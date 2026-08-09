@@ -306,6 +306,54 @@ event lines. Redraw-stripping regressions surface here.
 3. **Pi adapter.**
 4. **Roles `explore` and `plan`.**
 
+## Post-design corrections
+
+Found by smoke-testing the core mechanic (detached tmux → opencode →
+deepseek-v4-flash) before implementation. All three amend the design above.
+
+**tmux tears down the session on command exit.** `capture-pane` returns empty
+once the harness process ends, so the pane-tail fallback would be unavailable
+exactly when a harness crashes without writing a report — the case it exists to
+cover. Adapters must set `remain-on-exit on` and the engine owns pane teardown
+via `sonata gc`.
+
+**OpenCode has two modes with different capabilities.** `opencode run` is
+non-interactive and line-oriented: clean to normalize, but it has no approval
+prompts and cannot be steered. Approvals and live steering exist only in the
+interactive TUI. The adapter interface therefore exposes an `interactive` flag,
+and the OpenCode adapter selects mode from the permission mode — `run` for
+`acceptEdits`/`bypassPermissions`, TUI for `default`. Pane normalization must
+handle both.
+
+**The tail cursor is engine-internal.** The design showed `--since <cursor>`
+managed by the wrapper. Making the wrapper track cursors adds state to the
+component that should have none. The engine persists the cursor in the run
+directory instead, so the wrapper's poll is a bare `sonata tail <id> --wait 20`.
+
+**`opencode run --format json` is unusable as tested.** It advertises raw JSON
+events, which would have replaced pane scraping with a structured stream. In
+practice it produced zero bytes and never exited across two attempts exceeding
+three minutes each. A control run — identical model, cwd, and `--auto`, with
+only `--format json` removed — exited 0 in under a minute with correct output,
+isolating the flag as the cause on opencode v1.18.15. Pane capture therefore
+remains the progress mechanism. The adapter keeps an `parseEvents` seam so a
+fixed upstream can be adopted without touching the engine.
+
+**Blocking approvals are confirmed, not theoretical.** The first probe ran in a
+directory outside the repo, hit the `build` agent's `external_directory → ask`
+rule, and hung indefinitely with nobody to answer. This is the exact failure the
+stall backstop exists for, and it appeared on the first unguarded run. The
+`STALLED` timeout is not optional.
+
+**OpenCode's permission model is declarative.** Agents carry allow/ask rules per
+permission and pattern, and ship as `build`, `plan` (read-only), `explore`, and
+`general`. Mode and role mapping can therefore be expressed as agent selection
+plus `--auto`, rather than inferred from TUI text.
+
+**The available model roster is larger than assumed.** The configured
+`opencode-go` provider offers `deepseek-v4-flash`, `deepseek-v4-pro`, `kimi-k3`,
+`kimi-k2.7-code`, `glm-5.2`, `grok-4.5`, `mimo-v2.5-pro`, and `qwen3.8-max`.
+
 ## Risks
 
 **Prompt detection is regex against a TUI sonata does not control.** It will
