@@ -2,6 +2,7 @@
 import { parseArgs } from 'node:util';
 import { cmdRun } from './commands/run.js';
 import { cmdTail } from './commands/tail.js';
+import { cmdApprove } from './commands/approve.js';
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
@@ -54,6 +55,20 @@ async function main(argv: string[]): Promise<number> {
       if (res.report) console.log(`\n${res.report}`);
     }
     return res.state === 'STALLED' ? 3 : 0;
+  }
+
+  if (command === 'approve') {
+    const { values, positionals } = parseArgs({
+      args: rest,
+      allowPositionals: true,
+      options: { yes: { type: 'boolean', default: false }, no: { type: 'boolean', default: false } },
+    });
+    const id = positionals[0];
+    if (!id) throw new Error('sonata approve requires a run id');
+    if (values.yes === values.no) throw new Error('sonata approve requires exactly one of --yes or --no');
+    await cmdApprove({ cwd: process.cwd(), id, yes: values.yes });
+    console.log(`approved=${values.yes} run=${id}`);
+    return 0;
   }
 
   console.error(`sonata: unknown command "${command ?? ''}"`);
