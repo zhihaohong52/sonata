@@ -1,0 +1,16 @@
+[models.deepseek-v4-flash]
+harness = "opencode"
+id = "deepseek-v4-flash"
+
+[models.kimi-k3]
+harness = "opencode"
+id = "kimi-k3"
+
+[generate]
+roles = ["review", "code"]
+models = ["deepseek-v4-flash", "kimi-k3"]
+
+[run]
+tail_window_seconds = 20
+stall_timeout_seconds = 120
+run_timeout_seconds = 1800
