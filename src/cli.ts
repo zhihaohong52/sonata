@@ -5,6 +5,8 @@ import { cmdRun } from './commands/run.js';
 import { cmdTail } from './commands/tail.js';
 import { cmdApprove } from './commands/approve.js';
 import { cmdSync } from './commands/sync.js';
+import { cmdDoctor } from './commands/doctor.js';
+import { cmdGc } from './commands/gc.js';
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
@@ -79,6 +81,18 @@ async function main(argv: string[]): Promise<number> {
       agentsDir: join(process.cwd(), '.claude', 'agents'),
     });
     for (const p of written) console.log(`wrote ${p}`);
+    return 0;
+  }
+
+  if (command === 'doctor') {
+    const { ok, checks } = await cmdDoctor({ cwd: process.cwd() });
+    for (const c of checks) console.log(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: ${c.detail}`);
+    return ok ? 0 : 1;
+  }
+
+  if (command === 'gc') {
+    const killed = await cmdGc({ cwd: process.cwd() });
+    console.log(killed.length ? `killed ${killed.join(', ')}` : 'nothing to clean up');
     return 0;
   }
 
