@@ -1,0 +1,81 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { cmdRun } from '../../src/commands/run.js';
+import { readMeta, runDir } from '../../src/store.js';
+import { killSession, hasSession, capturePane } from '../../src/tmux.js';
+import { readPermissionMode } from '../../src/mode.js';
+
+let cwd: string;
+let created: string[] = [];
+
+beforeEach(() => {
+  cwd = mkdtempSync(join(tmpdir(), 'sonata-run-'));
+  mkdirSync(join(cwd, 'roles'), { recursive: true });
+  writeFileSync(join(cwd, 'roles', 'code.md'), 'Do the work.');
+  writeFileSync(join(cwd, 'sonata.toml'), `
+[models.fake]
+harness = "opencode"
+id = "fake"
+
+[generate]
+roles = ["code"]
+models = ["fake"]
+`);
+});
+
+afterEach(async () => {
+  for (const s of created) await killSession(s);
+  created = [];
+});
+
+describe('readPermissionMode', () => {
+  it('defaults to the safest mode when no session file exists', () => {
+    expect(readPermissionMode(cwd, 'missing')).toBe('default');
+  });
+
+  it('reads a written mode', () => {
+    mkdirSync(join(cwd, '.sonata'), { recursive: true });
+    writeFileSync(join(cwd, '.sonata', 'session-s1.json'),
+      JSON.stringify({ permissionMode: 'bypassPermissions' }));
+    expect(readPermissionMode(cwd, 's1')).toBe('bypassPermissions');
+  });
+});
+
+describe('cmdRun', () => {
+  it('creates a run, writes instructions and cmd.sh, and starts a live session', async () => {
+    const taskFile = join(cwd, 'task.txt');
+    writeFileSync(taskFile, 'Refactor the parser.');
+
+    const res = await cmdRun({
+      cwd, role: 'code', model: 'fake', taskFile,
+      rolesDir: join(cwd, 'roles'), sessionId: undefined,
+    });
+    created.push(res.session);
+
+    const dir = runDir(cwd, res.id);
+    expect(existsSync(join(dir, 'instructions.md'))).toBe(true);
+    expect(existsSync(join(dir, 'cmd.sh'))).toBe(true);
+
+    const instructions = readFileSync(join(dir, 'instructions.md'), 'utf8');
+    expect(instructions).toContain('Refactor the parser.');
+    expect(instructions).toContain(join(dir, 'report.md'));
+
+    const meta = readMeta(cwd, res.id);
+    expect(meta.harness).toBe('opencode');
+    expect(meta.model).toBe('fake');
+    expect(meta.mode).toBe('default');
+
+    expect(await hasSession(res.session)).toBe(true);
+  });
+
+  it('rejects an undefined model with an actionable message', async () => {
+    const taskFile = join(cwd, 'task.txt');
+    writeFileSync(taskFile, 'x');
+    await expect(cmdRun({
+      cwd, role: 'code', model: 'ghost', taskFile,
+      rolesDir: join(cwd, 'roles'), sessionId: undefined,
+    })).rejects.toThrow(/unknown model "ghost"/);
+  });
+});
