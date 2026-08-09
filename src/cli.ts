@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
+import { join } from 'node:path';
 import { cmdRun } from './commands/run.js';
 import { cmdTail } from './commands/tail.js';
 import { cmdApprove } from './commands/approve.js';
+import { cmdSync } from './commands/sync.js';
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
@@ -68,6 +70,15 @@ async function main(argv: string[]): Promise<number> {
     if (values.yes === values.no) throw new Error('sonata approve requires exactly one of --yes or --no');
     await cmdApprove({ cwd: process.cwd(), id, yes: values.yes });
     console.log(`approved=${values.yes} run=${id}`);
+    return 0;
+  }
+
+  if (command === 'sync') {
+    const written = cmdSync({
+      cwd: process.cwd(),
+      agentsDir: join(process.cwd(), '.claude', 'agents'),
+    });
+    for (const p of written) console.log(`wrote ${p}`);
     return 0;
   }
 
