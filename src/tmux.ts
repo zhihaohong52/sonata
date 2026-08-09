@@ -47,10 +47,19 @@ export async function sendKeys(session: string, keys: string): Promise<void> {
 }
 
 export async function capturePane(session: string): Promise<string> {
+  return (await tryCapturePane(session)) ?? '';
+}
+
+/**
+ * Distinguishes a genuinely empty pane ('') from a failed capture (null). The
+ * tmux server rejects calls transiently under load, and treating that as an
+ * empty pane makes callers believe the pane was cleared.
+ */
+export async function tryCapturePane(session: string): Promise<string | null> {
   try {
     return await tmux(['capture-pane', '-p', '-t', session]);
   } catch {
-    return '';
+    return null;
   }
 }
 
@@ -60,6 +69,19 @@ export async function listSessions(): Promise<string[]> {
     return out.split('\n').filter(Boolean);
   } catch {
     return [];
+  }
+}
+
+/**
+ * Name of the tmux session this process is running inside, or null when not
+ * inside tmux. Used to stop sonata killing the pane it lives in.
+ */
+export async function currentSession(): Promise<string | null> {
+  if (!process.env.TMUX) return null;
+  try {
+    return (await tmux(['display-message', '-p', '#{session_name}'])).trim() || null;
+  } catch {
+    return null;
   }
 }
 

@@ -1,10 +1,12 @@
+import { statSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { loadConfig } from '../config.js';
 import { getAdapter } from '../adapters/index.js';
-import { capturePane } from '../tmux.js';
+import { tryCapturePane } from '../tmux.js';
 import { cleanPane, newLines } from '../normalize.js';
 import {
   readMeta, readExit, readReport, readCursor, writeCursor,
-  appendEvents, readEvents, writeMeta,
+  appendEvents, readEvents, writeMeta, runDir,
 } from '../store.js';
 import type { TailState } from '../types.js';
 
@@ -65,6 +67,30 @@ export interface TailOptions {
   now?: () => number;
 }
 
+function lastChangeMs(cwd: string, id: string, now: () => number): number {
+  try {
+    const lastWrite = statSync(join(runDir(cwd, id), 'events.jsonl')).mtimeMs;
+    return lastWrite <= now() ? lastWrite : now();
+  } catch {
+    return now();
+  }
+}
+
+function paneSnapshotPath(cwd: string, id: string): string {
+  return join(runDir(cwd, id), 'pane.snapshot');
+}
+
+function readPaneSnapshot(cwd: string, id: string): string[] {
+  const p = paneSnapshotPath(cwd, id);
+  if (!existsSync(p)) return [];
+  const raw = readFileSync(p, 'utf8');
+  return raw.length === 0 ? [] : raw.split('\n');
+}
+
+function writePaneSnapshot(cwd: string, id: string, lines: string[]): void {
+  writeFileSync(paneSnapshotPath(cwd, id), lines.join('\n'));
+}
+
 export async function cmdTail(opts: TailOptions): Promise<TailResult> {
   const now = opts.now ?? (() => Date.now());
   const pollMs = opts.pollMs ?? 500;
@@ -73,13 +99,24 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
   const adapter = getAdapter(meta.harness);
 
   const deadline = now() + opts.waitSeconds * 1000;
-  let lastChange = now();
+  let lastChange = lastChangeMs(opts.cwd, opts.id, now);
 
   for (;;) {
-    const pane = cleanPane(await capturePane(meta.session));
     const cursor = readCursor(opts.cwd, opts.id);
-    const seen = readEvents(opts.cwd, opts.id);
-    const fresh = newLines(seen.slice(Math.max(0, seen.length - 200)), pane);
+    const prevPane = readPaneSnapshot(opts.cwd, opts.id);
+
+    // Diff against the PREVIOUS PANE, not the accumulated event log. The event
+    // log contains older, already-scrolled content, so suffix-overlap against
+    // it fails and re-emits the whole pane on every poll — which makes every
+    // call return PROGRESS immediately and starves the caller's poll budget.
+    //
+    // A failed capture (null, common when tmux is busy) must not be mistaken
+    // for an emptied pane: writing an empty snapshot would make the next poll
+    // re-emit everything, producing the same starvation.
+    const captured = await tryCapturePane(meta.session);
+    const pane = captured === null ? prevPane : cleanPane(captured);
+    const fresh = captured === null ? [] : newLines(prevPane, pane);
+    if (captured !== null) writePaneSnapshot(opts.cwd, opts.id, pane);
 
     if (fresh.length > 0) {
       appendEvents(opts.cwd, opts.id, fresh);
