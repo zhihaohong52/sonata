@@ -7,7 +7,7 @@ harness = "opencode"
 id = "kimi-k3"
 
 [generate]
-roles = ["review", "code"]
+roles = ["code", "review"]
 models = ["deepseek-v4-flash", "kimi-k3"]
 
 [run]

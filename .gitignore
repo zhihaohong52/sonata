@@ -1,3 +1,7 @@
 node_modules/
 dist/
 .sonata/
+
+# Generated per-user by `sonata init` (contains absolute paths)
+.claude/settings.json
+.claude/agents/
