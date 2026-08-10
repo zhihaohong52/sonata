@@ -1,0 +1,180 @@
+/**
+ * Environment detection for `sonata init` and `sonata doctor`.
+ *
+ * Parsing is separated from process execution so the interesting logic can be
+ * tested against real fixture files rather than a live machine.
+ */
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { checkVersion } from './commands/doctor.js';
+
+const run = promisify(execFile);
+
+export type Severity = 'error' | 'warn' | 'info';
+
+export interface Problem {
+  severity: Severity;
+  message: string;
+  /** A command the user can run, or a description of the repair sonata offers. */
+  fix?: string;
+  /** True when `sonata init` can perform the repair itself. */
+  autoFixable?: boolean;
+}
+
+export interface OpenCodeModel {
+  provider: string;
+  id: string;
+  name?: string;
+}
+
+export interface HarnessStatus {
+  name: string;
+  installed: boolean;
+  version?: string;
+  supported: boolean;
+  binPath?: string;
+  models: OpenCodeModel[];
+  authedProviders: string[];
+  problems: Problem[];
+}
+
+export function parseOpenCodeModels(text: string): OpenCodeModel[] {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  const out: OpenCodeModel[] = [];
+  for (const [provider, def] of Object.entries<any>(parsed?.provider ?? {})) {
+    for (const [id, model] of Object.entries<any>(def?.models ?? {})) {
+      out.push({ provider, id, name: model?.name });
+    }
+  }
+  return out;
+}
+
+export function parseAuthedProviders(text: string): string[] {
+  try {
+    return Object.keys(JSON.parse(text) ?? {});
+  } catch {
+    return [];
+  }
+}
+
+/** Agent files that sonata generated but the current config no longer covers. */
+export function staleAgents(agentsDir: string, expected: string[]): string[] {
+  if (!existsSync(agentsDir)) return [];
+  const wanted = new Set(expected.map((n) => `${n}.md`));
+  return readdirSync(agentsDir)
+    .filter((f) => f.endsWith('.md'))
+    .filter((f) => isSonataAgent(join(agentsDir, f)))
+    .filter((f) => !wanted.has(f))
+    .sort();
+}
+
+function isSonataAgent(path: string): boolean {
+  try {
+    return readFileSync(path, 'utf8').includes('forwarding wrapper around the sonata runtime');
+  } catch {
+    return false;
+  }
+}
+
+async function tryRun(cmd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string | null> {
+  try {
+    const { stdout } = await run(cmd, args, { env: env ?? process.env });
+    return stdout.trim();
+  } catch {
+    return null;
+  }
+}
+
+export async function detectTmux(): Promise<{ installed: boolean; version?: string; problems: Problem[] }> {
+  const out = await tryRun('tmux', ['-V']);
+  if (out === null) {
+    return {
+      installed: false,
+      problems: [{
+        severity: 'error',
+        message: 'tmux is not installed — sonata runs every harness inside a tmux session',
+        fix: 'brew install tmux',
+      }],
+    };
+  }
+  return { installed: true, version: out.replace(/^tmux\s+/, ''), problems: [] };
+}
+
+export interface DetectEnv {
+  home: string;
+  supportedVersions: string;
+}
+
+export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
+  const problems: Problem[] = [];
+  const localBin = join(env.home, '.opencode', 'bin', 'opencode');
+
+  const path = `${join(env.home, '.opencode', 'bin')}:${process.env.PATH ?? ''}`;
+  const version = await tryRun('opencode', ['--version'], { ...process.env, PATH: path });
+
+  if (version === null) {
+    return {
+      name: 'opencode',
+      installed: false,
+      supported: false,
+      models: [],
+      authedProviders: [],
+      problems: [{
+        severity: 'error',
+        message: 'opencode is not installed',
+        fix: 'curl -fsSL https://opencode.ai/install | bash',
+      }],
+    };
+  }
+
+  const supported = checkVersion(version, env.supportedVersions);
+  if (!supported) {
+    problems.push({
+      severity: 'warn',
+      message: `opencode ${version} is outside the tested range ${env.supportedVersions}`,
+      fix: 'Prompt detection may misbehave; upgrade or pin a tested version.',
+    });
+  }
+
+  const configPath = join(env.home, '.config', 'opencode', 'opencode.json');
+  const models = existsSync(configPath)
+    ? parseOpenCodeModels(readFileSync(configPath, 'utf8'))
+    : [];
+
+  const authPath = join(env.home, '.local', 'share', 'opencode', 'auth.json');
+  const authedProviders = existsSync(authPath)
+    ? parseAuthedProviders(readFileSync(authPath, 'utf8'))
+    : [];
+
+  if (models.length === 0) {
+    problems.push({
+      severity: 'error',
+      message: 'opencode has no models configured',
+      fix: 'opencode auth login',
+    });
+  } else if (authedProviders.length === 0) {
+    problems.push({
+      severity: 'error',
+      message: 'opencode has models configured but no authenticated provider',
+      fix: 'opencode auth login',
+    });
+  }
+
+  return {
+    name: 'opencode',
+    installed: true,
+    version,
+    supported,
+    binPath: existsSync(localBin) ? localBin : 'opencode',
+    models,
+    authedProviders,
+    problems,
+  };
+}

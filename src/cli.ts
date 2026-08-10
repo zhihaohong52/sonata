@@ -7,9 +7,80 @@ import { cmdApprove } from './commands/approve.js';
 import { cmdSync } from './commands/sync.js';
 import { cmdDoctor } from './commands/doctor.js';
 import { cmdGc } from './commands/gc.js';
+import { cmdInit, isCancellation } from './commands/init.js';
+import type { HookScope } from './settings.js';
+import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const USAGE = `sonata — foreign-model subagents for Claude Code
+
+  sonata init      set up sonata in this project (interactive)
+  sonata doctor    check tmux, harnesses, auth and versions
+  sonata sync      regenerate agent files from sonata.toml
+  sonata run       launch a harness run, print its id
+  sonata tail      poll a run for progress
+  sonata approve   answer a pending approval
+  sonata gc        kill finished tmux sessions
+
+  init flags (skip the prompts):
+    --yes                    accept defaults, no prompts
+    --models a,b             models to enable
+    --roles code,review      roles to generate
+    --scope project|global|skip   where to install the permission hook
+`;
+
+/** Repository root, one level above the compiled dist/ or src/ directory. */
+function packageRoot(): string {
+  return join(fileURLToPath(new URL('.', import.meta.url)), '..');
+}
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
+
+  if (!command || command === 'help' || command === '--help' || command === '-h') {
+    console.log(USAGE);
+    return command ? 0 : 2;
+  }
+
+  if (command === 'init') {
+    const { values } = parseArgs({
+      args: rest,
+      options: {
+        yes: { type: 'boolean', default: false },
+        models: { type: 'string' },
+        roles: { type: 'string' },
+        scope: { type: 'string' },
+      },
+    });
+
+    const scope = values.scope as HookScope | 'skip' | undefined;
+    if (scope && !['project', 'global', 'skip'].includes(scope)) {
+      throw new Error(`sonata init: --scope must be project, global or skip (got "${scope}")`);
+    }
+
+    const split = (v: string | undefined): string[] | undefined =>
+      v === undefined ? undefined : v.split(',').map((s) => s.trim()).filter(Boolean);
+
+    try {
+      const res = await cmdInit({
+        cwd: process.cwd(),
+        home: homedir(),
+        packageRoot: packageRoot(),
+        yes: values.yes,
+        models: split(values.models),
+        roles: split(values.roles),
+        scope,
+      });
+      if (res.cancelled) return 1;
+      return res.problems.some((p) => p.severity === 'error') ? 1 : 0;
+    } catch (err) {
+      if (isCancellation(err)) {
+        console.log('\n  Cancelled. Nothing written.');
+        return 130;
+      }
+      throw err;
+    }
+  }
 
   if (command === 'run') {
     const { values } = parseArgs({
