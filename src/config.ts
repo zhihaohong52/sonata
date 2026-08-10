@@ -3,7 +3,14 @@ import { join } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 
 export const KNOWN_HARNESSES = ['opencode', 'codex'] as const;
-export const KNOWN_ROLES = ['review', 'code'] as const;
+export const KNOWN_ROLES = ['review', 'code', 'explore', 'plan'] as const;
+
+/** Roles that must never write, whatever permission mode the session is in. */
+export const READ_ONLY_ROLES = ['review', 'explore', 'plan'] as const;
+
+export function isReadOnlyRole(role: string): boolean {
+  return (READ_ONLY_ROLES as readonly string[]).includes(role);
+}
 
 export interface ModelConfig { harness: string; id: string }
 

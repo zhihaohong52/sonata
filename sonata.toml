@@ -11,7 +11,7 @@ harness = "codex"
 id = "gpt-5.6-sol"
 
 [generate]
-roles = ["code", "review"]
+roles = ["code", "review", "explore", "plan"]
 models = ["deepseek-v4-flash", "kimi-k3", "gpt-5-6-sol"]
 
 [run]

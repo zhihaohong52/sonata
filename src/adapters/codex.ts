@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { connect } from 'node:net';
 import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput } from './types.js';
+import { isReadOnlyRole } from '../config.js';
 
 const run = promisify(execFile);
 
@@ -49,7 +50,11 @@ function shellQuote(s: string): string {
 }
 
 function buildScript(input: PlanInput): LaunchPlan {
-  const interactive = input.mode === 'default';
+  // A read-only role must never be able to write, whatever the permission mode
+  // says: force the read-only sandbox and the non-interactive `codex exec`,
+  // which never raises an approval prompt.
+  const readOnly = isReadOnlyRole(input.role);
+  const interactive = input.mode === 'default' && !readOnly;
   const lastMessage = `${input.runDir}/last-message.txt`;
   const message = 'Follow the instructions in the attached file.';
 
@@ -78,7 +83,7 @@ function buildScript(input: PlanInput): LaunchPlan {
       ...common,
       '--skip-git-repo-check',
       '-c approval_policy="never"',
-      `-s ${sandboxFor(input.mode)}`,
+      `-s ${readOnly ? 'read-only' : sandboxFor(input.mode)}`,
       `-o ${shellQuote(lastMessage)}`,
       shellQuote(prompt),
     ].join(' ');

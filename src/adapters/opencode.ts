@@ -1,4 +1,5 @@
 import type { HarnessAdapter, LaunchPlan, PlanInput } from './types.js';
+import { isReadOnlyRole } from '../config.js';
 
 const PROMPT_PATTERNS: RegExp[] = [
   /\(y\/n\)/i,
@@ -10,13 +11,15 @@ const PROMPT_PATTERNS: RegExp[] = [
 
 function agentFor(input: PlanInput): string {
   if (input.mode === 'plan') return 'plan';
-  if (input.role === 'review') return 'plan';
+  if (input.role === 'explore') return 'explore';
+  if (isReadOnlyRole(input.role)) return 'plan';
   return 'build';
 }
 
 function buildScript(input: PlanInput): LaunchPlan {
   const interactive = input.mode === 'default';
-  const auto = input.mode === 'acceptEdits' || input.mode === 'bypassPermissions';
+  const readOnly = isReadOnlyRole(input.role);
+  const auto = !readOnly && (input.mode === 'acceptEdits' || input.mode === 'bypassPermissions');
   const agent = agentFor(input);
 
   const flags = ['run', `--agent ${agent}`, `-m opencode/${input.modelId}`];

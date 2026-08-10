@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseConfig } from '../src/config.js';
+import { parseConfig, isReadOnlyRole } from '../src/config.js';
 
 const VALID = `
 [models.deepseek-v4-flash]
@@ -64,5 +64,30 @@ roles = ["dance"]
 models = ["a"]
 `;
     expect(() => parseConfig(bad)).toThrow(/unknown role "dance"/);
+  });
+
+  it('accepts explore and plan roles', () => {
+    const cfg = parseConfig(`
+[models.a]
+harness = "opencode"
+id = "a"
+
+[generate]
+roles = ["explore", "plan"]
+models = ["a"]
+`);
+    expect(cfg.generate.roles).toEqual(['explore', 'plan']);
+  });
+});
+
+describe('isReadOnlyRole', () => {
+  it('returns true for read-only roles', () => {
+    expect(isReadOnlyRole('review')).toBe(true);
+    expect(isReadOnlyRole('explore')).toBe(true);
+    expect(isReadOnlyRole('plan')).toBe(true);
+  });
+
+  it('returns false for code', () => {
+    expect(isReadOnlyRole('code')).toBe(false);
   });
 });

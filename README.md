@@ -189,7 +189,7 @@ harness = "opencode"
 id = "deepseek-v4-flash"
 
 [generate]
-roles  = ["code", "review"]
+roles  = ["code", "review", "explore", "plan"]
 models = ["deepseek-v4-flash", "kimi-k3"]
 
 [run]
@@ -202,6 +202,10 @@ Roles live in `roles/*.md` and are owned by sonata rather than the harness, so
 "review" means the same thing whichever model performs it — which is what makes
 comparing two models' reviews meaningful.
 
+Four roles ship: `code`, `review`, `explore` and `plan`. The last three are
+**read-only** — sonata forces a read-only sandbox for them regardless of your
+permission mode, so a review can never quietly edit your repository.
+
 Run `sonata sync` after editing the config.
 
 ## Limitations
@@ -212,7 +216,6 @@ Worth knowing before you depend on this:
 - **Codex through a proxy needs that proxy up.** If `~/.codex/config.toml` sets
   `openai_base_url`, `sonata doctor` checks the endpoint is listening — a dead
   proxy otherwise wastes minutes in retries before failing.
-- **Roles are `code` and `review`.** `explore` and `plan` are not implemented.
 - **Prompt detection is regex against a TUI sonata does not control.** It is
   tested against a scripted fake harness, not against real opencode output, and
   it will break when harnesses change their interface. The `STALLED` timeout is
@@ -227,7 +230,7 @@ Worth knowing before you depend on this:
 
 ```bash
 npm install
-npm test          # 140 tests; needs tmux
+npm test          # 150 tests; needs tmux
 npm run typecheck
 npm run build
 ```

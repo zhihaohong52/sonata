@@ -7,6 +7,8 @@ export interface AgentSpec { role: string; model: string; harness: string }
 const ROLE_BLURB: Record<string, string> = {
   code: 'implementation, refactors, and mechanical code changes',
   review: 'reviewing existing code for defects, without modifying it',
+  explore: 'locating code and answering questions about the codebase, without modifying it',
+  plan: 'producing an implementation plan for a change, without performing it',
 };
 
 export function agentMarkdown(spec: AgentSpec): string {

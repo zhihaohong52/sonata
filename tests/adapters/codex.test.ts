@@ -29,6 +29,24 @@ describe('codexAdapter.plan — sandbox mapping', () => {
     expect(p.script).toContain('-s danger-full-access');
   });
 
+  it('forces read-only and non-interactive for the review role in acceptEdits', () => {
+    const p = codexAdapter.plan({ ...base, role: 'review', mode: 'acceptEdits' });
+    expect(p.script).toContain('-s read-only');
+    expect(p.script).not.toContain('workspace-write');
+    expect(p.interactive).toBe(false);
+  });
+
+  it('forces read-only for the review role even in bypassPermissions', () => {
+    const p = codexAdapter.plan({ ...base, role: 'review', mode: 'bypassPermissions' });
+    expect(p.script).toContain('-s read-only');
+    expect(p.script).not.toContain('danger-full-access');
+  });
+
+  it('keeps workspace-write for the code role in acceptEdits', () => {
+    const p = codexAdapter.plan({ ...base, role: 'code', mode: 'acceptEdits' });
+    expect(p.script).toContain('-s workspace-write');
+  });
+
   it('never uses the bypass-approvals-and-sandbox flag', () => {
     for (const mode of ['plan', 'acceptEdits', 'bypassPermissions'] as const) {
       const p = codexAdapter.plan({ ...base, mode });

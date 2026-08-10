@@ -36,6 +36,23 @@ describe('openCodeAdapter.plan', () => {
     expect(p.script).toContain('--agent plan');
   });
 
+  it('maps the explore role to the explore agent', () => {
+    const p = openCodeAdapter.plan({ ...base, role: 'explore', mode: 'acceptEdits' });
+    expect(p.script).toContain('--agent explore');
+  });
+
+  it('uses the read-only plan agent for the plan role', () => {
+    const p = openCodeAdapter.plan({ ...base, role: 'plan', mode: 'acceptEdits' });
+    expect(p.script).toContain('--agent plan');
+  });
+
+  it('never passes --auto for a read-only role even in bypassPermissions', () => {
+    for (const role of ['review', 'explore', 'plan']) {
+      const p = openCodeAdapter.plan({ ...base, role, mode: 'bypassPermissions' });
+      expect(p.script).not.toContain('--auto');
+    }
+  });
+
   it('runs interactively in default mode so approvals can surface', () => {
     const p = openCodeAdapter.plan({ ...base, mode: 'default' });
     expect(p.interactive).toBe(true);

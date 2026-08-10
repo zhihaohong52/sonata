@@ -59,4 +59,22 @@ describe('cmdSync', () => {
     ]);
     expect(readFileSync(join(agentsDir, 'code-kimi-k3.md'), 'utf8')).toContain('--model kimi-k3');
   });
+
+  it('writes explore and plan agent files', () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models.deepseek-v4-flash]
+harness = "opencode"
+id = "deepseek-v4-flash"
+
+[generate]
+roles = ["explore", "plan"]
+models = ["deepseek-v4-flash"]
+`);
+    const agentsDir = join(cwd, '.claude', 'agents');
+    const written = cmdSync({ cwd, agentsDir });
+    expect(written.map((p) => p.split('/').pop()).sort()).toEqual([
+      'explore-deepseek-v4-flash.md',
+      'plan-deepseek-v4-flash.md',
+    ]);
+  });
 });

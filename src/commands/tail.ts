@@ -64,6 +64,8 @@ export interface TailOptions {
   id: string;
   waitSeconds: number;
   pollMs?: number;
+  /** Grace period after the exit sentinel for the pane to flush. */
+  settleMs?: number;
   now?: () => number;
 }
 
@@ -94,6 +96,7 @@ function writePaneSnapshot(cwd: string, id: string, lines: string[]): void {
 export async function cmdTail(opts: TailOptions): Promise<TailResult> {
   const now = opts.now ?? (() => Date.now());
   const pollMs = opts.pollMs ?? 500;
+  const settleMs = opts.settleMs ?? 500;
   const config = loadConfig(opts.cwd);
   const meta = readMeta(opts.cwd, opts.id);
   const adapter = getAdapter(meta.harness);
@@ -114,17 +117,41 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
     // for an emptied pane: writing an empty snapshot would make the next poll
     // re-emit everything, producing the same starvation.
     const captured = await tryCapturePane(meta.session);
-    const pane = captured === null ? prevPane : cleanPane(captured);
-    const fresh = captured === null ? [] : newLines(prevPane, pane);
-    if (captured !== null) writePaneSnapshot(opts.cwd, opts.id, pane);
+    const paneNow = captured === null ? prevPane : cleanPane(captured);
+    const freshNow = captured === null ? [] : newLines(prevPane, paneNow);
+    if (captured !== null) writePaneSnapshot(opts.cwd, opts.id, paneNow);
 
-    if (fresh.length > 0) {
-      appendEvents(opts.cwd, opts.id, fresh);
-      writeCursor(opts.cwd, opts.id, cursor + fresh.length);
+    if (freshNow.length > 0) {
+      appendEvents(opts.cwd, opts.id, freshNow);
+      writeCursor(opts.cwd, opts.id, cursor + freshNow.length);
       lastChange = now();
     }
 
-    const exitCode = readExit(opts.cwd, opts.id);
+    let exitCode = readExit(opts.cwd, opts.id);
+    let pane = paneNow;
+    let fresh = freshNow;
+
+    // The exit sentinel is a file write; the harness's last output reaches the
+    // pane via a terminal flush. Under load the sentinel wins the race, which
+    // would truncate a degraded report of exactly the crash we need to see.
+    // Take one settling capture before declaring the run finished.
+    if (exitCode !== null) {
+      await new Promise((r) => setTimeout(r, settleMs));
+      const settled = await tryCapturePane(meta.session);
+      if (settled !== null) {
+        const settledPane = cleanPane(settled);
+        const extra = newLines(pane, settledPane);
+        if (extra.length > 0) {
+          appendEvents(opts.cwd, opts.id, extra);
+          writeCursor(opts.cwd, opts.id, readCursor(opts.cwd, opts.id) + extra.length);
+          fresh = [...fresh, ...extra];
+        }
+        writePaneSnapshot(opts.cwd, opts.id, settledPane);
+        pane = settledPane;
+      }
+      exitCode = readExit(opts.cwd, opts.id);
+    }
+
 
     // Prefer the model's own report; fall back to a final message the harness
     // wrote itself (codex `-o`) before giving up and returning pane text.
