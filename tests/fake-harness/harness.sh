@@ -33,4 +33,8 @@ case "$SCENARIO" in
     echo "finished without writing anything"
     echo 0 > "$RUN_DIR/exit"
     ;;
+  hang)
+    echo "> fake · scenario=hang"
+    sleep 120
+    ;;
 esac

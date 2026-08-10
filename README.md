@@ -130,6 +130,12 @@ tmux attach -t sonata-<id>     # -r for read-only
 Attaching means you can correct a cheap model that is going off the rails
 instead of paying for the rest of a wasted run.
 
+`run_timeout_seconds` is a hard cap, enforced by a watchdog inside the launched
+shell rather than by `sonata tail` — a runaway run with nobody watching is
+exactly the case that needs bounding. On expiry the whole process group is
+killed and the run is reported `DONE`, `degraded`, with a report beginning
+`[timed out: …]`.
+
 ## Permission modes
 
 Sonata mirrors your Claude Code permission mode onto the harness. A sonata
@@ -195,7 +201,7 @@ models = ["deepseek-v4-flash", "kimi-k3"]
 [run]
 tail_window_seconds   = 20    # how long `sonata tail` blocks per call
 stall_timeout_seconds = 120   # silence before a run is reported STALLED
-run_timeout_seconds   = 1800
+run_timeout_seconds   = 1800   # hard cap; the run is killed at this point
 ```
 
 Roles live in `roles/*.md` and are owned by sonata rather than the harness, so
@@ -230,7 +236,7 @@ Worth knowing before you depend on this:
 
 ```bash
 npm install
-npm test          # 150 tests; needs tmux
+npm test          # 162 tests; needs tmux
 npm run typecheck
 npm run build
 ```

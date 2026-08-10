@@ -18,6 +18,7 @@ export interface DecideInput {
   msSinceLastChange: number;
   stallTimeoutMs: number;
   paneTail: string[];
+  timedOut: boolean;
 }
 
 export interface TailResult {
@@ -32,15 +33,20 @@ export interface TailResult {
 /** Pure state machine. Order matters: completion beats a stale prompt match. */
 export function decide(input: DecideInput): TailResult {
   if (input.exitCode !== null) {
-    const degraded = input.report === null;
+    // A timed-out run is degraded even if a report file happens to exist: the
+    // work was cut short, so the report cannot be trusted as complete.
+    const degraded = input.timedOut || input.report === null;
+    const report = input.timedOut
+      ? `[timed out: sonata killed the run after the configured run_timeout_seconds]\n\n${input.paneTail.join('\n')}`
+      : degraded
+        ? `[degraded: harness exited ${input.exitCode} without writing a report]\n\n${input.paneTail.join('\n')}`
+        : input.report!;
     return {
       state: 'DONE',
       lines: input.newLines,
       exitCode: input.exitCode,
       degraded,
-      report: degraded
-        ? `[degraded: harness exited ${input.exitCode} without writing a report]\n\n${input.paneTail.join('\n')}`
-        : input.report!,
+      report,
     };
   }
 
@@ -170,6 +176,7 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       msSinceLastChange: now() - lastChange,
       stallTimeoutMs: config.run.stallTimeoutSeconds * 1000,
       paneTail: pane.slice(-20),
+      timedOut: existsSync(join(runDir(opts.cwd, opts.id), 'timeout')),
     });
 
     if (result.state === 'DONE') {

@@ -9,6 +9,7 @@ const base = {
   msSinceLastChange: 0,
   stallTimeoutMs: 120_000,
   paneTail: ['last', 'lines'],
+  timedOut: false,
 };
 
 describe('tail decide', () => {
@@ -54,5 +55,20 @@ describe('tail decide', () => {
     const r = decide({ ...base, msSinceLastChange: 5_000 });
     expect(r.state).toBe('PROGRESS');
     expect(r.lines).toEqual([]);
+  });
+
+  it('marks a timed-out finished run DONE degraded with the timeout line', () => {
+    const r = decide({ ...base, exitCode: 0, timedOut: true });
+    expect(r.state).toBe('DONE');
+    expect(r.degraded).toBe(true);
+    expect(r.report).toMatch(/^\[timed out: sonata killed the run after the configured run_timeout_seconds\]\n\n/);
+  });
+
+  it('still degrades a timed-out run that has a report file', () => {
+    const r = decide({ ...base, exitCode: 0, report: 'a complete report', timedOut: true });
+    expect(r.state).toBe('DONE');
+    expect(r.degraded).toBe(true);
+    expect(r.report).toMatch(/^\[timed out: sonata killed the run after the configured run_timeout_seconds\]/);
+    expect(r.report).toContain('last');
   });
 });

@@ -5,6 +5,8 @@ import { join, resolve } from 'node:path';
 import { createRun, runDir } from '../src/store.js';
 import { newSession, runScript, killSession } from '../src/tmux.js';
 import { cmdTail } from '../src/commands/tail.js';
+import { loadConfig } from '../src/config.js';
+import { wrapWithTimeout } from '../src/watchdog.js';
 
 const HARNESS = resolve('tests/fake-harness/harness.sh');
 let cwd: string;
@@ -14,9 +16,10 @@ const sessions: string[] = [];
  * Writes the fixture config. The stall timeout is generous by default: under
  * parallel test load a harness can take several seconds just to start, and a
  * short timeout misreads that startup latency as a stall. Only the test that
- * deliberately exercises STALLED shortens it.
+ * deliberately exercises STALLED shortens it. The run timeout is generous by
+ * default too, so only the hang test exercises the watchdog.
  */
-function writeConfig(stallTimeoutSeconds: number): void {
+function writeConfig(stallTimeoutSeconds: number, runTimeoutSeconds = 30): void {
   writeFileSync(join(cwd, 'sonata.toml'), `
 [models.fake]
 harness = "opencode"
@@ -28,6 +31,7 @@ models = ["fake"]
 
 [run]
 stall_timeout_seconds = ${stallTimeoutSeconds}
+run_timeout_seconds = ${runTimeoutSeconds}
 `);
 }
 
@@ -48,8 +52,14 @@ async function launch(scenario: string, interactive: boolean, harness = 'opencod
     startedAt: new Date().toISOString(),
   });
   const dir = runDir(cwd, meta.id);
+  const harnessScript = join(dir, 'harness.sh');
+  writeFileSync(harnessScript, `#!/bin/bash\n${HARNESS} ${scenario} '${dir}'\n`, { mode: 0o755 });
   const script = join(dir, 'cmd.sh');
-  writeFileSync(script, `#!/bin/bash\n${HARNESS} ${scenario} '${dir}'\n`, { mode: 0o755 });
+  writeFileSync(script, wrapWithTimeout({
+    harnessScriptPath: harnessScript,
+    runDir: dir,
+    timeoutSeconds: loadConfig(cwd).run.runTimeoutSeconds,
+  }), { mode: 0o755 });
   await newSession({ session: meta.session, cwd });
   sessions.push(meta.session);
   await runScript(meta.session, script);
@@ -125,5 +135,14 @@ stall_timeout_seconds = 30
     await tailUntil(id, ['DONE']);
     const { hasSession } = await import('../src/tmux.js');
     expect(await hasSession(`sonata-${id}`)).toBe(true);
+  });
+
+  it('kills a hung run at the run timeout and marks it degraded', async () => {
+    writeConfig(30, 3); // generous stall timeout, short run timeout
+    const id = await launch('hang', false);
+    const r = await tailUntil(id, ['DONE'], 60);
+    expect(r.degraded).toBe(true);
+    expect(r.report).toMatch(/^\[timed out: sonata killed the run after the configured run_timeout_seconds\]\n\n/);
+    expect(r.report).toContain('scenario=hang');
   });
 });

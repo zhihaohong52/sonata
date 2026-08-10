@@ -6,6 +6,7 @@ import { createRun, runDir, writeMeta } from '../store.js';
 import { loadRole, composeInstructions } from '../roles.js';
 import { readPermissionMode } from '../mode.js';
 import { newSession, runScript } from '../tmux.js';
+import { wrapWithTimeout } from '../watchdog.js';
 
 export interface RunOptions {
   cwd: string;
@@ -75,8 +76,15 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     instructionsPath,
   });
 
+  const harnessPath = join(dir, 'harness.sh');
+  writeFileSync(harnessPath, plan.script, { mode: 0o755 });
+
   const scriptPath = join(dir, 'cmd.sh');
-  writeFileSync(scriptPath, plan.script, { mode: 0o755 });
+  writeFileSync(scriptPath, wrapWithTimeout({
+    harnessScriptPath: harnessPath,
+    runDir: dir,
+    timeoutSeconds: config.run.runTimeoutSeconds,
+  }), { mode: 0o755 });
 
   writeMeta(opts.cwd, { ...meta, interactive: plan.interactive });
 
