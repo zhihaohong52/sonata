@@ -41,9 +41,9 @@ afterEach(async () => {
   sessions.length = 0;
 });
 
-async function launch(scenario: string, interactive: boolean) {
+async function launch(scenario: string, interactive: boolean, harness = 'opencode') {
   const meta = createRun(cwd, {
-    role: 'code', model: 'fake', harness: 'opencode',
+    role: 'code', model: 'fake', harness,
     mode: interactive ? 'default' : 'acceptEdits', interactive,
     startedAt: new Date().toISOString(),
   });
@@ -86,6 +86,25 @@ describe('end to end against the fake harness', () => {
     const r = await tailUntil(id, ['DONE']);
     expect(r.degraded).toBe(true);
     expect(r.exitCode).toBe(0);
+  });
+
+  it('uses a harness-written final message when the model wrote no report', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models.fake]
+harness = "codex"
+id = "fake"
+
+[generate]
+roles = ["code"]
+models = ["fake"]
+
+[run]
+stall_timeout_seconds = 30
+`);
+    const id = await launch('fallback', false, 'codex');
+    const r = await tailUntil(id, ['DONE']);
+    expect(r.degraded).toBe(false);
+    expect(r.report).toContain('Final message written by the harness itself');
   });
 
   it('detects a pending approval as PAUSED', async () => {

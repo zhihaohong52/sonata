@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 
-export const KNOWN_HARNESSES = ['opencode'] as const;
+export const KNOWN_HARNESSES = ['opencode', 'codex'] as const;
 export const KNOWN_ROLES = ['review', 'code'] as const;
 
 export interface ModelConfig { harness: string; id: string }

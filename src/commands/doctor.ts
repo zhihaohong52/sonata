@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { loadConfig } from '../config.js';
 import { getAdapter } from '../adapters/index.js';
 import { tmuxVersion } from '../tmux.js';
+import { homedir } from 'node:os';
 
 const run = promisify(execFile);
 
@@ -63,6 +64,18 @@ export async function cmdDoctor(opts: { cwd: string }): Promise<{ ok: boolean; c
         ok,
         detail: ok ? version : `${version} outside tested range ${adapter.supportedVersions}`,
       });
+
+      // Version alone does not mean usable: a harness can be installed, current
+      // and still unable to reach a model.
+      if (adapter.health) {
+        for (const p of await adapter.health({ home: homedir() })) {
+          checks.push({
+            name: `${name} health`,
+            ok: p.severity !== 'error',
+            detail: p.fix ? `${p.message} — ${p.fix}` : p.message,
+          });
+        }
+      }
     } catch {
       checks.push({ name, ok: false, detail: 'not found on PATH' });
     }

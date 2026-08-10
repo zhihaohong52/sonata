@@ -1,8 +1,10 @@
 import type { HarnessAdapter } from './types.js';
 import { openCodeAdapter } from './opencode.js';
+import { codexAdapter } from './codex.js';
 
 const ADAPTERS: Record<string, HarnessAdapter> = {
   opencode: openCodeAdapter,
+  codex: codexAdapter,
 };
 
 export function getAdapter(name: string): HarnessAdapter {
@@ -15,5 +17,5 @@ export function getAdapter(name: string): HarnessAdapter {
   return a;
 }
 
-export { openCodeAdapter };
+export { openCodeAdapter, codexAdapter };
 export type { HarnessAdapter, PlanInput, LaunchPlan } from './types.js';

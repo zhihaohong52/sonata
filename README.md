@@ -27,17 +27,18 @@ Two reasons you might want that:
 
 ## Status
 
-**Working, early.** The engine and the OpenCode adapter are complete and
-tested; a live run goes from `sonata run` to a returned report. Codex and Pi
-adapters are not written yet. See [Limitations](#limitations) before relying
-on it.
+**Working, early.** The engine and the OpenCode and Codex adapters are complete
+and tested, each verified end to end against a real model. A Pi adapter is not
+written yet. See [Limitations](#limitations) before relying on it.
 
 ## Requirements
 
 - **Node 22+**
 - **tmux** — every harness runs inside a tmux session (`brew install tmux`,
   `apt install tmux`)
-- **[OpenCode](https://opencode.ai)**, authenticated with at least one provider
+- At least one harness, authenticated:
+  - **[OpenCode](https://opencode.ai)** — any provider it supports
+  - **[Codex CLI](https://github.com/openai/codex)** — `codex login`
 
 ## Install
 
@@ -134,12 +135,31 @@ instead of paying for the rest of a wasted run.
 Sonata mirrors your Claude Code permission mode onto the harness. A sonata
 agent is never more permissive than the session that spawned it.
 
-| Claude Code mode | opencode agent | auto-approve | interactive |
+**OpenCode:**
+
+| Claude Code mode | agent | auto-approve | interactive |
 |---|---|---|---|
 | `plan` | `plan` (read-only) | no | no |
 | `default` | `build` | no | yes — approvals surface |
 | `acceptEdits` | `build` | yes | no |
 | `bypassPermissions` | `build` | yes | no |
+
+**Codex** maps onto its sandbox policy directly:
+
+| Claude Code mode | invocation | sandbox |
+|---|---|---|
+| `plan` | `codex exec` | `read-only` |
+| `default` | interactive TUI, `approval_policy=on-request` | `workspace-write` |
+| `acceptEdits` | `codex exec` | `workspace-write` |
+| `bypassPermissions` | `codex exec` | `danger-full-access` |
+
+`codex exec` cannot raise an approval prompt, so `default` mode uses the
+interactive TUI — otherwise a sonata agent could write without ever asking,
+which would be more permissive than the session that spawned it. Sonata never
+passes `--dangerously-bypass-approvals-and-sandbox`.
+
+Codex also writes its final message to a file (`-o`), so sonata has a
+harness-guaranteed report and degrades to pane text far less often.
 
 The mode is not exposed as an environment variable, so this needs a
 `PreToolUse` hook — which `sonata init` offers to install, at project or global
@@ -188,7 +208,10 @@ Run `sonata sync` after editing the config.
 
 Worth knowing before you depend on this:
 
-- **OpenCode only.** Codex and Pi adapters are designed but not built.
+- **No Pi adapter.** OpenCode and Codex are supported; Pi is designed but not built.
+- **Codex through a proxy needs that proxy up.** If `~/.codex/config.toml` sets
+  `openai_base_url`, `sonata doctor` checks the endpoint is listening — a dead
+  proxy otherwise wastes minutes in retries before failing.
 - **Roles are `code` and `review`.** `explore` and `plan` are not implemented.
 - **Prompt detection is regex against a TUI sonata does not control.** It is
   tested against a scripted fake harness, not against real opencode output, and
@@ -204,7 +227,7 @@ Worth knowing before you depend on this:
 
 ```bash
 npm install
-npm test          # 116 tests; needs tmux
+npm test          # 140 tests; needs tmux
 npm run typecheck
 npm run build
 ```

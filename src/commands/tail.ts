@@ -125,10 +125,20 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
     }
 
     const exitCode = readExit(opts.cwd, opts.id);
+
+    // Prefer the model's own report; fall back to a final message the harness
+    // wrote itself (codex `-o`) before giving up and returning pane text.
+    const fallbackPath = adapter.fallbackReportFile
+      ? join(runDir(opts.cwd, opts.id), adapter.fallbackReportFile)
+      : null;
+    const fallback = fallbackPath && existsSync(fallbackPath)
+      ? readFileSync(fallbackPath, 'utf8').trim() || null
+      : null;
+
     const result = decide({
       newLines: fresh,
       exitCode,
-      report: readReport(opts.cwd, opts.id),
+      report: readReport(opts.cwd, opts.id) ?? fallback,
       promptText: meta.interactive ? adapter.describePrompt(pane) : null,
       msSinceLastChange: now() - lastChange,
       stallTimeoutMs: config.run.stallTimeoutSeconds * 1000,

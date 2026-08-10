@@ -22,6 +22,12 @@ case "$SCENARIO" in
     echo "segmentation fault"
     echo 139 > "$RUN_DIR/exit"
     ;;
+  fallback)
+    echo "> fake · scenario=fallback"
+    echo "worked, but wrote no report of its own"
+    printf 'Final message written by the harness itself.\n' > "$RUN_DIR/last-message.txt"
+    echo 0 > "$RUN_DIR/exit"
+    ;;
   noreport)
     echo "> fake · scenario=noreport"
     echo "finished without writing anything"

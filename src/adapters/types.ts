@@ -28,4 +28,21 @@ export interface HarnessAdapter {
   /** Extracts a human-readable pending action from cleaned pane lines. */
   describePrompt(lines: string[]): string | null;
   approveKeys: { yes: string; no: string };
+  /**
+   * File inside the run directory where the harness itself writes its final
+   * message, if it can. Used as a report fallback before resorting to the pane.
+   */
+  fallbackReportFile?: string;
+  /**
+   * Extra runtime checks beyond "is the binary present at a supported
+   * version" — authentication, reachable endpoints, and so on. Reported by
+   * `sonata doctor`.
+   */
+  health?(env: { home: string }): Promise<HarnessProblem[]>;
+}
+
+export interface HarnessProblem {
+  severity: 'error' | 'warn';
+  message: string;
+  fix?: string;
 }
