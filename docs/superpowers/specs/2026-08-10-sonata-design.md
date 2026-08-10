@@ -354,6 +354,58 @@ plus `--auto`, rather than inferred from TUI text.
 `opencode-go` provider offers `deepseek-v4-flash`, `deepseek-v4-pro`, `kimi-k3`,
 `kimi-k2.7-code`, `glm-5.2`, `grok-4.5`, `mimo-v2.5-pro`, and `qwen3.8-max`.
 
+## Post-implementation corrections: prompt detection
+
+Found by driving both harnesses to a real approval prompt and capturing the
+pane. Captures are kept in `tests/fixtures/panes/` and drive the tests.
+
+**Both adapters' prompt regexes were written from imagination and matched
+nothing either harness prints.** Codex asks "Would you like to run the
+following command?"; none of `allow.*?`, `approve.*?`, `(y/n)`, `[y/N]`, or
+`waiting for approval` matches it. A codex run waiting for approval was
+therefore reported `STALLED`, not `PAUSED`, and sat until the run timeout. The
+tests passed throughout, because they were written from the same guesses as the
+regexes — a prompt fixture is only worth anything if it was captured, not
+composed.
+
+**`describePrompt` returning one line is not enough for codex.** The matched
+line is the question; the command being approved is on a later line. It now
+returns the whole block.
+
+**Codex's deny key is esc, not `n`,** and its accelerators act immediately — the
+trailing `Enter` sonata sent would fall through to the composer. `y` was
+verified against a live TUI to clear both the command approval and the
+directory-trust prompt, whose options are numbered and print no `y`.
+
+**Codex blocks on a directory-trust prompt** on first entry to a directory,
+before any work runs. `codex exec` is unaffected. Detected now, and `doctor`
+warns when the project is untrusted.
+
+**`opencode run` has no approval UI at all — this supersedes the design's
+permission mapping.** With permissions unset it ran `rm file.txt` unasked. With
+`permission = { bash = "ask" }` it does not ask either; it auto-rejects:
+
+```
+! permission requested: bash (rm file.txt); auto-rejecting
+```
+
+So `default` mode was not a gate, and an opencode subagent ran effectively in
+`bypassPermissions` while the design claimed a sonata agent is never more
+permissive than its parent session. Sonata now refuses to launch a
+write-capable role on opencode in `default` mode. This also retires the design's
+"TUI for `default`" mapping above: `opencode run --interactive` is a renderer,
+not an approval path.
+
+Note the tension with "Blocking approvals are confirmed" above, where an
+opencode run *hung* awaiting an answer. That was a different rule
+(`external_directory → ask`) and is not what a `bash → ask` rule does in `run`
+mode on 1.18.15. The stall backstop remains justified either way; what changed
+is that a hang is no longer the expected shape of an opencode approval.
+
+**Assuming `default` when the hook is missing now has teeth.** Since opencode
+refuses `default`, a missing permission hook breaks every opencode dispatch.
+`doctor` reports that directly rather than letting it surface at first use.
+
 ## Risks
 
 **Prompt detection is regex against a TUI sonata does not control.** It will
