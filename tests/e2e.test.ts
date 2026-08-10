@@ -19,10 +19,10 @@ const sessions: string[] = [];
  * deliberately exercises STALLED shortens it. The run timeout is generous by
  * default too, so only the hang test exercises the watchdog.
  */
-function writeConfig(stallTimeoutSeconds: number, runTimeoutSeconds = 30): void {
+function writeConfig(stallTimeoutSeconds: number, runTimeoutSeconds = 30, harness = 'opencode'): void {
   writeFileSync(join(cwd, 'sonata.toml'), `
 [models.fake]
-harness = "opencode"
+harness = "${harness}"
 id = "fake"
 
 [generate]
@@ -117,10 +117,16 @@ stall_timeout_seconds = 30
     expect(r.report).toContain('Final message written by the harness itself');
   });
 
+  // Codex, not opencode: `opencode run` has no approval UI at all, so PAUSED
+  // is unreachable there. See the note on openCodeAdapter's prompt patterns.
   it('detects a pending approval as PAUSED', async () => {
-    const id = await launch('prompt', true);
+    writeConfig(30, 30, 'codex');
+    const id = await launch('prompt', true, 'codex');
     const r = await tailUntil(id, ['PAUSED']);
+    expect(r.prompt).toContain('Would you like to run the following command?');
+    // The whole block, so the caller can see WHAT it is approving.
     expect(r.prompt).toContain('rm -rf build');
+    expect(r.prompt).toContain('1. Yes, proceed (y)');
   });
 
   it('falls back to STALLED when a prompt is not recognised', async () => {

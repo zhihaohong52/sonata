@@ -1,0 +1,20 @@
+# Captured verbatim from a live codex 0.144.4 TUI pane (tmux capture-pane),
+# running `codex -a untrusted -s workspace-write` and asked to delete a file.
+# `rtk` is a local shell wrapper on the capturing machine; codex printed the
+# command exactly as shown. Preceding unrelated transcript lines were trimmed;
+# the prompt block below is unmodified.
+
+• Running rtk rm file.txt
+
+
+  Would you like to run the following command?
+
+  Environment: local
+
+  $ rtk rm file.txt
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `rtk rm file.txt` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel

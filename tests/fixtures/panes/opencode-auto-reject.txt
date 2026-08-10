@@ -1,0 +1,14 @@
+# Captured verbatim from a live opencode 1.18.15 pane running
+#   opencode run --agent build -m opencode/<model> --interactive '<task>'
+# in a project whose opencode.json set:
+#   "permission": { "edit": "ask", "bash": "ask", "webfetch": "ask" }
+#
+# This is the whole finding: asking is configured, and opencode still does not
+# ask. It refuses on the user's behalf. There is no state in which `opencode
+# run` waits for an answer, so sonata can never report it as PAUSED.
+# Shell noise and machine paths were trimmed; the opencode output is unmodified.
+
+> build · deepseek-v4-flash
+! permission requested: bash (rm file.txt); auto-rejecting
+✗ rm file.txt failed
+Error: The user rejected permission to use this specific tool call.

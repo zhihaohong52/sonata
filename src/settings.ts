@@ -48,6 +48,18 @@ export function writeSettings(path: string, settings: Settings): void {
   writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`);
 }
 
+/**
+ * Whether *some* sonata mode-capture hook is present, wherever it was installed
+ * from. `hookInstalled` matches one exact command string, which is the right
+ * check when installing; this is the right check when diagnosing, since a hook
+ * installed by a different sonata checkout still does the job.
+ */
+export function modeHookPresent(settings: Settings, event = 'PreToolUse'): boolean {
+  return (settings.hooks?.[event] ?? []).some((entry) =>
+    entry.hooks.some((h) => h.command.includes('capture-mode.mjs')),
+  );
+}
+
 export function hookInstalled(settings: Settings, command: string, event = 'PreToolUse'): boolean {
   return (settings.hooks?.[event] ?? []).some((entry) =>
     entry.hooks.some((h) => h.command === command),

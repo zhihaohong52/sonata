@@ -13,8 +13,19 @@ case "$SCENARIO" in
     echo 0 > "$RUN_DIR/exit"
     ;;
   prompt)
+    # Reproduces a real codex approval, captured in
+    # tests/fixtures/panes/codex-approve-command.txt. Keep it verbatim: the
+    # point of this scenario is that detection is tested against text codex
+    # actually prints, not against text invented to match the regexes.
     echo "> fake · scenario=prompt"
-    echo "Allow bash to run rm -rf build? (y/n)"
+    echo "• Running rm -rf build"
+    echo "  Would you like to run the following command?"
+    echo "  Environment: local"
+    echo "  \$ rm -rf build"
+    echo "› 1. Yes, proceed (y)"
+    echo "  2. Yes, and don't ask again for commands that start with \`rm -rf build\` (p)"
+    echo "  3. No, and tell Codex what to do differently (esc)"
+    echo "  Press enter to confirm or esc to cancel"
     sleep 30
     ;;
   crash)

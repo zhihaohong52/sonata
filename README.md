@@ -139,18 +139,35 @@ killed and the run is reported `DONE`, `degraded`, with a report beginning
 ## Permission modes
 
 Sonata mirrors your Claude Code permission mode onto the harness. A sonata
-agent is never more permissive than the session that spawned it.
+agent is never more permissive than the session that spawned it — where a
+harness cannot honour a mode, sonata refuses the run rather than downgrading it
+quietly.
 
 **OpenCode:**
 
-| Claude Code mode | agent | auto-approve | interactive |
-|---|---|---|---|
-| `plan` | `plan` (read-only) | no | no |
-| `default` | `build` | no | yes — approvals surface |
-| `acceptEdits` | `build` | yes | no |
-| `bypassPermissions` | `build` | yes | no |
+| Claude Code mode | agent | auto-approve |
+|---|---|---|
+| `plan` | `plan` (read-only) | no |
+| `default` | refused for write-capable roles — see below | — |
+| `acceptEdits` | `build` | yes |
+| `bypassPermissions` | `build` | yes |
 
-**Codex** maps onto its sandbox policy directly:
+`opencode run` has no approval UI at all. Probed against opencode 1.18: with
+permissions unset it runs commands unasked, and with `permission = { bash =
+"ask" }` it does not ask either — it auto-rejects:
+
+```
+! permission requested: bash (rm file.txt); auto-rejecting
+```
+
+So `default` — "ask me first" — cannot be honoured. Rather than run an opencode
+agent ungated while claiming otherwise, sonata refuses to launch a
+write-capable role in `default` mode and says so. Read-only roles still run,
+having nothing to ask about. To use opencode for edits, dispatch in
+`acceptEdits` or `bypassPermissions`, or use a codex model, whose TUI does
+prompt.
+
+**Codex** maps onto its sandbox policy directly, and can be approved:
 
 | Claude Code mode | invocation | sandbox |
 |---|---|---|
@@ -163,6 +180,14 @@ agent is never more permissive than the session that spawned it.
 interactive TUI — otherwise a sonata agent could write without ever asking,
 which would be more permissive than the session that spawned it. Sonata never
 passes `--dangerously-bypass-approvals-and-sandbox`.
+
+On first entry to a directory, the codex TUI blocks on a directory-trust
+question before any work starts. Sonata surfaces it as a `PAUSED` prompt, and
+`sonata doctor` warns when the project has not been trusted yet, so a
+`default`-mode run does not stall on it unexpectedly.
+
+Prompt detection for codex is written from captured TUI output, kept in
+`tests/fixtures/panes/`, rather than from guesses about what it prints.
 
 Codex also writes its final message to a file (`-o`), so sonata has a
 harness-guaranteed report and degrades to pane text far less often.
@@ -236,7 +261,7 @@ Worth knowing before you depend on this:
 
 ```bash
 npm install
-npm test          # 162 tests; needs tmux
+npm test          # 178 tests; needs tmux
 npm run typecheck
 npm run build
 ```

@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { loadConfig } from '../config.js';
 import { getAdapter } from '../adapters/index.js';
 import { tmuxVersion } from '../tmux.js';
+import { modeHookPresent, readSettings, settingsPath } from '../settings.js';
 import { homedir } from 'node:os';
 
 const run = promisify(execFile);
@@ -52,6 +53,24 @@ export async function cmdDoctor(opts: { cwd: string }): Promise<{ ok: boolean; c
   }
 
   const harnesses = new Set(Object.values(config.models).map((m) => m.harness));
+
+  // Without the hook sonata cannot read the session's permission mode and
+  // assumes `default` — which opencode cannot honour, so every opencode
+  // dispatch refuses. Say that here rather than letting it surface as a
+  // confusing failure on first use.
+  if (harnesses.has('opencode')) {
+    const installed = (['project', 'global'] as const).some((scope) =>
+      modeHookPresent(readSettings(settingsPath(scope, opts.cwd, homedir()))),
+    );
+    checks.push({
+      name: 'permission hook',
+      ok: installed,
+      detail: installed
+        ? 'installed — the session permission mode is visible to sonata'
+        : 'not installed, so sonata assumes `default`, which opencode cannot ' +
+          'honour — every opencode dispatch will refuse. Run `sonata init`',
+    });
+  }
   for (const name of harnesses) {
     const adapter = getAdapter(name);
     try {
@@ -68,7 +87,7 @@ export async function cmdDoctor(opts: { cwd: string }): Promise<{ ok: boolean; c
       // Version alone does not mean usable: a harness can be installed, current
       // and still unable to reach a model.
       if (adapter.health) {
-        for (const p of await adapter.health({ home: homedir() })) {
+        for (const p of await adapter.health({ home: homedir(), cwd: opts.cwd })) {
           checks.push({
             name: `${name} health`,
             ok: p.severity !== 'error',

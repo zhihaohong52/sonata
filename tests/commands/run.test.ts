@@ -44,13 +44,21 @@ describe('readPermissionMode', () => {
 });
 
 describe('cmdRun', () => {
+  /** opencode refuses `default` mode, so a launch test must pick a mode it runs. */
+  function sessionInMode(mode: string): string {
+    mkdirSync(join(cwd, '.sonata'), { recursive: true });
+    writeFileSync(join(cwd, '.sonata', 'session-run.json'),
+      JSON.stringify({ permissionMode: mode }));
+    return 'run';
+  }
+
   it('creates a run, writes instructions and cmd.sh, and starts a live session', async () => {
     const taskFile = join(cwd, 'task.txt');
     writeFileSync(taskFile, 'Refactor the parser.');
 
     const res = await cmdRun({
       cwd, role: 'code', model: 'fake', taskFile,
-      rolesDir: join(cwd, 'roles'), sessionId: undefined,
+      rolesDir: join(cwd, 'roles'), sessionId: sessionInMode('acceptEdits'),
     });
     created.push(res.session);
 
@@ -65,7 +73,7 @@ describe('cmdRun', () => {
     const meta = readMeta(cwd, res.id);
     expect(meta.harness).toBe('opencode');
     expect(meta.model).toBe('fake');
-    expect(meta.mode).toBe('default');
+    expect(meta.mode).toBe('acceptEdits');
 
     expect(await hasSession(res.session)).toBe(true);
   });
@@ -77,5 +85,17 @@ describe('cmdRun', () => {
       cwd, role: 'code', model: 'ghost', taskFile,
       rolesDir: join(cwd, 'roles'), sessionId: undefined,
     })).rejects.toThrow(/unknown model "ghost"/);
+  });
+
+  it('refuses an opencode dispatch when the mode is unknown', async () => {
+    // No session file means no permission hook, and sonata assumes `default`.
+    // opencode cannot honour that, so the dispatch must fail loudly rather
+    // than silently run ungated.
+    const taskFile = join(cwd, 'task.txt');
+    writeFileSync(taskFile, 'x');
+    await expect(cmdRun({
+      cwd, role: 'code', model: 'fake', taskFile,
+      rolesDir: join(cwd, 'roles'), sessionId: undefined,
+    })).rejects.toThrow(/cannot ask for approval/i);
   });
 });

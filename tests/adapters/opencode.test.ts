@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { openCodeAdapter } from '../../src/adapters/opencode.js';
 import { getAdapter } from '../../src/adapters/index.js';
 
@@ -53,11 +56,27 @@ describe('openCodeAdapter.plan', () => {
     }
   });
 
-  it('runs interactively in default mode so approvals can surface', () => {
-    const p = openCodeAdapter.plan({ ...base, mode: 'default' });
-    expect(p.interactive).toBe(true);
+  it('streams via --interactive without claiming approvals can surface', () => {
+    // `--interactive` picks opencode's split-footer renderer so the pane shows
+    // the run as it happens. It does not make the run answerable — opencode
+    // auto-rejects permission requests in `run` mode regardless.
+    const p = openCodeAdapter.plan({ ...base, mode: 'acceptEdits' });
     expect(p.script).toContain('--interactive');
-    expect(p.script).not.toContain('--auto');
+    expect(p.interactive).toBe(false);
+  });
+
+  it('refuses default mode rather than running a write-capable role ungated', () => {
+    // opencode cannot ask, so honouring "ask me first" is impossible. Running
+    // anyway would exceed the permissions of the session that dispatched it.
+    expect(() => openCodeAdapter.plan({ ...base, mode: 'default' }))
+      .toThrow(/cannot ask for approval/i);
+  });
+
+  it('still allows default mode for read-only roles, which never need to ask', () => {
+    for (const role of ['review', 'explore', 'plan']) {
+      const p = openCodeAdapter.plan({ ...base, role, mode: 'default' });
+      expect(p.script).not.toContain('--auto');
+    }
   });
 
   it('prepends the opencode bin dir, which is not on PATH', () => {
@@ -83,14 +102,34 @@ describe('openCodeAdapter.plan', () => {
   });
 });
 
-describe('openCodeAdapter.describePrompt', () => {
-  it('detects an approval request', () => {
-    const lines = ['> build · deepseek-v4-flash', 'Allow bash to run rm -rf build? (y/n)'];
-    expect(openCodeAdapter.describePrompt(lines)).toContain('rm -rf build');
+/**
+ * `opencode run` has no approval UI. Probed against opencode 1.18 with
+ * `--interactive` and `permission = { bash = "ask" }`, a call needing approval
+ * is auto-rejected rather than offered. These tests pin that limitation so it
+ * is not quietly "fixed" back into a prompt pattern that never fires.
+ */
+describe('openCodeAdapter — approvals are not possible in run mode', () => {
+  it('never reports a pending prompt, even on a real auto-reject', () => {
+    const captured = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../fixtures/panes/opencode-auto-reject.txt'),
+      'utf8',
+    ).split('\n');
+    expect(openCodeAdapter.describePrompt(captured)).toBeNull();
   });
 
   it('returns null when nothing is pending', () => {
     expect(openCodeAdapter.describePrompt(['reading src/a.ts'])).toBeNull();
+  });
+
+  it('offers no keys to answer with', () => {
+    expect(openCodeAdapter.approveKeys.yes).toEqual([]);
+    expect(openCodeAdapter.approveKeys.no).toEqual([]);
+  });
+
+  it('never claims a plan is interactive, in any mode it will run', () => {
+    for (const mode of ['plan', 'acceptEdits', 'bypassPermissions'] as const) {
+      expect(openCodeAdapter.plan({ ...base, mode }).interactive).toBe(false);
+    }
   });
 });
 

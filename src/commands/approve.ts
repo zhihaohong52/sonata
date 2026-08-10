@@ -15,7 +15,12 @@ export async function cmdApprove(opts: ApproveOptions): Promise<void> {
     );
   }
 
-  const key = opts.yes ? adapter.approveKeys.yes : adapter.approveKeys.no;
-  await sendKeys(meta.session, key);
-  await sendKeys(meta.session, 'Enter');
+  const keys = opts.yes ? adapter.approveKeys.yes : adapter.approveKeys.no;
+  if (keys.length === 0) {
+    throw new Error(
+      `sonata: the ${adapter.name} harness cannot be answered from outside. ` +
+      `Attach with \`tmux attach -t ${meta.session}\` to respond directly.`,
+    );
+  }
+  for (const key of keys) await sendKeys(meta.session, key);
 }

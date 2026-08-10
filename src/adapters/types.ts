@@ -27,7 +27,13 @@ export interface HarnessAdapter {
   promptPatterns: RegExp[];
   /** Extracts a human-readable pending action from cleaned pane lines. */
   describePrompt(lines: string[]): string | null;
-  approveKeys: { yes: string; no: string };
+  /**
+   * tmux key sequences that answer a pending prompt. These are full sequences,
+   * not single keys followed by an implied Enter: codex's selection lists act
+   * on the accelerator immediately, and a trailing Enter would fall through to
+   * the composer and submit an empty message.
+   */
+  approveKeys: { yes: string[]; no: string[] };
   /**
    * File inside the run directory where the harness itself writes its final
    * message, if it can. Used as a report fallback before resorting to the pane.
@@ -38,7 +44,7 @@ export interface HarnessAdapter {
    * version" — authentication, reachable endpoints, and so on. Reported by
    * `sonata doctor`.
    */
-  health?(env: { home: string }): Promise<HarnessProblem[]>;
+  health?(env: { home: string; cwd: string }): Promise<HarnessProblem[]>;
 }
 
 export interface HarnessProblem {

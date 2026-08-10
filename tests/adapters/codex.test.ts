@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { codexAdapter, configuredBaseUrl } from '../../src/adapters/codex.js';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { codexAdapter, configuredBaseUrl, projectTrusted } from '../../src/adapters/codex.js';
 import { getAdapter } from '../../src/adapters/index.js';
 
 const base = {
@@ -113,14 +116,91 @@ describe('codexAdapter.plan — invocation details', () => {
   });
 });
 
-describe('codexAdapter.describePrompt', () => {
-  it('detects an approval request', () => {
-    expect(codexAdapter.describePrompt(['Allow codex to run rm -rf build?']))
-      .toContain('rm -rf build');
+/**
+ * Driven by real captures rather than invented text. The patterns these
+ * replace matched none of what codex actually prints, so a run waiting for
+ * approval was reported STALLED — invisible to a test written from the same
+ * imagination as the regex.
+ */
+function fixture(name: string): string[] {
+  const path = join(dirname(fileURLToPath(import.meta.url)), '../fixtures/panes', name);
+  return readFileSync(path, 'utf8').split('\n');
+}
+
+describe('codexAdapter.describePrompt — against captured codex output', () => {
+  it('detects a real command approval', () => {
+    const prompt = codexAdapter.describePrompt(fixture('codex-approve-command.txt'));
+    expect(prompt).toContain('Would you like to run the following command?');
+  });
+
+  it('returns the whole block, so the caller can see what it is approving', () => {
+    const prompt = codexAdapter.describePrompt(fixture('codex-approve-command.txt'))!;
+    expect(prompt).toContain('rm file.txt');
+    expect(prompt).toContain('1. Yes, proceed (y)');
+    expect(prompt.split('\n').length).toBeGreaterThan(1);
+  });
+
+  it('detects the directory-trust prompt that blocks a run before it starts', () => {
+    const prompt = codexAdapter.describePrompt(fixture('codex-trust-directory.txt'));
+    expect(prompt).toContain('Do you trust the contents of this directory?');
   });
 
   it('returns null when nothing is pending', () => {
     expect(codexAdapter.describePrompt(['reading src/a.ts'])).toBeNull();
+  });
+
+  it('does not park the run on the model\'s own prose about approvals', () => {
+    expect(codexAdapter.describePrompt([
+      'I will approve the PR once CI is green.',
+      'Should I allow the deploy to proceed?',
+    ])).toBeNull();
+  });
+});
+
+describe('codexAdapter.approveKeys', () => {
+  it('answers yes with the accelerator alone, with no trailing Enter', () => {
+    // Codex acts on `y` immediately; a following Enter would land in the
+    // composer and submit an empty message.
+    expect(codexAdapter.approveKeys.yes).toEqual(['y']);
+  });
+
+  it('denies with Escape, since codex offers no `n` accelerator', () => {
+    expect(codexAdapter.approveKeys.no).toEqual(['Escape']);
+  });
+});
+
+describe('projectTrusted', () => {
+  const cfg = [
+    '[projects."/Users/j/trusted"]',
+    'trust_level = "trusted"',
+    '',
+    '[projects."/Users/j/untrusted"]',
+    'trust_level = "untrusted"',
+    '',
+    '[tui]',
+    'theme = "dark"',
+  ].join('\n');
+
+  it('is true for a directory codex has been trusted in', () => {
+    expect(projectTrusted(cfg, '/Users/j/trusted')).toBe(true);
+  });
+
+  it('is false for a directory recorded as untrusted', () => {
+    expect(projectTrusted(cfg, '/Users/j/untrusted')).toBe(false);
+  });
+
+  it('is false for a directory codex has never seen', () => {
+    expect(projectTrusted(cfg, '/Users/j/unknown')).toBe(false);
+  });
+
+  it('does not read trust from a following section', () => {
+    const spill = '[projects."/a"]\n\n[projects."/b"]\ntrust_level = "trusted"\n';
+    expect(projectTrusted(spill, '/a')).toBe(false);
+  });
+
+  it('treats regex metacharacters in the path literally', () => {
+    const dotted = '[projects."/Users/j/a.b"]\ntrust_level = "trusted"\n';
+    expect(projectTrusted(dotted, '/Users/j/axb')).toBe(false);
   });
 });
 
