@@ -421,6 +421,33 @@ will run what auto mode would have blocked. Mapping is done at the boundary in
 `mode.ts` rather than widening `PermissionMode`, so adapters keep a small union
 and the judgement lives in one documented place.
 
+## Post-implementation corrections: the Pi adapter
+
+**"Adding Pi is a new adapter file and a config line" was nearly right.** The
+adapter boundary held for everything about *launching* pi — flags, tool gating,
+prompt handling — which is what the claim was really about. What it missed is
+that a harness can differ in what it is capable of *reporting*, not just how it
+is invoked.
+
+Pi's read-only enforcement is genuine: `--tools read,grep,find,ls` removes the
+write tool, so the model cannot write to the repo. It also cannot write
+`report.md`. Sonata's report contract assumed every run could produce one, and
+so marked clean read-only runs `degraded` — a word that elsewhere means the
+harness crashed. That required a new fact on `LaunchPlan` (`canWriteReport`),
+persisted in run meta and consulted by `decide`.
+
+Worth stating precisely, because it is a real asymmetry between harnesses:
+codex read-only runs are fine, since the harness itself writes the final
+message via `-o`; opencode read-only runs are fine, since its `plan` agent can
+still write (verified — which also means opencode's read-only guarantee is
+weaker than pi's); only pi both enforces read-only properly and has no
+harness-written report. Strong enforcement and a guaranteed report are, for
+now, mutually exclusive on pi.
+
+**Pi has no sandbox,** so `acceptEdits` and `bypassPermissions` are
+indistinguishable to it. Sonata does not pretend otherwise; isolation has to
+come from a container.
+
 ## Risks
 
 **Prompt detection is regex against a TUI sonata does not control.** It will
