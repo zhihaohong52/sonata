@@ -10,9 +10,14 @@ id = "kimi-k3"
 harness = "codex"
 id = "gpt-5.6-sol"
 
+# Pi takes model ids in provider/id form.
+[models.pi-deepseek-v4-flash]
+harness = "pi"
+id = "opencode-go/deepseek-v4-flash"
+
 [generate]
 roles = ["code", "review", "explore", "plan"]
-models = ["deepseek-v4-flash", "kimi-k3", "gpt-5-6-sol"]
+models = ["deepseek-v4-flash", "kimi-k3", "gpt-5-6-sol", "pi-deepseek-v4-flash"]
 
 [run]
 tail_window_seconds = 20

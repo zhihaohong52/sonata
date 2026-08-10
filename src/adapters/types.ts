@@ -14,6 +14,14 @@ export interface LaunchPlan {
   script: string;
   /** True when the harness runs a TUI that can surface approval prompts. */
   interactive: boolean;
+  /**
+   * False when this configuration cannot write `report.md` at all. Pi's
+   * read-only tool allowlist is real enforcement: it removes the write tool,
+   * which stops the model writing to the repo AND to its own report. Sonata
+   * must not then call a clean run degraded — nothing went wrong.
+   * Omitted means the run is expected to write a report.
+   */
+  canWriteReport?: boolean;
 }
 
 export interface HarnessAdapter {
@@ -23,6 +31,12 @@ export interface HarnessAdapter {
   /** Extra PATH entries prepended before invoking the harness. */
   pathPrepend: string[];
   plan(input: PlanInput): LaunchPlan;
+  /**
+   * Whether the harness can stop and ask a human to approve an action. False
+   * for opencode (auto-rejects) and pi (no permission popups by design), which
+   * is why both refuse `default` mode for write-capable roles.
+   */
+  canPromptForApproval: boolean;
   /** Patterns indicating the harness is blocked awaiting approval. */
   promptPatterns: RegExp[];
   /** Extracts a human-readable pending action from cleaned pane lines. */

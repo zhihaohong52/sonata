@@ -41,6 +41,23 @@ describe('readPermissionMode', () => {
       JSON.stringify({ permissionMode: 'bypassPermissions' }));
     expect(readPermissionMode(cwd, 's1')).toBe('bypassPermissions');
   });
+
+  it('maps Claude Code `auto` onto acceptEdits', () => {
+    // `auto` is Claude Code's current default mode: it runs lower-risk calls
+    // without prompting. Treating it as `default` would claim the parent
+    // prompts for everything, and would make every opencode dispatch refuse.
+    mkdirSync(join(cwd, '.sonata'), { recursive: true });
+    writeFileSync(join(cwd, '.sonata', 'session-s2.json'),
+      JSON.stringify({ permissionMode: 'auto' }));
+    expect(readPermissionMode(cwd, 's2')).toBe('acceptEdits');
+  });
+
+  it('still falls back to default for a genuinely unknown mode', () => {
+    mkdirSync(join(cwd, '.sonata'), { recursive: true });
+    writeFileSync(join(cwd, '.sonata', 'session-s3.json'),
+      JSON.stringify({ permissionMode: 'someFutureMode' }));
+    expect(readPermissionMode(cwd, 's3')).toBe('default');
+  });
 });
 
 describe('cmdRun', () => {

@@ -19,6 +19,12 @@ export interface DecideInput {
   stallTimeoutMs: number;
   paneTail: string[];
   timedOut: boolean;
+  /**
+   * False when the harness configuration cannot write a report file at all
+   * (pi's read-only tool allowlist removes the write tool). A clean exit with
+   * no report is then the expected outcome, not a failure.
+   */
+  canWriteReport?: boolean;
 }
 
 export interface TailResult {
@@ -33,14 +39,24 @@ export interface TailResult {
 /** Pure state machine. Order matters: completion beats a stale prompt match. */
 export function decide(input: DecideInput): TailResult {
   if (input.exitCode !== null) {
+    // A run that could never write a report is not degraded for lacking one —
+    // its terminal output IS the report. Only a clean exit qualifies: a
+    // read-only run that crashed is still a failure worth flagging.
+    const reportImpossible = input.canWriteReport === false
+      && input.report === null
+      && input.exitCode === 0
+      && !input.timedOut;
+
     // A timed-out run is degraded even if a report file happens to exist: the
     // work was cut short, so the report cannot be trusted as complete.
-    const degraded = input.timedOut || input.report === null;
+    const degraded = input.timedOut || (input.report === null && !reportImpossible);
     const report = input.timedOut
       ? `[timed out: sonata killed the run after the configured run_timeout_seconds]\n\n${input.paneTail.join('\n')}`
-      : degraded
-        ? `[degraded: harness exited ${input.exitCode} without writing a report]\n\n${input.paneTail.join('\n')}`
-        : input.report!;
+      : reportImpossible
+        ? `[read-only run: the harness cannot write a report file, so this is its terminal output]\n\n${input.paneTail.join('\n')}`
+        : degraded
+          ? `[degraded: harness exited ${input.exitCode} without writing a report]\n\n${input.paneTail.join('\n')}`
+          : input.report!;
     return {
       state: 'DONE',
       lines: input.newLines,
@@ -177,6 +193,7 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       stallTimeoutMs: config.run.stallTimeoutSeconds * 1000,
       paneTail: pane.slice(-20),
       timedOut: existsSync(join(runDir(opts.cwd, opts.id), 'timeout')),
+      canWriteReport: meta.canWriteReport,
     });
 
     if (result.state === 'DONE') {

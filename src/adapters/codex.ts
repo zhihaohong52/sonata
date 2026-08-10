@@ -219,6 +219,7 @@ export const codexAdapter: HarnessAdapter = {
   supportedVersions: '>=0.140.0 <1.0.0',
   pathPrepend: [],
   plan: buildScript,
+  canPromptForApproval: true,
   promptPatterns: PROMPT_PATTERNS,
   /**
    * Returns the whole prompt block, not just the line that matched. A codex

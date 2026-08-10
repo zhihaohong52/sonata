@@ -27,9 +27,9 @@ Two reasons you might want that:
 
 ## Status
 
-**Working, early.** The engine and the OpenCode and Codex adapters are complete
-and tested, each verified end to end against a real model. A Pi adapter is not
-written yet. See [Limitations](#limitations) before relying on it.
+**Working, early.** The engine and the OpenCode, Codex and Pi adapters are
+complete and tested, each verified end to end against a real model. See
+[Limitations](#limitations) before relying on it.
 
 ## Requirements
 
@@ -39,6 +39,8 @@ written yet. See [Limitations](#limitations) before relying on it.
 - At least one harness, authenticated:
   - **[OpenCode](https://opencode.ai)** — any provider it supports
   - **[Codex CLI](https://github.com/openai/codex)** — `codex login`
+  - **[Pi](https://github.com/earendil-works/pi-mono)** — any provider it
+    supports; model ids take the `provider/id` form
 
 ## Install
 
@@ -167,6 +169,28 @@ having nothing to ask about. To use opencode for edits, dispatch in
 `acceptEdits` or `bypassPermissions`, or use a codex model, whose TUI does
 prompt.
 
+**Pi** has the strictest enforcement of the three, and the least negotiable
+limits. Its docs say it "intentionally does not include built-in MCP,
+sub-agents, permission popups, plan mode, to-dos, or background bash", and it
+has no sandbox — so like opencode it cannot honour `default`, and refuses:
+
+| Claude Code mode | tools |
+|---|---|
+| `plan` | `--tools read,grep,find,ls` |
+| `default` | refused for write-capable roles |
+| `acceptEdits` | all built-in tools |
+| `bypassPermissions` | all built-in tools |
+
+Unlike opencode's agent selection, pi's `--tools` allowlist is real: asked to
+create a file with the write tool withheld, the model reports having no write
+tool and no file appears. Note the consequence — a read-only pi run cannot
+write `report.md` either, so sonata takes its terminal output as the report and
+does **not** mark it degraded. A read-only run that crashes or times out is
+still flagged.
+
+Pi has no sandbox, so it draws no distinction between `acceptEdits` and
+`bypassPermissions`. If you need isolation, run it in a container.
+
 **Codex** maps onto its sandbox policy directly, and can be approved:
 
 | Claude Code mode | invocation | sandbox |
@@ -194,7 +218,17 @@ harness-guaranteed report and degrades to pane text far less often.
 
 The mode is not exposed as an environment variable, so this needs a
 `PreToolUse` hook — which `sonata init` offers to install, at project or global
-scope. Without it, sonata assumes `default`, which is the safe direction.
+scope. Without it, sonata assumes `default`. For codex that is simply the
+cautious choice; for opencode it means dispatches refuse, so `sonata doctor`
+reports a missing hook as a blocker rather than letting it surface on first use.
+
+**`auto` mode.** Claude Code's current default mode is `auto`: it runs tool
+calls its classifier judges lower-risk without prompting, and blocks the rest.
+Sonata maps it to `acceptEdits`, which is the closest thing it can actually
+enforce on another harness — work proceeds without prompting, as it does in the
+parent session. The residual gap is worth stating plainly: the foreign harness
+has no such classifier, so it will run things auto mode would have blocked.
+Dispatch in `plan` mode, or to a read-only role, when that matters.
 
 The hook does nothing in projects that have no `sonata.toml`, so a global
 install will not litter unrelated repositories.
@@ -261,7 +295,7 @@ Worth knowing before you depend on this:
 
 ```bash
 npm install
-npm test          # 178 tests; needs tmux
+npm test          # 205 tests; needs tmux
 npm run typecheck
 npm run build
 ```

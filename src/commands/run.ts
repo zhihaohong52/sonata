@@ -86,7 +86,11 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     timeoutSeconds: config.run.runTimeoutSeconds,
   }), { mode: 0o755 });
 
-  writeMeta(opts.cwd, { ...meta, interactive: plan.interactive });
+  writeMeta(opts.cwd, {
+    ...meta,
+    interactive: plan.interactive,
+    canWriteReport: plan.canWriteReport ?? true,
+  });
 
   await newSession({ session: meta.session, cwd: opts.cwd });
   await runScript(meta.session, scriptPath);

@@ -73,6 +73,7 @@ export const openCodeAdapter: HarnessAdapter = {
   supportedVersions: '>=1.18.0 <2.0.0',
   pathPrepend: ['$HOME/.opencode/bin'],
   plan: buildScript,
+  canPromptForApproval: false,
   promptPatterns: PROMPT_PATTERNS,
   describePrompt(): string | null {
     return null;

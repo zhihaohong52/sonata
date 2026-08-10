@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 
-export const KNOWN_HARNESSES = ['opencode', 'codex'] as const;
+export const KNOWN_HARNESSES = ['opencode', 'codex', 'pi'] as const;
 export const KNOWN_ROLES = ['review', 'code', 'explore', 'plan'] as const;
 
 /** Roles that must never write, whatever permission mode the session is in. */

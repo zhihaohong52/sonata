@@ -406,6 +406,21 @@ is that a hang is no longer the expected shape of an opencode approval.
 refuses `default`, a missing permission hook breaks every opencode dispatch.
 `doctor` reports that directly rather than letting it surface at first use.
 
+**Sonata did not know Claude Code's default permission mode.** The design's mode
+list — `plan`, `default`, `acceptEdits`, `bypassPermissions` — is incomplete.
+Claude Code 2.1.226 also emits `auto`, and describes it as "now Claude Code's
+default permission mode": it runs tool calls its classifier judges lower-risk
+without prompting and blocks the rest. Sonata treated the unrecognised value as
+`default`, which was wrong on its own terms — the parent is not prompting for
+every action — and became fatal once opencode started refusing `default`, since
+the mode most users are in would have blocked every opencode dispatch.
+
+`auto` now maps to `acceptEdits`, the closest mode sonata can enforce on a
+foreign harness. The residual gap is real: the harness has no classifier, so it
+will run what auto mode would have blocked. Mapping is done at the boundary in
+`mode.ts` rather than widening `PermissionMode`, so adapters keep a small union
+and the judgement lives in one documented place.
+
 ## Risks
 
 **Prompt detection is regex against a TUI sonata does not control.** It will

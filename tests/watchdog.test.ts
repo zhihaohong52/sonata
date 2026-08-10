@@ -60,6 +60,15 @@ describe('wrapWithTimeout', () => {
     expect(script).toContain('kill $WATCHDOG_PID');
   });
 
+  it('disowns the watchdog so its kill is not reported into the pane', () => {
+    // The watchdog is killed on every normal run, and job control would print
+    // "Terminated: 15" to the terminal — which then becomes the tail of any
+    // degraded report. Disown must come before the wait, or the report races.
+    expect(script).toContain('disown $WATCHDOG_PID');
+    expect(script.indexOf('disown $WATCHDOG_PID'))
+      .toBeLessThan(script.indexOf('wait $HARNESS_PID'));
+  });
+
   it('guards the exit write with an existence check', () => {
     expect(script).toContain("if [ ! -f '/tmp/sonata/exit' ]; then");
     expect(script).toContain("echo $STATUS > '/tmp/sonata/exit'");

@@ -55,10 +55,11 @@ export async function cmdDoctor(opts: { cwd: string }): Promise<{ ok: boolean; c
   const harnesses = new Set(Object.values(config.models).map((m) => m.harness));
 
   // Without the hook sonata cannot read the session's permission mode and
-  // assumes `default` — which opencode cannot honour, so every opencode
-  // dispatch refuses. Say that here rather than letting it surface as a
-  // confusing failure on first use.
-  if (harnesses.has('opencode')) {
+  // assumes `default` — which a harness that cannot ask for approval refuses
+  // outright, so every dispatch to it fails. Say that here rather than letting
+  // it surface as a confusing failure on first use.
+  const cannotAsk = [...harnesses].filter((h) => !getAdapter(h).canPromptForApproval);
+  if (cannotAsk.length > 0) {
     const installed = (['project', 'global'] as const).some((scope) =>
       modeHookPresent(readSettings(settingsPath(scope, opts.cwd, homedir()))),
     );
@@ -67,8 +68,8 @@ export async function cmdDoctor(opts: { cwd: string }): Promise<{ ok: boolean; c
       ok: installed,
       detail: installed
         ? 'installed — the session permission mode is visible to sonata'
-        : 'not installed, so sonata assumes `default`, which opencode cannot ' +
-          'honour — every opencode dispatch will refuse. Run `sonata init`',
+        : `not installed, so sonata assumes \`default\`, which ${cannotAsk.join(' and ')} ` +
+          'cannot honour — those dispatches will refuse. Run `sonata init`',
     });
   }
   for (const name of harnesses) {

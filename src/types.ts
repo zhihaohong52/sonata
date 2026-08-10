@@ -9,6 +9,13 @@ export interface RunMeta {
   harness: string;
   mode: PermissionMode;
   interactive: boolean;
+  /**
+   * False when the harness configuration physically cannot write the report
+   * file — a strict read-only tool allowlist blocks the model's own writes.
+   * Such a run is not degraded merely for lacking a report; its terminal
+   * output is the report. Absent means true, for runs recorded before this.
+   */
+  canWriteReport?: boolean;
   session: string;
   cwd: string;
   startedAt: string;
