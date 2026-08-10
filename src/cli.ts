@@ -101,7 +101,9 @@ async function main(argv: string[]): Promise<number> {
       role: values.role,
       model: values.model,
       taskFile: values['task-file'],
-      rolesDir: values['roles-dir'] ?? new URL('../roles', import.meta.url).pathname,
+      // fileURLToPath, not .pathname — the latter percent-encodes spaces and
+      // would break for anyone whose install path contains one.
+      rolesDir: values['roles-dir'] ?? join(packageRoot(), 'roles'),
       sessionId: process.env.CLAUDE_CODE_SESSION_ID,
     });
     console.log(values.json ? JSON.stringify(res) : `run ${res.id} (tmux ${res.session})`);

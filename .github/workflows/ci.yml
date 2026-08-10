@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # Sonata runs every harness inside a tmux session, so the test suite
+      # genuinely needs tmux — the fake harness and pane capture depend on it.
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      # Catches the packaging mistakes that only appear at publish time:
+      # a missing runtime asset, or a bin target excluded by `files`.
+      - name: Verify package contents
+        run: |
+          npm run build
+          npm pack --dry-run --json > /tmp/pack.json
+          node -e '
+            const files = require("/tmp/pack.json")[0].files.map(f => f.path);
+            const required = [
+              "dist/cli.js",
+              "roles/code.md",
+              "roles/review.md",
+              "hooks/capture-mode.mjs",
+              "README.md",
+              "LICENSE",
+            ];
+            const missing = required.filter(f => !files.includes(f));
+            if (missing.length) {
+              console.error("Missing from tarball:", missing.join(", "));
+              process.exit(1);
+            }
+            console.log("Tarball contains all " + required.length + " required files.");
+          '

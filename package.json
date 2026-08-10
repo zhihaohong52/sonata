@@ -1,15 +1,50 @@
 {
-  "name": "sonata",
+  "name": "@zhihaohong52/sonata",
   "version": "0.1.0",
+  "description": "Foreign-model subagents for Claude Code — dispatch cheaper or different models through their own harnesses, as ordinary subagents",
+  "keywords": [
+    "claude-code",
+    "subagent",
+    "opencode",
+    "codex",
+    "tmux",
+    "llm",
+    "ai-agent"
+  ],
+  "homepage": "https://github.com/zhihaohong52/sonata#readme",
+  "bugs": {
+    "url": "https://github.com/zhihaohong52/sonata/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhihaohong52/sonata.git"
+  },
+  "license": "MIT",
+  "author": "James (https://github.com/zhihaohong52)",
   "type": "module",
-  "bin": { "sonata": "./dist/cli.js" },
+  "bin": {
+    "sonata": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "roles",
+    "hooks",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "dev": "tsx src/cli.ts"
+    "dev": "tsx src/cli.ts",
+    "prepublishOnly": "npm run build && npm test"
   },
-  "engines": { "node": ">=22" },
-  "dependencies": { "smol-toml": "^1.3.1" },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "smol-toml": "^1.3.1"
+  },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",
