@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { PassThrough } from 'node:stream';
 import {
-  parseKey, initialState, reduce, renderList, type Choice,
+  parseKey, initialState, reduce, renderList, viewport, listHeight, type Choice,
   parseTextKey, initialTextState, reduceText, renderText,
   readKeys,
 } from '../src/tui.js';
@@ -296,5 +296,58 @@ describe('readKeys', () => {
     await done;
 
     expect(seen).toEqual(['j', ' ', '\r']);
+  });
+});
+
+describe('viewport', () => {
+  it('shows the top of the list when the cursor is at the top', () => {
+    expect(viewport(0, 100, 10)).toEqual({ start: 0, end: 10, above: 0, below: 90 });
+  });
+
+  it('shows the bottom when the cursor is at the end', () => {
+    expect(viewport(99, 100, 10)).toEqual({ start: 90, end: 100, above: 90, below: 0 });
+  });
+
+  it('centres the cursor in the middle of a long list', () => {
+    const w = viewport(50, 100, 10);
+    expect(w.start).toBe(45);
+    expect(w.end).toBe(55);
+  });
+
+  it('shows everything when the list is shorter than the window', () => {
+    expect(viewport(1, 3, 10)).toEqual({ start: 0, end: 3, above: 0, below: 0 });
+  });
+
+  it('handles an empty list without going out of range', () => {
+    expect(viewport(0, 0, 10)).toEqual({ start: 0, end: 0, above: 0, below: 0 });
+  });
+});
+
+describe('listHeight', () => {
+  it('leaves room for the title, filter, counts and hint', () => {
+    expect(listHeight(30)).toBe(15);
+    expect(listHeight(20)).toBe(12);
+  });
+
+  it('never returns less than three rows', () => {
+    expect(listHeight(5)).toBe(3);
+  });
+});
+
+describe('renderList — windowing', () => {
+  const many: Choice<number>[] = Array.from({ length: 50 }, (_, i) => ({ value: i, label: `m${i}` }));
+
+  it('draws only the window, with overflow counts', () => {
+    const out = renderList('Pick', many, initialState(many), true, 5);
+    expect(out).toContain('m0');
+    expect(out).not.toContain('m40');
+    expect(out).toContain('↓ 45 more');
+  });
+
+  it('keeps the block short enough to redraw', () => {
+    // The redraw moves the cursor up by the block height; a block taller than
+    // the terminal cannot be redrawn correctly.
+    const out = renderList('Pick', many, initialState(many), true, 5);
+    expect(out.split('\n').length).toBeLessThan(15);
   });
 });

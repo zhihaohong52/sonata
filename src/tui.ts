@@ -100,21 +100,55 @@ export function reduce<T>(
   }
 }
 
+export interface Window {
+  start: number;
+  end: number;
+  above: number;
+  below: number;
+}
+
+/**
+ * The slice of a list to draw, centred on the cursor.
+ *
+ * Drawing every choice is not an option: the redraw moves the terminal cursor
+ * up by the block height, so a block taller than the screen corrupts it, and
+ * one provider alone offers 341 models.
+ */
+export function viewport(cursor: number, total: number, height: number): Window {
+  if (total === 0) return { start: 0, end: 0, above: 0, below: 0 };
+  const h = Math.min(Math.max(3, height), total);
+  let start = cursor - Math.floor(h / 2);
+  if (start < 0) start = 0;
+  if (start + h > total) start = total - h;
+  const end = start + h;
+  return { start, end, above: start, below: total - end };
+}
+
+/** Rows available for choices, after the title, filter, counts and hint. */
+export function listHeight(rows: number = process.stdout.rows ?? 24): number {
+  return Math.max(3, Math.min(15, rows - 8));
+}
+
 export function renderList<T>(
   title: string,
   choices: Choice<T>[],
   state: ListState,
   multi: boolean,
+  height = 15,
 ): string {
+  const win = viewport(state.cursor, choices.length, height);
   const lines: string[] = [`  ${title}`, ''];
 
-  choices.forEach((choice, i) => {
+  if (win.above > 0) lines.push(`    ↑ ${win.above} more`);
+  for (let i = win.start; i < win.end; i++) {
+    const choice = choices[i];
     const pointer = i === state.cursor ? '❯' : ' ';
     const mark = multi ? (state.checked.has(i) ? '◉' : '○') : '';
     const hint = choice.hint ? `  · ${choice.hint}` : '';
     const label = choice.disabled ? `${choice.label} (unavailable)` : choice.label;
     lines.push(`  ${pointer} ${mark} ${label}${hint}`.replace(/\s+$/, ''));
-  });
+  }
+  if (win.below > 0) lines.push(`    ↓ ${win.below} more`);
 
   lines.push('');
   lines.push(multi ? '  space toggle · enter confirm · esc cancel'
@@ -286,11 +320,12 @@ async function runList<T>(
   let state = initialState(choices);
   const stdin = process.stdin;
   const stdout = process.stdout;
+  const height = listHeight();
 
   const draw = (first: boolean): void => {
-    const body = renderList(title, choices, state, multi);
+    const body = renderList(title, choices, state, multi, height);
     if (!first) stdout.write(`\u001b[${body.split('\n').length}A`);
-    stdout.write(`${body}\n`);
+    stdout.write(`${body.split('\n').map((l) => `\u001b[2K${l}`).join('\n')}\n`);
   };
 
   draw(true);
