@@ -7,6 +7,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KNOWN_ROLES } from '../config.js';
+import type { ModelRef } from '../types.js';
 import {
   detectTmux, detectOpenCode, staleAgents,
   type Problem, type OpenCodeModel, type HarnessStatus, type DetectEnv,
@@ -101,6 +102,34 @@ function existingModels(cwd: string): string[] {
   if (!existsSync(path)) return [];
   return [...readFileSync(path, 'utf8').matchAll(/^\[models\.\s*(?:"([^"]+)"|([^\]"]+?))\s*\]/gm)]
     .map((m) => m[1] ?? m[2]);
+}
+
+/**
+ * The config key is also the agent filename (`code-<key>.md`), so it cannot
+ * contain `/`. The harness segment is load-bearing rather than decorative: pi
+ * and opencode can serve the identical ref, and without it those two
+ * selections would overwrite each other.
+ */
+export function configKeyFor(ref: ModelRef): string {
+  return `${ref.harness}-${ref.ref}`.replace(/\//g, '-');
+}
+
+/**
+ * Keys claimed more than once.
+ *
+ * Flattening is not injective, because provider names contain dashes too:
+ * `opencode/go-x` and `opencode-go/x` both yield `opencode-go-x`. No pair in
+ * the current catalogue collides, but it is served rather than static, so it
+ * cannot be assumed away.
+ */
+export function duplicateKeys(keys: string[]): string[] {
+  const seen = new Set<string>();
+  const dupes = new Set<string>();
+  for (const k of keys) {
+    if (seen.has(k)) dupes.add(k);
+    seen.add(k);
+  }
+  return [...dupes].sort();
 }
 
 export async function cmdInit(opts: InitOptions): Promise<InitResult> {

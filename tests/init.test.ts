@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseOpenCodeModels, parseAuthedProviders, staleAgents, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
-import { cmdInit } from '../src/commands/init.js';
+import { cmdInit, configKeyFor, duplicateKeys } from '../src/commands/init.js';
 import { readSettings } from '../src/settings.js';
 import { parseConfig } from '../src/config.js';
 
@@ -266,5 +266,44 @@ describe('offerableProviders', () => {
   it('counts the models behind each row', () => {
     const got = offerableProviders(refs, ['openrouter']);
     expect(got.find((p) => p.key === 'opencode/openrouter')?.count).toBe(2);
+  });
+});
+
+describe('configKeyFor', () => {
+  const ref = (harness: 'opencode' | 'pi', provider: string, id: string) =>
+    ({ harness, provider, id, ref: `${provider}/${id}` });
+
+  it('qualifies the key with the harness', () => {
+    expect(configKeyFor(ref('opencode', 'openrouter', 'deepseek-v4-flash')))
+      .toBe('opencode-openrouter-deepseek-v4-flash');
+  });
+
+  it('flattens a nested openrouter id', () => {
+    expect(configKeyFor(ref('opencode', 'openrouter', 'deepseek/deepseek-v4-flash')))
+      .toBe('opencode-openrouter-deepseek-deepseek-v4-flash');
+  });
+
+  it('separates the same ref served by two harnesses', () => {
+    const a = configKeyFor(ref('opencode', 'opencode-go', 'deepseek-v4-flash'));
+    const b = configKeyFor(ref('pi', 'opencode-go', 'deepseek-v4-flash'));
+    expect(a).not.toBe(b);
+  });
+});
+
+describe('duplicateKeys', () => {
+  it('finds two refs that flatten alike', () => {
+    // Provider names contain dashes too, so flattening is not injective.
+    const a = configKeyFor({ harness: 'opencode', provider: 'opencode', id: 'go-x', ref: 'opencode/go-x' });
+    const b = configKeyFor({ harness: 'opencode', provider: 'opencode-go', id: 'x', ref: 'opencode-go/x' });
+    expect(a).toBe(b);
+    expect(duplicateKeys([a, b])).toEqual([a]);
+  });
+
+  it('is empty when every key is distinct', () => {
+    expect(duplicateKeys(['a', 'b', 'c'])).toEqual([]);
+  });
+
+  it('reports each colliding key once', () => {
+    expect(duplicateKeys(['a', 'a', 'a', 'b'])).toEqual(['a']);
   });
 });
