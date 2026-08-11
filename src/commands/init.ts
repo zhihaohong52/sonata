@@ -111,12 +111,21 @@ export function tomlFor(
 
   const lines: string[] = [];
   for (const [key, entry] of entries) {
-    lines.push(`[models.${tomlKey(key)}]`, `harness = "${entry.harness}"`, `id = "${entry.id}"`, '');
+    lines.push(
+      `[models.${tomlKey(key)}]`,
+      `harness = ${tomlKey(entry.harness)}`,
+      `id = ${tomlKey(entry.id)}`,
+      '',
+    );
   }
   lines.push(
     '[generate]',
-    `roles = [${roles.map((r) => `"${r}"`).join(', ')}]`,
-    `models = [${entries.map(([k]) => `"${k}"`).join(', ')}]`,
+    `roles = [${roles.map(tomlKey).join(', ')}]`,
+    // Every one of these must go through tomlKey, not just the table header.
+    // Carried keys are user-authored and can contain a quote; escaping the
+    // header alone produced a config that no longer parsed, destroying the
+    // hand-written entry this function exists to preserve.
+    `models = [${entries.map(([k]) => tomlKey(k)).join(', ')}]`,
     '',
     '[run]',
     'tail_window_seconds = 20',

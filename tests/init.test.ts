@@ -516,3 +516,24 @@ describe('HarnessStatus.refs', () => {
     expect(status.refs[0].ref).toBe('openrouter/kimi-k3');
   });
 });
+
+describe('tomlFor — escaping', () => {
+  // Found by an independent review run: the table header was escaped via
+  // tomlKey, but the generate.models array and the values were interpolated
+  // raw. A hand-written key containing a quote produced a config that no
+  // longer parsed — destroying the very entry carrying it through was meant
+  // to protect.
+  it('escapes carried keys everywhere they appear, not just in the header', () => {
+    const carried = { 'say"hi': { harness: 'codex', id: 'gpt-5.6-sol' } };
+    const out = tomlFor([], ['code'], carried);
+
+    expect(() => parseConfig(out)).not.toThrow();
+    expect(parseConfig(out).generate.models).toEqual(['say"hi']);
+  });
+
+  it('escapes a backslash in a value', () => {
+    const carried = { plain: { harness: 'codex', id: 'a\\b' } };
+    const out = tomlFor([], ['code'], carried);
+    expect(parseConfig(out).models.plain.id).toBe('a\\b');
+  });
+});
