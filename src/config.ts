@@ -61,7 +61,7 @@ export function parseConfig(text: string): SonataConfig {
     if (!models[m]) {
       throw new Error(
         `sonata.toml: generate.models references unknown model "${m}". ` +
-        `Define [models.${m}] first.`,
+        `Define [models."${m}"] first.`,
       );
     }
   }

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { parseOpenCodeModels, parseAuthedProviders, staleAgents } from '../src/detect.js';
 import { cmdInit } from '../src/commands/init.js';
 import { readSettings } from '../src/settings.js';
+import { parseConfig } from '../src/config.js';
 
 // Shape taken verbatim from a real ~/.config/opencode/opencode.json.
 const OC_CONFIG = JSON.stringify({
@@ -14,6 +15,8 @@ const OC_CONFIG = JSON.stringify({
       models: {
         'deepseek-v4-flash': { name: 'DeepSeek V4 Flash' },
         'kimi-k3': { name: 'Kimi K3' },
+        // Real model ids carry version dots, which are TOML key separators.
+        'grok-4.5': { name: 'Grok-4.5' },
       },
     },
   },
@@ -24,6 +27,7 @@ describe('parseOpenCodeModels', () => {
     expect(parseOpenCodeModels(OC_CONFIG)).toEqual([
       { provider: 'opencode', id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
       { provider: 'opencode', id: 'kimi-k3', name: 'Kimi K3' },
+      { provider: 'opencode', id: 'grok-4.5', name: 'Grok-4.5' },
     ]);
   });
 
@@ -114,7 +118,7 @@ describe('cmdInit (non-interactive)', () => {
     expect(res.hookChanged).toBe(true);
 
     const toml = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
-    expect(toml).toContain('[models.deepseek-v4-flash]');
+    expect(toml).toContain('[models."deepseek-v4-flash"]');
     expect(toml).toContain('harness = "opencode"');
 
     const settings = readSettings(join(cwd, '.claude', 'settings.json'));
@@ -158,6 +162,32 @@ describe('cmdInit (non-interactive)', () => {
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       models: ['kimi-k3'], roles: ['dance'], scope: 'skip', write,
     })).rejects.toThrow(/unknown role/);
+  });
+
+  // A model id like `grok-4.5` is not a plain TOML key: the dot nests it, so
+  // `[models.grok-4.5]` parses as models -> "grok-4" -> "5" and the config no
+  // longer describes the model it names.
+  it('writes a model id containing dots as one quoted key', async () => {
+    await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      models: ['grok-4.5'], roles: ['code'], scope: 'skip', write,
+    });
+
+    const config = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
+    expect(Object.keys(config.models)).toEqual(['grok-4.5']);
+    expect(config.models['grok-4.5']).toEqual({ harness: 'opencode', id: 'grok-4.5' });
+  });
+
+  it('pre-selects a dotted model id already in sonata.toml', async () => {
+    const args = {
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      roles: ['code'], scope: 'skip' as const, write,
+    };
+    await cmdInit({ ...args, models: ['grok-4.5'] });
+    // With no --models, a re-run carries over what the file already enables.
+    const second = await cmdInit(args);
+
+    expect(second.models).toEqual(['grok-4.5']);
   });
 
   it('reports blocking problems and writes nothing when a provider is unauthed', async () => {

@@ -63,11 +63,20 @@ function renderProblem(p: Problem): string {
   return `  ${icon} ${p.message}${fix}`;
 }
 
+/**
+ * Model ids carry version dots — `grok-4.5`, `gpt-5.6-sol` — and a dot is TOML's
+ * key separator, so a bare `[models.grok-4.5]` nests as models → "grok-4" → "5"
+ * and stops describing the model it names. Quoting makes it one literal key.
+ */
+function tomlKey(id: string): string {
+  return `"${id.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
 function tomlFor(models: OpenCodeModel[], chosen: string[], roles: string[]): string {
   const lines: string[] = [];
   for (const id of chosen) {
     const m = models.find((x) => x.id === id);
-    lines.push(`[models.${id}]`, 'harness = "opencode"', `id = "${m?.id ?? id}"`, '');
+    lines.push(`[models.${tomlKey(id)}]`, 'harness = "opencode"', `id = "${m?.id ?? id}"`, '');
   }
   lines.push(
     '[generate]',
@@ -83,11 +92,15 @@ function tomlFor(models: OpenCodeModel[], chosen: string[], roles: string[]): st
   return lines.join('\n');
 }
 
-/** Model ids already enabled in an existing sonata.toml, for pre-ticking. */
+/**
+ * Model ids already enabled in an existing sonata.toml, for pre-ticking.
+ * Accepts both the quoted form sonata writes and a bare key typed by hand.
+ */
 function existingModels(cwd: string): string[] {
   const path = join(cwd, 'sonata.toml');
   if (!existsSync(path)) return [];
-  return [...readFileSync(path, 'utf8').matchAll(/^\[models\.([^\]]+)\]/gm)].map((m) => m[1]);
+  return [...readFileSync(path, 'utf8').matchAll(/^\[models\.\s*(?:"([^"]+)"|([^\]"]+?))\s*\]/gm)]
+    .map((m) => m[1] ?? m[2]);
 }
 
 export async function cmdInit(opts: InitOptions): Promise<InitResult> {
