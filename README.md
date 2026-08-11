@@ -2,6 +2,10 @@
 
 **Foreign-model subagents for Claude Code.**
 
+[![ci](https://github.com/zhihaohong52/sonata/actions/workflows/ci.yml/badge.svg)](https://github.com/zhihaohong52/sonata/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
+
 Claude Code's subagents are excellent, but they are always Claude. Sonata lets
 you dispatch a subagent backed by a different model — running in that model's
 own harness — through the ordinary Agent tool. Same interface, same working
@@ -28,14 +32,19 @@ Two reasons you might want that:
 ## Status
 
 **Working, early.** The engine and the OpenCode, Codex and Pi adapters are
-complete and tested, each verified end to end against a real model. See
-[Limitations](#limitations) before relying on it.
+complete and tested, each verified end to end against a real model.
+
+Not yet published to npm — install from source (below). Read
+[Limitations](#limitations) and [Security](#security) before depending on it.
 
 ## Requirements
 
 - **Node 22+**
 - **tmux** — every harness runs inside a tmux session (`brew install tmux`,
   `apt install tmux`)
+- **macOS or Linux.** Sonata launches bash scripts inside tmux and manages
+  process groups directly; Windows is not supported. WSL should work but is
+  untested.
 - At least one harness, authenticated:
   - **[OpenCode](https://opencode.ai)** — any provider it supports
   - **[Codex CLI](https://github.com/openai/codex)** — `codex login`
@@ -44,9 +53,17 @@ complete and tested, each verified end to end against a real model. See
 
 ## Install
 
+Sonata is not on npm yet. Install from source:
+
 ```bash
-npm install -g @zhihaohong52/sonata
+git clone https://github.com/zhihaohong52/sonata.git
+cd sonata
+npm install
+npm run build
+npm link          # puts `sonata` on your PATH
 ```
+
+Once it is published, this becomes `npm install -g @zhihaohong52/sonata`.
 
 Then, in the repository where you want to use it:
 
@@ -83,6 +100,28 @@ Every prompt has a flag, so it also works unattended:
 sonata init --yes --models deepseek-v4-flash,kimi-k3 --roles code,review --scope project
 ```
 
+### Adding Codex or Pi models
+
+**The wizard only discovers OpenCode models.** Codex and Pi work fully, but
+their models are added to `sonata.toml` by hand:
+
+```toml
+[models.gpt-5-6-sol]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+# Pi takes model ids in provider/id form.
+[models.pi-deepseek]
+harness = "pi"
+id = "opencode-go/deepseek-v4-flash"
+
+[generate]
+roles  = ["code", "review", "explore", "plan"]
+models = ["gpt-5-6-sol", "pi-deepseek"]
+```
+
+Then `sonata sync` to regenerate the agent files, and restart Claude Code.
+
 ## Using it
 
 The generated agents are ordinary registry entries, so Claude selects them the
@@ -115,8 +154,7 @@ opencode → deepseek-v4-flash
 ```
 
 The wrapper never parses harness output. It calls the CLI and relays. All
-harness-specific knowledge lives in one adapter file, so adding a harness
-touches nothing else.
+harness-specific knowledge lives in one adapter file.
 
 Completion is read from an exit sentinel and a report file, never scraped from
 the terminal. If a harness dies without writing a report, sonata returns the
@@ -210,17 +248,17 @@ question before any work starts. Sonata surfaces it as a `PAUSED` prompt, and
 `sonata doctor` warns when the project has not been trusted yet, so a
 `default`-mode run does not stall on it unexpectedly.
 
-Prompt detection for codex is written from captured TUI output, kept in
-`tests/fixtures/panes/`, rather than from guesses about what it prints.
-
 Codex also writes its final message to a file (`-o`), so sonata has a
 harness-guaranteed report and degrades to pane text far less often.
+
+### The permission hook
 
 The mode is not exposed as an environment variable, so this needs a
 `PreToolUse` hook — which `sonata init` offers to install, at project or global
 scope. Without it, sonata assumes `default`. For codex that is simply the
-cautious choice; for opencode it means dispatches refuse, so `sonata doctor`
-reports a missing hook as a blocker rather than letting it surface on first use.
+cautious choice; for opencode and pi it means dispatches refuse, so
+`sonata doctor` reports a missing hook as a blocker rather than letting it
+surface on first use.
 
 **`auto` mode.** Claude Code's current default mode is `auto`: it runs tool
 calls its classifier judges lower-risk without prompting, and blocks the rest.
@@ -250,16 +288,16 @@ install will not litter unrelated repositories.
 ```toml
 # sonata.toml
 [models.deepseek-v4-flash]
-harness = "opencode"
-id = "deepseek-v4-flash"
+harness = "opencode"      # opencode | codex | pi
+id = "deepseek-v4-flash"  # the harness's own model id
 
 [generate]
 roles  = ["code", "review", "explore", "plan"]
 models = ["deepseek-v4-flash", "kimi-k3"]
 
 [run]
-tail_window_seconds   = 20    # how long `sonata tail` blocks per call
-stall_timeout_seconds = 120   # silence before a run is reported STALLED
+tail_window_seconds   = 20     # how long `sonata tail` blocks per call
+stall_timeout_seconds = 120    # silence before a run is reported STALLED
 run_timeout_seconds   = 1800   # hard cap; the run is killed at this point
 ```
 
@@ -268,26 +306,67 @@ Roles live in `roles/*.md` and are owned by sonata rather than the harness, so
 comparing two models' reviews meaningful.
 
 Four roles ship: `code`, `review`, `explore` and `plan`. The last three are
-**read-only** — sonata forces a read-only sandbox for them regardless of your
-permission mode, so a review can never quietly edit your repository.
+**read-only**, enforced by the harness rather than by the prompt alone — a
+read-only sandbox on codex, a tool allowlist on pi, a read-only agent on
+opencode. The strength of that guarantee differs per harness; see
+[Permission modes](#permission-modes).
 
-Run `sonata sync` after editing the config.
+Run `sonata sync` after editing the config, and restart Claude Code.
+
+## Troubleshooting
+
+Start with `sonata doctor` — it checks tmux, each configured harness, its
+version and auth, and the permission hook.
+
+| Symptom | Cause |
+|---|---|
+| Agents don't appear in Claude Code | Claude Code reads `.claude/agents/` at startup. Run `sonata sync`, then restart it. |
+| `sonata: command not found` | The generated agents call `sonata` on your PATH. Run `npm link` in the clone (or install globally once published). |
+| Dispatch fails: "cannot ask for approval" | You are in `default` mode with opencode or pi, which cannot prompt. Switch to `acceptEdits`, use a codex model, or dispatch a read-only role. |
+| Every opencode/pi dispatch refuses | The permission hook is not installed, so sonata assumes `default`. Run `sonata init` and choose a hook scope. |
+| A codex run sits in `PAUSED` at startup | Codex has not been trusted in this directory. Run `codex` there once and answer "Yes, continue". |
+| A run reports `degraded` | The harness exited without writing a report; the text you get is scraped pane output. Treat it as untrustworthy. |
+| A run never finishes | It is capped by `run_timeout_seconds`. Attach with `tmux attach -t sonata-<id>` to watch it. |
+
+## Security
+
+Sonata launches other coding agents on your machine. They run **as you**, with
+your files and your credentials.
+
+- **Read the permission tables above before dispatching write-capable roles.**
+  Only codex offers a real sandbox. Pi has none, and opencode's is advisory.
+- **Sonata never bypasses a harness's own safety flags.** It does not pass
+  `--dangerously-bypass-approvals-and-sandbox` to codex.
+- **Credentials stay with the harness.** Sonata reads harness config to report
+  health; it does not copy, forward or log API keys. Keys live wherever the
+  harness put them (e.g. `~/.config/opencode/opencode.json`).
+- **Prompt injection is a real risk.** A foreign model reading a hostile
+  repository can be steered, and it has no classifier between it and your
+  files. For untrusted code, dispatch read-only roles or run in a container.
+
+Please report security issues privately, through the repository's
+[Security tab](https://github.com/zhihaohong52/sonata/security), rather than in
+a public issue.
 
 ## Limitations
 
 Worth knowing before you depend on this:
 
-- **No Pi adapter.** OpenCode and Codex are supported; Pi is designed but not built.
+- **`sonata init` only discovers OpenCode models.** Codex and Pi work fully,
+  but must be added to `sonata.toml` by hand.
+- **Not published to npm yet**, so installation is from source.
+- **Prompt detection is regex against TUIs sonata does not control.** Codex's
+  patterns are written from captured real output in `tests/fixtures/panes/`,
+  but they will still break when codex changes its interface. The `STALLED`
+  timeout is the backstop. OpenCode and Pi cannot prompt at all, so there is
+  nothing to detect.
 - **Codex through a proxy needs that proxy up.** If `~/.codex/config.toml` sets
   `openai_base_url`, `sonata doctor` checks the endpoint is listening — a dead
   proxy otherwise wastes minutes in retries before failing.
-- **Prompt detection is regex against a TUI sonata does not control.** It is
-  tested against a scripted fake harness, not against real opencode output, and
-  it will break when harnesses change their interface. The `STALLED` timeout is
-  the backstop.
 - **`opencode run --format json` is broken upstream** (v1.18.15 produces no
   output and never exits), so progress comes from pane text rather than a
-  structured event stream. The adapter keeps a seam for adopting it later.
+  structured event stream. Pi's `--mode json` does work; the adapter keeps a
+  seam for adopting it.
 - **No streaming granularity guarantees.** Progress is whatever the harness
   prints.
 
@@ -300,12 +379,50 @@ npm run typecheck
 npm run build
 ```
 
-The test suite runs against a **fake harness** — a scripted binary replaying
-normal, crash, stall, approval-prompt and missing-report scenarios — so the
+The test suite runs against a **fake harness** — a scripted binary replaying a
+normal run, a crash, a real captured approval prompt, a hang that the watchdog
+must kill, a clean exit with no report, and a harness-written report — so the
 whole engine is covered with no API spend and no harness installed.
 
 Design notes and the implementation plan, including the defects found by
 running it, are in [`docs/superpowers/`](docs/superpowers/).
+
+## Adding a harness
+
+The adapter boundary is the extension point. A new harness means one new file
+plus two lines of registration:
+
+1. **`src/adapters/<name>.ts`** — export a `HarnessAdapter`. The interface is
+   in `src/adapters/types.ts`; `opencode.ts` is the smallest example, `codex.ts`
+   the most complete. You implement:
+   - `plan(input)` → the bash script to run, and whether it can be approved
+   - `canPromptForApproval` — whether the harness can stop and ask a human
+   - `promptPatterns` / `describePrompt` — how a pending approval looks
+   - `health(env)` — optional runtime checks beyond "is it installed"
+2. **`src/adapters/index.ts`** — register it.
+3. **`src/config.ts`** — add the name to `KNOWN_HARNESSES`.
+4. **`tests/adapters/<name>.test.ts`** — follow an existing adapter's tests.
+
+Optionally, `src/detect.ts` for `sonata init` discovery — currently OpenCode
+only, so a new harness is configured by hand until someone adds it.
+
+**Probe the real binary before you write the adapter.** Every adapter bug found
+so far was invisible in the documentation and obvious on the first real run:
+OpenCode silently eating a positional argument, codex rejecting a flag that its
+own `exec` accepts, both harnesses printing approval prompts that matched none
+of the patterns written for them. If you claim a harness prints something,
+capture it into `tests/fixtures/panes/` and test against that.
+
+## Contributing
+
+Issues and pull requests are welcome.
+
+- Run `npm test` and `npm run typecheck` before opening a PR; CI runs both on
+  Linux with tmux installed.
+- Add tests for behaviour you change. The suite needs no API keys.
+- Prefer evidence to inference: if a change depends on how a harness behaves,
+  say how you verified it. A captured fixture beats a plausible regex.
+- Keep harness-specific knowledge inside its adapter.
 
 ## License
 
