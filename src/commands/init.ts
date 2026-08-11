@@ -10,7 +10,7 @@ import { KNOWN_ROLES, parseConfig } from '../config.js';
 import type { ModelRef } from '../types.js';
 import {
   detectTmux, detectOpenCode, staleAgents,
-  type Problem, type OpenCodeModel, type HarnessStatus, type DetectEnv,
+  type Problem, type HarnessStatus, type DetectEnv,
 } from '../detect.js';
 import {
   settingsPath, readSettings, writeSettings, installHook,
@@ -196,7 +196,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
 
   out(tmux.installed ? `  ✓ tmux ${tmux.version}` : '  ✗ tmux not found');
   out(oc.installed
-    ? `  ✓ opencode ${oc.version} · ${oc.models.length} models · ${oc.authedProviders.length} authed provider(s)`
+    ? `  ✓ opencode ${oc.version} · ${oc.refs.length} models · ${oc.authedProviders.length} authed provider(s)`
     : '  ✗ opencode not found');
   out('');
 
@@ -224,7 +224,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   } else if (interactive) {
     models = await multiselect(
       'Models to enable',
-      oc.models.map((m) => ({
+      oc.refs.map((m) => ({
         value: m.id,
         label: m.id,
         hint: m.name,
@@ -235,11 +235,11 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     models = [...preTicked];
   }
 
-  const unknown = models.filter((m) => !oc.models.some((x) => x.id === m));
+  const unknown = models.filter((m) => !oc.refs.some((x) => x.id === m));
   if (unknown.length > 0) {
     throw new Error(
       `sonata init: opencode does not offer ${unknown.join(', ')}. ` +
-      `Available: ${oc.models.map((m) => m.id).join(', ')}`,
+      `Available: ${oc.refs.map((m) => m.id).join(', ')}`,
     );
   }
   if (models.length === 0) {

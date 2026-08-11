@@ -95,7 +95,7 @@ describe('cmdInit (non-interactive)', () => {
       version: '1.18.15',
       supported: true,
       binPath: '/fake/opencode',
-      models: parseOpenCodeModels(OC_CONFIG),
+      refs: parseOpenCodeRefs('opencode/deepseek-v4-flash\nopencode/kimi-k3\nopencode/grok-4.5\n'),
       authedProviders: authed,
       problems: authed.length === 0
         ? [{
@@ -404,5 +404,17 @@ describe('tomlFor', () => {
     const parsed = parseConfig(out);
     expect(parsed.generate.models.sort())
       .toEqual(['gpt-5-6-sol', 'opencode-openrouter-grok-4.5']);
+  });
+});
+
+describe('HarnessStatus.refs', () => {
+  it('carries refs rather than bare model ids', async () => {
+    // Detection shells out, so this asserts the shape the fakes must satisfy.
+    const status = {
+      name: 'opencode', installed: true, supported: true,
+      refs: parseOpenCodeRefs('openrouter/kimi-k3\n'),
+      authedProviders: ['openrouter'], problems: [],
+    };
+    expect(status.refs[0].ref).toBe('openrouter/kimi-k3');
   });
 });

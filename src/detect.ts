@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { checkVersion } from './commands/doctor.js';
+import { parsePiRefs } from './adapters/pi.js';
 import type { ModelRef, ProviderHarness } from './types.js';
 
 const run = promisify(execFile);
@@ -36,7 +37,7 @@ export interface HarnessStatus {
   version?: string;
   supported: boolean;
   binPath?: string;
-  models: OpenCodeModel[];
+  refs: ModelRef[];
   authedProviders: string[];
   problems: Problem[];
 }
@@ -151,6 +152,21 @@ async function tryRun(cmd: string, args: string[], env?: NodeJS.ProcessEnv): Pro
   }
 }
 
+/** Like `tryRun`, but bounded — a hung provider must not stall `init`. */
+async function tryRunLimited(
+  cmd: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  ms: number,
+): Promise<string | null> {
+  try {
+    const { stdout } = await run(cmd, args, { env, timeout: ms });
+    return stdout.trim();
+  } catch {
+    return null;
+  }
+}
+
 export async function detectTmux(): Promise<{ installed: boolean; version?: string; problems: Problem[] }> {
   const out = await tryRun('tmux', ['-V']);
   if (out === null) {
@@ -183,7 +199,7 @@ export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
       name: 'opencode',
       installed: false,
       supported: false,
-      models: [],
+      refs: [],
       authedProviders: [],
       problems: [{
         severity: 'error',
@@ -202,26 +218,27 @@ export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
     });
   }
 
+  const listing = await tryRun('opencode', ['models'], { ...process.env, PATH: path });
+  const refs = listing === null ? [] : parseOpenCodeRefs(listing);
+
+  // The CLI emits no display names; the config has them for custom providers.
   const configPath = join(env.home, '.config', 'opencode', 'opencode.json');
-  const models = existsSync(configPath)
+  const named = existsSync(configPath)
     ? parseOpenCodeModels(readFileSync(configPath, 'utf8'))
     : [];
+  for (const ref of refs) {
+    ref.name = named.find((m) => m.provider === ref.provider && m.id === ref.id)?.name;
+  }
 
   const authPath = join(env.home, '.local', 'share', 'opencode', 'auth.json');
   const authedProviders = existsSync(authPath)
     ? parseAuthedProviders(readFileSync(authPath, 'utf8'))
     : [];
 
-  if (models.length === 0) {
+  if (refs.length === 0) {
     problems.push({
       severity: 'error',
-      message: 'opencode has no models configured',
-      fix: 'opencode auth login',
-    });
-  } else if (authedProviders.length === 0) {
-    problems.push({
-      severity: 'error',
-      message: 'opencode has models configured but no authenticated provider',
+      message: 'opencode reported no models',
       fix: 'opencode auth login',
     });
   }
@@ -232,8 +249,43 @@ export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
     version,
     supported,
     binPath: existsSync(localBin) ? localBin : 'opencode',
-    models,
+    refs,
     authedProviders,
     problems,
   };
+}
+
+export async function detectPi(env: DetectEnv): Promise<HarnessStatus> {
+  const path = `${join(env.home, '.local', 'bin')}:${process.env.PATH ?? ''}`;
+  const version = await tryRun('pi', ['--version'], { ...process.env, PATH: path });
+
+  // Absence is not an error. A machine with only opencode is normal.
+  if (version === null) {
+    return { name: 'pi', installed: false, supported: false, refs: [], authedProviders: [], problems: [] };
+  }
+
+  // Pi can block when a provider is unreachable, and doctor must never hang.
+  const listing = await tryRunLimited('pi', ['--list-models'], { ...process.env, PATH: path }, 5_000);
+  const problems: Problem[] = [];
+  if (listing === null) {
+    problems.push({
+      severity: 'warn',
+      message: 'pi is installed but did not list any models',
+      fix: 'pi auth check --provider <name>',
+    });
+  }
+
+  return {
+    name: 'pi',
+    installed: true,
+    version,
+    supported: true,
+    refs: listing === null ? [] : parsePiRefs(listing),
+    authedProviders: [],
+    problems,
+  };
+}
+
+export async function detectHarnesses(env: DetectEnv): Promise<HarnessStatus[]> {
+  return Promise.all([detectOpenCode(env), detectPi(env)]);
 }
