@@ -319,6 +319,26 @@ export function redraw(body: string, lastHeight: number): { out: string; height:
   };
 }
 
+/**
+ * The wordmark, for commands a person reads rather than pipes.
+ *
+ * Deliberately plain text: no colour, so it survives a pale terminal, a dark
+ * one, and a pipe into a file equally. Widest row is 54 columns, which leaves
+ * room on an 80-column terminal.
+ */
+export function banner(): string {
+  return [
+  '  ███████╗ ██████╗ ███╗   ██╗ █████╗ ████████╗ █████╗',
+  '  ██╔════╝██╔═══██╗████╗  ██║██╔══██╗╚══██╔══╝██╔══██╗',
+  '  ███████╗██║   ██║██╔██╗ ██║███████║   ██║   ███████║',
+  '  ╚════██║██║   ██║██║╚██╗██║██╔══██║   ██║   ██╔══██║',
+  '  ███████║╚██████╔╝██║ ╚████║██║  ██║   ██║   ██║  ██║',
+  '  ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝',
+    '',
+    '  foreign-model subagents for Claude Code',
+  ].join('\n');
+}
+
 export function isInteractive(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }

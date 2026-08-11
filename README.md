@@ -78,10 +78,18 @@ The same model id is often served by several providers, and they are different
 choices — different routing, different billing. So you pick a provider first:
 
 ```
-  sonata init
+  ███████╗ ██████╗ ███╗   ██╗ █████╗ ████████╗ █████╗
+  ██╔════╝██╔═══██╗████╗  ██║██╔══██╗╚══██╔══╝██╔══██╗
+  ███████╗██║   ██║██╔██╗ ██║███████║   ██║   ███████║
+  ╚════██║██║   ██║██║╚██╗██║██╔══██║   ██║   ██╔══██║
+  ███████║╚██████╔╝██║ ╚████║██║  ██║   ██║   ██║  ██║
+  ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝
+
+  foreign-model subagents for Claude Code
 
   ✓ tmux 3.7b
   ✓ opencode 1.18.16 · 496 models
+  · pi not installed
 
   Providers
 

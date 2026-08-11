@@ -17,7 +17,7 @@ import {
   hookInstalled, hookCommand, type HookScope,
 } from '../settings.js';
 import { cmdSync } from './sync.js';
-import { multiselect, select, confirm, isInteractive, CancelledError } from '../tui.js';
+import { multiselect, select, confirm, isInteractive, banner, CancelledError } from '../tui.js';
 
 const OPENCODE_RANGE = '>=1.18.0 <2.0.0';
 
@@ -251,7 +251,9 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   const interactive = !opts.yes && isInteractive();
 
   out('');
-  out('  sonata init');
+  // Decoration is for a person watching. Under --yes the output is being
+  // scripted or logged, so it stays plain.
+  out(interactive ? banner() : '  sonata init');
   out('');
 
   // ---- detect -----------------------------------------------------------

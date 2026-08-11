@@ -8,6 +8,7 @@ import { cmdSync } from './commands/sync.js';
 import { cmdDoctor } from './commands/doctor.js';
 import { cmdGc } from './commands/gc.js';
 import { cmdInit, isCancellation } from './commands/init.js';
+import { banner, isInteractive } from './tui.js';
 import type { HookScope } from './settings.js';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -172,6 +173,9 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (command === 'doctor') {
+    // doctor is read, not piped — but only decorate a real terminal, so
+    // `sonata doctor > report.txt` stays plain.
+    if (isInteractive()) console.log(`\n${banner()}\n`);
     const { ok, checks } = await cmdDoctor({ cwd: process.cwd(), home: homedir() });
     for (const c of checks) console.log(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: ${c.detail}`);
     return ok ? 0 : 1;

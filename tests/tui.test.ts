@@ -4,7 +4,7 @@ import {
   parseKey, initialState, reduce, renderList, viewport, listHeight, type Choice,
   type ListState, visibleIndices,
   parseTextKey, initialTextState, reduceText, renderText,
-  readKeys, redraw,
+  readKeys, redraw, banner,
 } from '../src/tui.js';
 
 const CHOICES: Choice<string>[] = [
@@ -470,5 +470,26 @@ describe('redraw', () => {
   it('clears each line, so a shrinking block leaves no stale tail', () => {
     const { out } = redraw('a\nb', 2);
     expect(out.match(/\u001b\[2K/g)).toHaveLength(2);
+  });
+});
+
+describe('banner', () => {
+  it('renders the wordmark', () => {
+    const lines = banner().split('\n');
+    expect(lines.length).toBeGreaterThanOrEqual(6);
+    expect(banner()).toContain('foreign-model subagents');
+  });
+
+  it('fits an 80-column terminal', () => {
+    // The banner is decoration; wrapping it would look worse than not having it.
+    for (const line of banner().split('\n')) {
+      expect([...line].length).toBeLessThanOrEqual(80);
+    }
+  });
+
+  it('leaves no trailing whitespace', () => {
+    for (const line of banner().split('\n')) {
+      expect(line).toBe(line.replace(/\s+$/, ''));
+    }
   });
 });
