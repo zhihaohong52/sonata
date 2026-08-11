@@ -537,3 +537,43 @@ describe('tomlFor — escaping', () => {
     expect(parseConfig(out).models.plain.id).toBe('a\\b');
   });
 });
+
+describe('tomlFor — control characters and duplicate tables', () => {
+  // Second review pass: tomlKey escaped only backslash and quote. TOML basic
+  // strings also forbid raw control characters, so a carried id containing a
+  // newline or tab produced an unparseable config — the same data loss as the
+  // quote bug, reached the same way, through a hand-written entry.
+  it('escapes control characters in a carried value', () => {
+    const carried = { odd: { harness: 'codex', id: 'a\nb\tc' } };
+    const out = tomlFor([], ['code'], carried);
+
+    expect(() => parseConfig(out)).not.toThrow();
+    expect(parseConfig(out).models.odd.id).toBe('a\nb\tc');
+  });
+
+  it('escapes a control character in a key', () => {
+    const carried = { 'a\nb': { harness: 'codex', id: 'x' } };
+    const out = tomlFor([], ['code'], carried);
+    expect(() => parseConfig(out)).not.toThrow();
+    expect(Object.keys(parseConfig(out).models)).toEqual(['a\nb']);
+  });
+
+  // TOML forbids two tables with the same name. cmdInit checks for this and
+  // reports it kindly, but tomlFor is exported and must not be able to emit a
+  // document that cannot be read back, whoever calls it.
+  it('refuses to emit two tables with the same name', () => {
+    const refs = [
+      { harness: 'opencode' as const, provider: 'opencode', id: 'go-x', ref: 'opencode/go-x' },
+      { harness: 'opencode' as const, provider: 'opencode-go', id: 'x', ref: 'opencode-go/x' },
+    ];
+    expect(() => tomlFor(refs, ['code'], {})).toThrow(/opencode-go-x/);
+  });
+
+  it('refuses when a carried key collides with a generated one', () => {
+    const refs = [{
+      harness: 'opencode' as const, provider: 'openrouter', id: 'kimi-k3', ref: 'openrouter/kimi-k3',
+    }];
+    expect(() => tomlFor(refs, ['code'], { 'opencode-openrouter-kimi-k3': { harness: 'codex', id: 'z' } }))
+      .toThrow(/opencode-openrouter-kimi-k3/);
+  });
+});

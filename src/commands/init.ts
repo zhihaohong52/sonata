@@ -93,9 +93,25 @@ export function carriedEntries(
   return kept;
 }
 
-/** A TOML basic-string key. An unquoted dotted key nests and corrupts the table. */
+const TOML_ESCAPES: Record<string, string> = {
+  '\\': '\\\\', '"': '\\"', '\b': '\\b', '\t': '\\t',
+  '\n': '\\n', '\f': '\\f', '\r': '\\r',
+};
+
+/**
+ * A TOML basic string, used for every key and value this file writes.
+ *
+ * An unquoted dotted key nests and corrupts the table, and a raw control
+ * character makes the document unreadable. Both matter because carried
+ * entries are user-authored: a hand-written id containing a newline once
+ * produced a config that no longer parsed, destroying the very entry
+ * carrying-forward exists to preserve.
+ */
 function tomlKey(key: string): string {
-  return `"${key.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  // eslint-disable-next-line no-control-regex
+  const escaped = key.replace(/[\\"\u0000-\u001f\u007f]/g, (ch) =>
+    TOML_ESCAPES[ch] ?? `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  return `"${escaped}"`;
 }
 
 export function tomlFor(
@@ -108,6 +124,18 @@ export function tomlFor(
       [configKeyFor(r), { harness: r.harness, id: r.ref }]),
     ...Object.entries(carried),
   ];
+
+  // TOML forbids two tables with the same name, and flattening is not
+  // injective. cmdInit checks this first and reports it kindly; this guard
+  // makes it impossible for any caller to emit a document that cannot be read
+  // back.
+  const clashes = duplicateKeys(entries.map(([k]) => k));
+  if (clashes.length > 0) {
+    throw new Error(
+      `sonata: ${clashes.join(', ')} would name two different models. ` +
+      'Rename the hand-written entry, or enable only one of the colliding refs.',
+    );
+  }
 
   const lines: string[] = [];
   for (const [key, entry] of entries) {
