@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { piAdapter, countModelRows } from '../../src/adapters/pi.js';
+import { piAdapter, countModelRows, parsePiRefs } from '../../src/adapters/pi.js';
 import { getAdapter } from '../../src/adapters/index.js';
 
 const base = {
@@ -128,6 +128,34 @@ describe('countModelRows', () => {
   it('is zero for empty output', () => {
     expect(countModelRows('')).toBe(0);
     expect(countModelRows('\n  \n')).toBe(0);
+  });
+});
+
+describe('parsePiRefs', () => {
+  const HEADER = 'provider     model              context  max-out  thinking  images';
+
+  it('joins the provider and model columns into a ref', () => {
+    const out = [HEADER, 'opencode-go  deepseek-v4-flash  1M  384K  yes  no'].join('\n');
+    expect(parsePiRefs(out)).toEqual([
+      {
+        harness: 'pi',
+        provider: 'opencode-go',
+        id: 'deepseek-v4-flash',
+        ref: 'opencode-go/deepseek-v4-flash',
+      },
+    ]);
+  });
+
+  it('never treats the header as a model', () => {
+    expect(parsePiRefs(`${HEADER}\n`)).toEqual([]);
+  });
+
+  it('ignores blanks and rows too short to carry a model', () => {
+    expect(parsePiRefs('')).toEqual([]);
+    expect(parsePiRefs('\n  \n')).toEqual([]);
+    // The real format is unverified; a malformed row must be skipped, not
+    // parsed into a ref with an undefined id.
+    expect(parsePiRefs(`${HEADER}\nopencode-go\n`)).toEqual([]);
   });
 });
 

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput } from './types.js';
+import type { ModelRef } from '../types.js';
 import { isReadOnlyRole } from '../config.js';
 
 const run = promisify(execFile);
@@ -88,18 +89,34 @@ const NO_PROVIDER: HarnessProblem = {
 };
 
 /**
- * Counts real model rows in `pi --list-models` output.
- *
  * The listing always starts with a `provider  model  context ...` header, so
  * "output is non-empty" is not evidence that any model exists — the header
  * alone would report a broken install as healthy.
  */
+const PI_HEADER = /^provider\s+model\b/;
+
+/**
+ * Parses `pi --list-models`, a whitespace-aligned table whose first two
+ * columns are the provider and the model. Rows with fewer than two columns are
+ * skipped rather than parsed: the exact format is unverified against a real
+ * install, so a malformed row must not become a ref with an undefined id.
+ */
+export function parsePiRefs(stdout: string): ModelRef[] {
+  const out: ModelRef[] = [];
+  for (const raw of stdout.split('\n')) {
+    const line = raw.trim();
+    if (line.length === 0 || PI_HEADER.test(line)) continue;
+    const cols = line.split(/\s+/);
+    if (cols.length < 2) continue;
+    const [provider, id] = cols;
+    out.push({ harness: 'pi', provider, id, ref: `${provider}/${id}` });
+  }
+  return out;
+}
+
+/** Counts real model rows, for the health check. */
 export function countModelRows(stdout: string): number {
-  return stdout
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0 && !/^provider\s+model\b/.test(l))
-    .length;
+  return parsePiRefs(stdout).length;
 }
 
 async function piHealth(_env: { home: string; cwd: string }): Promise<HarnessProblem[]> {
