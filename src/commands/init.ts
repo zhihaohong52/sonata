@@ -4,7 +4,7 @@
  * Interactive by default; every choice also has a flag so the command works in
  * CI and scripts. Nothing is written until the user confirms the summary.
  */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { KNOWN_ROLES, configPath, GLOBAL_CONFIG_RELATIVE, parseConfig } from '../config.js';
 import type { ModelRef } from '../types.js';
@@ -293,8 +293,28 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   }
   for (const p of problems) out(renderProblem(p));
 
-  const resolved = configPath(opts.cwd, opts.home);
-  const configText = resolved === null ? '' : readFileSync(resolved, 'utf8');
+  let configScope: ConfigScope;
+  if (opts.configScope) {
+    configScope = opts.configScope;
+  } else if (interactive) {
+    out('');
+    configScope = await select<ConfigScope>('Where should this config apply', [
+      { value: 'project', label: 'This project only', hint: './sonata.toml + ./.claude/agents/' },
+      { value: 'global', label: 'All projects', hint: '~/.config/sonata/ + ~/.claude/agents/' },
+    ]);
+  } else {
+    configScope = 'project';
+  }
+
+  // Read the file that is about to be overwritten, not whichever one merely
+  // resolves. Choosing `global` in a repo that has its own sonata.toml would
+  // otherwise carry that repo's hand-written entries into the machine config
+  // and pre-tick from a file the user is not editing — which is why the scope
+  // is asked before anything is read.
+  const configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
+  const configText = existsSync(configPathResolved)
+    ? readFileSync(configPathResolved, 'utf8')
+    : '';
   const enabled = preTickedRefs(configText, allRefs);
 
   // ---- choose providers -------------------------------------------------
@@ -381,20 +401,6 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   }
 
   // ---- config scope -----------------------------------------------------
-  let configScope: ConfigScope;
-  if (opts.configScope) {
-    configScope = opts.configScope;
-  } else if (interactive) {
-    out('');
-    configScope = await select<ConfigScope>('Where should this config apply', [
-      { value: 'project', label: 'This project only', hint: './sonata.toml + ./.claude/agents/' },
-      { value: 'global', label: 'All projects', hint: '~/.config/sonata/ + ~/.claude/agents/' },
-    ]);
-  } else {
-    configScope = 'project';
-  }
-
-  const configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
 
   // ---- hook scope -------------------------------------------------------
   const command = hookCommand(opts.packageRoot);

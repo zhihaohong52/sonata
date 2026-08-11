@@ -621,6 +621,48 @@ describe('cmdInit — config scope', () => {
     roles: ['code'], scope: 'skip' as const,
   };
 
+  // The scope is chosen before the existing config is read, so init reads the
+  // file it is about to overwrite. Reading whichever config merely *resolves*
+  // would carry a repo's hand-written entries into the machine config, and
+  // pre-tick from a file the user is not editing.
+  it('does not carry a local entry into the machine config', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."local-only-codex"]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+[generate]
+roles = ["code"]
+models = ["local-only-codex"]
+`);
+
+    await cmdInit({ ...args, cwd, home, configScope: 'global', write });
+
+    const global = parseConfig(readFileSync(join(home, '.config', 'sonata', 'sonata.toml'), 'utf8'));
+    expect(Object.keys(global.models)).toEqual(['opencode-openrouter-kimi-k3']);
+    expect(global.models['local-only-codex']).toBeUndefined();
+  });
+
+  it('pre-ticks from the machine config, not the repo one, in global scope', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."opencode-openrouter-kimi-k3"]
+harness = "opencode"
+id = "openrouter/kimi-k3"
+
+[generate]
+roles = ["code"]
+models = ["opencode-openrouter-kimi-k3"]
+`);
+
+    // No --models: the selection carries over from the config being edited,
+    // which in global scope is the machine one — and it is empty.
+    await expect(cmdInit({
+      packageRoot: '/pkg', yes: true, detect, cwd, home,
+      providers: ['opencode/openrouter'], roles: ['code'],
+      scope: 'skip' as const, configScope: 'global' as const, write,
+    })).rejects.toThrow(/no models selected/);
+  });
+
   it('writes a global config and global agents, and nothing in the repo', async () => {
     const res = await cmdInit({ ...args, cwd, home, configScope: 'global', write });
 
