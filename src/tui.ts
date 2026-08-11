@@ -299,6 +299,26 @@ export function renderText(title: string, state: TextState, hint?: string): stri
   ].join('\n');
 }
 
+/**
+ * Builds one redraw of a block, and reports the height to pass back next time.
+ *
+ * The cursor must move up by the height of the block ALREADY on screen, not
+ * the one about to be written. They differ whenever the block changes size —
+ * a viewport scroll adds an overflow line, a filter shrinks the list — and
+ * moving by the wrong amount leaves the cursor in the wrong row, after which
+ * every later redraw drifts further and overwrites the wrong lines.
+ *
+ * Each line is cleared as it is rewritten, so a shrinking block leaves no tail.
+ */
+export function redraw(body: string, lastHeight: number): { out: string; height: number } {
+  const lines = body.split('\n');
+  const up = lastHeight > 0 ? `\u001b[${lastHeight}A` : '';
+  return {
+    out: `${up}${lines.map((l) => `\u001b[2K${l}`).join('\n')}\n`,
+    height: lines.length,
+  };
+}
+
 export function isInteractive(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
@@ -363,17 +383,19 @@ async function runList<T>(
   const stdout = process.stdout;
   const height = listHeight();
 
-  const draw = (first: boolean): void => {
-    const body = renderList(title, choices, state, multi, height);
-    if (!first) stdout.write(`\u001b[${body.split('\n').length}A`);
-    stdout.write(`${body.split('\n').map((l) => `\u001b[2K${l}`).join('\n')}\n`);
+  let lastHeight = 0;
+  const draw = (): void => {
+    const { out, height: drawn } =
+      redraw(renderList(title, choices, state, multi, height), lastHeight);
+    stdout.write(out);
+    lastHeight = drawn;
   };
 
-  draw(true);
+  draw();
   await readKeys(stdin, (chunk) => {
     state = reduce(state, parseKey(chunk, multi), choices, multi);
     if (state.done) return true;
-    draw(false);
+    draw();
     return false;
   });
 
@@ -411,16 +433,13 @@ export async function prompt(
   const stdout = process.stdout;
   let lastHeight = 0;
 
-  const draw = (first: boolean): void => {
-    const body = renderText(title, state, error ?? opts.hint);
-    if (!first) stdout.write(`\u001b[${lastHeight}A`);
-    // The error line changes the block height, so clear each line as it is
-    // rewritten; otherwise a shrinking block leaves the old tail on screen.
-    stdout.write(`${body.split('\n').map((l) => `\u001b[2K${l}`).join('\n')}\n`);
-    lastHeight = body.split('\n').length;
+  const draw = (): void => {
+    const { out, height } = redraw(renderText(title, state, error ?? opts.hint), lastHeight);
+    stdout.write(out);
+    lastHeight = height;
   };
 
-  draw(true);
+  draw();
   await readKeys(stdin, (chunk) => {
     const next = reduceText(state, parseTextKey(chunk));
     // Validation runs on submission only, so the message does not flicker
@@ -430,14 +449,14 @@ export async function prompt(
       if (problem) {
         error = problem;
         state = { ...next, done: false };
-        draw(false);
+        draw();
         return false;
       }
     }
     error = null;
     state = next;
     if (state.done) return true;
-    draw(false);
+    draw();
     return false;
   });
 

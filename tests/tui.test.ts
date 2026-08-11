@@ -4,7 +4,7 @@ import {
   parseKey, initialState, reduce, renderList, viewport, listHeight, type Choice,
   type ListState, visibleIndices,
   parseTextKey, initialTextState, reduceText, renderText,
-  readKeys,
+  readKeys, redraw,
 } from '../src/tui.js';
 
 const CHOICES: Choice<string>[] = [
@@ -444,5 +444,31 @@ describe('reduce — filtering', () => {
   it('ignores filter keys in single-select mode', () => {
     const s = reduce(initialState(choices), { kind: 'char', value: 'z' }, choices, false);
     expect(s.filter).toBe('');
+  });
+});
+
+describe('redraw', () => {
+  // Found by an independent review run: runList moved the cursor up by the
+  // height of the block it was ABOUT to write, not the one already on screen.
+  // Harmless while the height was fixed; the viewport and filter made it vary,
+  // so a scroll (12 -> 13 lines) or a filter shrink (9 -> 6) left the cursor
+  // in the wrong row and stale text below.
+  it('moves up by the height already on screen, not the new one', () => {
+    const first = redraw('a\nb\nc', 0);
+    expect(first.height).toBe(3);
+    expect(first.out).not.toContain('A');          // nothing on screen yet
+
+    const grown = redraw('a\nb\nc\nd', first.height);
+    expect(grown.out.startsWith('\u001b[3A')).toBe(true);   // the OLD height
+    expect(grown.height).toBe(4);
+
+    const shrunk = redraw('a', grown.height);
+    expect(shrunk.out.startsWith('\u001b[4A')).toBe(true);  // the OLD height
+    expect(shrunk.height).toBe(1);
+  });
+
+  it('clears each line, so a shrinking block leaves no stale tail', () => {
+    const { out } = redraw('a\nb', 2);
+    expect(out.match(/\u001b\[2K/g)).toHaveLength(2);
   });
 });
