@@ -27,6 +27,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
     --providers opencode/openrouter,pi/opencode-go   providers to draw models from
     --models a,b             models to enable (config keys)
     --roles code,review      roles to generate
+    --config-scope project|global   where the config and its agents go
     --scope project|global|skip   where to install the permission hook
 `;
 
@@ -51,6 +52,7 @@ async function main(argv: string[]): Promise<number> {
         providers: { type: 'string' },
         models: { type: 'string' },
         roles: { type: 'string' },
+        'config-scope': { type: 'string' },
         scope: { type: 'string' },
       },
     });
@@ -58,6 +60,13 @@ async function main(argv: string[]): Promise<number> {
     const scope = values.scope as HookScope | 'skip' | undefined;
     if (scope && !['project', 'global', 'skip'].includes(scope)) {
       throw new Error(`sonata init: --scope must be project, global or skip (got "${scope}")`);
+    }
+
+    const configScope = values['config-scope'] as 'project' | 'global' | undefined;
+    if (configScope && !['project', 'global'].includes(configScope)) {
+      throw new Error(
+        `sonata init: --config-scope must be project or global (got "${configScope}")`,
+      );
     }
 
     const split = (v: string | undefined): string[] | undefined =>
@@ -73,6 +82,7 @@ async function main(argv: string[]): Promise<number> {
         models: split(values.models),
         roles: split(values.roles),
         scope,
+        configScope,
       });
       if (res.cancelled) return 1;
       return res.problems.some((p) => p.severity === 'error') ? 1 : 0;
@@ -154,6 +164,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === 'sync') {
     const written = cmdSync({
       cwd: process.cwd(),
+      home: homedir(),
       agentsDir: join(process.cwd(), '.claude', 'agents'),
     });
     for (const p of written) console.log(`wrote ${p}`);
@@ -161,7 +172,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (command === 'doctor') {
-    const { ok, checks } = await cmdDoctor({ cwd: process.cwd() });
+    const { ok, checks } = await cmdDoctor({ cwd: process.cwd(), home: homedir() });
     for (const c of checks) console.log(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: ${c.detail}`);
     return ok ? 0 : 1;
   }

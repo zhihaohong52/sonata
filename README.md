@@ -296,6 +296,24 @@ stall_timeout_seconds = 120    # silence before a run is reported STALLED
 run_timeout_seconds   = 1800   # hard cap; the run is killed at this point
 ```
 
+### Where sonata.toml lives
+
+Sonata looks for a config in two places, in order:
+
+1. `./sonata.toml` — the current repository
+2. `~/.config/sonata/sonata.toml` — the machine
+
+A project config wins outright; it is not merged with the machine one. So a
+repository with its own `sonata.toml` sees only that file, and adding one
+repo-specific model means copying the machine entries alongside it.
+
+`sonata init` asks which you want, and writes the agents to match — project
+agents into `./.claude/agents/`, machine agents into `~/.claude/agents/`, where
+Claude Code offers them in every repository. Use `--config-scope project|global`
+to skip the prompt.
+
+`sonata doctor` prints the config path it actually used.
+
 Roles live in `roles/*.md` and are owned by sonata rather than the harness, so
 "review" means the same thing whichever model performs it — which is what makes
 comparing two models' reviews meaningful.
