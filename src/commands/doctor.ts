@@ -1,10 +1,12 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
-import { loadConfig } from '../config.js';
+import { loadConfig, configPath, GLOBAL_CONFIG_RELATIVE } from '../config.js';
 import { getAdapter } from '../adapters/index.js';
 import { tmuxVersion } from '../tmux.js';
 import { modeHookPresent, readSettings, settingsPath } from '../settings.js';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const run = promisify(execFile);
 
@@ -34,7 +36,10 @@ export function checkVersion(actual: string, range: string): boolean {
 
 export interface Check { name: string; ok: boolean; detail: string }
 
-export async function cmdDoctor(opts: { cwd: string }): Promise<{ ok: boolean; checks: Check[] }> {
+export async function cmdDoctor(
+  opts: { cwd: string; home?: string },
+): Promise<{ ok: boolean; checks: Check[] }> {
+  const home = opts.home ?? homedir();
   const checks: Check[] = [];
 
   try {
@@ -44,12 +49,28 @@ export async function cmdDoctor(opts: { cwd: string }): Promise<{ ok: boolean; c
   }
 
   let config;
+  const resolved = configPath(opts.cwd, home);
   try {
-    config = loadConfig(opts.cwd);
-    checks.push({ name: 'sonata.toml', ok: true, detail: `${Object.keys(config.models).length} models` });
+    config = loadConfig(opts.cwd, home);
+    checks.push({
+      name: 'sonata.toml',
+      ok: true,
+      detail: `${resolved} · ${Object.keys(config.models).length} models`,
+    });
   } catch (err) {
     checks.push({ name: 'sonata.toml', ok: false, detail: (err as Error).message });
     return { ok: false, checks };
+  }
+
+  // `sonata init` run in $HOME used to write here, and nothing reads it. It
+  // looks exactly like configuration, which is worse than not existing.
+  const stray = join(home, 'sonata.toml');
+  if (existsSync(stray) && resolved !== stray) {
+    checks.push({
+      name: 'stray config',
+      ok: false,
+      detail: `${stray} is not read by sonata — mv it to ${join(home, GLOBAL_CONFIG_RELATIVE)}`,
+    });
   }
 
   const harnesses = new Set(Object.values(config.models).map((m) => m.harness));
