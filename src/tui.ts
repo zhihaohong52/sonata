@@ -6,7 +6,11 @@
  * without a TTY. Only `runList` and `confirm` touch stdin.
  */
 
-export type Key = 'up' | 'down' | 'space' | 'enter' | 'cancel' | 'other';
+export type ListKey =
+  | { kind: 'up' } | { kind: 'down' } | { kind: 'space' }
+  | { kind: 'enter' } | { kind: 'cancel' }
+  | { kind: 'backspace' } | { kind: 'ignore' }
+  | { kind: 'char'; value: string };
 
 export interface Choice<T> {
   value: T;
@@ -16,32 +20,52 @@ export interface Choice<T> {
   disabled?: boolean;
 }
 
+/**
+ * `filterable` decides what a letter means. In a filterable list it is text;
+ * in a plain list it is vim navigation. The lists that filter are the long
+ * ones, where typing is the only practical way to reach an entry.
+ */
+export function parseKey(seq: string, filterable: boolean): ListKey {
+  switch (seq) {
+    case '\u001b[A': return { kind: 'up' };
+    case '\u001b[B': return { kind: 'down' };
+    // Space toggles even while filtering: no provider or model ref contains
+    // one, so the filter never needs a space.
+    case ' ': return { kind: 'space' };
+    case '\r': case '\n': return { kind: 'enter' };
+    case '\u0003': case '\u001b': return { kind: 'cancel' };
+    case '\u007f': case '\b': return { kind: 'backspace' };
+    default: break;
+  }
+  if (!filterable) {
+    if (seq === 'k') return { kind: 'up' };
+    if (seq === 'j') return { kind: 'down' };
+    return { kind: 'ignore' };
+  }
+  // eslint-disable-next-line no-control-regex
+  if (seq.length > 0 && !/[\u0000-\u001f\u007f]/.test(seq)) {
+    return { kind: 'char', value: seq };
+  }
+  return { kind: 'ignore' };
+}
+
 export interface ListState {
+  /** Index into the *filtered* view. */
   cursor: number;
+  /** *Original* choice indices, so a filter change cannot disturb a selection. */
   checked: Set<number>;
+  filter: string;
   done: boolean;
   cancelled: boolean;
 }
 
-export function parseKey(seq: string): Key {
-  switch (seq) {
-    case '\u001b[A':
-    case 'k':
-      return 'up';
-    case '\u001b[B':
-    case 'j':
-      return 'down';
-    case ' ':
-      return 'space';
-    case '\r':
-    case '\n':
-      return 'enter';
-    case '\u0003': // ctrl-c
-    case '\u001b': // esc
-      return 'cancel';
-    default:
-      return 'other';
-  }
+export function visibleIndices<T>(choices: Choice<T>[], filter: string): number[] {
+  const q = filter.trim().toLowerCase();
+  const out: number[] = [];
+  choices.forEach((c, i) => {
+    if (q.length === 0 || c.label.toLowerCase().includes(q)) out.push(i);
+  });
+  return out;
 }
 
 export function initialState<T>(choices: Choice<T>[]): ListState {
@@ -53,46 +77,59 @@ export function initialState<T>(choices: Choice<T>[]): ListState {
   return {
     cursor: firstEnabled === -1 ? 0 : firstEnabled,
     checked,
+    filter: '',
     done: false,
     cancelled: false,
   };
 }
 
-/** Moves the cursor, skipping disabled entries. Wraps at both ends. */
-function move<T>(choices: Choice<T>[], from: number, delta: number): number {
-  const n = choices.length;
+/** Moves within the filtered view, skipping disabled entries. Wraps. */
+function move<T>(choices: Choice<T>[], view: number[], from: number, delta: number): number {
+  const n = view.length;
   if (n === 0) return 0;
   let i = from;
   for (let step = 0; step < n; step++) {
     i = (i + delta + n) % n;
-    if (!choices[i].disabled) return i;
+    if (!choices[view[i]].disabled) return i;
   }
   return from;
 }
 
+function withFilter<T>(state: ListState, choices: Choice<T>[], filter: string): ListState {
+  const view = visibleIndices(choices, filter);
+  return { ...state, filter, cursor: view.length === 0 ? 0 : Math.min(state.cursor, view.length - 1) };
+}
+
 export function reduce<T>(
   state: ListState,
-  key: Key,
+  key: ListKey,
   choices: Choice<T>[],
   multi: boolean,
 ): ListState {
-  switch (key) {
+  const view = visibleIndices(choices, state.filter);
+  const under = view[state.cursor];
+
+  switch (key.kind) {
     case 'up':
-      return { ...state, cursor: move(choices, state.cursor, -1) };
+      return { ...state, cursor: move(choices, view, state.cursor, -1) };
     case 'down':
-      return { ...state, cursor: move(choices, state.cursor, +1) };
+      return { ...state, cursor: move(choices, view, state.cursor, +1) };
     case 'space': {
-      if (!multi || choices[state.cursor]?.disabled) return state;
+      if (!multi || under === undefined || choices[under].disabled) return state;
       const checked = new Set(state.checked);
-      if (checked.has(state.cursor)) checked.delete(state.cursor);
-      else checked.add(state.cursor);
+      if (checked.has(under)) checked.delete(under);
+      else checked.add(under);
       return { ...state, checked };
     }
     case 'enter': {
-      if (!multi && choices[state.cursor]?.disabled) return state;
-      const checked = multi ? state.checked : new Set([state.cursor]);
-      return { ...state, checked, done: true };
+      if (multi) return { ...state, done: true };
+      if (under === undefined || choices[under].disabled) return state;
+      return { ...state, checked: new Set([under]), done: true };
     }
+    case 'char':
+      return multi ? withFilter(state, choices, state.filter + key.value) : state;
+    case 'backspace':
+      return multi ? withFilter(state, choices, state.filter.slice(0, -1)) : state;
     case 'cancel':
       return { ...state, cancelled: true, done: true };
     default:
@@ -136,14 +173,17 @@ export function renderList<T>(
   multi: boolean,
   height = 15,
 ): string {
-  const win = viewport(state.cursor, choices.length, height);
+  const view = visibleIndices(choices, state.filter);
+  const win = viewport(state.cursor, view.length, height);
   const lines: string[] = [`  ${title}`, ''];
+  if (multi) lines.push(`  filter: ${state.filter}█`, '');
 
   if (win.above > 0) lines.push(`    ↑ ${win.above} more`);
   for (let i = win.start; i < win.end; i++) {
-    const choice = choices[i];
+    const orig = view[i];
+    const choice = choices[orig];
     const pointer = i === state.cursor ? '❯' : ' ';
-    const mark = multi ? (state.checked.has(i) ? '◉' : '○') : '';
+    const mark = multi ? (state.checked.has(orig) ? '◉' : '○') : '';
     const hint = choice.hint ? `  · ${choice.hint}` : '';
     const label = choice.disabled ? `${choice.label} (unavailable)` : choice.label;
     lines.push(`  ${pointer} ${mark} ${label}${hint}`.replace(/\s+$/, ''));
@@ -151,15 +191,16 @@ export function renderList<T>(
   if (win.below > 0) lines.push(`    ↓ ${win.below} more`);
 
   lines.push('');
-  lines.push(multi ? '  space toggle · enter confirm · esc cancel'
-                   : '  ↑↓ move · enter select · esc cancel');
+  lines.push(multi
+    ? `  ${view.length} of ${choices.length} · space toggle · type to filter · enter confirm · esc cancel`
+    : '  ↑↓ move · enter select · esc cancel');
   return lines.join('\n');
 }
 
 // ---- text input ---------------------------------------------------------
 
 /**
- * A line editor, kept separate from `Key` because the meaning of a keystroke
+ * A line editor, kept separate from `ListKey` because the meaning of a keystroke
  * differs: in a list, `j` moves down; in a text field it is the letter j.
  */
 export type TextKey =
@@ -330,7 +371,7 @@ async function runList<T>(
 
   draw(true);
   await readKeys(stdin, (chunk) => {
-    state = reduce(state, parseKey(chunk), choices, multi);
+    state = reduce(state, parseKey(chunk, multi), choices, multi);
     if (state.done) return true;
     draw(false);
     return false;
