@@ -17,7 +17,7 @@ beforeEach(() => {
   writeFileSync(join(cwd, 'sonata.toml'), `
 [models.fake]
 harness = "opencode"
-id = "fake"
+id = "fake/fake"
 
 [generate]
 roles = ["code"]

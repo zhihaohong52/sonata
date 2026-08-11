@@ -11,11 +11,11 @@ beforeEach(() => {
   writeFileSync(join(cwd, 'sonata.toml'), `
 [models.deepseek-v4-flash]
 harness = "opencode"
-id = "deepseek-v4-flash"
+id = "opencode-go/deepseek-v4-flash"
 
 [models.kimi-k3]
 harness = "opencode"
-id = "kimi-k3"
+id = "opencode-go/kimi-k3"
 
 [generate]
 roles = ["review", "code"]
@@ -64,7 +64,7 @@ describe('cmdSync', () => {
     writeFileSync(join(cwd, 'sonata.toml'), `
 [models.deepseek-v4-flash]
 harness = "opencode"
-id = "deepseek-v4-flash"
+id = "opencode-go/deepseek-v4-flash"
 
 [generate]
 roles = ["explore", "plan"]

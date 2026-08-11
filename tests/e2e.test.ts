@@ -23,7 +23,7 @@ function writeConfig(stallTimeoutSeconds: number, runTimeoutSeconds = 30, harnes
   writeFileSync(join(cwd, 'sonata.toml'), `
 [models.fake]
 harness = "${harness}"
-id = "fake"
+id = "${harness === 'codex' ? 'fake' : 'fake/fake'}"
 
 [generate]
 roles = ["code"]

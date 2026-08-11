@@ -4,7 +4,7 @@ import { parseConfig, isReadOnlyRole } from '../src/config.js';
 const VALID = `
 [models.deepseek-v4-flash]
 harness = "opencode"
-id = "deepseek-v4-flash"
+id = "opencode-go/deepseek-v4-flash"
 
 [generate]
 roles = ["code"]
@@ -15,7 +15,7 @@ describe('parseConfig', () => {
   it('parses models and applies run defaults', () => {
     const cfg = parseConfig(VALID);
     expect(cfg.models['deepseek-v4-flash']).toEqual({
-      harness: 'opencode', id: 'deepseek-v4-flash',
+      harness: 'opencode', id: 'opencode-go/deepseek-v4-flash',
     });
     expect(cfg.run.tailWindowSeconds).toBe(20);
     expect(cfg.run.stallTimeoutSeconds).toBe(120);
@@ -31,7 +31,7 @@ describe('parseConfig', () => {
     const bad = `
 [models.a]
 harness = "opencode"
-id = "a"
+id = "openrouter/a"
 
 [generate]
 roles = ["code"]
@@ -57,7 +57,7 @@ models = ["a"]
     const bad = `
 [models.a]
 harness = "opencode"
-id = "a"
+id = "openrouter/a"
 
 [generate]
 roles = ["dance"]
@@ -70,13 +70,42 @@ models = ["a"]
     const cfg = parseConfig(`
 [models.a]
 harness = "opencode"
-id = "a"
+id = "openrouter/a"
 
 [generate]
 roles = ["explore", "plan"]
 models = ["a"]
 `);
     expect(cfg.generate.roles).toEqual(['explore', 'plan']);
+  });
+});
+
+describe('parseConfig — provider-qualified ids', () => {
+  const cfg = (harness: string, id: string) => `
+[models."m"]
+harness = "${harness}"
+id = "${id}"
+
+[generate]
+roles = ["code"]
+models = ["m"]
+`;
+
+  it('rejects a bare id on opencode, which needs provider/model', () => {
+    expect(() => parseConfig(cfg('opencode', 'kimi-k3')))
+      .toThrow(/needs a provider.*sonata init/s);
+  });
+
+  it('rejects a bare id on pi for the same reason', () => {
+    expect(() => parseConfig(cfg('pi', 'kimi-k3'))).toThrow(/needs a provider/);
+  });
+
+  it('accepts a ref', () => {
+    expect(parseConfig(cfg('opencode', 'openrouter/kimi-k3')).models.m.id).toBe('openrouter/kimi-k3');
+  });
+
+  it('accepts a bare codex id, which has no provider dimension', () => {
+    expect(parseConfig(cfg('codex', 'gpt-5.6-sol')).models.m.id).toBe('gpt-5.6-sol');
   });
 });
 

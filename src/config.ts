@@ -43,6 +43,15 @@ export function parseConfig(text: string): SonataConfig {
         `Known harnesses: ${KNOWN_HARNESSES.join(', ')}`,
       );
     }
+    // Opencode and pi address models as provider/model; codex takes a bare id,
+    // so this cannot be a global rule.
+    if ((d.harness === 'opencode' || d.harness === 'pi') && !d.id.includes('/')) {
+      throw new Error(
+        `sonata.toml: model "${name}" needs a provider — ${d.harness} takes ` +
+        `ids in provider/model form, not "${d.id}". Re-run \`sonata init\` to ` +
+        'choose a provider.',
+      );
+    }
     models[name] = { harness: d.harness, id: d.id };
   }
 
