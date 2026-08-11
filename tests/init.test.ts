@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseOpenCodeModels, parseAuthedProviders, staleAgents, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
 import { parsePiRefs } from '../src/adapters/pi.js';
-import { cmdInit, configKeyFor, duplicateKeys, preTickedRefs, carriedEntries, tomlFor } from '../src/commands/init.js';
+import { cmdInit, configKeyFor, duplicateKeys, preTickedRefs, carriedEntries, tomlFor, configPathFor, agentsDirFor } from '../src/commands/init.js';
 import { readSettings } from '../src/settings.js';
 import { parseConfig } from '../src/config.js';
 
@@ -575,5 +575,76 @@ describe('tomlFor — control characters and duplicate tables', () => {
     }];
     expect(() => tomlFor(refs, ['code'], { 'opencode-openrouter-kimi-k3': { harness: 'codex', id: 'z' } }))
       .toThrow(/opencode-openrouter-kimi-k3/);
+  });
+});
+
+describe('configPathFor / agentsDirFor', () => {
+  it('puts a project config and its agents beside the repo', () => {
+    expect(configPathFor('project', '/repo', '/home')).toBe(join('/repo', 'sonata.toml'));
+    expect(agentsDirFor('project', '/repo', '/home')).toBe(join('/repo', '.claude', 'agents'));
+  });
+
+  it('puts a global config and its agents under home', () => {
+    // Both must follow the scope. Splitting them is the defect this fixes:
+    // init in $HOME wrote agents globally and config where only $HOME reads it.
+    expect(configPathFor('global', '/repo', '/home'))
+      .toBe(join('/home', '.config', 'sonata', 'sonata.toml'));
+    expect(agentsDirFor('global', '/repo', '/home')).toBe(join('/home', '.claude', 'agents'));
+  });
+});
+
+describe('cmdInit — config scope', () => {
+  let cwd: string;
+  let home: string;
+  let lines: string[];
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'init-scope-cwd-'));
+    home = mkdtempSync(join(tmpdir(), 'init-scope-home-'));
+    lines = [];
+  });
+
+  const write = (l: string) => { lines.push(l); };
+
+  const detect = async () => ({
+    tmux: { installed: true, version: '3.7b', problems: [] },
+    harnesses: [{
+      name: 'opencode', installed: true, version: '1.18.16', supported: true,
+      refs: parseOpenCodeRefs('openrouter/kimi-k3\n'),
+      authedProviders: ['openrouter'], problems: [],
+    }],
+  });
+
+  const args = {
+    packageRoot: '/pkg', yes: true, detect,
+    providers: ['opencode/openrouter'], models: ['opencode-openrouter-kimi-k3'],
+    roles: ['code'], scope: 'skip' as const,
+  };
+
+  it('writes a global config and global agents, and nothing in the repo', async () => {
+    const res = await cmdInit({ ...args, cwd, home, configScope: 'global', write });
+
+    expect(res.configPath).toBe(join(home, '.config', 'sonata', 'sonata.toml'));
+    expect(existsSync(join(home, '.config', 'sonata', 'sonata.toml'))).toBe(true);
+    expect(existsSync(join(home, '.claude', 'agents', 'code-opencode-openrouter-kimi-k3.md'))).toBe(true);
+    expect(existsSync(join(cwd, 'sonata.toml'))).toBe(false);
+    expect(existsSync(join(cwd, '.claude', 'agents'))).toBe(false);
+  });
+
+  it('defaults to the project scope', async () => {
+    const res = await cmdInit({ ...args, cwd, home, write });
+    expect(res.configPath).toBe(join(cwd, 'sonata.toml'));
+    expect(existsSync(join(cwd, '.claude', 'agents', 'code-opencode-openrouter-kimi-k3.md'))).toBe(true);
+  });
+
+  it('pre-ticks from the machine config when the repo has none', async () => {
+    await cmdInit({ ...args, cwd, home, configScope: 'global', write });
+    // A second run with no --models carries over whatever is already enabled,
+    // which now has to be found in the global config rather than the cwd.
+    const second = await cmdInit({
+      packageRoot: '/pkg', yes: true, detect, cwd, home,
+      roles: ['code'], scope: 'skip' as const, configScope: 'global' as const, write,
+    });
+    expect(second.models).toEqual(['opencode-openrouter-kimi-k3']);
   });
 });

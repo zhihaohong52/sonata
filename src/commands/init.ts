@@ -4,9 +4,9 @@
  * Interactive by default; every choice also has a flag so the command works in
  * CI and scripts. Nothing is written until the user confirms the summary.
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { KNOWN_ROLES, parseConfig } from '../config.js';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { KNOWN_ROLES, configPath, GLOBAL_CONFIG_RELATIVE, parseConfig } from '../config.js';
 import type { ModelRef } from '../types.js';
 import {
   detectTmux, detectHarnesses, offerableProviders, staleAgents,
@@ -34,6 +34,30 @@ export const defaultDetector: Detector = async (env) => ({
   harnesses: await detectHarnesses(env),
 });
 
+export type ConfigScope = 'project' | 'global';
+
+/**
+ * Where a config is written for a scope. The read-side counterpart is
+ * `configPath`, which resolves a precedence chain; this picks one location.
+ */
+export function configPathFor(scope: ConfigScope, cwd: string, home: string): string {
+  return scope === 'global'
+    ? join(home, GLOBAL_CONFIG_RELATIVE)
+    : join(cwd, 'sonata.toml');
+}
+
+/**
+ * Agents follow the config's scope. Keeping them together is the whole point:
+ * `init` in $HOME used to write agents globally and config where only $HOME
+ * could read it, producing agents that were offered everywhere and worked
+ * nowhere.
+ */
+export function agentsDirFor(scope: ConfigScope, cwd: string, home: string): string {
+  return scope === 'global'
+    ? join(home, '.claude', 'agents')
+    : join(cwd, '.claude', 'agents');
+}
+
 export interface InitOptions {
   cwd: string;
   home: string;
@@ -45,6 +69,8 @@ export interface InitOptions {
   models?: string[];
   roles?: string[];
   scope?: HookScope | 'skip';
+  /** Where the config and its agents are written. Defaults to `project`. */
+  configScope?: ConfigScope;
   write?: (line: string) => void;
   detect?: Detector;
 }
@@ -265,8 +291,8 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   }
   for (const p of problems) out(renderProblem(p));
 
-  const configPath = join(opts.cwd, 'sonata.toml');
-  const configText = existsSync(configPath) ? readFileSync(configPath, 'utf8') : '';
+  const resolved = configPath(opts.cwd, opts.home);
+  const configText = resolved === null ? '' : readFileSync(resolved, 'utf8');
   const enabled = preTickedRefs(configText, allRefs);
 
   // ---- choose providers -------------------------------------------------
@@ -352,6 +378,22 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     throw new Error('sonata init: no roles selected — nothing to generate.');
   }
 
+  // ---- config scope -----------------------------------------------------
+  let configScope: ConfigScope;
+  if (opts.configScope) {
+    configScope = opts.configScope;
+  } else if (interactive) {
+    out('');
+    configScope = await select<ConfigScope>('Where should this config apply', [
+      { value: 'project', label: 'This project only', hint: './sonata.toml + ./.claude/agents/' },
+      { value: 'global', label: 'All projects', hint: '~/.config/sonata/ + ~/.claude/agents/' },
+    ]);
+  } else {
+    configScope = 'project';
+  }
+
+  const configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
+
   // ---- hook scope -------------------------------------------------------
   const command = hookCommand(opts.packageRoot);
   const alreadyGlobal = hookInstalled(readSettings(settingsPath('global', opts.cwd, opts.home)), command);
@@ -382,14 +424,14 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   out(`    roles   ${roles.join(', ')}`);
   out(`    agents  ${roles.length * keys.length} files in .claude/agents/`);
   out(`    hook    ${scope === 'skip' ? 'not installed' : `${scope} settings.json`}`);
-  out(`    config  ${configPath}`);
+  out(`    config  ${configPathResolved}`);
   out('');
 
   if (interactive && !(await confirm('Write these changes?', true))) {
     out('  Nothing written.');
     return {
       problems, models: keys, roles, scope, hookChanged: false,
-      agentsWritten: [], configPath, cancelled: true,
+      agentsWritten: [], configPath: configPathResolved, cancelled: true,
     };
   }
 
@@ -402,8 +444,9 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
       'Rename the hand-written entry, or enable only one of the colliding refs.',
     );
   }
-  writeFileSync(configPath, tomlFor(chosen, roles, carried));
-  out(`  ✓ wrote ${configPath}`);
+  mkdirSync(dirname(configPathResolved), { recursive: true });
+  writeFileSync(configPathResolved, tomlFor(chosen, roles, carried));
+  out(`  ✓ wrote ${configPathResolved}`);
 
   let hookChanged = false;
   if (scope !== 'skip') {
@@ -414,8 +457,8 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     out(result.changed ? `  ✓ installed hook in ${path}` : `  · hook already present in ${path}`);
   }
 
-  const agentsDir = join(opts.cwd, '.claude', 'agents');
-  const agentsWritten = cmdSync({ cwd: opts.cwd, agentsDir });
+  const agentsDir = agentsDirFor(configScope, opts.cwd, opts.home);
+  const agentsWritten = cmdSync({ cwd: opts.cwd, home: opts.home, agentsDir });
   out(`  ✓ generated ${agentsWritten.length} agents in ${agentsDir}`);
 
   const expected = roles.flatMap((r) => keys.map((k) => `${r}-${k}`));
@@ -431,7 +474,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   out('  Done. Restart Claude Code for the new agents to appear.');
   out('');
 
-  return { problems, models: keys, roles, scope, hookChanged, agentsWritten, configPath };
+  return { problems, models: keys, roles, scope, hookChanged, agentsWritten, configPath: configPathResolved };
 }
 
 export function isCancellation(err: unknown): boolean {
