@@ -67,10 +67,10 @@ To watch the run live, a human can attach with \`tmux attach -t sonata-<id>\`.
 `;
 }
 
-export interface SyncOptions { cwd: string; agentsDir: string }
+export interface SyncOptions { cwd: string; agentsDir: string; home?: string }
 
 export function cmdSync(opts: SyncOptions): string[] {
-  const config = loadConfig(opts.cwd);
+  const config = loadConfig(opts.cwd, opts.home);
   mkdirSync(opts.agentsDir, { recursive: true });
 
   const written: string[] = [];
