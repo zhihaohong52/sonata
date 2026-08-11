@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agentMarkdown, cmdSync } from '../../src/commands/sync.js';
@@ -76,5 +76,28 @@ models = ["deepseek-v4-flash"]
       'explore-deepseek-v4-flash.md',
       'plan-deepseek-v4-flash.md',
     ]);
+  });
+});
+
+describe('cmdSync — machine config', () => {
+  it('generates from the machine config when the repo has none', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sync-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'sync-home-'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), `
+[models."m"]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+[generate]
+roles = ["code"]
+models = ["m"]
+`);
+
+    const agentsDir = join(home, '.claude', 'agents');
+    const written = cmdSync({ cwd, home, agentsDir });
+
+    expect(written).toHaveLength(1);
+    expect(existsSync(join(agentsDir, 'code-m.md'))).toBe(true);
   });
 });
