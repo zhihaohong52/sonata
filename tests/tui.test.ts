@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseKey, initialState, reduce, renderList, type Choice,
+  parseTextKey, initialTextState, reduceText, renderText,
 } from '../src/tui.js';
 
 const CHOICES: Choice<string>[] = [
@@ -129,5 +130,126 @@ describe('renderList', () => {
   it('renders hints', () => {
     const c: Choice<string>[] = [{ value: 'a', label: 'a', hint: 'fast' }];
     expect(renderList('t', c, initialState(c), false)).toContain('· fast');
+  });
+});
+
+// ---- text input ---------------------------------------------------------
+
+const ESC = '\u001b';
+
+/** Types a string one keystroke at a time, as a terminal delivers it. */
+function type(text: string, start = '') {
+  return [...text].reduce(
+    (s, ch) => reduceText(s, parseTextKey(ch)),
+    initialTextState(start),
+  );
+}
+
+describe('parseTextKey', () => {
+  it('treats letters as text, not as list navigation', () => {
+    // The list widget binds j/k to movement. In a text field they are letters,
+    // which is the whole reason text input needs its own key parser.
+    expect(parseTextKey('j')).toEqual({ kind: 'char', value: 'j' });
+    expect(parseTextKey('k')).toEqual({ kind: 'char', value: 'k' });
+    expect(parseTextKey(' ')).toEqual({ kind: 'char', value: ' ' });
+  });
+
+  it('recognises editing keys', () => {
+    expect(parseTextKey('\u007f').kind).toBe('backspace');
+    expect(parseTextKey('\b').kind).toBe('backspace');
+    expect(parseTextKey(`${ESC}[D`).kind).toBe('left');
+    expect(parseTextKey(`${ESC}[C`).kind).toBe('right');
+    expect(parseTextKey('\u0001').kind).toBe('home');
+    expect(parseTextKey('\u0005').kind).toBe('end');
+    expect(parseTextKey('\r').kind).toBe('enter');
+    expect(parseTextKey('\u0003').kind).toBe('cancel');
+    expect(parseTextKey(ESC).kind).toBe('cancel');
+  });
+
+  it('accepts a pasted chunk as a single insertion', () => {
+    expect(parseTextKey('gpt-5.6-sol')).toEqual({ kind: 'char', value: 'gpt-5.6-sol' });
+  });
+
+  it('ignores sequences carrying control characters', () => {
+    // An unhandled escape sequence must never reach the value, where it would
+    // be invisible on screen and corrupt the result.
+    expect(parseTextKey(`${ESC}[5~`).kind).toBe('ignore');
+    expect(parseTextKey(`a${ESC}bc`).kind).toBe('ignore');
+  });
+});
+
+describe('reduceText', () => {
+  it('inserts typed characters', () => {
+    const s = type('gpt-5');
+    expect(s.value).toBe('gpt-5');
+    expect(s.cursor).toBe(5);
+  });
+
+  it('inserts at the cursor, not the end', () => {
+    let s = type('ac');
+    s = reduceText(s, { kind: 'left' });
+    s = reduceText(s, { kind: 'char', value: 'b' });
+    expect(s.value).toBe('abc');
+    expect(s.cursor).toBe(2);
+  });
+
+  it('backspaces at the cursor and stops at the start', () => {
+    let s = type('abc');
+    s = reduceText(s, { kind: 'backspace' });
+    expect(s.value).toBe('ab');
+    s = reduceText(s, { kind: 'home' });
+    s = reduceText(s, { kind: 'backspace' });
+    expect(s.value).toBe('ab');
+    expect(s.cursor).toBe(0);
+  });
+
+  it('clamps cursor movement at both ends', () => {
+    let s = type('ab');
+    s = reduceText(s, { kind: 'right' });
+    expect(s.cursor).toBe(2);
+    for (let i = 0; i < 5; i++) s = reduceText(s, { kind: 'left' });
+    expect(s.cursor).toBe(0);
+  });
+
+  it('refuses to submit an empty or blank value', () => {
+    // Returning "" would be written into sonata.toml as a model id.
+    expect(reduceText(initialTextState(''), { kind: 'enter' }).done).toBe(false);
+    expect(reduceText(type('   '), { kind: 'enter' }).done).toBe(false);
+  });
+
+  it('submits a non-empty value', () => {
+    const s = reduceText(type('gpt-5.6-sol'), { kind: 'enter' });
+    expect(s.done).toBe(true);
+    expect(s.cancelled).toBe(false);
+  });
+
+  it('cancels without submitting', () => {
+    const s = reduceText(type('half-typed'), { kind: 'cancel' });
+    expect(s.cancelled).toBe(true);
+    expect(s.done).toBe(true);
+  });
+
+  it('starts with the cursor after any initial value', () => {
+    expect(initialTextState('gpt-5.6-sol').cursor).toBe('gpt-5.6-sol'.length);
+  });
+});
+
+describe('renderText', () => {
+  const plain = (s: string) => s.replace(/\u001b\[\d+m/g, '');
+
+  it('shows the title and the typed value', () => {
+    const out = renderText('Codex model id', type('gpt-5.6-sol'));
+    expect(out).toContain('Codex model id');
+    // The caret is a reverse-video cell, so strip styling before comparing.
+    expect(plain(out)).toContain('gpt-5.6-sol');
+  });
+
+  it('marks the cursor position', () => {
+    expect(renderText('t', type('ab'))).toContain('\u001b[7m');
+  });
+
+  it('uses a custom hint when given, and a default otherwise', () => {
+    expect(renderText('t', type('x'), 'unknown model')).toContain('unknown model');
+    expect(renderText('t', type('x'))).toContain('enter confirm');
   });
 });

@@ -122,6 +122,108 @@ export function renderList<T>(
   return lines.join('\n');
 }
 
+// ---- text input ---------------------------------------------------------
+
+/**
+ * A line editor, kept separate from `Key` because the meaning of a keystroke
+ * differs: in a list, `j` moves down; in a text field it is the letter j.
+ */
+export type TextKey =
+  | { kind: 'char'; value: string }
+  | { kind: 'backspace' }
+  | { kind: 'left' }
+  | { kind: 'right' }
+  | { kind: 'home' }
+  | { kind: 'end' }
+  | { kind: 'enter' }
+  | { kind: 'cancel' }
+  | { kind: 'ignore' };
+
+export interface TextState {
+  value: string;
+  /** Insertion point, 0..value.length. */
+  cursor: number;
+  done: boolean;
+  cancelled: boolean;
+}
+
+export function parseTextKey(seq: string): TextKey {
+  switch (seq) {
+    case '\u001b[D': return { kind: 'left' };
+    case '\u001b[C': return { kind: 'right' };
+    case '\u001b[H': case '\u0001': return { kind: 'home' };   // Home, ctrl-a
+    case '\u001b[F': case '\u0005': return { kind: 'end' };    // End, ctrl-e
+    case '\u007f': case '\b': return { kind: 'backspace' };    // DEL, BS
+    case '\r': case '\n': return { kind: 'enter' };
+    case '\u0003': case '\u001b': return { kind: 'cancel' };   // ctrl-c, esc
+    default:
+      break;
+  }
+  // A paste arrives as a single chunk, so multi-character input is accepted —
+  // but anything containing a control character is dropped rather than written
+  // into the value, where an escape sequence would be invisible and corrupting.
+  // eslint-disable-next-line no-control-regex
+  if (seq.length > 0 && !/[\u0000-\u001f\u007f]/.test(seq)) {
+    return { kind: 'char', value: seq };
+  }
+  return { kind: 'ignore' };
+}
+
+export function initialTextState(initial = ''): TextState {
+  return { value: initial, cursor: initial.length, done: false, cancelled: false };
+}
+
+export function reduceText(state: TextState, key: TextKey): TextState {
+  switch (key.kind) {
+    case 'char':
+      return {
+        ...state,
+        value: state.value.slice(0, state.cursor) + key.value + state.value.slice(state.cursor),
+        cursor: state.cursor + key.value.length,
+      };
+    case 'backspace':
+      if (state.cursor === 0) return state;
+      return {
+        ...state,
+        value: state.value.slice(0, state.cursor - 1) + state.value.slice(state.cursor),
+        cursor: state.cursor - 1,
+      };
+    case 'left':
+      return { ...state, cursor: Math.max(0, state.cursor - 1) };
+    case 'right':
+      return { ...state, cursor: Math.min(state.value.length, state.cursor + 1) };
+    case 'home':
+      return { ...state, cursor: 0 };
+    case 'end':
+      return { ...state, cursor: state.value.length };
+    case 'enter':
+      // An empty value is not a submission: there is nothing to accept, and
+      // silently returning "" would be written into sonata.toml as a model id.
+      return state.value.trim().length === 0 ? state : { ...state, done: true };
+    case 'cancel':
+      return { ...state, cancelled: true, done: true };
+    default:
+      return state;
+  }
+}
+
+export function renderText(title: string, state: TextState, hint?: string): string {
+  // The caret is drawn as a reverse-video cell rather than by moving the real
+  // terminal cursor, which the full-block redraw would otherwise fight with.
+  const at = state.value.slice(state.cursor, state.cursor + 1) || ' ';
+  const line =
+    state.value.slice(0, state.cursor) +
+    `\u001b[7m${at}\u001b[0m` +
+    state.value.slice(state.cursor + 1);
+  return [
+    `  ${title}`,
+    '',
+    `  \u276f ${line}`,
+    '',
+    hint ? `  ${hint}` : '  enter confirm \u00b7 esc cancel',
+  ].join('\n');
+}
+
 export function isInteractive(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
@@ -183,6 +285,69 @@ export async function select<T>(title: string, choices: Choice<T>[]): Promise<T>
 
 export async function multiselect<T>(title: string, choices: Choice<T>[]): Promise<T[]> {
   return runList(title, choices, true);
+}
+
+/**
+ * Reads one line of text. Used where there is nothing to enumerate — codex has
+ * no command that lists its models, so the id has to be typed.
+ */
+export async function prompt(
+  title: string,
+  opts: { initial?: string; hint?: string; validate?: (v: string) => string | null } = {},
+): Promise<string> {
+  if (!isInteractive()) {
+    throw new Error(
+      'sonata: this command needs an interactive terminal. ' +
+      'Use the non-interactive flags instead (see `sonata init --help`).',
+    );
+  }
+
+  let state = initialTextState(opts.initial ?? '');
+  let error: string | null = null;
+  const stdin = process.stdin;
+  const stdout = process.stdout;
+  let lastHeight = 0;
+
+  const draw = (first: boolean): void => {
+    const body = renderText(title, state, error ?? opts.hint);
+    if (!first) stdout.write(`\u001b[${lastHeight}A`);
+    // The error line changes the block height, so clear each line as it is
+    // rewritten; otherwise a shrinking block leaves the old tail on screen.
+    stdout.write(`${body.split('\n').map((l) => `\u001b[2K${l}`).join('\n')}\n`);
+    lastHeight = body.split('\n').length;
+  };
+
+  stdin.setRawMode(true);
+  stdin.resume();
+  stdin.setEncoding('utf8');
+  draw(true);
+
+  try {
+    for await (const chunk of stdin) {
+      const next = reduceText(state, parseTextKey(String(chunk)));
+      // Validation runs on submission only, so the message does not flicker
+      // while the value is still being typed.
+      if (next.done && !next.cancelled && opts.validate) {
+        const problem = opts.validate(next.value.trim());
+        if (problem) {
+          error = problem;
+          state = { ...next, done: false };
+          draw(false);
+          continue;
+        }
+      }
+      error = null;
+      state = next;
+      if (state.done) break;
+      draw(false);
+    }
+  } finally {
+    stdin.setRawMode(false);
+    stdin.pause();
+  }
+
+  if (state.cancelled) throw new CancelledError();
+  return state.value.trim();
 }
 
 export async function confirm(question: string, defaultYes: boolean): Promise<boolean> {
