@@ -380,7 +380,9 @@ must kill, a clean exit with no report, and a harness-written report — so the
 whole engine is covered with no API spend and no harness installed.
 
 Design notes and the implementation plan, including the defects found by
-running it, are in [`docs/superpowers/`](docs/superpowers/).
+running it, are in [`docs/superpowers/`](docs/superpowers/). What using sonata
+to implement sonata taught about sizing and verifying dispatched work is in
+[`docs/dispatching-work-through-sonata.md`](docs/dispatching-work-through-sonata.md).
 
 ## Adding a harness
 
