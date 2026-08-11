@@ -32,10 +32,24 @@ hardcoding the provider — it could not implement its own fix.
 | 11 | `c3720d6` |
 | 12 | `12be635`, `77a18c0` |
 
-Two defects found after the fact and fixed: `tomlFor` escaped its TOML table
-header but not `generate.models` (`07d003d`, found by an independent review
-run), and a read-only opencode run was judged degraded for a report it cannot
-write (`10a17e3`, found by dogfooding).
+Four defects found after the fact and fixed. Three came from independent
+review runs dispatched through sonata, one from dogfooding:
+
+| Defect | Commit | Found by |
+|---|---|---|
+| `tomlFor` escaped the table header but not `generate.models` | `07d003d` | review (kimi-k3) |
+| a read-only opencode run was judged degraded for a report it cannot write | `10a17e3` | dogfooding |
+| `runList` redrew by the new block height, not the one on screen | `5a234e3` | review (kimi-k3) |
+| `tomlKey` left control characters raw; `tomlFor` could emit duplicate tables | `ad969d8` | review (gpt-5.6-terra) |
+
+Two of those were introduced by this plan rather than by the implementer. The
+redraw bug is the clearest: Task 9 added a per-line clear *because* the block
+height varies, and did not fix the cursor-up amount in the same breath, though
+`prompt()` in the same file already had it right.
+
+`tomlKey` was afterwards checked exhaustively — every ASCII character including
+all 32 control codes, as both key and value, round-trips through
+`tomlFor` → `parseConfig` unchanged.
 
 **Task 13: partially done.** The opencode half is verified — `sonata init` was
 driven end to end, interactively and via flags, and `parseOpenCodeRefs` was run
