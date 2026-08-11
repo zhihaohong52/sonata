@@ -68,7 +68,13 @@ function buildScript(input: PlanInput): LaunchPlan {
     '',
   ].join('\n');
 
-  return { script, interactive: false };
+  // opencode's `plan` agent prohibits file edits, so a run under it cannot
+  // write report.md either — observed live, a review run ending "Unable to
+  // write the required report because plan mode prohibits file edits." Such a
+  // run is not degraded merely for lacking a report; its output is the report.
+  // `explore` is a read-only agent that can still write, so this keys off the
+  // agent actually chosen rather than off the role being read-only.
+  return { script, interactive: false, canWriteReport: agent !== 'plan' };
 }
 
 export const openCodeAdapter: HarnessAdapter = {

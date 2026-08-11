@@ -160,3 +160,26 @@ describe('openCodeAdapter.plan — provider routing', () => {
     expect(p.script).toContain('-m openrouter/deepseek/deepseek-v4-flash');
   });
 });
+
+describe('openCodeAdapter.plan — report writability', () => {
+  // A read-only role runs under opencode's `plan` agent, which prohibits file
+  // edits — so the model cannot write report.md either. Observed live: a
+  // review run ended "Unable to write the required report because plan mode
+  // prohibits file edits." Sonata must not then call the run degraded.
+  it('reports that a read-only role cannot write its report', () => {
+    expect(openCodeAdapter.plan({ ...base, role: 'review', mode: 'acceptEdits' }).canWriteReport)
+      .toBe(false);
+    expect(openCodeAdapter.plan({ ...base, role: 'plan', mode: 'acceptEdits' }).canWriteReport)
+      .toBe(false);
+  });
+
+  it('still expects a report from a write-capable role', () => {
+    expect(openCodeAdapter.plan({ ...base, role: 'code', mode: 'acceptEdits' }).canWriteReport)
+      .not.toBe(false);
+  });
+
+  it('explore can write, since it runs under the explore agent', () => {
+    expect(openCodeAdapter.plan({ ...base, role: 'explore', mode: 'acceptEdits' }).canWriteReport)
+      .not.toBe(false);
+  });
+});
