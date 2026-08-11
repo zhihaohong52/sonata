@@ -10,6 +10,43 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-11-provider-selection-design.md`
 
+## Status
+
+**Tasks 1-12: complete.** Implemented 2026-08-11, eleven of them dispatched to
+`deepseek-v4-flash` through sonata itself. Task 7 was landed first, out of
+order, because sonata could not dispatch anything until its adapter stopped
+hardcoding the provider — it could not implement its own fix.
+
+| Task | Commit |
+|---|---|
+| 7 (bootstrap) | `283f16b` |
+| 1 | `18d6fcd` |
+| 2 | `fbce943` |
+| 3 | `b57735a` |
+| 4 | `660a156` |
+| 5 | `c7cfd61` |
+| 6 | `76a9e00` |
+| 8 | `286ae9e` |
+| 9 | `11c16fc` |
+| 10 | `c7408a1` |
+| 11 | `c3720d6` |
+| 12 | `12be635`, `77a18c0` |
+
+Two defects found after the fact and fixed: `tomlFor` escaped its TOML table
+header but not `generate.models` (`07d003d`, found by an independent review
+run), and a read-only opencode run was judged degraded for a report it cannot
+write (`10a17e3`, found by dogfooding).
+
+**Task 13: partially done.** The opencode half is verified — `sonata init` was
+driven end to end, interactively and via flags, and `parseOpenCodeRefs` was run
+over a live 496-ref catalogue. The pi half is **not** done: pi is not installed
+on this machine, so `parsePiRefs` remains written against a fixture composed
+from memory rather than captured output.
+
+Task 12 had to be split in two after failing twice as a single run; see
+[`docs/dispatching-work-through-sonata.md`](../../dispatching-work-through-sonata.md)
+for why, and for what else dispatching this plan taught.
+
 ## Global Constraints
 
 - ESM: every relative import ends in `.js`, even from `.ts` sources.
