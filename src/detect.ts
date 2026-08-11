@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { checkVersion } from './commands/doctor.js';
-import type { ModelRef } from './types.js';
+import type { ModelRef, ProviderHarness } from './types.js';
 
 const run = promisify(execFile);
 
@@ -84,6 +84,43 @@ export function parseOpenCodeRefs(stdout: string): ModelRef[] {
     });
   }
   return out;
+}
+
+export interface ProviderSummary {
+  harness: ProviderHarness;
+  provider: string;
+  count: number;
+  /** `harness/provider` — identifies a picker row. */
+  key: string;
+}
+
+/**
+ * OpenCode's free tier needs no auth entry, so it is offered alongside the
+ * authenticated providers.
+ */
+const FREE_OPENCODE_PROVIDERS = ['opencode'];
+
+/**
+ * Groups refs into picker rows.
+ *
+ * The auth filter applies to opencode only. `pi --list-models` lists just the
+ * models pi can actually run — that is what piHealth relies on when it treats
+ * an empty list as "no usable provider" — so filtering pi by an auth file
+ * would invent a concept pi does not have.
+ */
+export function offerableProviders(refs: ModelRef[], authed: string[]): ProviderSummary[] {
+  const allowed = new Set([...authed, ...FREE_OPENCODE_PROVIDERS]);
+  const counts = new Map<string, ProviderSummary>();
+
+  for (const ref of refs) {
+    if (ref.harness === 'opencode' && !allowed.has(ref.provider)) continue;
+    const key = `${ref.harness}/${ref.provider}`;
+    const seen = counts.get(key);
+    if (seen) seen.count += 1;
+    else counts.set(key, { harness: ref.harness, provider: ref.provider, count: 1, key });
+  }
+
+  return [...counts.values()].sort((a, b) => a.key.localeCompare(b.key));
 }
 
 /** Agent files that sonata generated but the current config no longer covers. */

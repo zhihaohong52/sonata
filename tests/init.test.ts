@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseOpenCodeModels, parseAuthedProviders, staleAgents, parseOpenCodeRefs } from '../src/detect.js';
+import { parseOpenCodeModels, parseAuthedProviders, staleAgents, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
 import { cmdInit } from '../src/commands/init.js';
 import { readSettings } from '../src/settings.js';
 import { parseConfig } from '../src/config.js';
@@ -228,5 +228,43 @@ describe('parseOpenCodeRefs', () => {
     expect(parseOpenCodeRefs('noslash\n')).toEqual([]);
     expect(parseOpenCodeRefs('/leading\n')).toEqual([]);
     expect(parseOpenCodeRefs('trailing/\n')).toEqual([]);
+  });
+});
+
+describe('offerableProviders', () => {
+  const refs = [
+    { harness: 'opencode' as const, provider: 'openrouter', id: 'a', ref: 'openrouter/a' },
+    { harness: 'opencode' as const, provider: 'openrouter', id: 'b', ref: 'openrouter/b' },
+    { harness: 'opencode' as const, provider: 'agnes', id: 'c', ref: 'agnes/c' },
+    { harness: 'opencode' as const, provider: 'opencode', id: 'free', ref: 'opencode/free' },
+    { harness: 'pi' as const, provider: 'openrouter', id: 'a', ref: 'openrouter/a' },
+  ];
+
+  it('drops opencode providers with no auth entry', () => {
+    const got = offerableProviders(refs, ['openrouter']);
+    expect(got.some((p) => p.provider === 'agnes')).toBe(false);
+  });
+
+  it('keeps the free opencode tier, which needs no auth entry', () => {
+    const got = offerableProviders(refs, ['openrouter']);
+    expect(got.find((p) => p.harness === 'opencode' && p.provider === 'opencode')?.count).toBe(1);
+  });
+
+  it('never applies the auth filter to pi, which lists only usable models', () => {
+    // `openrouter` is not authed here, but pi must be offered all the same. The
+    // free opencode tier is always offered too, needing no auth entry.
+    const got = offerableProviders(refs, []);
+    expect(got.map((p) => p.key)).toEqual(['opencode/opencode', 'pi/openrouter']);
+  });
+
+  it('keeps one provider under two harnesses as two rows', () => {
+    const got = offerableProviders(refs, ['openrouter']);
+    expect(got.filter((p) => p.provider === 'openrouter').map((p) => p.key).sort())
+      .toEqual(['opencode/openrouter', 'pi/openrouter']);
+  });
+
+  it('counts the models behind each row', () => {
+    const got = offerableProviders(refs, ['openrouter']);
+    expect(got.find((p) => p.key === 'opencode/openrouter')?.count).toBe(2);
   });
 });
