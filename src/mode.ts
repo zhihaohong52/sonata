@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { PermissionMode } from './types.js';
 
@@ -32,10 +33,27 @@ const ALIASES: Record<string, PermissionMode> = {
  * A PreToolUse hook writes it to .sonata/session-<id>.json; this reads it back.
  * Falls back to the safest mode when unknown.
  */
-export function readPermissionMode(cwd: string, sessionId: string | undefined): PermissionMode {
+/**
+ * `home` mirrors `loadConfig`: it is optional so existing callers keep working,
+ * and always injected in tests, which must never read the real home directory.
+ *
+ * The two locations match where the hook writes. A project with its own sonata
+ * setup keeps its mode beside it; a project relying on the machine config keeps
+ * its mode beside that, because the hook must not scatter `.sonata/`
+ * directories across every repository on the machine.
+ */
+export function readPermissionMode(
+  cwd: string,
+  sessionId: string | undefined,
+  home: string = homedir(),
+): PermissionMode {
   if (!sessionId) return 'default';
-  const path = join(cwd, '.sonata', `session-${sessionId}.json`);
-  if (!existsSync(path)) return 'default';
+  const candidates = [
+    join(cwd, '.sonata', `session-${sessionId}.json`),
+    join(home, '.config', 'sonata', `session-${sessionId}.json`),
+  ];
+  const path = candidates.find((p) => existsSync(p));
+  if (path === undefined) return 'default';
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as { permissionMode?: string };
     const raw = parsed.permissionMode;

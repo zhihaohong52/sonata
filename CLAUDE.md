@@ -109,7 +109,9 @@ Sonata mirrors the Claude Code permission mode onto the harness; a sonata agent 
 **A read-only run cannot write `report.md`** on either opencode or pi, so sonata takes terminal output as the report and does NOT mark such a run degraded (`LaunchPlan.canWriteReport`). Pi's allowlist removes the write tool; opencode's `plan` agent is *instructed* not to modify files and declines — weaker enforcement, identical reporting consequence. Probed directly: a run asked only to write one file wrote nothing and reported "blocked by policy, not by error".
 - **Codex** (real sandbox, TUI prompts): `plan` → `codex exec` read-only; `default` → interactive TUI with `approval_policy=on-request` workspace-write; `acceptEdits` → `codex exec` workspace-write; `bypassPermissions` → `codex exec` danger-full-access. Sonata never passes `--dangerously-bypass-approvals-and-sandbox`.
 
-The permission mode is not exposed as an env var, so this needs a **PreToolUse hook** (`hooks/capture-mode.mjs`), which `sonata init` offers to install at project or global scope. Without it sonata assumes `default` — for opencode/pi that means dispatches refuse, so `sonata doctor` reports a missing hook as a blocker. The hook does nothing in projects with no `sonata.toml`.
+The permission mode is not exposed as an env var, so this needs a **PreToolUse hook** (`hooks/capture-mode.mjs`), which `sonata init` offers to install at project or global scope. Without it sonata assumes `default` — for opencode/pi that means dispatches refuse, so `sonata doctor` reports a missing hook as a blocker.
+
+**Where the mode is stored mirrors config resolution.** A project with its own `sonata.toml` or `.sonata/` gets `<cwd>/.sonata/session-<id>.json`; a project relying only on `~/.config/sonata/sonata.toml` gets `~/.config/sonata/session-<id>.json`; a directory with neither is left alone. That second case matters — the hook is installed globally and fires on every Bash call, so writing into the repo would scatter `.sonata/` directories across the machine. `readPermissionMode` reads the same two locations in the same order.
 
 **`auto` mode** (Claude Code's current default) maps to `acceptEdits`. Residual gap: the foreign harness has no classifier, so it will run things auto mode would have blocked. Dispatch in `plan` mode, or to a read-only role, when that matters.
 
@@ -151,7 +153,6 @@ Sonata launches other coding agents on your machine — they run **as you**, wit
 
 ## Known Limitations
 
-- **The permission hook does not fire in a repo that relies only on the machine config.** `usesSonata()` in `hooks/capture-mode.mjs` activates on a local `sonata.toml` or `.sonata/`, neither of which such a repo has — so no mode is captured, sonata assumes `default`, and opencode/pi write-capable dispatches refuse. Workaround: `sonata init` in that repo, or create a `.sonata/` directory. The fix is to teach `usesSonata()` about `~/.config/sonata/sonata.toml`.
 - `sonata init` discovers OpenCode and Pi models; codex models are added by hand.
 - `parsePiRefs` is written against a fixture composed from memory, not captured from a real `pi --list-models`. Pi was not installed on the machine where it was written. Capture real output before trusting it.
 - Not published to npm yet — install from source.
