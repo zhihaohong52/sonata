@@ -48,10 +48,11 @@ function buildScript(input: PlanInput): LaunchPlan {
   // run into the pane. It does NOT make the run answerable: opencode auto-
   // rejects permission requests in `run` mode either way, so the plan reports
   // interactive: false and sonata never waits for an approval that cannot come.
-  // `modelId` is a full `provider/model` ref. It used to be prefixed with a
-  // hardcoded `opencode/`, which sent every run to the free tier whatever the
-  // user selected — and that tier serves almost none of the models people
-  // configure, so the run died before the model saw the task.
+  //
+  // `modelId` is a full `provider/model` ref, passed through untouched. It used
+  // to be prefixed with a hardcoded `opencode/`, which sent every run to the
+  // free tier whatever the user selected — and that tier serves almost none of
+  // the models people configure, so the run died before the model saw the task.
   const flags = ['run', `--agent ${agent}`, `-m ${input.modelId}`, '--interactive'];
   if (auto) flags.push('--auto');
 
@@ -68,12 +69,19 @@ function buildScript(input: PlanInput): LaunchPlan {
     '',
   ].join('\n');
 
-  // opencode's `plan` agent prohibits file edits, so a run under it cannot
-  // write report.md either — observed live, a review run ending "Unable to
-  // write the required report because plan mode prohibits file edits." Such a
-  // run is not degraded merely for lacking a report; its output is the report.
-  // `explore` is a read-only agent that can still write, so this keys off the
-  // agent actually chosen rather than off the role being read-only.
+  // A run under opencode's `plan` agent cannot produce report.md, so such a
+  // run is not degraded merely for lacking one; its output is the report.
+  //
+  // The enforcement is policy, not tool removal: the plan agent is instructed
+  // that any modification is a violation superseding all other instructions,
+  // and it declines. Probed directly — a run asked only to write one file
+  // wrote nothing and reported "blocked by policy, not by error" — and
+  // observed on two unrelated review runs that could not write their reports.
+  // Weaker than pi, whose allowlist removes the write tool outright, but the
+  // outcome for sonata is the same: no report arrives.
+  //
+  // `explore` is read-only yet still writes, so this keys off the agent
+  // actually chosen rather than off the role being read-only.
   return { script, interactive: false, canWriteReport: agent !== 'plan' };
 }
 

@@ -438,11 +438,20 @@ persisted in run meta and consulted by `decide`.
 
 Worth stating precisely, because it is a real asymmetry between harnesses:
 codex read-only runs are fine, since the harness itself writes the final
-message via `-o`; opencode read-only runs are fine, since its `plan` agent can
-still write (verified — which also means opencode's read-only guarantee is
-weaker than pi's); only pi both enforces read-only properly and has no
+message via `-o`; only pi both enforces read-only properly and has no
 harness-written report. Strong enforcement and a guaranteed report are, for
 now, mutually exclusive on pi.
+
+**Correction, 2026-08-11: opencode read-only runs are not fine either.** This
+section claimed, marked verified, that opencode's `plan` agent can still write.
+It cannot, and the claim cost a real defect: read-only opencode runs were
+judged degraded for a report they could never produce. Two unrelated review
+runs failed to write their reports, and a direct probe — a run asked to do
+nothing but write one file — wrote nothing and reported "blocked by policy, not
+by error". The enforcement is instruction rather than tool removal, so it is
+still weaker than pi's allowlist, but the reporting consequence is identical.
+`canWriteReport` now covers opencode too, keyed off the agent chosen, since
+`explore` is read-only yet does write.
 
 **Pi has no sandbox,** so `acceptEdits` and `bypassPermissions` are
 indistinguishable to it. Sonata does not pretend otherwise; isolation has to
