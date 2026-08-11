@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import { PassThrough } from 'node:stream';
 import {
   parseKey, initialState, reduce, renderList, type Choice,
   parseTextKey, initialTextState, reduceText, renderText,
+  readKeys,
 } from '../src/tui.js';
 
 const CHOICES: Choice<string>[] = [
@@ -251,5 +253,48 @@ describe('renderText', () => {
   it('uses a custom hint when given, and a default otherwise', () => {
     expect(renderText('t', type('x'), 'unknown model')).toContain('unknown model');
     expect(renderText('t', type('x'))).toContain('enter confirm');
+  });
+});
+
+describe('readKeys', () => {
+  /**
+   * stdin is shared across every prompt in a run, and `sonata init` shows four
+   * in a row. Destroying it on the way out, or leaving it flowing, breaks the
+   * prompt *after* this one rather than this one — so one read proves nothing.
+   */
+  it('leaves the stream usable for the prompts that follow', async () => {
+    const stdin = new PassThrough();
+    const seen: string[] = [];
+    const readOne = () => readKeys(stdin, (chunk) => {
+      seen.push(chunk);
+      return true;
+    });
+
+    for (const key of ['a', 'b', 'c']) {
+      setTimeout(() => stdin.write(key), 0);
+      await readOne();
+    }
+
+    expect(seen).toEqual(['a', 'b', 'c']);
+    expect(stdin.destroyed).toBe(false);
+  });
+
+  it('keeps reading until the handler reports done', async () => {
+    const stdin = new PassThrough();
+    const seen: string[] = [];
+    const done = readKeys(stdin, (chunk) => {
+      seen.push(chunk);
+      return chunk === '\r';
+    });
+
+    // One keystroke per tick: a stream coalesces writes made in the same tick
+    // into a single chunk, which a terminal would not do.
+    for (const key of ['j', ' ', '\r']) {
+      stdin.write(key);
+      await new Promise((r) => setImmediate(r));
+    }
+    await done;
+
+    expect(seen).toEqual(['j', ' ', '\r']);
   });
 });

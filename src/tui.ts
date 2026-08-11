@@ -235,6 +235,41 @@ export class CancelledError extends Error {
   }
 }
 
+interface KeySource extends NodeJS.ReadableStream {
+  setRawMode?(mode: boolean): void;
+  iterator(opts: { destroyOnReturn: boolean }): AsyncIterableIterator<unknown>;
+}
+
+/**
+ * Puts stdin in raw mode, feeds every keystroke to `step`, and restores it.
+ *
+ * Owning the whole lifecycle here is deliberate: stdin is shared by every
+ * prompt in a run, and two details have to be right or the *next* prompt
+ * breaks rather than this one.
+ *
+ *   - `destroyOnReturn: false` — the default async iterator destroys the
+ *     stream when the loop ends, so a later prompt would reject with "The
+ *     operation was aborted".
+ *   - no `resume()` — that switches stdin to flowing mode, where chunks are
+ *     dropped in the gap before the next prompt's iterator attaches. The
+ *     iterator pulls on its own; it needs no help.
+ */
+export async function readKeys(
+  stdin: KeySource,
+  step: (chunk: string) => boolean,
+): Promise<void> {
+  stdin.setRawMode?.(true);
+  stdin.setEncoding('utf8');
+  try {
+    for await (const chunk of stdin.iterator({ destroyOnReturn: false })) {
+      if (step(String(chunk))) return;
+    }
+  } finally {
+    stdin.setRawMode?.(false);
+    stdin.pause();
+  }
+}
+
 async function runList<T>(
   title: string,
   choices: Choice<T>[],
@@ -258,21 +293,13 @@ async function runList<T>(
     stdout.write(`${body}\n`);
   };
 
-  stdin.setRawMode(true);
-  stdin.resume();
-  stdin.setEncoding('utf8');
   draw(true);
-
-  try {
-    for await (const chunk of stdin) {
-      state = reduce(state, parseKey(String(chunk)), choices, multi);
-      if (state.done) break;
-      draw(false);
-    }
-  } finally {
-    stdin.setRawMode(false);
-    stdin.pause();
-  }
+  await readKeys(stdin, (chunk) => {
+    state = reduce(state, parseKey(chunk), choices, multi);
+    if (state.done) return true;
+    draw(false);
+    return false;
+  });
 
   if (state.cancelled) throw new CancelledError();
   return [...state.checked].sort((a, b) => a - b).map((i) => choices[i].value);
@@ -317,34 +344,26 @@ export async function prompt(
     lastHeight = body.split('\n').length;
   };
 
-  stdin.setRawMode(true);
-  stdin.resume();
-  stdin.setEncoding('utf8');
   draw(true);
-
-  try {
-    for await (const chunk of stdin) {
-      const next = reduceText(state, parseTextKey(String(chunk)));
-      // Validation runs on submission only, so the message does not flicker
-      // while the value is still being typed.
-      if (next.done && !next.cancelled && opts.validate) {
-        const problem = opts.validate(next.value.trim());
-        if (problem) {
-          error = problem;
-          state = { ...next, done: false };
-          draw(false);
-          continue;
-        }
+  await readKeys(stdin, (chunk) => {
+    const next = reduceText(state, parseTextKey(chunk));
+    // Validation runs on submission only, so the message does not flicker
+    // while the value is still being typed.
+    if (next.done && !next.cancelled && opts.validate) {
+      const problem = opts.validate(next.value.trim());
+      if (problem) {
+        error = problem;
+        state = { ...next, done: false };
+        draw(false);
+        return false;
       }
-      error = null;
-      state = next;
-      if (state.done) break;
-      draw(false);
     }
-  } finally {
-    stdin.setRawMode(false);
-    stdin.pause();
-  }
+    error = null;
+    state = next;
+    if (state.done) return true;
+    draw(false);
+    return false;
+  });
 
   if (state.cancelled) throw new CancelledError();
   return state.value.trim();
