@@ -48,7 +48,11 @@ function buildScript(input: PlanInput): LaunchPlan {
   // run into the pane. It does NOT make the run answerable: opencode auto-
   // rejects permission requests in `run` mode either way, so the plan reports
   // interactive: false and sonata never waits for an approval that cannot come.
-  const flags = ['run', `--agent ${agent}`, `-m opencode/${input.modelId}`, '--interactive'];
+  // `modelId` is a full `provider/model` ref. It used to be prefixed with a
+  // hardcoded `opencode/`, which sent every run to the free tier whatever the
+  // user selected — and that tier serves almost none of the models people
+  // configure, so the run died before the model saw the task.
+  const flags = ['run', `--agent ${agent}`, `-m ${input.modelId}`, '--interactive'];
   if (auto) flags.push('--auto');
 
   // `-f` is declared as an array option, so it greedily consumes any following

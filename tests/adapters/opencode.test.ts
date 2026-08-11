@@ -6,7 +6,7 @@ import { openCodeAdapter } from '../../src/adapters/opencode.js';
 import { getAdapter } from '../../src/adapters/index.js';
 
 const base = {
-  modelId: 'deepseek-v4-flash',
+  modelId: 'openrouter/deepseek-v4-flash',
   role: 'code',
   cwd: '/repo',
   runDir: '/repo/.sonata/runs/abc123',
@@ -20,7 +20,7 @@ describe('openCodeAdapter.plan', () => {
     expect(p.script).toContain('opencode run');
     expect(p.script).toContain('--auto');
     expect(p.script).toContain('--agent build');
-    expect(p.script).toContain('-m opencode/deepseek-v4-flash');
+    expect(p.script).toContain('-m openrouter/deepseek-v4-flash');
   });
 
   it('never passes --format json, which is broken upstream', () => {
@@ -140,5 +140,23 @@ describe('getAdapter', () => {
 
   it('throws for an unknown harness', () => {
     expect(() => getAdapter('nope')).toThrow(/unknown harness/i);
+  });
+});
+
+describe('openCodeAdapter.plan — provider routing', () => {
+  it('passes the ref to -m verbatim, with no hardcoded provider', () => {
+    // The adapter used to prefix `opencode/`, which sent every run to the free
+    // tier regardless of the provider the user chose — and that tier serves
+    // none of these models, so the run died before the model saw the task.
+    const p = openCodeAdapter.plan({ ...base, mode: 'acceptEdits' });
+    expect(p.script).toContain('-m openrouter/deepseek-v4-flash');
+    expect(p.script).not.toContain('-m opencode/openrouter/deepseek-v4-flash');
+  });
+
+  it('routes a nested openrouter ref unchanged', () => {
+    const p = openCodeAdapter.plan({
+      ...base, modelId: 'openrouter/deepseek/deepseek-v4-flash', mode: 'acceptEdits',
+    });
+    expect(p.script).toContain('-m openrouter/deepseek/deepseek-v4-flash');
   });
 });
