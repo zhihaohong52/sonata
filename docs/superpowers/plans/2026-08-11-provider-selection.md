@@ -1227,7 +1227,7 @@ In `runList`, pass the height so real terminals get a real window:
   const height = listHeight();
   const draw = (first: boolean): void => {
     const body = renderList(title, choices, state, multi, height);
-    if (!first) stdout.write(`[${body.split('\n').length}A`);
+    if (!first) stdout.write(`\u001b[${body.split('\n').length}A`);
     stdout.write(`${body}\n`);
   };
 ```
@@ -1235,7 +1235,7 @@ In `runList`, pass the height so real terminals get a real window:
 The redraw must also clear each line, because the block height now changes as overflow counts appear and disappear:
 
 ```ts
-    stdout.write(`${body.split('\n').map((l) => `[2K${l}`).join('\n')}\n`);
+    stdout.write(`${body.split('\n').map((l) => `\u001b[2K${l}`).join('\n')}\n`);
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -1301,11 +1301,11 @@ describe('parseKey — filterable lists', () => {
   });
 
   it('maps arrows, enter, cancel and backspace in both modes', () => {
-    expect(parseKey('[A', true)).toEqual({ kind: 'up' });
-    expect(parseKey('[B', true)).toEqual({ kind: 'down' });
+    expect(parseKey('\u001b[A', true)).toEqual({ kind: 'up' });
+    expect(parseKey('\u001b[B', true)).toEqual({ kind: 'down' });
     expect(parseKey('\r', true)).toEqual({ kind: 'enter' });
-    expect(parseKey('', true)).toEqual({ kind: 'cancel' });
-    expect(parseKey('', true)).toEqual({ kind: 'backspace' });
+    expect(parseKey('\u001b', true)).toEqual({ kind: 'cancel' });
+    expect(parseKey('\u007f', true)).toEqual({ kind: 'backspace' });
   });
 });
 
@@ -1405,14 +1405,14 @@ export type ListKey =
  */
 export function parseKey(seq: string, filterable: boolean): ListKey {
   switch (seq) {
-    case '[A': return { kind: 'up' };
-    case '[B': return { kind: 'down' };
+    case '\u001b[A': return { kind: 'up' };
+    case '\u001b[B': return { kind: 'down' };
     // Space toggles even while filtering: no provider or model ref contains
     // one, so the filter never needs a space.
     case ' ': return { kind: 'space' };
     case '\r': case '\n': return { kind: 'enter' };
-    case '': case '': return { kind: 'cancel' };
-    case '': case '\b': return { kind: 'backspace' };
+    case '\u0003': case '\u001b': return { kind: 'cancel' };
+    case '\u007f': case '\b': return { kind: 'backspace' };
     default: break;
   }
   if (!filterable) {
@@ -1421,7 +1421,7 @@ export function parseKey(seq: string, filterable: boolean): ListKey {
     return { kind: 'ignore' };
   }
   // eslint-disable-next-line no-control-regex
-  if (seq.length > 0 && !/[ -]/.test(seq)) {
+  if (seq.length > 0 && !/[\u0000-\u001f\u007f]/.test(seq)) {
     return { kind: 'char', value: seq };
   }
   return { kind: 'ignore' };
@@ -1550,7 +1550,7 @@ Finally, `[...state.checked]` in `runList` already maps original indices to valu
 
 - [ ] **Step 6: Update the pre-existing key and reducer tests**
 
-The `parseKey` and `reduce` describe blocks at the top of `tests/tui.test.ts` pass string keys. Update them: `parseKey('[A')` becomes `parseKey('[A', false)` and asserts `{ kind: 'up' }`; `reduce(s, 'up', CHOICES, true)` becomes `reduce(s, { kind: 'up' }, CHOICES, true)`. The `renderList` assertions are unaffected except that multiselect output now also contains a `filter:` line.
+The `parseKey` and `reduce` describe blocks at the top of `tests/tui.test.ts` pass string keys. Update them: `parseKey('\u001b[A')` becomes `parseKey('\u001b[A', false)` and asserts `{ kind: 'up' }`; `reduce(s, 'up', CHOICES, true)` becomes `reduce(s, { kind: 'up' }, CHOICES, true)`. The `renderList` assertions are unaffected except that multiselect output now also contains a `filter:` line.
 
 - [ ] **Step 7: Run the full suite**
 
