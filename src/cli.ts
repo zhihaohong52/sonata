@@ -24,7 +24,8 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
 
   init flags (skip the prompts):
     --yes                    accept defaults, no prompts
-    --models a,b             models to enable
+    --providers opencode/openrouter,pi/opencode-go   providers to draw models from
+    --models a,b             models to enable (config keys)
     --roles code,review      roles to generate
     --scope project|global|skip   where to install the permission hook
 `;
@@ -47,6 +48,7 @@ async function main(argv: string[]): Promise<number> {
       args: rest,
       options: {
         yes: { type: 'boolean', default: false },
+        providers: { type: 'string' },
         models: { type: 'string' },
         roles: { type: 'string' },
         scope: { type: 'string' },
@@ -67,6 +69,7 @@ async function main(argv: string[]): Promise<number> {
         home: homedir(),
         packageRoot: packageRoot(),
         yes: values.yes,
+        providers: split(values.providers),
         models: split(values.models),
         roles: split(values.roles),
         scope,

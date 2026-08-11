@@ -97,28 +97,23 @@ It writes `sonata.toml`, generates one agent per role × model into
 Every prompt has a flag, so it also works unattended:
 
 ```bash
-sonata init --yes --models deepseek-v4-flash,kimi-k3 --roles code,review --scope project
+sonata init --yes --providers opencode/openrouter --models opencode-openrouter-kimi-k3 --roles code,review --scope project
 ```
 
-### Adding Codex or Pi models
+### Adding Codex models
 
-**The wizard only discovers OpenCode models.** Codex and Pi work fully, but
-their models are added to `sonata.toml` by hand:
+**The wizard discovers OpenCode and Pi models.** Both are picked by provider,
+then by model. Codex has no provider dimension and takes a bare model id, so
+codex models are still added to `sonata.toml` by hand:
 
 ```toml
-[models.gpt-5-6-sol]
+[models."gpt-5-6-sol"]
 harness = "codex"
 id = "gpt-5.6-sol"
-
-# Pi takes model ids in provider/id form.
-[models.pi-deepseek]
-harness = "pi"
-id = "opencode-go/deepseek-v4-flash"
-
-[generate]
-roles  = ["code", "review", "explore", "plan"]
-models = ["gpt-5-6-sol", "pi-deepseek"]
 ```
+
+Hand-written entries survive `sonata init` - the wizard carries through any
+model whose harness it does not manage, and adds it to `generate.models`.
 
 Then `sonata sync` to regenerate the agent files, and restart Claude Code.
 
