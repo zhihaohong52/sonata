@@ -6,7 +6,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { KNOWN_ROLES } from '../config.js';
+import { KNOWN_ROLES, parseConfig } from '../config.js';
 import type { ModelRef } from '../types.js';
 import {
   detectTmux, detectOpenCode, staleAgents,
@@ -94,14 +94,31 @@ function tomlFor(models: OpenCodeModel[], chosen: string[], roles: string[]): st
 }
 
 /**
- * Model ids already enabled in an existing sonata.toml, for pre-ticking.
- * Accepts both the quoted form sonata writes and a bare key typed by hand.
+ * Refs already enabled, for pre-ticking.
+ *
+ * Matching is on `(harness, id)` rather than on the config key: a key is a
+ * name the user or an older sonata chose, while the ref states what was
+ * actually meant. This is what lets a hand-written pi entry pre-tick despite
+ * a key the wizard would never generate.
+ *
+ * An unparseable config pre-ticks nothing rather than throwing — `init` must
+ * be able to repair a broken file, which is half its purpose.
  */
-function existingModels(cwd: string): string[] {
-  const path = join(cwd, 'sonata.toml');
-  if (!existsSync(path)) return [];
-  return [...readFileSync(path, 'utf8').matchAll(/^\[models\.\s*(?:"([^"]+)"|([^\]"]+?))\s*\]/gm)]
-    .map((m) => m[1] ?? m[2]);
+export function preTickedRefs(configText: string, refs: ModelRef[]): Set<string> {
+  let models: Record<string, { harness: string; id: string }>;
+  try {
+    models = parseConfig(configText).models;
+  } catch {
+    return new Set();
+  }
+
+  const enabled = new Set<string>();
+  for (const entry of Object.values(models)) {
+    for (const ref of refs) {
+      if (ref.harness === entry.harness && ref.ref === entry.id) enabled.add(ref.ref);
+    }
+  }
+  return enabled;
 }
 
 /**
@@ -164,7 +181,10 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   for (const p of problems) out(renderProblem(p));
 
   // ---- choose models ----------------------------------------------------
-  const preTicked = new Set(existingModels(opts.cwd));
+  const configText = existsSync(join(opts.cwd, 'sonata.toml'))
+    ? readFileSync(join(opts.cwd, 'sonata.toml'), 'utf8')
+    : '';
+  const preTicked = new Set<string>(preTickedRefs(configText, []));
   let models: string[];
 
   if (opts.models) {

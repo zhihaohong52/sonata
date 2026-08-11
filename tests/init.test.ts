@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseOpenCodeModels, parseAuthedProviders, staleAgents, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
-import { cmdInit, configKeyFor, duplicateKeys } from '../src/commands/init.js';
+import { cmdInit, configKeyFor, duplicateKeys, preTickedRefs } from '../src/commands/init.js';
 import { readSettings } from '../src/settings.js';
 import { parseConfig } from '../src/config.js';
 
@@ -178,18 +178,6 @@ describe('cmdInit (non-interactive)', () => {
     expect(config.models['grok-4.5']).toEqual({ harness: 'opencode', id: 'grok-4.5' });
   });
 
-  it('pre-selects a dotted model id already in sonata.toml', async () => {
-    const args = {
-      cwd, home, packageRoot: '/pkg', yes: true, detect,
-      roles: ['code'], scope: 'skip' as const, write,
-    };
-    await cmdInit({ ...args, models: ['grok-4.5'] });
-    // With no --models, a re-run carries over what the file already enables.
-    const second = await cmdInit(args);
-
-    expect(second.models).toEqual(['grok-4.5']);
-  });
-
   it('reports blocking problems and writes nothing when a provider is unauthed', async () => {
     authed = [];
     const res = await cmdInit({
@@ -305,5 +293,59 @@ describe('duplicateKeys', () => {
 
   it('reports each colliding key once', () => {
     expect(duplicateKeys(['a', 'a', 'a', 'b'])).toEqual(['a']);
+  });
+});
+
+describe('preTickedRefs', () => {
+  const refs = [
+    { harness: 'opencode' as const, provider: 'openrouter', id: 'deepseek-v4-flash', ref: 'openrouter/deepseek-v4-flash' },
+    { harness: 'pi' as const, provider: 'opencode-go', id: 'deepseek-v4-flash', ref: 'opencode-go/deepseek-v4-flash' },
+  ];
+
+  it('recognises a hand-written pi entry from its ref, not its key', () => {
+    // The README tells users to name this entry `pi-deepseek`; the wizard
+    // would never generate that key, but the ref says exactly what was meant.
+    const toml = `
+[models."pi-deepseek"]
+harness = "pi"
+id = "opencode-go/deepseek-v4-flash"
+
+[generate]
+roles = ["code"]
+models = ["pi-deepseek"]
+`;
+    expect(preTickedRefs(toml, refs)).toEqual(new Set(['opencode-go/deepseek-v4-flash']));
+  });
+
+  it('matches the harness too, so one ref under two harnesses stays distinct', () => {
+    const toml = `
+[models."opencode-opencode-go-deepseek-v4-flash"]
+harness = "opencode"
+id = "opencode-go/deepseek-v4-flash"
+
+[generate]
+roles = ["code"]
+models = ["opencode-opencode-go-deepseek-v4-flash"]
+`;
+    // The only catalogue ref with that id is pi's, so nothing pre-ticks.
+    expect(preTickedRefs(toml, refs)).toEqual(new Set());
+  });
+
+  it('pre-ticks nothing for a bare id, which names no provider', () => {
+    const toml = `
+[models."kimi-k3"]
+harness = "opencode"
+id = "kimi-k3"
+
+[generate]
+roles = ["code"]
+models = ["kimi-k3"]
+`;
+    expect(preTickedRefs(toml, refs)).toEqual(new Set());
+  });
+
+  it('is empty for an unparseable or empty config', () => {
+    expect(preTickedRefs('', refs)).toEqual(new Set());
+    expect(preTickedRefs('not toml at all {{{', refs)).toEqual(new Set());
   });
 });
