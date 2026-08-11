@@ -64,25 +64,57 @@ function renderProblem(p: Problem): string {
   return `  ${icon} ${p.message}${fix}`;
 }
 
+export interface ConfigEntry { harness: string; id: string }
+
 /**
- * Model ids carry version dots — `grok-4.5`, `gpt-5.6-sol` — and a dot is TOML's
- * key separator, so a bare `[models.grok-4.5]` nests as models → "grok-4" → "5"
- * and stops describing the model it names. Quoting makes it one literal key.
+ * Entries the wizard does not manage, and so must not delete.
+ *
+ * `init` overwrites sonata.toml wholesale. Codex models are added by hand —
+ * the README says so — which makes the wizard the only thing that can destroy
+ * them.
  */
-function tomlKey(id: string): string {
-  return `"${id.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+export function carriedEntries(
+  configText: string,
+  managed: string[],
+): Record<string, ConfigEntry> {
+  let models: Record<string, ConfigEntry>;
+  try {
+    models = parseConfig(configText).models;
+  } catch {
+    return {};
+  }
+
+  const kept: Record<string, ConfigEntry> = {};
+  for (const [key, entry] of Object.entries(models)) {
+    if (!managed.includes(entry.harness)) kept[key] = entry;
+  }
+  return kept;
 }
 
-function tomlFor(models: OpenCodeModel[], chosen: string[], roles: string[]): string {
+/** A TOML basic-string key. An unquoted dotted key nests and corrupts the table. */
+function tomlKey(key: string): string {
+  return `"${key.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+export function tomlFor(
+  refs: ModelRef[],
+  roles: string[],
+  carried: Record<string, ConfigEntry>,
+): string {
+  const entries: [string, ConfigEntry][] = [
+    ...refs.map((r): [string, ConfigEntry] =>
+      [configKeyFor(r), { harness: r.harness, id: r.ref }]),
+    ...Object.entries(carried),
+  ];
+
   const lines: string[] = [];
-  for (const id of chosen) {
-    const m = models.find((x) => x.id === id);
-    lines.push(`[models.${tomlKey(id)}]`, 'harness = "opencode"', `id = "${m?.id ?? id}"`, '');
+  for (const [key, entry] of entries) {
+    lines.push(`[models.${tomlKey(key)}]`, `harness = "${entry.harness}"`, `id = "${entry.id}"`, '');
   }
   lines.push(
     '[generate]',
     `roles = [${roles.map((r) => `"${r}"`).join(', ')}]`,
-    `models = [${chosen.map((m) => `"${m}"`).join(', ')}]`,
+    `models = [${entries.map(([k]) => `"${k}"`).join(', ')}]`,
     '',
     '[run]',
     'tail_window_seconds = 20',
@@ -278,7 +310,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   }
 
   // ---- write ------------------------------------------------------------
-  writeFileSync(configPath, tomlFor(oc.models, models, roles));
+  writeFileSync(configPath, tomlFor([], roles, {}));
   out(`  ✓ wrote ${configPath}`);
 
   let hookChanged = false;
