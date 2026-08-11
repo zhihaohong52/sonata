@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseOpenCodeModels, parseAuthedProviders, staleAgents } from '../src/detect.js';
+import { parseOpenCodeModels, parseAuthedProviders, staleAgents, parseOpenCodeRefs } from '../src/detect.js';
 import { cmdInit } from '../src/commands/init.js';
 import { readSettings } from '../src/settings.js';
 import { parseConfig } from '../src/config.js';
@@ -201,5 +201,32 @@ describe('cmdInit (non-interactive)', () => {
     expect(res.agentsWritten).toEqual([]);
     expect(existsSync(join(cwd, 'sonata.toml'))).toBe(false);
     expect(lines.join('\n')).toContain('opencode auth login');
+  });
+});
+
+describe('parseOpenCodeRefs', () => {
+  it('splits a ref on the first slash only', () => {
+    // The model id may itself contain slashes; only the provider is delimited.
+    expect(parseOpenCodeRefs('openrouter/deepseek/deepseek-v4-flash\n')).toEqual([
+      {
+        harness: 'opencode',
+        provider: 'openrouter',
+        id: 'deepseek/deepseek-v4-flash',
+        ref: 'openrouter/deepseek/deepseek-v4-flash',
+      },
+    ]);
+  });
+
+  it('reads every line of a listing', () => {
+    const out = ['opencode-go/deepseek-v4-flash', 'openrouter/deepseek-v4-flash'].join('\n');
+    expect(parseOpenCodeRefs(out).map((r) => r.provider)).toEqual(['opencode-go', 'openrouter']);
+  });
+
+  it('ignores blanks and lines that are not refs', () => {
+    expect(parseOpenCodeRefs('')).toEqual([]);
+    expect(parseOpenCodeRefs('\n   \n')).toEqual([]);
+    expect(parseOpenCodeRefs('noslash\n')).toEqual([]);
+    expect(parseOpenCodeRefs('/leading\n')).toEqual([]);
+    expect(parseOpenCodeRefs('trailing/\n')).toEqual([]);
   });
 });

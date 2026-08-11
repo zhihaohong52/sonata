@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { checkVersion } from './commands/doctor.js';
+import type { ModelRef } from './types.js';
 
 const run = promisify(execFile);
 
@@ -62,6 +63,27 @@ export function parseAuthedProviders(text: string): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Parses `opencode models`, which prints one `provider/model` ref per line —
+ * exactly the string `-m` accepts.
+ */
+export function parseOpenCodeRefs(stdout: string): ModelRef[] {
+  const out: ModelRef[] = [];
+  for (const raw of stdout.split('\n')) {
+    const line = raw.trim();
+    const slash = line.indexOf('/');
+    // A ref needs a non-empty provider and a non-empty id either side.
+    if (slash <= 0 || slash === line.length - 1) continue;
+    out.push({
+      harness: 'opencode',
+      provider: line.slice(0, slash),
+      id: line.slice(slash + 1),
+      ref: line,
+    });
+  }
+  return out;
 }
 
 /** Agent files that sonata generated but the current config no longer covers. */

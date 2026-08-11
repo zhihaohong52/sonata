@@ -2,6 +2,22 @@ export type PermissionMode = 'plan' | 'default' | 'acceptEdits' | 'bypassPermiss
 
 export type TailState = 'PROGRESS' | 'PAUSED' | 'DONE' | 'STALLED';
 
+export type ProviderHarness = 'opencode' | 'pi';
+
+/**
+ * One `provider/model` pair a harness can actually run.
+ *
+ * `ref` is what reaches `-m` / `--model` verbatim. `id` may itself contain
+ * slashes — openrouter nests an org segment — so it is never re-split.
+ */
+export interface ModelRef {
+  harness: ProviderHarness;
+  provider: string;
+  id: string;
+  ref: string;
+  name?: string;
+}
+
 export interface RunMeta {
   id: string;
   role: string;
