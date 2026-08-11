@@ -23,7 +23,7 @@
   "author": "James (https://github.com/zhihaohong52)",
   "type": "module",
   "bin": {
-    "sonata": "./dist/cli.js"
+    "sonata": "dist/cli.js"
   },
   "files": [
     "dist",
