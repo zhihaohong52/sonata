@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { KNOWN_ROLES, parseConfig } from '../config.js';
 import type { ModelRef } from '../types.js';
 import {
-  detectTmux, detectOpenCode, staleAgents,
+  detectTmux, detectHarnesses, offerableProviders, staleAgents,
   type Problem, type HarnessStatus, type DetectEnv,
 } from '../detect.js';
 import {
@@ -23,7 +23,7 @@ const OPENCODE_RANGE = '>=1.18.0 <2.0.0';
 
 export interface Detection {
   tmux: { installed: boolean; version?: string; problems: Problem[] };
-  oc: HarnessStatus;
+  harnesses: HarnessStatus[];
 }
 
 export type Detector = (env: DetectEnv) => Promise<Detection>;
@@ -31,7 +31,7 @@ export type Detector = (env: DetectEnv) => Promise<Detection>;
 /** Real environment probe. Tests inject a substitute so they stay hermetic. */
 export const defaultDetector: Detector = async (env) => ({
   tmux: await detectTmux(),
-  oc: await detectOpenCode(env),
+  harnesses: await detectHarnesses(env),
 });
 
 export interface InitOptions {
@@ -40,6 +40,8 @@ export interface InitOptions {
   packageRoot: string;
   /** Non-interactive overrides. When `yes` is set, no prompts are shown. */
   yes?: boolean;
+  /** Picker keys, `harness/provider`. Non-interactive override. */
+  providers?: string[];
   models?: string[];
   roles?: string[];
   scope?: HookScope | 'skip';
@@ -191,14 +193,28 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
 
   // ---- detect -----------------------------------------------------------
   const detect = opts.detect ?? defaultDetector;
-  const { tmux, oc } = await detect({ home: opts.home, supportedVersions: OPENCODE_RANGE });
-  const problems: Problem[] = [...tmux.problems, ...oc.problems];
+  const { tmux, harnesses } = await detect({ home: opts.home, supportedVersions: OPENCODE_RANGE });
+  const problems: Problem[] = [...tmux.problems, ...harnesses.flatMap((h) => h.problems)];
 
   out(tmux.installed ? `  ✓ tmux ${tmux.version}` : '  ✗ tmux not found');
-  out(oc.installed
-    ? `  ✓ opencode ${oc.version} · ${oc.refs.length} models · ${oc.authedProviders.length} authed provider(s)`
-    : '  ✗ opencode not found');
+  for (const h of harnesses) {
+    out(h.installed
+      ? `  ✓ ${h.name} ${h.version} · ${h.refs.length} models`
+      : `  · ${h.name} not installed`);
+  }
   out('');
+
+  const allRefs = harnesses.flatMap((h) => h.refs);
+  const authed = harnesses.flatMap((h) => h.authedProviders);
+  const offered = offerableProviders(allRefs, authed);
+
+  if (offered.length === 0) {
+    problems.push({
+      severity: 'error',
+      message: 'no harness reported a usable model provider',
+      fix: 'opencode auth login',
+    });
+  }
 
   const blocking = problems.filter((p) => p.severity === 'error');
   if (blocking.length > 0) {
@@ -212,39 +228,71 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   }
   for (const p of problems) out(renderProblem(p));
 
-  // ---- choose models ----------------------------------------------------
-  const configText = existsSync(join(opts.cwd, 'sonata.toml'))
-    ? readFileSync(join(opts.cwd, 'sonata.toml'), 'utf8')
-    : '';
-  const preTicked = new Set<string>(preTickedRefs(configText, []));
-  let models: string[];
+  const configPath = join(opts.cwd, 'sonata.toml');
+  const configText = existsSync(configPath) ? readFileSync(configPath, 'utf8') : '';
+  const enabled = preTickedRefs(configText, allRefs);
 
-  if (opts.models) {
-    models = opts.models;
+  // ---- choose providers -------------------------------------------------
+  let providerKeys: string[];
+  if (opts.providers) {
+    providerKeys = opts.providers;
   } else if (interactive) {
-    models = await multiselect(
-      'Models to enable',
-      oc.refs.map((m) => ({
-        value: m.id,
-        label: m.id,
-        hint: m.name,
-        checked: preTicked.has(m.id),
+    providerKeys = await multiselect(
+      'Providers',
+      offered.map((p) => ({
+        value: p.key,
+        label: `${p.harness} · ${p.provider}`,
+        hint: `${p.count} models`,
+        checked: allRefs.some((r) => `${r.harness}/${r.provider}` === p.key && enabled.has(r.ref)),
       })),
     );
   } else {
-    models = [...preTicked];
+    providerKeys = offered
+      .filter((p) => allRefs.some((r) => `${r.harness}/${r.provider}` === p.key && enabled.has(r.ref)))
+      .map((p) => p.key);
   }
 
-  const unknown = models.filter((m) => !oc.refs.some((x) => x.id === m));
-  if (unknown.length > 0) {
+  const unknownProviders = providerKeys.filter((k) => !offered.some((p) => p.key === k));
+  if (unknownProviders.length > 0) {
     throw new Error(
-      `sonata init: opencode does not offer ${unknown.join(', ')}. ` +
-      `Available: ${oc.refs.map((m) => m.id).join(', ')}`,
+      `sonata init: no harness offers ${unknownProviders.join(', ')}. ` +
+      `Available: ${offered.map((p) => p.key).join(', ')}`,
     );
   }
-  if (models.length === 0) {
+
+  const inScope = allRefs.filter((r) => providerKeys.includes(`${r.harness}/${r.provider}`));
+
+  // ---- choose models ----------------------------------------------------
+  let keys: string[];
+  if (opts.models) {
+    keys = opts.models;
+  } else if (interactive) {
+    keys = await multiselect(
+      'Models to enable',
+      inScope.map((r) => ({
+        value: configKeyFor(r),
+        label: r.ref,
+        hint: r.name,
+        checked: enabled.has(r.ref),
+      })),
+    );
+  } else {
+    keys = inScope.filter((r) => enabled.has(r.ref)).map(configKeyFor);
+  }
+
+  const byKey = new Map(inScope.map((r) => [configKeyFor(r), r]));
+  const unknown = keys.filter((k) => !byKey.has(k));
+  if (unknown.length > 0) {
+    throw new Error(
+      `sonata init: the selected providers do not offer ${unknown.join(', ')}. ` +
+      `Available: ${[...byKey.keys()].join(', ')}`,
+    );
+  }
+  if (keys.length === 0) {
     throw new Error('sonata init: no models selected — nothing to generate.');
   }
+
+  const chosen = keys.map((k) => byKey.get(k)!);
 
   // ---- choose roles -----------------------------------------------------
   let roles: string[];
@@ -291,12 +339,11 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   }
 
   // ---- confirm ----------------------------------------------------------
-  const configPath = join(opts.cwd, 'sonata.toml');
   out('');
   out('  Summary');
-  out(`    models  ${models.join(', ')}`);
+  out(`    models  ${chosen.map((r) => r.ref).join(', ')}`);
   out(`    roles   ${roles.join(', ')}`);
-  out(`    agents  ${roles.length * models.length} files in .claude/agents/`);
+  out(`    agents  ${roles.length * keys.length} files in .claude/agents/`);
   out(`    hook    ${scope === 'skip' ? 'not installed' : `${scope} settings.json`}`);
   out(`    config  ${configPath}`);
   out('');
@@ -304,13 +351,21 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   if (interactive && !(await confirm('Write these changes?', true))) {
     out('  Nothing written.');
     return {
-      problems, models, roles, scope, hookChanged: false,
+      problems, models: keys, roles, scope, hookChanged: false,
       agentsWritten: [], configPath, cancelled: true,
     };
   }
 
   // ---- write ------------------------------------------------------------
-  writeFileSync(configPath, tomlFor([], roles, {}));
+  const carried = carriedEntries(configText, ['opencode', 'pi']);
+  const clashes = duplicateKeys([...keys, ...Object.keys(carried)]);
+  if (clashes.length > 0) {
+    throw new Error(
+      `sonata init: ${clashes.join(', ')} would name two different models. ` +
+      'Rename the hand-written entry, or enable only one of the colliding refs.',
+    );
+  }
+  writeFileSync(configPath, tomlFor(chosen, roles, carried));
   out(`  ✓ wrote ${configPath}`);
 
   let hookChanged = false;
@@ -326,7 +381,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   const agentsWritten = cmdSync({ cwd: opts.cwd, agentsDir });
   out(`  ✓ generated ${agentsWritten.length} agents in ${agentsDir}`);
 
-  const expected = roles.flatMap((r) => models.map((m) => `${r}-${m}`));
+  const expected = roles.flatMap((r) => keys.map((k) => `${r}-${k}`));
   const stale = staleAgents(agentsDir, expected);
   if (stale.length > 0) {
     out('');
@@ -339,7 +394,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   out('  Done. Restart Claude Code for the new agents to appear.');
   out('');
 
-  return { problems, models, roles, scope, hookChanged, agentsWritten, configPath };
+  return { problems, models: keys, roles, scope, hookChanged, agentsWritten, configPath };
 }
 
 export function isCancellation(err: unknown): boolean {
