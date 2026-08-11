@@ -72,25 +72,48 @@ sonata init
 ```
 
 `sonata init` detects your environment, reports anything broken with the command
-that fixes it, and asks which models and roles you want:
+that fixes it, and asks which providers, models and roles you want.
+
+The same model id is often served by several providers, and they are different
+choices — different routing, different billing. So you pick a provider first:
 
 ```
   sonata init
 
   ✓ tmux 3.7b
-  ✓ opencode 1.18.15 · 8 models · 1 authed provider(s)
+  ✓ opencode 1.18.16 · 496 models
 
-  Models to enable
+  Providers
 
-    ◉ deepseek-v4-flash  · DeepSeek V4 Flash
-  ❯ ○ kimi-k3  · Kimi K3
-    ○ glm-5.2  · GLM 5.2
+  filter: █
 
-  space toggle · enter confirm · esc cancel
+  ❯ ◉ opencode · openrouter        · 31 models
+    ○ opencode · opencode-go   · 18 models
+    ○ opencode · openrouter    · 341 models
+    ○ pi · opencode-go         · 12 models
+
+  9 of 9 · space toggle · type to filter · enter confirm · esc cancel
 ```
 
-It writes `sonata.toml`, generates one agent per role × model into
-`.claude/agents/`, and offers to install the permission hook.
+then the models within them. Long lists scroll and filter as you type, because
+one provider alone can offer several hundred:
+
+```
+  Models to enable
+
+  filter: kimi█
+
+  ❯ ◉ openrouter/kimi-k3       · Kimi K3
+    ○ openrouter/kimi-k3-free  · Kimi K3 Free
+
+  2 of 31 · space toggle · type to filter · enter confirm · esc cancel
+```
+
+Finally it asks whether the config applies to this project or the whole
+machine, writes `sonata.toml`, generates one agent per role × model, and offers
+to install the permission hook. Project scope writes `./sonata.toml` and
+`./.claude/agents/`; machine scope writes `~/.config/sonata/sonata.toml` and
+`~/.claude/agents/`, where Claude Code offers the agents in every repository.
 
 **Restart Claude Code** so it picks up the new agents.
 
