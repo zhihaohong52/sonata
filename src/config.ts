@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 
@@ -86,10 +87,36 @@ export function parseConfig(text: string): SonataConfig {
   };
 }
 
-export function loadConfig(cwd: string): SonataConfig {
-  const path = join(cwd, 'sonata.toml');
-  if (!existsSync(path)) {
-    throw new Error(`No sonata.toml found at ${path}. Run \`sonata init\` or create one.`);
+/** Where a machine-level config lives, relative to the home directory. */
+export const GLOBAL_CONFIG_RELATIVE = join('.config', 'sonata', 'sonata.toml');
+
+/**
+ * The config file that will be used, or null if there is none.
+ *
+ * A project config wins outright — it is not merged with the machine one.
+ * Exactly one file is ever in effect, so it is always possible to say which
+ * file produced a run.
+ */
+export function configPath(cwd: string, home: string): string | null {
+  const local = join(cwd, 'sonata.toml');
+  if (existsSync(local)) return local;
+  const global = join(home, GLOBAL_CONFIG_RELATIVE);
+  if (existsSync(global)) return global;
+  return null;
+}
+
+/**
+ * `home` is optional so that callers which have not yet been threaded through
+ * keep working; it is always injected in tests, which must never read the
+ * real home directory.
+ */
+export function loadConfig(cwd: string, home: string = homedir()): SonataConfig {
+  const path = configPath(cwd, home);
+  if (path === null) {
+    throw new Error(
+      `No sonata.toml found. Looked in ${join(cwd, 'sonata.toml')} and ` +
+      `${join(home, GLOBAL_CONFIG_RELATIVE)}. Run \`sonata init\` or create one.`,
+    );
   }
   return parseConfig(readFileSync(path, 'utf8'));
 }
