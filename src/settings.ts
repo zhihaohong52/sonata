@@ -24,7 +24,45 @@ export interface HookEntry {
 
 export type Settings = Record<string, unknown> & {
   hooks?: Record<string, HookEntry[]>;
+  permissions?: { allow?: string[]; [k: string]: unknown };
 };
+
+/**
+ * The three MCP tools a sonata wrapper is given.
+ *
+ * These must be on the allow list, not left to Claude Code's `auto` mode
+ * classifier. The classifier judges each call separately and its decisions are
+ * not stable across calls: on 2026-08-12 a wrapper had `run` allowed and
+ * `tail` allowed twice, then denied twice mid-run —
+ * "Blocked by classifier" — which left a foreign model writing to the
+ * repository with nothing able to observe it. `run` is the tool that executes
+ * code; permitting it while blocking the read-back is the worst possible half
+ * to keep.
+ */
+export const SONATA_TOOLS = [
+  'mcp__sonata__run',
+  'mcp__sonata__tail',
+  'mcp__sonata__approve',
+];
+
+/** Which of the sonata tools are missing from `permissions.allow`. */
+export function missingAllowEntries(settings: Settings): string[] {
+  const allow = settings.permissions?.allow ?? [];
+  return SONATA_TOOLS.filter((t) => !allow.includes(t));
+}
+
+/**
+ * Adds the sonata tools to `permissions.allow`, preserving order and every
+ * unrelated entry. Idempotent: re-running `sonata init` cannot duplicate them.
+ */
+export function allowSonataTools(settings: Settings): { settings: Settings; changed: boolean } {
+  const missing = missingAllowEntries(settings);
+  if (missing.length === 0) return { settings, changed: false };
+
+  const permissions = { ...(settings.permissions ?? {}) };
+  permissions.allow = [...(settings.permissions?.allow ?? []), ...missing];
+  return { settings: { ...settings, permissions }, changed: true };
+}
 
 export function settingsPath(scope: HookScope, cwd: string, home: string): string {
   return scope === 'global'

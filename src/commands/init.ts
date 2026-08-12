@@ -13,7 +13,7 @@ import {
   type Problem, type HarnessStatus, type DetectEnv,
 } from '../detect.js';
 import {
-  settingsPath, readSettings, writeSettings, installHook,
+  settingsPath, readSettings, writeSettings, installHook, allowSonataTools,
   hookInstalled, hookCommand, registerMcp, type HookScope, type Runner,
 } from '../settings.js';
 import { pruneAgents } from '../detect.js';
@@ -583,10 +583,18 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   let hookChanged = false;
   if (scope !== 'skip') {
     const path = settingsPath(scope, opts.cwd, opts.home);
-    const result = installHook(readSettings(path), command);
-    if (result.changed) writeSettings(path, result.settings);
-    hookChanged = result.changed;
-    out(result.changed ? `  ✓ installed hook in ${path}` : `  · hook already present in ${path}`);
+    const withHook = installHook(readSettings(path), command);
+    // Allow-list the three wrapper tools in the same file, in the same pass.
+    // Left to `auto` mode's classifier they are judged per call, and a wrapper
+    // whose `tail` is denied mid-run leaves a foreign model writing to the
+    // repository unobserved.
+    const withAllow = allowSonataTools(withHook.settings);
+    if (withHook.changed || withAllow.changed) writeSettings(path, withAllow.settings);
+    hookChanged = withHook.changed;
+    out(withHook.changed ? `  ✓ installed hook in ${path}` : `  · hook already present in ${path}`);
+    out(withAllow.changed
+      ? `  ✓ allow-listed the sonata tools in ${path}`
+      : `  · sonata tools already allow-listed in ${path}`);
   }
 
   const agentsDir = agentsDirFor(configScope, opts.cwd, opts.home);

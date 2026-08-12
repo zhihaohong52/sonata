@@ -44,10 +44,33 @@ export function cmdVerify(opts: VerifyOptions): { ok: boolean; detail: string } 
     };
   }
 
-  const exit = meta.exitCode === undefined ? 'still running' : `exit ${meta.exitCode}`;
+  // `meta.exitCode` is written by `sonata tail`, so a run whose tail never
+  // completed looks live forever — exactly the case verify exists for. The
+  // exit sentinel is written by the launched shell itself and is the truth
+  // about whether the process finished. Observed on 2026-08-12: a run that
+  // exited 0 and wrote a full report reported "still running", because the
+  // wrapper's `tail` was denied by the permission classifier mid-run.
+  const exit = meta.exitCode !== undefined
+    ? `exit ${meta.exitCode}`
+    : sentinelExit(dir) ?? 'still running';
+
+  const unreconciled = meta.exitCode === undefined && sentinelExit(dir) !== null
+    ? ' · finished but never read back by `sonata tail`'
+    : '';
+
   return {
     ok: true,
     detail: `${opts.id}: ${meta.role} on ${meta.model} via ${meta.harness} · ${exit}` +
-      (meta.degraded ? ' · degraded' : ''),
+      (meta.degraded ? ' · degraded' : '') + unreconciled,
   };
+}
+
+/** The exit sentinel the launched shell writes, independent of `tail`. */
+function sentinelExit(dir: string): string | null {
+  try {
+    const raw = readFileSync(join(dir, 'exit'), 'utf8').trim();
+    return /^-?\d+$/.test(raw) ? `exit ${raw}` : null;
+  } catch {
+    return null;
+  }
 }

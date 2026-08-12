@@ -58,6 +58,13 @@ its report.
 
 4. Never call the \`approve\` tool yourself. Never start a second run.
 
+5. If a tool call is refused — a permission denial rather than a result —
+   stop and say so as your first line: \`BLOCKED <id> <tool> denied\`. Do not
+   retry it, work around it, or summarise the task from the run id alone. The
+   run is still executing in tmux and is now unobserved, which is the one
+   outcome worse than a failed dispatch: the human needs to know a model is
+   writing to their repository with nothing watching it.
+
 To watch the run live, a human can attach with \`tmux attach -r -t sonata-<id>\`
 (\`-r\` is read-only; drop it to steer a cheap model mid-run). Sonata cannot
 stream the harness conversation into Claude Code — a subagent receives text

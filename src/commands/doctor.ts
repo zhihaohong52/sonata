@@ -15,7 +15,7 @@ import {
   modeHookPresent,
   readSettings,
   settingsPath,
-  
+  missingAllowEntries,
   mcpRegistered,
 } from '../settings.js';
 import { homedir } from 'node:os';
@@ -171,6 +171,27 @@ export async function cmdDoctor(
           'cannot honour — those dispatches will refuse. Run `sonata init`',
     });
   }
+  // The wrapper's three tools must be allow-listed. Left to `auto` mode they
+  // are judged per call and the decisions are not stable: a wrapper on
+  // 2026-08-12 had `tail` allowed twice then denied twice mid-run, so the run
+  // kept going with nothing able to read it back. `run` executes code, and it
+  // is the one the classifier tends to permit — so the failure is silent by
+  // construction, and worth naming before it happens rather than after.
+  {
+    const scopes = ['project', 'global'] as const;
+    const missing = scopes
+      .map((scope) => missingAllowEntries(readSettings(settingsPath(scope, opts.cwd, homedir()))))
+      .reduce((a, b) => (a.length <= b.length ? a : b));
+    checks.push({
+      name: 'tool permissions',
+      ok: missing.length === 0,
+      detail: missing.length === 0
+        ? 'the sonata tools are allow-listed, so no dispatch depends on the classifier'
+        : `${missing.join(', ')} not allow-listed — in \`auto\` mode these are judged per call, ` +
+          'and a denied `tail` leaves a running dispatch unobservable. Run `sonata init`',
+    });
+  }
+
   for (const name of harnesses) {
     const adapter = getAdapter(name);
     try {
