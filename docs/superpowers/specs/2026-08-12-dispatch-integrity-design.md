@@ -48,11 +48,26 @@ In every case a safety property was a sentence in a prompt.
 
 Worth recording, because it looks like an avoidable indirection and is not.
 
-Claude Code can only put a Claude model in an agent slot. The Agent tool's
-model override is a closed enum — `sonnet`, `opus`, `haiku`, `fable` — and
-across 161 agent definitions on the development machine, from every plugin
-author installed, `model:` is only ever `haiku`, `sonnet`, `opus` or `inherit`.
-There is no extension point for an agent whose inference runs elsewhere.
+**Correction, 2026-08-12.** An earlier draft claimed Claude Code can only put a
+Claude model in an agent slot. That is true of the Agent tool's `model`
+parameter, a closed enum of `sonnet`, `opus`, `haiku`, `fable` — but not of
+subagent frontmatter, which accepts a full model ID and "the same values as the
+`--model` flag". Pointed at an LLM gateway via `ANTHROPIC_BASE_URL`, a subagent
+can therefore run on a non-Anthropic model, with no sonata involved.
+
+That does not make sonata's relay avoidable, because it delivers a different
+thing. A gateway-routed subagent runs the foreign model inside *Claude Code's*
+harness — its system prompt, its Read/Edit/Bash tools, its permission model.
+Sonata's second goal is the opposite: the model delivered through *its own*
+harness, keeping that harness's loop, tools and sandbox, streamed through tmux
+and attachable mid-run. Nothing in Claude Code can launch opencode, codex or pi
+as a subagent, so something Claude-shaped must occupy the slot and dispatch to
+it.
+
+A related limitation is tracked upstream: the Agent tool's three-slot enum means
+Claude cannot *choose* among foreign models when delegating, only inherit
+whatever the aliases were hijacked to resolve to
+(anthropics/claude-code#34821).
 
 So a relay is the only shape available. The design's first goal is dispatch
 *through the ordinary Agent tool*, so Claude's selection and fan-out apply
