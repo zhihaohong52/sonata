@@ -119,3 +119,33 @@ export function uninstallHook(
 export function hookCommand(packageRoot: string): string {
   return `node ${JSON.stringify(join(packageRoot, 'hooks', 'capture-mode.mjs'))}`;
 }
+
+/**
+ * Where the MCP registration lives, mirroring settingsPath: a project-scoped
+ * config registers in the project, a machine-scoped one in the user's config.
+ * A registration that outlives its config is the same class of bug as agents
+ * that outlive theirs.
+ */
+export function mcpConfigPath(scope: HookScope, cwd: string, home: string): string {
+  return scope === 'global'
+    ? join(home, '.claude', 'mcp.json')
+    : join(cwd, '.mcp.json');
+}
+
+function mcpEntry(packageRoot: string) {
+  return { command: 'node', args: [join(packageRoot, 'dist', 'cli.js'), 'mcp'] };
+}
+
+export function mcpRegistered(path: string, packageRoot: string): boolean {
+  const s = readSettings(path) as { mcpServers?: Record<string, { args?: string[] }> };
+  const want = mcpEntry(packageRoot).args.join(' ');
+  return (s.mcpServers?.sonata?.args ?? []).join(' ') === want;
+}
+
+export function registerMcp(path: string, packageRoot: string): { changed: boolean } {
+  if (mcpRegistered(path, packageRoot)) return { changed: false };
+  const s = readSettings(path) as Settings & { mcpServers?: Record<string, unknown> };
+  s.mcpServers = { ...(s.mcpServers ?? {}), sonata: mcpEntry(packageRoot) };
+  writeSettings(path, s);
+  return { changed: true };
+}

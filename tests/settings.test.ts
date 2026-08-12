@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   settingsPath, readSettings, writeSettings, installHook,
   uninstallHook, hookInstalled, hookCommand, type Settings,
+  mcpConfigPath, mcpRegistered, registerMcp,
 } from '../src/settings.js';
 
 let dir: string;
@@ -28,6 +29,13 @@ describe('settingsPath', () => {
 
   it('resolves the project path', () => {
     expect(settingsPath('project', '/repo', '/home/u')).toBe('/repo/.claude/settings.json');
+  });
+});
+
+describe('mcpConfigPath', () => {
+  it('resolves project and global paths', () => {
+    expect(mcpConfigPath('project', '/repo', '/home/u')).toBe('/repo/.mcp.json');
+    expect(mcpConfigPath('global', '/repo', '/home/u')).toBe('/home/u/.claude/mcp.json');
   });
 });
 
@@ -117,5 +125,37 @@ describe('hookInstalled', () => {
   it('detects presence and absence', () => {
     expect(hookInstalled(EXISTING, 'rtk hook claude')).toBe(true);
     expect(hookInstalled(EXISTING, 'cmd')).toBe(false);
+  });
+});
+
+describe('MCP registration', () => {
+  it('registers sonata as a stdio server pointing at this install', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-reg-'));
+    const path = join(dir, '.mcp.json');
+
+    expect(mcpRegistered(path, '/pkg')).toBe(false);
+    expect(registerMcp(path, '/pkg').changed).toBe(true);
+    expect(mcpRegistered(path, '/pkg')).toBe(true);
+
+    const parsed = JSON.parse(readFileSync(path, 'utf8'));
+    expect(parsed.mcpServers.sonata.command).toBe('node');
+    expect(parsed.mcpServers.sonata.args).toEqual([join('/pkg', 'dist', 'cli.js'), 'mcp']);
+  });
+
+  it('is idempotent', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-reg-'));
+    const path = join(dir, '.mcp.json');
+    registerMcp(path, '/pkg');
+    expect(registerMcp(path, '/pkg').changed).toBe(false);
+  });
+
+  it('leaves another server alone', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-reg-'));
+    const path = join(dir, '.mcp.json');
+    writeFileSync(path, JSON.stringify({ mcpServers: { other: { command: 'x' } } }));
+    registerMcp(path, '/pkg');
+    const parsed = JSON.parse(readFileSync(path, 'utf8'));
+    expect(parsed.mcpServers.other.command).toBe('x');
+    expect(parsed.mcpServers.sonata).toBeDefined();
   });
 });
