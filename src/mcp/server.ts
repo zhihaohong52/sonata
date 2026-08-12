@@ -27,6 +27,17 @@ export async function serveMcp(
       continue;
     }
 
+    // JSON.parse accepts `null`, `5`, `"x"` and `[1]`. Reading .id off any of
+    // them threw, which killed the loop — and a dead server takes the
+    // session's dispatch capability with it.
+    if (typeof req !== 'object' || req === null || Array.isArray(req)) {
+      write(JSON.stringify({
+        jsonrpc: '2.0', id: null,
+        error: { code: -32600, message: 'invalid request' },
+      }));
+      continue;
+    }
+
     const res = await handle(req, {
       tools: TOOL_DEFS,
       call: (name, args) => callTool(name, args, env),

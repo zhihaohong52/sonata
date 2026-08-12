@@ -1,4 +1,5 @@
 import { writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ToolDef } from './protocol.js';
@@ -72,7 +73,7 @@ export async function callTool(
       const role = need(args, 'role');
       const model = need(args, 'model');
       const task = need(args, 'task');
-      const taskFile = join(tmpdir(), `sonata-task-${Date.now()}.md`);
+      const taskFile = join(tmpdir(), `sonata-task-${Date.now()}-${randomUUID().slice(0, 8)}.md`);
       writeFileSync(taskFile, task);
       const result = await cmdRun({
         cwd: env.cwd,

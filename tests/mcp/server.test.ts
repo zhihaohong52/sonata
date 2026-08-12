@@ -35,3 +35,17 @@ describe('serveMcp', () => {
     expect(out).toEqual([]);
   });
 });
+
+describe('serveMcp — hostile input', () => {
+  const env = { cwd: '/repo', home: '/home', rolesDir: '/pkg/roles' };
+
+  it('survives valid JSON that is not a request object', async () => {
+    // JSON.parse('null') succeeds, and reading .id off it threw — killing the
+    // loop and taking the session's dispatch capability with it.
+    const out: string[] = [];
+    await serveMcp(lines('null', '5', '"x"', '[1]',
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })),
+      (l) => out.push(l), env);
+    expect(JSON.parse(out[out.length - 1]).result.tools).toHaveLength(3);
+  });
+});

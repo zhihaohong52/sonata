@@ -34,3 +34,18 @@ describe('cmdVerify', () => {
     expect(res.detail).toContain('opencode-openrouter-kimi-k3');
   });
 });
+
+describe('cmdVerify — unusable meta', () => {
+  it('does not report ok for meta that is not an object', () => {
+    // Reading fields off 42 yields undefined, which read as a successful
+    // verification of a run that, so far as the meta says, never happened.
+    for (const body of ['42', '"x"', '[]', 'null', 'true']) {
+      const res = cmdVerify({ cwd: runDirWith(JSON.parse(body)), id: 'abc123' });
+      expect(res.ok).toBe(false);
+    }
+  });
+
+  it('does not report ok when the meta names no model', () => {
+    expect(cmdVerify({ cwd: runDirWith({ id: 'abc123' }), id: 'abc123' }).ok).toBe(false);
+  });
+});

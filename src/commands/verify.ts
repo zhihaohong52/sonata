@@ -22,6 +22,16 @@ export function cmdVerify(opts: VerifyOptions): { ok: boolean; detail: string } 
   } catch {
     return { ok: false, detail: `run "${opts.id}" has unreadable meta.json` };
   }
+  // A meta that is not an object reads every field as undefined, which looked
+  // exactly like a successful verification of a run that never happened —
+  // defeating the only check that a report corresponds to real work.
+  if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) {
+    return { ok: false, detail: `run "${opts.id}" has unusable meta.json` };
+  }
+  if (typeof meta.model !== 'string') {
+    return { ok: false, detail: `run "${opts.id}" names no model in meta.json` };
+  }
+
 
   if (opts.model !== undefined && meta.model !== opts.model) {
     return {
