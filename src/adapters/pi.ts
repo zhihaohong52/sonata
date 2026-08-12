@@ -97,16 +97,34 @@ const PI_HEADER = /^provider\s+model\b/;
 
 /**
  * Parses `pi --list-models`, a whitespace-aligned table whose first two
- * columns are the provider and the model. Rows with fewer than two columns are
- * skipped rather than parsed: the exact format is unverified against a real
- * install, so a malformed row must not become a ref with an undefined id.
+ * columns are the provider and the model.
+ *
+ * Rows are read only AFTER the header, because pi does not always print a
+ * table. With no provider configured it prints prose, captured verbatim in
+ * `tests/fixtures/pi/no-models.txt`:
+ *
+ *     No models available. Use /login to log into a provider via OAuth or …
+ *
+ * Splitting that on whitespace yielded the phantom model `No/models`, which
+ * `countModelRows` then counted as one real row — so `piHealth` reported an
+ * unconfigured pi as healthy, and `sonata init` offered `No/models` for
+ * selection. Gating on the header rejects every prose form at once, including
+ * `No models matching "<pattern>"` from a search that matched nothing.
  */
 export function parsePiRefs(stdout: string): ModelRef[] {
   const out: ModelRef[] = [];
+  let inTable = false;
   for (const raw of stdout.split('\n')) {
     const line = raw.trim();
-    if (line.length === 0 || PI_HEADER.test(line)) continue;
+    if (line.length === 0) continue;
+    if (!inTable) {
+      // Anything before the header is prose, not a truncated table.
+      if (PI_HEADER.test(line)) inTable = true;
+      continue;
+    }
     const cols = line.split(/\s+/);
+    // A real row carries all six columns. Fewer means the line is not a row,
+    // and must not become a ref with an undefined id.
     if (cols.length < 2) continue;
     const [provider, id] = cols;
     out.push({ harness: 'pi', provider, id, ref: `${provider}/${id}` });

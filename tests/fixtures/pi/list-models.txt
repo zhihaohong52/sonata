@@ -1,0 +1,5 @@
+provider     model              context  max-out  thinking  images
+anthropic    claude-opus-5      200K     64K      yes       yes   
+anthropic    claude-sonnet-5    1M       64K      yes       yes   
+opencode-go  deepseek-v4-flash  1M       384K     yes       no    
+openrouter   kimi-k3            256K     32K      no        no    

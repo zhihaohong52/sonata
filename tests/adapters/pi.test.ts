@@ -1,6 +1,19 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { piAdapter, countModelRows, parsePiRefs } from '../../src/adapters/pi.js';
 import { getAdapter } from '../../src/adapters/index.js';
+
+/**
+ * Captured from pi 0.84.1, not composed by hand.
+ *
+ * `list-models.txt` is the output of pi's own formatter
+ * (`dist/cli/list-models.js`) driven with stub model rows; `no-models.txt` is
+ * verbatim stdout from a real `pi --list-models` with no provider configured.
+ */
+function piFixture(name: string): string {
+  return readFileSync(join(import.meta.dirname, '../fixtures/pi', name), 'utf8');
+}
 
 const base = {
   modelId: 'opencode-go/deepseek-v4-flash',
@@ -134,6 +147,15 @@ describe('countModelRows', () => {
 describe('parsePiRefs', () => {
   const HEADER = 'provider     model              context  max-out  thinking  images';
 
+  it('reads every row of a real pi 0.84.1 listing', () => {
+    expect(parsePiRefs(piFixture('list-models.txt')).map((r) => r.ref)).toEqual([
+      'anthropic/claude-opus-5',
+      'anthropic/claude-sonnet-5',
+      'opencode-go/deepseek-v4-flash',
+      'openrouter/kimi-k3',
+    ]);
+  });
+
   it('joins the provider and model columns into a ref', () => {
     const out = [HEADER, 'opencode-go  deepseek-v4-flash  1M  384K  yes  no'].join('\n');
     expect(parsePiRefs(out)).toEqual([
@@ -150,11 +172,26 @@ describe('parsePiRefs', () => {
     expect(parsePiRefs(`${HEADER}\n`)).toEqual([]);
   });
 
+  // pi prints prose, not an empty table, when nothing is configured. Splitting
+  // it on whitespace produced the phantom model `No/models`, which made
+  // countModelRows report an unconfigured pi as healthy.
+  it('finds no models in the real "no models available" message', () => {
+    const real = piFixture('no-models.txt');
+    expect(parsePiRefs(real)).toEqual([]);
+    expect(countModelRows(real)).toBe(0);
+  });
+
+  it('finds no models when a search pattern matches nothing', () => {
+    expect(parsePiRefs('No models matching "nonesuch"\n')).toEqual([]);
+  });
+
+  it('ignores rows that appear before any header', () => {
+    expect(parsePiRefs('opencode-go  deepseek-v4-flash  1M  384K  yes  no\n')).toEqual([]);
+  });
+
   it('ignores blanks and rows too short to carry a model', () => {
     expect(parsePiRefs('')).toEqual([]);
     expect(parsePiRefs('\n  \n')).toEqual([]);
-    // The real format is unverified; a malformed row must be skipped, not
-    // parsed into a ref with an undefined id.
     expect(parsePiRefs(`${HEADER}\nopencode-go\n`)).toEqual([]);
   });
 });
