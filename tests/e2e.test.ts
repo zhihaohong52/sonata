@@ -25,9 +25,8 @@ function writeConfig(stallTimeoutSeconds: number, runTimeoutSeconds = 30, harnes
 harness = "${harness}"
 id = "${harness === 'codex' ? 'fake' : 'fake/fake'}"
 
-[generate]
-roles = ["code"]
-models = ["fake"]
+[generate.roles]
+code = ["fake"]
 
 [run]
 stall_timeout_seconds = ${stallTimeoutSeconds}
@@ -104,9 +103,8 @@ describe('end to end against the fake harness', () => {
 harness = "codex"
 id = "fake"
 
-[generate]
-roles = ["code"]
-models = ["fake"]
+[generate.roles]
+code = ["fake"]
 
 [run]
 stall_timeout_seconds = 30

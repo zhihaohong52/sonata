@@ -258,9 +258,8 @@ describe('cmdInit — provider selection', () => {
 harness = "codex"
 id = "gpt-5.6-sol"
 
-[generate]
-roles = ["code"]
-models = ["gpt-5-6-sol"]
+[generate.roles]
+code = ["gpt-5-6-sol"]
 `);
     await cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect,
@@ -270,7 +269,7 @@ models = ["gpt-5-6-sol"]
 
     const cfg = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
     expect(cfg.models['gpt-5-6-sol'].id).toBe('gpt-5.6-sol');
-    expect(cfg.generate.models).toContain('gpt-5-6-sol');
+    expect(Object.values(cfg.generate.roles).flat()).toContain('gpt-5-6-sol');
   });
 
   it('pre-selects an enabled ref on a re-run', async () => {
@@ -410,9 +409,8 @@ describe('preTickedRefs', () => {
 harness = "pi"
 id = "opencode-go/deepseek-v4-flash"
 
-[generate]
-roles = ["code"]
-models = ["pi-deepseek"]
+[generate.roles]
+code = ["pi-deepseek"]
 `;
     expect(preTickedRefs(toml, refs)).toEqual(new Set(['opencode-go/deepseek-v4-flash']));
   });
@@ -423,9 +421,8 @@ models = ["pi-deepseek"]
 harness = "opencode"
 id = "opencode-go/deepseek-v4-flash"
 
-[generate]
-roles = ["code"]
-models = ["opencode-opencode-go-deepseek-v4-flash"]
+[generate.roles]
+code = ["opencode-opencode-go-deepseek-v4-flash"]
 `;
     // The only catalogue ref with that id is pi's, so nothing pre-ticks.
     expect(preTickedRefs(toml, refs)).toEqual(new Set());
@@ -437,9 +434,8 @@ models = ["opencode-opencode-go-deepseek-v4-flash"]
 harness = "opencode"
 id = "kimi-k3"
 
-[generate]
-roles = ["code"]
-models = ["kimi-k3"]
+[generate.roles]
+code = ["kimi-k3"]
 `;
     expect(preTickedRefs(toml, refs)).toEqual(new Set());
   });
@@ -460,9 +456,8 @@ id = "gpt-5.6-sol"
 harness = "opencode"
 id = "openrouter/kimi-k3"
 
-[generate]
-roles = ["code"]
-models = ["gpt-5-6-sol", "opencode-openrouter-kimi-k3"]
+[generate.roles]
+code = ["gpt-5-6-sol", "opencode-openrouter-kimi-k3"]
 `;
 
   it('keeps entries whose harness the wizard does not manage', () => {
@@ -493,14 +488,14 @@ describe('tomlFor', () => {
     expect(out).toContain('id = "openrouter/grok-4.5"');
   });
 
-  it('carries a hand-written entry through, in generate.models too', () => {
+  it('carries a hand-written entry through, in generate.roles too', () => {
     const out = tomlFor(refs, ['code'], { 'gpt-5-6-sol': { harness: 'codex', id: 'gpt-5.6-sol' } });
     expect(out).toContain('[models."gpt-5-6-sol"]');
     expect(out).toContain('harness = "codex"');
     expect(out).toContain('"gpt-5-6-sol"');
     // Both the generated and the carried model are generated.
     const parsed = parseConfig(out);
-    expect(parsed.generate.models.sort())
+    expect(Object.values(parsed.generate.roles).flat().sort())
       .toEqual(['gpt-5-6-sol', 'opencode-openrouter-grok-4.5']);
   });
 });
@@ -519,7 +514,7 @@ describe('HarnessStatus.refs', () => {
 
 describe('tomlFor — escaping', () => {
   // Found by an independent review run: the table header was escaped via
-  // tomlKey, but the generate.models array and the values were interpolated
+  // tomlKey, but the generate.roles arrays and the values were interpolated
   // raw. A hand-written key containing a quote produced a config that no
   // longer parsed — destroying the very entry carrying it through was meant
   // to protect.
@@ -528,7 +523,7 @@ describe('tomlFor — escaping', () => {
     const out = tomlFor([], ['code'], carried);
 
     expect(() => parseConfig(out)).not.toThrow();
-    expect(parseConfig(out).generate.models).toEqual(['say"hi']);
+    expect(Object.values(parseConfig(out).generate.roles).flat()).toEqual(['say"hi']);
   });
 
   it('escapes a backslash in a value', () => {
@@ -631,9 +626,8 @@ describe('cmdInit — config scope', () => {
 harness = "codex"
 id = "gpt-5.6-sol"
 
-[generate]
-roles = ["code"]
-models = ["local-only-codex"]
+[generate.roles]
+code = ["local-only-codex"]
 `);
 
     await cmdInit({ ...args, cwd, home, configScope: 'global', write });
@@ -649,9 +643,8 @@ models = ["local-only-codex"]
 harness = "opencode"
 id = "openrouter/kimi-k3"
 
-[generate]
-roles = ["code"]
-models = ["opencode-openrouter-kimi-k3"]
+[generate.roles]
+code = ["opencode-openrouter-kimi-k3"]
 `);
 
     // No --models: the selection carries over from the config being edited,

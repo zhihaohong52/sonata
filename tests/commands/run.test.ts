@@ -19,9 +19,8 @@ beforeEach(() => {
 harness = "opencode"
 id = "fake/fake"
 
-[generate]
-roles = ["code"]
-models = ["fake"]
+[generate.roles]
+code = ["fake"]
 `);
 });
 

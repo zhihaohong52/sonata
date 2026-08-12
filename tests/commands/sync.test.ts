@@ -17,9 +17,9 @@ id = "opencode-go/deepseek-v4-flash"
 harness = "opencode"
 id = "opencode-go/kimi-k3"
 
-[generate]
-roles = ["review", "code"]
-models = ["deepseek-v4-flash", "kimi-k3"]
+[generate.roles]
+review = ["deepseek-v4-flash", "kimi-k3"]
+code = ["deepseek-v4-flash", "kimi-k3"]
 `);
 });
 
@@ -66,9 +66,9 @@ describe('cmdSync', () => {
 harness = "opencode"
 id = "opencode-go/deepseek-v4-flash"
 
-[generate]
-roles = ["explore", "plan"]
-models = ["deepseek-v4-flash"]
+[generate.roles]
+explore = ["deepseek-v4-flash"]
+plan = ["deepseek-v4-flash"]
 `);
     const agentsDir = join(cwd, '.claude', 'agents');
     const written = cmdSync({ cwd, agentsDir });
@@ -89,9 +89,8 @@ describe('cmdSync — machine config', () => {
 harness = "codex"
 id = "gpt-5.6-sol"
 
-[generate]
-roles = ["code"]
-models = ["m"]
+[generate.roles]
+code = ["m"]
 `);
 
     const agentsDir = join(home, '.claude', 'agents');

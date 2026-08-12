@@ -172,15 +172,16 @@ export function tomlFor(
       '',
     );
   }
-  lines.push(
-    '[generate]',
-    `roles = [${roles.map(tomlKey).join(', ')}]`,
-    // Every one of these must go through tomlKey, not just the table header.
+  lines.push('[generate.roles]');
+  for (const role of roles) {
+    // Every model key must go through tomlKey, not just the table header.
     // Carried keys are user-authored and can contain a quote; escaping the
     // header alone produced a config that no longer parsed, destroying the
     // hand-written entry this function exists to preserve.
-    `models = [${entries.map(([k]) => tomlKey(k)).join(', ')}]`,
-    '',
+    lines.push(`${role} = [${entries.map(([k]) => tomlKey(k)).join(', ')}]`);
+  }
+  lines.push('');
+  lines.push(
     '[run]',
     'tail_window_seconds = 20',
     'stall_timeout_seconds = 120',

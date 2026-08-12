@@ -28,9 +28,8 @@ describe('cmdDoctor — which config', () => {
 harness = "codex"
 id = "gpt-5.6-sol"
 
-[generate]
-roles = ["code"]
-models = ["m"]
+[generate.roles]
+code = ["m"]
 `;
   let cwd: string;
   let home: string;

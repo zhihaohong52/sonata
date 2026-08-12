@@ -2,16 +2,15 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseConfig, isReadOnlyRole, configPath, loadConfig } from '../src/config.js';
+import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents } from '../src/config.js';
 
 const VALID = `
 [models.deepseek-v4-flash]
 harness = "opencode"
 id = "opencode-go/deepseek-v4-flash"
 
-[generate]
-roles = ["code"]
-models = ["deepseek-v4-flash"]
+[generate.roles]
+code = ["deepseek-v4-flash"]
 `;
 
 describe('parseConfig', () => {
@@ -30,15 +29,14 @@ describe('parseConfig', () => {
     expect(cfg.run.tailWindowSeconds).toBe(5);
   });
 
-  it('rejects a generate.models entry with no model definition', () => {
+  it('rejects a generate.roles entry with no model definition', () => {
     const bad = `
 [models.a]
 harness = "opencode"
 id = "openrouter/a"
 
-[generate]
-roles = ["code"]
-models = ["ghost"]
+[generate.roles]
+code = ["ghost"]
 `;
     expect(() => parseConfig(bad)).toThrow(/unknown model "ghost"/);
   });
@@ -49,9 +47,8 @@ models = ["ghost"]
 harness = "nope"
 id = "a"
 
-[generate]
-roles = ["code"]
-models = ["a"]
+[generate.roles]
+code = ["a"]
 `;
     expect(() => parseConfig(bad)).toThrow(/unknown harness "nope"/);
   });
@@ -62,9 +59,8 @@ models = ["a"]
 harness = "opencode"
 id = "openrouter/a"
 
-[generate]
-roles = ["dance"]
-models = ["a"]
+[generate.roles]
+dance = ["a"]
 `;
     expect(() => parseConfig(bad)).toThrow(/unknown role "dance"/);
   });
@@ -75,11 +71,11 @@ models = ["a"]
 harness = "opencode"
 id = "openrouter/a"
 
-[generate]
-roles = ["explore", "plan"]
-models = ["a"]
+[generate.roles]
+explore = ["a"]
+plan = ["a"]
 `);
-    expect(cfg.generate.roles).toEqual(['explore', 'plan']);
+    expect(cfg.generate.roles).toEqual({ explore: ['a'], plan: ['a'] });
   });
 });
 
@@ -89,9 +85,8 @@ describe('parseConfig — provider-qualified ids', () => {
 harness = "${harness}"
 id = "${id}"
 
-[generate]
-roles = ["code"]
-models = ["m"]
+[generate.roles]
+code = ["m"]
 `;
 
   it('rejects a bare id on opencode, which needs provider/model', () => {
@@ -130,9 +125,8 @@ describe('configPath', () => {
 harness = "codex"
 id = "gpt-5.6-sol"
 
-[generate]
-roles = ["code"]
-models = ["m"]
+[generate.roles]
+code = ["m"]
 `;
 
   let cwd: string;
@@ -184,9 +178,8 @@ describe('loadConfig — resolution', () => {
 harness = "codex"
 id = "gpt-5.6-sol"
 
-[generate]
-roles = ["code"]
-models = ["m"]
+[generate.roles]
+code = ["m"]
 `);
     expect(Object.keys(loadConfig(cwd, home).models)).toEqual(['m']);
   });
@@ -195,5 +188,73 @@ models = ["m"]
     expect(() => loadConfig(cwd, home)).toThrow(/sonata\.toml/);
     expect(() => loadConfig(cwd, home)).toThrow(new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     expect(() => loadConfig(cwd, home)).toThrow(/\.config[/\\]sonata/);
+  });
+});
+
+describe('generate.roles table', () => {
+  const cfg = (body: string) => `
+[models."a"]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+[models."b"]
+harness = "codex"
+id = "gpt-5.6-terra"
+
+${body}
+`;
+
+  it('gives each role its own models', () => {
+    const c = parseConfig(cfg(`
+[generate.roles]
+code = ["a"]
+review = ["a", "b"]
+`));
+    expect(c.generate.roles).toEqual({ code: ['a'], review: ['a', 'b'] });
+    expect(generatedAgents(c)).toEqual([
+      { role: 'code', model: 'a' },
+      { role: 'review', model: 'a' },
+      { role: 'review', model: 'b' },
+    ]);
+  });
+
+  it('treats an empty list and an omitted role alike', () => {
+    const c = parseConfig(cfg(`
+[generate.roles]
+code = []
+`));
+    expect(generatedAgents(c)).toEqual([]);
+  });
+
+  // TOML cannot hold both `roles = [...]` and `[generate.roles]`, so the old
+  // form is detected by type rather than guessed. A config that parses into
+  // something nobody intended is how the [models.gpt-5.6-luna] bug happened.
+  it('rejects the old flat form, naming the fix', () => {
+    expect(() => parseConfig(cfg(`
+[generate]
+roles = ["code"]
+models = ["a"]
+`))).toThrow(/\[generate\.roles\]/);
+  });
+
+  it('rejects a leftover generate.models key', () => {
+    expect(() => parseConfig(cfg(`
+[generate]
+models = ["a"]
+`))).toThrow(/\[generate\.roles\]/);
+  });
+
+  it('rejects an unknown role key', () => {
+    expect(() => parseConfig(cfg(`
+[generate.roles]
+dance = ["a"]
+`))).toThrow(/unknown role/i);
+  });
+
+  it('names the role when a model is undefined', () => {
+    expect(() => parseConfig(cfg(`
+[generate.roles]
+code = ["nope"]
+`))).toThrow(/code.*nope/s);
   });
 });

@@ -74,8 +74,9 @@ export function cmdSync(opts: SyncOptions): string[] {
   mkdirSync(opts.agentsDir, { recursive: true });
 
   const written: string[] = [];
-  for (const role of config.generate.roles) {
-    for (const model of config.generate.models) {
+  const allModels = [...new Set(Object.values(config.generate.roles).flat())];
+  for (const role of Object.keys(config.generate.roles)) {
+    for (const model of allModels) {
       const harness = config.models[model].harness;
       const path = join(opts.agentsDir, `${role}-${model}.md`);
       writeFileSync(path, agentMarkdown({ role, model, harness }));

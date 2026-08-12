@@ -17,7 +17,7 @@ export interface ModelConfig { harness: string; id: string }
 
 export interface SonataConfig {
   models: Record<string, ModelConfig>;
-  generate: { roles: string[]; models: string[] };
+  generate: { roles: Record<string, string[]> };
   run: {
     tailWindowSeconds: number;
     stallTimeoutSeconds: number;
@@ -56,29 +56,46 @@ export function parseConfig(text: string): SonataConfig {
     models[name] = { harness: d.harness, id: d.id };
   }
 
-  const roles: string[] = raw.generate?.roles ?? [];
-  const genModels: string[] = raw.generate?.models ?? [];
+  const gen = (raw.generate ?? {}) as Record<string, unknown>;
 
-  for (const role of roles) {
+  // TOML cannot express both `roles = [...]` and `[generate.roles]`, so the
+  // old form is distinguishable exactly. Fail loudly rather than approximate:
+  // a config read as something nobody intended is worse than one that errors.
+  if (Array.isArray(gen.roles) || gen.models !== undefined) {
+    throw new Error(
+      'sonata.toml: [generate] now maps each role to its own models. Replace\n' +
+      '    roles  = [...]\n    models = [...]\n' +
+      'with, for example:\n' +
+      '    [generate.roles]\n    code   = ["<model-key>"]\n    review = ["<model-key>"]\n' +
+      'or re-run `sonata init`.',
+    );
+  }
+
+  const roles: Record<string, string[]> = {};
+  for (const [role, list] of Object.entries((gen.roles ?? {}) as Record<string, unknown>)) {
     if (!KNOWN_ROLES.includes(role as any)) {
       throw new Error(
         `sonata.toml: generate.roles contains unknown role "${role}". ` +
         `Known roles: ${KNOWN_ROLES.join(', ')}`,
       );
     }
-  }
-  for (const m of genModels) {
-    if (!models[m]) {
-      throw new Error(
-        `sonata.toml: generate.models references unknown model "${m}". ` +
-        `Define [models."${m}"] first.`,
-      );
+    if (!Array.isArray(list)) {
+      throw new Error(`sonata.toml: generate.roles.${role} must be a list of model keys.`);
     }
+    for (const m of list) {
+      if (!models[m as string]) {
+        throw new Error(
+          `sonata.toml: generate.roles.${role} references unknown model "${m}". ` +
+          `Define [models."${m}"] first.`,
+        );
+      }
+    }
+    roles[role] = list as string[];
   }
 
   return {
     models,
-    generate: { roles, models: genModels },
+    generate: { roles },
     run: {
       tailWindowSeconds: num(raw.run?.tail_window_seconds, 20),
       stallTimeoutSeconds: num(raw.run?.stall_timeout_seconds, 120),
@@ -119,4 +136,20 @@ export function loadConfig(cwd: string, home: string = homedir()): SonataConfig 
     );
   }
   return parseConfig(readFileSync(path, 'utf8'));
+}
+
+/**
+ * Every agent the config asks for.
+ *
+ * The single definition of what should exist. The roles × models product used
+ * to be written out in `cmdSync`, again in `init`'s summary, and again as the
+ * expected set for `staleAgents` — three copies that could disagree, and stale
+ * agents caused three separate failures.
+ */
+export function generatedAgents(config: SonataConfig): { role: string; model: string }[] {
+  const out: { role: string; model: string }[] = [];
+  for (const [role, models] of Object.entries(config.generate.roles)) {
+    for (const model of models) out.push({ role, model });
+  }
+  return out;
 }
