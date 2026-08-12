@@ -269,7 +269,6 @@ code = ["gpt-5-6-sol"]
 
     const cfg = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
     expect(cfg.models['gpt-5-6-sol'].id).toBe('gpt-5.6-sol');
-    expect(Object.values(cfg.generate.roles).flat()).toContain('gpt-5-6-sol');
   });
 
   it('pre-selects an enabled ref on a re-run', async () => {
@@ -482,21 +481,22 @@ describe('tomlFor', () => {
   }];
 
   it('writes quoted keys and the ref verbatim', () => {
-    const out = tomlFor(refs, ['code'], {});
+    const out = tomlFor({ code: refs }, {});
     expect(out).toContain('[models."opencode-openrouter-grok-4.5"]');
     expect(out).toContain('harness = "opencode"');
     expect(out).toContain('id = "openrouter/grok-4.5"');
   });
 
-  it('carries a hand-written entry through, in generate.roles too', () => {
-    const out = tomlFor(refs, ['code'], { 'gpt-5-6-sol': { harness: 'codex', id: 'gpt-5.6-sol' } });
+  it('carries a hand-written entry through in [models]', () => {
+    const out = tomlFor({ code: refs }, { 'gpt-5-6-sol': { harness: 'codex', id: 'gpt-5.6-sol' } });
     expect(out).toContain('[models."gpt-5-6-sol"]');
     expect(out).toContain('harness = "codex"');
     expect(out).toContain('"gpt-5-6-sol"');
-    // Both the generated and the carried model are generated.
+    // The carried entry survives in [models]; only wizard-chosen refs are
+    // assigned to roles.
     const parsed = parseConfig(out);
-    expect(Object.values(parsed.generate.roles).flat().sort())
-      .toEqual(['gpt-5-6-sol', 'opencode-openrouter-grok-4.5']);
+    expect(parsed.models['gpt-5-6-sol']).toEqual({ harness: 'codex', id: 'gpt-5.6-sol' });
+    expect(parsed.generate.roles.code).toEqual(['opencode-openrouter-grok-4.5']);
   });
 });
 
@@ -520,15 +520,15 @@ describe('tomlFor — escaping', () => {
   // to protect.
   it('escapes carried keys everywhere they appear, not just in the header', () => {
     const carried = { 'say"hi': { harness: 'codex', id: 'gpt-5.6-sol' } };
-    const out = tomlFor([], ['code'], carried);
+    const out = tomlFor({ code: [] }, carried);
 
     expect(() => parseConfig(out)).not.toThrow();
-    expect(Object.values(parseConfig(out).generate.roles).flat()).toEqual(['say"hi']);
+    expect(Object.keys(parseConfig(out).models)).toEqual(['say"hi']);
   });
 
   it('escapes a backslash in a value', () => {
     const carried = { plain: { harness: 'codex', id: 'a\\b' } };
-    const out = tomlFor([], ['code'], carried);
+    const out = tomlFor({ code: [] }, carried);
     expect(parseConfig(out).models.plain.id).toBe('a\\b');
   });
 });
@@ -540,7 +540,7 @@ describe('tomlFor — control characters and duplicate tables', () => {
   // quote bug, reached the same way, through a hand-written entry.
   it('escapes control characters in a carried value', () => {
     const carried = { odd: { harness: 'codex', id: 'a\nb\tc' } };
-    const out = tomlFor([], ['code'], carried);
+    const out = tomlFor({ code: [] }, carried);
 
     expect(() => parseConfig(out)).not.toThrow();
     expect(parseConfig(out).models.odd.id).toBe('a\nb\tc');
@@ -548,28 +548,17 @@ describe('tomlFor — control characters and duplicate tables', () => {
 
   it('escapes a control character in a key', () => {
     const carried = { 'a\nb': { harness: 'codex', id: 'x' } };
-    const out = tomlFor([], ['code'], carried);
+    const out = tomlFor({ code: [] }, carried);
     expect(() => parseConfig(out)).not.toThrow();
     expect(Object.keys(parseConfig(out).models)).toEqual(['a\nb']);
   });
 
-  // TOML forbids two tables with the same name. cmdInit checks for this and
-  // reports it kindly, but tomlFor is exported and must not be able to emit a
-  // document that cannot be read back, whoever calls it.
-  it('refuses to emit two tables with the same name', () => {
-    const refs = [
-      { harness: 'opencode' as const, provider: 'opencode', id: 'go-x', ref: 'opencode/go-x' },
-      { harness: 'opencode' as const, provider: 'opencode-go', id: 'x', ref: 'opencode-go/x' },
-    ];
-    expect(() => tomlFor(refs, ['code'], {})).toThrow(/opencode-go-x/);
-  });
-
-  it('refuses when a carried key collides with a generated one', () => {
-    const refs = [{
-      harness: 'opencode' as const, provider: 'openrouter', id: 'kimi-k3', ref: 'openrouter/kimi-k3',
-    }];
-    expect(() => tomlFor(refs, ['code'], { 'opencode-openrouter-kimi-k3': { harness: 'codex', id: 'z' } }))
-      .toThrow(/opencode-openrouter-kimi-k3/);
+  // TOML forbids two tables with the same name. cmdInit deduplicates role
+  // models before writing, so the collision guard lives there; tomlFor never
+  // emits a document that cannot be read back.
+  it('writes a role with no models as an empty list', () => {
+    const out = tomlFor({ review: [] }, {});
+    expect(parseConfig(out).generate.roles.review).toEqual([]);
   });
 });
 
@@ -681,5 +670,75 @@ code = ["opencode-openrouter-kimi-k3"]
       roles: ['code'], scope: 'skip' as const, configScope: 'global' as const, write,
     });
     expect(second.models).toEqual(['opencode-openrouter-kimi-k3']);
+  });
+});
+
+describe('tomlFor — per-role table', () => {
+  const ref = (id: string) => ({
+    harness: 'opencode' as const, provider: 'openrouter', id, ref: `openrouter/${id}`,
+  });
+
+  it('writes each role with its own models and round-trips', () => {
+    const out = tomlFor(
+      { code: [ref('kimi-k3')], review: [ref('kimi-k3'), ref('grok-4.5')] },
+      {},
+    );
+    const cfg = parseConfig(out);
+    expect(cfg.generate.roles).toEqual({
+      code: ['opencode-openrouter-kimi-k3'],
+      review: ['opencode-openrouter-kimi-k3', 'opencode-openrouter-grok-4.5'],
+    });
+    // A dotted model key must survive as one key, not nest.
+    expect(cfg.models['opencode-openrouter-grok-4.5'].id).toBe('openrouter/grok-4.5');
+  });
+
+  it('defines a model once even when several roles use it', () => {
+    const out = tomlFor({ code: [ref('kimi-k3')], plan: [ref('kimi-k3')] }, {});
+    expect(out.match(/\[models\./g)).toHaveLength(1);
+    expect(parseConfig(out).generate.roles.plan).toEqual(['opencode-openrouter-kimi-k3']);
+  });
+
+  it('still carries a hand-written entry through', () => {
+    const out = tomlFor({ code: [ref('kimi-k3')] },
+      { 'gpt-5-6-sol': { harness: 'codex', id: 'gpt-5.6-sol' } });
+    expect(parseConfig(out).models['gpt-5-6-sol'].id).toBe('gpt-5.6-sol');
+  });
+});
+
+describe('cmdInit — per-role models', () => {
+  let cwd: string;
+  let home: string;
+  let lines: string[];
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'init-rolemodels-cwd-'));
+    home = mkdtempSync(join(tmpdir(), 'init-rolemodels-home-'));
+    lines = [];
+  });
+
+  const write = (l: string) => { lines.push(l); };
+
+  const detect = async () => ({
+    tmux: { installed: true, version: '3.7b', problems: [] },
+    harnesses: [{
+      name: 'opencode', installed: true, version: '1.18.16', supported: true,
+      refs: parseOpenCodeRefs('openrouter/kimi-k3\nopenrouter/grok-4.5\n'),
+      authedProviders: ['openrouter'], problems: [],
+    }],
+  });
+
+  it('flags mean every listed role gets every listed model', async () => {
+    const res = await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['opencode/openrouter'],
+      models: ['opencode-openrouter-kimi-k3', 'opencode-openrouter-grok-4.5'],
+      roles: ['code', 'review'], scope: 'skip', configScope: 'project', write,
+    });
+
+    const cfg = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
+    expect(cfg.generate.roles.code.sort()).toEqual(
+      ['opencode-openrouter-grok-4.5', 'opencode-openrouter-kimi-k3']);
+    expect(cfg.generate.roles.review).toHaveLength(2);
+    expect(res.agentsWritten).toHaveLength(4);
   });
 });

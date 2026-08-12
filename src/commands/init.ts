@@ -140,22 +140,21 @@ function tomlKey(key: string): string {
   return `"${escaped}"`;
 }
 
+/**
+ * `roleModels` maps a role to the refs that role should generate agents for.
+ * A model used by several roles is still defined once in [models].
+ */
 export function tomlFor(
-  refs: ModelRef[],
-  roles: string[],
+  roleModels: Record<string, ModelRef[]>,
   carried: Record<string, ConfigEntry>,
 ): string {
-  const entries: [string, ConfigEntry][] = [
-    ...refs.map((r): [string, ConfigEntry] =>
-      [configKeyFor(r), { harness: r.harness, id: r.ref }]),
-    ...Object.entries(carried),
-  ];
+  const defined = new Map<string, ConfigEntry>();
+  for (const refs of Object.values(roleModels)) {
+    for (const r of refs) defined.set(configKeyFor(r), { harness: r.harness, id: r.ref });
+  }
+  for (const [k, e] of Object.entries(carried)) defined.set(k, e);
 
-  // TOML forbids two tables with the same name, and flattening is not
-  // injective. cmdInit checks this first and reports it kindly; this guard
-  // makes it impossible for any caller to emit a document that cannot be read
-  // back.
-  const clashes = duplicateKeys(entries.map(([k]) => k));
+  const clashes = duplicateKeys([...defined.keys()]);
   if (clashes.length > 0) {
     throw new Error(
       `sonata: ${clashes.join(', ')} would name two different models. ` +
@@ -164,7 +163,7 @@ export function tomlFor(
   }
 
   const lines: string[] = [];
-  for (const [key, entry] of entries) {
+  for (const [key, entry] of defined) {
     lines.push(
       `[models.${tomlKey(key)}]`,
       `harness = ${tomlKey(entry.harness)}`,
@@ -172,13 +171,10 @@ export function tomlFor(
       '',
     );
   }
+
   lines.push('[generate.roles]');
-  for (const role of roles) {
-    // Every model key must go through tomlKey, not just the table header.
-    // Carried keys are user-authored and can contain a quote; escaping the
-    // header alone produced a config that no longer parsed, destroying the
-    // hand-written entry this function exists to preserve.
-    lines.push(`${role} = [${entries.map(([k]) => tomlKey(k)).join(', ')}]`);
+  for (const [role, refs] of Object.entries(roleModels)) {
+    lines.push(`${tomlKey(role)} = [${refs.map((r) => tomlKey(configKeyFor(r))).join(', ')}]`);
   }
   lines.push('');
   lines.push(
@@ -401,6 +397,29 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     throw new Error('sonata init: no roles selected — nothing to generate.');
   }
 
+  // ---- per-role models --------------------------------------------------
+  // The common case is one keystroke; only a user who wants different models
+  // per role pays for the extra screens.
+  let roleModels: Record<string, ModelRef[]>;
+  const sameForAll = !interactive || await confirm(
+    `Use the same models for every role?  (${roles.length} roles × ${chosen.length} models = ` +
+    `${roles.length * chosen.length} agents)`,
+    true,
+  );
+
+  if (sameForAll) {
+    roleModels = Object.fromEntries(roles.map((r) => [r, chosen]));
+  } else {
+    roleModels = {};
+    for (const role of roles) {
+      const picked = await multiselect(
+        `Models for: ${role}`,
+        chosen.map((r) => ({ value: r.ref, label: r.ref, hint: r.name, checked: true })),
+      );
+      roleModels[role] = chosen.filter((r) => picked.includes(r.ref));
+    }
+  }
+
   // ---- config scope -----------------------------------------------------
 
   // ---- hook scope -------------------------------------------------------
@@ -431,7 +450,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   out('  Summary');
   out(`    models  ${chosen.map((r) => r.ref).join(', ')}`);
   out(`    roles   ${roles.join(', ')}`);
-  out(`    agents  ${roles.length * keys.length} files in .claude/agents/`);
+  out(`    agents  ${Object.values(roleModels).reduce((n, m) => n + m.length, 0)} files in .claude/agents/`);
   out(`    hook    ${scope === 'skip' ? 'not installed' : `${scope} settings.json`}`);
   out(`    config  ${configPathResolved}`);
   out('');
@@ -454,7 +473,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     );
   }
   mkdirSync(dirname(configPathResolved), { recursive: true });
-  writeFileSync(configPathResolved, tomlFor(chosen, roles, carried));
+  writeFileSync(configPathResolved, tomlFor(roleModels, carried));
   out(`  ✓ wrote ${configPathResolved}`);
 
   let hookChanged = false;
