@@ -72,3 +72,59 @@ code = ["m"]
     expect(await check('stray config')).toBeUndefined();
   });
 });
+
+describe('cmdDoctor — completeness', () => {
+  const MIN = `
+[models."a"]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+[generate.roles]
+code = ["a"]
+`;
+  const MARKER = 'forwarding wrapper around the sonata runtime';
+
+  const setup = () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-c-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-h-'));
+    writeFileSync(join(cwd, 'sonata.toml'), MIN);
+    mkdirSync(join(cwd, '.claude', 'agents'), { recursive: true });
+    return { cwd, home };
+  };
+  const check = async (cwd: string, home: string, name: string) =>
+    (await cmdDoctor({ cwd, home })).checks.find((c) => c.name === name);
+
+  it('flags an agent naming a model the config does not define', async () => {
+    const { cwd, home } = setup();
+    writeFileSync(join(cwd, '.claude', 'agents', 'code-gone.md'), MARKER);
+    expect((await check(cwd, home, 'agents'))?.ok).toBe(false);
+  });
+
+  it('flags an agent that still grants Bash', async () => {
+    const { cwd, home } = setup();
+    writeFileSync(join(cwd, '.claude', 'agents', 'code-a.md'),
+      `---\nname: code-a\ntools: Bash\n---\n${MARKER}`);
+    const c = await check(cwd, home, 'agent tools');
+    expect(c?.ok).toBe(false);
+    expect(c?.detail).toContain('sonata sync');
+  });
+
+  it('flags an unregistered MCP server', async () => {
+    const { cwd, home } = setup();
+    // The wrapper cannot report its own absence of tools, so doctor must.
+    expect((await check(cwd, home, 'mcp server'))?.ok).toBe(false);
+  });
+
+  it('stays quiet on a healthy setup', async () => {
+    const { cwd, home } = setup();
+    writeFileSync(join(cwd, '.claude', 'agents', 'code-a.md'),
+      `---\nname: code-a\ntools: mcp__sonata__run\n---\n${MARKER}`);
+    writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({
+      mcpServers: { sonata: { command: 'node', args: [join('/pkg', 'dist', 'cli.js'), 'mcp'] } },
+    }));
+    const res = await cmdDoctor({ cwd, home, packageRoot: '/pkg' });
+    for (const name of ['agents', 'agent tools', 'mcp server']) {
+      expect(res.checks.find((c) => c.name === name)?.ok).toBe(true);
+    }
+  });
+});

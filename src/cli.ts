@@ -178,7 +178,11 @@ async function main(argv: string[]): Promise<number> {
     // doctor is read, not piped — but only decorate a real terminal, so
     // `sonata doctor > report.txt` stays plain.
     if (isInteractive()) console.log(`\n${banner()}\n`);
-    const { ok, checks } = await cmdDoctor({ cwd: process.cwd(), home: homedir() });
+    const { ok, checks } = await cmdDoctor({
+      cwd: process.cwd(),
+      home: homedir(),
+      packageRoot: packageRoot(),
+    });
     for (const c of checks) console.log(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: ${c.detail}`);
     return ok ? 0 : 1;
   }

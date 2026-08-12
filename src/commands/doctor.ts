@@ -1,10 +1,22 @@
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
-import { loadConfig, configPath, GLOBAL_CONFIG_RELATIVE } from '../config.js';
+import {
+  loadConfig,
+  configPath,
+  GLOBAL_CONFIG_RELATIVE,
+  generatedAgents,
+} from '../config.js';
+import { staleAgents } from '../detect.js';
 import { getAdapter } from '../adapters/index.js';
 import { tmuxVersion } from '../tmux.js';
-import { modeHookPresent, readSettings, settingsPath } from '../settings.js';
+import {
+  modeHookPresent,
+  readSettings,
+  settingsPath,
+  mcpConfigPath,
+  mcpRegistered,
+} from '../settings.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -37,7 +49,7 @@ export function checkVersion(actual: string, range: string): boolean {
 export interface Check { name: string; ok: boolean; detail: string }
 
 export async function cmdDoctor(
-  opts: { cwd: string; home?: string },
+  opts: { cwd: string; home?: string; packageRoot?: string },
 ): Promise<{ ok: boolean; checks: Check[] }> {
   const home = opts.home ?? homedir();
   const checks: Check[] = [];
@@ -72,6 +84,48 @@ export async function cmdDoctor(
       detail: `${stray} is not read by sonata — mv it to ${join(home, GLOBAL_CONFIG_RELATIVE)}`,
     });
   }
+
+  const agentsDir = join(opts.cwd, '.claude', 'agents');
+  const wanted = generatedAgents(config).map((a) => `${a.role}-${a.model}`);
+  const stale = staleAgents(agentsDir, wanted);
+  checks.push(stale.length === 0
+    ? { name: 'agents', ok: true, detail: `${wanted.length} generated, none stale` }
+    : {
+        name: 'agents',
+        ok: false,
+        detail: `${stale.length} stale agent file(s) name models the config does not ` +
+          `define — run \`sonata sync\` to remove them: ${stale.slice(0, 3).join(', ')}` +
+          (stale.length > 3 ? ', …' : ''),
+      });
+
+  const withBash = existsSync(agentsDir)
+    ? readdirSync(agentsDir).filter((f) => f.endsWith('.md')).filter((f) => {
+        const body = readFileSync(join(agentsDir, f), 'utf8');
+        return body.includes('forwarding wrapper around the sonata runtime')
+          && /^tools:\s*Bash\s*$/m.test(body);
+      })
+    : [];
+  checks.push(withBash.length === 0
+    ? { name: 'agent tools', ok: true, detail: 'no wrapper grants Bash' }
+    : {
+        name: 'agent tools',
+        ok: false,
+        detail: `${withBash.length} wrapper(s) still grant Bash and can do the work ` +
+          'themselves — run `sonata sync`, then restart Claude Code',
+      });
+
+  const scope = resolved === join(opts.cwd, 'sonata.toml') ? 'project' : 'global';
+  const mcpPath = mcpConfigPath(scope, opts.cwd, home);
+  const registered = opts.packageRoot !== undefined
+    && mcpRegistered(mcpPath, opts.packageRoot);
+  checks.push(registered
+    ? { name: 'mcp server', ok: true, detail: mcpPath }
+    : {
+        name: 'mcp server',
+        ok: false,
+        detail: `not registered in ${mcpPath} — wrappers would have no tools at all; ` +
+          'run `sonata init`',
+      });
 
   const harnesses = new Set(Object.values(config.models).map((m) => m.harness));
 
