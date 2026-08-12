@@ -156,6 +156,31 @@ harness versions. Three failures this week were outside that set, so it gains:
 `doctor` reports; `init` offers to fix what it can. `doctor` does not modify
 anything, consistent with how it already treats a stray `~/sonata.toml`.
 
+### Stale agents are deleted, with consent
+
+`staleAgents` has existed since the beginning and is only ever *reported*:
+`init` prints "delete them by hand, or re-run after removing them". Nothing
+deletes them, and the accumulated files caused three failures on 2026-08-12 —
+36 globally-offered agents naming models a rewritten config no longer defined,
+and 32 more that had to be removed by hand.
+
+`sync` and `init` now offer to remove them:
+
+- **Interactive** — the count and the first few names are shown, and the user
+  confirms. Deletion is destructive, and a prompt is the honest way to ask.
+- **Non-interactive** — nothing is deleted without `--prune`. A scripted run
+  that silently removed files would be a poor trade for tidiness.
+
+Either way only files carrying sonata's marker are candidates. `staleAgents`
+already filters on `forwarding wrapper around the sonata runtime`, so a
+hand-written agent sharing the directory can never be matched — the property
+that made the manual cleanup safe.
+
+`cmdSync` stays non-interactive. It reports what is stale; the CLI and `init`
+decide whether to ask and then call `pruneAgents`. Putting a prompt inside
+`cmdSync` would make the one function the whole agent surface depends on
+untestable without a TTY.
+
 ### Registration follows config scope
 
 `init` writes the MCP server registration to the scope the config uses:
@@ -185,6 +210,13 @@ the run's `meta.json` and exit sentinel.
 
 **`src/commands/sync.ts`** — `agentMarkdown` emits the MCP tool line, and the
 wrapper's procedure text is rewritten to call tools rather than shell commands.
+`cmdSync` returns `{ written, stale }` rather than a bare array, so callers can
+act on staleness without recomputing it.
+
+**`pruneAgents(agentsDir, files): string[]`** (`src/detect.ts`, beside
+`staleAgents`) — deletes the named files and returns those actually removed.
+Takes an explicit list rather than recomputing, so the files shown to the user
+are exactly the files deleted.
 
 **`src/settings.ts`** — MCP registration read/write, mirroring `installHook`.
 
@@ -219,6 +251,12 @@ Claude Code ──dispatch──▶ wrapper agent  (no Bash)
   wrapper cannot report its own absence.
 - **Agents still granting Bash** → a `doctor` error, not a warning. Until they
   are regenerated the old failure remains reachable.
+- **Stale agents present, non-interactive, no `--prune`** → reported, not
+  removed, and `sync` still exits zero. Nothing is broken by their presence;
+  they are merely offered.
+- **A file vanishing between listing and deletion** → skipped rather than
+  throwing. Another `sync` may have removed it, and a race must not abort a
+  cleanup.
 
 ## Migration
 
@@ -250,6 +288,10 @@ is live when it is not.
   naming a missing model, an agent still granting Bash, and an unregistered MCP
   server.
 - `agentMarkdown` — emits the MCP tool line and no `Bash` grant.
+- `pruneAgents` — removes exactly the files named; leaves a hand-written agent
+  in the same directory untouched; tolerates a file already gone.
+- `cmdSync` — returns the stale set without deleting anything, so the decision
+  stays with the caller.
 
 Tests inject `cwd` and `home` as temp directories and never read the real
 environment, as the existing suite does.
