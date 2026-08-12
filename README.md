@@ -95,7 +95,7 @@ choices — different routing, different billing. So you pick a provider first:
 
   filter: █
 
-  ❯ ◉ opencode · openrouter        · 31 models
+  ❯ ◉ opencode · openai        · 13 models
     ○ opencode · opencode-go   · 18 models
     ○ opencode · openrouter    · 341 models
     ○ pi · opencode-go         · 12 models
@@ -109,12 +109,12 @@ one provider alone can offer several hundred:
 ```
   Models to enable
 
-  filter: kimi█
+  filter: gpt█
 
-  ❯ ◉ openrouter/kimi-k3       · Kimi K3
-    ○ openrouter/kimi-k3-free  · Kimi K3 Free
+  ❯ ◉ openai/gpt-5.6-sol      · GPT-5.6 Sol
+    ○ openai/gpt-5.6-luna     · GPT-5.6 Luna
 
-  2 of 31 · space toggle · type to filter · enter confirm · esc cancel
+  2 of 13 · space toggle · type to filter · enter confirm · esc cancel
 ```
 
 Finally it asks whether the config applies to this project or the whole
@@ -128,7 +128,7 @@ to install the permission hook. Project scope writes `./sonata.toml` and
 Every prompt has a flag, so it also works unattended:
 
 ```bash
-sonata init --yes --providers opencode/openrouter --models opencode-openrouter-kimi-k3 --roles code,review --scope project
+sonata init --yes --providers opencode/openai --models opencode-openai-gpt-5.6-sol --roles code,review --scope project
 ```
 
 ### Adding Codex models

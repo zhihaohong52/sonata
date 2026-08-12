@@ -7,8 +7,8 @@
 
 OpenCode and pi both address a model as `provider/model`, and the same model id
 is commonly served by several providers. On the development machine
-`deepseek-v4-flash` arrives from `opencode-go`, from `openrouter`, and from
-`openrouter` (as `openrouter/deepseek/deepseek-v4-flash`). Sonata has no
+`deepseek-v4-flash` arrives from `opencode-go` and from `openrouter` (as
+`openrouter/deepseek/deepseek-v4-flash`). Sonata has no
 concept of a provider, which causes four defects.
 
 **Sonata dispatches to a provider the user never chose.** The opencode adapter
