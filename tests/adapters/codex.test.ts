@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { codexAdapter, configuredBaseUrl, projectTrusted } from '../../src/adapters/codex.js';
+import { parseCodexModels, codexAdapter, configuredBaseUrl, projectTrusted } from '../../src/adapters/codex.js';
 import { getAdapter } from '../../src/adapters/index.js';
 
 const base = {
@@ -230,5 +230,51 @@ describe('adapter registry', () => {
 
   it('opencode declares no fallback, since it cannot write one', () => {
     expect(getAdapter('opencode').fallbackReportFile).toBeUndefined();
+  });
+});
+
+describe('parseCodexModels', () => {
+  const real = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../fixtures/codex/model-list.json'),
+    'utf8',
+  );
+
+  // Captured from a live `codex app-server` model/list call on codex-cli
+  // 0.147.0. Codex has no `models` subcommand, which is why its models used to
+  // be hand-written into sonata.toml.
+  it('reads a real model/list response', () => {
+    const refs = parseCodexModels(real);
+    expect(refs.map((r) => r.ref)).toEqual([
+      'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini',
+    ]);
+    expect(refs[0]).toEqual({
+      harness: 'codex', provider: 'codex', id: 'gpt-5.6-sol', ref: 'gpt-5.6-sol', name: 'GPT-5.6-Sol',
+    });
+  });
+
+  // Codex ids are bare, which parseConfig enforces. A provider-qualified ref
+  // would produce the key codex-codex-gpt-5.6-sol and an id the config rejects.
+  it('keeps ids bare, so the config key is codex-<id>', () => {
+    expect(parseCodexModels(real).every((r) => !r.ref.includes('/'))).toBe(true);
+  });
+
+  it('omits hidden models', () => {
+    const body = JSON.stringify({ result: { data: [
+      { id: 'visible', displayName: 'V', hidden: false },
+      { id: 'internal', displayName: 'I', hidden: true },
+    ] } });
+    expect(parseCodexModels(body).map((r) => r.id)).toEqual(['visible']);
+  });
+
+  it('accepts the result object on its own', () => {
+    const body = JSON.stringify({ data: [{ id: 'gpt-5.5', hidden: false }] });
+    expect(parseCodexModels(body).map((r) => r.id)).toEqual(['gpt-5.5']);
+  });
+
+  it('returns nothing rather than throwing on junk, an error, or a missing id', () => {
+    expect(parseCodexModels('not json')).toEqual([]);
+    expect(parseCodexModels('null')).toEqual([]);
+    expect(parseCodexModels(JSON.stringify({ error: { message: 'not logged in' } }))).toEqual([]);
+    expect(parseCodexModels(JSON.stringify({ result: { data: [{ displayName: 'no id' }] } }))).toEqual([]);
   });
 });

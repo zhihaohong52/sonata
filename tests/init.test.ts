@@ -411,7 +411,9 @@ id = "opencode-go/deepseek-v4-flash"
 [generate.roles]
 code = ["pi-deepseek"]
 `;
-    expect(preTickedRefs(toml, refs)).toEqual(new Set(['opencode-go/deepseek-v4-flash']));
+    // Keyed by config key, not by ref: opencode and pi both serve
+    // opencode-go/deepseek-v4-flash, and a ref-keyed set pre-ticked both.
+    expect(preTickedRefs(toml, refs)).toEqual(new Set(['pi-opencode-go-deepseek-v4-flash']));
   });
 
   it('matches the harness too, so one ref under two harnesses stays distinct', () => {
@@ -437,6 +439,25 @@ id = "kimi-k3"
 code = ["kimi-k3"]
 `;
     expect(preTickedRefs(toml, refs)).toEqual(new Set());
+  });
+
+  // The picker labelled rows by `ref`, so opencode's and pi's
+  // opencode-go/deepseek-v4-flash printed as two identical lines, and both
+  // shared a selection value: ticking one selected the other.
+  it('pre-ticks only the harness actually configured, not its twin', () => {
+    const toml = `
+[models."opencode-opencode-go-deepseek-v4-flash"]
+harness = "opencode"
+id = "opencode-go/deepseek-v4-flash"
+
+[generate.roles]
+code = ["opencode-opencode-go-deepseek-v4-flash"]
+`;
+    const twin = [
+      { harness: 'opencode' as const, provider: 'opencode-go', id: 'deepseek-v4-flash', ref: 'opencode-go/deepseek-v4-flash' },
+      { harness: 'pi' as const, provider: 'opencode-go', id: 'deepseek-v4-flash', ref: 'opencode-go/deepseek-v4-flash' },
+    ];
+    expect(preTickedRefs(toml, twin)).toEqual(new Set(['opencode-opencode-go-deepseek-v4-flash']));
   });
 
   it('is empty for an unparseable or empty config', () => {

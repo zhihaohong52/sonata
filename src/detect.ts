@@ -10,6 +10,7 @@ import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from
 import { join } from 'node:path';
 import { checkVersion } from './commands/doctor.js';
 import { parsePiRefs } from './adapters/pi.js';
+import { parseCodexModels, codexModelList } from './adapters/codex.js';
 import type { ModelRef, ProviderHarness } from './types.js';
 
 const run = promisify(execFile);
@@ -306,8 +307,46 @@ export async function detectPi(env: DetectEnv): Promise<HarnessStatus> {
   };
 }
 
+/**
+ * Codex, discovered through `codex app-server`'s `model/list`.
+ *
+ * Codex has no provider dimension, so every model lands under the single
+ * pseudo-provider `codex`. An install that is present but not logged in lists
+ * nothing, which is reported as a warning rather than an error: a machine with
+ * only opencode is normal.
+ */
+export async function detectCodex(env: DetectEnv): Promise<HarnessStatus> {
+  const version = await tryRun('codex', ['--version'], process.env);
+  if (version === null) {
+    return { name: 'codex', installed: false, supported: false, refs: [], authedProviders: [], problems: [] };
+  }
+
+  const listing = await codexModelList();
+  const refs = listing === null ? [] : parseCodexModels(listing);
+  const problems: Problem[] = [];
+  if (refs.length === 0) {
+    problems.push({
+      severity: 'warn',
+      message: 'codex is installed but listed no models',
+      fix: 'codex login',
+    });
+  }
+
+  return {
+    name: 'codex',
+    installed: true,
+    version,
+    supported: true,
+    refs,
+    // Codex has one account rather than per-provider auth; listing models at
+    // all is the evidence that it is usable.
+    authedProviders: refs.length > 0 ? ['codex'] : [],
+    problems,
+  };
+}
+
 export async function detectHarnesses(env: DetectEnv): Promise<HarnessStatus[]> {
-  return Promise.all([detectOpenCode(env), detectPi(env)]);
+  return Promise.all([detectOpenCode(env), detectPi(env), detectCodex(env)]);
 }
 
 /** Where opencode keeps its own configuration. */

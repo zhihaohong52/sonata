@@ -215,7 +215,10 @@ export function preTickedRefs(configText: string, refs: ModelRef[]): Set<string>
   const enabled = new Set<string>();
   for (const entry of Object.values(models)) {
     for (const ref of refs) {
-      if (ref.harness === entry.harness && ref.ref === entry.id) enabled.add(ref.ref);
+      // Keyed by config key, not by `ref`. Two harnesses can serve the
+      // identical provider/model, so a set keyed on `ref` pre-ticked both
+      // when only one was configured.
+      if (ref.harness === entry.harness && ref.ref === entry.id) enabled.add(configKeyFor(ref));
     }
   }
   return enabled;
@@ -227,6 +230,18 @@ export function preTickedRefs(configText: string, refs: ModelRef[]): Set<string>
  * and opencode can serve the identical ref, and without it those two
  * selections would overwrite each other.
  */
+/**
+ * What a model is called on screen: `<harness>/<provider>/<model>`.
+ *
+ * pi and opencode can serve the identical `provider/model`, so labelling rows
+ * by `ref` alone printed two identical lines and gave no way to tell which
+ * harness a row would dispatch to. Codex has no provider dimension, so its
+ * rows read `codex/gpt-5.6-sol`.
+ */
+export function refLabel(ref: ModelRef): string {
+  return `${ref.harness}/${ref.ref}`;
+}
+
 export function configKeyFor(ref: ModelRef): string {
   return `${ref.harness}-${ref.ref}`.replace(/\//g, '-');
 }
@@ -332,12 +347,12 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
         value: p.key,
         label: `${p.harness} · ${p.provider}`,
         hint: `${p.count} models`,
-        checked: allRefs.some((r) => `${r.harness}/${r.provider}` === p.key && enabled.has(r.ref)),
+        checked: allRefs.some((r) => `${r.harness}/${r.provider}` === p.key && enabled.has(configKeyFor(r))),
       })),
     );
   } else {
     providerKeys = offered
-      .filter((p) => allRefs.some((r) => `${r.harness}/${r.provider}` === p.key && enabled.has(r.ref)))
+      .filter((p) => allRefs.some((r) => `${r.harness}/${r.provider}` === p.key && enabled.has(configKeyFor(r))))
       .map((p) => p.key);
   }
 
@@ -360,13 +375,13 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
       'Models to enable',
       inScope.map((r) => ({
         value: configKeyFor(r),
-        label: r.ref,
+        label: refLabel(r),
         hint: r.name,
-        checked: enabled.has(r.ref),
+        checked: enabled.has(configKeyFor(r)),
       })),
     );
   } else {
-    keys = inScope.filter((r) => enabled.has(r.ref)).map(configKeyFor);
+    keys = inScope.filter((r) => enabled.has(configKeyFor(r))).map(configKeyFor);
   }
 
   const byKey = new Map(inScope.map((r) => [configKeyFor(r), r]));
@@ -421,9 +436,11 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     for (const role of roles) {
       const picked = await multiselect(
         `Models for: ${role}`,
-        chosen.map((r) => ({ value: r.ref, label: r.ref, hint: r.name, checked: true })),
+        chosen.map((r) => ({
+          value: configKeyFor(r), label: refLabel(r), hint: r.name, checked: true,
+        })),
       );
-      roleModels[role] = chosen.filter((r) => picked.includes(r.ref));
+      roleModels[role] = chosen.filter((r) => picked.includes(configKeyFor(r)));
     }
   }
 
@@ -455,7 +472,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   // ---- confirm ----------------------------------------------------------
   out('');
   out('  Summary');
-  out(`    models  ${chosen.map((r) => r.ref).join(', ')}`);
+  out(`    models  ${chosen.map(refLabel).join(', ')}`);
   out(`    roles   ${roles.join(', ')}`);
   out(`    agents  ${Object.values(roleModels).reduce((n, m) => n + m.length, 0)} files in .claude/agents/`);
   out(`    hook    ${scope === 'skip' ? 'not installed' : `${scope} settings.json`}`);

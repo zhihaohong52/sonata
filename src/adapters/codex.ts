@@ -3,10 +3,114 @@ import { promisify } from 'node:util';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { connect } from 'node:net';
+import { spawn } from 'node:child_process';
 import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput } from './types.js';
+import type { ModelRef } from '../types.js';
 import { isReadOnlyRole } from '../config.js';
 
 const run = promisify(execFile);
+
+/**
+ * Codex model discovery.
+ *
+ * Codex has no `models` subcommand, which is why its models were hand-written
+ * into sonata.toml. It does have `codex app-server`, a JSON-RPC service whose
+ * `model/list` method returns the catalogue the picker needs. The protocol is
+ * not guesswork: `codex app-server generate-json-schema` emits it, and the
+ * response captured from a real call is in
+ * `tests/fixtures/codex/model-list.json`.
+ *
+ * Unlike opencode and pi, codex has no provider dimension — ids are bare
+ * (`gpt-5.6-sol`), which `parseConfig` enforces. `provider` is set to `codex`
+ * for grouping in the picker only; `ref` stays bare so the config key comes
+ * out as `codex-gpt-5.6-sol`.
+ */
+export function parseCodexModels(stdout: string): ModelRef[] {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return [];
+  }
+
+  // Accept either the whole JSON-RPC response or the result object alone.
+  const data = parsed?.result?.data ?? parsed?.data;
+  if (!Array.isArray(data)) return [];
+
+  const out: ModelRef[] = [];
+  for (const m of data) {
+    // `hidden` marks models the picker is meant not to offer (internal or
+    // review-only entries). A missing id is not a model.
+    if (m === null || typeof m !== 'object') continue;
+    if (typeof m.id !== 'string' || m.id.length === 0) continue;
+    if (m.hidden === true) continue;
+    out.push({
+      harness: 'codex',
+      provider: 'codex',
+      id: m.id,
+      ref: m.id,
+      name: typeof m.displayName === 'string' ? m.displayName : undefined,
+    });
+  }
+  return out;
+}
+
+/**
+ * Asks a short-lived `codex app-server` for its catalogue.
+ *
+ * The server speaks newline-delimited JSON-RPC and requires `initialize`
+ * before any other method. Everything is bounded by a timeout and the child is
+ * always killed: `sonata doctor` must never hang on a harness.
+ */
+export function codexModelList(timeoutMs = 15_000): Promise<string | null> {
+  return new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn('codex', ['app-server'], { stdio: ['pipe', 'pipe', 'ignore'] });
+    } catch {
+      resolve(null);
+      return;
+    }
+
+    let buf = '';
+    let settled = false;
+    const finish = (value: string | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill();
+      resolve(value);
+    };
+
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    child.on('error', () => finish(null));
+    child.on('exit', () => finish(null));
+
+    child.stdout?.on('data', (d: Buffer) => {
+      buf += d.toString();
+      let i: number;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (line.trim().length === 0) continue;
+        let msg: any;
+        try { msg = JSON.parse(line); } catch { continue; }
+        if (msg?.id === 1) {
+          child.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'model/list', params: {} })}\n`);
+        } else if (msg?.id === 2) {
+          finish(line);
+        }
+      }
+    });
+
+    child.stdin?.write(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { clientInfo: { name: 'sonata', version: '0.0.1', title: 'sonata' } },
+    })}\n`);
+  });
+}
 
 /**
  * Codex CLI adapter.
