@@ -486,7 +486,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   }
 
   const agentsDir = agentsDirFor(configScope, opts.cwd, opts.home);
-  const agentsWritten = cmdSync({ cwd: opts.cwd, home: opts.home, agentsDir });
+  const agentsWritten = cmdSync({ cwd: opts.cwd, home: opts.home, agentsDir }).written;
   out(`  ✓ generated ${agentsWritten.length} agents in ${agentsDir}`);
 
   const expected = roles.flatMap((r) => keys.map((k) => `${r}-${k}`));

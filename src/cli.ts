@@ -167,7 +167,7 @@ async function main(argv: string[]): Promise<number> {
       cwd: process.cwd(),
       home: homedir(),
       agentsDir: join(process.cwd(), '.claude', 'agents'),
-    });
+    }).written;
     for (const p of written) console.log(`wrote ${p}`);
     return 0;
   }

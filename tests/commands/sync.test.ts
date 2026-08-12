@@ -49,7 +49,7 @@ describe('agentMarkdown', () => {
 describe('cmdSync', () => {
   it('writes one agent file per role x model pair', () => {
     const agentsDir = join(cwd, '.claude', 'agents');
-    const written = cmdSync({ cwd, agentsDir });
+    const written = cmdSync({ cwd, agentsDir }).written;
     expect(written).toHaveLength(4);
     expect(written.map((p) => p.split('/').pop()).sort()).toEqual([
       'code-deepseek-v4-flash.md',
@@ -71,7 +71,7 @@ explore = ["deepseek-v4-flash"]
 plan = ["deepseek-v4-flash"]
 `);
     const agentsDir = join(cwd, '.claude', 'agents');
-    const written = cmdSync({ cwd, agentsDir });
+    const written = cmdSync({ cwd, agentsDir }).written;
     expect(written.map((p) => p.split('/').pop()).sort()).toEqual([
       'explore-deepseek-v4-flash.md',
       'plan-deepseek-v4-flash.md',
@@ -94,9 +94,75 @@ code = ["m"]
 `);
 
     const agentsDir = join(home, '.claude', 'agents');
-    const written = cmdSync({ cwd, home, agentsDir });
+    const written = cmdSync({ cwd, home, agentsDir }).written;
 
     expect(written).toHaveLength(1);
     expect(existsSync(join(agentsDir, 'code-m.md'))).toBe(true);
+  });
+});
+
+describe('cmdSync — per-role models and staleness', () => {
+  it('writes only the agents the roles ask for', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sync-roles-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."a"]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+[models."b"]
+harness = "codex"
+id = "gpt-5.6-terra"
+
+[generate.roles]
+code = ["a"]
+review = ["a", "b"]
+`);
+    const agentsDir = join(cwd, '.claude', 'agents');
+    const res = cmdSync({ cwd, agentsDir });
+
+    expect(res.written).toHaveLength(3);
+    expect(existsSync(join(agentsDir, 'code-a.md'))).toBe(true);
+    expect(existsSync(join(agentsDir, 'review-b.md'))).toBe(true);
+    // code did not ask for b
+    expect(existsSync(join(agentsDir, 'code-b.md'))).toBe(false);
+  });
+
+  it('reports stale agents without deleting them', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sync-stale-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."a"]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+[generate.roles]
+code = ["a"]
+`);
+    const agentsDir = join(cwd, '.claude', 'agents');
+    cmdSync({ cwd, agentsDir });
+    // An agent sonata wrote earlier, for a model no longer configured.
+    writeFileSync(join(agentsDir, 'code-gone.md'),
+      'forwarding wrapper around the sonata runtime');
+
+    const res = cmdSync({ cwd, agentsDir });
+    expect(res.stale).toEqual(['code-gone.md']);
+    // Reported, not removed — the caller decides.
+    expect(existsSync(join(agentsDir, 'code-gone.md'))).toBe(true);
+  });
+
+  it('never reports an agent sonata did not write', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sync-foreign-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."a"]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+[generate.roles]
+code = ["a"]
+`);
+    const agentsDir = join(cwd, '.claude', 'agents');
+    cmdSync({ cwd, agentsDir });
+    writeFileSync(join(agentsDir, 'my-own-agent.md'), 'hand written, not sonata');
+
+    expect(cmdSync({ cwd, agentsDir }).stale).toEqual([]);
   });
 });

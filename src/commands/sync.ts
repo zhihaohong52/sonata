@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig } from '../config.js';
+import { generatedAgents, loadConfig } from '../config.js';
+import { staleAgents } from '../detect.js';
 
 export interface AgentSpec { role: string; model: string; harness: string }
 
@@ -69,19 +70,28 @@ To watch the run live, a human can attach with \`tmux attach -t sonata-<id>\`.
 
 export interface SyncOptions { cwd: string; agentsDir: string; home?: string }
 
-export function cmdSync(opts: SyncOptions): string[] {
+export interface SyncResult {
+  /** Paths written. */
+  written: string[];
+  /** Filenames sonata wrote that the config no longer covers. Not deleted. */
+  stale: string[];
+}
+
+export function cmdSync(opts: SyncOptions): SyncResult {
   const config = loadConfig(opts.cwd, opts.home);
   mkdirSync(opts.agentsDir, { recursive: true });
 
+  const wanted = generatedAgents(config);
   const written: string[] = [];
-  const allModels = [...new Set(Object.values(config.generate.roles).flat())];
-  for (const role of Object.keys(config.generate.roles)) {
-    for (const model of allModels) {
-      const harness = config.models[model].harness;
-      const path = join(opts.agentsDir, `${role}-${model}.md`);
-      writeFileSync(path, agentMarkdown({ role, model, harness }));
-      written.push(path);
-    }
+  for (const { role, model } of wanted) {
+    const harness = config.models[model].harness;
+    const path = join(opts.agentsDir, `${role}-${model}.md`);
+    writeFileSync(path, agentMarkdown({ role, model, harness }));
+    written.push(path);
   }
-  return written.sort();
+
+  return {
+    written,
+    stale: staleAgents(opts.agentsDir, wanted.map((a) => `${a.role}-${a.model}`)),
+  };
 }
