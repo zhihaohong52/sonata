@@ -9,13 +9,14 @@ import { dirname, join } from 'node:path';
 import { KNOWN_ROLES, configPath, GLOBAL_CONFIG_RELATIVE, parseConfig } from '../config.js';
 import type { ModelRef } from '../types.js';
 import {
-  detectTmux, detectHarnesses, offerableProviders, staleAgents,
+  detectTmux, detectHarnesses, offerableProviders,
   type Problem, type HarnessStatus, type DetectEnv,
 } from '../detect.js';
 import {
   settingsPath, readSettings, writeSettings, installHook,
-  hookInstalled, hookCommand, type HookScope,
+  hookInstalled, hookCommand, mcpConfigPath, registerMcp, type HookScope,
 } from '../settings.js';
+import { pruneAgents } from '../detect.js';
 import { cmdSync } from './sync.js';
 import { multiselect, select, confirm, isInteractive, banner, CancelledError } from '../tui.js';
 
@@ -71,6 +72,7 @@ export interface InitOptions {
   scope?: HookScope | 'skip';
   /** Where the config and its agents are written. Defaults to `project`. */
   configScope?: ConfigScope;
+  prune?: boolean;
   write?: (line: string) => void;
   detect?: Detector;
 }
@@ -83,6 +85,8 @@ export interface InitResult {
   hookChanged: boolean;
   agentsWritten: string[];
   configPath: string;
+  mcpChanged: boolean;
+  pruned: string[];
   cancelled?: boolean;
 }
 
@@ -286,6 +290,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     return {
       problems, models: [], roles: [], scope: 'skip', hookChanged: false,
       agentsWritten: [], configPath: join(opts.cwd, 'sonata.toml'),
+      mcpChanged: false, pruned: [],
     };
   }
   for (const p of problems) out(renderProblem(p));
@@ -460,6 +465,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     return {
       problems, models: keys, roles, scope, hookChanged: false,
       agentsWritten: [], configPath: configPathResolved, cancelled: true,
+      mcpChanged: false, pruned: [],
     };
   }
 
@@ -486,23 +492,40 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   }
 
   const agentsDir = agentsDirFor(configScope, opts.cwd, opts.home);
-  const agentsWritten = cmdSync({ cwd: opts.cwd, home: opts.home, agentsDir }).written;
+  const sync = cmdSync({ cwd: opts.cwd, home: opts.home, agentsDir });
+  const agentsWritten = sync.written;
   out(`  ✓ generated ${agentsWritten.length} agents in ${agentsDir}`);
 
-  const expected = roles.flatMap((r) => keys.map((k) => `${r}-${k}`));
-  const stale = staleAgents(agentsDir, expected);
+  const mcpPath = mcpConfigPath(configScope === 'global' ? 'global' : 'project', opts.cwd, opts.home);
+  const mcp = registerMcp(mcpPath, opts.packageRoot);
+  out(mcp.changed
+    ? `  ✓ registered the sonata MCP server in ${mcpPath}`
+    : `  · MCP server already registered in ${mcpPath}`);
+
+  const stale = sync.stale;
+  let pruned: string[] = [];
   if (stale.length > 0) {
     out('');
     out(`  ! ${stale.length} stale agent file(s) no longer in your config:`);
-    for (const f of stale) out(`      ${f}`);
-    out('      ❯ delete them by hand, or re-run after removing them');
+    for (const f of stale.slice(0, 5)) out(`      ${f}`);
+    if (stale.length > 5) out(`      … and ${stale.length - 5} more`);
+    const remove = opts.prune ?? (interactive && await confirm('Delete them?', true));
+    if (remove) {
+      pruned = pruneAgents(agentsDir, stale);
+      out(`  ✓ removed ${pruned.length} stale agent file(s)`);
+    } else {
+      out('      ❯ delete them by hand, or re-run with --prune');
+    }
   }
 
   out('');
-  out('  Done. Restart Claude Code for the new agents to appear.');
+  out('  Done. Restart Claude Code so it picks up the agents and the MCP server.');
   out('');
 
-  return { problems, models: keys, roles, scope, hookChanged, agentsWritten, configPath: configPathResolved };
+  return {
+    problems, models: keys, roles, scope, hookChanged, agentsWritten,
+    configPath: configPathResolved, mcpChanged: mcp.changed, pruned,
+  };
 }
 
 export function isCancellation(err: unknown): boolean {

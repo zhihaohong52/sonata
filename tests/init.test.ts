@@ -742,3 +742,55 @@ describe('cmdInit — per-role models', () => {
     expect(res.agentsWritten).toHaveLength(4);
   });
 });
+
+describe('cmdInit — MCP and pruning', () => {
+  let cwd: string;
+  let home: string;
+  const write = (_line: string) => {};
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'init-mcp-cwd-'));
+    home = mkdtempSync(join(tmpdir(), 'init-mcp-home-'));
+  });
+
+  const detect = async () => ({
+    tmux: { installed: true, version: '3.7b', problems: [] },
+    harnesses: [{
+      name: 'opencode', installed: true, version: '1.18.16', supported: true,
+      refs: parseOpenCodeRefs('openrouter/kimi-k3\n'),
+      authedProviders: ['openrouter'], problems: [],
+    }],
+  });
+  const args = {
+    packageRoot: '/pkg', yes: true, detect,
+    providers: ['opencode/openrouter'], models: ['opencode-openrouter-kimi-k3'],
+    roles: ['code'], scope: 'skip' as const, configScope: 'project' as const,
+  };
+
+  it('registers the MCP server in the config\'s scope', async () => {
+    const res = await cmdInit({ ...args, cwd, home, write });
+    expect(res.mcpChanged).toBe(true);
+    const parsed = JSON.parse(readFileSync(join(cwd, '.mcp.json'), 'utf8'));
+    expect(parsed.mcpServers.sonata.args).toContain('mcp');
+  });
+
+  it('does not delete stale agents unless asked', async () => {
+    await cmdInit({ ...args, cwd, home, write });
+    const dir = join(cwd, '.claude', 'agents');
+    writeFileSync(join(dir, 'code-gone.md'), 'forwarding wrapper around the sonata runtime');
+
+    const res = await cmdInit({ ...args, cwd, home, write });
+    expect(res.pruned).toEqual([]);
+    expect(existsSync(join(dir, 'code-gone.md'))).toBe(true);
+  });
+
+  it('deletes them when --prune is given', async () => {
+    await cmdInit({ ...args, cwd, home, write });
+    const dir = join(cwd, '.claude', 'agents');
+    writeFileSync(join(dir, 'code-gone.md'), 'forwarding wrapper around the sonata runtime');
+
+    const res = await cmdInit({ ...args, cwd, home, prune: true, write });
+    expect(res.pruned).toEqual(['code-gone.md']);
+    expect(existsSync(join(dir, 'code-gone.md'))).toBe(false);
+  });
+});

@@ -8,7 +8,8 @@ import { cmdSync } from './commands/sync.js';
 import { cmdDoctor } from './commands/doctor.js';
 import { cmdGc } from './commands/gc.js';
 import { cmdInit, isCancellation } from './commands/init.js';
-import { banner, isInteractive } from './tui.js';
+import { banner, isInteractive, confirm } from './tui.js';
+import { pruneAgents } from './detect.js';
 import type { HookScope } from './settings.js';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +33,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
     --roles code,review      roles to generate
     --config-scope project|global   where the config and its agents go
     --scope project|global|skip   where to install the permission hook
+    --prune                    delete stale sonata agent files
 `;
 
 /** Repository root, one level above the compiled dist/ or src/ directory. */
@@ -57,6 +59,9 @@ async function main(argv: string[]): Promise<number> {
         roles: { type: 'string' },
         'config-scope': { type: 'string' },
         scope: { type: 'string' },
+        // No default: `undefined` means "unanswered", which lets cmdInit fall
+        // through to the interactive prompt. `false` would suppress it.
+        prune: { type: 'boolean' },
       },
     });
 
@@ -86,6 +91,7 @@ async function main(argv: string[]): Promise<number> {
         roles: split(values.roles),
         scope,
         configScope,
+        prune: values.prune,
       });
       if (res.cancelled) return 1;
       return res.problems.some((p) => p.severity === 'error') ? 1 : 0;
@@ -165,12 +171,28 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (command === 'sync') {
-    const written = cmdSync({
+    const { values } = parseArgs({
+      args: rest,
+      options: { prune: { type: 'boolean', default: false } },
+    });
+    const agentsDir = join(process.cwd(), '.claude', 'agents');
+    const sync = cmdSync({
       cwd: process.cwd(),
       home: homedir(),
-      agentsDir: join(process.cwd(), '.claude', 'agents'),
-    }).written;
-    for (const p of written) console.log(`wrote ${p}`);
+      agentsDir,
+    });
+    for (const p of sync.written) console.log(`wrote ${p}`);
+    if (sync.stale.length > 0) {
+      for (const f of sync.stale.slice(0, 5)) console.log(`stale ${f}`);
+      if (sync.stale.length > 5) console.log(`stale ... and ${sync.stale.length - 5} more`);
+      const remove = values.prune || (isInteractive() && await confirm('Delete them?', true));
+      if (remove) {
+        const pruned = pruneAgents(agentsDir, sync.stale);
+        console.log(`removed ${pruned.length} stale agent file(s)`);
+      } else {
+        console.log('delete them by hand, or re-run with --prune');
+      }
+    }
     return 0;
   }
 
