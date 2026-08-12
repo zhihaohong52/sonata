@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decide } from '../../src/commands/tail.js';
+import { decide, harnessOutput } from '../../src/commands/tail.js';
 
 const base = {
   newLines: [] as string[],
@@ -48,6 +48,58 @@ describe('tail decide — runs that cannot write a report', () => {
   it('leaves write-capable runs degraded when they write nothing', () => {
     const r = decide({ ...base, canWriteReport: true, exitCode: 0 });
     expect(r.degraded).toBe(true);
+  });
+
+  // A read-only run was previously accepted on the exit code alone, so a
+  // harness that died before saying anything — locked database, expired
+  // token, bad model id — reported DONE and not degraded, with the echo of
+  // sonata's own launch command standing in for the report.
+  const LAUNCH = '/repo/.sonata/runs/abc123/cmd.sh';
+
+  it('flags a read-only run that exited cleanly having said nothing', () => {
+    const r = decide({
+      ...readOnly,
+      exitCode: 0,
+      paneTail: [`bash "${LAUNCH}"`, `user@host repo % bash "${LAUNCH}"`, '  '],
+      launchMarker: LAUNCH,
+    });
+    expect(r.degraded).toBe(true);
+    expect(r.report).toContain('without producing any output');
+  });
+
+  it('accepts a read-only run that produced even one line of its own', () => {
+    const r = decide({
+      ...readOnly,
+      exitCode: 0,
+      paneTail: [`bash "${LAUNCH}"`, 'math.js exports add'],
+      launchMarker: LAUNCH,
+    });
+    expect(r.degraded).toBe(false);
+    expect(r.report).toContain('cannot write a report file');
+  });
+
+  it('does not mistake a blank pane for output when no marker is given', () => {
+    const r = decide({ ...readOnly, exitCode: 0, paneTail: ['', '   '] });
+    expect(r.degraded).toBe(true);
+  });
+});
+
+describe('harnessOutput', () => {
+  const LAUNCH = '/repo/.sonata/runs/abc123/cmd.sh';
+
+  it('drops blank lines and every echo of the launch command', () => {
+    expect(harnessOutput([
+      `bash "${LAUNCH}"`,
+      '',
+      `user@host repo % bash "${LAUNCH}"`,
+      '   ',
+      'real output',
+    ], LAUNCH)).toEqual(['real output']);
+  });
+
+  it('keeps output that merely mentions a similar path', () => {
+    expect(harnessOutput(['read /repo/.sonata/runs/abc123/report.md'], LAUNCH))
+      .toEqual(['read /repo/.sonata/runs/abc123/report.md']);
   });
 });
 

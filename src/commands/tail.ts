@@ -8,7 +8,21 @@ import {
   readMeta, readExit, readReport, readCursor, writeCursor,
   appendEvents, readEvents, writeMeta, runDir,
 } from '../store.js';
+import { cmdVerify } from './verify.js';
 import type { TailState } from '../types.js';
+
+/**
+ * The provenance line appended to every finished report.
+ *
+ * Built from the run's own meta.json, so it cannot be produced by a wrapper
+ * that skipped the dispatch and answered from memory — the failure `sonata
+ * verify` was written to catch, but which only helped when someone remembered
+ * to run it.
+ */
+function provenance(cwd: string, id: string): string {
+  const v = cmdVerify({ cwd, id });
+  return v.ok ? `— sonata ${v.detail}` : `— sonata could NOT verify this run: ${v.detail}`;
+}
 
 export interface DecideInput {
   newLines: string[];
@@ -25,6 +39,26 @@ export interface DecideInput {
    * no report is then the expected outcome, not a failure.
    */
   canWriteReport?: boolean;
+  /**
+   * The launch line sonata itself put in the pane (the `cmd.sh` path). Used to
+   * tell the harness's own output apart from the echo of the command that
+   * started it — an exact string sonata wrote, not a guessed prompt pattern.
+   */
+  launchMarker?: string;
+}
+
+/**
+ * The harness's own output: everything in the pane that sonata did not put
+ * there. tmux echoes the launch command, and the shell prints a prompt around
+ * it, so a pane that "has content" is not evidence a model ever spoke.
+ */
+export function harnessOutput(paneTail: string[], launchMarker?: string): string[] {
+  return paneTail.filter((line) => {
+    const t = line.trim();
+    if (t.length === 0) return false;
+    if (launchMarker !== undefined && t.includes(launchMarker)) return false;
+    return true;
+  });
 }
 
 export interface TailResult {
@@ -42,10 +76,20 @@ export function decide(input: DecideInput): TailResult {
     // A run that could never write a report is not degraded for lacking one —
     // its terminal output IS the report. Only a clean exit qualifies: a
     // read-only run that crashed is still a failure worth flagging.
+    //
+    // The output must also be non-empty. Without that check, ANY clean exit
+    // was accepted as success for a read-only role, so a harness that died
+    // before saying anything — a locked database, an expired token, a bad
+    // model id — was reported DONE and not degraded, with the launch command
+    // echo standing in for a report. That is the silent success this whole
+    // design exists to prevent: nothing else downstream can tell the
+    // difference between "answered" and "never ran".
+    const spoke = harnessOutput(input.paneTail, input.launchMarker).length > 0;
     const reportImpossible = input.canWriteReport === false
       && input.report === null
       && input.exitCode === 0
-      && !input.timedOut;
+      && !input.timedOut
+      && spoke;
 
     // A timed-out run is degraded even if a report file happens to exist: the
     // work was cut short, so the report cannot be trusted as complete.
@@ -54,9 +98,11 @@ export function decide(input: DecideInput): TailResult {
       ? `[timed out: sonata killed the run after the configured run_timeout_seconds]\n\n${input.paneTail.join('\n')}`
       : reportImpossible
         ? `[read-only run: the harness cannot write a report file, so this is its terminal output]\n\n${input.paneTail.join('\n')}`
-        : degraded
-          ? `[degraded: harness exited ${input.exitCode} without writing a report]\n\n${input.paneTail.join('\n')}`
-          : input.report!;
+        : degraded && !spoke
+          ? `[degraded: the harness exited ${input.exitCode} without producing any output — nothing ran]\n\n${input.paneTail.join('\n')}`
+          : degraded
+            ? `[degraded: harness exited ${input.exitCode} without writing a report]\n\n${input.paneTail.join('\n')}`
+            : input.report!;
     return {
       state: 'DONE',
       lines: input.newLines,
@@ -125,6 +171,9 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
 
   const deadline = now() + opts.waitSeconds * 1000;
   let lastChange = lastChangeMs(opts.cwd, opts.id, now);
+  // The exact path tmux echoes when the run starts, so pane lines sonata
+  // caused can be told from output the harness produced.
+  const scriptPath = join(runDir(opts.cwd, opts.id), 'cmd.sh');
 
   for (;;) {
     const cursor = readCursor(opts.cwd, opts.id);
@@ -194,6 +243,7 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       paneTail: pane.slice(-20),
       timedOut: existsSync(join(runDir(opts.cwd, opts.id), 'timeout')),
       canWriteReport: meta.canWriteReport,
+      launchMarker: scriptPath,
     });
 
     if (result.state === 'DONE') {
@@ -203,7 +253,11 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
         exitCode: result.exitCode,
         degraded: result.degraded,
       });
-      return result;
+      // Every finished report carries its own provenance, so verification is
+      // not a step someone has to remember. A wrapper that answers from its
+      // own head instead of dispatching cannot produce this line: it is built
+      // from the run's meta.json, which only a real run writes.
+      return { ...result, report: `${result.report ?? ''}\n\n${provenance(opts.cwd, opts.id)}` };
     }
 
     if (result.state !== 'PROGRESS' || result.lines.length > 0) return result;

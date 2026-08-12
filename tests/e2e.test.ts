@@ -82,6 +82,23 @@ describe('end to end against the fake harness', () => {
     expect(r.exitCode).toBe(0);
   });
 
+  // A wrapper that skipped the dispatch and answered from its own head cannot
+  // produce this line: it is built from meta.json, which only a real run
+  // writes. Verification therefore no longer depends on someone remembering
+  // to run `sonata verify`.
+  it('appends provenance naming the run, role and model to a finished report', async () => {
+    const id = await launch('normal', false);
+    const r = await tailUntil(id, ['DONE']);
+    expect(r.report).toContain(`— sonata ${id}:`);
+    expect(r.report).toContain('code on fake via opencode');
+  });
+
+  it('appends provenance to a degraded report too', async () => {
+    const id = await launch('crash', false);
+    const r = await tailUntil(id, ['DONE']);
+    expect(r.report).toContain(`— sonata ${id}:`);
+  });
+
   it('reports a crash as DONE degraded with the pane tail', async () => {
     const id = await launch('crash', false);
     const r = await tailUntil(id, ['DONE']);

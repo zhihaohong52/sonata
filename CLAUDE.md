@@ -160,12 +160,13 @@ Sonata launches other coding agents on your machine — they run **as you**, wit
 ## Known Limitations
 
 - `sonata init` discovers OpenCode and Pi models; codex models are added by hand.
-- `parsePiRefs` is written against a fixture composed from memory, not captured from a real `pi --list-models`. Pi was not installed on the machine where it was written. Capture real output before trusting it.
+- **opencode's `event` table grows without bound** — 6.5 GB across 140k rows on the development machine, which is what produced `database is locked` under three concurrent dispatches. Sonata cannot prune another harness's store. Three concurrent runs against opencode 1.18.16 completed cleanly, so this is load- and size-dependent rather than a fixed limit; a run that dies without producing output is now reported `degraded` rather than silently succeeding.
 - Not published to npm yet — install from source.
 - Prompt detection is regex against TUIs sonata does not control; `STALLED` timeout is the backstop. Codex prompt patterns are written from captured real output in `tests/fixtures/panes/`.
 - Codex through a proxy needs that proxy up (`sonata doctor` checks the endpoint).
 - `opencode run --format json` is broken upstream (v1.18.15 produces no output, never exits), so progress comes from pane text rather than a structured event stream. Pi's `--mode json` works; the adapter keeps a seam for adopting it.
 - No streaming granularity guarantees — progress is whatever the harness prints.
+- **The harness conversation cannot be streamed into Claude Code.** A subagent receives text only as tool results, and its parent receives only its final message, so no push channel exists to stream into. `sonata tail` is already a long-poll (it returns the instant a line appears, and only blocks for `tail_window_seconds` when the harness is silent); `tmux attach -r -t sonata-<id>` is the live view, and `sonata run` now prints that command.
 
 ## Conventions
 

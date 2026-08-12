@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { runDir } from '../store.js';
 
 export interface VerifyOptions { cwd: string; id: string; model?: string }
 
@@ -10,7 +11,10 @@ export interface VerifyOptions { cwd: string; id: string; model?: string }
  * carries no id that survives this.
  */
 export function cmdVerify(opts: VerifyOptions): { ok: boolean; detail: string } {
-  const dir = join(opts.cwd, '.sonata', 'runs', opts.id);
+  // Shares the store's definition rather than rebuilding the path: two copies
+  // could disagree about where runs live, and this is the check that decides
+  // whether a run happened at all.
+  const dir = runDir(opts.cwd, opts.id);
   const metaPath = join(dir, 'meta.json');
   if (!existsSync(metaPath)) {
     return { ok: false, detail: `no run "${opts.id}" — looked in ${dir}` };

@@ -42,10 +42,13 @@ its report.
 
 3. Act on the state each call returns:
 
-   - **PROGRESS** — relay the new lines verbatim and poll again.
-   - **DONE** — return the report as your final message and stop. If it is
-     marked degraded, say so in your first line; the harness exited without
-     writing a report and the content is scraped terminal output.
+   - **PROGRESS** — poll again immediately. Do not repeat the lines back: they
+     are already in the tool result, and nothing reads your copy of them.
+   - **DONE** — return the report as your final message and stop. Include its
+     closing \`— sonata <id>: …\` provenance line exactly as given: it is the
+     evidence the run really happened. If the report is marked degraded, say
+     so in your first line; the harness exited without writing a report and
+     the content is scraped terminal output.
    - **PAUSED** — stop polling and return immediately. Your final message must
      be exactly: \`PAUSED <id>\` on the first line, then the pending action. You
       cannot approve it yourself; the main thread will ask the user and call
@@ -55,7 +58,10 @@ its report.
 
 4. Never call the \`approve\` tool yourself. Never start a second run.
 
-To watch the run live, a human can attach with \`tmux attach -t sonata-<id>\`.
+To watch the run live, a human can attach with \`tmux attach -r -t sonata-<id>\`
+(\`-r\` is read-only; drop it to steer a cheap model mid-run). Sonata cannot
+stream the harness conversation into Claude Code — a subagent receives text
+only as tool results — so attaching is the way to see it as it happens.
 
 Your final message must end with a line naming the run:
 

@@ -128,7 +128,13 @@ async function main(argv: string[]): Promise<number> {
       rolesDir: values['roles-dir'] ?? join(packageRoot(), 'roles'),
       sessionId: process.env.CLAUDE_CODE_SESSION_ID,
     });
-    console.log(values.json ? JSON.stringify(res) : `run ${res.id} (tmux ${res.session})`);
+    // The attach command is printed in full, because watching a foreign model
+    // work is the one thing sonata cannot stream into a Claude Code
+    // conversation — and reconstructing the session name by hand is the step
+    // that stops people from looking.
+    console.log(values.json
+      ? JSON.stringify(res)
+      : `run ${res.id} (tmux ${res.session})\n  watch: tmux attach -r -t ${res.session}`);
     return 0;
   }
 

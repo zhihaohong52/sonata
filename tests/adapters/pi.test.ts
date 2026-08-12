@@ -7,9 +7,9 @@ import { getAdapter } from '../../src/adapters/index.js';
 /**
  * Captured from pi 0.84.1, not composed by hand.
  *
- * `list-models.txt` is the output of pi's own formatter
- * (`dist/cli/list-models.js`) driven with stub model rows; `no-models.txt` is
- * verbatim stdout from a real `pi --list-models` with no provider configured.
+ * `list-models.txt` is verbatim stdout from `pi --list-models` against a
+ * logged-in install; `no-models.txt` is verbatim stdout from the same command
+ * before any provider was configured.
  */
 function piFixture(name: string): string {
   return readFileSync(join(import.meta.dirname, '../fixtures/pi', name), 'utf8');
@@ -148,12 +148,20 @@ describe('parsePiRefs', () => {
   const HEADER = 'provider     model              context  max-out  thinking  images';
 
   it('reads every row of a real pi 0.84.1 listing', () => {
-    expect(parsePiRefs(piFixture('list-models.txt')).map((r) => r.ref)).toEqual([
-      'anthropic/claude-opus-5',
-      'anthropic/claude-sonnet-5',
-      'opencode-go/deepseek-v4-flash',
-      'openrouter/kimi-k3',
-    ]);
+    const refs = parsePiRefs(piFixture('list-models.txt'));
+    // One ref per row, header excluded.
+    expect(refs).toHaveLength(25);
+    expect([...new Set(refs.map((r) => r.provider))]).toEqual(['openai-codex', 'opencode-go']);
+    expect(refs[0]).toEqual({
+      harness: 'pi',
+      provider: 'openai-codex',
+      id: 'gpt-5.3-codex-spark',
+      ref: 'openai-codex/gpt-5.3-codex-spark',
+    });
+    // A dotted id must survive intact — the segment that broke TOML keys.
+    expect(refs.map((r) => r.ref)).toContain('opencode-go/qwen3.8-max');
+    // No row may carry an undefined half.
+    expect(refs.every((r) => r.provider.length > 0 && r.id.length > 0)).toBe(true);
   });
 
   it('joins the provider and model columns into a ref', () => {
