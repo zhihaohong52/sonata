@@ -168,9 +168,8 @@ working directory, so worktree isolation works with no extra configuration).
 Claude Code
     │  Agent(subagent_type: "code-deepseek-v4-flash")
     ▼
-wrapper agent  (haiku, Bash only — relays, never reasons)
-    │  sonata run …          →  run id, returns immediately
-    │  sonata tail <id>      →  PROGRESS | PAUSED | DONE | STALLED
+wrapper agent  (MCP-only — relays, never reasons)
+    │  mcp__sonata__run / tail / approve
     ▼
 sonata CLI
     │  composes role prompt + CLAUDE.md + task
@@ -179,8 +178,11 @@ sonata CLI
 opencode → deepseek-v4-flash
 ```
 
-The wrapper never parses harness output. It calls the CLI and relays. All
-harness-specific knowledge lives in one adapter file.
+The wrapper holds `mcp__sonata__run`, `mcp__sonata__tail` and
+`mcp__sonata__approve`, and no Bash. It never parses harness output; it calls
+the MCP tools and relays. All harness-specific knowledge lives in one adapter
+file. Bash access was tested and silently ignored by Claude Code, so
+`tools: Bash(sonata:*)` is not a supported alternative.
 
 Completion is read from an exit sentinel and a report file, never scraped from
 the terminal. If a harness dies without writing a report, sonata returns the
@@ -301,25 +303,29 @@ install will not litter unrelated repositories.
 
 | Command | Purpose |
 |---|---|
-| `sonata init` | Set up sonata in this project (interactive) |
+| `sonata init` | Set up sonata in this project (interactive); `--prune` removes stale generated agents |
 | `sonata doctor` | Check tmux, harnesses, auth and versions |
-| `sonata sync` | Regenerate agent files from `sonata.toml` |
+| `sonata sync` | Regenerate agent files from `sonata.toml`; `--prune` removes stale generated agents |
 | `sonata run` | Launch a run, print its id |
 | `sonata tail` | Poll a run for progress |
 | `sonata approve` | Answer a pending approval |
+| `sonata mcp` | Run the Sonata MCP server |
+| `sonata verify <id> [--model <key>]` | Verify a completed run |
 | `sonata gc` | Kill finished tmux sessions |
 
 ## Configuration
 
 ```toml
 # sonata.toml
-[models.deepseek-v4-flash]
+[models."opencode-openrouter-kimi-k3"]
 harness = "opencode"      # opencode | codex | pi
-id = "deepseek-v4-flash"  # the harness's own model id
+id = "openrouter/kimi-k3"      # provider/model for opencode and pi; bare for codex
 
-[generate]
-roles  = ["code", "review", "explore", "plan"]
-models = ["deepseek-v4-flash", "kimi-k3"]
+[generate.roles]
+code    = ["opencode-openrouter-kimi-k3"]
+review  = ["opencode-openrouter-grok-4.5", "opencode-openai-gpt-5.6-sol"]
+explore = ["opencode-opencode-go-deepseek-v4-flash"]
+plan    = ["opencode-openai-gpt-5.6-terra"]
 
 [run]
 tail_window_seconds   = 20     # how long `sonata tail` blocks per call
@@ -354,6 +360,10 @@ Four roles ship: `code`, `review`, `explore` and `plan`. The last three are
 read-only sandbox on codex, a tool allowlist on pi, a read-only agent on
 opencode. The strength of that guarantee differs per harness; see
 [Permission modes](#permission-modes).
+
+Each role chooses its own models through `[generate.roles]`; the old flat
+`roles`/`models` pair is no longer accepted. `sonata init` rewrites an old
+config to the per-role format.
 
 Run `sonata sync` after editing the config, and restart Claude Code.
 

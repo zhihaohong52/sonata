@@ -30,12 +30,14 @@ npm link           # puts `sonata` on your PATH (until published to npm)
 ```
 
 The CLI (after `npm link`):
-- `sonata init` — set up sonata (interactive wizard; picks providers, then models, then roles, then whether the config is project- or machine-scoped; writes the config, generates one agent per role × model, offers the permission hook). Unattended flags: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope project|global`, `--scope project|global|skip`
+- `sonata init` — set up sonata (interactive wizard; picks providers, then models, then roles, then whether the config is project- or machine-scoped; writes the config, generates one agent per role × model, offers the permission hook). Unattended flags: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope project|global`, `--scope project|global|skip`, `--prune`
 - `sonata doctor` — check tmux, harnesses, auth, versions, permission hook
-- `sonata sync` — regenerate agent files from `sonata.toml` (run after editing config, then restart Claude Code)
+- `sonata sync` — regenerate agent files from `sonata.toml` (run after editing config, then restart Claude Code); supports `--prune`
 - `sonata run` — launch a run, print its id
 - `sonata tail` — poll a run for progress (PROGRESS | PAUSED | DONE | STALLED)
 - `sonata approve` — answer a pending approval
+- `sonata mcp` — run the Sonata MCP server
+- `sonata verify <id> [--model <key>]` — verify a completed run
 - `sonata gc` — kill finished tmux sessions
 
 ## Architecture
@@ -44,8 +46,8 @@ The CLI (after `npm link`):
 Claude Code
     │  Agent(subagent_type: "code-deepseek-v4-flash")
     ▼
-wrapper agent  (relays, never parses harness output)
-    │  sonata run …  →  run id;  sonata tail <id>  →  progress
+wrapper agent  (MCP-only; relays, never reasons)
+    │  mcp__sonata__run / tail / approve
     ▼
 sonata CLI
     │  composes role prompt + CLAUDE.md + task
@@ -55,7 +57,8 @@ opencode → deepseek-v4-flash   (or codex, or pi)
 ```
 
 Key design points:
-- **The wrapper never parses harness output.** It calls the CLI and relays. All harness-specific knowledge lives in one adapter file.
+- **The wrapper holds `mcp__sonata__run`, `mcp__sonata__tail` and `mcp__sonata__approve`, and no Bash.** This is deliberate: an agent with Bash performed 102 file reads and zero dispatches on 2026-08-12. `tools: Bash(sonata:*)` was tested and is silently ignored, so it is not a cheaper alternative and should not be re-proposed.
+- **The wrapper never parses harness output.** It calls the MCP tools and relays. All harness-specific knowledge lives in one adapter file.
 - **Completion is read from an exit sentinel and a report file**, never scraped from the terminal. If a harness dies without a report, sonata returns the captured pane and marks the result `degraded`.
 - **Progress comes from diffing the tmux pane.** You can attach to any live run: `tmux attach -t sonata-<id>` (`-r` read-only) — so you can correct a cheap model mid-run.
 - **`run_timeout_seconds` is a hard cap** enforced by a watchdog inside the launched shell (not by `sonata tail`); on expiry the whole process group is killed and the run is reported `DONE`, `degraded`, report beginning `[timed out: …]`.
@@ -130,9 +133,11 @@ A project config **replaces** the machine one; they are never merged, so it is a
 harness = "opencode"                # opencode | codex | pi
 id = "openrouter/deepseek-v4-flash"     # provider/model for opencode and pi; a bare id for codex
 
-[generate]
-roles  = ["code", "review", "explore", "plan"]
-models = ["opencode-openrouter-deepseek-v4-flash"]
+[generate.roles]
+code    = ["opencode-openrouter-kimi-k3"]
+review  = ["opencode-openrouter-grok-4.5", "opencode-openai-gpt-5.6-sol"]
+explore = ["opencode-opencode-go-deepseek-v4-flash"]
+plan    = ["opencode-openai-gpt-5.6-terra"]
 
 [run]
 tail_window_seconds   = 20     # how long `sonata tail` blocks per call
@@ -143,6 +148,7 @@ run_timeout_seconds   = 1800   # hard cap; the run is killed at this point
 - **Keys are always quoted.** An unquoted `[models.grok-4.5]` nests as `models → "grok-4" → "5"` and silently stops describing the model it names. Every key and value is written through `tomlKey`, which also escapes control characters.
 - **The key is `<harness>-<provider>-<model>`, slashes flattened to dashes**, and doubles as the agent filename (`code-<key>.md`). The harness segment is load-bearing: pi and opencode can serve the identical ref. Flattening is *not* injective (`opencode/go-x` and `opencode-go/x` collide), so `init` checks the keys it is about to write.
 - **Ids are provider-qualified for opencode and pi**, bare for codex; `parseConfig` enforces this per harness.
+- **Each role chooses its own models** through `[generate.roles]`; the old flat `roles`/`models` pair is no longer accepted. `sonata init` rewrites an old config to the per-role format.
 - Four roles ship: `code`, `review`, `explore`, `plan`. The last three are read-only, enforced by the harness (read-only sandbox on codex, tool allowlist on pi, read-only agent on opencode).
 - `sonata init` discovers OpenCode and Pi models. Codex has no provider dimension and is added by hand; hand-written entries survive `sonata init`, which carries through any model whose harness it does not manage.
 - Run `sonata sync` after editing the config, and restart Claude Code so it picks up the generated agents.
