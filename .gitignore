@@ -5,3 +5,4 @@ dist/
 # Generated per-user by `sonata init` (contains absolute paths)
 .claude/settings.json
 .claude/agents/
+sonata.toml
