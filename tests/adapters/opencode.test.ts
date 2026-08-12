@@ -39,9 +39,9 @@ describe('openCodeAdapter.plan', () => {
     expect(p.script).toContain('--agent plan');
   });
 
-  it('maps the explore role to the explore agent', () => {
+  it('maps the explore role to plan, the only read-only primary agent', () => {
     const p = openCodeAdapter.plan({ ...base, role: 'explore', mode: 'acceptEdits' });
-    expect(p.script).toContain('--agent explore');
+    expect(p.script).toContain('--agent plan');
   });
 
   it('uses the read-only plan agent for the plan role', () => {
@@ -178,8 +178,37 @@ describe('openCodeAdapter.plan — report writability', () => {
       .not.toBe(false);
   });
 
-  it('explore can write, since it runs under the explore agent', () => {
+  it('explore cannot write either, now that it runs under plan', () => {
+    // It used to resolve to the write-capable `build` by accident. Being
+    // unable to write its own report is the cost of the role actually being
+    // read-only, and sonata must not call such a run degraded.
     expect(openCodeAdapter.plan({ ...base, role: 'explore', mode: 'acceptEdits' }).canWriteReport)
-      .not.toBe(false);
+      .toBe(false);
+  });
+});
+
+describe('openCodeAdapter.plan — only primary agents are dispatchable', () => {
+  it('runs the explore role under plan, not explore', () => {
+    // `opencode run --agent` accepts primary agents only. `explore` is a
+    // SUBAGENT, so opencode silently substituted the write-capable `build` —
+    // a read-only role that was not read-only. Enabling it in opencode.json
+    // does not help; it is still not primary.
+    const p = openCodeAdapter.plan({ ...base, role: 'explore', mode: 'acceptEdits' });
+    expect(p.script).toContain('--agent plan');
+    expect(p.script).not.toContain('--agent explore');
+  });
+
+  it('never dispatches to a non-primary agent for any role', () => {
+    const PRIMARY = ['build', 'plan'];
+    for (const role of ['code', 'review', 'explore', 'plan']) {
+      const script = openCodeAdapter.plan({ ...base, role, mode: 'acceptEdits' }).script;
+      const agent = /--agent (\S+)/.exec(script)![1];
+      expect(PRIMARY).toContain(agent);
+    }
+  });
+
+  it('still reports that a read-only run cannot write its report', () => {
+    expect(openCodeAdapter.plan({ ...base, role: 'explore', mode: 'acceptEdits' }).canWriteReport)
+      .toBe(false);
   });
 });

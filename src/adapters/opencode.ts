@@ -17,9 +17,20 @@ import { isReadOnlyRole } from '../config.js';
  */
 const PROMPT_PATTERNS: RegExp[] = [];
 
+/**
+ * `opencode run --agent` accepts PRIMARY agents only — `build` and `plan`.
+ *
+ * `explore` exists but is a subagent, so asking for it does not fail: opencode
+ * substitutes the default agent, which is the write-capable `build`, and says
+ * so only in a pane warning nothing parses. The explore role therefore stopped
+ * being read-only without anything reporting it. Enabling `explore` in
+ * opencode.json does not help — it is still not primary.
+ *
+ * So every read-only role maps to `plan`, which is primary and genuinely
+ * read-only. A role sonata calls read-only must never resolve to `build`.
+ */
 function agentFor(input: PlanInput): string {
   if (input.mode === 'plan') return 'plan';
-  if (input.role === 'explore') return 'explore';
   if (isReadOnlyRole(input.role)) return 'plan';
   return 'build';
 }
@@ -80,8 +91,8 @@ function buildScript(input: PlanInput): LaunchPlan {
   // Weaker than pi, whose allowlist removes the write tool outright, but the
   // outcome for sonata is the same: no report arrives.
   //
-  // `explore` is read-only yet still writes, so this keys off the agent
-  // actually chosen rather than off the role being read-only.
+  // Keyed off the agent actually chosen rather than the role, because the two
+  // can differ: `plan` mode sends a write-capable role to the plan agent too.
   return { script, interactive: false, canWriteReport: agent !== 'plan' };
 }
 
