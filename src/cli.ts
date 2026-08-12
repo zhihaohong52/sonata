@@ -22,6 +22,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata tail      poll a run for progress
   sonata approve   answer a pending approval
   sonata gc        kill finished tmux sessions
+  sonata mcp       start the stdio JSON-RPC server (started by Claude Code; not run by hand)
 
   init flags (skip the prompts):
     --yes                    accept defaults, no prompts
@@ -184,6 +185,17 @@ async function main(argv: string[]): Promise<number> {
   if (command === 'gc') {
     const killed = await cmdGc({ cwd: process.cwd() });
     console.log(killed.length ? `killed ${killed.join(', ')}` : 'nothing to clean up');
+    return 0;
+  }
+
+  if (command === 'mcp') {
+    const { runMcpStdio } = await import('./mcp/server.js');
+    await runMcpStdio({
+      cwd: process.cwd(),
+      home: homedir(),
+      rolesDir: join(packageRoot(), 'roles'),
+      sessionId: process.env.CLAUDE_CODE_SESSION_ID,
+    });
     return 0;
   }
 
