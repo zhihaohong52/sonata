@@ -6,7 +6,7 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { checkVersion } from './commands/doctor.js';
 import { parsePiRefs } from './adapters/pi.js';
@@ -141,6 +141,26 @@ function isSonataAgent(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Deletes the named agent files, returning those actually removed.
+ *
+ * Takes an explicit list rather than recomputing, so the files shown to a user
+ * are exactly the files deleted — there is no window in which the set changes
+ * between the question and the deletion.
+ */
+export function pruneAgents(agentsDir: string, files: string[]): string[] {
+  const removed: string[] = [];
+  for (const f of files) {
+    try {
+      unlinkSync(join(agentsDir, f));
+      removed.push(f);
+    } catch {
+      // Already gone. A concurrent sync is a race, not a failure.
+    }
+  }
+  return removed;
 }
 
 async function tryRun(cmd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string | null> {
