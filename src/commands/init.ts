@@ -14,7 +14,7 @@ import {
 } from '../detect.js';
 import {
   settingsPath, readSettings, writeSettings, installHook,
-  hookInstalled, hookCommand, mcpConfigPath, registerMcp, type HookScope,
+  hookInstalled, hookCommand, registerMcp, type HookScope, type Runner,
 } from '../settings.js';
 import { pruneAgents } from '../detect.js';
 import { cmdSync } from './sync.js';
@@ -72,6 +72,8 @@ export interface InitOptions {
   scope?: HookScope | 'skip';
   /** Where the config and its agents are written. Defaults to `project`. */
   configScope?: ConfigScope;
+  /** Injected in tests so registration never shells out to the real binary. */
+  mcpRunner?: Runner;
   prune?: boolean;
   write?: (line: string) => void;
   detect?: Detector;
@@ -496,11 +498,19 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   const agentsWritten = sync.written;
   out(`  ✓ generated ${agentsWritten.length} agents in ${agentsDir}`);
 
-  const mcpPath = mcpConfigPath(configScope === 'global' ? 'global' : 'project', opts.cwd, opts.home);
-  const mcp = registerMcp(mcpPath, opts.packageRoot);
-  out(mcp.changed
-    ? `  ✓ registered the sonata MCP server in ${mcpPath}`
-    : `  · MCP server already registered in ${mcpPath}`);
+  // Claude Code owns where these live, so it does the writing. A machine-scoped
+  // config pairs with the user scope; a project one with ./.mcp.json.
+  const mcpScope = configScope === 'global' ? 'user' : 'project';
+  const mcp = registerMcp(mcpScope, opts.cwd, opts.packageRoot, opts.mcpRunner);
+  if (mcp.changed) {
+    out(`  ✓ registered the sonata MCP server (${mcpScope} scope)`);
+  } else if (mcp.ok) {
+    out('  · MCP server already registered');
+  } else {
+    // Without it the generated wrappers hold no tools at all and do nothing.
+    out('  ! could not register the MCP server — run this by hand:');
+    out(`      ${mcp.command}`);
+  }
 
   const stale = sync.stale;
   let pruned: string[] = [];

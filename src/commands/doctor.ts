@@ -15,7 +15,7 @@ import {
   modeHookPresent,
   readSettings,
   settingsPath,
-  mcpConfigPath,
+  
   mcpRegistered,
 } from '../settings.js';
 import { homedir } from 'node:os';
@@ -136,16 +136,18 @@ export async function cmdDoctor(
     });
   }
 
-  const scope = resolved === join(opts.cwd, 'sonata.toml') ? 'project' : 'global';
-  const mcpPath = mcpConfigPath(scope, opts.cwd, home);
+  // Where Claude Code would look depends on which config is in effect: a
+  // project config pairs with ./.mcp.json, a machine config with the user
+  // scope in ~/.claude.json.
+  const mcpScope = resolved === join(opts.cwd, 'sonata.toml') ? 'project' : 'user';
   const registered = opts.packageRoot !== undefined
-    && mcpRegistered(mcpPath, opts.packageRoot);
+    && mcpRegistered(mcpScope, opts.cwd, home, opts.packageRoot);
   checks.push(registered
-    ? { name: 'mcp server', ok: true, detail: mcpPath }
+    ? { name: 'mcp server', ok: true, detail: `registered at ${mcpScope} scope` }
     : {
         name: 'mcp server',
         ok: false,
-        detail: `not registered in ${mcpPath} — wrappers would have no tools at all; ` +
+        detail: `not registered at ${mcpScope} scope — wrappers would have no tools at all; ` +
           'run `sonata init`',
       });
 

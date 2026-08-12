@@ -656,7 +656,7 @@ code = ["opencode-openrouter-kimi-k3"]
   });
 
   it('defaults to the project scope', async () => {
-    const res = await cmdInit({ ...args, cwd, home, write });
+    const res = await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
     expect(res.configPath).toBe(join(cwd, 'sonata.toml'));
     expect(existsSync(join(cwd, '.claude', 'agents', 'code-opencode-openrouter-kimi-k3.md'))).toBe(true);
   });
@@ -767,25 +767,40 @@ describe('cmdInit — MCP and pruning', () => {
     roles: ['code'], scope: 'skip' as const, configScope: 'project' as const,
   };
 
-  it('registers the MCP server in the config\'s scope', async () => {
-    const res = await cmdInit({ ...args, cwd, home, write });
+  it('asks the claude CLI to register the server at the config\'s scope', async () => {
+    // Claude Code owns where these live — ~/.claude.json is its live state, and
+    // sonata writing it could clobber a concurrent session — so the CLI does it.
+    const calls: string[][] = [];
+    const res = await cmdInit({
+      ...args, cwd, home, write,
+      mcpRunner: (_cmd, a) => { calls.push(a); return { ok: true, output: 'Added' }; },
+    });
+
     expect(res.mcpChanged).toBe(true);
-    const parsed = JSON.parse(readFileSync(join(cwd, '.mcp.json'), 'utf8'));
-    expect(parsed.mcpServers.sonata.args).toContain('mcp');
+    expect(calls[0].slice(0, 5)).toEqual(['mcp', 'add', '--scope', 'project', 'sonata']);
+  });
+
+  it('uses the user scope when the config is machine-scoped', async () => {
+    const calls: string[][] = [];
+    await cmdInit({
+      ...args, cwd, home, write, configScope: 'global',
+      mcpRunner: (_cmd, a) => { calls.push(a); return { ok: true, output: 'Added' }; },
+    });
+    expect(calls[0].slice(0, 4)).toEqual(['mcp', 'add', '--scope', 'user']);
   });
 
   it('does not delete stale agents unless asked', async () => {
-    await cmdInit({ ...args, cwd, home, write });
+    await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
     const dir = join(cwd, '.claude', 'agents');
     writeFileSync(join(dir, 'code-gone.md'), 'forwarding wrapper around the sonata runtime');
 
-    const res = await cmdInit({ ...args, cwd, home, write });
+    const res = await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
     expect(res.pruned).toEqual([]);
     expect(existsSync(join(dir, 'code-gone.md'))).toBe(true);
   });
 
   it('deletes them when --prune is given', async () => {
-    await cmdInit({ ...args, cwd, home, write });
+    await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
     const dir = join(cwd, '.claude', 'agents');
     writeFileSync(join(dir, 'code-gone.md'), 'forwarding wrapper around the sonata runtime');
 
