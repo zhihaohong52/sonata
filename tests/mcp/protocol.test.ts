@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { handle, type ToolDef } from '../../src/mcp/protocol.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { handle, type ToolDef, type JsonRpcRequest } from '../../src/mcp/protocol.js';
 
 const tools: ToolDef[] = [
   { name: 'run', description: 'launch', inputSchema: { type: 'object', properties: {} } },
@@ -54,5 +56,53 @@ describe('handle', () => {
   it('returns method-not-found for an unknown method', async () => {
     const res = await handle({ jsonrpc: '2.0', id: 6, method: 'nope' }, deps);
     expect(res!.error!.code).toBe(-32601);
+  });
+});
+
+/**
+ * The captured exchange, not an imagined one. Claude Code 2.1.228 opening a
+ * project-scoped sonata server on 2026-08-12; every line is verbatim.
+ */
+describe('the captured handshake', () => {
+  const lines = readFileSync(
+    join(import.meta.dirname, '..', 'fixtures', 'mcp-handshake.jsonl'), 'utf8')
+    .split('\n').filter((l) => l.trim().length > 0);
+
+  const requests = () => lines.map((l) => JSON.parse(l) as JsonRpcRequest);
+
+  it('replays with a well-formed response for every request', async () => {
+    for (const req of requests()) {
+      const res = await handle(req, deps);
+      if (req.id === undefined) {
+        // notifications/initialized carries no id and must draw no response.
+        expect(res).toBeNull();
+        continue;
+      }
+      expect(res).not.toBeNull();
+      expect(res!.jsonrpc).toBe('2.0');
+      expect(res!.id).toBe(req.id);
+      expect(res!.error).toBeUndefined();
+    }
+  });
+
+  it('answers the initialize whose id is 0', async () => {
+    // The real client numbers from zero. `if (req.id)` would have dropped this
+    // response and hung the session; only a capture shows it.
+    const init = requests().find((r) => r.method === 'initialize')!;
+    expect(init.id).toBe(0);
+    expect(await handle(init, deps)).not.toBeNull();
+  });
+
+  it('echoes the protocol version the real client asked for', async () => {
+    const init = requests().find((r) => r.method === 'initialize')!;
+    expect(init.params!.protocolVersion).toBe('2025-11-25');
+    const res = await handle(init, deps);
+    expect((res!.result as any).protocolVersion).toBe('2025-11-25');
+  });
+
+  it('serves tools/list, the call that decides whether a wrapper has tools', async () => {
+    const list = requests().find((r) => r.method === 'tools/list')!;
+    const res = await handle(list, deps);
+    expect((res!.result as any).tools).toEqual(tools);
   });
 });

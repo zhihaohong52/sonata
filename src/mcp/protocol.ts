@@ -31,8 +31,13 @@ export interface Deps {
   call(name: string, args: Record<string, unknown>): Promise<string>;
 }
 
-/** Used only when a client omits its version; the real one is echoed back. */
-const FALLBACK_PROTOCOL_VERSION = '2025-06-18';
+/**
+ * Used only when a client omits its version; the real one is echoed back.
+ * Captured from Claude Code 2.1.228 on 2026-08-12 — see
+ * tests/fixtures/mcp-handshake.jsonl. It was written as 2025-06-18 from
+ * documentation, which the capture disproved.
+ */
+const FALLBACK_PROTOCOL_VERSION = '2025-11-25';
 
 export async function handle(
   req: JsonRpcRequest,
