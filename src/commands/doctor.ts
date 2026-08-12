@@ -7,7 +7,8 @@ import {
   GLOBAL_CONFIG_RELATIVE,
   generatedAgents,
 } from '../config.js';
-import { staleAgents } from '../detect.js';
+import { staleAgents, disabledOpencodeAgents, enableOpencodeAgent,
+} from '../detect.js';
 import { getAdapter } from '../adapters/index.js';
 import { tmuxVersion } from '../tmux.js';
 import {
@@ -113,6 +114,27 @@ export async function cmdDoctor(
         detail: `${withBash.length} wrapper(s) still grant Bash and can do the work ` +
           'themselves — run `sonata sync`, then restart Claude Code',
       });
+
+  // Agents sonata dispatches to. A disabled one is not an error opencode
+  // reports: `--agent explore` falls back to the write-capable `build` with a
+  // warning in the pane that nothing parses, so a read-only role silently
+  // stops being read-only. Corrected rather than reported, because the
+  // failure is invisible and the fix is one field.
+  const NEEDED_OPENCODE_AGENTS = ['explore', 'plan', 'build'];
+  const disabled = disabledOpencodeAgents(home).filter((a) => NEEDED_OPENCODE_AGENTS.includes(a));
+  if (disabled.length === 0) {
+    checks.push({ name: 'opencode agents', ok: true, detail: 'none sonata needs are disabled' });
+  } else {
+    const fixed = disabled.filter((a) => enableOpencodeAgent(home, a));
+    checks.push({
+      name: 'opencode agents',
+      ok: fixed.length === disabled.length,
+      detail: fixed.length > 0
+        ? `re-enabled ${fixed.join(', ')} in opencode.json — disabled, a read-only role ` +
+          'silently runs under the write-capable `build`'
+        : `${disabled.join(', ')} disabled in opencode.json and could not be re-enabled`,
+    });
+  }
 
   const scope = resolved === join(opts.cwd, 'sonata.toml') ? 'project' : 'global';
   const mcpPath = mcpConfigPath(scope, opts.cwd, home);

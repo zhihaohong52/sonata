@@ -6,7 +6,7 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { checkVersion } from './commands/doctor.js';
 import { parsePiRefs } from './adapters/pi.js';
@@ -308,4 +308,55 @@ export async function detectPi(env: DetectEnv): Promise<HarnessStatus> {
 
 export async function detectHarnesses(env: DetectEnv): Promise<HarnessStatus[]> {
   return Promise.all([detectOpenCode(env), detectPi(env)]);
+}
+
+/** Where opencode keeps its own configuration. */
+function opencodeConfigPath(home: string): string {
+  return join(home, '.config', 'opencode', 'opencode.json');
+}
+
+function readOpencodeConfig(home: string): Record<string, any> | null {
+  const path = opencodeConfigPath(home);
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as Record<string, any>;
+  } catch {
+    // opencode's config is not sonata's to repair. An unreadable one is
+    // opencode's problem to report, not a reason for doctor to fail.
+    return null;
+  }
+}
+
+/**
+ * Agents the user's opencode config switches off.
+ *
+ * A disabled agent is not an error opencode reports: `opencode run --agent
+ * explore` falls back to the default agent with a warning in the pane that
+ * nothing parses. A read-only role then runs under the write-capable `build`,
+ * which is how sonata came to document an enforcement it did not have.
+ */
+export function disabledOpencodeAgents(home: string): string[] {
+  const cfg = readOpencodeConfig(home);
+  const agents = (cfg?.agent ?? {}) as Record<string, { disable?: boolean }>;
+  return Object.entries(agents)
+    .filter(([, v]) => v?.disable === true)
+    .map(([name]) => name);
+}
+
+/**
+ * Switches one opencode agent back on, returning whether anything changed.
+ *
+ * This writes another tool's configuration, so it changes exactly one field
+ * and leaves the rest of the document alone. It never creates a config that
+ * was not already there.
+ */
+export function enableOpencodeAgent(home: string, name: string): boolean {
+  const path = opencodeConfigPath(home);
+  const cfg = readOpencodeConfig(home);
+  if (cfg === null) return false;
+  if (cfg.agent?.[name]?.disable !== true) return false;
+
+  cfg.agent[name].disable = false;
+  writeFileSync(path, `${JSON.stringify(cfg, null, 2)}\n`);
+  return true;
 }

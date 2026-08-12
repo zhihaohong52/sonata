@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkVersion, cmdDoctor } from '../../src/commands/doctor.js';
@@ -126,5 +126,43 @@ code = ["a"]
     for (const name of ['agents', 'agent tools', 'mcp server']) {
       expect(res.checks.find((c) => c.name === name)?.ok).toBe(true);
     }
+  });
+});
+
+describe('cmdDoctor — opencode agents sonata needs', () => {
+  const MIN = `
+[models."a"]
+harness = "opencode"
+id = "openrouter/kimi-k3"
+
+[generate.roles]
+explore = ["a"]
+`;
+  it('re-enables an agent sonata needs and says so', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-oc-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-och-'));
+    writeFileSync(join(cwd, 'sonata.toml'), MIN);
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    const cfg = join(home, '.config', 'opencode', 'opencode.json');
+    writeFileSync(cfg, JSON.stringify({ agent: { explore: { disable: true } } }));
+
+    const c = (await cmdDoctor({ cwd, home })).checks.find((x) => x.name === 'opencode agents');
+    // A disabled read-only agent silently becomes the write-capable `build`,
+    // so this is corrected rather than merely reported.
+    expect(c?.detail).toContain('explore');
+    expect(JSON.parse(readFileSync(cfg, 'utf8')).agent.explore.disable).toBe(false);
+  });
+
+  it('stays quiet when nothing sonata needs is disabled', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-oc2-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-och2-'));
+    writeFileSync(join(cwd, 'sonata.toml'), MIN);
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    writeFileSync(join(home, '.config', 'opencode', 'opencode.json'),
+      JSON.stringify({ agent: { general: { disable: true } } }));
+
+    const c = (await cmdDoctor({ cwd, home })).checks.find((x) => x.name === 'opencode agents');
+    // `general` is not an agent sonata dispatches to; leave the user's choice alone.
+    expect(c?.ok).toBe(true);
   });
 });
