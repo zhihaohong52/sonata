@@ -6,7 +6,7 @@ This file provides guidance to AI assistants when working with this repository. 
 
 **Sonata** — foreign-model subagents for Claude Code. It lets you dispatch a subagent backed by a different model (OpenCode, Codex, or Pi), running in that model's own harness, through the ordinary Agent tool. Same interface, same working directory, same report contract — different brain. Motivations: cost (cheap high-cache models for mechanical work) and diversity of judgement (a different model family reviews Claude's work).
 
-The wrapper agent (Bash-only, relays rather than reasons) calls `sonata run` → gets a run id, then polls with `sonata tail`. Sonata composes the role prompt + CLAUDE.md + task, launches the harness in a detached tmux session, and reads completion from an exit sentinel + report file (never scraped from the terminal). Runs that die without writing a report are marked `degraded` so results are never falsely trusted.
+The wrapper agent (MCP-only, relays rather than reasons) calls `sonata run` → gets a run id, then polls with `sonata tail`. Sonata composes the role prompt + CLAUDE.md + task, launches the harness in a detached tmux session, and reads completion from an exit sentinel + report file (never scraped from the terminal). Runs that die without writing a report are marked `degraded` so results are never falsely trusted.
 
 **Status:** Working, early. Engine and the OpenCode/Codex/Pi adapters are complete and tested end-to-end against real models. Not yet published to npm — install from source (`npm link`).
 
@@ -23,7 +23,7 @@ The wrapper agent (Bash-only, relays rather than reasons) calls `sonata run` →
 npm install        # install dependencies
 npm run build      # tsc → dist/
 npm run typecheck  # tsc --noEmit
-npm test           # vitest run (374 tests; needs tmux — runs against a fake harness)
+npm test           # vitest run (407 tests; needs tmux — runs against a fake harness)
 npm run dev        # tsx src/cli.ts
 
 npm link           # puts `sonata` on your PATH (until published to npm)
@@ -37,6 +37,7 @@ The CLI (after `npm link`):
 - `sonata tail` — poll a run for progress (PROGRESS | PAUSED | DONE | STALLED)
 - `sonata approve` — answer a pending approval
 - `sonata mcp` — run the Sonata MCP server
+- `sonata log <id>` — print a run's whole transcript; the after-the-fact companion to `tmux attach`
 - `sonata verify <id> [--model <key>]` — verify a completed run
 - `sonata gc` — kill finished tmux sessions
 
@@ -67,7 +68,7 @@ Key design points:
 
 ```
 src/
-├── cli.ts                CLI entry point; command dispatch (init/doctor/sync/run/tail/approve/gc)
+├── cli.ts                CLI entry point; command dispatch (init/doctor/sync/run/tail/approve/log/verify/gc)
 ├── config.ts             config resolution (project → machine), sonata.toml parsing, KNOWN_HARNESSES, isReadOnlyRole
 ├── detect.ts             harness catalogues (`opencode models`, `pi --list-models`) → ModelRef, provider grouping
 ├── normalize.ts          config/model normalization

@@ -310,6 +310,7 @@ install will not litter unrelated repositories.
 | `sonata tail` | Poll a run for progress |
 | `sonata approve` | Answer a pending approval |
 | `sonata mcp` | Run the Sonata MCP server |
+| `sonata log <id>` | Print a run's whole transcript (`tail` returns only new lines) |
 | `sonata verify <id> [--model <key>]` | Verify a completed run |
 | `sonata gc` | Kill finished tmux sessions |
 

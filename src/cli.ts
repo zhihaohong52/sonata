@@ -23,6 +23,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata tail      poll a run for progress
   sonata approve   answer a pending approval
   sonata gc        kill finished tmux sessions
+  sonata log       print a run's whole transcript (tail returns only new lines)
   sonata verify    confirm a dispatch actually happened
   sonata mcp       start the stdio JSON-RPC server (started by Claude Code; not run by hand)
 
@@ -219,6 +220,16 @@ async function main(argv: string[]): Promise<number> {
     const killed = await cmdGc({ cwd: process.cwd() });
     console.log(killed.length ? `killed ${killed.join(', ')}` : 'nothing to clean up');
     return 0;
+  }
+
+  if (command === 'log') {
+    const { positionals } = parseArgs({ args: rest, allowPositionals: true, options: {} });
+    const id = positionals[0];
+    if (!id) throw new Error('sonata log requires a run id');
+    const { cmdLog } = await import('./commands/log.js');
+    const res = cmdLog({ cwd: process.cwd(), id });
+    console.log(res.text);
+    return res.ok ? 0 : 1;
   }
 
   if (command === 'verify') {
