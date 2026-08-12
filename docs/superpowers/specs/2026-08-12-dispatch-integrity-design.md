@@ -44,6 +44,37 @@ as a class of defect rather than one bug:
 
 In every case a safety property was a sentence in a prompt.
 
+## Why there is a wrapper at all
+
+Worth recording, because it looks like an avoidable indirection and is not.
+
+Claude Code can only put a Claude model in an agent slot. The Agent tool's
+model override is a closed enum — `sonnet`, `opus`, `haiku`, `fable` — and
+across 161 agent definitions on the development machine, from every plugin
+author installed, `model:` is only ever `haiku`, `sonnet`, `opus` or `inherit`.
+There is no extension point for an agent whose inference runs elsewhere.
+
+So a relay is the only shape available. The design's first goal is dispatch
+*through the ordinary Agent tool*, so Claude's selection and fan-out apply
+unchanged; something Claude-shaped must therefore occupy the slot, and Haiku is
+the cheapest thing that can. The 2026-08-10 design said so plainly — "wrapper
+agent (haiku, Bash only — relays, never reasons)" — and accepted "wrapper
+polling costs tokens" as a known cost. A verified dispatch measured on
+2026-08-12 cost ~29k Haiku tokens over 26 tool calls, almost all of it polling.
+
+The relay-free alternative is the main session calling `mcp__sonata__run`
+directly, with no agent. That removes the Haiku and the Agent tool together,
+losing selection, fan-out and the native subagent — the first goal. The wrapper
+is the price of that goal, and Claude Code sets the price.
+
+What this spec changes is not the shape. "Relays, never reasons" was a request
+in a prompt; it becomes a property of the tools the wrapper holds.
+
+**It does not make dispatch guaranteed.** A wrapper that cannot do the work
+itself can still fail to dispatch at all, or dispatch wrongly. `sonata verify`
+remains the check that work claimed equals work done; what changes is that the
+trust stops being about capability.
+
 ## Goals
 
 - Make it impossible, not merely discouraged, for a wrapper to do the work
