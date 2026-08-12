@@ -23,7 +23,7 @@ The wrapper agent (Bash-only, relays rather than reasons) calls `sonata run` →
 npm install        # install dependencies
 npm run build      # tsc → dist/
 npm run typecheck  # tsc --noEmit
-npm test           # vitest run (310 tests; needs tmux — runs against a fake harness)
+npm test           # vitest run (374 tests; needs tmux — runs against a fake harness)
 npm run dev        # tsx src/cli.ts
 
 npm link           # puts `sonata` on your PATH (until published to npm)

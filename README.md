@@ -22,7 +22,7 @@ Two reasons you might want that:
 
 ```
 ● code-deepseek-v4-flash (running)
-  └ Bash: sonata tail a1f3e2 --wait 20
+  └ sonata: tail a1f3e2
      → read  src/parser.ts
      → edit  src/parser.ts  +31 −12
      → bash  pytest -q → 47 passed
