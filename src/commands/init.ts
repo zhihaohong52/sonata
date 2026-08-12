@@ -18,7 +18,7 @@ import {
 } from '../settings.js';
 import { pruneAgents } from '../detect.js';
 import { cmdSync } from './sync.js';
-import { multiselect, select, confirm, isInteractive, banner, CancelledError } from '../tui.js';
+import { multiselect, select, confirm, isInteractive, banner, CancelledError, BackError } from '../tui.js';
 
 const OPENCODE_RANGE = '>=1.18.0 <2.0.0';
 
@@ -238,6 +238,18 @@ export function preTickedRefs(configText: string, refs: ModelRef[]): Set<string>
  * harness a row would dispatch to. Codex has no provider dimension, so its
  * rows read `codex/gpt-5.6-sol`.
  */
+/**
+ * The nearest earlier screen the user could actually return to.
+ *
+ * A step answered by a flag (`--providers`, `--roles`) is never shown, so Left
+ * must skip past it rather than appearing to do nothing. Returning `from`
+ * itself means there is no earlier screen, and Left is inert.
+ */
+export function previousAskedStep(asked: boolean[], from: number): number {
+  for (let k = from - 1; k >= 0; k--) if (asked[k]) return k;
+  return from;
+}
+
 export function refLabel(ref: ModelRef): string {
   return `${ref.harness}/${ref.ref}`;
 }
@@ -312,135 +324,202 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   }
   for (const p of problems) out(renderProblem(p));
 
-  let configScope: ConfigScope;
-  if (opts.configScope) {
-    configScope = opts.configScope;
-  } else if (interactive) {
-    out('');
-    configScope = await select<ConfigScope>('Where should this config apply', [
-      { value: 'project', label: 'This project only', hint: './sonata.toml + ./.claude/agents/' },
-      { value: 'global', label: 'All projects', hint: '~/.config/sonata/ + ~/.claude/agents/' },
-    ]);
-  } else {
-    configScope = 'project';
-  }
+  // ---- the question sequence -------------------------------------------
+  //
+  // Asked as a step machine rather than a straight run of awaits, so Left can
+  // go back a screen. Each step re-derives everything that depends on the
+  // answers before it: going back to the providers screen and choosing
+  // differently must re-ask the model list against the new providers, not
+  // against a stale one. A step whose answer came from a flag is skipped, and
+  // is never a target to go back to.
+  let configScope!: ConfigScope;
+  let configPathResolved!: string;
+  let configText!: string;
+  let enabled!: Set<string>;
+  let providerKeys!: string[];
+  let inScope!: ModelRef[];
+  let keys!: string[];
+  let byKey!: Map<string, ModelRef>;
+  let chosen!: ModelRef[];
+  let roles!: string[];
+  let roleModels!: Record<string, ModelRef[]>;
 
-  // Read the file that is about to be overwritten, not whichever one merely
-  // resolves. Choosing `global` in a repo that has its own sonata.toml would
-  // otherwise carry that repo's hand-written entries into the machine config
-  // and pre-tick from a file the user is not editing — which is why the scope
-  // is asked before anything is read.
-  const configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
-  const configText = existsSync(configPathResolved)
-    ? readFileSync(configPathResolved, 'utf8')
-    : '';
-  const enabled = preTickedRefs(configText, allRefs);
+  const asked = [
+    opts.configScope === undefined && interactive,
+    !opts.providers && interactive,
+    !opts.models && interactive,
+    !opts.roles && interactive,
+    interactive,
+  ];
+  const previousAsked = (from: number): number => previousAskedStep(asked, from);
+  const canGoBack = (step: number): boolean => previousAsked(step) !== step;
 
-  // ---- choose providers -------------------------------------------------
-  let providerKeys: string[];
-  if (opts.providers) {
-    providerKeys = opts.providers;
-  } else if (interactive) {
-    providerKeys = await multiselect(
-      'Providers',
-      offered.map((p) => ({
-        value: p.key,
-        label: `${p.harness} · ${p.provider}`,
-        hint: `${p.count} models`,
-        checked: allRefs.some((r) => `${r.harness}/${r.provider}` === p.key && enabled.has(configKeyFor(r))),
-      })),
-    );
-  } else {
-    providerKeys = offered
-      .filter((p) => allRefs.some((r) => `${r.harness}/${r.provider}` === p.key && enabled.has(configKeyFor(r))))
-      .map((p) => p.key);
-  }
+  for (let step = 0; step < 5;) {
+    try {
+      switch (step) {
+        case 0: {
+          if (opts.configScope) {
+            configScope = opts.configScope;
+          } else if (interactive) {
+            out('');
+            configScope = await select<ConfigScope>('Where should this config apply', [
+              { value: 'project', label: 'This project only', hint: './sonata.toml + ./.claude/agents/' },
+              { value: 'global', label: 'All projects', hint: '~/.config/sonata/ + ~/.claude/agents/' },
+            ], canGoBack(0));
+          } else {
+            configScope = 'project';
+          }
 
-  const unknownProviders = providerKeys.filter((k) => !offered.some((p) => p.key === k));
-  if (unknownProviders.length > 0) {
-    throw new Error(
-      `sonata init: no harness offers ${unknownProviders.join(', ')}. ` +
-      `Available: ${offered.map((p) => p.key).join(', ')}`,
-    );
-  }
+          // Read the file that is about to be overwritten, not whichever one
+          // merely resolves. Choosing `global` in a repo that has its own
+          // sonata.toml would otherwise carry that repo's hand-written entries
+          // into the machine config and pre-tick from a file the user is not
+          // editing — which is why the scope is asked before anything is read.
+          configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
+          configText = existsSync(configPathResolved)
+            ? readFileSync(configPathResolved, 'utf8')
+            : '';
+          enabled = preTickedRefs(configText, allRefs);
+          break;
+        }
 
-  const inScope = allRefs.filter((r) => providerKeys.includes(`${r.harness}/${r.provider}`));
+        case 1: {
+          if (opts.providers) {
+            providerKeys = opts.providers;
+          } else if (interactive) {
+            providerKeys = await multiselect(
+              'Providers',
+              offered.map((p) => ({
+                value: p.key,
+                label: `${p.harness} · ${p.provider}`,
+                hint: `${p.count} models`,
+                checked: allRefs.some((r) => `${r.harness}/${r.provider}` === p.key && enabled.has(configKeyFor(r))),
+              })),
+              canGoBack(1),
+            );
+          } else {
+            providerKeys = offered
+              .filter((p) => allRefs.some((r) => `${r.harness}/${r.provider}` === p.key && enabled.has(configKeyFor(r))))
+              .map((p) => p.key);
+          }
 
-  // ---- choose models ----------------------------------------------------
-  let keys: string[];
-  if (opts.models) {
-    keys = opts.models;
-  } else if (interactive) {
-    keys = await multiselect(
-      'Models to enable',
-      inScope.map((r) => ({
-        value: configKeyFor(r),
-        label: refLabel(r),
-        hint: r.name,
-        checked: enabled.has(configKeyFor(r)),
-      })),
-    );
-  } else {
-    keys = inScope.filter((r) => enabled.has(configKeyFor(r))).map(configKeyFor);
-  }
+          const unknownProviders = providerKeys.filter((k) => !offered.some((p) => p.key === k));
+          if (unknownProviders.length > 0) {
+            throw new Error(
+              `sonata init: no harness offers ${unknownProviders.join(', ')}. ` +
+              `Available: ${offered.map((p) => p.key).join(', ')}`,
+            );
+          }
 
-  const byKey = new Map(inScope.map((r) => [configKeyFor(r), r]));
-  const unknown = keys.filter((k) => !byKey.has(k));
-  if (unknown.length > 0) {
-    throw new Error(
-      `sonata init: the selected providers do not offer ${unknown.join(', ')}. ` +
-      `Available: ${[...byKey.keys()].join(', ')}`,
-    );
-  }
-  if (keys.length === 0) {
-    throw new Error('sonata init: no models selected — nothing to generate.');
-  }
+          inScope = allRefs.filter((r) => providerKeys.includes(`${r.harness}/${r.provider}`));
+          break;
+        }
 
-  const chosen = keys.map((k) => byKey.get(k)!);
+        case 2: {
+          if (opts.models) {
+            keys = opts.models;
+          } else if (interactive) {
+            keys = await multiselect(
+              'Models to enable',
+              inScope.map((r) => ({
+                value: configKeyFor(r),
+                label: refLabel(r),
+                hint: r.name,
+                checked: enabled.has(configKeyFor(r)),
+              })),
+              canGoBack(2),
+            );
+          } else {
+            keys = inScope.filter((r) => enabled.has(configKeyFor(r))).map(configKeyFor);
+          }
 
-  // ---- choose roles -----------------------------------------------------
-  let roles: string[];
-  if (opts.roles) {
-    roles = opts.roles;
-  } else if (interactive) {
-    roles = await multiselect(
-      'Roles to generate',
-      KNOWN_ROLES.map((r) => ({ value: r as string, label: r, checked: true })),
-    );
-  } else {
-    roles = [...KNOWN_ROLES];
-  }
+          byKey = new Map(inScope.map((r) => [configKeyFor(r), r]));
+          const unknown = keys.filter((k) => !byKey.has(k));
+          if (unknown.length > 0) {
+            throw new Error(
+              `sonata init: the selected providers do not offer ${unknown.join(', ')}. ` +
+              `Available: ${[...byKey.keys()].join(', ')}`,
+            );
+          }
+          if (keys.length === 0) {
+            throw new Error('sonata init: no models selected — nothing to generate.');
+          }
 
-  const badRoles = roles.filter((r) => !KNOWN_ROLES.includes(r as never));
-  if (badRoles.length > 0) {
-    throw new Error(`sonata init: unknown role(s) ${badRoles.join(', ')}`);
-  }
-  if (roles.length === 0) {
-    throw new Error('sonata init: no roles selected — nothing to generate.');
-  }
+          chosen = keys.map((k) => byKey.get(k)!);
+          break;
+        }
 
-  // ---- per-role models --------------------------------------------------
-  // The common case is one keystroke; only a user who wants different models
-  // per role pays for the extra screens.
-  let roleModels: Record<string, ModelRef[]>;
-  const sameForAll = !interactive || await confirm(
-    `Use the same models for every role?  (${roles.length} roles × ${chosen.length} models = ` +
-    `${roles.length * chosen.length} agents)`,
-    true,
-  );
+        case 3: {
+          if (opts.roles) {
+            roles = opts.roles;
+          } else if (interactive) {
+            roles = await multiselect(
+              'Roles to generate',
+              KNOWN_ROLES.map((r) => ({ value: r as string, label: r, checked: true })),
+              canGoBack(3),
+            );
+          } else {
+            roles = [...KNOWN_ROLES];
+          }
 
-  if (sameForAll) {
-    roleModels = Object.fromEntries(roles.map((r) => [r, chosen]));
-  } else {
-    roleModels = {};
-    for (const role of roles) {
-      const picked = await multiselect(
-        `Models for: ${role}`,
-        chosen.map((r) => ({
-          value: configKeyFor(r), label: refLabel(r), hint: r.name, checked: true,
-        })),
-      );
-      roleModels[role] = chosen.filter((r) => picked.includes(configKeyFor(r)));
+          const badRoles = roles.filter((r) => !KNOWN_ROLES.includes(r as never));
+          if (badRoles.length > 0) {
+            throw new Error(`sonata init: unknown role(s) ${badRoles.join(', ')}`);
+          }
+          if (roles.length === 0) {
+            throw new Error('sonata init: no roles selected — nothing to generate.');
+          }
+          break;
+        }
+
+        case 4: {
+          // The common case is one keystroke; only a user who wants different
+          // models per role pays for the extra screens.
+          const sameForAll = !interactive || await confirm(
+            `Use the same models for every role?  (${roles.length} roles × ${chosen.length} models = ` +
+            `${roles.length * chosen.length} agents)`,
+            true,
+            canGoBack(4),
+          );
+
+          if (sameForAll) {
+            roleModels = Object.fromEntries(roles.map((r) => [r, chosen]));
+            break;
+          }
+
+          // Each role is its own screen, so Left walks back through the roles
+          // one at a time and only leaves this step from the first of them.
+          const picks: Record<string, ModelRef[]> = {};
+          for (let r = 0; r < roles.length;) {
+            const role = roles[r];
+            try {
+              const picked = await multiselect(
+                `Models for: ${role}`,
+                chosen.map((m) => ({
+                  value: configKeyFor(m), label: refLabel(m), hint: m.name, checked: true,
+                })),
+                true,
+              );
+              picks[role] = chosen.filter((m) => picked.includes(configKeyFor(m)));
+              r++;
+            } catch (err) {
+              // Back from the first role leaves the step entirely, returning
+              // to the same-models question.
+              if (err instanceof BackError && r > 0) { r--; continue; }
+              throw err;
+            }
+          }
+          roleModels = picks;
+          break;
+        }
+      }
+      step++;
+    } catch (err) {
+      if (err instanceof BackError) {
+        step = previousAsked(step);
+        continue;
+      }
+      throw err;
     }
   }
 

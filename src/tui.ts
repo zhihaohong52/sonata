@@ -8,7 +8,7 @@
 
 export type ListKey =
   | { kind: 'up' } | { kind: 'down' } | { kind: 'space' }
-  | { kind: 'enter' } | { kind: 'cancel' }
+  | { kind: 'enter' } | { kind: 'cancel' } | { kind: 'back' }
   | { kind: 'backspace' } | { kind: 'ignore' }
   | { kind: 'char'; value: string };
 
@@ -29,6 +29,9 @@ export function parseKey(seq: string, filterable: boolean): ListKey {
   switch (seq) {
     case '\u001b[A': return { kind: 'up' };
     case '\u001b[B': return { kind: 'down' };
+    // Left steps back a screen. Free to claim even in a filterable list: the
+    // filter is append-only, with no cursor to move within it.
+    case '\u001b[D': return { kind: 'back' };
     // Space toggles even while filtering: no provider or model ref contains
     // one, so the filter never needs a space.
     case ' ': return { kind: 'space' };
@@ -57,6 +60,8 @@ export interface ListState {
   filter: string;
   done: boolean;
   cancelled: boolean;
+  /** Left was pressed: the caller should re-ask the previous question. */
+  back?: boolean;
 }
 
 export function visibleIndices<T>(choices: Choice<T>[], filter: string): number[] {
@@ -132,6 +137,8 @@ export function reduce<T>(
       return multi ? withFilter(state, choices, state.filter.slice(0, -1)) : state;
     case 'cancel':
       return { ...state, cancelled: true, done: true };
+    case 'back':
+      return { ...state, back: true, done: true };
     default:
       return state;
   }
@@ -172,6 +179,7 @@ export function renderList<T>(
   state: ListState,
   multi: boolean,
   height = 15,
+  back = false,
 ): string {
   const view = visibleIndices(choices, state.filter);
   const win = viewport(state.cursor, view.length, height);
@@ -192,8 +200,8 @@ export function renderList<T>(
 
   lines.push('');
   lines.push(multi
-    ? `  ${view.length} of ${choices.length} · space toggle · type to filter · enter confirm · esc cancel`
-    : '  ↑↓ move · enter select · esc cancel');
+    ? `  ${view.length} of ${choices.length} · space toggle · type to filter · enter confirm${back ? ' · ← back' : ''} · esc cancel`
+    : `  ↑↓ move · enter select${back ? ' · ← back' : ''} · esc cancel`);
   return lines.join('\n');
 }
 
@@ -350,6 +358,20 @@ export class CancelledError extends Error {
   }
 }
 
+/**
+ * Left was pressed on a screen that offers a previous step.
+ *
+ * A thrown sentinel rather than a return value, so every prompt keeps its
+ * ordinary return type and only the wizard that knows the step order has to
+ * handle going back.
+ */
+export class BackError extends Error {
+  constructor() {
+    super('back');
+    this.name = 'BackError';
+  }
+}
+
 interface KeySource extends NodeJS.ReadableStream {
   setRawMode?(mode: boolean): void;
   iterator(opts: { destroyOnReturn: boolean }): AsyncIterableIterator<unknown>;
@@ -389,6 +411,7 @@ async function runList<T>(
   title: string,
   choices: Choice<T>[],
   multi: boolean,
+  back = false,
 ): Promise<T[]> {
   if (!isInteractive()) {
     throw new Error(
@@ -406,7 +429,7 @@ async function runList<T>(
   let lastHeight = 0;
   const draw = (): void => {
     const { out, height: drawn } =
-      redraw(renderList(title, choices, state, multi, height), lastHeight);
+      redraw(renderList(title, choices, state, multi, height, back), lastHeight);
     stdout.write(out);
     lastHeight = drawn;
   };
@@ -420,16 +443,21 @@ async function runList<T>(
   });
 
   if (state.cancelled) throw new CancelledError();
+  // Only honoured where the caller said a previous step exists; otherwise Left
+  // is inert rather than an error the wizard would have to swallow.
+  if (state.back && back) throw new BackError();
   return [...state.checked].sort((a, b) => a - b).map((i) => choices[i].value);
 }
 
-export async function select<T>(title: string, choices: Choice<T>[]): Promise<T> {
-  const picked = await runList(title, choices, false);
+export async function select<T>(title: string, choices: Choice<T>[], back = false): Promise<T> {
+  const picked = await runList(title, choices, false, back);
   return picked[0];
 }
 
-export async function multiselect<T>(title: string, choices: Choice<T>[]): Promise<T[]> {
-  return runList(title, choices, true);
+export async function multiselect<T>(
+  title: string, choices: Choice<T>[], back = false,
+): Promise<T[]> {
+  return runList(title, choices, true, back);
 }
 
 /**
@@ -484,8 +512,10 @@ export async function prompt(
   return state.value.trim();
 }
 
-export async function confirm(question: string, defaultYes: boolean): Promise<boolean> {
+export async function confirm(
+  question: string, defaultYes: boolean, back = false,
+): Promise<boolean> {
   const yes = { value: true, label: 'Yes', checked: defaultYes };
   const no = { value: false, label: 'No', checked: !defaultYes };
-  return select(question, defaultYes ? [yes, no] : [no, yes]);
+  return select(question, defaultYes ? [yes, no] : [no, yes], back);
 }
