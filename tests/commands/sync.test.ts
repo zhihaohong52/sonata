@@ -26,14 +26,15 @@ code = ["deepseek-v4-flash", "kimi-k3"]
 describe('agentMarkdown', () => {
   const md = agentMarkdown({ role: 'code', model: 'deepseek-v4-flash', harness: 'opencode' });
 
-  it('declares a cheap Bash-only wrapper', () => {
+  it('declares a cheap tool-only wrapper', () => {
     expect(md).toContain('name: code-deepseek-v4-flash');
     expect(md).toContain('model: haiku');
-    expect(md).toContain('tools: Bash');
+    expect(md).toContain('tools: mcp__sonata__run, mcp__sonata__tail, mcp__sonata__approve');
   });
 
-  it('names the exact run command', () => {
-    expect(md).toContain('sonata run --role code --model deepseek-v4-flash');
+  it('does not grant Bash or shell commands', () => {
+    expect(md).not.toMatch(/^tools:.*\bBash\b/m);
+    expect(md).not.toContain('sonata run --role');
   });
 
   it('forbids the wrapper doing work of its own', () => {
@@ -43,6 +44,23 @@ describe('agentMarkdown', () => {
   it('documents the PAUSED and STALLED handling', () => {
     expect(md).toContain('PAUSED');
     expect(md).toContain('STALLED');
+  });
+});
+
+describe('agentMarkdown — tool grant', () => {
+  const md = () => agentMarkdown({ role: 'code', model: 'm', harness: 'opencode' });
+
+  it('grants only the three sonata MCP tools', () => {
+    expect(md()).toContain(
+      'tools: mcp__sonata__run, mcp__sonata__tail, mcp__sonata__approve');
+  });
+
+  it('never grants Bash', () => {
+    expect(md()).not.toMatch(/^tools:.*\bBash\b/m);
+  });
+
+  it('tells the wrapper to call tools, not shell commands', () => {
+    expect(md()).not.toContain('sonata run --role');
   });
 });
 
@@ -57,7 +75,8 @@ describe('cmdSync', () => {
       'review-deepseek-v4-flash.md',
       'review-kimi-k3.md',
     ]);
-    expect(readFileSync(join(agentsDir, 'code-kimi-k3.md'), 'utf8')).toContain('--model kimi-k3');
+    expect(readFileSync(join(agentsDir, 'code-kimi-k3.md'), 'utf8')).toContain(
+      'role: code, model: kimi-k3, and the full task text.');
   });
 
   it('writes explore and plan agent files', () => {
