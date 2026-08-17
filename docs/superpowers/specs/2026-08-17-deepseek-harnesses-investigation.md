@@ -162,6 +162,38 @@ the 0.x line whose stated non-goal was multi-provider support. So it is a harnes
 dimension, not just one more model — the same reason pi and opencode both exist in
 `KNOWN_HARNESSES` and why the key is `<harness>-<provider>-<model>`.
 
+### Hazard: Reasonix auto-loads the project's `.mcp.json` (probed)
+
+Run in `/tmp`, `doctor` lists no plugins. Run inside this repository, it lists:
+
+```
+plugins
+  sonata           stdio    node
+```
+
+Nothing in `~/.reasonix/config.toml` registers it — the `[[plugins]]` block there is
+entirely commented out. Reasonix picked it up from `./.mcp.json` in the working directory.
+
+**A Reasonix run dispatched by sonata into this repo would therefore be handed
+`mcp__sonata__run`, `tail` and `approve`, and could dispatch further sonata runs.** That
+is unbounded recursion started by a foreign model, and it is invisible unless you go
+looking: sonata's own hazard model assumes the harness has file and shell tools, not
+sonata's control plane.
+
+This is not hypothetical for any repo that ships a `.mcp.json`, and it is not specific to
+sonata's server — any project-local MCP server is loaded the same way. The adapter needs a
+decision before it ships. Options, cheapest first:
+
+- Have `plan()` point Reasonix at a config without project plugin discovery, if a flag or
+  config key exists to disable it (unprobed — check `reasonix mcp` and `docs/SPEC.md`).
+- Refuse to launch when the resolved plugin set contains sonata's own server, the way
+  sonata already refuses modes a harness cannot honour rather than downgrading quietly.
+- At minimum, have `sonata doctor` report it as a blocker.
+
+Note the sandbox is cwd-scoped in the right way — `write_roots` was `/tmp` under
+`--dir /tmp` and this repository when run here — so the file-tool boundary is sound. It is
+the tool *set*, not the write boundary, that leaks.
+
 Auth failure is fast and legible, which makes `degraded` classification easy:
 
 ```
