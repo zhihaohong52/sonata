@@ -69,7 +69,9 @@ Key design points:
 
 ```
 src/
-├── cli.ts                CLI entry point; command dispatch (init/doctor/sync/run/tail/approve/log/verify/gc)
+├── cli.ts                CLI entry point; arg parsing, then delegates to src/commands/* and src/mcp/*
+├── commands/             command implementations (approve, doctor, gc, init, log, run, sync, tail, verify)
+├── mcp/                  stdio JSON-RPC MCP server — protocol.ts (handshake + captured fixtures), server.ts (`runMcpStdio`), tools.ts (run/tail/approve tools)
 ├── config.ts             config resolution (project → machine), sonata.toml parsing, KNOWN_HARNESSES, isReadOnlyRole
 ├── detect.ts             harness catalogues (`opencode models`, `pi --list-models`) → ModelRef, provider grouping
 ├── normalize.ts          config/model normalization

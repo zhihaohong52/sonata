@@ -184,10 +184,14 @@ This is not hypothetical for any repo that ships a `.mcp.json`, and it is not sp
 sonata's server — any project-local MCP server is loaded the same way. The adapter needs a
 decision before it ships. Options, cheapest first:
 
-- Have `plan()` point Reasonix at a config without project plugin discovery, if a flag or
-  config key exists to disable it (unprobed — check `reasonix mcp` and `docs/SPEC.md`).
+- **A `deny` rule on the sonata MCP tools, passed per run.** Reasonix's permission model
+  states that explicit `deny` rules survive every mode including yolo, so this holds even
+  for `bypassPermissions` dispatches. This looks like the right answer: per-run, no
+  persistent state, and it fails closed. The exact rule syntax for MCP tools is unprobed.
 - Refuse to launch when the resolved plugin set contains sonata's own server, the way
   sonata already refuses modes a harness cannot honour rather than downgrading quietly.
+- Not `reasonix mcp disable sonata` — that mutates the user's own config and would break
+  their interactive Reasonix sessions to fix sonata's problem.
 - At minimum, have `sonata doctor` report it as a blocker.
 
 Note the sandbox is cwd-scoped in the right way — `write_roots` was `/tmp` under

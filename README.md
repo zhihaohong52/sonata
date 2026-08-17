@@ -133,9 +133,10 @@ sonata init --yes --providers opencode/openai --models opencode-openai-gpt-5.6-s
 
 ### Adding Codex models
 
-**The wizard discovers OpenCode and Pi models.** Both are picked by provider,
-then by model. Codex has no provider dimension and takes a bare model id, so
-codex models are still added to `sonata.toml` by hand:
+**The wizard discovers OpenCode and Pi models** by provider then by model, and
+**Codex through `codex app-server`'s `model/list`** (JSON-RPC over stdio —
+codex has no provider dimension and takes a bare model id). Hand-written codex
+entries survive `sonata init`, so a bare-id model can also be added by hand:
 
 ```toml
 [models."gpt-5-6-sol"]
@@ -407,8 +408,10 @@ a public issue.
 
 Worth knowing before you depend on this:
 
-- **`sonata init` only discovers OpenCode models.** Codex and Pi work fully,
-  but must be added to `sonata.toml` by hand.
+- **`sonata init` discovers models for all three harnesses.** Codex has no
+  `models` subcommand, so its catalogue comes from `codex app-server`'s
+  `model/list` (JSON-RPC over stdio), with a real response captured in
+  `tests/fixtures/codex/model-list.json`.
 - **Not published to npm yet**, so installation is from source.
 - **Prompt detection is regex against TUIs sonata does not control.** Codex's
   patterns are written from captured real output in `tests/fixtures/panes/`,
@@ -429,7 +432,7 @@ Worth knowing before you depend on this:
 
 ```bash
 npm install
-npm test          # 205 tests; needs tmux
+npm test          # 432 tests; needs tmux
 npm run typecheck
 npm run build
 ```
@@ -461,7 +464,8 @@ plus two lines of registration:
 4. **`tests/adapters/<name>.test.ts`** — follow an existing adapter's tests.
 
 Optionally, `src/detect.ts` for `sonata init` discovery — currently OpenCode
-only, so a new harness is configured by hand until someone adds it.
+and Pi; codex has no provider dimension, so its entries are added by hand
+(and survive the wizard).
 
 **Probe the real binary before you write the adapter.** Every adapter bug found
 so far was invisible in the documentation and obvious on the first real run:
