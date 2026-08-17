@@ -31,7 +31,7 @@ Two reasons you might want that:
 
 ## Status
 
-**Working, early.** The engine and the OpenCode, Codex and Pi adapters are
+**Working, early.** The engine and the OpenCode, Codex, Pi and Reasonix adapters are
 complete and tested, each verified end to end against a real model.
 
 Not yet published to npm — install from source (below). Read
@@ -50,6 +50,9 @@ Not yet published to npm — install from source (below). Read
   - **[Codex CLI](https://github.com/openai/codex)** — `codex login`
   - **[Pi](https://github.com/earendil-works/pi-mono)** — any provider it
     supports; model ids take the `provider/id` form
+  - **[Reasonix](https://github.com/esengine/DeepSeek-Reasonix)** — `reasonix setup`;
+    any OpenAI-compatible endpoint is a config entry, and model ids take the
+    `provider/id` form
 
 ## Install
 
@@ -280,6 +283,38 @@ question before any work starts. Sonata surfaces it as a `PAUSED` prompt, and
 Codex also writes its final message to a file (`-o`), so sonata has a
 harness-guaranteed report and degrades to pane text far less often.
 
+**Reasonix** has real approval cards, so like codex it can honour `default`:
+
+| Claude Code mode | invocation | asks |
+|---|---|---|
+| `plan` | `reasonix run --permission-mode dontAsk` | no — denies instead |
+| `default` | interactive TUI, `--permission-mode ask` | yes |
+| `acceptEdits` | `reasonix run --permission-mode acceptEdits` | no |
+| `bypassPermissions` | `reasonix run --permission-mode bypassPermissions` | no |
+
+Reasonix has a `plan` mode of its own, but `reasonix run` refuses it outright —
+"--permission-mode plan requires an interactive session", exit 2 — so read-only
+work uses `dontAsk`, which denies without prompting. That enforcement is real
+and covers the shell too: asked to read one file and write another, the model
+read it fine and was refused both the write tool and a `printf … > file`
+fallback. As with pi, a read-only run therefore cannot write `report.md`, so
+sonata takes its terminal output as the report and does **not** mark it
+degraded.
+
+Sonata never passes `-y`/`--auto`. That flag aliases reasonix's *own* `auto`
+mode, which is wider than Claude Code's — it skips risk prompts for operations
+like `git push`. Since Claude's `auto` maps to `acceptEdits`, reaching for the
+similarly named flag would silently widen permissions.
+
+Two quirks worth knowing. Reasonix loads the working directory's `.mcp.json` on
+top of its own config, so a dispatched model inherits whatever MCP servers your
+project defines — including sonata itself, if you have it configured there;
+`sonata doctor` warns when it sees one. And on a machine that has never
+answered it, the very first `reasonix` invocation blocks on a telemetry consent
+question before the agent starts at all, which looks exactly like a model that
+never said anything — `sonata doctor` reports that as a blocker, and
+`reasonix config telemetry off` clears it.
+
 ### The permission hook
 
 The mode is not exposed as an environment variable, so this needs a
@@ -320,8 +355,8 @@ install will not litter unrelated repositories.
 ```toml
 # sonata.toml
 [models."opencode-openrouter-kimi-k3"]
-harness = "opencode"      # opencode | codex | pi
-id = "openrouter/kimi-k3"      # provider/model for opencode and pi; bare for codex
+harness = "opencode"      # opencode | codex | pi | reasonix
+id = "openrouter/kimi-k3"      # provider/model for opencode, pi, reasonix; bare for codex
 
 [generate.roles]
 code    = ["opencode-openrouter-kimi-k3"]
@@ -378,7 +413,7 @@ version and auth, and the permission hook.
 |---|---|
 | Agents don't appear in Claude Code | Claude Code reads `.claude/agents/` at startup. Run `sonata sync`, then restart it. |
 | `sonata: command not found` | The generated agents call `sonata` on your PATH. Run `npm link` in the clone (or install globally once published). |
-| Dispatch fails: "cannot ask for approval" | You are in `default` mode with opencode or pi, which cannot prompt. Switch to `acceptEdits`, use a codex model, or dispatch a read-only role. |
+| Dispatch fails: "cannot ask for approval" | You are in `default` mode with opencode or pi, which cannot prompt. Switch to `acceptEdits`, use a codex or reasonix model, or dispatch a read-only role. |
 | Every opencode/pi dispatch refuses | The permission hook is not installed, so sonata assumes `default`. Run `sonata init` and choose a hook scope. |
 | A codex run sits in `PAUSED` at startup | Codex has not been trusted in this directory. Run `codex` there once and answer "Yes, continue". |
 | A run reports `degraded` | The harness exited without writing a report; the text you get is scraped pane output. Treat it as untrustworthy. |
@@ -432,7 +467,7 @@ Worth knowing before you depend on this:
 
 ```bash
 npm install
-npm test          # 432 tests; needs tmux
+npm test          # 469 tests; needs tmux
 npm run typecheck
 npm run build
 ```

@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { checkVersion } from './commands/doctor.js';
 import { parsePiRefs } from './adapters/pi.js';
 import { parseCodexModels, codexModelList } from './adapters/codex.js';
+import { parseReasonixRefs, reasonixDoctorJson } from './adapters/reasonix.js';
 import type { ModelRef, ProviderHarness } from './types.js';
 
 const run = promisify(execFile);
@@ -345,8 +346,47 @@ export async function detectCodex(env: DetectEnv): Promise<HarnessStatus> {
   };
 }
 
+/**
+ * Reasonix, discovered through `reasonix doctor --json`.
+ *
+ * There is no `models` subcommand, but `doctor --json` carries the provider
+ * catalogue and the per-provider key state in one call, so discovery and the
+ * auth check are the same request. `parseReasonixRefs` drops providers without
+ * a key, which is why an install that lists nothing is reported as a warning
+ * rather than an error: a machine with only opencode is normal.
+ */
+export async function detectReasonix(_env: DetectEnv): Promise<HarnessStatus> {
+  const version = await tryRun('reasonix', ['--version'], process.env);
+  if (version === null) {
+    return { name: 'reasonix', installed: false, supported: false, refs: [], authedProviders: [], problems: [] };
+  }
+
+  const json = await reasonixDoctorJson();
+  const refs = json === null ? [] : parseReasonixRefs(json);
+  const problems: Problem[] = [];
+  if (refs.length === 0) {
+    problems.push({
+      severity: 'warn',
+      message: 'reasonix is installed but no provider has a usable API key',
+      fix: 'reasonix setup',
+    });
+  }
+
+  return {
+    name: 'reasonix',
+    installed: true,
+    version,
+    supported: true,
+    refs,
+    // `key_present` has already filtered these, so every provider that survived
+    // is one reasonix can actually run against.
+    authedProviders: [...new Set(refs.map((r) => r.provider))],
+    problems,
+  };
+}
+
 export async function detectHarnesses(env: DetectEnv): Promise<HarnessStatus[]> {
-  return Promise.all([detectOpenCode(env), detectPi(env), detectCodex(env)]);
+  return Promise.all([detectOpenCode(env), detectPi(env), detectCodex(env), detectReasonix(env)]);
 }
 
 /** Where opencode keeps its own configuration. */

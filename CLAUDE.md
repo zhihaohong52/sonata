@@ -4,18 +4,18 @@ This file provides guidance to AI assistants when working with this repository. 
 
 ## Project Overview
 
-**Sonata** — foreign-model subagents for Claude Code. It lets you dispatch a subagent backed by a different model (OpenCode, Codex, or Pi), running in that model's own harness, through the ordinary Agent tool. Same interface, same working directory, same report contract — different brain. Motivations: cost (cheap high-cache models for mechanical work) and diversity of judgement (a different model family reviews Claude's work).
+**Sonata** — foreign-model subagents for Claude Code. It lets you dispatch a subagent backed by a different model (OpenCode, Codex, Pi, or Reasonix), running in that model's own harness, through the ordinary Agent tool. Same interface, same working directory, same report contract — different brain. Motivations: cost (cheap high-cache models for mechanical work) and diversity of judgement (a different model family reviews Claude's work).
 
 The wrapper agent (MCP-only, relays rather than reasons) calls `sonata run` → gets a run id, then polls with `sonata tail`. Sonata composes the role prompt + CLAUDE.md + task, launches the harness in a detached tmux session, and reads completion from an exit sentinel + report file (never scraped from the terminal). Runs that die without writing a report are marked `degraded` so results are never falsely trusted.
 
-**Status:** Working, early. Engine and the OpenCode/Codex/Pi adapters are complete and tested end-to-end against real models. Not yet published to npm — install from source (`npm link`).
+**Status:** Working, early. Engine and the OpenCode/Codex/Pi/Reasonix adapters are complete and tested end-to-end against real models. Not yet published to npm — install from source (`npm link`).
 
 ## Requirements
 
 - Node 22+
 - tmux (every harness runs inside a tmux session) — `brew install tmux`
 - macOS or Linux (Windows unsupported; WSL untested)
-- At least one harness authenticated: OpenCode, Codex CLI (`codex login`), or Pi
+- At least one harness authenticated: OpenCode, Codex CLI (`codex login`), Pi, or Reasonix (`reasonix setup`)
 
 ## Commands
 
@@ -23,7 +23,7 @@ The wrapper agent (MCP-only, relays rather than reasons) calls `sonata run` → 
 npm install        # install dependencies
 npm run build      # tsc → dist/
 npm run typecheck  # tsc --noEmit
-npm test           # vitest run (432 tests; needs tmux — runs against a fake harness)
+npm test           # vitest run (469 tests; needs tmux — runs against a fake harness)
 npm run dev        # tsx src/cli.ts
 
 npm link           # puts `sonata` on your PATH (until published to npm)
@@ -54,7 +54,7 @@ sonata CLI
     │  composes role prompt + CLAUDE.md + task
     │  launches harness in a detached tmux session
     ▼
-opencode → deepseek-v4-flash   (or codex, or pi)
+opencode → deepseek-v4-flash   (or codex, pi, or reasonix)
 ```
 
 Key design points:
@@ -88,7 +88,8 @@ src/
     ├── index.ts          adapter registration
     ├── opencode.ts       smallest example adapter
     ├── codex.ts          most complete adapter
-    └── pi.ts             pi adapter
+    ├── pi.ts             pi adapter
+    └── reasonix.ts       reasonix adapter — the only harness whose TUI sonata seeds itself
 
 tests/                   vitest suite against a fake harness + captured fixtures in tests/fixtures/panes/
 roles/                   role definitions (code, review, explore, plan) — owned by sonata, not the harness
@@ -115,6 +116,10 @@ Sonata mirrors the Claude Code permission mode onto the harness; a sonata agent 
 
 **A read-only run cannot write `report.md`** on either opencode or pi, so sonata takes terminal output as the report and does NOT mark such a run degraded (`LaunchPlan.canWriteReport`). Pi's allowlist removes the write tool; opencode's `plan` agent is *instructed* not to modify files and declines — weaker enforcement, identical reporting consequence. Probed directly: a run asked only to write one file wrote nothing and reported "blocked by policy, not by error".
 - **Codex** (real sandbox, TUI prompts): `plan` → `codex exec` read-only; `default` → interactive TUI with `approval_policy=on-request` workspace-write; `acceptEdits` → `codex exec` workspace-write; `bypassPermissions` → `codex exec` danger-full-access. Sonata never passes `--dangerously-bypass-approvals-and-sandbox`.
+- **Reasonix** (real approval cards, so `default` is honoured): `plan` and every read-only role → `run --permission-mode dontAsk`; `default` → interactive TUI with `--permission-mode ask`; `acceptEdits` and `bypassPermissions` → `run` with the same-named mode.
+  - `--permission-mode plan` is **refused by `reasonix run`** ("requires an interactive session", exit 2), so read-only work uses `dontAsk` instead. That is real enforcement, probed: a run asked to read one file and write another read it fine and was refused both the write tool and the shell fallback. It cannot write `report.md` either, so `canWriteReport` is false.
+  - **Never use `-y`/`--auto`.** It aliases reasonix's own `auto`, which is wider than Claude Code's — it skips risk prompts for things like `git push`. Claude's `auto` maps to `acceptEdits`, so always pass `--permission-mode` explicitly.
+  - Reasonix loads the working directory's `.mcp.json` on top of its own config. In this repository that hands a dispatched model sonata's own run/tail/approve tools, so it can dispatch further runs. `sonata doctor` warns when a `.mcp.json` is present.
 
 The permission mode is not exposed as an env var, so this needs a **PreToolUse hook** (`hooks/capture-mode.mjs`), which `sonata init` offers to install at project or global scope. Without it sonata assumes `default` — for opencode/pi that means dispatches refuse, so `sonata doctor` reports a missing hook as a blocker.
 
@@ -134,8 +139,8 @@ A project config **replaces** the machine one; they are never merged, so it is a
 ```toml
 # sonata.toml
 [models."opencode-openrouter-deepseek-v4-flash"]
-harness = "opencode"                # opencode | codex | pi
-id = "openrouter/deepseek-v4-flash"     # provider/model for opencode and pi; a bare id for codex
+harness = "opencode"                # opencode | codex | pi | reasonix
+id = "openrouter/deepseek-v4-flash"     # provider/model for opencode, pi and reasonix; a bare id for codex
 
 [generate.roles]
 code    = ["opencode-openrouter-kimi-k3"]
@@ -151,15 +156,15 @@ run_timeout_seconds   = 1800   # hard cap; the run is killed at this point
 
 - **Keys are always quoted.** An unquoted `[models.grok-4.5]` nests as `models → "grok-4" → "5"` and silently stops describing the model it names. Every key and value is written through `tomlKey`, which also escapes control characters.
 - **The key is `<harness>-<provider>-<model>`, slashes flattened to dashes**, and doubles as the agent filename (`code-<key>.md`). The harness segment is load-bearing: pi and opencode can serve the identical ref. Flattening is *not* injective (`opencode/go-x` and `opencode-go/x` collide), so `init` checks the keys it is about to write.
-- **Ids are provider-qualified for opencode and pi**, bare for codex; `parseConfig` enforces this per harness. Picker rows are labelled `<harness>/<provider>/<model>` (`refLabel`), because opencode and pi can serve the identical `provider/model` — labelling by ref alone printed two identical rows that also shared a selection value.
+- **Ids are provider-qualified for opencode, pi and reasonix**, bare for codex; `parseConfig` enforces this per harness. Picker rows are labelled `<harness>/<provider>/<model>` (`refLabel`), because opencode and pi can serve the identical `provider/model` — labelling by ref alone printed two identical rows that also shared a selection value.
 - **Each role chooses its own models** through `[generate.roles]`; the old flat `roles`/`models` pair is no longer accepted. `sonata init` rewrites an old config to the per-role format.
-- Four roles ship: `code`, `review`, `explore`, `plan`. The last three are read-only, enforced by the harness (read-only sandbox on codex, tool allowlist on pi, read-only agent on opencode).
-- `sonata init` discovers OpenCode and Pi models. Codex has no provider dimension and is added by hand; hand-written entries survive `sonata init`, which carries through any model whose harness it does not manage.
+- Four roles ship: `code`, `review`, `explore`, `plan`. The last three are read-only, enforced by the harness (read-only sandbox on codex, tool allowlist on pi, read-only agent on opencode, `dontAsk` on reasonix).
+- `sonata init` discovers OpenCode, Pi and Reasonix models (reasonix's catalogue and its per-provider auth state both come from `reasonix doctor --json`). Codex has no provider dimension and is added by hand; hand-written entries survive `sonata init`, which carries through any model whose harness it does not manage.
 - Run `sonata sync` after editing the config, and restart Claude Code so it picks up the generated agents.
 
 ## Security
 
-Sonata launches other coding agents on your machine — they run **as you**, with your files and credentials. Only codex offers a real sandbox; pi has none, and opencode's is advisory. Sonata never bypasses a harness's own safety flags; credentials stay with the harness (sonata reads harness config for health reporting but does not copy/forward/log API keys). Prompt injection is a real risk with foreign models — for untrusted code, dispatch read-only roles or run in a container.
+Sonata launches other coding agents on your machine — they run **as you**, with your files and credentials. Codex and reasonix both offer a real sandbox (reasonix reports its own `write_roots`, which follow `--dir`); pi has none, and opencode's is advisory. Sonata never bypasses a harness's own safety flags; credentials stay with the harness (sonata reads harness config for health reporting but does not copy/forward/log API keys). Prompt injection is a real risk with foreign models — for untrusted code, dispatch read-only roles or run in a container.
 
 ## Known Limitations
 
@@ -169,6 +174,12 @@ Sonata launches other coding agents on your machine — they run **as you**, wit
 - Prompt detection is regex against TUIs sonata does not control; `STALLED` timeout is the backstop. Codex prompt patterns are written from captured real output in `tests/fixtures/panes/`.
 - Codex through a proxy needs that proxy up (`sonata doctor` checks the endpoint).
 - `opencode run --format json` is broken upstream (v1.18.15 produces no output, never exits), so progress comes from pane text rather than a structured event stream. Pi's `--mode json` works; the adapter keeps a seam for adopting it.
+- **An interactive run has to be told to stop.** Reasonix's TUI is a chat session: it does not exit when the task is
+  done, so nothing writes the exit sentinel and a finished run sits at PROGRESS until the stall timeout, then gets
+  killed and reported degraded with its report sitting right there. The adapter's watcher waits for `report.md` and
+  then sends Ctrl-D, retrying until the sentinel appears. Ctrl-D, never the documented `exit` + Enter: typing blind
+  races the TUI, and a run that typed `exit` landed the letters in an open approval card and the Enter picked
+  whatever row was highlighted.
 - No streaming granularity guarantees — progress is whatever the harness prints.
 - **The harness conversation cannot be streamed into Claude Code.** A subagent receives text only as tool results, and its parent receives only its final message, so no push channel exists to stream into. `sonata tail` is already a long-poll (it returns the instant a line appears, and only blocks for `tail_window_seconds` when the harness is silent); `tmux attach -r -t sonata-<id>` is the live view, and `sonata run` now prints that command.
 
@@ -180,4 +191,9 @@ Sonata launches other coding agents on your machine — they run **as you**, wit
 - Run `npm test` and `npm run typecheck` before opening a PR; CI runs both on Linux with tmux installed.
 - Escape control characters and keys everywhere they are written (TOML escaping) — see the duplicate-TOML-table and control-char fixes in git history.
 - **`sonata` on PATH runs `dist/`, not `src/`.** After changing anything under `src/`, `npm run build` or the global command keeps the old behaviour. Two bugs in this repo's history were "fixed" but still reproducing for exactly this reason.
+- **The launch wrapper must `fg` the harness, and must not redirect that `fg`.** `set -m` gives the harness its own
+  process group so the watchdog can kill the tree, but that group is then not the terminal's foreground group, so any
+  harness reading the terminal takes SIGTTIN and stops dead — pane frozen, process in state `T`, no exit sentinel,
+  killed at the run timeout. `fg %1 >/dev/null 2>&1` runs, reports success, and leaves the job stopped anyway;
+  only the unredirected `fg %1` actually hands over. Both verified against the same wrapper.
 - The wrapper agent relays; it must never reason about or parse harness output.

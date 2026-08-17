@@ -3,8 +3,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 
-export const KNOWN_HARNESSES = ['opencode', 'codex', 'pi'] as const;
+export const KNOWN_HARNESSES = ['opencode', 'codex', 'pi', 'reasonix'] as const;
 export const KNOWN_ROLES = ['review', 'code', 'explore', 'plan'] as const;
+
+/** Harnesses whose `--model` needs a provider segment; codex takes a bare id. */
+const QUALIFIED_ID_HARNESSES: readonly string[] = ['opencode', 'pi', 'reasonix'];
 
 /** Roles that must never write, whatever permission mode the session is in. */
 export const READ_ONLY_ROLES = ['review', 'explore', 'plan'] as const;
@@ -44,9 +47,11 @@ export function parseConfig(text: string): SonataConfig {
         `Known harnesses: ${KNOWN_HARNESSES.join(', ')}`,
       );
     }
-    // Opencode and pi address models as provider/model; codex takes a bare id,
-    // so this cannot be a global rule.
-    if ((d.harness === 'opencode' || d.harness === 'pi') && !d.id.includes('/')) {
+    // Opencode, pi and reasonix address models as provider/model; codex takes a
+    // bare id, so this cannot be a global rule. Reasonix's provider segment is
+    // the name of a `[providers]` entry in that machine's reasonix.toml, so the
+    // same id can mean different things on two machines.
+    if (QUALIFIED_ID_HARNESSES.includes(d.harness) && !d.id.includes('/')) {
       throw new Error(
         `sonata.toml: model "${name}" needs a provider — ${d.harness} takes ` +
         `ids in provider/model form, not "${d.id}". Re-run \`sonata init\` to ` +

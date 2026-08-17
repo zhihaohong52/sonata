@@ -31,6 +31,39 @@ describe('wrapWithTimeout process-group killing', () => {
   });
 });
 
+/**
+ * `set -m` is what makes the group killable, and it is also what takes the
+ * terminal away from the harness — its own process group is not the
+ * terminal's foreground group, so anything that reads the terminal gets
+ * SIGTTIN and stops. Reproduced with a harness that reads a single key: the
+ * pane freezes and the process sits in state T until the run timeout.
+ */
+describe('wrapWithTimeout hands the terminal to the harness', () => {
+  it('foregrounds the harness so an interactive TUI can read the terminal', () => {
+    expect(script).toContain('fg %1');
+  });
+
+  /**
+   * `fg %1 >/dev/null 2>&1` runs, reports success, and leaves the job stopped
+   * anyway — the handover does not happen. Verified both ways against the same
+   * wrapper, so the noisier form is the working one.
+   */
+  it('does not redirect fg, which silently defeats the handover', () => {
+    // Anchored: the comment above the call names the broken form on purpose.
+    expect(script).not.toMatch(/^\s*fg %1\s*>/m);
+  });
+
+  it('still falls back to wait where there is no terminal to hand over', () => {
+    expect(script).toContain('if [ -t 0 ]; then');
+    expect(script).toContain('wait $HARNESS_PID');
+  });
+
+  it('takes the harness status from whichever branch ran', () => {
+    // Both branches must set STATUS, or a run's exit code becomes the shell's.
+    expect(script.match(/STATUS=\$\?/g)?.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe('wrapWithTimeout', () => {
   it('is a bash script that runs the harness in the background', () => {
     expect(script.startsWith('#!/bin/bash')).toBe(true);

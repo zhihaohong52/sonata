@@ -568,7 +568,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   }
 
   // ---- write ------------------------------------------------------------
-  const carried = carriedEntries(configText, ['opencode', 'pi']);
+  const carried = carriedEntries(configText, ['opencode', 'pi', 'reasonix']);
   const clashes = duplicateKeys([...keys, ...Object.keys(carried)]);
   if (clashes.length > 0) {
     throw new Error(

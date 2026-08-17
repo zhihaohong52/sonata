@@ -1,0 +1,94 @@
+{
+  "version": "v1.26.0",
+  "os": "darwin",
+  "arch": "arm64",
+  "cwd": "/tmp",
+  "config": {
+    "source_path": "~/.reasonix/config.toml",
+    "user_path": "~/.reasonix/config.toml",
+    "default_model": "custom-opencode-ai/deepseek-v4-flash"
+  },
+  "providers": [
+    {
+      "name": "deepseek-flash",
+      "kind": "anthropic",
+      "base_url_host": "api.deepseek.com",
+      "models": [
+        "deepseek-v4-flash"
+      ],
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "key_present": false,
+      "is_default": false,
+      "context_window": 1000000
+    },
+    {
+      "name": "deepseek-pro",
+      "kind": "anthropic",
+      "base_url_host": "api.deepseek.com",
+      "model": "deepseek-v4-pro",
+      "models": [
+        "deepseek-v4-pro"
+      ],
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "key_present": false,
+      "is_default": false,
+      "context_window": 1000000
+    },
+    {
+      "name": "custom-opencode-ai",
+      "kind": "openai",
+      "base_url_host": "opencode.ai",
+      "models": [
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "glm-5.3",
+        "gpt-5.6-luna",
+        "grok-4.5",
+        "hy3",
+        "kimi-k3",
+        "mimo-v2.5",
+        "mimo-v2.5-pro",
+        "minimax-m3",
+        "qwen3.7-plus",
+        "qwen3.8-max"
+      ],
+      "api_key_env": "CUSTOM_OPENCODE_AI_API_KEY",
+      "key_present": true,
+      "is_default": false,
+      "context_window": 128000
+    }
+  ],
+  "lsp": {
+    "enabled": true,
+    "servers": 0
+  },
+  "sessions": {
+    "dir": "~/.reasonix/sessions",
+    "count": 0,
+    "bytes": 0
+  },
+  "sandbox": {
+    "bash": "enforce",
+    "network": true,
+    "write_roots": [
+      "/tmp"
+    ],
+    "available": true,
+    "shell": "bash (/bin/bash)"
+  },
+  "network": {
+    "proxy_mode": "auto",
+    "proxy": "auto (env)",
+    "no_proxy": false
+  },
+  "permission": {
+    "mode": "ask",
+    "allow_rules": 0,
+    "ask_rules": 0,
+    "deny_rules": 0
+  },
+  "warnings": [
+    "skill \"review\" allowed-tools references \"use_capability\" which is not in the current registry",
+    "skill \"security-review\" allowed-tools references \"use_capability\" which is not in the current registry"
+  ]
+}

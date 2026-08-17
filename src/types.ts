@@ -2,7 +2,7 @@ export type PermissionMode = 'plan' | 'default' | 'acceptEdits' | 'bypassPermiss
 
 export type TailState = 'PROGRESS' | 'PAUSED' | 'DONE' | 'STALLED';
 
-export type ProviderHarness = 'opencode' | 'pi' | 'codex';
+export type ProviderHarness = 'opencode' | 'pi' | 'codex' | 'reasonix';
 
 /**
  * One `provider/model` pair a harness can actually run.
