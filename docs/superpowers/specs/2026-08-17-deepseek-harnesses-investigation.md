@@ -259,31 +259,99 @@ tail`'s fidelity, not remove the long-poll. Worth recording; not worth building 
 
 ---
 
+## Live runs (probed against `custom-opencode-ai/deepseek-v4-flash`)
+
+With a working provider configured, all three open questions are now answered, and two
+findings emerged that no amount of reading would have produced.
+
+### Ids are provider-qualified after all — opencode/pi-shaped, not codex-shaped
+
+This corrects the earlier reading. `doctor --json` on the configured machine shows a
+provider serving twelve models, and `default_model` is `custom-opencode-ai/deepseek-v4-flash`:
+
+```json
+{ "name": "custom-opencode-ai", "kind": "openai", "base_url_host": "opencode.ai",
+  "models": ["deepseek-v4-flash", "deepseek-v4-pro", "glm-5.3", "gpt-5.6-luna", "grok-4.5",
+             "hy3", "kimi-k3", "mimo-v2.5", "mimo-v2.5-pro", "minimax-m3",
+             "qwen3.7-plus", "qwen3.8-max"],
+  "api_key_env": "CUSTOM_OPENCODE_AI_API_KEY", "key_present": true }
+```
+
+`--model custom-opencode-ai/deepseek-v4-flash` works. So `--model` takes
+`<provider>` *or* `<provider>/<model>`, `parseConfig` should enforce the qualified form
+like opencode's and pi's, and the `<harness>-<provider>-<model>` key applies unchanged.
+Note also that `model` is absent from a provider entry when it serves several models —
+`detect.ts` must read `models[]`, not `model`.
+
+### `run` needs no report scraping at all
+
+```
+$ reasonix run --dir $P --permission-mode acceptEdits --output-format json "Write report.md …"
+{"type":"result","subtype":"success","is_error":false,"duration_ms":29087,"num_turns":1,
+ "result":"Done. `report.md` was created …","session_id":"20260817-081907…",
+ "usage":{"input_tokens":25492,"output_tokens":329,"cache_read_input_tokens":12800, …}}
+```
+
+The envelope is essentially Claude Code's own `--output-format json` shape: the final
+assistant message is in `result`, and `is_error` is a ready-made `degraded` signal. The
+model also wrote `report.md` as instructed, so the ordinary report contract works. Between
+`result` on stdout and the report file, `fallbackReportFile` is likely unnecessary.
+
+### `canWriteReport: false` for plan mode — confirmed
+
+A plan-mode session asked to write one file wrote nothing; it produced a plan and stopped
+at a confirmation prompt. Same consequence as pi and opencode: sonata must take terminal
+output as the report and must **not** mark such a run degraded.
+
+### Three distinct prompt shapes, all captured
+
+Fixtures are in `tests/fixtures/panes/`: `reasonix-plan-confirm.txt`,
+`reasonix-tool-approval.txt`, `reasonix-question-prompt.txt`. The third is the one that
+would otherwise be missed — the model asking the *user* a multi-select question, which
+blocks a dispatch just as hard as an approval does:
+
+```
+ Will call tool write file report.md.          ⏸ Plan ready above — choose what to do next
+ Source: built-in tool                          ❯ 1. Start execution
+ ❯ 1. Allow once                                  2. Revise plan (keep planning)
+   2. Allow Edit for this session                 3. Exit without executing
+   3. Always allow Edit (save to config)
+   4. Deny
+```
+
+Digit accelerators work correctly on the **tool approval** card: sending `4` recorded
+`· Decision recorded: deny` and the pane showed `● Write ⊘ blocked by permission policy`,
+with no file created. Those two lines are good `promptPatterns` anchors, and
+`· Decision recorded: <x>` is a clean post-answer confirmation for the adapter to assert on.
+
+### Defect: the plan prompt's third option does not do what it says
+
+Reproduced three ways — sending literal `3`, and navigating `↓ ↓` to a visibly selected
+`❯ 3. Exit without executing` then pressing Enter:
+
+- the pane records `· Decision recorded: revise_plan` — option **2**, not option 3
+- and the session silently switches from **Plan** to **Auto** in the status line
+
+`Escape` (advertised as "keeps planning") behaves correctly and leaves the mode at Plan.
+
+The escalation is real but narrower than it first looks: a follow-up write request in that
+post-plan Auto session still raised an approval card rather than writing unasked. So it is
+a mislabelled-mode bug, not a silent bypass of the permission system. It still matters to
+sonata twice over — a plan-role dispatch must never end in a write-capable mode, and an
+adapter whose `approveKeys` used the advertised digits would trigger exactly this. Prefer
+`Escape` for "no" at the plan prompt, and assert on `Decision recorded:` before trusting
+any answer. Worth reporting upstream.
+
 ## What is still unknown
 
-The flag surface, mode mapping, discovery, health and TUI seeding are all now settled
-against the real binary. What is **not** settled is everything that requires the model to
-actually take a turn, because the probe machine has no `DEEPSEEK_API_KEY` (or a configured
-OpenAI-compatible provider). Nothing below can be written from documentation —
-this repository's rule is that a captured fixture beats a plausible regex, and every
-adapter bug found so far was invisible in docs and obvious on the first real run.
+- The `deny`-rule syntax for MCP tools, needed for the `.mcp.json` hazard above.
+- Whether `--permission-mode auto`'s documented "auto-approve ordinary writer fallbacks"
+  ever applies without a prompt; every write observed here raised a card. This decides
+  whether `acceptEdits` dispatches run unattended or need `--allowed-tools` rules.
+- `stream-json` / `--events-jsonl` payload shape, if progress is ever taken from the event
+  stream instead of the pane.
 
-With a key present, three things remain:
-
-1. **Capture a real approval card** into `tests/fixtures/panes/`, and the real key
-   sequences that answer it. `promptPatterns`, `describePrompt` and `approveKeys` come from
-   that capture. The status line advertises `Shift+Tab ask/auto/plan` and `Ctrl+Y YOLO`,
-   so the card's own accelerators still have to be read off a real prompt — and note
-   codex's lesson that a trailing Enter can fall through to the composer.
-2. **Does plan mode block writing `report.md`?** That decides `canWriteReport`. Probe it
-   the way pi and opencode were probed: ask a plan-mode run to write exactly one file and
-   see whether the file appears.
-3. **Does `run` write the final message anywhere on disk**, or is it stdout-only? If there
-   is a session file holding the final assistant text, that becomes `fallbackReportFile`.
-   `--metrics PATH` and `--trajectory PATH` are already sonata-controlled output paths and
-   may make the whole question moot.
-
-Only after 1–3 does writing `src/adapters/reasonix.ts` make sense.
+None of these blocks `src/adapters/reasonix.ts` — that can now be written.
 
 Aside, useful later: `reasonix subagent <list|create|edit|delete|try|run>` is a
 first-class subagent system, and `reasonix acp` serves the Agent Client Protocol over
