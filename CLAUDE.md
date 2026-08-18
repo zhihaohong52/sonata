@@ -181,6 +181,15 @@ Sonata launches other coding agents on your machine — they run **as you**, wit
   then sends Ctrl-D, retrying until the sentinel appears. Ctrl-D, never the documented `exit` + Enter: typing blind
   races the TUI, and a run that typed `exit` landed the letters in an open approval card and the Enter picked
   whatever row was highlighted.
+- **A prompt stays in the pane after it is answered, so it can be re-reported.** Prompt detection reads the current
+  pane, and answering does not erase the block that matched. Under the one-call loop this is visible: a live
+  reasonix dispatch on 2026-08-18 returned PAUSED for a prompt that had already been approved, so `approve` sent
+  its `1` when no selection list was open and the digit landed in the composer as text. Two consequences —
+  wasted approve/wait round trips, and a composer that is no longer empty.
+- **Ctrl-D does not quit a reasonix TUI whose composer is not empty**, which is how the above turns a finished run
+  into a STALLED one: the report was written, the quit watcher sent Ctrl-D, nothing happened, and no exit sentinel
+  was ever produced. Clearing the line before quitting would fix the second half; the first half needs prompt
+  detection to know what it has already answered.
 - No streaming granularity guarantees — progress is whatever the harness prints.
 - **The harness conversation cannot be streamed into Claude Code.** A subagent receives text only as tool results, and its parent receives only its final message, so no push channel exists to stream into. The wrapper no longer polls through the MCP surface: use `tmux attach -r -t sonata-<id>` for the live view or `sonata log <id>` for the transcript; `sonata tail` remains available as a human/debugging CLI command.
 
