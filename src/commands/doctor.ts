@@ -99,20 +99,25 @@ export async function cmdDoctor(
           (stale.length > 3 ? ', …' : ''),
       });
 
-  const withBash = existsSync(agentsDir)
-    ? readdirSync(agentsDir).filter((f) => f.endsWith('.md')).filter((f) => {
-        const body = readFileSync(join(agentsDir, f), 'utf8');
-        return body.includes('forwarding wrapper around the sonata runtime')
-          && /^tools:\s*Bash\s*$/m.test(body);
-      })
+  const wrappers = existsSync(agentsDir)
+    ? readdirSync(agentsDir).filter((f) => f.endsWith('.md')).filter((f) =>
+        readFileSync(join(agentsDir, f), 'utf8')
+          .includes('forwarding wrapper around the sonata runtime'))
     : [];
-  checks.push(withBash.length === 0
-    ? { name: 'agent tools', ok: true, detail: 'no wrapper grants Bash' }
+  const withBash = wrappers.filter((f) =>
+    /^tools:\s*Bash\s*$/m.test(readFileSync(join(agentsDir, f), 'utf8')));
+  const stalePolling = wrappers.filter((f) =>
+    /mcp__sonata__(run|tail)\b/.test(readFileSync(join(agentsDir, f), 'utf8')));
+  checks.push(stalePolling.length === 0
+    ? { name: 'agent tools', ok: withBash.length === 0, detail: withBash.length === 0
+        ? 'no wrapper grants Bash'
+        : `${withBash.length} wrapper(s) still grant Bash and can do the work ` +
+          'themselves — run `sonata sync`, then restart Claude Code' }
     : {
         name: 'agent tools',
         ok: false,
-        detail: `${withBash.length} wrapper(s) still grant Bash and can do the work ` +
-          'themselves — run `sonata sync`, then restart Claude Code',
+        detail: `${stalePolling.length} wrapper(s) still call the removed run/tail ` +
+          'tools and will fail mid-dispatch — run `sonata sync`, then restart Claude Code',
       });
 
   // Agents sonata dispatches to. A disabled one is not an error opencode

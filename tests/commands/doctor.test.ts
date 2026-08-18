@@ -118,7 +118,7 @@ code = ["a"]
   it('stays quiet on a healthy setup', async () => {
     const { cwd, home } = setup();
     writeFileSync(join(cwd, '.claude', 'agents', 'code-a.md'),
-      `---\nname: code-a\ntools: mcp__sonata__run\n---\n${MARKER}`);
+      `---\nname: code-a\ntools: mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve\n---\n${MARKER}`);
     writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({
       mcpServers: { sonata: { command: 'node', args: [join('/pkg', 'dist', 'cli.js'), 'mcp'] } },
     }));
@@ -126,6 +126,54 @@ code = ["a"]
     for (const name of ['agents', 'agent tools', 'mcp server']) {
       expect(res.checks.find((c) => c.name === name)?.ok).toBe(true);
     }
+  });
+});
+
+describe('cmdDoctor — stale wrapper agents', () => {
+  const MINIMAL = `
+[models."m"]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+[generate.roles]
+code = ["m"]
+`;
+  let cwd: string;
+  let home: string;
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'doc-cwd-'));
+    home = mkdtempSync(join(tmpdir(), 'doc-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), MINIMAL);
+    mkdirSync(join(cwd, '.claude', 'agents'), { recursive: true });
+  });
+
+  const writeAgent = (file: string, tools: string) => {
+    writeFileSync(join(cwd, '.claude', 'agents', file), [
+      '---',
+      `name: ${file.replace(/\.md$/, '')}`,
+      `tools: ${tools}`,
+      '---',
+      '',
+      'You are a forwarding wrapper around the sonata runtime.',
+      ''
+    ].join('\n'));
+  };
+
+  it('blocks when a generated agent still names the polling tools', async () => {
+    writeAgent('code-old.md', 'mcp__sonata__run, mcp__sonata__tail, mcp__sonata__approve');
+
+    const { checks } = await cmdDoctor({ cwd, home });
+    const check = checks.find((c) => c.name === 'agent tools')!;
+    expect(check.ok).toBe(false);
+    expect(check.detail).toContain('sonata sync');
+  });
+
+  it('passes when every agent names the current tools', async () => {
+    writeAgent('code-new.md', 'mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve');
+
+    const { checks } = await cmdDoctor({ cwd, home });
+    expect(checks.find((c) => c.name === 'agent tools')!.ok).toBe(true);
   });
 });
 
