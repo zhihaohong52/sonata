@@ -173,7 +173,7 @@ Claude Code
     │  Agent(subagent_type: "code-deepseek-v4-flash")
     ▼
 wrapper agent  (MCP-only — relays, never reasons)
-    │  mcp__sonata__run / tail / approve
+    │  mcp__sonata__dispatch / wait / approve
     ▼
 sonata CLI
     │  composes role prompt + CLAUDE.md + task
@@ -182,11 +182,16 @@ sonata CLI
 opencode → deepseek-v4-flash
 ```
 
-The wrapper holds `mcp__sonata__run`, `mcp__sonata__tail` and
+The wrapper holds `mcp__sonata__dispatch`, `mcp__sonata__wait` and
 `mcp__sonata__approve`, and no Bash. It never parses harness output; it calls
 the MCP tools and relays. All harness-specific knowledge lives in one adapter
 file. Bash access was tested and silently ignored by Claude Code, so
 `tools: Bash(sonata:*)` is not a supported alternative.
+
+`dispatch` launches a run and blocks until it finishes, needs approval, stalls,
+or reaches its blocking window. `wait` resumes a run after approval or when a
+previous call returned `RUNNING`. The MCP surface deliberately has no polling
+tool; `sonata tail` remains available as a human/debugging CLI command.
 
 Completion is read from an exit sentinel and a report file, never scraped from
 the terminal. If a harness dies without writing a report, sonata returns the
@@ -343,10 +348,10 @@ install will not litter unrelated repositories.
 | `sonata doctor` | Check tmux, harnesses, auth and versions |
 | `sonata sync` | Regenerate agent files from `sonata.toml`; `--prune` removes stale generated agents |
 | `sonata run` | Launch a run, print its id |
-| `sonata tail` | Poll a run for progress |
+| `sonata tail` | Human/debugging view of a run; not part of the MCP dispatch path |
 | `sonata approve` | Answer a pending approval |
 | `sonata mcp` | Run the Sonata MCP server |
-| `sonata log <id>` | Print a run's whole transcript (`tail` returns only new lines) |
+| `sonata log <id>` | Print a run's whole transcript |
 | `sonata verify <id> [--model <key>]` | Verify a completed run |
 | `sonata gc` | Kill finished tmux sessions |
 
@@ -368,6 +373,7 @@ plan    = ["opencode-openai-gpt-5.6-terra"]
 tail_window_seconds   = 20     # how long `sonata tail` blocks per call
 stall_timeout_seconds = 120    # silence before a run is reported STALLED
 run_timeout_seconds   = 1800   # hard cap; the run is killed at this point
+dispatch_window_seconds = 1500 # blocking window; must stay under MCP's 30-minute stdio idle limit
 ```
 
 ### Where sonata.toml lives
@@ -414,6 +420,7 @@ version and auth, and the permission hook.
 | Agents don't appear in Claude Code | Claude Code reads `.claude/agents/` at startup. Run `sonata sync`, then restart it. |
 | `sonata: command not found` | The generated agents call `sonata` on your PATH. Run `npm link` in the clone (or install globally once published). |
 | Dispatch fails: "cannot ask for approval" | You are in `default` mode with opencode or pi, which cannot prompt. Switch to `acceptEdits`, use a codex or reasonix model, or dispatch a read-only role. |
+| Dispatch fails immediately after upgrading | Generated agents still name the removed `run`/`tail` tools. Run `sonata sync`, then restart Claude Code. |
 | Every opencode/pi dispatch refuses | The permission hook is not installed, so sonata assumes `default`. Run `sonata init` and choose a hook scope. |
 | A codex run sits in `PAUSED` at startup | Codex has not been trusted in this directory. Run `codex` there once and answer "Yes, continue". |
 | A run reports `degraded` | The harness exited without writing a report; the text you get is scraped pane output. Treat it as untrustworthy. |

@@ -193,7 +193,7 @@ export async function cmdDoctor(
       detail: missing.length === 0
         ? 'the sonata tools are allow-listed, so no dispatch depends on the classifier'
         : `${missing.join(', ')} not allow-listed — in \`auto\` mode these are judged per call, ` +
-          'and a denied `tail` leaves a running dispatch unobservable. Run `sonata init`',
+          'and a denied `wait` leaves a paused dispatch unobservable. Run `sonata init`',
     });
   }
 

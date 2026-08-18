@@ -6,7 +6,7 @@ This file provides guidance to AI assistants when working with this repository. 
 
 **Sonata** — foreign-model subagents for Claude Code. It lets you dispatch a subagent backed by a different model (OpenCode, Codex, Pi, or Reasonix), running in that model's own harness, through the ordinary Agent tool. Same interface, same working directory, same report contract — different brain. Motivations: cost (cheap high-cache models for mechanical work) and diversity of judgement (a different model family reviews Claude's work).
 
-The wrapper agent (MCP-only, relays rather than reasons) calls `sonata run` → gets a run id, then polls with `sonata tail`. Sonata composes the role prompt + CLAUDE.md + task, launches the harness in a detached tmux session, and reads completion from an exit sentinel + report file (never scraped from the terminal). Runs that die without writing a report are marked `degraded` so results are never falsely trusted.
+The wrapper agent (MCP-only, relays rather than reasons) calls the `dispatch` tool, which launches a run and blocks until it is worth reporting; it uses `wait` to resume a `RUNNING` or approved run. Sonata composes the role prompt + CLAUDE.md + task, launches the harness in a detached tmux session, and reads completion from an exit sentinel + report file (never scraped from the terminal). Runs that die without writing a report are marked `degraded` so results are never falsely trusted.
 
 **Status:** Working, early. Engine and the OpenCode/Codex/Pi/Reasonix adapters are complete and tested end-to-end against real models. Not yet published to npm — install from source (`npm link`).
 
@@ -34,7 +34,7 @@ The CLI (after `npm link`):
 - `sonata doctor` — check tmux, harnesses, auth, versions, permission hook
 - `sonata sync` — regenerate agent files from `sonata.toml` (run after editing config, then restart Claude Code); supports `--prune`
 - `sonata run` — launch a run, print its id
-- `sonata tail` — poll a run for progress (PROGRESS | PAUSED | DONE | STALLED)
+- `sonata tail` — human/debugging view of a run (PROGRESS | PAUSED | DONE | STALLED); the MCP dispatch path uses `dispatch`/`wait`
 - `sonata approve` — answer a pending approval
 - `sonata mcp` — run the Sonata MCP server
 - `sonata log <id>` — print a run's whole transcript; the after-the-fact companion to `tmux attach`
@@ -48,7 +48,7 @@ Claude Code
     │  Agent(subagent_type: "code-deepseek-v4-flash")
     ▼
 wrapper agent  (MCP-only; relays, never reasons)
-    │  mcp__sonata__run / tail / approve
+    │  mcp__sonata__dispatch / wait / approve
     ▼
 sonata CLI
     │  composes role prompt + CLAUDE.md + task
@@ -58,12 +58,12 @@ opencode → deepseek-v4-flash   (or codex, pi, or reasonix)
 ```
 
 Key design points:
-- **The three wrapper tools must be allow-listed**, which `sonata init` now does and `sonata doctor` checks. In Claude Code's `auto` mode an un-allow-listed tool is judged per call and the decisions are not stable: on 2026-08-12 a wrapper had `run` allowed and `tail` allowed twice then denied twice mid-run ("Blocked by classifier"), so a foreign model kept writing to the repository with nothing able to observe it. `run` executes code and is the one the classifier tends to permit, which makes the failure silent by construction.
-- **The wrapper holds `mcp__sonata__run`, `mcp__sonata__tail` and `mcp__sonata__approve`, and no Bash.** This is deliberate: an agent with Bash performed 102 file reads and zero dispatches on 2026-08-12. `tools: Bash(sonata:*)` was tested and is silently ignored, so it is not a cheaper alternative and should not be re-proposed.
+- **The three wrapper tools must be allow-listed**, which `sonata init` now does and `sonata doctor` checks. In Claude Code's `auto` mode an un-allow-listed tool is judged per call and the decisions are not stable: on 2026-08-12 a wrapper had `run` allowed and `tail` allowed twice then denied twice mid-run ("Blocked by classifier"), so a foreign model kept writing to the repository with nothing able to observe it. `run` executes code and is the one the classifier tends to permit, which makes the failure silent by construction. Today those wrapper tools are `dispatch`, `wait`, and `approve`.
+- **The wrapper holds `mcp__sonata__dispatch`, `mcp__sonata__wait` and `mcp__sonata__approve`, and no Bash.** The polling tools were removed from the MCP surface so the wrapper cannot spend one model turn per progress poll; `dispatch` blocks until a reportable state and `wait` resumes when needed. This is deliberate: an agent with Bash performed 102 file reads and zero dispatches on 2026-08-12. `tools: Bash(sonata:*)` was tested and is silently ignored, so it is not a cheaper alternative and should not be re-proposed.
 - **The wrapper never parses harness output.** It calls the MCP tools and relays. All harness-specific knowledge lives in one adapter file.
 - **Completion is read from an exit sentinel and a report file**, never scraped from the terminal. If a harness dies without a report, sonata returns the captured pane and marks the result `degraded`.
 - **Progress comes from diffing the tmux pane.** You can attach to any live run: `tmux attach -t sonata-<id>` (`-r` read-only) — so you can correct a cheap model mid-run.
-- **`run_timeout_seconds` is a hard cap** enforced by a watchdog inside the launched shell (not by `sonata tail`); on expiry the whole process group is killed and the run is reported `DONE`, `degraded`, report beginning `[timed out: …]`.
+- **`run_timeout_seconds` is a hard cap** enforced by a watchdog inside the launched shell (not by the MCP wait loop); on expiry the whole process group is killed and the run is reported `DONE`, `degraded`, report beginning `[timed out: …]`.
 
 ### Source layout
 
@@ -71,7 +71,7 @@ Key design points:
 src/
 ├── cli.ts                CLI entry point; arg parsing, then delegates to src/commands/* and src/mcp/*
 ├── commands/             command implementations (approve, doctor, gc, init, log, run, sync, tail, verify)
-├── mcp/                  stdio JSON-RPC MCP server — protocol.ts (handshake + captured fixtures), server.ts (`runMcpStdio`), tools.ts (run/tail/approve tools)
+├── mcp/                  stdio JSON-RPC MCP server — protocol.ts (handshake + captured fixtures), server.ts (`runMcpStdio`), tools.ts (dispatch/wait/approve tools)
 ├── config.ts             config resolution (project → machine), sonata.toml parsing, KNOWN_HARNESSES, isReadOnlyRole
 ├── detect.ts             harness catalogues (`opencode models`, `pi --list-models`) → ModelRef, provider grouping
 ├── normalize.ts          config/model normalization
@@ -119,7 +119,7 @@ Sonata mirrors the Claude Code permission mode onto the harness; a sonata agent 
 - **Reasonix** (real approval cards, so `default` is honoured): `plan` and every read-only role → `run --permission-mode dontAsk`; `default` → interactive TUI with `--permission-mode ask`; `acceptEdits` and `bypassPermissions` → `run` with the same-named mode.
   - `--permission-mode plan` is **refused by `reasonix run`** ("requires an interactive session", exit 2), so read-only work uses `dontAsk` instead. That is real enforcement, probed: a run asked to read one file and write another read it fine and was refused both the write tool and the shell fallback. It cannot write `report.md` either, so `canWriteReport` is false.
   - **Never use `-y`/`--auto`.** It aliases reasonix's own `auto`, which is wider than Claude Code's — it skips risk prompts for things like `git push`. Claude's `auto` maps to `acceptEdits`, so always pass `--permission-mode` explicitly.
-  - Reasonix loads the working directory's `.mcp.json` on top of its own config. In this repository that hands a dispatched model sonata's own run/tail/approve tools, so it can dispatch further runs. `sonata doctor` warns when a `.mcp.json` is present.
+  - Reasonix loads the working directory's `.mcp.json` on top of its own config. In this repository that hands a dispatched model sonata's own dispatch/wait/approve tools, so it can dispatch further runs. `sonata doctor` warns when a `.mcp.json` is present.
 
 The permission mode is not exposed as an env var, so this needs a **PreToolUse hook** (`hooks/capture-mode.mjs`), which `sonata init` offers to install at project or global scope. Without it sonata assumes `default` — for opencode/pi that means dispatches refuse, so `sonata doctor` reports a missing hook as a blocker.
 
@@ -152,6 +152,7 @@ plan    = ["opencode-openai-gpt-5.6-terra"]
 tail_window_seconds   = 20     # how long `sonata tail` blocks per call
 stall_timeout_seconds = 120    # silence before a run is reported STALLED
 run_timeout_seconds   = 1800   # hard cap; the run is killed at this point
+dispatch_window_seconds = 1500 # blocking window; must stay under MCP's 30-minute stdio idle limit
 ```
 
 - **Keys are always quoted.** An unquoted `[models.grok-4.5]` nests as `models → "grok-4" → "5"` and silently stops describing the model it names. Every key and value is written through `tomlKey`, which also escapes control characters.
@@ -181,7 +182,7 @@ Sonata launches other coding agents on your machine — they run **as you**, wit
   races the TUI, and a run that typed `exit` landed the letters in an open approval card and the Enter picked
   whatever row was highlighted.
 - No streaming granularity guarantees — progress is whatever the harness prints.
-- **The harness conversation cannot be streamed into Claude Code.** A subagent receives text only as tool results, and its parent receives only its final message, so no push channel exists to stream into. `sonata tail` is already a long-poll (it returns the instant a line appears, and only blocks for `tail_window_seconds` when the harness is silent); `tmux attach -r -t sonata-<id>` is the live view, and `sonata run` now prints that command.
+- **The harness conversation cannot be streamed into Claude Code.** A subagent receives text only as tool results, and its parent receives only its final message, so no push channel exists to stream into. The wrapper no longer polls through the MCP surface: use `tmux attach -r -t sonata-<id>` for the live view or `sonata log <id>` for the transcript; `sonata tail` remains available as a human/debugging CLI command.
 
 ## Conventions
 

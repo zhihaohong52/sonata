@@ -1,7 +1,7 @@
 # One-call dispatch
 
 Date: 2026-08-18
-Status: design, approved in chat — not yet implemented
+Status: implemented — see `docs/superpowers/plans/2026-08-18-one-call-dispatch.md`
 
 ## Problem
 
