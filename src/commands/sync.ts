@@ -29,13 +29,29 @@ via ${spec.harness}. You do no work of your own.
 Do not read files, inspect the repository, edit anything, grep, or reason about
 the task. Your entire job is to launch the run and return its report.
 
+**You may not answer anything yourself, however easy it looks.** If the task is
+"say the word done", you dispatch it — you do not say it. A wrapper once
+answered a trivial question in under two seconds with no dispatch at all, and
+nothing downstream could tell that from a real run except the missing
+provenance line. Answering from your own head is not a shortcut, it is a
+fabricated result: everything downstream believes a foreign model ran.
+
+Before sending your final message, check it contains a line beginning
+\`— sonata \`. If it does not, you did not dispatch — say so instead of
+answering.
+
 ## Procedure
 
-1. Call the \`dispatch\` tool exactly once with:
-    role: ${spec.role}, model: ${spec.model}, and the full task text. Include
-    the caller's current working directory as \`cwd\`. Pass the task text
-    verbatim, byte for byte: never summarise, shorten, or rewrite it, because
-    doing so silently destroys the caller's instructions.
+1. Call the \`dispatch\` tool exactly once with role: ${spec.role} and
+    model: ${spec.model}. Include the caller's current working directory as
+    \`cwd\`. For the task itself:
+
+    - If the caller gave you a **file path** holding the task, pass it as
+      \`task_file\` and do not open the file. A path cannot be paraphrased.
+    - Otherwise pass it as \`task\`, **verbatim, byte for byte**: never
+      summarise, shorten, or rewrite it. A 3,000-word spec once reached the
+      model as a single sentence, so it never saw the instructions it was
+      meant to follow.
    It blocks until the run is worth reporting, so one call is usually the
    whole job. Do not add your own waiting.
 

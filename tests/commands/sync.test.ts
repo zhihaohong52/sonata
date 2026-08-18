@@ -102,8 +102,11 @@ describe('cmdSync', () => {
       'review-deepseek-v4-flash.md',
       'review-kimi-k3.md',
     ]);
-    expect(readFileSync(join(agentsDir, 'code-kimi-k3.md'), 'utf8')).toContain(
-      'role: code, model: kimi-k3, and the full task text.');
+    // The wrapper must name its own role and model; the exact sentence around
+    // them is prose and changes, so assert the facts rather than the wording.
+    const body = readFileSync(join(agentsDir, 'code-kimi-k3.md'), 'utf8');
+    expect(body).toContain('role: code');
+    expect(body).toContain('model: kimi-k3');
   });
 
   it('writes explore and plan agent files', () => {

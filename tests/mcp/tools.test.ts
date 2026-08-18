@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { TOOL_DEFS, callTool, truncateReport, MAX_REPORT_CHARS } from '../../src/mcp/tools.js';
+import { TOOL_DEFS, callTool, truncateReport, MAX_REPORT_CHARS, resolveTaskFile } from '../../src/mcp/tools.js';
 
 describe('truncateReport', () => {
   it('leaves an ordinary report exactly as it is', () => {
@@ -31,8 +31,10 @@ describe('TOOL_DEFS', () => {
   it('declares the arguments each tool needs', () => {
     const dispatch = TOOL_DEFS.find((t) => t.name === 'dispatch')!;
     expect(Object.keys((dispatch.inputSchema as any).properties).sort())
-      .toEqual(['cwd', 'model', 'role', 'task']);
-    expect((dispatch.inputSchema as any).required.sort()).toEqual(['model', 'role', 'task']);
+      .toEqual(['cwd', 'model', 'role', 'task', 'task_file']);
+    // `task` is not required: task_file is the paraphrase-proof alternative,
+    // and resolveTaskFile enforces that exactly one of the two is given.
+    expect((dispatch.inputSchema as any).required.sort()).toEqual(['model', 'role']);
 
     const wait = TOOL_DEFS.find((t) => t.name === 'wait')!;
     expect((wait.inputSchema as any).required).toEqual(['id']);
@@ -134,5 +136,46 @@ describe('callTool', () => {
 
     expect(dispatchObserver).toBe(onLines);
     expect(waitObserver).toBe(onLines);
+  });
+});
+
+/**
+ * `task_file` exists because the wrapper agent paraphrases: a ~3K spec once
+ * reached the harness as one line. A path cannot be paraphrased.
+ */
+describe('resolveTaskFile', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sonata-taskfile-'));
+
+  it('writes an inline task to a temp file and returns its path', () => {
+    const p = resolveTaskFile({ task: 'do the thing' }, dir);
+    expect(readFileSync(p, 'utf8')).toBe('do the thing');
+  });
+
+  it('returns the caller\'s file untouched, so the exact bytes survive', () => {
+    const brief = join(dir, 'brief.md');
+    writeFileSync(brief, '# A long brief\n\nwith detail\n');
+    expect(resolveTaskFile({ task_file: brief }, dir)).toBe(brief);
+  });
+
+  it('resolves a relative task_file against the run cwd', () => {
+    writeFileSync(join(dir, 'rel.md'), 'relative');
+    expect(resolveTaskFile({ task_file: 'rel.md' }, dir)).toBe(join(dir, 'rel.md'));
+  });
+
+  // Preferring one silently would let a paraphrased `task` beat the file the
+  // caller actually meant.
+  it('refuses both at once rather than picking', () => {
+    const brief = join(dir, 'brief.md');
+    expect(() => resolveTaskFile({ task: 'x', task_file: brief }, dir))
+      .toThrow(/either "task" or "task_file", not both/);
+  });
+
+  it('refuses a task_file that does not exist', () => {
+    expect(() => resolveTaskFile({ task_file: join(dir, 'gone.md') }, dir))
+      .toThrow(/does not exist/);
+  });
+
+  it('refuses neither being given', () => {
+    expect(() => resolveTaskFile({}, dir)).toThrow(/required/);
   });
 });

@@ -1,4 +1,4 @@
-import { writeFileSync, statSync } from 'node:fs';
+import { writeFileSync, statSync, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -51,10 +51,11 @@ export const TOOL_DEFS: ToolDef[] = [
       properties: {
         role: { type: 'string', description: 'code | review | explore | plan' },
         model: { type: 'string', description: 'a model key from sonata.toml' },
-        task: { type: 'string', description: 'Pass the caller task verbatim, byte for byte; never summarise, shorten, or rewrite it.' },
+        task: { type: 'string', description: 'The task text, verbatim and byte for byte. Never summarise, shorten, or rewrite it. If the caller gave you a file path instead, use task_file.' },
+        task_file: { type: 'string', description: 'Path to a file holding the task. Prefer this whenever the caller gives you one: a path cannot be paraphrased, and the model receives exactly what was written. Give either task or task_file, not both.' },
         cwd: { type: 'string', description: 'optional existing directory in which to launch the run' },
       },
-      required: ['role', 'model', 'task'],
+      required: ['role', 'model'],
     },
     _meta: REPORT_META,
   },
@@ -95,6 +96,42 @@ function withTrimmedReport(result: WaitResult): WaitResult {
     : { ...result, report: truncateReport(result.report, result.id) };
 }
 
+/**
+ * Where the task text comes from: an inline string, or a file the caller wrote.
+ *
+ * `task_file` exists because the wrapper agent is a small model relaying
+ * arguments, and it paraphrases — a ~3K step-by-step spec once reached the
+ * harness as a one-line summary. A path cannot be paraphrased: it either
+ * arrives intact or the dispatch fails loudly. Prose asking a model not to
+ * summarise is a request; this is a mechanism.
+ *
+ * Exactly one of the two, because silently preferring one when both are given
+ * would let a paraphrased `task` win over the file the caller meant.
+ */
+export function resolveTaskFile(args: Record<string, unknown>, cwd: string): string {
+  const inline = typeof args.task === 'string' && args.task.length > 0;
+  const path = typeof args.task_file === 'string' && args.task_file.length > 0;
+
+  if (inline && path) {
+    throw new Error('sonata: give either "task" or "task_file", not both');
+  }
+  if (path) {
+    const resolved = resolve(cwd, args.task_file as string);
+    if (!existsSync(resolved)) {
+      throw new Error(`sonata: task_file "${args.task_file}" does not exist`);
+    }
+    // Copied rather than read-and-rewritten so the bytes the caller wrote are
+    // the bytes composeInstructions receives.
+    return resolved;
+  }
+  if (!inline) {
+    throw new Error('sonata: the "task" or "task_file" argument is required');
+  }
+  const tmp = join(tmpdir(), `sonata-task-${Date.now()}-${randomUUID().slice(0, 8)}.md`);
+  writeFileSync(tmp, args.task as string);
+  return tmp;
+}
+
 function need(args: Record<string, unknown>, key: string): string {
   const value = args[key];
   if (typeof value !== 'string' || value.length === 0) {
@@ -128,10 +165,8 @@ export async function callTool(
     case 'dispatch': {
       const role = need(args, 'role');
       const model = need(args, 'model');
-      const task = need(args, 'task');
       const cwd = resolveToolCwd(args, env);
-      const taskFile = join(tmpdir(), `sonata-task-${Date.now()}-${randomUUID().slice(0, 8)}.md`);
-      writeFileSync(taskFile, task);
+      const taskFile = resolveTaskFile(args, cwd);
       const started = await (env.run ?? cmdRun)({
         cwd,
         role,

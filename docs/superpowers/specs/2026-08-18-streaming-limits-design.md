@@ -1,86 +1,106 @@
-# What sonata can and cannot borrow from a native subagent
+# Streaming, and why the wrapper agent stays
 
 Date: 2026-08-18
-Status: measured; the wiring it recommends is implemented
+Status: measured; the fixes it recommends are implemented
 
-Sonata's ambition has always been to feel like a native Claude Code subagent —
-same interface, same working directory, same report contract, different brain —
-including being able to watch the foreign model work, turn by turn, in the
-terminal.
+> An earlier revision of this document concluded the opposite — that a
+> subagent's tool call never renders progress, and that the wrapper should
+> therefore be dropped. That was an observation error: the ticks were rendering
+> in the subagent's own nested view while the transcript was being watched. The
+> corrected measurements are below. The error is recorded rather than deleted
+> because it is the kind that survives review — every individual claim was true,
+> and the conclusion was still wrong.
 
-Everything below was measured against Claude Code 2.1.233, protocol
-2025-11-25. None of it is inferred.
+Sonata's ambition is to feel like a native Claude Code subagent: same interface,
+same working directory, same report contract, different brain — including
+watching the foreign model work, turn by turn, in the terminal.
 
-## The one channel an MCP server has
+Measured against Claude Code 2.1.233, protocol 2025-11-25.
+
+## The channel
 
 Claude Code sends `params._meta.progressToken` on `tools/call`, and a
-`notifications/progress` referencing that token renders in the user's terminal.
-They are protocol messages, not tool results, so they cost no tokens and enter
-no model's context — which is exactly why they can show the user a running
-harness and exactly why they can never feed the orchestrator.
+`notifications/progress` referencing that token renders in the terminal. These
+are protocol messages, not tool results: they cost no tokens and enter no
+model's context. That is why they can show a user a running harness, and why
+they can never feed the orchestrator.
 
-That is the whole channel. There is no other push surface.
+## Measurements
 
-## Three measurements
+1. **A subagent's tool call renders progress, in the subagent's own view.**
+   Observed at `sonata tick 53 · t=212s`, still ticking.
 
-1. **A subagent's tool call never renders progress.** Two dispatches were run
-   with an identical ticker, one from the main thread and one through a wrapper
-   subagent, labelled `DIRECT` and `WRAPPER`. Only `DIRECT` ticks appeared.
+2. **A subagent's tool call is never backgrounded.** Claude Code backgrounds
+   only main-conversation calls. So the call blocks for the whole run, and
+   therefore streams for the whole run.
 
-2. **A main-thread call renders progress only while it blocks.** Claude Code
-   moves a main-conversation MCP call to a background task after 120 seconds.
-   On a 4-second ticker, ticks stopped at exactly 30.
+3. **A main-thread call streams only until it is backgrounded at 120s.** On a
+   4-second ticker, ticks stopped at exactly 30. `/tasks` then shows
+   `sonata/dispatch · <id> · working` and no progress text.
 
-3. **`/tasks` shows status, not progress.** A backgrounded run displays
-   `sonata/dispatch · <id> · working` and nothing else, so the messages do not
-   reappear elsewhere.
+4. **120s is not a high bar.** A dispatch whose entire task was "say the word
+   done" crossed it and was backgrounded; codex startup alone can consume it.
 
 ## What follows
 
 | | async | live turns |
 |---|---|---|
-| native subagent | yes | yes |
-| sonata via wrapper agent | yes | no |
-| sonata direct, under 120s | no | yes |
-| sonata direct, backgrounded | yes | no |
+| via wrapper subagent | yes | **yes, whole run** |
+| direct, main thread | after 120s | first 120s only |
 
-**Sonata cannot have both.** A native subagent does, because Claude Code renders
-subagent activity through its own internal channel, which is not available to an
-MCP server. This is an upstream constraint, not a sonata design flaw: if Claude
-Code ever renders progress for backgrounded calls, sonata inherits the full
-experience with no change.
+**The wrapper is the only path that delivers both**, and it is what makes sonata
+feel like a native subagent. It stays.
 
-`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` is the dial between the two rows. Setting
-it to `0` or a large value in a project's `.claude/settings.json` keeps a call
-blocking, and therefore streaming, for the whole run. It is deliberately **not**
-recommended: holding the session for an eight-minute dispatch is a worse trade
-than losing the stream, and the setting applies to every MCP server in the
-project rather than to sonata alone.
+Direct dispatch remains right for one-offs where the orchestrator wants the
+result in its own context and does not care about watching. Its 120-second
+streaming ceiling is a property worth knowing, not a defect to fix.
 
-## Decisions
+## The wrapper's two failure modes
 
-**Keep backgrounding.** Default behaviour, no config changes shipped.
+Both are silent. Both were observed today.
 
-**Emit progress anyway.** `cmdTail` already computes the new pane lines each
-poll; emitting them as progress notifications is small, costs nothing, and gives
-real streaming for runs under two minutes — a decent share of them. It is also
-positioned to become the full experience for free if the upstream limit lifts.
+### Paraphrasing
 
-**Drop the wrapper agent.** It streams nothing, costs a model turn per dispatch,
-and is the only component that can corrupt the task text — a 3K spec once
-arrived as a one-line summary. Dispatching directly from the main thread
-preserves the task byte for byte because the caller writes the argument itself.
-This also removes the need for a `task_file` parameter, which existed only to
-route around the paraphrasing.
+A ~3K step-by-step spec reached the harness as a one-line summary. The wrapper
+is a small model relaying `task` as a string, and prose asking it not to
+summarise is a request, not a mechanism.
 
-**`tmux attach` remains the real live view.** For anything past two minutes it is
-the answer, and on its merits it beats the native experience: the actual
-terminal, complete rather than summarised, and interactive — drop `-r` and steer
-a cheap model mid-run.
+**Fix: `task_file`.** The caller writes the task to a file and passes the path.
+A path either arrives intact or the dispatch fails loudly — there is nothing to
+rewrite. Evidence this works: every dispatch in this session that used a written
+brief arrived verbatim, including one of 120 lines, because what crossed the
+wrapper boundary was a filename.
+
+`task` stays for short inline tasks. Exactly one of the two must be given.
+
+### Fabrication
+
+Asked to "say the word done", a wrapper returned `done` in 1.9 seconds with zero
+tool calls. No run was launched. The same task dispatched directly took over two
+minutes, consumed 13,294 tokens on the foreign model, and returned the identical
+word — with provenance. Only the provenance line distinguished them.
+
+This is worse than paraphrasing: paraphrasing degrades a run, fabrication
+invents one. It happens precisely when the wrapper believes it can answer, which
+is when a caller is least likely to check.
+
+**Fix, in two parts.**
+
+1. The wrapper prompt states the prohibition directly: it may not answer
+   anything itself, however easy, and a response it did not obtain from a
+   dispatch is a failure rather than a shortcut. It must self-check for the
+   provenance line before answering.
+
+2. The provenance line is the mechanism, and it already exists:
+   `— sonata <id>: <role> on <model> via <harness> · exit N`, built from
+   `meta.json`, which only a real run writes. A response lacking it should be
+   treated as fabricated, and `sonata verify <id>` confirms a claimed id.
+
+Neither part is enforceable inside sonata — the wrapper's final message belongs
+to Claude Code. What sonata can do is make the rule unmissable and the evidence
+checkable, which is what these changes do.
 
 ## What would change this
 
-A single upstream change: Claude Code rendering `notifications/progress` for
-backgrounded calls, or exposing subagent tool-call progress. Worth re-probing
-after a Claude Code upgrade; the three measurements above are each about ten
-minutes to redo.
+Claude Code rendering progress for backgrounded calls would remove the 120s
+ceiling on direct dispatch. Nothing else here depends on upstream behaviour.
