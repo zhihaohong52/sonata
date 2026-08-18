@@ -30,7 +30,7 @@ export interface ToolDef {
 
 export interface Deps {
   tools: ToolDef[];
-  call(name: string, args: Record<string, unknown>): Promise<string>;
+  call(name: string, args: Record<string, unknown>, onLines?: (lines: string[]) => void): Promise<string>;
 }
 
 /**
@@ -44,6 +44,7 @@ const FALLBACK_PROTOCOL_VERSION = '2025-11-25';
 export async function handle(
   req: JsonRpcRequest,
   deps: Deps,
+  onLines?: (lines: string[]) => void,
 ): Promise<JsonRpcResponse | null> {
   // Notifications have no id and take no response.
   if (req.id === undefined) return null;
@@ -71,7 +72,7 @@ export async function handle(
         if (!deps.tools.some((t) => t.name === name)) {
           throw new Error(`unknown tool "${name}"`);
         }
-        const text = await deps.call(name, args);
+        const text = await deps.call(name, args, onLines);
         return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } };
       } catch (err) {
         // A refused dispatch must reach the wrapper as text it can relay,

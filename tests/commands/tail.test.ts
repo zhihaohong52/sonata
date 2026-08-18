@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { cmdTail, decide, harnessOutput } from '../../src/commands/tail.js';
 import { tailWaitSeconds } from '../../src/cli.js';
 import { capturePane, killSession, newSession, sendKeys } from '../../src/tmux.js';
-import { readAnsweredPrompt, runDir, writeAnsweredPrompt } from '../../src/store.js';
+import { readAnsweredPrompt, readCursor, readEvents, runDir, writeAnsweredPrompt } from '../../src/store.js';
 import { cleanPane } from '../../src/normalize.js';
 import { codexAdapter } from '../../src/adapters/codex.js';
 
@@ -233,5 +233,36 @@ describe('cmdTail answered prompts', () => {
     await snapshotPrompt();
     const result = await cmdTail({ cwd, id, waitSeconds: 0 });
     expect(result.state).toBe('PAUSED');
+  });
+
+  it('emits persisted new harness output', async () => {
+    await snapshotPrompt();
+    await sendKeys(session, "printf 'streamed output\\n'");
+    await sendKeys(session, 'Enter');
+    await new Promise((r) => setTimeout(r, 100));
+    let emitted: string[] = [];
+
+    await cmdTail({
+      cwd, id, waitSeconds: 0,
+      onLines: (lines) => {
+        emitted = lines;
+        expect(readEvents(cwd, id)).toEqual(expect.arrayContaining(lines));
+        expect(readCursor(cwd, id)).toBeGreaterThanOrEqual(lines.length);
+      },
+    });
+
+    expect(emitted).toContain('streamed output');
+  });
+
+  it('continues when the output observer throws', async () => {
+    await snapshotPrompt();
+    await sendKeys(session, "printf 'streamed output\\n'");
+    await sendKeys(session, 'Enter');
+    await new Promise((r) => setTimeout(r, 100));
+
+    await expect(cmdTail({
+      cwd, id, waitSeconds: 0,
+      onLines: () => { throw new Error('notifications unavailable'); },
+    })).resolves.toMatchObject({ state: 'PAUSED' });
   });
 });

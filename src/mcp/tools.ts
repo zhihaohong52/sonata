@@ -122,6 +122,7 @@ export async function callTool(
   name: string,
   args: Record<string, unknown>,
   env: ToolEnv,
+  onLines?: (lines: string[]) => void,
 ): Promise<string> {
   switch (name) {
     case 'dispatch': {
@@ -139,12 +140,12 @@ export async function callTool(
         rolesDir: env.rolesDir,
         sessionId: env.sessionId,
       });
-      const result = await (env.wait ?? cmdWait)({ cwd, id: started.id });
+      const result = await (env.wait ?? cmdWait)({ cwd, id: started.id, onLines });
       return JSON.stringify({ ...withTrimmedReport(result), cwd });
     }
     case 'wait': {
       const cwd = resolveToolCwd(args, env);
-      const result = await (env.wait ?? cmdWait)({ cwd, id: need(args, 'id') });
+      const result = await (env.wait ?? cmdWait)({ cwd, id: need(args, 'id'), onLines });
       return JSON.stringify({ ...withTrimmedReport(result), cwd });
     }
     case 'approve': {

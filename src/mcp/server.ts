@@ -58,10 +58,28 @@ export async function serveMcp(
       continue;
     }
 
+    const token = req.method === 'tools/call'
+      && req.params?._meta
+      && typeof req.params._meta === 'object'
+      ? (req.params._meta as Record<string, unknown>).progressToken
+      : undefined;
+    let progress = 0;
+    const onLines = typeof token === 'string' || typeof token === 'number'
+      ? (lines: string[]) => {
+        for (const message of lines) {
+          write(JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'notifications/progress',
+            params: { progressToken: token, progress: ++progress, message },
+          }));
+        }
+      }
+      : undefined;
+
     const res = await handle(req, {
       tools: TOOL_DEFS,
-      call: (name, args) => callTool(name, args, env),
-    });
+      call: (name, args, onLines) => callTool(name, args, env, onLines),
+    }, onLines);
     if (res !== null) write(JSON.stringify(res));
   }
 }

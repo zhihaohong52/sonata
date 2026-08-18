@@ -117,4 +117,22 @@ describe('callTool', () => {
     expect(waitCwd).toBe(cwd);
     expect(JSON.parse(result)).toMatchObject({ id: 'abc123', cwd });
   });
+
+  it('passes an output observer to dispatch and wait', async () => {
+    const onLines = () => {};
+    let dispatchObserver: unknown;
+    let waitObserver: unknown;
+    const run = async () => ({ id: 'abc123', session: 'sonata-abc123', interactive: false });
+    const wait = async (opts: any) => {
+      if (opts.id === 'abc123') dispatchObserver = opts.onLines;
+      if (opts.id === 'def456') waitObserver = opts.onLines;
+      return { id: opts.id, state: 'RUNNING' as const, lines: [] };
+    };
+
+    await callTool('dispatch', { role: 'code', model: 'm', task: 't' }, { ...env, run, wait }, onLines);
+    await callTool('wait', { id: 'def456' }, { ...env, wait }, onLines);
+
+    expect(dispatchObserver).toBe(onLines);
+    expect(waitObserver).toBe(onLines);
+  });
 });

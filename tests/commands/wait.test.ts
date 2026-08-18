@@ -57,6 +57,19 @@ describe('cmdWait', () => {
     expect(r.state).toBe('STALLED');
   });
 
+  it('passes its output observer to cmdTail', async () => {
+    const onLines = () => {};
+    let received: unknown;
+    await cmdWait({
+      cwd: repo(), id: 'abc123', pollMs: 1, onLines,
+      tail: async (opts) => {
+        received = opts.onLines;
+        return { state: 'STALLED', lines: [] };
+      },
+    });
+    expect(received).toBe(onLines);
+  });
+
   // The window keeps the call inside Claude Code's 30-minute stdio idle
   // window. RUNNING is resumable: the run is untouched and still in tmux.
   it('gives up its window and returns RUNNING, not a failure', async () => {

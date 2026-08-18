@@ -34,6 +34,28 @@ describe('serveMcp', () => {
     await serveMcp(lines('', '   '), (l) => out.push(l), env);
     expect(out).toEqual([]);
   });
+
+  it('emits progress notifications only for a supplied token', async () => {
+    const out: string[] = [];
+    const wait = async (opts: any) => {
+      opts.onLines?.(['first harness line', 'second harness line']);
+      return { id: opts.id, state: 'RUNNING' as const, lines: [] };
+    };
+    await serveMcp(lines(
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name: 'wait', arguments: { id: 'abc123' }, _meta: { progressToken: 'token-1' } } }),
+      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call',
+        params: { name: 'wait', arguments: { id: 'abc123' } } }),
+    ), (l) => out.push(l), { ...env, wait });
+
+    const notifications = out.map((line) => JSON.parse(line)).filter((m) => m.method === 'notifications/progress');
+    expect(notifications).toEqual([
+      { jsonrpc: '2.0', method: 'notifications/progress',
+        params: { progressToken: 'token-1', progress: 1, message: 'first harness line' } },
+      { jsonrpc: '2.0', method: 'notifications/progress',
+        params: { progressToken: 'token-1', progress: 2, message: 'second harness line' } },
+    ]);
+  });
 });
 
 describe('serveMcp — hostile input', () => {

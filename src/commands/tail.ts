@@ -131,6 +131,8 @@ export interface TailOptions {
   cwd: string;
   id: string;
   waitSeconds: number;
+  /** Best-effort observer for newly persisted harness output. */
+  onLines?: (lines: string[]) => void;
   pollMs?: number;
   /** Grace period after the exit sentinel for the pane to flush. */
   settleMs?: number;
@@ -227,6 +229,14 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       exitCode = readExit(opts.cwd, opts.id);
     }
 
+    const output = harnessOutput(fresh, scriptPath);
+    if (output.length > 0) {
+      try {
+        opts.onLines?.(output);
+      } catch {
+        // Progress notifications are cosmetic; never let their transport stop a run.
+      }
+    }
 
     // Prefer the model's own report; fall back to a final message the harness
     // wrote itself (codex `-o`) before giving up and returning pane text.

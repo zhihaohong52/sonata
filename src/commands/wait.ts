@@ -18,6 +18,7 @@ export interface WaitResult extends Omit<TailResult, 'state'> {
 export interface WaitOptions {
   cwd: string;
   id: string;
+  onLines?: (lines: string[]) => void;
   windowSeconds?: number;
   pollMs?: number;
   now?: () => number;
@@ -51,6 +52,7 @@ export async function cmdWait(opts: WaitOptions): Promise<WaitResult> {
       id: opts.id,
       // One tail call must not outlast the window it is spending.
       waitSeconds: Math.max(0, Math.ceil((deadline - now()) / 1000)),
+      onLines: opts.onLines,
       pollMs,
     });
     if (result.state !== 'PROGRESS') return { ...result, id: opts.id };
