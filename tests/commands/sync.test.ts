@@ -29,7 +29,7 @@ describe('agentMarkdown', () => {
   it('declares a cheap tool-only wrapper', () => {
     expect(md).toContain('name: code-deepseek-v4-flash');
     expect(md).toContain('model: haiku');
-    expect(md).toContain('tools: mcp__sonata__run, mcp__sonata__tail, mcp__sonata__approve');
+    expect(md).toContain('tools: mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve');
   });
 
   it('does not grant Bash or shell commands', () => {
@@ -52,7 +52,7 @@ describe('agentMarkdown — tool grant', () => {
 
   it('grants only the three sonata MCP tools', () => {
     expect(md()).toContain(
-      'tools: mcp__sonata__run, mcp__sonata__tail, mcp__sonata__approve');
+      'tools: mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve');
   });
 
   it('never grants Bash', () => {
@@ -61,6 +61,28 @@ describe('agentMarkdown — tool grant', () => {
 
   it('tells the wrapper to call tools, not shell commands', () => {
     expect(md()).not.toContain('sonata run --role');
+  });
+});
+
+describe('agentMarkdown — one-call dispatch', () => {
+  const md = agentMarkdown({ role: 'code', model: 'm', harness: 'opencode' });
+
+  it('grants the three tools the wrapper holds', () => {
+    expect(md).toContain('tools: mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve');
+  });
+
+  it('never tells the wrapper to poll', () => {
+    expect(md).not.toMatch(/\bpoll\b/i);
+    expect(md).not.toContain('`tail`');
+  });
+
+  it('tells it to resume with wait after a RUNNING result', () => {
+    expect(md).toContain('RUNNING');
+    expect(md).toContain('`wait`');
+  });
+
+  it('still forbids doing the work itself', () => {
+    expect(md).toContain('You do no work of your own.');
   });
 });
 
