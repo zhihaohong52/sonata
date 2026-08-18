@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ToolDef } from './protocol.js';
 import { cmdRun } from '../commands/run.js';
-import { cmdTail } from '../commands/tail.js';
+import { cmdWait } from '../commands/wait.js';
+import type { WaitResult } from '../commands/wait.js';
 import { cmdApprove } from '../commands/approve.js';
 
 /**
@@ -31,12 +32,16 @@ export interface ToolEnv {
   sessionId?: string;
 }
 
+const MAX_RESULT_SIZE_CHARS = 200_000;
+const REPORT_META = { 'anthropic/maxResultSizeChars': MAX_RESULT_SIZE_CHARS };
+
 export const TOOL_DEFS: ToolDef[] = [
   {
-    name: 'run',
+    name: 'dispatch',
     description:
-      'Launch a sonata run on a foreign model and return its run id immediately. ' +
-      'The run continues in the background; poll it with tail.',
+      'Run a task on a foreign model and return its report. Blocks until the run ' +
+      'finishes, needs an approval, or stalls — so one call is usually the whole ' +
+      'dispatch. Returns state DONE, PAUSED, STALLED or RUNNING.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -46,17 +51,19 @@ export const TOOL_DEFS: ToolDef[] = [
       },
       required: ['role', 'model', 'task'],
     },
+    _meta: REPORT_META,
   },
   {
-    name: 'tail',
+    name: 'wait',
     description:
-      'Poll a run for progress. Blocks until something changes or the tail window ' +
-      'elapses. Returns PROGRESS, PAUSED, DONE or STALLED.',
+      'Resume waiting on a run already launched — after answering a PAUSED prompt, ' +
+      'or when a previous call returned RUNNING. Same states as dispatch.',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string', description: 'the run id' } },
       required: ['id'],
     },
+    _meta: REPORT_META,
   },
   {
     name: 'approve',
@@ -72,6 +79,13 @@ export const TOOL_DEFS: ToolDef[] = [
   },
 ];
 
+/** Trims the report in a result, leaving every other field alone. */
+function withTrimmedReport(result: WaitResult): WaitResult {
+  return result.report === undefined
+    ? result
+    : { ...result, report: truncateReport(result.report, result.id) };
+}
+
 function need(args: Record<string, unknown>, key: string): string {
   const value = args[key];
   if (typeof value !== 'string' || value.length === 0) {
@@ -86,13 +100,13 @@ export async function callTool(
   env: ToolEnv,
 ): Promise<string> {
   switch (name) {
-    case 'run': {
+    case 'dispatch': {
       const role = need(args, 'role');
       const model = need(args, 'model');
       const task = need(args, 'task');
       const taskFile = join(tmpdir(), `sonata-task-${Date.now()}-${randomUUID().slice(0, 8)}.md`);
       writeFileSync(taskFile, task);
-      const result = await cmdRun({
+      const started = await cmdRun({
         cwd: env.cwd,
         role,
         model,
@@ -100,11 +114,12 @@ export async function callTool(
         rolesDir: env.rolesDir,
         sessionId: env.sessionId,
       });
-      return JSON.stringify(result);
+      const result = await cmdWait({ cwd: env.cwd, id: started.id });
+      return JSON.stringify(withTrimmedReport(result));
     }
-    case 'tail': {
-      const result = await cmdTail({ cwd: env.cwd, id: need(args, 'id'), waitSeconds: 0 });
-      return JSON.stringify(result);
+    case 'wait': {
+      const result = await cmdWait({ cwd: env.cwd, id: need(args, 'id') });
+      return JSON.stringify(withTrimmedReport(result));
     }
     case 'approve': {
       const answer = need(args, 'answer');

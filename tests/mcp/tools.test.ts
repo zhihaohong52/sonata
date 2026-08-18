@@ -21,15 +21,25 @@ describe('truncateReport', () => {
 });
 
 describe('TOOL_DEFS', () => {
-  it('exposes exactly run, tail and approve', () => {
-    expect(TOOL_DEFS.map((t) => t.name).sort()).toEqual(['approve', 'run', 'tail']);
+  it('exposes exactly dispatch, wait and approve', () => {
+    expect(TOOL_DEFS.map((t) => t.name).sort()).toEqual(['approve', 'dispatch', 'wait']);
   });
 
   it('declares the arguments each tool needs', () => {
-    const run = TOOL_DEFS.find((t) => t.name === 'run')!;
-    expect(Object.keys((run.inputSchema as any).properties).sort())
+    const dispatch = TOOL_DEFS.find((t) => t.name === 'dispatch')!;
+    expect(Object.keys((dispatch.inputSchema as any).properties).sort())
       .toEqual(['model', 'role', 'task']);
-    expect((run.inputSchema as any).required.sort()).toEqual(['model', 'role', 'task']);
+    expect((dispatch.inputSchema as any).required.sort()).toEqual(['model', 'role', 'task']);
+
+    const wait = TOOL_DEFS.find((t) => t.name === 'wait')!;
+    expect((wait.inputSchema as any).required).toEqual(['id']);
+  });
+
+  it('raises the result-size ceiling for the tools that return reports', () => {
+    for (const name of ['dispatch', 'wait']) {
+      const def = TOOL_DEFS.find((t) => t.name === name)!;
+      expect(def._meta?.['anthropic/maxResultSizeChars']).toBe(200_000);
+    }
   });
 });
 
@@ -41,6 +51,13 @@ describe('callTool', () => {
   });
 
   it('requires the arguments the schema declares', async () => {
-    await expect(callTool('run', { role: 'code' }, env)).rejects.toThrow(/model/);
+    await expect(callTool('dispatch', { role: 'code' }, env)).rejects.toThrow(/model/);
+    await expect(callTool('wait', {}, env)).rejects.toThrow(/id/);
+  });
+
+  it('no longer offers the polling tools', async () => {
+    await expect(callTool('tail', { id: 'abc123' }, env)).rejects.toThrow(/unknown tool/i);
+    await expect(callTool('run', { role: 'code', model: 'm', task: 't' }, env))
+      .rejects.toThrow(/unknown tool/i);
   });
 });

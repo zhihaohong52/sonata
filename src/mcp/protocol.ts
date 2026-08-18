@@ -24,6 +24,8 @@ export interface ToolDef {
   name: string;
   description: string;
   inputSchema: object;
+  /** Passed through verbatim in `tools/list`; see anthropic/maxResultSizeChars. */
+  _meta?: Record<string, unknown>;
 }
 
 export interface Deps {
