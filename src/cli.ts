@@ -14,6 +14,7 @@ import { pruneAgents } from './detect.js';
 import type { HookScope } from './settings.js';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { realpathSync } from 'node:fs';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
 
@@ -267,7 +268,28 @@ async function main(argv: string[]): Promise<number> {
   return 2;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+/**
+ * True when this module was executed as the program, rather than imported.
+ *
+ * Compares REAL paths. `sonata` on PATH is a symlink into node_modules, so
+ * node sets argv[1] to the symlink while import.meta.url resolves to the file
+ * it points at — a raw string comparison never matches, and every command
+ * exits 0 having done nothing. That shipped: the guard exists so a test can
+ * import this module without running the CLI, and the first version of it
+ * killed the CLI instead. Nothing caught it, because every test imports.
+ */
+export function invokedAsProgram(argv1: string | undefined, moduleUrl: string): boolean {
+  if (!argv1) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    // One of the paths does not resolve, so this is not the program. Staying
+    // silent beats running twice.
+    return false;
+  }
+}
+
+if (invokedAsProgram(process.argv[1], import.meta.url)) {
   main(process.argv.slice(2))
     .then((code) => process.exit(code))
     .catch((err: unknown) => {
