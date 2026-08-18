@@ -217,7 +217,11 @@ function buildScript(input: PlanInput): LaunchPlan {
     '',
   ].join('\n');
 
-  return { script, interactive };
+  // Read-only roles and plan mode both invoke Codex with a read-only sandbox,
+  // so the model cannot write report.md. Default-mode code runs use the
+  // interactive workspace-write TUI instead of sandboxFor() and can write it.
+  const canWriteReport = interactive || (!readOnly && sandboxFor(input.mode) !== 'read-only');
+  return { script, interactive, canWriteReport };
 }
 
 /** Base URL codex is configured to talk to, if it overrides the default. */

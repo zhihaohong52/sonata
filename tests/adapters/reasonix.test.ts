@@ -157,6 +157,13 @@ describe('reasonixAdapter.plan — default mode uses the TUI', () => {
     expect(p.script).toContain('tmux send-keys -t "$SESSION" C-d');
   });
 
+  it('clears the composer before each Ctrl-D retry', () => {
+    const clear = p.script.indexOf('tmux send-keys -t "$SESSION" C-u');
+    const quit = p.script.indexOf('tmux send-keys -t "$SESSION" C-d');
+    expect(clear).toBeGreaterThan(-1);
+    expect(clear).toBeLessThan(quit);
+  });
+
   /**
    * Typing blind into a TUI races with it. A run that typed the documented
    * `exit` landed the letters in an open approval card and the Enter picked

@@ -207,6 +207,10 @@ function interactiveScript(input: PlanInput): string {
     // reasonix returns, so it doubles as "the quit landed".
     '  for _ in $(seq 1 20); do',
     `    [ -f ${shellQuote(exitPath)} ] && break`,
+    // A stray key can remain in the composer after a prompt is answered. A
+    // run observed with `1` in the composer ignored every Ctrl-D until the
+    // line was cleared, so kill the line before each quit attempt.
+    '    tmux send-keys -t "$SESSION" C-u',
     '    tmux send-keys -t "$SESSION" C-d',
     '    sleep 3',
     '  done',

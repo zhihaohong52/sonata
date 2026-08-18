@@ -50,6 +50,17 @@ describe('codexAdapter.plan — sandbox mapping', () => {
     expect(p.script).toContain('-s workspace-write');
   });
 
+  it('reports whether the effective invocation can write the report', () => {
+    for (const role of ['review', 'explore', 'plan']) {
+      for (const mode of ['plan', 'default', 'acceptEdits', 'bypassPermissions'] as const) {
+        expect(codexAdapter.plan({ ...base, role, mode }).canWriteReport).toBe(false);
+      }
+    }
+    expect(codexAdapter.plan({ ...base, role: 'code', mode: 'plan' }).canWriteReport).toBe(false);
+    expect(codexAdapter.plan({ ...base, role: 'code', mode: 'acceptEdits' }).canWriteReport).toBe(true);
+    expect(codexAdapter.plan({ ...base, role: 'code', mode: 'bypassPermissions' }).canWriteReport).toBe(true);
+  });
+
   it('never uses the bypass-approvals-and-sandbox flag', () => {
     for (const mode of ['plan', 'acceptEdits', 'bypassPermissions'] as const) {
       const p = codexAdapter.plan({ ...base, mode });
