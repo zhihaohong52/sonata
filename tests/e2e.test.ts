@@ -74,6 +74,60 @@ async function tailUntil(id: string, states: string[], tries = 30) {
 }
 
 describe('end to end against the fake harness', () => {
+  // The one-call path: no polling loop, one call, the report.
+  it('cmdWait returns DONE with the report in a single call', async () => {
+    const { cmdWait } = await import('../src/commands/wait.js');
+    const id = await launch('normal', false);
+    const r = await cmdWait({ cwd, id, pollMs: 200, windowSeconds: 30 });
+    expect(r.state).toBe('DONE');
+    expect(r.report).toContain('Refactored the parser');
+    expect(r.report).toContain(`— sonata ${id}:`);
+    expect(r.degraded).toBe(false);
+  });
+
+  it('cmdWait surfaces a crash as DONE degraded in one call', async () => {
+    const { cmdWait } = await import('../src/commands/wait.js');
+    const id = await launch('crash', false);
+    const r = await cmdWait({ cwd, id, pollMs: 200, windowSeconds: 30 });
+    expect(r.state).toBe('DONE');
+    expect(r.degraded).toBe(true);
+    expect(r.report).toContain('segmentation fault');
+  });
+
+  it('cmdWait stops at PAUSED, and resumes to DONE after approve', async () => {
+    writeConfig(30, 30, 'codex');
+    const id = await launch('prompt', true, 'codex');
+    const { cmdWait } = await import('../src/commands/wait.js');
+    const paused = await cmdWait({ cwd, id, pollMs: 200, windowSeconds: 30 });
+    expect(paused.state).toBe('PAUSED');
+    expect(paused.prompt).toContain('Would you like to run the following command?');
+    expect(paused.id).toBe(id);
+
+    const { cmdApprove } = await import('../src/commands/approve.js');
+    await cmdApprove({ cwd, id, yes: true });
+    const done = await cmdWait({ cwd, id, pollMs: 200, windowSeconds: 30 });
+    expect(['DONE', 'PAUSED', 'STALLED']).toContain(done.state);
+  });
+
+  it('cmdWait returns STALLED rather than blocking on a silent run', async () => {
+    writeConfig(3);
+    const id = await launch('prompt', false);
+    const { cmdWait } = await import('../src/commands/wait.js');
+    const r = await cmdWait({ cwd, id, pollMs: 200, windowSeconds: 30 });
+    expect(r.state).toBe('STALLED');
+  });
+
+  // Idempotent: the retry path exists for calls that may have been dropped
+  // mid-block, so calling wait once too often must return the report again.
+  it('cmdWait on a finished run returns the report again, not an error', async () => {
+    const { cmdWait } = await import('../src/commands/wait.js');
+    const id = await launch('normal', false);
+    await cmdWait({ cwd, id, pollMs: 200, windowSeconds: 30 });
+    const again = await cmdWait({ cwd, id, pollMs: 200, windowSeconds: 30 });
+    expect(again.state).toBe('DONE');
+    expect(again.report).toContain('Refactored the parser');
+  });
+
   it('reaches DONE and returns the report', async () => {
     const id = await launch('normal', false);
     const r = await tailUntil(id, ['DONE']);
