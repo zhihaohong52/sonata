@@ -1,6 +1,6 @@
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ToolDef } from './protocol.js';
 import { cmdRun } from '../commands/run.js';
@@ -30,6 +30,10 @@ export interface ToolEnv {
   home: string;
   rolesDir: string;
   sessionId?: string;
+  /** Test seams; production uses the real commands. */
+  run?: typeof cmdRun;
+  wait?: typeof cmdWait;
+  approve?: typeof cmdApprove;
 }
 
 const MAX_RESULT_SIZE_CHARS = 200_000;
@@ -47,7 +51,8 @@ export const TOOL_DEFS: ToolDef[] = [
       properties: {
         role: { type: 'string', description: 'code | review | explore | plan' },
         model: { type: 'string', description: 'a model key from sonata.toml' },
-        task: { type: 'string', description: 'the full task text for the model' },
+        task: { type: 'string', description: 'Pass the caller task verbatim, byte for byte; never summarise, shorten, or rewrite it.' },
+        cwd: { type: 'string', description: 'optional existing directory in which to launch the run' },
       },
       required: ['role', 'model', 'task'],
     },
@@ -60,7 +65,10 @@ export const TOOL_DEFS: ToolDef[] = [
       'or when a previous call returned RUNNING. Same states as dispatch.',
     inputSchema: {
       type: 'object',
-      properties: { id: { type: 'string', description: 'the run id' } },
+      properties: {
+        id: { type: 'string', description: 'the run id' },
+        cwd: { type: 'string', description: 'the same directory returned by dispatch' },
+      },
       required: ['id'],
     },
     _meta: REPORT_META,
@@ -73,6 +81,7 @@ export const TOOL_DEFS: ToolDef[] = [
       properties: {
         id: { type: 'string' },
         answer: { type: 'string', description: 'yes or no' },
+        cwd: { type: 'string', description: 'the same directory returned by dispatch' },
       },
       required: ['id', 'answer'],
     },
@@ -94,6 +103,21 @@ function need(args: Record<string, unknown>, key: string): string {
   return value;
 }
 
+export function resolveToolCwd(args: Record<string, unknown>, env: ToolEnv): string {
+  if (args.cwd === undefined) return env.cwd;
+  if (typeof args.cwd !== 'string' || args.cwd.length === 0) {
+    throw new Error('sonata: the "cwd" argument must be a non-empty directory path');
+  }
+
+  const cwd = resolve(env.cwd, args.cwd);
+  try {
+    if (!statSync(cwd).isDirectory()) throw new Error('not a directory');
+  } catch {
+    throw new Error(`sonata: requested cwd "${args.cwd}" does not exist or is not a directory`);
+  }
+  return cwd;
+}
+
 export async function callTool(
   name: string,
   args: Record<string, unknown>,
@@ -104,29 +128,33 @@ export async function callTool(
       const role = need(args, 'role');
       const model = need(args, 'model');
       const task = need(args, 'task');
+      const cwd = resolveToolCwd(args, env);
       const taskFile = join(tmpdir(), `sonata-task-${Date.now()}-${randomUUID().slice(0, 8)}.md`);
       writeFileSync(taskFile, task);
-      const started = await cmdRun({
-        cwd: env.cwd,
+      const started = await (env.run ?? cmdRun)({
+        cwd,
         role,
         model,
         taskFile,
         rolesDir: env.rolesDir,
         sessionId: env.sessionId,
       });
-      const result = await cmdWait({ cwd: env.cwd, id: started.id });
-      return JSON.stringify(withTrimmedReport(result));
+      const result = await (env.wait ?? cmdWait)({ cwd, id: started.id });
+      return JSON.stringify({ ...withTrimmedReport(result), cwd });
     }
     case 'wait': {
-      const result = await cmdWait({ cwd: env.cwd, id: need(args, 'id') });
-      return JSON.stringify(withTrimmedReport(result));
+      const cwd = resolveToolCwd(args, env);
+      const result = await (env.wait ?? cmdWait)({ cwd, id: need(args, 'id') });
+      return JSON.stringify({ ...withTrimmedReport(result), cwd });
     }
     case 'approve': {
       const answer = need(args, 'answer');
       if (answer !== 'yes' && answer !== 'no') {
         throw new Error('sonata: the "answer" argument must be yes or no');
       }
-      await cmdApprove({ cwd: env.cwd, id: need(args, 'id'), yes: answer === 'yes' });
+      await (env.approve ?? cmdApprove)({
+        cwd: resolveToolCwd(args, env), id: need(args, 'id'), yes: answer === 'yes',
+      });
       return 'answered';
     }
     default:

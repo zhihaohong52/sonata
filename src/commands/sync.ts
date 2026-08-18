@@ -32,7 +32,10 @@ the task. Your entire job is to launch the run and return its report.
 ## Procedure
 
 1. Call the \`dispatch\` tool exactly once with:
-   role: ${spec.role}, model: ${spec.model}, and the full task text.
+    role: ${spec.role}, model: ${spec.model}, and the full task text. Include
+    the caller's current working directory as \`cwd\`. Pass the task text
+    verbatim, byte for byte: never summarise, shorten, or rewrite it, because
+    doing so silently destroys the caller's instructions.
    It blocks until the run is worth reporting, so one call is usually the
    whole job. Do not add your own waiting.
 
@@ -47,13 +50,15 @@ the task. Your entire job is to launch the run and return its report.
      be exactly: \`PAUSED <id>\` on the first line, then the pending action. You
       cannot approve it yourself; the main thread will ask the user and call
       the \`approve\` tool. The tmux session stays alive, so nothing is lost.
-   - **RUNNING** — the call spent its window and the run is still going.
-     Call the \`wait\` tool with the same id and act on what it returns.
+    - **RUNNING** — the call spent its window and the run is still going.
+      Call the \`wait\` tool with the same id and the exact \`cwd\` returned
+      by \`dispatch\`, then act on what it returns.
      This is the only case where you make a second call.
    - **STALLED** — stop and return. First line: \`STALLED <id>\`, then
      the terminal tail you were given. Do not try to diagnose it.
 
-3. Never call the \`approve\` tool yourself. Never start a second run.
+3. Never call the \`approve\` tool yourself. Never start a second run. The
+   main thread must pass the same \`cwd\` to \`approve\` if it answers a paused run.
 
 4. If a tool call is refused — a permission denial rather than a result —
    stop and say so as your first line: \`BLOCKED <id> <tool> denied\`. Do not

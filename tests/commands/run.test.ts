@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { cmdRun } from '../../src/commands/run.js';
+import { cmdRun, MAX_REPO_CONTEXT_CHARS, repoContext } from '../../src/commands/run.js';
 import { readMeta, runDir } from '../../src/store.js';
 import { killSession, hasSession, capturePane } from '../../src/tmux.js';
 import { readPermissionMode } from '../../src/mode.js';
@@ -113,5 +113,16 @@ describe('cmdRun', () => {
       cwd, role: 'code', model: 'fake', taskFile,
       rolesDir: join(cwd, 'roles'), sessionId: undefined,
     })).rejects.toThrow(/cannot ask for approval/i);
+  });
+});
+
+describe('repoContext', () => {
+  it('caps oversized repository instructions with a visible file marker', () => {
+    writeFileSync(join(cwd, 'CLAUDE.md'), 'x'.repeat(MAX_REPO_CONTEXT_CHARS + 1_000));
+
+    const context = repoContext(cwd);
+
+    expect(context.length).toBeLessThanOrEqual(MAX_REPO_CONTEXT_CHARS);
+    expect(context).toContain('[truncated: CLAUDE.md exceeded');
   });
 });

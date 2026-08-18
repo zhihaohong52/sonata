@@ -41,6 +41,11 @@ describe('agentMarkdown', () => {
     expect(md).toMatch(/do not (read|inspect|edit)/i);
   });
 
+  it('requires verbatim task forwarding and preserving the dispatch cwd', () => {
+    expect(md).toMatch(/verbatim, byte for byte/i);
+    expect(md).toMatch(/same id and the exact `cwd` returned/i);
+  });
+
   it('documents the PAUSED and STALLED handling', () => {
     expect(md).toContain('PAUSED');
     expect(md).toContain('STALLED');

@@ -22,11 +22,11 @@ export function composeInstructions(input: ComposeInput): string {
 
   parts.push(`# Role: ${input.role}`, '', input.roleText.trim(), '');
 
+  parts.push('## Task', '', input.task.trim(), '');
+
   if (input.repoContext.trim().length > 0) {
     parts.push('## Repository context', '', input.repoContext.trim(), '');
   }
-
-  parts.push('## Task', '', input.task.trim(), '');
 
   parts.push(
     '## Reporting',
@@ -41,6 +41,8 @@ export function composeInstructions(input: ComposeInput): string {
     'is returned.',
     '',
   );
+
+  parts.push('## Task reminder', '', 'Complete the task exactly as stated above:', '', input.task.trim(), '');
 
   return parts.join('\n');
 }

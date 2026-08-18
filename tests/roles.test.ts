@@ -20,9 +20,10 @@ describe('composeInstructions', () => {
     reportPath: '/tmp/run/report.md',
   });
 
-  it('includes role, repo context and task in that order', () => {
+  it('puts the task before repository context and restates it at the end', () => {
     expect(out.indexOf('ROLE_BODY')).toBeLessThan(out.indexOf('REPO_CONTEXT'));
-    expect(out.indexOf('REPO_CONTEXT')).toBeLessThan(out.indexOf('TASK_TEXT'));
+    expect(out.indexOf('TASK_TEXT')).toBeLessThan(out.indexOf('REPO_CONTEXT'));
+    expect(out.lastIndexOf('TASK_TEXT')).toBeGreaterThan(out.indexOf('## Reporting'));
   });
 
   it('instructs the agent to write the report as its final action', () => {

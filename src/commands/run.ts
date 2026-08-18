@@ -23,11 +23,29 @@ export interface RunResult {
   interactive: boolean;
 }
 
-function repoContext(cwd: string): string {
+export const MAX_REPO_CONTEXT_CHARS = 24_000;
+
+export function repoContext(cwd: string): string {
   const parts: string[] = [];
   for (const name of ['CLAUDE.md', 'AGENTS.md']) {
     const p = join(cwd, name);
-    if (existsSync(p)) parts.push(`### ${name}\n\n${readFileSync(p, 'utf8').trim()}`);
+    if (!existsSync(p)) continue;
+
+    const header = `### ${name}\n\n`;
+    const content = readFileSync(p, 'utf8').trim();
+    const current = parts.join('\n\n');
+    const separator = current.length === 0 ? '' : '\n\n';
+    const marker = `\n\n[truncated: ${name} exceeded the ${MAX_REPO_CONTEXT_CHARS}-character repository context limit]`;
+    const available = MAX_REPO_CONTEXT_CHARS - current.length - separator.length - header.length;
+
+    if (content.length <= available) {
+      parts.push(`${header}${content}`);
+      continue;
+    }
+
+    // Large repository instructions bury the actual task and cause models to miss it.
+    parts.push(`${header}${content.slice(0, Math.max(0, available - marker.length))}${marker}`);
+    break;
   }
   return parts.join('\n\n');
 }
