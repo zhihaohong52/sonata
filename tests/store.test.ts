@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import {
   newRunId, runDir, createRun, readMeta, writeMeta,
   readExit, readReport, readCursor, writeCursor,
-  appendEvents, readEvents, listRuns,
+  appendEvents, readEvents, listRuns, readAnsweredPrompt,
+  writeAnsweredPrompt, clearAnsweredPrompt,
 } from '../src/store.js';
 
 let cwd: string;
@@ -60,5 +61,17 @@ describe('run store', () => {
     });
     writeMeta(cwd, { ...meta, exitCode: 1, degraded: true });
     expect(readMeta(cwd, meta.id).degraded).toBe(true);
+  });
+
+  it('records and clears an answered prompt', () => {
+    const meta = createRun(cwd, {
+      role: 'code', model: 'm', harness: 'codex',
+      mode: 'default', interactive: true, startedAt: '2026-08-10T00:00:00.000Z',
+    });
+    expect(readAnsweredPrompt(cwd, meta.id)).toBeNull();
+    writeAnsweredPrompt(cwd, meta.id, 'Allow ls?');
+    expect(readAnsweredPrompt(cwd, meta.id)).toBe('Allow ls?');
+    clearAnsweredPrompt(cwd, meta.id);
+    expect(readAnsweredPrompt(cwd, meta.id)).toBeNull();
   });
 });

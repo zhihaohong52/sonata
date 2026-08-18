@@ -3,8 +3,8 @@ import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdApprove } from '../../src/commands/approve.js';
-import { capturePane, newSession, killSession } from '../../src/tmux.js';
-import { runDir } from '../../src/store.js';
+import { capturePane, newSession, killSession, sendKeys } from '../../src/tmux.js';
+import { readAnsweredPrompt, runDir } from '../../src/store.js';
 
 let cwd: string;
 const SESSION = 'sonata-test-approve';
@@ -29,9 +29,13 @@ afterEach(async () => { await killSession(SESSION); });
 describe('cmdApprove', () => {
   it('sends the yes key into the live pane', async () => {
     await newSession({ session: SESSION, cwd });
+    await sendKeys(SESSION, "printf 'Would you like to run the following command?\\n$ ls\\nPress Enter to confirm\\n'");
+    await sendKeys(SESSION, 'Enter');
+    await new Promise((r) => setTimeout(r, 100));
     await cmdApprove({ cwd, id: 'abc123', yes: true });
     await new Promise((r) => setTimeout(r, 500));
     expect(await capturePane(SESSION)).toContain('y');
+    expect(readAnsweredPrompt(cwd, 'abc123')).toContain('Would you like to run');
   });
 
   it('fails clearly when the session is gone', async () => {

@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync,
-  appendFileSync, readdirSync,
+  appendFileSync, readdirSync, unlinkSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import type { RunMeta } from './types.js';
@@ -49,6 +49,19 @@ export function readExit(cwd: string, id: string): number | null {
 
 export function readReport(cwd: string, id: string): string | null {
   return readIfExists(join(runDir(cwd, id), 'report.md'));
+}
+
+export function readAnsweredPrompt(cwd: string, id: string): string | null {
+  return readIfExists(join(runDir(cwd, id), 'answered-prompt'));
+}
+
+export function writeAnsweredPrompt(cwd: string, id: string, prompt: string): void {
+  writeFileSync(join(runDir(cwd, id), 'answered-prompt'), prompt);
+}
+
+export function clearAnsweredPrompt(cwd: string, id: string): void {
+  const path = join(runDir(cwd, id), 'answered-prompt');
+  if (existsSync(path)) unlinkSync(path);
 }
 
 export function readCursor(cwd: string, id: string): number {

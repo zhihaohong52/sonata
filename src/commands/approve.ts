@@ -1,6 +1,7 @@
-import { readMeta } from '../store.js';
+import { readMeta, writeAnsweredPrompt } from '../store.js';
 import { getAdapter } from '../adapters/index.js';
-import { hasSession, sendKeys } from '../tmux.js';
+import { capturePane, hasSession, sendKeys } from '../tmux.js';
+import { cleanPane } from '../normalize.js';
 
 export interface ApproveOptions { cwd: string; id: string; yes: boolean }
 
@@ -22,5 +23,7 @@ export async function cmdApprove(opts: ApproveOptions): Promise<void> {
       `Attach with \`tmux attach -t ${meta.session}\` to respond directly.`,
     );
   }
+  const prompt = adapter.describePrompt(cleanPane(await capturePane(meta.session)));
+  if (prompt !== null) writeAnsweredPrompt(opts.cwd, opts.id, prompt);
   for (const key of keys) await sendKeys(meta.session, key);
 }

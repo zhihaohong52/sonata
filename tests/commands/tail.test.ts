@@ -1,6 +1,13 @@
-import { describe, it, expect } from 'vitest';
-import { decide, harnessOutput } from '../../src/commands/tail.js';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { cmdTail, decide, harnessOutput } from '../../src/commands/tail.js';
 import { tailWaitSeconds } from '../../src/cli.js';
+import { capturePane, killSession, newSession, sendKeys } from '../../src/tmux.js';
+import { readAnsweredPrompt, runDir, writeAnsweredPrompt } from '../../src/store.js';
+import { cleanPane } from '../../src/normalize.js';
+import { codexAdapter } from '../../src/adapters/codex.js';
 
 describe('tailWaitSeconds', () => {
   it('uses the configured window when --wait is absent', () => {
@@ -176,5 +183,55 @@ describe('tail decide', () => {
     expect(r.degraded).toBe(true);
     expect(r.report).toMatch(/^\[timed out: sonata killed the run after the configured run_timeout_seconds\]/);
     expect(r.report).toContain('last');
+  });
+});
+
+describe('cmdTail answered prompts', () => {
+  let cwd: string;
+  const session = 'sonata-test-tail-prompt';
+  const id = 'abc123';
+
+  beforeEach(async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '[run]\nstall_timeout_seconds = 120\n');
+    mkdirSync(runDir(cwd, id), { recursive: true });
+    writeFileSync(join(runDir(cwd, id), 'meta.json'), JSON.stringify({
+      id, role: 'code', model: 'm', harness: 'codex', mode: 'default',
+      interactive: true, session, cwd, startedAt: '2026-08-10T00:00:00.000Z',
+    }));
+    await newSession({ session, cwd });
+    await sendKeys(session, "printf 'Would you like to run the following command?\\n$ ls\\nPress Enter to confirm\\n'");
+    await sendKeys(session, 'Enter');
+    await new Promise((r) => setTimeout(r, 500));
+  });
+
+  afterEach(async () => { await killSession(session); });
+
+  async function snapshotPrompt(): Promise<string> {
+    const pane = cleanPane(await capturePane(session));
+    writeFileSync(join(runDir(cwd, id), 'pane.snapshot'), pane.join('\n'));
+    return codexAdapter.describePrompt(pane)!;
+  }
+
+  it('does not report a prompt that was already answered', async () => {
+    writeAnsweredPrompt(cwd, id, await snapshotPrompt());
+    const result = await cmdTail({ cwd, id, waitSeconds: 0 });
+    expect(result.state).toBe('PROGRESS');
+  });
+
+  it('reports the same prompt after fresh pane output clears the answer record', async () => {
+    writeAnsweredPrompt(cwd, id, await snapshotPrompt());
+    await sendKeys(session, "printf 'working\\n'");
+    await sendKeys(session, 'Enter');
+    await new Promise((r) => setTimeout(r, 100));
+    const result = await cmdTail({ cwd, id, waitSeconds: 0 });
+    expect(result.state).toBe('PAUSED');
+    expect(readAnsweredPrompt(cwd, id)).toBeNull();
+  });
+
+  it('reports an unanswered prompt', async () => {
+    await snapshotPrompt();
+    const result = await cmdTail({ cwd, id, waitSeconds: 0 });
+    expect(result.state).toBe('PAUSED');
   });
 });

@@ -6,7 +6,7 @@ import { tryCapturePane } from '../tmux.js';
 import { cleanPane, newLines } from '../normalize.js';
 import {
   readMeta, readExit, readReport, readCursor, writeCursor,
-  appendEvents, readEvents, writeMeta, runDir,
+  appendEvents, readEvents, writeMeta, runDir, readAnsweredPrompt, clearAnsweredPrompt,
 } from '../store.js';
 import { cmdVerify } from './verify.js';
 import type { TailState } from '../types.js';
@@ -195,6 +195,9 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
     if (freshNow.length > 0) {
       appendEvents(opts.cwd, opts.id, freshNow);
       writeCursor(opts.cwd, opts.id, cursor + freshNow.length);
+      // A real repeat prompt has output between asks. Forget the old answer as
+      // soon as the pane advances so we do not hide that new request forever.
+      clearAnsweredPrompt(opts.cwd, opts.id);
       lastChange = now();
     }
 
@@ -215,6 +218,7 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
         if (extra.length > 0) {
           appendEvents(opts.cwd, opts.id, extra);
           writeCursor(opts.cwd, opts.id, readCursor(opts.cwd, opts.id) + extra.length);
+          clearAnsweredPrompt(opts.cwd, opts.id);
           fresh = [...fresh, ...extra];
         }
         writePaneSnapshot(opts.cwd, opts.id, settledPane);
@@ -233,11 +237,13 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       ? readFileSync(fallbackPath, 'utf8').trim() || null
       : null;
 
+    const detectedPrompt = meta.interactive ? adapter.describePrompt(pane) : null;
+    const answeredPrompt = readAnsweredPrompt(opts.cwd, opts.id);
     const result = decide({
       newLines: fresh,
       exitCode,
       report: readReport(opts.cwd, opts.id) ?? fallback,
-      promptText: meta.interactive ? adapter.describePrompt(pane) : null,
+      promptText: detectedPrompt === answeredPrompt ? null : detectedPrompt,
       msSinceLastChange: now() - lastChange,
       stallTimeoutMs: config.run.stallTimeoutSeconds * 1000,
       paneTail: pane.slice(-20),
