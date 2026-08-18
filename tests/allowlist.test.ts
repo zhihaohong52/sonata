@@ -8,10 +8,15 @@ import { allowSonataTools, missingAllowEntries, SONATA_TOOLS } from '../src/sett
  * a foreign model writing to the repository with nothing able to read it back.
  */
 describe('allow-listing the sonata tools', () => {
-  it('names all three wrapper tools', () => {
+  it('allow-lists the tools the wrapper actually holds', () => {
     expect(SONATA_TOOLS).toEqual([
-      'mcp__sonata__run', 'mcp__sonata__tail', 'mcp__sonata__approve',
+      'mcp__sonata__dispatch', 'mcp__sonata__wait', 'mcp__sonata__approve',
     ]);
+  });
+
+  it('does not name the removed polling tools', () => {
+    expect(SONATA_TOOLS).not.toContain('mcp__sonata__run');
+    expect(SONATA_TOOLS).not.toContain('mcp__sonata__tail');
   });
 
   it('adds every tool to an empty settings file', () => {
@@ -45,9 +50,9 @@ describe('allow-listing the sonata tools', () => {
   // The dangerous state is partial: `run` permitted while `tail` is not means
   // dispatches launch and cannot be observed.
   it('completes a partial allow list without disturbing what is there', () => {
-    const partial = { permissions: { allow: ['mcp__sonata__run'] } };
+    const partial = { permissions: { allow: ['mcp__sonata__dispatch'] } };
     expect(missingAllowEntries(partial)).toEqual([
-      'mcp__sonata__tail', 'mcp__sonata__approve',
+      'mcp__sonata__wait', 'mcp__sonata__approve',
     ]);
     const { settings, changed } = allowSonataTools(partial);
     expect(changed).toBe(true);

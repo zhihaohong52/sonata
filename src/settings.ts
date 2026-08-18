@@ -32,16 +32,20 @@ export type Settings = Record<string, unknown> & {
  *
  * These must be on the allow list, not left to Claude Code's `auto` mode
  * classifier. The classifier judges each call separately and its decisions are
- * not stable across calls: on 2026-08-12 a wrapper had `run` allowed and
- * `tail` allowed twice, then denied twice mid-run —
- * "Blocked by classifier" — which left a foreign model writing to the
- * repository with nothing able to observe it. `run` is the tool that executes
- * code; permitting it while blocking the read-back is the worst possible half
- * to keep.
+ * not stable across calls: on 2026-08-12 a wrapper had `run` allowed and `tail`
+ * allowed twice, then denied twice mid-run — "Blocked by classifier" — which
+ * left a foreign model writing to the repository with nothing able to observe
+ * it. (`run` and `tail` were the tool names then; `dispatch` and `wait`
+ * replaced them when polling did.)
+ *
+ * The shape of that failure changed but did not go away. `dispatch` both
+ * executes and reads back, so it can no longer be permitted while the
+ * read-back is blocked — but a denied `wait` still strands a paused run
+ * unobserved, which is the same hazard with a smaller blast radius.
  */
 export const SONATA_TOOLS = [
-  'mcp__sonata__run',
-  'mcp__sonata__tail',
+  'mcp__sonata__dispatch',
+  'mcp__sonata__wait',
   'mcp__sonata__approve',
 ];
 
