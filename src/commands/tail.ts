@@ -57,6 +57,13 @@ export function harnessOutput(paneTail: string[], launchMarker?: string): string
     const t = line.trim();
     if (t.length === 0) return false;
     if (launchMarker !== undefined && t.includes(launchMarker)) return false;
+    // The watchdog foregrounds the harness job with `fg`, which echoes the
+    // job's command line — `bash '<runDir>/harness.sh'`. That is sonata's own
+    // plumbing, not the model speaking. Left in, it streamed to the user as if
+    // the harness had said it, and worse, it counted towards `spoke`, so a run
+    // that produced nothing at all could look like it had answered. Anchored to
+    // `bash '` so a model quoting its own harness path is not swallowed.
+    if (/^bash '.*\/harness\.sh'$/.test(t)) return false;
     return true;
   });
 }

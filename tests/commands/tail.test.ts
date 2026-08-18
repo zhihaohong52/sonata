@@ -266,3 +266,27 @@ describe('cmdTail answered prompts', () => {
     })).resolves.toMatchObject({ state: 'PAUSED' });
   });
 });
+
+/**
+ * `fg` in the watchdog echoes the job command line. That arrived after the
+ * SIGTTIN fix and nothing filtered it, so sonata's own shell plumbing streamed
+ * to the user as harness output — and counted as evidence the harness had
+ * spoken, which is what the degraded check depends on.
+ */
+describe('harnessOutput — the watchdog fg echo', () => {
+  it('drops the job line fg prints', () => {
+    expect(harnessOutput([
+      "bash '/repo/.sonata/runs/abc123/harness.sh'",
+      'Refactored the parser',
+    ])).toEqual(['Refactored the parser']);
+  });
+
+  it('still reports nothing spoken when only the echo is present', () => {
+    expect(harnessOutput(["bash '/repo/.sonata/runs/abc123/harness.sh'"])).toEqual([]);
+  });
+
+  it('keeps a model line that merely mentions a harness path', () => {
+    const line = 'I inspected bash scripts including /repo/.sonata/runs/abc123/harness.sh';
+    expect(harnessOutput([line])).toEqual([line]);
+  });
+});
