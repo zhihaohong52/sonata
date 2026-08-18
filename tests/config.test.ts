@@ -79,6 +79,35 @@ plan = ["a"]
   });
 });
 
+describe('dispatch window', () => {
+  it('defaults to 1500 seconds, inside the 30-minute MCP idle window', () => {
+    const c = parseConfig(`
+[models.m]
+harness = "opencode"
+id = "p/m"
+
+[generate.roles]
+code = ["m"]
+`);
+    expect(c.run.dispatchWindowSeconds).toBe(1500);
+  });
+
+  it('reads an override from the run table', () => {
+    const c = parseConfig(`
+[models.m]
+harness = "opencode"
+id = "p/m"
+
+[generate.roles]
+code = ["m"]
+
+[run]
+dispatch_window_seconds = 600
+`);
+    expect(c.run.dispatchWindowSeconds).toBe(600);
+  });
+});
+
 describe('parseConfig — provider-qualified ids', () => {
   const cfg = (harness: string, id: string) => `
 [models."m"]

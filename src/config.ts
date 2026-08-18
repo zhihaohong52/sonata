@@ -25,6 +25,16 @@ export interface SonataConfig {
     tailWindowSeconds: number;
     stallTimeoutSeconds: number;
     runTimeoutSeconds: number;
+    /**
+     * How long `dispatch`/`wait` block before returning RUNNING.
+     *
+     * Claude Code aborts an MCP call that sends nothing for its idle window —
+     * 30 minutes for stdio servers. Silence is already covered by
+     * stallTimeoutSeconds; this bounds the opposite case, a productive run
+     * that works for longer than the window and would otherwise be killed
+     * mid-flight. Must stay below 1800.
+     */
+    dispatchWindowSeconds: number;
   };
 }
 
@@ -105,6 +115,7 @@ export function parseConfig(text: string): SonataConfig {
       tailWindowSeconds: num(raw.run?.tail_window_seconds, 20),
       stallTimeoutSeconds: num(raw.run?.stall_timeout_seconds, 120),
       runTimeoutSeconds: num(raw.run?.run_timeout_seconds, 1800),
+      dispatchWindowSeconds: num(raw.run?.dispatch_window_seconds, 1500),
     },
   };
 }
