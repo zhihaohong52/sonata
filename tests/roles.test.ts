@@ -80,3 +80,37 @@ describe('composeInstructions — a run that cannot write a report', () => {
     }
   });
 });
+
+/**
+ * Reasonix loads the working directory's .mcp.json, so in a repo where sonata
+ * is registered a dispatched model receives sonata's own dispatch/wait/approve
+ * tools and can start further runs. No harness offers a per-run way to withhold
+ * them, so the instructions say it outright. Mitigation, not enforcement.
+ */
+describe('composeInstructions — inherited sonata tools', () => {
+  const base = {
+    role: 'code',
+    roleText: 'You code.',
+    repoContext: '',
+    task: 'Do the thing.',
+    reportPath: '/repo/.sonata/runs/abc123/report.md',
+  };
+
+  it('forbids dispatching when the tools are inherited', () => {
+    const out = composeInstructions({ ...base, inheritedSonataTools: true });
+    expect(out).toContain('## Do not dispatch');
+    expect(out).toContain('You are');
+    expect(out).toMatch(/already one of those runs/);
+  });
+
+  it('says nothing about it when the tools are not there', () => {
+    for (const input of [base, { ...base, inheritedSonataTools: false }]) {
+      expect(composeInstructions(input)).not.toContain('## Do not dispatch');
+    }
+  });
+
+  it('still puts the task before the warning', () => {
+    const out = composeInstructions({ ...base, inheritedSonataTools: true });
+    expect(out.indexOf('## Task')).toBeLessThan(out.indexOf('## Do not dispatch'));
+  });
+});

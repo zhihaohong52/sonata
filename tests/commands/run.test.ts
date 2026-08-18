@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { cmdRun, MAX_REPO_CONTEXT_CHARS, repoContext } from '../../src/commands/run.js';
+import { cmdRun, MAX_REPO_CONTEXT_CHARS, repoContext, exposesSonataTools } from '../../src/commands/run.js';
 import { readMeta, runDir } from '../../src/store.js';
 import { killSession, hasSession, capturePane } from '../../src/tmux.js';
 import { readPermissionMode } from '../../src/mode.js';
@@ -124,5 +124,42 @@ describe('repoContext', () => {
 
     expect(context.length).toBeLessThanOrEqual(MAX_REPO_CONTEXT_CHARS);
     expect(context).toContain('[truncated: CLAUDE.md exceeded');
+  });
+});
+
+describe('exposesSonataTools', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sonata-mcpjson-'));
+
+  it('is false when the project has no .mcp.json', () => {
+    expect(exposesSonataTools(dir)).toBe(false);
+  });
+
+  it('detects sonata by server name', () => {
+    const d = mkdtempSync(join(tmpdir(), 'sonata-mcpjson-'));
+    writeFileSync(join(d, '.mcp.json'), JSON.stringify({ mcpServers: { sonata: { command: 'node' } } }));
+    expect(exposesSonataTools(d)).toBe(true);
+  });
+
+  it('detects sonata when it is registered under another name', () => {
+    const d = mkdtempSync(join(tmpdir(), 'sonata-mcpjson-'));
+    writeFileSync(join(d, '.mcp.json'), JSON.stringify({
+      mcpServers: { helper: { command: 'node', args: ['/opt/sonata/dist/cli.js', 'mcp'] } },
+    }));
+    expect(exposesSonataTools(d)).toBe(true);
+  });
+
+  it('is false for unrelated servers', () => {
+    const d = mkdtempSync(join(tmpdir(), 'sonata-mcpjson-'));
+    writeFileSync(join(d, '.mcp.json'), JSON.stringify({
+      mcpServers: { playwright: { command: 'npx', args: ['@playwright/mcp'] } },
+    }));
+    expect(exposesSonataTools(d)).toBe(false);
+  });
+
+  // Guessing "exposes nothing" would be the unsafe direction.
+  it('assumes the worst when .mcp.json cannot be parsed', () => {
+    const d = mkdtempSync(join(tmpdir(), 'sonata-mcpjson-'));
+    writeFileSync(join(d, '.mcp.json'), '{ not json');
+    expect(exposesSonataTools(d)).toBe(true);
   });
 });

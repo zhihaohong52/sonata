@@ -50,6 +50,35 @@ export function repoContext(cwd: string): string {
   return parts.join('\n\n');
 }
 
+/**
+ * Whether the working directory hands a harness sonata's own MCP tools.
+ *
+ * Reasonix — and any harness that reads a project `.mcp.json` — loads those
+ * servers on top of its own config, and reasonix's docs call them "trusted
+ * configuration [that needs] no separate launch confirmation". In a repo where
+ * sonata is registered at project scope, a dispatched model therefore receives
+ * `mcp__sonata__dispatch`/`wait`/`approve` and can start further sonata runs.
+ *
+ * There is no per-run way to withhold them: `reasonix run` has no deny flag,
+ * and `reasonix mcp disable` writes the user's own config, which is not
+ * sonata's to edit. So this is detection feeding an instruction, not
+ * enforcement — said plainly here so nobody mistakes it for a guarantee.
+ */
+export function exposesSonataTools(cwd: string): boolean {
+  const path = join(cwd, '.mcp.json');
+  if (!existsSync(path)) return false;
+  try {
+    const servers = JSON.parse(readFileSync(path, 'utf8'))?.mcpServers ?? {};
+    return Object.entries(servers).some(([name, def]) =>
+      name === 'sonata'
+      || JSON.stringify(def ?? '').includes('sonata'));
+  } catch {
+    // An unreadable .mcp.json is not sonata's to repair, and guessing that it
+    // exposes nothing would be the unsafe direction.
+    return true;
+  }
+}
+
 export async function cmdRun(opts: RunOptions): Promise<RunResult> {
   const config = loadConfig(opts.cwd);
 
@@ -97,6 +126,7 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     task,
     reportPath: join(dir, 'report.md'),
     canWriteReport: plan.canWriteReport ?? true,
+    inheritedSonataTools: exposesSonataTools(opts.cwd),
   }));
 
   const harnessPath = join(dir, 'harness.sh');

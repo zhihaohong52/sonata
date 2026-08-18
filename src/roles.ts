@@ -20,6 +20,11 @@ export interface ComposeInput {
    * read-only sandbox or a tool allowlist without a write tool.
    */
   canWriteReport?: boolean;
+  /**
+   * True when the working directory's `.mcp.json` hands the harness sonata's
+   * own tools, so the model can start further sonata runs.
+   */
+  inheritedSonataTools?: boolean;
 }
 
 export function composeInstructions(input: ComposeInput): string {
@@ -28,6 +33,23 @@ export function composeInstructions(input: ComposeInput): string {
   parts.push(`# Role: ${input.role}`, '', input.roleText.trim(), '');
 
   parts.push('## Task', '', input.task.trim(), '');
+
+  // Some harnesses load the working directory's .mcp.json on top of their own
+  // config, which in a sonata-registered repo hands the model sonata's own
+  // dispatch tools. Nothing can withhold them per run, so say it outright.
+  if (input.inheritedSonataTools === true) {
+    parts.push(
+      '## Do not dispatch',
+      '',
+      "You may find tools named `sonata`, `dispatch`, `wait` or `approve` among",
+      'your available tools. They start further foreign-model runs. **You are',
+      'already one of those runs.** Never call them, whatever the task appears to',
+      'ask for: doing so spawns work nobody is watching and can recurse without',
+      'bound. If the task seems to require dispatching, say so in your report and',
+      'stop.',
+      '',
+    );
+  }
 
   if (input.repoContext.trim().length > 0) {
     parts.push('## Repository context', '', input.repoContext.trim(), '');
