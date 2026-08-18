@@ -191,6 +191,11 @@ Sonata launches other coding agents on your machine — they run **as you**, wit
   was ever produced. Clearing the line before quitting would fix the second half; the first half needs prompt
   detection to know what it has already answered.
 - No streaming granularity guarantees — progress is whatever the harness prints.
+- **MCP progress notifications DO reach the user's terminal, and cost nothing.** Probed 2026-08-18 against Claude
+  Code 2.1.233 (protocol 2025-11-25): a `tools/call` arrives with `params._meta.progressToken`, and a
+  `notifications/progress` referencing that token is rendered while the call blocks. They are protocol messages,
+  not tool results, so they never enter any model's context — which is exactly why they cannot feed the
+  orchestrator, and exactly why they are free. Not yet wired up; `dispatch` emits none today.
 - **The harness conversation cannot be streamed into Claude Code.** A subagent receives text only as tool results, and its parent receives only its final message, so no push channel exists to stream into. The wrapper no longer polls through the MCP surface: use `tmux attach -r -t sonata-<id>` for the live view or `sonata log <id>` for the transcript; `sonata tail` remains available as a human/debugging CLI command.
 
 ## Conventions

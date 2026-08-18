@@ -1,6 +1,25 @@
 import { createInterface } from 'node:readline';
+import { appendFileSync } from 'node:fs';
 import { handle, type JsonRpcRequest } from './protocol.js';
 import { TOOL_DEFS, callTool, type ToolEnv } from './tools.js';
+
+/**
+ * Records every incoming request verbatim when `SONATA_MCP_DEBUG` names a file.
+ *
+ * The client's own framing is otherwise invisible: sonata never sees whether
+ * Claude Code supplies a `_meta.progressToken`, which is what decides whether
+ * the server may push `notifications/progress` at all. Off unless the variable
+ * is set, and it never touches stdout — anything written there is protocol.
+ */
+function debugLog(line: string): void {
+  const path = process.env.SONATA_MCP_DEBUG;
+  if (!path) return;
+  try {
+    appendFileSync(path, `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    // Debug logging must never take the session's dispatch capability down.
+  }
+}
 
 /**
  * The stdio loop. Input is injected so the whole server is testable without a
@@ -14,6 +33,7 @@ export async function serveMcp(
   for await (const raw of input) {
     const line = raw.trim();
     if (line.length === 0) continue;
+    debugLog(line);
 
     let req: JsonRpcRequest;
     try {
