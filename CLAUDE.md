@@ -191,6 +191,10 @@ Sonata launches other coding agents on your machine — they run **as you**, wit
   was ever produced. Clearing the line before quitting would fix the second half; the first half needs prompt
   detection to know what it has already answered.
 - No streaming granularity guarantees — progress is whatever the harness prints.
+- **`default` mode is verified live on codex and reasonix** (2026-08-18). A codex dispatch surfaced its
+  directory-trust prompt as `PAUSED`, took `approve`, did the work and reached `DONE` un-degraded — the first
+  time codex `default` has ever run. A reasonix dispatch went from 9 calls with duplicated prompts ending
+  `STALLED`, to 5 calls, no duplicates, `DONE` with its report.
 - **MCP progress notifications DO reach the user's terminal, and cost nothing.** Probed 2026-08-18 against Claude
   Code 2.1.233 (protocol 2025-11-25): a `tools/call` arrives with `params._meta.progressToken`, and a
   `notifications/progress` referencing that token is rendered while the call blocks. They are protocol messages,
