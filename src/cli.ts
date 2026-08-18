@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 import { join } from 'node:path';
 import { cmdRun } from './commands/run.js';
 import { cmdTail } from './commands/tail.js';
+import { loadConfig } from './config.js';
 import { cmdApprove } from './commands/approve.js';
 import { cmdSync } from './commands/sync.js';
 import { cmdDoctor } from './commands/doctor.js';
@@ -36,6 +37,13 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
     --scope project|global|skip   where to install the permission hook
     --prune                    delete stale sonata agent files
 `;
+
+/** `--wait` wins; otherwise use the configured tail window. */
+export function tailWaitSeconds(flag: string | undefined, configured: number): number {
+  if (flag === undefined) return configured;
+  const parsed = Number.parseInt(flag, 10);
+  return Number.isFinite(parsed) ? parsed : configured;
+}
 
 /** Repository root, one level above the compiled dist/ or src/ directory. */
 function packageRoot(): string {
@@ -150,7 +158,7 @@ async function main(argv: string[]): Promise<number> {
     const res = await cmdTail({
       cwd: process.cwd(),
       id,
-      waitSeconds: Number.parseInt(values.wait ?? '20', 10),
+      waitSeconds: tailWaitSeconds(values.wait, loadConfig(process.cwd()).run.tailWindowSeconds),
     });
     if (values.json) {
       console.log(JSON.stringify(res));
@@ -259,9 +267,11 @@ async function main(argv: string[]): Promise<number> {
   return 2;
 }
 
-main(process.argv.slice(2))
-  .then((code) => process.exit(code))
-  .catch((err: unknown) => {
-    console.error(err instanceof Error ? err.message : String(err));
-    process.exit(1);
-  });
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main(process.argv.slice(2))
+    .then((code) => process.exit(code))
+    .catch((err: unknown) => {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    });
+}

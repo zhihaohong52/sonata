@@ -1,5 +1,20 @@
 import { describe, it, expect } from 'vitest';
 import { decide, harnessOutput } from '../../src/commands/tail.js';
+import { tailWaitSeconds } from '../../src/cli.js';
+
+describe('tailWaitSeconds', () => {
+  it('uses the configured window when --wait is absent', () => {
+    expect(tailWaitSeconds(undefined, 45)).toBe(45);
+  });
+
+  it('lets --wait override it', () => {
+    expect(tailWaitSeconds('5', 45)).toBe(5);
+  });
+
+  it('falls back to the configured window for a non-numeric flag', () => {
+    expect(tailWaitSeconds('soon', 45)).toBe(45);
+  });
+});
 
 const base = {
   newLines: [] as string[],
