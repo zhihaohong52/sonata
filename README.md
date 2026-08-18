@@ -126,7 +126,7 @@ to install the permission hook. Project scope writes `./sonata.toml` and
 `./.claude/agents/`; machine scope writes `~/.config/sonata/sonata.toml` and
 `~/.claude/agents/`, where Claude Code offers the agents in every repository.
 
-**Restart Claude Code** so it picks up the new agents.
+Claude Code picks up the new agents automatically; no restart is needed.
 
 Every prompt has a flag, so it also works unattended:
 
@@ -150,7 +150,7 @@ id = "gpt-5.6-sol"
 Hand-written entries survive `sonata init` - the wizard carries through any
 model whose harness it does not manage, and adds it to `generate.models`.
 
-Then `sonata sync` to regenerate the agent files, and restart Claude Code.
+Then run `sonata sync` to regenerate the agent files; Claude Code picks them up automatically.
 
 ## Using it
 
@@ -411,7 +411,7 @@ Each role chooses its own models through `[generate.roles]`; the old flat
 `roles`/`models` pair is no longer accepted. `sonata init` rewrites an old
 config to the per-role format.
 
-Run `sonata sync` after editing the config, and restart Claude Code.
+Run `sonata sync` after editing the config; Claude Code picks up the generated agents automatically. Reconnect the sonata MCP server with `/mcp` only when sonata's MCP tool surface changes.
 
 ## Troubleshooting
 
@@ -420,10 +420,10 @@ version and auth, and the permission hook.
 
 | Symptom | Cause |
 |---|---|
-| Agents don't appear in Claude Code | Claude Code reads `.claude/agents/` at startup. Run `sonata sync`, then restart it. |
+| Agents don't appear in Claude Code | Run `sonata sync`; Claude Code picks up regenerated agents automatically. |
 | `sonata: command not found` | The generated agents call `sonata` on your PATH. Run `npm link` in the clone (or install globally once published). |
 | Dispatch fails: "cannot ask for approval" | You are in `default` mode with opencode or pi, which cannot prompt. Switch to `acceptEdits`, use a codex or reasonix model, or dispatch a read-only role. |
-| Dispatch fails immediately after upgrading | Generated agents still name the removed `run`/`tail` tools. Run `sonata sync`, then restart Claude Code. |
+| Dispatch fails immediately after upgrading | Generated agents still name the removed `run`/`tail` tools. Run `sonata sync`; Claude Code picks up the regenerated agents automatically. |
 | Every opencode/pi dispatch refuses | The permission hook is not installed, so sonata assumes `default`. Run `sonata init` and choose a hook scope. |
 | A codex run sits in `PAUSED` at startup | Codex has not been trusted in this directory. Run `codex` there once and answer "Yes, continue". |
 | A run reports `degraded` | The harness exited without writing a report; the text you get is scraped pane output. Treat it as untrustworthy. |

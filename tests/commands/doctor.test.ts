@@ -106,7 +106,8 @@ code = ["a"]
       `---\nname: code-a\ntools: Bash\n---\n${MARKER}`);
     const c = await check(cwd, home, 'agent tools');
     expect(c?.ok).toBe(false);
-    expect(c?.detail).toContain('sonata sync');
+    expect(c?.detail).toBe('1 wrapper(s) still grant Bash and can do the work themselves — run `sonata sync`');
+    expect(c?.detail).not.toContain('restart Claude Code');
   });
 
   it('flags an unregistered MCP server', async () => {
@@ -166,7 +167,8 @@ code = ["m"]
     const { checks } = await cmdDoctor({ cwd, home });
     const check = checks.find((c) => c.name === 'agent tools')!;
     expect(check.ok).toBe(false);
-    expect(check.detail).toContain('sonata sync');
+    expect(check.detail).toBe('1 wrapper(s) still call the removed run/tail tools and will fail mid-dispatch — run `sonata sync`');
+    expect(check.detail).not.toContain('restart Claude Code');
   });
 
   it('passes when every agent names the current tools', async () => {

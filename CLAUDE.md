@@ -32,7 +32,7 @@ npm link           # puts `sonata` on your PATH (until published to npm)
 The CLI (after `npm link`):
 - `sonata init` — set up sonata (interactive wizard; asks the config scope, then providers, models, roles and per-role models. Left goes back a screen, skipping any answered by a flag; writes the config, generates one agent per role × model, offers the permission hook). Unattended flags: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope project|global`, `--scope project|global|skip`, `--prune`
 - `sonata doctor` — check tmux, harnesses, auth, versions, permission hook
-- `sonata sync` — regenerate agent files from `sonata.toml` (run after editing config, then restart Claude Code); supports `--prune`
+- `sonata sync` — regenerate agent files from `sonata.toml`; Claude Code picks them up automatically. Supports `--prune`
 - `sonata run` — launch a run, print its id
 - `sonata tail` — human/debugging view of a run (PROGRESS | PAUSED | DONE | STALLED); the MCP dispatch path uses `dispatch`/`wait`
 - `sonata approve` — answer a pending approval
@@ -161,7 +161,7 @@ dispatch_window_seconds = 1500 # blocking window; must stay under MCP's 30-minut
 - **Each role chooses its own models** through `[generate.roles]`; the old flat `roles`/`models` pair is no longer accepted. `sonata init` rewrites an old config to the per-role format.
 - Four roles ship: `code`, `review`, `explore`, `plan`. The last three are read-only, enforced by the harness (read-only sandbox on codex, tool allowlist on pi, read-only agent on opencode, `dontAsk` on reasonix).
 - `sonata init` discovers OpenCode, Pi and Reasonix models (reasonix's catalogue and its per-provider auth state both come from `reasonix doctor --json`). Codex has no provider dimension and is added by hand; hand-written entries survive `sonata init`, which carries through any model whose harness it does not manage.
-- Run `sonata sync` after editing the config, and restart Claude Code so it picks up the generated agents.
+- Run `sonata sync` after editing the config; Claude Code picks up the generated agents automatically. Reconnect the sonata MCP server with `/mcp` only when sonata's MCP tool surface changes.
 
 ## Security
 

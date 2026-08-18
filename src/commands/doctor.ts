@@ -112,12 +112,12 @@ export async function cmdDoctor(
     ? { name: 'agent tools', ok: withBash.length === 0, detail: withBash.length === 0
         ? 'no wrapper grants Bash'
         : `${withBash.length} wrapper(s) still grant Bash and can do the work ` +
-          'themselves — run `sonata sync`, then restart Claude Code' }
+          'themselves — run `sonata sync`' }
     : {
         name: 'agent tools',
         ok: false,
         detail: `${stalePolling.length} wrapper(s) still call the removed run/tail ` +
-          'tools and will fail mid-dispatch — run `sonata sync`, then restart Claude Code',
+          'tools and will fail mid-dispatch — run `sonata sync`',
       });
 
   // Agents sonata dispatches to. A disabled one is not an error opencode
