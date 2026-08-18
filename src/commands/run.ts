@@ -77,14 +77,10 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
   const dir = runDir(opts.cwd, meta.id);
   const instructionsPath = join(dir, 'instructions.md');
 
-  writeFileSync(instructionsPath, composeInstructions({
-    role: opts.role,
-    roleText: loadRole(opts.role, opts.rolesDir),
-    repoContext: repoContext(opts.cwd),
-    task,
-    reportPath: join(dir, 'report.md'),
-  }));
-
+  // The plan comes first because it decides whether a report is possible at
+  // all, and the instructions must not ask for one that cannot be written.
+  // `adapter.plan` only takes the instructions path, never its contents, so
+  // nothing here depends on the file existing yet.
   const plan = adapter.plan({
     modelId: modelCfg.id,
     role: opts.role,
@@ -93,6 +89,15 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     runDir: dir,
     instructionsPath,
   });
+
+  writeFileSync(instructionsPath, composeInstructions({
+    role: opts.role,
+    roleText: loadRole(opts.role, opts.rolesDir),
+    repoContext: repoContext(opts.cwd),
+    task,
+    reportPath: join(dir, 'report.md'),
+    canWriteReport: plan.canWriteReport ?? true,
+  }));
 
   const harnessPath = join(dir, 'harness.sh');
   writeFileSync(harnessPath, plan.script, { mode: 0o755 });
