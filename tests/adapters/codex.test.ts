@@ -85,6 +85,21 @@ describe('codexAdapter.plan — default mode', () => {
     expect(p.script).toContain('-s workspace-write');
     expect(p.script).not.toContain('danger-full-access');
   });
+
+  it('keeps the TUI stdout attached to the terminal', () => {
+    expect(p.script).not.toContain('tee');
+  });
+
+  it('quits after the model writes its report', () => {
+    expect(p.script).toContain("while [ ! -f '/repo/.sonata/runs/abc123/report.md' ]; do sleep 2; done");
+    expect(p.script).toContain('tmux send-keys -t "$SESSION" C-u');
+    expect(p.script).toContain('tmux send-keys -t "$SESSION" C-d');
+    expect(p.script.indexOf('C-u')).toBeLessThan(p.script.indexOf('C-d'));
+  });
+
+  it('does not seed the composer because codex receives the prompt as argv', () => {
+    expect(p.script).not.toContain('tmux send-keys -t "$SESSION" -l');
+  });
 });
 
 describe('codexAdapter.plan — invocation details', () => {
@@ -114,6 +129,10 @@ describe('codexAdapter.plan — invocation details', () => {
 
   it('disables approvals in non-interactive mode so it cannot hang', () => {
     expect(p.script).toContain('-c approval_policy="never"');
+  });
+
+  it('keeps non-interactive output in harness.log', () => {
+    expect(p.script).toContain("2>&1 | tee -a '/repo/.sonata/runs/abc123/harness.log'");
   });
 
   it('writes the exit sentinel with pipefail', () => {

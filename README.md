@@ -278,7 +278,10 @@ Pi has no sandbox, so it draws no distinction between `acceptEdits` and
 `codex exec` cannot raise an approval prompt, so `default` mode uses the
 interactive TUI — otherwise a sonata agent could write without ever asking,
 which would be more permissive than the session that spawned it. Sonata never
-passes `--dangerously-bypass-approvals-and-sandbox`.
+passes `--dangerously-bypass-approvals-and-sandbox`. Its stdout stays attached
+to tmux: piping it through `tee` makes codex print `Error: stdout is not a
+terminal` and exit 0. After `report.md` lands, sonata clears the TUI composer
+and sends Ctrl-D so the run writes its exit sentinel rather than stalling.
 
 On first entry to a directory, the codex TUI blocks on a directory-trust
 question before any work starts. Sonata surfaces it as a `PAUSED` prompt, and

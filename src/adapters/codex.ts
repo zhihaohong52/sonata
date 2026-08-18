@@ -208,7 +208,7 @@ function buildScript(input: PlanInput): LaunchPlan {
     ].join(' ');
   }
 
-  const script = [
+  const script = interactive ? interactiveScript(input, invocation) : [
     '#!/bin/bash',
     'set -o pipefail',
     `cd ${shellQuote(input.cwd)} || exit 97`,
@@ -222,6 +222,36 @@ function buildScript(input: PlanInput): LaunchPlan {
   // interactive workspace-write TUI instead of sandboxFor() and can write it.
   const canWriteReport = interactive || (!readOnly && sandboxFor(input.mode) !== 'read-only');
   return { script, interactive, canWriteReport };
+}
+
+/** `default` mode needs Codex's interactive TUI to surface approvals. */
+function interactiveScript(input: PlanInput, invocation: string): string {
+  const reportPath = `${input.runDir}/report.md`;
+  const exitPath = `${input.runDir}/exit`;
+
+  return [
+    '#!/bin/bash',
+    'set -o pipefail',
+    `cd ${shellQuote(input.cwd)} || exit 97`,
+    `SESSION="$(tmux display-message -p '#S')"`,
+    '(',
+    // The report is the harness's own "task over" signal. Until it lands, the
+    // model may still be working or waiting on an approval.
+    `  while [ ! -f ${shellQuote(reportPath)} ]; do sleep 2; done`,
+    // See reasonix's interactiveScript for why the composer is cleared before
+    // each quit attempt and why the exit sentinel acknowledges the quit.
+    '  for _ in $(seq 1 20); do',
+    `    [ -f ${shellQuote(exitPath)} ] && break`,
+    '    tmux send-keys -t "$SESSION" C-u',
+    '    tmux send-keys -t "$SESSION" C-d',
+    '    sleep 3',
+    '  done',
+    ') >/dev/null 2>&1 &',
+    // Codex refuses a TUI whose stdout is redirected: "Error: stdout is not a terminal".
+    invocation,
+    `echo $? > ${shellQuote(exitPath)}`,
+    '',
+  ].join('\n');
 }
 
 /** Base URL codex is configured to talk to, if it overrides the default. */
