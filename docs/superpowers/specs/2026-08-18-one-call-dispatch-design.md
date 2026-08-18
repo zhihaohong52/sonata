@@ -100,19 +100,26 @@ this design depends on it.
 
 ### Report truncation
 
-Claude Code warns above 10k tokens of MCP output and truncates at 25k. A large
-degraded report — pane text after a crash — can exceed that today and is clipped
-mid-sentence by the client, with nothing saying so.
+Claude Code warns above 10k tokens of MCP output and caps at 25k
+(`MAX_MCP_OUTPUT_TOKENS`). Separately, a result over the persist-to-disk
+threshold is written to a file and replaced in the conversation by a file
+reference — so an oversized report is not silently clipped, but it does stop
+being the wrapper's final message, which is what the orchestrator reads.
 
-`dispatch` and `wait` truncate deliberately instead: keep the head, append
+Two measures, in order:
 
-```
-[truncated: full transcript at `sonata log <id>`]
-```
+1. **Declare the ceiling.** `_meta["anthropic/maxResultSizeChars"]` on the
+   `tools/list` entry raises that tool's threshold, up to a hard ceiling of
+   500,000 characters. Set it to 200,000 so ordinary reports — including a
+   degraded one carrying pane text — arrive whole and inline.
+2. **Truncate above our own ceiling anyway.** Keep the head, append
 
-Declaring `anthropic/maxResultSizeChars` on the tool raises the ceiling and is
-worth doing as well, but the truncation notice is the part that stops a
-deliverable vanishing without a trace.
+   ```
+   [truncated: full transcript at `sonata log <id>`]
+   ```
+
+   Nothing sensible reads a 200k-character report into a conversation, and the
+   notice keeps the pointer to the full text in view.
 
 ### A dropped call loses nothing
 
