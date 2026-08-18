@@ -7,6 +7,23 @@ import { cmdRun } from '../commands/run.js';
 import { cmdTail } from '../commands/tail.js';
 import { cmdApprove } from '../commands/approve.js';
 
+/**
+ * Ceiling on a report returned through MCP.
+ *
+ * Claude Code warns above 10k tokens of tool output and caps at 25k, and a
+ * result over its persist-to-disk threshold is replaced in the conversation by
+ * a file reference — which stops the report being the wrapper's final message,
+ * the one thing the orchestrator actually reads. 40k characters is roughly 10k
+ * tokens, so an ordinary report stays inline and under the warning.
+ */
+export const MAX_REPORT_CHARS = 40_000;
+
+/** Keeps the head of an oversized report and says where the whole thing is. */
+export function truncateReport(report: string, id: string, max = MAX_REPORT_CHARS): string {
+  if (report.length <= max) return report;
+  return `${report.slice(0, max)}\n\n[truncated: full transcript at \`sonata log ${id}\`]`;
+}
+
 export interface ToolEnv {
   cwd: string;
   home: string;
