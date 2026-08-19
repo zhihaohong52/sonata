@@ -310,19 +310,17 @@ export function renderText(title: string, state: TextState, hint?: string): stri
 /**
  * Builds one redraw of a block, and reports the height to pass back next time.
  *
- * The cursor must move up by the height of the block ALREADY on screen, not
- * the one about to be written. They differ whenever the block changes size —
- * a viewport scroll adds an overflow line, a filter shrinks the list — and
- * moving by the wrong amount leaves the cursor in the wrong row, after which
- * every later redraw drifts further and overwrites the wrong lines.
- *
- * Each line is cleared as it is rewritten, so a shrinking block leaves no tail.
+ * Uses clear-screen rather than per-line cursor-up: some terminal
+ * environments (cmux panels, certain multiplexer panes) do not process
+ * CSI cursor-movement sequences, which causes cursor-up redraws to
+ * append the block rather than overwrite it. Clear-screen is universally
+ * handled.
  */
 export function redraw(body: string, lastHeight: number): { out: string; height: number } {
   const lines = body.split('\n');
-  const up = lastHeight > 0 ? `\u001b[${lastHeight}A` : '';
+  const clear = lastHeight > 0 ? '\u001b[2J\u001b[H' : '';
   return {
-    out: `${up}${lines.map((l) => `\u001b[2K${l}`).join('\n')}\n`,
+    out: `${clear}${lines.join('\n')}\n`,
     height: lines.length,
   };
 }
