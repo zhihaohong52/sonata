@@ -14,7 +14,8 @@ import { pruneAgents } from './detect.js';
 import type { HookScope } from './settings.js';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
+import { cmdAuthAdd, cmdAuthList, cmdAuthRemove } from './commands/auth.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
 
@@ -27,6 +28,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata gc        kill finished tmux sessions
   sonata log       print a run's whole transcript (tail returns only new lines)
   sonata verify    confirm a dispatch actually happened
+  sonata auth      add, list or remove native gateway keys
   sonata mcp       start the stdio JSON-RPC server (started by Claude Code; not run by hand)
 
   init flags (skip the prompts):
@@ -34,6 +36,8 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
     --providers opencode/openrouter,pi/opencode-go   providers to draw models from
     --models a,b             models to enable (config keys)
     --roles code,review      roles to generate
+    --native-models a,b      native model keys to enable (opt-in; default none)
+    --native-roles code,review   roles to generate native agents for
     --config-scope project|global   where the config and its agents go
     --scope project|global|skip   where to install the permission hook
     --prune                    delete stale sonata agent files
@@ -67,6 +71,8 @@ async function main(argv: string[]): Promise<number> {
         providers: { type: 'string' },
         models: { type: 'string' },
         roles: { type: 'string' },
+        'native-models': { type: 'string' },
+        'native-roles': { type: 'string' },
         'config-scope': { type: 'string' },
         scope: { type: 'string' },
         // No default: `undefined` means "unanswered", which lets cmdInit fall
@@ -99,6 +105,8 @@ async function main(argv: string[]): Promise<number> {
         providers: split(values.providers),
         models: split(values.models),
         roles: split(values.roles),
+        nativeModels: split(values['native-models']),
+        nativeRoles: split(values['native-roles']),
         scope,
         configScope,
         prune: values.prune,
@@ -225,6 +233,31 @@ async function main(argv: string[]): Promise<number> {
     return ok ? 0 : 1;
   }
 
+  if (command === 'auth') {
+    const { positionals } = parseArgs({ args: rest, allowPositionals: true, options: {} });
+    const [action, gateway] = positionals;
+    const config = loadConfig(process.cwd(), homedir());
+    const gateways = Object.keys(config.native?.gateways ?? {});
+
+    if (action === 'list') {
+      console.log(cmdAuthList({ home: homedir(), gateways }).text);
+      return 0;
+    }
+    if (action === 'remove') {
+      if (!gateway) throw new Error('sonata auth remove requires a gateway');
+      cmdAuthRemove({ home: homedir(), gateway });
+      return 0;
+    }
+    if (action === 'add') {
+      if (!gateway) throw new Error('sonata auth add requires a gateway');
+      const key = await readAuthKey();
+      if (!key) throw new Error('sonata auth add requires a non-empty key');
+      cmdAuthAdd({ home: homedir(), gateway, key });
+      return 0;
+    }
+    throw new Error('sonata auth requires list, add <gateway> or remove <gateway>');
+  }
+
   if (command === 'gc') {
     const killed = await cmdGc({ cwd: process.cwd() });
     console.log(killed.length ? `killed ${killed.join(', ')}` : 'nothing to clean up');
@@ -266,6 +299,35 @@ async function main(argv: string[]): Promise<number> {
 
   console.error(`sonata: unknown command "${command ?? ''}"`);
   return 2;
+}
+
+async function readAuthKey(): Promise<string> {
+  if (!process.stdin.isTTY) {
+    return readFileSync(0, 'utf8').split(/\r?\n/, 1)[0].trim();
+  }
+
+  const stdin = process.stdin;
+  const stdout = process.stdout;
+  stdout.write('Key: ');
+  stdin.setRawMode?.(true);
+  stdin.resume();
+  let value = '';
+  try {
+    for await (const chunk of stdin.iterator({ destroyOnReturn: false })) {
+      const text = String(chunk);
+      for (const char of text) {
+        if (char === '\n' || char === '\r') return value.trim();
+        if (char === '\u0003') throw new Error('sonata auth add cancelled');
+        if (char === '\u007f' || char === '\b') value = value.slice(0, -1);
+        else value += char;
+      }
+    }
+  } finally {
+    stdin.setRawMode?.(false);
+    stdin.pause();
+    stdout.write('\n');
+  }
+  return value.trim();
 }
 
 /**
