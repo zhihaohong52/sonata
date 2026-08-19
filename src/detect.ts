@@ -89,19 +89,20 @@ const WELL_KNOWN_PROVIDER_URLS: Record<string, string> = {
 };
 
 export function parseOpenCodeProviderBaseUrls(text: string): Record<string, string> {
+  // Start with well-known defaults — opencode's built-in providers are not
+  // listed in the config file at all, so iterating config entries alone misses
+  // every standard provider.
+  const out: Record<string, string> = { ...WELL_KNOWN_PROVIDER_URLS };
   let parsed: any;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return {};
+    return out;
   }
-  const out: Record<string, string> = {};
   for (const [provider, def] of Object.entries<any>(parsed?.provider ?? {})) {
     const baseUrl = def?.options?.baseURL;
     if (typeof baseUrl === 'string' && baseUrl.trim() !== '') {
       out[provider] = baseUrl;
-    } else if (WELL_KNOWN_PROVIDER_URLS[provider]) {
-      out[provider] = WELL_KNOWN_PROVIDER_URLS[provider];
     }
   }
   return out;
