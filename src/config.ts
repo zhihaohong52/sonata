@@ -18,9 +18,19 @@ export function isReadOnlyRole(role: string): boolean {
 
 export interface ModelConfig { harness: string; id: string }
 
+export interface NativeModelConfig { gateway: string; id: string; contextWindow: number }
+export interface NativeGatewayConfig { baseUrl: string }
+export interface NativeConfig {
+  models: Record<string, NativeModelConfig>;
+  gateways: Record<string, NativeGatewayConfig>;
+  ports: { router: number; litellm: number };
+  generate: Record<string, string[]>;
+}
+
 export interface SonataConfig {
   models: Record<string, ModelConfig>;
   generate: { roles: Record<string, string[]> };
+  native?: NativeConfig;
   run: {
     tailWindowSeconds: number;
     stallTimeoutSeconds: number;
@@ -108,9 +118,78 @@ export function parseConfig(text: string): SonataConfig {
     roles[role] = list as string[];
   }
 
+  let native: NativeConfig | undefined;
+  if (raw.native !== undefined) {
+    const rawNative = raw.native as Record<string, unknown>;
+    const gateways: Record<string, NativeGatewayConfig> = {};
+    for (const [name, def] of Object.entries((rawNative.gateways ?? {}) as Record<string, unknown>)) {
+      const d = def as Record<string, unknown>;
+      if (typeof d.base_url !== 'string') {
+        throw new Error(`sonata.toml: native gateway "${name}" needs string "base_url"`);
+      }
+      gateways[name] = { baseUrl: d.base_url };
+    }
+
+    const nativeModels: Record<string, NativeModelConfig> = {};
+    for (const [name, def] of Object.entries((rawNative.models ?? {}) as Record<string, unknown>)) {
+      const d = def as Record<string, unknown>;
+      if (typeof d.gateway !== 'string' || typeof d.id !== 'string' || typeof d.context_window !== 'number') {
+        throw new Error(
+          `sonata.toml: native model "${name}" needs string "gateway", string "id" and number "context_window"`,
+        );
+      }
+      if (name.startsWith('claude-') || d.id.startsWith('claude-')) {
+        throw new Error(
+          `sonata.toml: native model "${name}" cannot use the "claude-" prefix because the router routes it to Anthropic.`,
+        );
+      }
+      if (!gateways[d.gateway]) {
+        throw new Error(
+          `sonata.toml: native model "${name}" references unknown gateway "${d.gateway}". ` +
+          `Define [native.gateways."${d.gateway}"] first.`,
+        );
+      }
+      nativeModels[name] = { gateway: d.gateway, id: d.id, contextWindow: d.context_window };
+    }
+
+    const nativeGenerate: Record<string, string[]> = {};
+    for (const [role, list] of Object.entries((gen.native ?? {}) as Record<string, unknown>)) {
+      if (!KNOWN_ROLES.includes(role as any)) {
+        throw new Error(
+          `sonata.toml: generate.native contains unknown role "${role}". ` +
+          `Known roles: ${KNOWN_ROLES.join(', ')}`,
+        );
+      }
+      if (!Array.isArray(list) || !list.every((model) => typeof model === 'string')) {
+        throw new Error(`sonata.toml: generate.native.${role} must be a list of native model keys.`);
+      }
+      for (const model of list) {
+        if (!nativeModels[model]) {
+          throw new Error(
+            `sonata.toml: generate.native.${role} references unknown native model "${model}". ` +
+            `Define [native.models."${model}"] first.`,
+          );
+        }
+      }
+      nativeGenerate[role] = list;
+    }
+
+    const rawPorts = (rawNative.ports ?? {}) as Record<string, unknown>;
+    native = {
+      models: nativeModels,
+      gateways,
+      ports: {
+        router: num(rawPorts.router, 4100),
+        litellm: num(rawPorts.litellm, 4000),
+      },
+      generate: nativeGenerate,
+    };
+  }
+
   return {
     models,
     generate: { roles },
+    native,
     run: {
       tailWindowSeconds: num(raw.run?.tail_window_seconds, 20),
       stallTimeoutSeconds: num(raw.run?.stall_timeout_seconds, 120),
@@ -165,6 +244,15 @@ export function loadConfig(cwd: string, home: string = homedir()): SonataConfig 
 export function generatedAgents(config: SonataConfig): { role: string; model: string }[] {
   const out: { role: string; model: string }[] = [];
   for (const [role, models] of Object.entries(config.generate.roles)) {
+    for (const model of models) out.push({ role, model });
+  }
+  return out;
+}
+
+/** Every native agent the config asks for. */
+export function generatedNativeAgents(config: SonataConfig): { role: string; model: string }[] {
+  const out: { role: string; model: string }[] = [];
+  for (const [role, models] of Object.entries(config.native?.generate ?? {})) {
     for (const model of models) out.push({ role, model });
   }
   return out;
