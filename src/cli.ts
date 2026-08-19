@@ -16,6 +16,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, realpathSync } from 'node:fs';
 import { cmdAuthAdd, cmdAuthList, cmdAuthRemove } from './commands/auth.js';
+import { cmdServe } from './commands/serve.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
 
@@ -29,6 +30,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata log       print a run's whole transcript (tail returns only new lines)
   sonata verify    confirm a dispatch actually happened
   sonata auth      add, list or remove native gateway keys
+  sonata serve [--daemon]  start the native router and managed LiteLLM proxy
   sonata mcp       start the stdio JSON-RPC server (started by Claude Code; not run by hand)
 
   init flags (skip the prompts):
@@ -256,6 +258,18 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     throw new Error('sonata auth requires list, add <gateway> or remove <gateway>');
+  }
+
+  if (command === 'serve') {
+    const { values } = parseArgs({
+      args: rest,
+      options: { daemon: { type: 'boolean', default: false } },
+    });
+    // TODO: detach and register daemon lifecycle with gc.
+    const handle = await cmdServe({ cwd: process.cwd(), home: homedir(), daemon: values.daemon });
+    console.log(`router listening on ${handle.routerPort}; litellm listening on ${handle.litellmPort}`);
+    await new Promise<void>(() => {});
+    return 0;
   }
 
   if (command === 'gc') {
