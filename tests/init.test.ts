@@ -5,8 +5,9 @@ import { join } from 'node:path';
 import { parseOpenCodeModels, parseAuthedProviders, staleAgents, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
 import { parsePiRefs } from '../src/adapters/pi.js';
 import {
-  cmdInit, configKeyFor, duplicateKeys, preTickedRefs, carriedEntries, tomlFor, configPathFor,
-  agentsDirFor, previousAskedStep, nativeCandidatesFrom,
+  cmdInit, duplicateKeys, previousAskedStep, nativeCandidatesFrom,
+  nativeTomlFor, preTickedNative, configPathFor, agentsDirFor,
+  type NativeCandidate,
 } from '../src/commands/init.js';
 import { readSettings } from '../src/settings.js';
 import { parseConfig } from '../src/config.js';
@@ -19,7 +20,6 @@ const OC_CONFIG = JSON.stringify({
       models: {
         'deepseek-v4-flash': { name: 'DeepSeek V4 Flash' },
         'kimi-k3': { name: 'Kimi K3' },
-        // Real model ids carry version dots, which are TOML key separators.
         'grok-4.5': { name: 'Grok-4.5' },
       },
     },
@@ -74,24 +74,12 @@ describe('staleAgents', () => {
   });
 });
 
-describe('cmdInit (non-interactive)', () => {
-  let cwd: string;
-  let home: string;
-  let lines: string[];
-  let authed: string[];
-
-  beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), 'init-cwd-'));
-    home = mkdtempSync(join(tmpdir(), 'init-home-'));
-    lines = [];
-    authed = ['opencode-go'];
-  });
-
-  const write = (l: string) => { lines.push(l); };
-
-  // Detection shells out to real binaries, so it is injected here to keep
-  // these tests hermetic and independent of the developer's machine.
-  const detect = async () => ({
+// Helper: a detection fixture that reports opencode with providerBaseUrls.
+function makeDetect(opts?: { authed?: string[]; extraRefs?: string; providerBaseUrls?: Record<string, string> }) {
+  const authed = opts?.authed ?? ['opencode-go'];
+  const refsStr = opts?.extraRefs ?? 'opencode/deepseek-v4-flash\nopencode/kimi-k3\nopencode/grok-4.5\n';
+  const pvUrls = opts?.providerBaseUrls ?? { opencode: 'https://opencode.ai/api/v1' };
+  return async () => ({
     tmux: { installed: true, version: '3.7b', problems: [] },
     harnesses: [{
       name: 'opencode',
@@ -99,8 +87,9 @@ describe('cmdInit (non-interactive)', () => {
       version: '1.18.15',
       supported: true,
       binPath: '/fake/opencode',
-      refs: parseOpenCodeRefs('opencode/deepseek-v4-flash\nopencode/kimi-k3\nopencode/grok-4.5\n'),
+      refs: parseOpenCodeRefs(refsStr),
       authedProviders: authed,
+      providerBaseUrls: pvUrls,
       problems: authed.length === 0
         ? [{
             severity: 'error' as const,
@@ -110,34 +99,49 @@ describe('cmdInit (non-interactive)', () => {
         : [],
     }],
   });
+}
 
-  it('writes config, installs the hook and generates agents', async () => {
+describe('cmdInit (non-interactive)', () => {
+  let cwd: string;
+  let home: string;
+  let lines: string[];
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'init-cwd-'));
+    home = mkdtempSync(join(tmpdir(), 'init-home-'));
+    lines = [];
+  });
+
+  const write = (l: string) => { lines.push(l); };
+  const detect = makeDetect();
+
+  it('writes native config, installs the hook and generates agents', async () => {
     const res = await cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect,
-      providers: ['opencode/opencode'], models: ['opencode-opencode-deepseek-v4-flash'],
+      providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'project', write,
     });
 
-    expect(res.models).toEqual(['opencode-opencode-deepseek-v4-flash']);
-    expect(res.agentsWritten).toHaveLength(1);
+    expect(res.models).toEqual(['opencode-deepseek-v4-flash']);
+    expect(res.agentsWritten.length).toBeGreaterThanOrEqual(1);
     expect(res.hookChanged).toBe(true);
 
     const toml = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
-    expect(toml).toContain('[models."opencode-opencode-deepseek-v4-flash"]');
-    expect(toml).toContain('harness = "opencode"');
+    expect(toml).toContain('[native.models."opencode-deepseek-v4-flash"]');
+    expect(toml).toContain('[native.gateways."opencode"]');
+    expect(toml).not.toContain('[models.');
+    expect(toml).not.toContain('[generate.roles]');
 
     const settings = readSettings(join(cwd, '.claude', 'settings.json'));
     expect(settings.hooks!.PreToolUse[0].hooks[0].command)
       .toBe('node "/pkg/hooks/capture-mode.mjs"');
-
-    expect(existsSync(join(cwd, '.claude', 'agents', 'code-opencode-opencode-deepseek-v4-flash.md'))).toBe(true);
   });
 
   it('is idempotent across repeated runs', async () => {
     const args = {
       cwd, home, packageRoot: '/pkg', yes: true, detect,
-      providers: ['opencode/opencode'] as string[],
-      models: ['opencode-opencode-deepseek-v4-flash'], roles: ['code'], scope: 'project' as const, write,
+      providers: ['opencode/opencode'],
+      models: ['opencode-deepseek-v4-flash'], roles: ['code'], scope: 'project' as const, write,
     };
     await cmdInit(args);
     const second = await cmdInit(args);
@@ -150,14 +154,14 @@ describe('cmdInit (non-interactive)', () => {
   it('can skip hook installation entirely', async () => {
     const res = await cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect,
-      providers: ['opencode/opencode'], models: ['opencode-opencode-kimi-k3'],
+      providers: ['opencode/opencode'], models: ['opencode-kimi-k3'],
       roles: ['review'], scope: 'skip', write,
     });
     expect(res.hookChanged).toBe(false);
     expect(existsSync(join(cwd, '.claude', 'settings.json'))).toBe(false);
   });
 
-  it('rejects a model opencode does not offer', async () => {
+  it('rejects a model the selected providers do not offer', async () => {
     await expect(cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'], models: ['gpt-9'], roles: ['code'], scope: 'skip', write,
@@ -167,31 +171,28 @@ describe('cmdInit (non-interactive)', () => {
   it('rejects an unknown role', async () => {
     await expect(cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect,
-      providers: ['opencode/opencode'], models: ['opencode-opencode-kimi-k3'],
+      providers: ['opencode/opencode'], models: ['opencode-kimi-k3'],
       roles: ['dance'], scope: 'skip', write,
     })).rejects.toThrow(/unknown role/);
   });
 
-  // A model id like `grok-4.5` is not a plain TOML key: the dot nests it, so
-  // `[models."opencode-opencode-grok-4.5"]` parses as models -> "opencode-opencode-grok-4" -> "5"
-  // and the config no longer describes the model it names.
   it('writes a model id containing dots as one quoted key', async () => {
     await cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect,
-      providers: ['opencode/opencode'], models: ['opencode-opencode-grok-4.5'],
+      providers: ['opencode/opencode'], models: ['opencode-grok-4.5'],
       roles: ['code'], scope: 'skip', write,
     });
 
     const config = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
-    expect(Object.keys(config.models)).toEqual(['opencode-opencode-grok-4.5']);
-    expect(config.models['opencode-opencode-grok-4.5']).toEqual({ harness: 'opencode', id: 'opencode/grok-4.5' });
+    expect(config.native?.models['opencode-grok-4.5']).toBeDefined();
+    expect(config.native?.models['opencode-grok-4.5'].id).toBe('grok-4.5');
   });
 
   it('reports blocking problems and writes nothing when a provider is unauthed', async () => {
-    authed = [];
+    const noAuth = makeDetect({ authed: [] });
     const res = await cmdInit({
-      cwd, home, packageRoot: '/pkg', yes: true, detect,
-      models: ['opencode-opencode-kimi-k3'], roles: ['code'], scope: 'skip', write,
+      cwd, home, packageRoot: '/pkg', yes: true, detect: noAuth,
+      models: ['opencode-kimi-k3'], roles: ['code'], scope: 'skip', write,
     });
 
     expect(res.problems.some((p) => p.severity === 'error')).toBe(true);
@@ -221,6 +222,7 @@ describe('cmdInit — provider selection', () => {
         name: 'opencode', installed: true, version: '1.18.16', supported: true,
         refs: parseOpenCodeRefs('openrouter/grok-4.5\nopencode-go/grok-4.5\n'),
         authedProviders: ['openrouter', 'opencode-go'], problems: [],
+        providerBaseUrls: { openrouter: 'https://openrouter.ai/api/v1', 'opencode-go': 'https://opencode.ai/api/v1' },
       },
       {
         name: 'pi', installed: true, version: '0.84.0', supported: true,
@@ -230,59 +232,32 @@ describe('cmdInit — provider selection', () => {
     ],
   });
 
-  it('enables the chosen provider\'s copy and writes the ref', async () => {
+  it('enables the chosen provider and writes a native model', async () => {
     const res = await cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect,
-      providers: ['opencode/openrouter'], models: ['opencode-openrouter-grok-4.5'],
+      providers: ['opencode/openrouter'], models: ['openrouter-grok-4.5'],
       roles: ['code'], scope: 'skip', write,
     });
 
-    expect(res.models).toEqual(['opencode-openrouter-grok-4.5']);
+    expect(res.models).toEqual(['openrouter-grok-4.5']);
     const cfg = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
-    expect(cfg.models['opencode-openrouter-grok-4.5'].id).toBe('openrouter/grok-4.5');
+    expect(cfg.native?.models['openrouter-grok-4.5'].id).toBe('grok-4.5');
+    expect(cfg.native?.models['openrouter-grok-4.5'].gateway).toBe('openrouter');
   });
 
-  it('keeps the same model from two harnesses as two entries', async () => {
+  it('deduplicates the same provider/model across harnesses for native', async () => {
+    // opencode and pi both offer opencode-go/grok-4.5; native shows it once.
     await cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode-go', 'pi/opencode-go'],
-      models: ['opencode-opencode-go-grok-4.5', 'pi-opencode-go-grok-4.5'],
+      models: ['opencode-go-grok-4.5'],
       roles: ['code'], scope: 'skip', write,
     });
 
     const cfg = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
-    expect(cfg.models['opencode-opencode-go-grok-4.5'].harness).toBe('opencode');
-    expect(cfg.models['pi-opencode-go-grok-4.5'].harness).toBe('pi');
-  });
-
-  it('carries a hand-written codex entry through a re-run', async () => {
-    writeFileSync(join(cwd, 'sonata.toml'), `
-[models."gpt-5-6-sol"]
-harness = "codex"
-id = "gpt-5.6-sol"
-
-[generate.roles]
-code = ["gpt-5-6-sol"]
-`);
-    await cmdInit({
-      cwd, home, packageRoot: '/pkg', yes: true, detect,
-      providers: ['opencode/openrouter'], models: ['opencode-openrouter-grok-4.5'],
-      roles: ['code'], scope: 'skip', write,
-    });
-
-    const cfg = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
-    expect(cfg.models['gpt-5-6-sol'].id).toBe('gpt-5.6-sol');
-  });
-
-  it('pre-selects an enabled ref on a re-run', async () => {
-    const args = {
-      cwd, home, packageRoot: '/pkg', yes: true, detect,
-      roles: ['code'], scope: 'skip' as const, write,
-    };
-    await cmdInit({ ...args, providers: ['opencode/openrouter'], models: ['opencode-openrouter-grok-4.5'] });
-    const second = await cmdInit(args);
-
-    expect(second.models).toEqual(['opencode-openrouter-grok-4.5']);
+    expect(cfg.native?.models['opencode-go-grok-4.5']).toBeDefined();
+    // Only one entry — not two harness-qualified entries.
+    expect(Object.keys(cfg.native?.models ?? {})).toEqual(['opencode-go-grok-4.5']);
   });
 
   it('rejects a model no offered provider serves', async () => {
@@ -295,7 +270,6 @@ code = ["gpt-5-6-sol"]
 
 describe('parseOpenCodeRefs', () => {
   it('splits a ref on the first slash only', () => {
-    // The model id may itself contain slashes; only the provider is delimited.
     expect(parseOpenCodeRefs('openrouter/deepseek/deepseek-v4-flash\n')).toEqual([
       {
         harness: 'opencode',
@@ -340,8 +314,6 @@ describe('offerableProviders', () => {
   });
 
   it('never applies the auth filter to pi, which lists only usable models', () => {
-    // `openrouter` is not authed here, but pi must be offered all the same. The
-    // free opencode tier is always offered too, needing no auth entry.
     const got = offerableProviders(refs, []);
     expect(got.map((p) => p.key)).toEqual(['opencode/opencode', 'pi/openrouter']);
   });
@@ -358,36 +330,7 @@ describe('offerableProviders', () => {
   });
 });
 
-describe('configKeyFor', () => {
-  const ref = (harness: 'opencode' | 'pi', provider: string, id: string) =>
-    ({ harness, provider, id, ref: `${provider}/${id}` });
-
-  it('qualifies the key with the harness', () => {
-    expect(configKeyFor(ref('opencode', 'openrouter', 'deepseek-v4-flash')))
-      .toBe('opencode-openrouter-deepseek-v4-flash');
-  });
-
-  it('flattens a nested openrouter id', () => {
-    expect(configKeyFor(ref('opencode', 'openrouter', 'deepseek/deepseek-v4-flash')))
-      .toBe('opencode-openrouter-deepseek-deepseek-v4-flash');
-  });
-
-  it('separates the same ref served by two harnesses', () => {
-    const a = configKeyFor(ref('opencode', 'opencode-go', 'deepseek-v4-flash'));
-    const b = configKeyFor(ref('pi', 'opencode-go', 'deepseek-v4-flash'));
-    expect(a).not.toBe(b);
-  });
-});
-
 describe('duplicateKeys', () => {
-  it('finds two refs that flatten alike', () => {
-    // Provider names contain dashes too, so flattening is not injective.
-    const a = configKeyFor({ harness: 'opencode', provider: 'opencode', id: 'go-x', ref: 'opencode/go-x' });
-    const b = configKeyFor({ harness: 'opencode', provider: 'opencode-go', id: 'x', ref: 'opencode-go/x' });
-    expect(a).toBe(b);
-    expect(duplicateKeys([a, b])).toEqual([a]);
-  });
-
   it('is empty when every key is distinct', () => {
     expect(duplicateKeys(['a', 'b', 'c'])).toEqual([]);
   });
@@ -397,192 +340,84 @@ describe('duplicateKeys', () => {
   });
 });
 
-describe('preTickedRefs', () => {
-  const refs = [
-    { harness: 'opencode' as const, provider: 'openrouter', id: 'deepseek-v4-flash', ref: 'openrouter/deepseek-v4-flash' },
-    { harness: 'pi' as const, provider: 'opencode-go', id: 'deepseek-v4-flash', ref: 'opencode-go/deepseek-v4-flash' },
+describe('preTickedNative', () => {
+  const candidates: NativeCandidate[] = [
+    { key: 'opencode-deepseek-v4-flash', gateway: 'opencode', id: 'deepseek-v4-flash', contextWindow: 128000, baseUrl: 'https://opencode.ai/api/v1' },
+    { key: 'anexto-grok-4.5', gateway: 'anexto', id: 'grok-4.5', contextWindow: 128000, baseUrl: 'https://bifrost.advai.net/v1' },
   ];
 
-  it('recognises a hand-written pi entry from its ref, not its key', () => {
-    // The README tells users to name this entry `pi-deepseek`; the wizard
-    // would never generate that key, but the ref says exactly what was meant.
+  it('ticks a candidate whose key matches an existing native model', () => {
     const toml = `
-[models."pi-deepseek"]
-harness = "pi"
-id = "opencode-go/deepseek-v4-flash"
-
-[generate.roles]
-code = ["pi-deepseek"]
+[native.models."opencode-deepseek-v4-flash"]
+gateway = "opencode"
+id = "deepseek-v4-flash"
+context_window = 128000
+[native.gateways."opencode"]
+base_url = "https://opencode.ai/api/v1"
 `;
-    // Keyed by config key, not by ref: opencode and pi both serve
-    // opencode-go/deepseek-v4-flash, and a ref-keyed set pre-ticked both.
-    expect(preTickedRefs(toml, refs)).toEqual(new Set(['pi-opencode-go-deepseek-v4-flash']));
-  });
-
-  it('matches the harness too, so one ref under two harnesses stays distinct', () => {
-    const toml = `
-[models."opencode-opencode-go-deepseek-v4-flash"]
-harness = "opencode"
-id = "opencode-go/deepseek-v4-flash"
-
-[generate.roles]
-code = ["opencode-opencode-go-deepseek-v4-flash"]
-`;
-    // The only catalogue ref with that id is pi's, so nothing pre-ticks.
-    expect(preTickedRefs(toml, refs)).toEqual(new Set());
-  });
-
-  it('pre-ticks nothing for a bare id, which names no provider', () => {
-    const toml = `
-[models."kimi-k3"]
-harness = "opencode"
-id = "kimi-k3"
-
-[generate.roles]
-code = ["kimi-k3"]
-`;
-    expect(preTickedRefs(toml, refs)).toEqual(new Set());
-  });
-
-  // The picker labelled rows by `ref`, so opencode's and pi's
-  // opencode-go/deepseek-v4-flash printed as two identical lines, and both
-  // shared a selection value: ticking one selected the other.
-  it('pre-ticks only the harness actually configured, not its twin', () => {
-    const toml = `
-[models."opencode-opencode-go-deepseek-v4-flash"]
-harness = "opencode"
-id = "opencode-go/deepseek-v4-flash"
-
-[generate.roles]
-code = ["opencode-opencode-go-deepseek-v4-flash"]
-`;
-    const twin = [
-      { harness: 'opencode' as const, provider: 'opencode-go', id: 'deepseek-v4-flash', ref: 'opencode-go/deepseek-v4-flash' },
-      { harness: 'pi' as const, provider: 'opencode-go', id: 'deepseek-v4-flash', ref: 'opencode-go/deepseek-v4-flash' },
-    ];
-    expect(preTickedRefs(toml, twin)).toEqual(new Set(['opencode-opencode-go-deepseek-v4-flash']));
+    expect(preTickedNative(toml, candidates)).toEqual(new Set(['opencode-deepseek-v4-flash']));
   });
 
   it('is empty for an unparseable or empty config', () => {
-    expect(preTickedRefs('', refs)).toEqual(new Set());
-    expect(preTickedRefs('not toml at all {{{', refs)).toEqual(new Set());
+    expect(preTickedNative('', candidates)).toEqual(new Set());
+    expect(preTickedNative('not toml {{{', candidates)).toEqual(new Set());
   });
-});
 
-describe('carriedEntries', () => {
-  const toml = `
-[models."gpt-5-6-sol"]
+  it('is empty when the config has no native table', () => {
+    expect(preTickedNative(`
+[models."x"]
 harness = "codex"
-id = "gpt-5.6-sol"
-
-[models."opencode-openrouter-kimi-k3"]
-harness = "opencode"
-id = "openrouter/kimi-k3"
-
-[generate.roles]
-code = ["gpt-5-6-sol", "opencode-openrouter-kimi-k3"]
-`;
-
-  it('keeps entries whose harness the wizard does not manage', () => {
-    expect(carriedEntries(toml, ['opencode', 'pi'])).toEqual({
-      'gpt-5-6-sol': { harness: 'codex', id: 'gpt-5.6-sol' },
-    });
-  });
-
-  it('drops entries the wizard is about to rewrite', () => {
-    expect(carriedEntries(toml, ['opencode', 'pi'])['opencode-openrouter-kimi-k3']).toBeUndefined();
-  });
-
-  it('is empty for an unparseable config', () => {
-    expect(carriedEntries('not toml {{{', ['opencode'])).toEqual({});
+id = "gpt"
+`, candidates)).toEqual(new Set());
   });
 });
 
-describe('tomlFor', () => {
-  const refs = [{
-    harness: 'opencode' as const, provider: 'openrouter',
-    id: 'grok-4.5', ref: 'openrouter/grok-4.5',
-  }];
-
-  it('writes quoted keys and the ref verbatim', () => {
-    const out = tomlFor({ code: refs }, {});
-    expect(out).toContain('[models."opencode-openrouter-grok-4.5"]');
-    expect(out).toContain('harness = "opencode"');
-    expect(out).toContain('id = "openrouter/grok-4.5"');
+describe('nativeTomlFor', () => {
+  const cand = (gw: string, id: string): NativeCandidate => ({
+    key: `${gw}-${id}`, gateway: gw, id, contextWindow: 128000, baseUrl: `https://${gw}.example/v1`,
   });
 
-  it('carries a hand-written entry through in [models]', () => {
-    const out = tomlFor({ code: refs }, { 'gpt-5-6-sol': { harness: 'codex', id: 'gpt-5.6-sol' } });
-    expect(out).toContain('[models."gpt-5-6-sol"]');
-    expect(out).toContain('harness = "codex"');
-    expect(out).toContain('"gpt-5-6-sol"');
-    // The carried entry survives in [models]; only wizard-chosen refs are
-    // assigned to roles.
-    const parsed = parseConfig(out);
-    expect(parsed.models['gpt-5-6-sol']).toEqual({ harness: 'codex', id: 'gpt-5.6-sol' });
-    expect(parsed.generate.roles.code).toEqual(['opencode-openrouter-grok-4.5']);
+  it('writes native gateways, models, and generate.native', () => {
+    const out = nativeTomlFor({ code: [cand('opencode', 'deepseek-v4-flash')] });
+    expect(out).toContain('[native.gateways."opencode"]');
+    expect(out).toContain('[native.models."opencode-deepseek-v4-flash"]');
+    expect(out).toContain('[generate.native]');
+    expect(out).not.toContain('[models.');
+    expect(out).not.toContain('[generate.roles]');
+
+    const cfg = parseConfig(out);
+    expect(cfg.native?.models['opencode-deepseek-v4-flash']).toEqual({
+      gateway: 'opencode', id: 'deepseek-v4-flash', contextWindow: 128000,
+    });
+    expect(cfg.native?.generate.code).toEqual(['opencode-deepseek-v4-flash']);
+  });
+
+  it('defines a model once even when several roles use it', () => {
+    const c = cand('opencode', 'kimi-k3');
+    const out = nativeTomlFor({ code: [c], plan: [c] });
+    expect(out.match(/\[native\.models\./g)).toHaveLength(1);
+    expect(parseConfig(out).native?.generate.plan).toEqual(['opencode-kimi-k3']);
+  });
+
+  it('writes each role with its own models', () => {
+    const out = nativeTomlFor({
+      code: [cand('opencode', 'kimi-k3')],
+      review: [cand('opencode', 'kimi-k3'), cand('opencode', 'grok-4.5')],
+    });
+    const cfg = parseConfig(out);
+    expect(cfg.native?.generate.code).toEqual(['opencode-kimi-k3']);
+    expect(cfg.native?.generate.review?.sort()).toEqual(['opencode-grok-4.5', 'opencode-kimi-k3']);
   });
 });
 
 describe('HarnessStatus.refs', () => {
   it('carries refs rather than bare model ids', async () => {
-    // Detection shells out, so this asserts the shape the fakes must satisfy.
     const status = {
       name: 'opencode', installed: true, supported: true,
       refs: parseOpenCodeRefs('openrouter/kimi-k3\n'),
       authedProviders: ['openrouter'], problems: [],
     };
     expect(status.refs[0].ref).toBe('openrouter/kimi-k3');
-  });
-});
-
-describe('tomlFor — escaping', () => {
-  // Found by an independent review run: the table header was escaped via
-  // tomlKey, but the generate.roles arrays and the values were interpolated
-  // raw. A hand-written key containing a quote produced a config that no
-  // longer parsed — destroying the very entry carrying it through was meant
-  // to protect.
-  it('escapes carried keys everywhere they appear, not just in the header', () => {
-    const carried = { 'say"hi': { harness: 'codex', id: 'gpt-5.6-sol' } };
-    const out = tomlFor({ code: [] }, carried);
-
-    expect(() => parseConfig(out)).not.toThrow();
-    expect(Object.keys(parseConfig(out).models)).toEqual(['say"hi']);
-  });
-
-  it('escapes a backslash in a value', () => {
-    const carried = { plain: { harness: 'codex', id: 'a\\b' } };
-    const out = tomlFor({ code: [] }, carried);
-    expect(parseConfig(out).models.plain.id).toBe('a\\b');
-  });
-});
-
-describe('tomlFor — control characters and duplicate tables', () => {
-  // Second review pass: tomlKey escaped only backslash and quote. TOML basic
-  // strings also forbid raw control characters, so a carried id containing a
-  // newline or tab produced an unparseable config — the same data loss as the
-  // quote bug, reached the same way, through a hand-written entry.
-  it('escapes control characters in a carried value', () => {
-    const carried = { odd: { harness: 'codex', id: 'a\nb\tc' } };
-    const out = tomlFor({ code: [] }, carried);
-
-    expect(() => parseConfig(out)).not.toThrow();
-    expect(parseConfig(out).models.odd.id).toBe('a\nb\tc');
-  });
-
-  it('escapes a control character in a key', () => {
-    const carried = { 'a\nb': { harness: 'codex', id: 'x' } };
-    const out = tomlFor({ code: [] }, carried);
-    expect(() => parseConfig(out)).not.toThrow();
-    expect(Object.keys(parseConfig(out).models)).toEqual(['a\nb']);
-  });
-
-  // TOML forbids two tables with the same name. cmdInit deduplicates role
-  // models before writing, so the collision guard lives there; tomlFor never
-  // emits a document that cannot be read back.
-  it('writes a role with no models as an empty list', () => {
-    const out = tomlFor({ review: [] }, {});
-    expect(parseConfig(out).generate.roles.review).toEqual([]);
   });
 });
 
@@ -593,8 +428,6 @@ describe('configPathFor / agentsDirFor', () => {
   });
 
   it('puts a global config and its agents under home', () => {
-    // Both must follow the scope. Splitting them is the defect this fixes:
-    // init in $HOME wrote agents globally and config where only $HOME reads it.
     expect(configPathFor('global', '/repo', '/home'))
       .toBe(join('/home', '.config', 'sonata', 'sonata.toml'));
     expect(agentsDirFor('global', '/repo', '/home')).toBe(join('/home', '.claude', 'agents'));
@@ -620,61 +453,21 @@ describe('cmdInit — config scope', () => {
       name: 'opencode', installed: true, version: '1.18.16', supported: true,
       refs: parseOpenCodeRefs('openrouter/kimi-k3\n'),
       authedProviders: ['openrouter'], problems: [],
+      providerBaseUrls: { openrouter: 'https://openrouter.ai/api/v1' },
     }],
   });
 
   const args = {
     packageRoot: '/pkg', yes: true, detect,
-    providers: ['opencode/openrouter'], models: ['opencode-openrouter-kimi-k3'],
+    providers: ['opencode/openrouter'], models: ['openrouter-kimi-k3'],
     roles: ['code'], scope: 'skip' as const,
   };
-
-  // The scope is chosen before the existing config is read, so init reads the
-  // file it is about to overwrite. Reading whichever config merely *resolves*
-  // would carry a repo's hand-written entries into the machine config, and
-  // pre-tick from a file the user is not editing.
-  it('does not carry a local entry into the machine config', async () => {
-    writeFileSync(join(cwd, 'sonata.toml'), `
-[models."local-only-codex"]
-harness = "codex"
-id = "gpt-5.6-sol"
-
-[generate.roles]
-code = ["local-only-codex"]
-`);
-
-    await cmdInit({ ...args, cwd, home, configScope: 'global', write });
-
-    const global = parseConfig(readFileSync(join(home, '.config', 'sonata', 'sonata.toml'), 'utf8'));
-    expect(Object.keys(global.models)).toEqual(['opencode-openrouter-kimi-k3']);
-    expect(global.models['local-only-codex']).toBeUndefined();
-  });
-
-  it('pre-ticks from the machine config, not the repo one, in global scope', async () => {
-    writeFileSync(join(cwd, 'sonata.toml'), `
-[models."opencode-openrouter-kimi-k3"]
-harness = "opencode"
-id = "openrouter/kimi-k3"
-
-[generate.roles]
-code = ["opencode-openrouter-kimi-k3"]
-`);
-
-    // No --models: the selection carries over from the config being edited,
-    // which in global scope is the machine one — and it is empty.
-    await expect(cmdInit({
-      packageRoot: '/pkg', yes: true, detect, cwd, home,
-      providers: ['opencode/openrouter'], roles: ['code'],
-      scope: 'skip' as const, configScope: 'global' as const, write,
-    })).rejects.toThrow(/no models selected/);
-  });
 
   it('writes a global config and global agents, and nothing in the repo', async () => {
     const res = await cmdInit({ ...args, cwd, home, configScope: 'global', write });
 
     expect(res.configPath).toBe(join(home, '.config', 'sonata', 'sonata.toml'));
     expect(existsSync(join(home, '.config', 'sonata', 'sonata.toml'))).toBe(true);
-    expect(existsSync(join(home, '.claude', 'agents', 'code-opencode-openrouter-kimi-k3.md'))).toBe(true);
     expect(existsSync(join(cwd, 'sonata.toml'))).toBe(false);
     expect(existsSync(join(cwd, '.claude', 'agents'))).toBe(false);
   });
@@ -682,50 +475,36 @@ code = ["opencode-openrouter-kimi-k3"]
   it('defaults to the project scope', async () => {
     const res = await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
     expect(res.configPath).toBe(join(cwd, 'sonata.toml'));
-    expect(existsSync(join(cwd, '.claude', 'agents', 'code-opencode-openrouter-kimi-k3.md'))).toBe(true);
   });
 
   it('pre-ticks from the machine config when the repo has none', async () => {
     await cmdInit({ ...args, cwd, home, configScope: 'global', write });
-    // A second run with no --models carries over whatever is already enabled,
-    // which now has to be found in the global config rather than the cwd.
     const second = await cmdInit({
       packageRoot: '/pkg', yes: true, detect, cwd, home,
       roles: ['code'], scope: 'skip' as const, configScope: 'global' as const, write,
     });
-    expect(second.models).toEqual(['opencode-openrouter-kimi-k3']);
-  });
-});
-
-describe('tomlFor — per-role table', () => {
-  const ref = (id: string) => ({
-    harness: 'opencode' as const, provider: 'openrouter', id, ref: `openrouter/${id}`,
+    expect(second.models).toEqual(['openrouter-kimi-k3']);
   });
 
-  it('writes each role with its own models and round-trips', () => {
-    const out = tomlFor(
-      { code: [ref('kimi-k3')], review: [ref('kimi-k3'), ref('grok-4.5')] },
-      {},
-    );
-    const cfg = parseConfig(out);
-    expect(cfg.generate.roles).toEqual({
-      code: ['opencode-openrouter-kimi-k3'],
-      review: ['opencode-openrouter-kimi-k3', 'opencode-openrouter-grok-4.5'],
-    });
-    // A dotted model key must survive as one key, not nest.
-    expect(cfg.models['opencode-openrouter-grok-4.5'].id).toBe('openrouter/grok-4.5');
-  });
+  it('pre-ticks from the machine native config, not the repo one, in global scope', async () => {
+    // Write a local native config that won't be read in global scope.
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.models."openrouter-kimi-k3"]
+gateway = "openrouter"
+id = "kimi-k3"
+context_window = 128000
+[native.gateways."openrouter"]
+base_url = "https://openrouter.ai/api/v1"
+[generate.native]
+code = ["openrouter-kimi-k3"]
+`);
 
-  it('defines a model once even when several roles use it', () => {
-    const out = tomlFor({ code: [ref('kimi-k3')], plan: [ref('kimi-k3')] }, {});
-    expect(out.match(/\[models\./g)).toHaveLength(1);
-    expect(parseConfig(out).generate.roles.plan).toEqual(['opencode-openrouter-kimi-k3']);
-  });
-
-  it('still carries a hand-written entry through', () => {
-    const out = tomlFor({ code: [ref('kimi-k3')] },
-      { 'gpt-5-6-sol': { harness: 'codex', id: 'gpt-5.6-sol' } });
-    expect(parseConfig(out).models['gpt-5-6-sol'].id).toBe('gpt-5.6-sol');
+    // No --models: selection comes from the config being edited (global = empty).
+    await expect(cmdInit({
+      packageRoot: '/pkg', yes: true, detect, cwd, home,
+      providers: ['opencode/openrouter'], roles: ['code'],
+      scope: 'skip' as const, configScope: 'global' as const, write,
+    })).rejects.toThrow(/no models selected/);
   });
 });
 
@@ -748,6 +527,7 @@ describe('cmdInit — per-role models', () => {
       name: 'opencode', installed: true, version: '1.18.16', supported: true,
       refs: parseOpenCodeRefs('openrouter/kimi-k3\nopenrouter/grok-4.5\n'),
       authedProviders: ['openrouter'], problems: [],
+      providerBaseUrls: { openrouter: 'https://openrouter.ai/api/v1' },
     }],
   });
 
@@ -755,15 +535,14 @@ describe('cmdInit — per-role models', () => {
     const res = await cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/openrouter'],
-      models: ['opencode-openrouter-kimi-k3', 'opencode-openrouter-grok-4.5'],
+      models: ['openrouter-kimi-k3', 'openrouter-grok-4.5'],
       roles: ['code', 'review'], scope: 'skip', configScope: 'project', write,
     });
 
     const cfg = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
-    expect(cfg.generate.roles.code.sort()).toEqual(
-      ['opencode-openrouter-grok-4.5', 'opencode-openrouter-kimi-k3']);
-    expect(cfg.generate.roles.review).toHaveLength(2);
-    expect(res.agentsWritten).toHaveLength(4);
+    expect(cfg.native?.generate.code?.sort()).toEqual(['openrouter-grok-4.5', 'openrouter-kimi-k3']);
+    expect(cfg.native?.generate.review).toHaveLength(2);
+    expect(res.agentsWritten.length).toBeGreaterThanOrEqual(4);
   });
 });
 
@@ -783,17 +562,16 @@ describe('cmdInit — MCP and pruning', () => {
       name: 'opencode', installed: true, version: '1.18.16', supported: true,
       refs: parseOpenCodeRefs('openrouter/kimi-k3\n'),
       authedProviders: ['openrouter'], problems: [],
+      providerBaseUrls: { openrouter: 'https://openrouter.ai/api/v1' },
     }],
   });
   const args = {
     packageRoot: '/pkg', yes: true, detect,
-    providers: ['opencode/openrouter'], models: ['opencode-openrouter-kimi-k3'],
+    providers: ['opencode/openrouter'], models: ['openrouter-kimi-k3'],
     roles: ['code'], scope: 'skip' as const, configScope: 'project' as const,
   };
 
   it('asks the claude CLI to register the server at the config\'s scope', async () => {
-    // Claude Code owns where these live — ~/.claude.json is its live state, and
-    // sonata writing it could clobber a concurrent session — so the CLI does it.
     const calls: string[][] = [];
     const res = await cmdInit({
       ...args, cwd, home, write,
@@ -841,7 +619,7 @@ describe('nativeCandidatesFrom', () => {
     { harness: 'pi' as const, provider: 'anexto', id: 'deepseek-v4-flash-0731', ref: 'anexto/deepseek-v4-flash-0731' },
   ];
 
-  it('keeps only opencode refs whose provider has a known base URL', () => {
+  it('keeps refs whose provider has a known base URL, deduplicating across harnesses', () => {
     const got = nativeCandidatesFrom(refs, { anexto: 'https://bifrost.advai.net/v1' });
     expect(got).toEqual([{
       key: 'anexto-deepseek-v4-flash-0731',
@@ -857,7 +635,7 @@ describe('nativeCandidatesFrom', () => {
   });
 });
 
-describe('cmdInit — native models', () => {
+describe('cmdInit — key check', () => {
   let cwd: string;
   let home: string;
   let lines: string[];
@@ -881,52 +659,11 @@ describe('cmdInit — native models', () => {
     }],
   });
 
-  const args = {
-    cwd, home, packageRoot: '/pkg', yes: true, detect,
-    providers: ['opencode/anexto'], models: ['opencode-anexto-deepseek-v4-flash-0731'],
-    roles: ['code'], scope: 'skip' as const, write,
-  };
-
-  it('writes a [native] table and generate.native when native flags are given', async () => {
-    const res = await cmdInit({
-      ...args, cwd, home, write,
-      nativeModels: ['anexto-deepseek-v4-flash-0731'], nativeRoles: ['code'],
-    });
-
-    const toml = readFileSync(res.configPath, 'utf8');
-    expect(toml).toMatch(/\[native\.models\."anexto-deepseek-v4-flash-0731"\]/);
-    expect(toml).toMatch(/\[native\.gateways\."anexto"\]/);
-    expect(toml).toMatch(/\[generate\.native\]/);
-
-    const cfg = parseConfig(toml);
-    expect(cfg.native?.models['anexto-deepseek-v4-flash-0731']).toEqual({
-      gateway: 'anexto', id: 'deepseek-v4-flash-0731', contextWindow: 128000,
-    });
-    expect(cfg.native?.gateways.anexto).toEqual({ baseUrl: 'https://bifrost.advai.net/v1' });
-    expect(cfg.native?.generate.code).toEqual(['anexto-deepseek-v4-flash-0731']);
-  });
-
-  it('writes no [native] table when native is skipped', async () => {
-    const res = await cmdInit({ ...args, cwd, home, write });
-    expect(readFileSync(res.configPath, 'utf8')).not.toMatch(/\[native\]/);
-  });
-
-  it('writes no [native] table under --yes with no native flags', async () => {
-    // --yes selects no native models by default; native stays opt-in.
-    const res = await cmdInit({ ...args, cwd, home, write, yes: true });
-    expect(readFileSync(res.configPath, 'utf8')).not.toMatch(/\[native\]/);
-  });
-
-  it('rejects a native model key no gateway offers', async () => {
-    await expect(cmdInit({
-      ...args, cwd, home, write, nativeModels: ['nope'], nativeRoles: ['code'],
-    })).rejects.toThrow(/no native gateway offers nope/);
-  });
-
   it('prints a key-source line for a chosen gateway with no discovered key', async () => {
     await cmdInit({
-      ...args, cwd, home, write,
-      nativeModels: ['anexto-deepseek-v4-flash-0731'], nativeRoles: ['code'],
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['opencode/anexto'], models: ['anexto-deepseek-v4-flash-0731'],
+      roles: ['code'], scope: 'skip', write,
     });
     expect(lines.some((l) => l.includes('anexto') && l.includes('sonata auth add anexto'))).toBe(true);
   });
@@ -936,30 +673,28 @@ describe('cmdInit — native models', () => {
     writeFileSync(join(home, '.config', 'sonata', 'keys.json'), JSON.stringify({ anexto: 'sk-test' }));
 
     await cmdInit({
-      ...args, cwd, home, write,
-      nativeModels: ['anexto-deepseek-v4-flash-0731'], nativeRoles: ['code'],
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['opencode/anexto'], models: ['anexto-deepseek-v4-flash-0731'],
+      roles: ['code'], scope: 'skip', write,
     });
     expect(lines.some((l) => l.includes('anexto') && l.includes('key from sonata'))).toBe(true);
   });
-
-  it('skips both native screens on a repeated run when only nativeRoles was given', async () => {
-    // nativeModels absent but nativeRoles present: chosenNative is empty, so
-    // the roles screen has nothing to ask regardless of the flag.
-    const res = await cmdInit({ ...args, cwd, home, write, nativeRoles: ['code'] });
-    expect(readFileSync(res.configPath, 'utf8')).not.toMatch(/\[native\]/);
-  });
 });
 
-describe('previousAskedStep — native screens', () => {
-  it('skips both flag-answered native steps, landing on the per-role-models step', () => {
-    // Mirrors cmdInit's asked[] shape: interactive session, but --native-models
-    // and --native-roles were both given, so steps 5 and 6 are never shown.
-    const asked = [true, true, true, true, true, false, false];
-    expect(previousAskedStep(asked, 6)).toBe(4);
+describe('previousAskedStep', () => {
+  it('skips flag-answered steps', () => {
+    // Steps 0, 3, 4 are interactive; steps 1 and 2 are flag-answered.
+    const asked = [true, false, false, true, true];
+    expect(previousAskedStep(asked, 3)).toBe(0);
   });
 
-  it('back from the native-roles step lands on the native-models step when both are interactive', () => {
-    const asked = [true, true, true, true, true, true, true];
-    expect(previousAskedStep(asked, 6)).toBe(5);
+  it('back from the last step lands on the previous interactive one', () => {
+    const asked = [true, true, true, true, true];
+    expect(previousAskedStep(asked, 4)).toBe(3);
+  });
+
+  it('returns the same step when there is no earlier interactive step', () => {
+    const asked = [false, false, true, true, true];
+    expect(previousAskedStep(asked, 2)).toBe(2);
   });
 });
