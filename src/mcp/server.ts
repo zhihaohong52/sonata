@@ -30,8 +30,10 @@ function debugLog(line: string): void {
  * its last line was overwritten before anyone could read it. Sending a rolling
  * window instead makes the message that survives *be* the recent history.
  *
- * Whether a client renders the newlines is the client's business; a flattened
- * window is no worse than the single line it replaced.
+ * This assumes the client renders the newlines. If one flattens them the
+ * window is *worse* than the single line it replaced — the newest line sits at
+ * the end, so a flattened or width-clipped blob buries the very line the user
+ * is waiting on. Measure before assuming; per-line emission is the fallback.
  */
 export const MAX_PROGRESS_LINES = 20;
 export const MAX_PROGRESS_CHARS = 2_000;
