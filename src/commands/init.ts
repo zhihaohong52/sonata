@@ -178,8 +178,18 @@ export function nativeCandidatesFrom(
   refs: ModelRef[],
   providerBaseUrls: Record<string, string>,
 ): NativeCandidate[] {
+  // Deduplicate by (provider, id) — pi and opencode can serve the identical
+  // model at the identical gateway, and showing both is noise for native use
+  // where the harness is irrelevant (the model runs in Claude Code's loop).
+  const seen = new Set<string>();
   return refs
-    .filter((r) => r.harness === 'opencode' && providerBaseUrls[r.provider] !== undefined)
+    .filter((r) => {
+      if (providerBaseUrls[r.provider] === undefined) return false;
+      const dedup = `${r.provider}/${r.id}`;
+      if (seen.has(dedup)) return false;
+      seen.add(dedup);
+      return true;
+    })
     .map((r) => ({
       key: r.ref.replace(/\//g, '-'),
       gateway: r.provider,
@@ -395,7 +405,12 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
 
   // Native candidates do not depend on the harness/role screens below — they
   // come straight from detection — so they are computed once, up front.
-  const providerBaseUrls = harnesses.find((h) => h.name === 'opencode')?.providerBaseUrls ?? {};
+  const providerBaseUrls: Record<string, string> = {};
+  for (const h of harnesses) {
+    for (const [k, v] of Object.entries(h.providerBaseUrls ?? {})) {
+      if (!providerBaseUrls[k]) providerBaseUrls[k] = v;
+    }
+  }
   const nativeCandidates = nativeCandidatesFrom(allRefs, providerBaseUrls);
   const nativeByKey = new Map(nativeCandidates.map((c) => [c.key, c]));
 
