@@ -42,6 +42,14 @@ export interface HarnessStatus {
   refs: ModelRef[];
   authedProviders: string[];
   problems: Problem[];
+  /**
+   * Provider name → base URL, for opencode only. This is what makes a
+   * provider a candidate native gateway (`sonata init`'s native-model
+   * screen): a native model is served by LiteLLM through a plain HTTP
+   * endpoint, so only a provider whose endpoint opencode already knows can be
+   * offered.
+   */
+  providerBaseUrls?: Record<string, string>;
 }
 
 export function parseOpenCodeModels(text: string): OpenCodeModel[] {
@@ -56,6 +64,30 @@ export function parseOpenCodeModels(text: string): OpenCodeModel[] {
     for (const [id, model] of Object.entries<any>(def?.models ?? {})) {
       out.push({ provider, id, name: model?.name });
     }
+  }
+  return out;
+}
+
+/**
+ * Provider name → base URL, read from opencode's own config.
+ *
+ * `sonata init`'s native-model screen needs an endpoint per gateway, and
+ * opencode already carries one for every custom/self-hosted provider under
+ * `provider.<name>.options.baseURL`. Providers with no `options.baseURL`
+ * (opencode's own built-in ones) are simply absent from the result, which is
+ * exactly the filter the native picker wants.
+ */
+export function parseOpenCodeProviderBaseUrls(text: string): Record<string, string> {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return {};
+  }
+  const out: Record<string, string> = {};
+  for (const [provider, def] of Object.entries<any>(parsed?.provider ?? {})) {
+    const baseUrl = def?.options?.baseURL;
+    if (typeof baseUrl === 'string' && baseUrl.trim() !== '') out[provider] = baseUrl;
   }
   return out;
 }
@@ -245,12 +277,12 @@ export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
 
   // The CLI emits no display names; the config has them for custom providers.
   const configPath = join(env.home, '.config', 'opencode', 'opencode.json');
-  const named = existsSync(configPath)
-    ? parseOpenCodeModels(readFileSync(configPath, 'utf8'))
-    : [];
+  const configText = existsSync(configPath) ? readFileSync(configPath, 'utf8') : '';
+  const named = configText === '' ? [] : parseOpenCodeModels(configText);
   for (const ref of refs) {
     ref.name = named.find((m) => m.provider === ref.provider && m.id === ref.id)?.name;
   }
+  const providerBaseUrls = parseOpenCodeProviderBaseUrls(configText);
 
   const authPath = join(env.home, '.local', 'share', 'opencode', 'auth.json');
   const authedProviders = existsSync(authPath)
@@ -273,6 +305,7 @@ export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
     binPath: existsSync(localBin) ? localBin : 'opencode',
     refs,
     authedProviders,
+    providerBaseUrls,
     problems,
   };
 }
