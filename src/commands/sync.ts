@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { generatedAgents, loadConfig } from '../config.js';
+import { generatedAgents, generatedNativeAgents, isReadOnlyRole, loadConfig } from '../config.js';
 import { staleAgents } from '../detect.js';
 
 export interface AgentSpec { role: string; model: string; harness: string }
@@ -98,6 +98,22 @@ Your final message must end with a line naming the run:
 `;
 }
 
+export function nativeAgentMarkdown(spec: { role: string; model: string }): string {
+  const blurb = ROLE_BLURB[spec.role] ?? spec.role;
+  const tools = isReadOnlyRole(spec.role) ? 'tools: Read, Grep, Glob\n' : '';
+
+  return `---
+name: native-${spec.role}-${spec.model}
+description: Runs ${blurb} natively on ${spec.model} inside Claude Code's own loop. Requires a sonata code session.
+model: ${spec.model}
+${tools}---
+
+This agent only works in a sonata code session.
+
+Focus on ${blurb}.
+`;
+}
+
 export interface SyncOptions { cwd: string; agentsDir: string; home?: string }
 
 export interface SyncResult {
@@ -120,8 +136,18 @@ export function cmdSync(opts: SyncOptions): SyncResult {
     written.push(path);
   }
 
+  const nativeWanted = generatedNativeAgents(config);
+  for (const { role, model } of nativeWanted) {
+    const path = join(opts.agentsDir, `native-${role}-${model}.md`);
+    writeFileSync(path, nativeAgentMarkdown({ role, model }));
+    written.push(path);
+  }
+
   return {
     written,
-    stale: staleAgents(opts.agentsDir, wanted.map((a) => `${a.role}-${a.model}`)),
+    stale: staleAgents(opts.agentsDir, [
+      ...wanted.map((a) => `${a.role}-${a.model}`),
+      ...nativeWanted.map((a) => `native-${a.role}-${a.model}`),
+    ]),
   };
 }
