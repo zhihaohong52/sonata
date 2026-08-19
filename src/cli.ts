@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync, realpathSync } from 'node:fs';
 import { cmdAuthAdd, cmdAuthList, cmdAuthRemove } from './commands/auth.js';
 import { cmdServe } from './commands/serve.js';
+import { cmdCode } from './commands/code.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
 
@@ -31,6 +32,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata verify    confirm a dispatch actually happened
   sonata auth      add, list or remove native gateway keys
   sonata serve [--daemon]  start the native router and managed LiteLLM proxy
+  sonata code [-- args…]   start Claude Code through the native router
   sonata mcp       start the stdio JSON-RPC server (started by Claude Code; not run by hand)
 
   init flags (skip the prompts):
@@ -269,6 +271,12 @@ async function main(argv: string[]): Promise<number> {
     const handle = await cmdServe({ cwd: process.cwd(), home: homedir(), daemon: values.daemon });
     console.log(`router listening on ${handle.routerPort}; litellm listening on ${handle.litellmPort}`);
     await new Promise<void>(() => {});
+    return 0;
+  }
+
+  if (command === 'code') {
+    const passthrough = rest[0] === '--' ? rest.slice(1) : rest;
+    await cmdCode({ cwd: process.cwd(), home: homedir(), passthrough });
     return 0;
   }
 
