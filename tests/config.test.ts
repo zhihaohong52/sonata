@@ -287,3 +287,72 @@ code = ["nope"]
 `))).toThrow(/code.*nope/s);
   });
 });
+
+describe('native config', () => {
+  it('parses a [native] table with models, gateways, ports and generate', () => {
+    const cfg = parseConfig(`
+[native.models."deepseek-v4-flash"]
+gateway = "anexto"
+id = "deepseek-v4-flash-0731"
+context_window = 128000
+[native.gateways."anexto"]
+base_url = "https://bifrost.advai.net/v1"
+[generate.native]
+code = ["deepseek-v4-flash"]
+`);
+    expect(cfg.native?.models['deepseek-v4-flash']).toEqual({
+      gateway: 'anexto', id: 'deepseek-v4-flash-0731', contextWindow: 128000,
+    });
+    expect(cfg.native?.gateways.anexto.baseUrl).toBe('https://bifrost.advai.net/v1');
+    expect(cfg.native?.ports).toEqual({ router: 4100, litellm: 4000 });
+    expect(cfg.native?.generate.code).toEqual(['deepseek-v4-flash']);
+  });
+
+  it('leaves native undefined when no [native] table is present', () => {
+    expect(parseConfig(`[models."x"]\nharness="codex"\nid="gpt"`).native).toBeUndefined();
+  });
+
+  it('refuses a native model id beginning claude-', () => {
+    expect(() => parseConfig(`
+[native.models."sneaky"]
+gateway = "g"
+id = "claude-opus-5"
+context_window = 1000
+[native.gateways."g"]
+base_url = "http://x"
+`)).toThrow(/claude-/);
+  });
+
+  it('refuses a native model key beginning claude-', () => {
+    expect(() => parseConfig(`
+[native.models."claude-ish"]
+gateway = "g"
+id = "foo"
+context_window = 1000
+[native.gateways."g"]
+base_url = "http://x"
+`)).toThrow(/claude-/);
+  });
+
+  it('refuses generate.native referencing an undefined native model', () => {
+    expect(() => parseConfig(`
+[native.models."a"]
+gateway="g"
+id="a1"
+context_window=1000
+[native.gateways."g"]
+base_url="http://x"
+[generate.native]
+code = ["missing"]
+`)).toThrow(/unknown native model "missing"/);
+  });
+
+  it('refuses a native model naming an undefined gateway', () => {
+    expect(() => parseConfig(`
+[native.models."a"]
+gateway="nope"
+id="a1"
+context_window=1000
+`)).toThrow(/unknown gateway "nope"/);
+  });
+});
