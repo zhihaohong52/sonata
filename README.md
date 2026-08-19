@@ -54,6 +54,8 @@ Not yet published to npm — install from source (below). Read
   - **[Reasonix](https://github.com/esengine/DeepSeek-Reasonix)** — `reasonix setup`;
     any OpenAI-compatible endpoint is a config entry, and model ids take the
     `provider/id` form
+  - **Claude Code** — the `claude` harness adapter (native path; see
+    [Native path](#native-path))
 
 ## Install
 
@@ -137,10 +139,11 @@ sonata init --yes --providers opencode/openai --models opencode-openai-gpt-5.6-s
 
 ### Adding Codex models
 
-**The wizard discovers OpenCode and Pi models** by provider then by model, and
-**Codex through `codex app-server`'s `model/list`** (JSON-RPC over stdio —
-codex has no provider dimension and takes a bare model id). Hand-written codex
-entries survive `sonata init`, so a bare-id model can also be added by hand:
+**The wizard discovers OpenCode, Pi and Reasonix models** by provider then by
+model, and **Codex through `codex app-server`'s `model/list`** (JSON-RPC over
+stdio — codex has no provider dimension and takes a bare model id). Hand-written
+codex entries survive `sonata init`, so a bare-id model can also be added by
+hand:
 
 ```toml
 [models."gpt-5-6-sol"]
@@ -213,6 +216,29 @@ shell rather than by `sonata tail` — a runaway run with nobody watching is
 exactly the case that needs bounding. On expiry the whole process group is
 killed and the run is reported `DONE`, `degraded`, with a report beginning
 `[timed out: …]`.
+
+## Native path
+
+The harness path above runs the foreign model's *own* loop in OpenCode, Codex,
+Pi, or Reasonix. The native path instead runs foreign models inside Claude
+Code's own loop, tools, and permission modes, through a local routing proxy:
+
+- `sonata serve` — runs the router and a managed LiteLLM child
+- `sonata code` — launches a Claude Code session routed through the proxy
+  (`ANTHROPIC_BASE_URL` points at the local router); auto-starts
+  `sonata serve --daemon` if the router is down
+- `sonata auth` — manages per-gateway keys that the router forwards to LiteLLM;
+  keys live in the store and are never logged or put in a conversation
+
+The `claude` harness adapter completes the picture: it dispatches a
+foreign-on-Claude-loop session through the existing MCP path, running headless
+`claude -p` with no TUI. Native dispatches assume `sonata serve` is already up.
+
+Two consequences worth knowing. First, `ANTHROPIC_BASE_URL` is process-wide and
+`isFirstPartyAnthropicBaseUrl` gates Remote Control, so sessions launched by
+`sonata code` lose Remote Control while routed through the local proxy. Second,
+model keys and ids beginning with `claude-` are refused at parse time, because
+the router sends that prefix to Anthropic.
 
 ## Permission modes
 
@@ -357,6 +383,9 @@ install will not litter unrelated repositories.
 | `sonata mcp` | Run the Sonata MCP server |
 | `sonata log <id>` | Print a run's whole transcript |
 | `sonata verify <id> [--model <key>]` | Verify a completed run |
+| `sonata auth` | Manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`) |
+| `sonata serve` | Run the native router and its managed LiteLLM child (`--daemon` detaches) |
+| `sonata code` | Launch a Claude Code session routed through the local proxy (passes `claude` args through) |
 | `sonata gc` | Kill finished tmux sessions |
 
 ## Configuration
@@ -478,7 +507,7 @@ Worth knowing before you depend on this:
 
 ```bash
 npm install
-npm test          # 469 tests; needs tmux
+npm test          # 596 tests; needs tmux
 npm run typecheck
 npm run build
 ```
@@ -509,9 +538,9 @@ plus two lines of registration:
 3. **`src/config.ts`** — add the name to `KNOWN_HARNESSES`.
 4. **`tests/adapters/<name>.test.ts`** — follow an existing adapter's tests.
 
-Optionally, `src/detect.ts` for `sonata init` discovery — currently OpenCode
-and Pi; codex has no provider dimension, so its entries are added by hand
-(and survive the wizard).
+Optionally, `src/detect.ts` for `sonata init` discovery — currently OpenCode,
+Pi and Reasonix; codex has no provider dimension, so its entries are added by
+hand (and survive the wizard).
 
 **Probe the real binary before you write the adapter.** Every adapter bug found
 so far was invisible in the documentation and obvious on the first real run:
