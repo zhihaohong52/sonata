@@ -24,7 +24,7 @@ The wrapper agent (MCP-only, relays rather than reasons) calls the `dispatch` to
 npm install        # install dependencies
 npm run build      # tsc → dist/
 npm run typecheck  # tsc --noEmit
-npm test           # vitest run (469 tests; needs tmux — runs against a fake harness)
+npm test           # vitest run (596 tests; needs tmux — runs against a fake harness)
 npm run dev        # tsx src/cli.ts
 
 npm link           # puts `sonata` on your PATH (until published to npm)
@@ -40,6 +40,9 @@ The CLI (after `npm link`):
 - `sonata mcp` — run the Sonata MCP server
 - `sonata log <id>` — print a run's whole transcript; the after-the-fact companion to `tmux attach`
 - `sonata verify <id> [--model <key>]` — verify a completed run
+- `sonata auth` — manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`; keys live in the store, never logged)
+- `sonata serve` — run the native router and its managed LiteLLM child (`--daemon` detaches); prints both ports
+- `sonata code` — launch a Claude Code session routed through the local proxy (passes `claude` args through); auto-starts `sonata serve --daemon` when the router is down
 - `sonata gc` — kill finished tmux sessions
 
 ## Architecture
@@ -71,10 +74,10 @@ Key design points:
 ```
 src/
 ├── cli.ts                CLI entry point; arg parsing, then delegates to src/commands/* and src/mcp/*
-├── commands/             command implementations (approve, doctor, gc, init, log, run, sync, tail, verify)
+├── commands/             command implementations (approve, auth, code, doctor, gc, init, log, run, serve, sync, tail, verify, wait)
 ├── mcp/                  stdio JSON-RPC MCP server — protocol.ts (handshake + captured fixtures), server.ts (`runMcpStdio`), tools.ts (dispatch/wait/approve tools)
 ├── config.ts             config resolution (project → machine), sonata.toml parsing, KNOWN_HARNESSES, isReadOnlyRole
-├── detect.ts             harness catalogues (`opencode models`, `pi --list-models`) → ModelRef, provider grouping
+├── detect.ts             harness catalogues (`opencode models`, `pi --list-models`, reasonix doctor) → ModelRef, provider grouping
 ├── normalize.ts          config/model normalization
 ├── roles.ts              role prompt composition
 ├── settings.ts           permission-hook scope settings
@@ -83,6 +86,7 @@ src/
 ├── tui.ts                Minimal zero-dependency TUI primitives — pure parseKey/reduce/renderList so list behaviour is testable without a TTY
 ├── watchdog.ts           run timeout enforcement
 ├── mode.ts               permission-mode mapping (plan/default/acceptEdits/bypassPermissions/auto)
+├── native/               native path — credentials.ts (gateway keys), litellm.ts (managed LiteLLM child config), router.ts (local routing proxy)
 ├── types.ts              shared types
 └── adapters/
     ├── types.ts          HarnessAdapter interface (plan, canPromptForApproval, promptPatterns, describePrompt, health)
@@ -90,12 +94,13 @@ src/
     ├── opencode.ts       smallest example adapter
     ├── codex.ts          most complete adapter
     ├── pi.ts             pi adapter
-    └── reasonix.ts       reasonix adapter — the only harness whose TUI sonata seeds itself
+    ├── reasonix.ts       reasonix adapter — the only harness whose TUI sonata seeds itself
+    └── claude.ts         claude harness adapter — headless `claude -p`, no TUI; native runs assume `sonata serve` is up
 
 tests/                   vitest suite against a fake harness + captured fixtures in tests/fixtures/panes/
 roles/                   role definitions (code, review, explore, plan) — owned by sonata, not the harness
 hooks/                   capture-mode.mjs + hooks.json — the PreToolUse permission hook
-docs/                    dispatching-work-through-sonata.md + superpowers/ (plans + specs)
+docs/                    dispatching-work-through-sonata.md + reviews/ (architecture review) + superpowers/ (plans + specs)
 ```
 
 ### Adding a harness
