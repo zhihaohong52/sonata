@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { agentMarkdown, cmdSync } from '../../src/commands/sync.js';
+import { agentMarkdown, cmdSync, nativeAgentMarkdown } from '../../src/commands/sync.js';
 
 let cwd: string;
 
@@ -91,6 +91,22 @@ describe('agentMarkdown — one-call dispatch', () => {
   });
 });
 
+describe('nativeAgentMarkdown', () => {
+  it('generates a native agent with the model id in frontmatter and no MCP tools', () => {
+    const md = nativeAgentMarkdown({ role: 'code', model: 'deepseek-v4-flash' });
+    expect(md).toMatch(/^name: native-code-deepseek-v4-flash$/m);
+    expect(md).toMatch(/^model: deepseek-v4-flash$/m);
+    expect(md).not.toMatch(/mcp__sonata__/);
+    expect(md).not.toMatch(/forwarding wrapper/);
+    expect(md).toContain('sonata code');
+  });
+
+  it('restricts a read-only native role to read tools', () => {
+    const md = nativeAgentMarkdown({ role: 'explore', model: 'deepseek-v4-flash' });
+    expect(md).toMatch(/^tools: Read, Grep, Glob$/m);
+  });
+});
+
 describe('cmdSync', () => {
   it('writes one agent file per role x model pair', () => {
     const agentsDir = join(cwd, '.claude', 'agents');
@@ -125,6 +141,32 @@ plan = ["deepseek-v4-flash"]
       'explore-deepseek-v4-flash.md',
       'plan-deepseek-v4-flash.md',
     ]);
+  });
+
+  it('writes native-<role>-<model>.md alongside wrapper agents', () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."deepseek-v4-flash"]
+harness = "opencode"
+id = "opencode-go/deepseek-v4-flash"
+
+[generate.roles]
+code = ["deepseek-v4-flash"]
+
+[native.models."native-deepseek"]
+gateway = "gateway"
+id = "deepseek-v4-flash"
+context_window = 128000
+
+[native.gateways."gateway"]
+base_url = "https://gateway.example/v1"
+
+[generate.native]
+code = ["native-deepseek"]
+`);
+    const agentsDir = join(cwd, '.claude', 'agents');
+    const res = cmdSync({ cwd, agentsDir });
+    expect(res.written.some((p) => p.endsWith('native-code-native-deepseek.md'))).toBe(true);
+    expect(existsSync(join(agentsDir, 'code-deepseek-v4-flash.md'))).toBe(true);
   });
 });
 
