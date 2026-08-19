@@ -7,6 +7,8 @@ import { loadRole, composeInstructions } from '../roles.js';
 import { readPermissionMode } from '../mode.js';
 import { newSession, runScript } from '../tmux.js';
 import { wrapWithTimeout } from '../watchdog.js';
+import { serveHealthUrl, cmdServe } from './serve.js';
+import { homedir } from 'node:os';
 
 export interface RunOptions {
   cwd: string;
@@ -79,6 +81,25 @@ export function exposesSonataTools(cwd: string): boolean {
   }
 }
 
+/** Ensure the native proxy is up when dispatching to the claude harness. */
+async function ensureNativeServe(cwd: string): Promise<void> {
+  const config = loadConfig(cwd);
+  if (!config.native) {
+    throw new Error(
+      'sonata: the claude harness requires a [native] table in sonata.toml. ' +
+      'Run `sonata init` to configure native models.',
+    );
+  }
+  const port = config.native.ports.router;
+  try {
+    const res = await fetch(serveHealthUrl(port));
+    if (res.ok) return;
+  } catch {
+    // Not up — start it.
+  }
+  await cmdServe({ cwd, home: homedir(), daemon: true });
+}
+
 export async function cmdRun(opts: RunOptions): Promise<RunResult> {
   const config = loadConfig(opts.cwd);
 
@@ -91,6 +112,9 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
   }
 
   const adapter = getAdapter(modelCfg.harness);
+
+  if (adapter.name === 'claude') await ensureNativeServe(opts.cwd);
+
   const mode = readPermissionMode(opts.cwd, opts.sessionId);
   const task = readFileSync(opts.taskFile, 'utf8');
 

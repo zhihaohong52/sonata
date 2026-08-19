@@ -1,15 +1,41 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { claudeAdapter } from '../../src/adapters/claude.js';
 import { getAdapter } from '../../src/adapters/index.js';
 import { KNOWN_HARNESSES } from '../../src/config.js';
 
-const base = {
-  modelId: 'deepseek-v4-flash',
-  role: 'code',
-  cwd: '/repo',
-  runDir: '/repo/.sonata/runs/abc123',
-  instructionsPath: '/repo/.sonata/runs/abc123/instructions.md',
-};
+function cwdWithNative(): string {
+  const cwd = mkdtempSync(join(tmpdir(), 'sonata-claude-adapter-'));
+  writeFileSync(join(cwd, 'sonata.toml'), `
+[models."claude-test"]
+harness = "claude"
+id = "deepseek-v4-flash"
+
+[native.models."deepseek-v4-flash"]
+gateway = "anexto"
+id = "deepseek-v4-flash-0731"
+context_window = 128000
+
+[native.gateways."anexto"]
+base_url = "https://bifrost.advai.net/v1"
+`);
+  const runDir = join(cwd, '.sonata/runs/abc123');
+  mkdirSync(runDir, { recursive: true });
+  return cwd;
+}
+
+const base = (() => {
+  const cwd = cwdWithNative();
+  return {
+    modelId: 'deepseek-v4-flash',
+    role: 'code',
+    cwd,
+    runDir: join(cwd, '.sonata/runs/abc123'),
+    instructionsPath: join(cwd, '.sonata/runs/abc123/instructions.md'),
+  };
+})();
 
 describe('claudeAdapter.plan', () => {
   it('runs claude -p headless with the model id', () => {
@@ -28,11 +54,11 @@ describe('claudeAdapter.plan', () => {
     expect(plan.script).toContain(`echo $? > '${base.runDir}/exit'`);
   });
 
-  it('preserves the native proxy environment', () => {
+  it('bakes the router URL from config into the script', () => {
     const plan = claudeAdapter.plan({ ...base, mode: 'acceptEdits' });
 
-    expect(plan.script).toContain('ANTHROPIC_BASE_URL');
-    expect(plan.script).toContain('CLAUDE_CODE_MAX_CONTEXT_TOKENS');
+    expect(plan.script).toContain("ANTHROPIC_BASE_URL='http://localhost:4100'");
+    expect(plan.script).toContain("CLAUDE_CODE_MAX_CONTEXT_TOKENS='128000'");
   });
 
   it('a read-only role restricts tools and cannot write a report', () => {
