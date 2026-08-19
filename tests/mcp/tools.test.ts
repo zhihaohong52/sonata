@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { TOOL_DEFS, callTool, truncateReport, MAX_REPORT_CHARS, resolveTaskFile } from '../../src/mcp/tools.js';
+import { TOOL_DEFS, callTool, truncateReport, MAX_REPORT_CHARS, resolveTaskFile, transcriptFor } from '../../src/mcp/tools.js';
+import { appendEvents, runDir } from '../../src/store.js';
 
 describe('truncateReport', () => {
   it('leaves an ordinary report exactly as it is', () => {
@@ -31,13 +32,14 @@ describe('TOOL_DEFS', () => {
   it('declares the arguments each tool needs', () => {
     const dispatch = TOOL_DEFS.find((t) => t.name === 'dispatch')!;
     expect(Object.keys((dispatch.inputSchema as any).properties).sort())
-      .toEqual(['cwd', 'model', 'role', 'task', 'task_file']);
+      .toEqual(['cwd', 'model', 'role', 'task', 'task_file', 'transcript']);
     // `task` is not required: task_file is the paraphrase-proof alternative,
     // and resolveTaskFile enforces that exactly one of the two is given.
     expect((dispatch.inputSchema as any).required.sort()).toEqual(['model', 'role']);
 
     const wait = TOOL_DEFS.find((t) => t.name === 'wait')!;
     expect((wait.inputSchema as any).required).toEqual(['id']);
+    expect(Object.keys((wait.inputSchema as any).properties)).toContain('transcript');
     expect((dispatch.inputSchema as any).properties.task.description).toMatch(/verbatim/i);
   });
 
@@ -177,5 +179,69 @@ describe('resolveTaskFile', () => {
 
   it('refuses neither being given', () => {
     expect(() => resolveTaskFile({}, dir)).toThrow(/required/);
+  });
+});
+
+
+describe('transcriptFor', () => {
+  function runWithEvents(lines: string[]): { cwd: string; id: string } {
+    const cwd = mkdtempSync(join(tmpdir(), 'sonata-transcript-'));
+    mkdirSync(runDir(cwd, 'abc123'), { recursive: true });
+    appendEvents(cwd, 'abc123', lines);
+    return { cwd, id: 'abc123' };
+  }
+
+  it('returns every recorded line', () => {
+    const { cwd, id } = runWithEvents(['first turn', 'second turn']);
+    expect(transcriptFor(cwd, id, 0)).toBe('first turn\nsecond turn');
+  });
+
+  it('returns nothing for a run that recorded no output', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sonata-transcript-'));
+    expect(transcriptFor(cwd, 'abc123', 0)).toBeUndefined();
+  });
+
+  it('budgets itself against the report sharing the result', () => {
+    const { cwd, id } = runWithEvents(['x'.repeat(200)]);
+    const out = transcriptFor(cwd, id, MAX_REPORT_CHARS - 50)!;
+    expect(out).toContain('[truncated: whole transcript at `sonata log abc123`]');
+    expect(out.startsWith('x'.repeat(50))).toBe(true);
+  });
+
+  it('yields the result to the report when the report fills it', () => {
+    const { cwd, id } = runWithEvents(['anything at all']);
+    expect(transcriptFor(cwd, id, MAX_REPORT_CHARS)).toBe(
+      '[omitted: the report used the whole result — `sonata log abc123`]',
+    );
+  });
+});
+
+describe('callTool — transcript', () => {
+  function envWithRun(lines: string[]) {
+    const cwd = mkdtempSync(join(tmpdir(), 'sonata-tool-transcript-'));
+    mkdirSync(runDir(cwd, 'abc123'), { recursive: true });
+    appendEvents(cwd, 'abc123', lines);
+    return {
+      cwd,
+      home: '/home',
+      rolesDir: '/pkg/roles',
+      wait: async (opts: any) => ({
+        id: opts.id, state: 'DONE' as const, report: 'the report', lines: [],
+      }),
+    };
+  }
+
+  it('omits the transcript unless it was asked for', async () => {
+    const env = envWithRun(['a turn']);
+    const out = JSON.parse(await callTool('wait', { id: 'abc123' }, env));
+    expect(out.transcript).toBeUndefined();
+    expect(out.report).toBe('the report');
+  });
+
+  it('returns it beside the report when asked', async () => {
+    const env = envWithRun(['a turn', 'another turn']);
+    const out = JSON.parse(await callTool('wait', { id: 'abc123', transcript: true }, env));
+    expect(out.transcript).toBe('a turn\nanother turn');
+    expect(out.report).toBe('the report');
   });
 });

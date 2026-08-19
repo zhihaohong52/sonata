@@ -199,8 +199,11 @@ Sonata launches other coding agents on your machine — they run **as you**, wit
   Code 2.1.233 (protocol 2025-11-25): a `tools/call` arrives with `params._meta.progressToken`, and a
   `notifications/progress` referencing that token is rendered while the call blocks. They are protocol messages,
   not tool results, so they never enter any model's context — which is exactly why they cannot feed the
-  orchestrator, and exactly why they are free. Not yet wired up; `dispatch` emits none today.
-- **The harness conversation cannot be streamed into Claude Code.** A subagent receives text only as tool results, and its parent receives only its final message, so no push channel exists to stream into. The wrapper no longer polls through the MCP surface: use `tmux attach -r -t sonata-<id>` for the live view or `sonata log <id>` for the transcript; `sonata tail` remains available as a human/debugging CLI command.
+  orchestrator, and exactly why they are free. Wired up: `dispatch` and `wait` emit one notification per poll,
+  each carrying a **rolling window** of the last 20 lines / 2,000 characters rather than a single line. The
+  protocol has no history — a client renders the newest message and replaces the one before it — so the window is
+  what makes the surviving message the recent transcript instead of whichever line happened to be last.
+- **The harness conversation cannot be *pushed* into Claude Code turn by turn.** A subagent receives text only as tool results, and its parent receives only its final message, so no push channel exists to stream into. Two channels carry the conversation anyway: the progress window above shows it live, and `dispatch`/`wait` accept `transcript: true`, which returns the run's whole recorded transcript — `sonata log`'s content — beside the report, budgeted so the report can never be pushed out of the result. It is opt-in because a transcript is far larger than a report and lands in the wrapper's context. Outside Claude Code, `tmux attach -r -t sonata-<id>` is the live view and `sonata log <id>` the after-the-fact one; `sonata tail` remains a human/debugging CLI command.
 
 ## Conventions
 

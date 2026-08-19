@@ -52,6 +52,10 @@ answering.
       summarise, shorten, or rewrite it. A 3,000-word spec once reached the
       model as a single sentence, so it never saw the instructions it was
       meant to follow.
+    - If the caller asked to *see* the run — its conversation, its transcript,
+      what the model did turn by turn — also pass \`transcript: true\`. The
+      transcript comes back in the tool result, where the caller can read it;
+      your final message stays the report, so do not paste it in.
    It blocks until the run is worth reporting, so one call is usually the
    whole job. Do not add your own waiting.
 

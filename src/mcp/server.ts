@@ -22,6 +22,39 @@ function debugLog(line: string): void {
 }
 
 /**
+ * How much recent output a single progress notification carries.
+ *
+ * MCP has no notion of history: the client renders the latest progress
+ * message and replaces the one before it. Sonata has always sent every line —
+ * one notification each — so the whole transcript crossed the wire and all but
+ * its last line was overwritten before anyone could read it. Sending a rolling
+ * window instead makes the message that survives *be* the recent history.
+ *
+ * Whether a client renders the newlines is the client's business; a flattened
+ * window is no worse than the single line it replaced.
+ */
+export const MAX_PROGRESS_LINES = 20;
+export const MAX_PROGRESS_CHARS = 2_000;
+
+/** The tail of `lines` that fits both budgets, oldest first. */
+export function progressWindow(
+  lines: string[],
+  maxLines = MAX_PROGRESS_LINES,
+  maxChars = MAX_PROGRESS_CHARS,
+): string[] {
+  const window = lines.slice(-maxLines);
+  // Drop from the oldest end: the newest line is the one the user is waiting
+  // to see, so it is the last thing that may be sacrificed.
+  while (window.length > 1 && window.join('\n').length > maxChars) window.shift();
+  if (window.length === 1 && window[0].length > maxChars) {
+    // One line longer than the whole budget. Keep its head — a harness prints
+    // what it is doing first and its arguments after.
+    return [window[0].slice(0, maxChars)];
+  }
+  return window;
+}
+
+/**
  * The stdio loop. Input is injected so the whole server is testable without a
  * process, which is the same seam readKeys uses for stdin in tui.ts.
  */
@@ -64,15 +97,18 @@ export async function serveMcp(
       ? (req.params._meta as Record<string, unknown>).progressToken
       : undefined;
     let progress = 0;
+    let recent: string[] = [];
     const onLines = typeof token === 'string' || typeof token === 'number'
       ? (lines: string[]) => {
-        for (const message of lines) {
-          write(JSON.stringify({
-            jsonrpc: '2.0',
-            method: 'notifications/progress',
-            params: { progressToken: token, progress: ++progress, message },
-          }));
-        }
+        // One notification per batch, not per line: each carries the window
+        // rather than a single line, so the message left on screen is the
+        // recent transcript instead of whichever line happened to be last.
+        recent = progressWindow([...recent, ...lines]);
+        write(JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'notifications/progress',
+          params: { progressToken: token, progress: ++progress, message: recent.join('\n') },
+        }));
       }
       : undefined;
 

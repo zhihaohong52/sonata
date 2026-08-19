@@ -7,6 +7,7 @@ import { cmdRun } from '../commands/run.js';
 import { cmdWait } from '../commands/wait.js';
 import type { WaitResult } from '../commands/wait.js';
 import { cmdApprove } from '../commands/approve.js';
+import { readEvents } from '../store.js';
 
 /**
  * Ceiling on a report returned through MCP.
@@ -53,6 +54,7 @@ export const TOOL_DEFS: ToolDef[] = [
         model: { type: 'string', description: 'a model key from sonata.toml' },
         task: { type: 'string', description: 'The task text, verbatim and byte for byte. Never summarise, shorten, or rewrite it. If the caller gave you a file path instead, use task_file.' },
         task_file: { type: 'string', description: 'Path to a file holding the task. Prefer this whenever the caller gives you one: a path cannot be paraphrased, and the model receives exactly what was written. Give either task or task_file, not both.' },
+        transcript: { type: 'boolean', description: 'Return the run\'s whole terminal transcript beside the report. Pass true when the caller asks to read what the model did, turn by turn; leave it out otherwise, since a transcript is far larger than a report.' },
         cwd: { type: 'string', description: 'optional existing directory in which to launch the run' },
       },
       required: ['role', 'model'],
@@ -69,6 +71,7 @@ export const TOOL_DEFS: ToolDef[] = [
       properties: {
         id: { type: 'string', description: 'the run id' },
         cwd: { type: 'string', description: 'the same directory returned by dispatch' },
+        transcript: { type: 'boolean', description: 'Return the run\'s whole terminal transcript beside the report.' },
       },
       required: ['id'],
     },
@@ -94,6 +97,49 @@ function withTrimmedReport(result: WaitResult): WaitResult {
   return result.report === undefined
     ? result
     : { ...result, report: truncateReport(result.report, result.id) };
+}
+
+/** The result payload, carrying the transcript only when it was asked for. */
+function withTranscript(
+  result: WaitResult,
+  cwd: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { ...result, cwd };
+  if (args.transcript !== true) return payload;
+  const transcript = transcriptFor(cwd, result.id, (result.report ?? '').length);
+  if (transcript !== undefined) payload.transcript = transcript;
+  return payload;
+}
+
+/**
+ * The run's whole pane transcript, for a caller who asked to read it.
+ *
+ * The events file has held every line all along — this is `sonata log`'s
+ * content delivered through MCP, so a wrapper can show its caller what the
+ * foreign model actually did rather than only what it concluded.
+ *
+ * Budgeted against the report beside it, because the two share one result and
+ * the report is the part that must never be pushed out. Head rather than tail:
+ * the end of a run is what the report already describes, so what is missing is
+ * how it got there.
+ */
+export function transcriptFor(
+  cwd: string,
+  id: string,
+  reportChars: number,
+  max = MAX_REPORT_CHARS,
+): string | undefined {
+  const lines = readEvents(cwd, id);
+  if (lines.length === 0) return undefined;
+
+  const budget = max - reportChars;
+  if (budget <= 0) return `[omitted: the report used the whole result — \`sonata log ${id}\`]`;
+
+  const text = lines.join('\n');
+  return text.length <= budget
+    ? text
+    : `${text.slice(0, budget)}\n\n[truncated: whole transcript at \`sonata log ${id}\`]`;
 }
 
 /**
@@ -176,12 +222,12 @@ export async function callTool(
         sessionId: env.sessionId,
       });
       const result = await (env.wait ?? cmdWait)({ cwd, id: started.id, onLines });
-      return JSON.stringify({ ...withTrimmedReport(result), cwd });
+      return JSON.stringify(withTranscript(withTrimmedReport(result), cwd, args));
     }
     case 'wait': {
       const cwd = resolveToolCwd(args, env);
       const result = await (env.wait ?? cmdWait)({ cwd, id: need(args, 'id'), onLines });
-      return JSON.stringify({ ...withTrimmedReport(result), cwd });
+      return JSON.stringify(withTranscript(withTrimmedReport(result), cwd, args));
     }
     case 'approve': {
       const answer = need(args, 'answer');
