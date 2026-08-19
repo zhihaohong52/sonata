@@ -40,8 +40,6 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
     --providers opencode/openrouter,pi/opencode-go   providers to draw models from
     --models a,b             models to enable (config keys)
     --roles code,review      roles to generate
-    --native-models a,b      native model keys to enable (opt-in; default none)
-    --native-roles code,review   roles to generate native agents for
     --config-scope project|global   where the config and its agents go
     --scope project|global|skip   where to install the permission hook
     --prune                    delete stale sonata agent files
@@ -75,8 +73,6 @@ async function main(argv: string[]): Promise<number> {
         providers: { type: 'string' },
         models: { type: 'string' },
         roles: { type: 'string' },
-        'native-models': { type: 'string' },
-        'native-roles': { type: 'string' },
         'config-scope': { type: 'string' },
         scope: { type: 'string' },
         // No default: `undefined` means "unanswered", which lets cmdInit fall
@@ -109,8 +105,6 @@ async function main(argv: string[]): Promise<number> {
         providers: split(values.providers),
         models: split(values.models),
         roles: split(values.roles),
-        nativeModels: split(values['native-models']),
-        nativeRoles: split(values['native-roles']),
         scope,
         configScope,
         prune: values.prune,
