@@ -57,6 +57,9 @@ claude (main loop, --model sonnet)          claude (subagent, model: deepseek-v4
   auth error, 3 requests to Anthropic — while the `deepseek-native` subagent
   made 3 requests through litellm and added the requested function correctly.
   The parent correctly reported the subagent's work.
+- **Stage 3** (interactive, observed by the user): a live session on the same
+  proxy; the deepseek subagent's turns rendered natively in the subagent view.
+  The rendering claim is measured, not inferred from the architecture.
 
 ## Honest caveats
 
