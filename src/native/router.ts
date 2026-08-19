@@ -6,6 +6,7 @@ export interface RouterDeps {
   litellmBase: string;
   litellmKey: string;
   log?: (line: string) => void;
+  health?: boolean;
 }
 
 export interface RouterRequest {
@@ -126,6 +127,11 @@ async function respond(res: ServerResponse, routed: RouterResponse): Promise<voi
 export function createRouterServer(deps: RouterDeps): Server {
   return createServer(async (req, res) => {
     try {
+      if (deps.health && new URL(req.url ?? '/', 'http://localhost').pathname === '/__sonata_health') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', sonata: true }));
+        return;
+      }
       await respond(res, await routeRequest({
         method: req.method ?? 'GET',
         url: req.url ?? '/',
