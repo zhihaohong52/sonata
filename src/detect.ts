@@ -77,6 +77,17 @@ export function parseOpenCodeModels(text: string): OpenCodeModel[] {
  * (opencode's own built-in ones) are simply absent from the result, which is
  * exactly the filter the native picker wants.
  */
+// Well-known provider endpoints. Opencode's built-in providers use implicit
+// defaults that never appear in the config file, so a provider with no
+// `options.baseURL` isn't necessarily one without an endpoint — it is one
+// whose endpoint is well-known. Native models need an explicit URL, so we
+// supply the defaults here.
+const WELL_KNOWN_PROVIDER_URLS: Record<string, string> = {
+  'openai': 'https://api.openai.com/v1',
+  'openai-codex': 'https://api.openai.com/v1',
+  'opencode-go': 'https://opencode.ai/api/v1',
+};
+
 export function parseOpenCodeProviderBaseUrls(text: string): Record<string, string> {
   let parsed: any;
   try {
@@ -87,7 +98,11 @@ export function parseOpenCodeProviderBaseUrls(text: string): Record<string, stri
   const out: Record<string, string> = {};
   for (const [provider, def] of Object.entries<any>(parsed?.provider ?? {})) {
     const baseUrl = def?.options?.baseURL;
-    if (typeof baseUrl === 'string' && baseUrl.trim() !== '') out[provider] = baseUrl;
+    if (typeof baseUrl === 'string' && baseUrl.trim() !== '') {
+      out[provider] = baseUrl;
+    } else if (WELL_KNOWN_PROVIDER_URLS[provider]) {
+      out[provider] = WELL_KNOWN_PROVIDER_URLS[provider];
+    }
   }
   return out;
 }
