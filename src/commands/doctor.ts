@@ -6,6 +6,7 @@ import {
   configPath,
   GLOBAL_CONFIG_RELATIVE,
   generatedAgents,
+  generatedNativeAgents,
 } from '../config.js';
 import { staleAgents, disabledOpencodeAgents, enableOpencodeAgent,
 } from '../detect.js';
@@ -20,6 +21,9 @@ import {
 } from '../settings.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { findLitellm } from '../native/litellm.js';
+import { keyReport } from '../native/credentials.js';
+import { serveHealthUrl } from './serve.js';
 
 const run = promisify(execFile);
 
@@ -87,7 +91,10 @@ export async function cmdDoctor(
   }
 
   const agentsDir = join(opts.cwd, '.claude', 'agents');
-  const wanted = generatedAgents(config).map((a) => `${a.role}-${a.model}`);
+  const wanted = [
+    ...generatedAgents(config).map((a) => `${a.role}-${a.model}`),
+    ...generatedNativeAgents(config).map((a) => `native-${a.role}-${a.model}`),
+  ];
   const stale = staleAgents(agentsDir, wanted);
   checks.push(stale.length === 0
     ? { name: 'agents', ok: true, detail: `${wanted.length} generated, none stale` }
@@ -97,7 +104,44 @@ export async function cmdDoctor(
         detail: `${stale.length} stale agent file(s) name models the config does not ` +
           `define — run \`sonata sync\` to remove them: ${stale.slice(0, 3).join(', ')}` +
           (stale.length > 3 ? ', …' : ''),
-      });
+       });
+
+  if (config.native) {
+    const litellm = findLitellm();
+    checks.push(litellm
+      ? { name: 'litellm', ok: true, detail: litellm }
+      : { name: 'litellm', ok: false, detail: "not found — pip install 'litellm[proxy]'" });
+
+    try {
+      const response = await fetch(serveHealthUrl(config.native.ports.router));
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        body = undefined;
+      }
+      const healthy = response.status === 200
+        && body !== null
+        && typeof body === 'object'
+        && (body as Record<string, unknown>).sonata === true;
+      checks.push(healthy
+        ? { name: 'serve health', ok: true, detail: 'up' }
+        : { name: 'serve health', ok: true, detail: 'not running — start with `sonata serve`' });
+    } catch {
+      // `serve` is user-started, so an unavailable endpoint is advisory.
+      checks.push({ name: 'serve health', ok: true, detail: 'not running — start with `sonata serve`' });
+    }
+
+    for (const report of keyReport(Object.keys(config.native.gateways), home)) {
+      checks.push(report.source
+        ? { name: `key source: ${report.gateway}`, ok: true, detail: `from ${report.source}` }
+        : {
+            name: `key source: ${report.gateway}`,
+            ok: false,
+            detail: `no key — \`sonata auth add ${report.gateway}\``,
+          });
+    }
+  }
 
   const wrappers = existsSync(agentsDir)
     ? readdirSync(agentsDir).filter((f) => f.endsWith('.md')).filter((f) =>
