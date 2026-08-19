@@ -19,6 +19,7 @@ import {
 import { pruneAgents } from '../detect.js';
 import { cmdSync } from './sync.js';
 import { multiselect, select, confirm, isInteractive, banner, CancelledError, BackError } from '../tui.js';
+import { keyReport } from '../native/credentials.js';
 
 const OPENCODE_RANGE = '>=1.18.0 <2.0.0';
 
@@ -69,6 +70,10 @@ export interface InitOptions {
   providers?: string[];
   models?: string[];
   roles?: string[];
+  /** Native model keys (see `nativeCandidatesFrom`). Empty/omitted means no native table. */
+  nativeModels?: string[];
+  /** Roles to generate native agents for. Only meaningful when `nativeModels` is non-empty. */
+  nativeRoles?: string[];
   scope?: HookScope | 'skip';
   /** Where the config and its agents are written. Defaults to `project`. */
   configScope?: ConfigScope;
@@ -147,12 +152,59 @@ function tomlKey(key: string): string {
 }
 
 /**
+ * A native model candidate offered on the native-models screen.
+ *
+ * Unlike a harness `ModelRef`, a native model needs no harness — it is served
+ * through the router/LiteLLM to Claude Code's own loop — but it does need a
+ * gateway endpoint and a declared context window, neither of which a harness
+ * ref carries.
+ */
+export interface NativeCandidate {
+  key: string;
+  gateway: string;
+  id: string;
+  contextWindow: number;
+  baseUrl: string;
+}
+
+/**
+ * Native candidates come from the same detected refs as the harness screens,
+ * filtered to opencode providers whose base URL is known — that is the whole
+ * requirement, because opencode is the only harness `sonata init` currently
+ * discovers gateway endpoints from. A ref that clears the filter becomes one
+ * candidate; `contextWindow` defaults to 128000 and is editable later by hand.
+ */
+export function nativeCandidatesFrom(
+  refs: ModelRef[],
+  providerBaseUrls: Record<string, string>,
+): NativeCandidate[] {
+  return refs
+    .filter((r) => r.harness === 'opencode' && providerBaseUrls[r.provider] !== undefined)
+    .map((r) => ({
+      key: r.ref.replace(/\//g, '-'),
+      gateway: r.provider,
+      id: r.id ?? r.ref,
+      contextWindow: 128000,
+      baseUrl: providerBaseUrls[r.provider],
+    }));
+}
+
+export function nativeLabel(c: NativeCandidate): string {
+  return `native/${c.gateway}/${c.id}`;
+}
+
+/**
  * `roleModels` maps a role to the refs that role should generate agents for.
  * A model used by several roles is still defined once in [models].
+ *
+ * `nativeRoleModels`, when given, does the same for `[native.models]`,
+ * `[native.gateways]` and `[generate.native]`. Nothing native is written when
+ * it is absent or empty — native stays opt-in the way it was chosen.
  */
 export function tomlFor(
   roleModels: Record<string, ModelRef[]>,
   carried: Record<string, ConfigEntry>,
+  nativeRoleModels?: Record<string, NativeCandidate[]>,
 ): string {
   const defined = new Map<string, ConfigEntry>();
   for (const refs of Object.values(roleModels)) {
@@ -183,6 +235,44 @@ export function tomlFor(
     lines.push(`${tomlKey(role)} = [${refs.map((r) => tomlKey(configKeyFor(r))).join(', ')}]`);
   }
   lines.push('');
+
+  const nativeModels = new Map<string, NativeCandidate>();
+  for (const cands of Object.values(nativeRoleModels ?? {})) {
+    for (const c of cands) nativeModels.set(c.key, c);
+  }
+
+  if (nativeModels.size > 0) {
+    const nativeClashes = duplicateKeys([...nativeModels.keys()]);
+    if (nativeClashes.length > 0) {
+      throw new Error(
+        `sonata: native model(s) ${nativeClashes.join(', ')} would name two different models.`,
+      );
+    }
+
+    const gateways = new Map<string, string>();
+    for (const c of nativeModels.values()) gateways.set(c.gateway, c.baseUrl);
+
+    for (const [gateway, baseUrl] of gateways) {
+      lines.push(`[native.gateways.${tomlKey(gateway)}]`, `base_url = ${tomlKey(baseUrl)}`, '');
+    }
+
+    for (const [key, c] of nativeModels) {
+      lines.push(
+        `[native.models.${tomlKey(key)}]`,
+        `gateway = ${tomlKey(c.gateway)}`,
+        `id = ${tomlKey(c.id)}`,
+        `context_window = ${c.contextWindow}`,
+        '',
+      );
+    }
+
+    lines.push('[generate.native]');
+    for (const [role, cands] of Object.entries(nativeRoleModels ?? {})) {
+      lines.push(`${tomlKey(role)} = [${cands.map((c) => tomlKey(c.key)).join(', ')}]`);
+    }
+    lines.push('');
+  }
+
   lines.push(
     '[run]',
     'tail_window_seconds = 20',
@@ -303,6 +393,12 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   const authed = harnesses.flatMap((h) => h.authedProviders);
   const offered = offerableProviders(allRefs, authed);
 
+  // Native candidates do not depend on the harness/role screens below — they
+  // come straight from detection — so they are computed once, up front.
+  const providerBaseUrls = harnesses.find((h) => h.name === 'opencode')?.providerBaseUrls ?? {};
+  const nativeCandidates = nativeCandidatesFrom(allRefs, providerBaseUrls);
+  const nativeByKey = new Map(nativeCandidates.map((c) => [c.key, c]));
+
   if (offered.length === 0) {
     problems.push({
       severity: 'error',
@@ -343,6 +439,10 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   let chosen!: ModelRef[];
   let roles!: string[];
   let roleModels!: Record<string, ModelRef[]>;
+  let nativeKeys!: string[];
+  let chosenNative!: NativeCandidate[];
+  let nativeRoles!: string[];
+  let nativeRoleModels: Record<string, NativeCandidate[]> = {};
 
   const asked = [
     opts.configScope === undefined && interactive,
@@ -350,11 +450,13 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     !opts.models && interactive,
     !opts.roles && interactive,
     interactive,
+    !opts.nativeModels && interactive,
+    !opts.nativeRoles && interactive,
   ];
   const previousAsked = (from: number): number => previousAskedStep(asked, from);
   const canGoBack = (step: number): boolean => previousAsked(step) !== step;
 
-  for (let step = 0; step < 5;) {
+  for (let step = 0; step < 7;) {
     try {
       switch (step) {
         case 0: {
@@ -512,6 +614,63 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
           roleModels = picks;
           break;
         }
+
+        case 5: {
+          // Native is opt-in and skippable: an empty selection here writes no
+          // [native] table at all and step 6 has nothing to ask.
+          if (opts.nativeModels) {
+            nativeKeys = opts.nativeModels;
+          } else if (interactive) {
+            nativeKeys = await multiselect(
+              'Native models (optional — run these as native Claude Code subagents)',
+              nativeCandidates.map((c) => ({
+                value: c.key, label: nativeLabel(c), hint: `context ${c.contextWindow}`, checked: false,
+              })),
+              canGoBack(5),
+            );
+          } else {
+            nativeKeys = [];
+          }
+
+          const unknownNative = nativeKeys.filter((k) => !nativeByKey.has(k));
+          if (unknownNative.length > 0) {
+            throw new Error(
+              `sonata init: no native gateway offers ${unknownNative.join(', ')}. ` +
+              `Available: ${[...nativeByKey.keys()].join(', ')}`,
+            );
+          }
+
+          chosenNative = nativeKeys.map((k) => nativeByKey.get(k)!);
+          break;
+        }
+
+        case 6: {
+          // Nothing was chosen on the previous screen, so this screen has
+          // nothing to ask — mirroring how an unmet dependency is handled
+          // elsewhere in this file rather than adding a third step-count.
+          if (chosenNative.length === 0) {
+            nativeRoles = [];
+            break;
+          }
+
+          if (opts.nativeRoles) {
+            nativeRoles = opts.nativeRoles;
+          } else if (interactive) {
+            nativeRoles = await multiselect(
+              'Roles to generate native agents for',
+              KNOWN_ROLES.map((r) => ({ value: r as string, label: r, checked: true })),
+              canGoBack(6),
+            );
+          } else {
+            nativeRoles = [...KNOWN_ROLES];
+          }
+
+          const badNativeRoles = nativeRoles.filter((r) => !KNOWN_ROLES.includes(r as never));
+          if (badNativeRoles.length > 0) {
+            throw new Error(`sonata init: unknown role(s) ${badNativeRoles.join(', ')}`);
+          }
+          break;
+        }
       }
       step++;
     } catch (err) {
@@ -524,6 +683,26 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   }
 
   // ---- config scope -----------------------------------------------------
+
+  if (chosenNative.length > 0 && nativeRoles.length > 0) {
+    nativeRoleModels = Object.fromEntries(nativeRoles.map((r) => [r, chosenNative]));
+  }
+
+  // ---- native key check ---------------------------------------------------
+  //
+  // Informational only — it does not block init. A gateway with no
+  // discovered key still gets written to the config; `sonata serve` is what
+  // actually needs the credential, and by then the user has had this warning
+  // plus the `sonata auth add` pointer.
+  if (chosenNative.length > 0) {
+    out('');
+    const gateways = [...new Set(chosenNative.map((c) => c.gateway))];
+    for (const report of keyReport(gateways, opts.home)) {
+      out(report.source
+        ? `  ✓ ${report.gateway}: key from ${report.source}`
+        : `  ! ${report.gateway}: no key — run \`sonata auth add ${report.gateway}\``);
+    }
+  }
 
   // ---- hook scope -------------------------------------------------------
   const command = hookCommand(opts.packageRoot);
@@ -554,6 +733,10 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   out(`    models  ${chosen.map(refLabel).join(', ')}`);
   out(`    roles   ${roles.join(', ')}`);
   out(`    agents  ${Object.values(roleModels).reduce((n, m) => n + m.length, 0)} files in .claude/agents/`);
+  if (chosenNative.length > 0) {
+    out(`    native  ${chosenNative.map(nativeLabel).join(', ')}`);
+    out(`    native roles  ${nativeRoles.join(', ')}`);
+  }
   out(`    hook    ${scope === 'skip' ? 'not installed' : `${scope} settings.json`}`);
   out(`    config  ${configPathResolved}`);
   out('');
@@ -577,7 +760,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     );
   }
   mkdirSync(dirname(configPathResolved), { recursive: true });
-  writeFileSync(configPathResolved, tomlFor(roleModels, carried));
+  writeFileSync(configPathResolved, tomlFor(roleModels, carried, nativeRoleModels));
   out(`  ✓ wrote ${configPathResolved}`);
 
   let hookChanged = false;
