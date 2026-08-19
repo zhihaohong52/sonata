@@ -171,7 +171,9 @@ export function staleAgents(agentsDir: string, expected: string[]): string[] {
 
 function isSonataAgent(path: string): boolean {
   try {
-    return readFileSync(path, 'utf8').includes('forwarding wrapper around the sonata runtime');
+    const text = readFileSync(path, 'utf8');
+    return text.includes('forwarding wrapper around the sonata runtime')
+      || /^name:\s+native-[^\s]+/m.test(text);
   } catch {
     return false;
   }
