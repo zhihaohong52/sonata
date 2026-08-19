@@ -1,8 +1,13 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkVersion, cmdDoctor } from '../../src/commands/doctor.js';
+import { writeSonataKey } from '../../src/native/credentials.js';
+
+vi.mock('../../src/native/litellm.js', () => ({
+  findLitellm: () => '/usr/local/bin/litellm',
+}));
 
 describe('checkVersion', () => {
   it('accepts a version inside the supported range', () => {
@@ -214,5 +219,80 @@ explore = ["a"]
     const c = (await cmdDoctor({ cwd, home })).checks.find((x) => x.name === 'opencode agents');
     // `general` is not an agent sonata dispatches to; leave the user's choice alone.
     expect(c?.ok).toBe(true);
+  });
+});
+
+describe('cmdDoctor — native path', () => {
+  const NATIVE = `
+[models."a"]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+[generate.roles]
+code = ["a"]
+
+[native.models."deepseek-v4-flash"]
+gateway = "anexto"
+id = "deepseek-v4-flash-0731"
+context_window = 128000
+
+[native.gateways."anexto"]
+base_url = "https://gateway.example/v1"
+
+[native.gateways."missing"]
+base_url = "https://missing.example/v1"
+
+[generate.native]
+code = ["deepseek-v4-flash"]
+`;
+
+  const setup = () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-native-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-native-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE);
+    mkdirSync(join(cwd, '.claude', 'agents'), { recursive: true });
+    return { cwd, home };
+  };
+
+  it('checks LiteLLM, a down serve, missing key sources, and native stale agents', async () => {
+    const { cwd, home } = setup();
+    writeFileSync(join(cwd, '.claude', 'agents', 'native-code-old.md'), '---\nname: native-code-old\n---\nold');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      expect(checks.find((c) => c.name === 'litellm')).toEqual({
+        name: 'litellm', ok: true, detail: '/usr/local/bin/litellm',
+      });
+      expect(checks.find((c) => c.name === 'serve health')).toEqual({
+        name: 'serve health', ok: true, detail: 'not running — start with `sonata serve`',
+      });
+      expect(checks.find((c) => c.name === 'key source: missing')).toEqual({
+        name: 'key source: missing', ok: false, detail: 'no key — `sonata auth add missing`',
+      });
+      expect(checks.find((c) => c.name === 'agents')?.ok).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('reports native serve health and key source without exposing key values', async () => {
+    const { cwd, home } = setup();
+    writeSonataKey(home, 'anexto', 'super-secret-key');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({ sonata: true }), { status: 200 });
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      expect(checks.find((c) => c.name === 'serve health')).toEqual({
+        name: 'serve health', ok: true, detail: 'up',
+      });
+      const keyChecks = checks.filter((c) => c.name.startsWith('key source:'));
+      expect(keyChecks.find((c) => c.name === 'key source: anexto')).toEqual({
+        name: 'key source: anexto', ok: true, detail: 'from sonata',
+      });
+      expect(keyChecks.every((c) => !c.detail.includes('super-secret-key'))).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
