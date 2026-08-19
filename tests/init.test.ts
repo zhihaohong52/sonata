@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseOpenCodeModels, parseAuthedProviders, staleAgents, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
 import { parsePiRefs } from '../src/adapters/pi.js';
-import { cmdInit, configKeyFor, duplicateKeys, preTickedRefs, carriedEntries, tomlFor, configPathFor, agentsDirFor } from '../src/commands/init.js';
+import {
+  cmdInit, configKeyFor, duplicateKeys, preTickedRefs, carriedEntries, tomlFor, configPathFor,
+  agentsDirFor, previousAskedStep, nativeCandidatesFrom,
+} from '../src/commands/init.js';
 import { readSettings } from '../src/settings.js';
 import { parseConfig } from '../src/config.js';
 
@@ -828,5 +831,135 @@ describe('cmdInit — MCP and pruning', () => {
     const res = await cmdInit({ ...args, cwd, home, prune: true, write });
     expect(res.pruned).toEqual(['code-gone.md']);
     expect(existsSync(join(dir, 'code-gone.md'))).toBe(false);
+  });
+});
+
+describe('nativeCandidatesFrom', () => {
+  const refs = [
+    { harness: 'opencode' as const, provider: 'vendorx', id: 'deepseek-v4-flash-0731', ref: 'vendorx/deepseek-v4-flash-0731' },
+    { harness: 'opencode' as const, provider: 'opencode', id: 'kimi-k3', ref: 'opencode/kimi-k3' },
+    { harness: 'pi' as const, provider: 'vendorx', id: 'deepseek-v4-flash-0731', ref: 'vendorx/deepseek-v4-flash-0731' },
+  ];
+
+  it('keeps only opencode refs whose provider has a known base URL', () => {
+    const got = nativeCandidatesFrom(refs, { vendorx: 'https://bifrost.advai.net/v1' });
+    expect(got).toEqual([{
+      key: 'vendorx-deepseek-v4-flash-0731',
+      gateway: 'vendorx',
+      id: 'deepseek-v4-flash-0731',
+      contextWindow: 128000,
+      baseUrl: 'https://bifrost.advai.net/v1',
+    }]);
+  });
+
+  it('is empty when no provider has a known base URL', () => {
+    expect(nativeCandidatesFrom(refs, {})).toEqual([]);
+  });
+});
+
+describe('cmdInit — native models', () => {
+  let cwd: string;
+  let home: string;
+  let lines: string[];
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'init-native-cwd-'));
+    home = mkdtempSync(join(tmpdir(), 'init-native-home-'));
+    lines = [];
+  });
+
+  const write = (l: string) => { lines.push(l); };
+
+  const detect = async () => ({
+    tmux: { installed: true, version: '3.7b', problems: [] },
+    harnesses: [{
+      name: 'opencode', installed: true, version: '1.18.16', supported: true,
+      refs: parseOpenCodeRefs('vendorx/deepseek-v4-flash-0731\n'),
+      authedProviders: ['vendorx'],
+      providerBaseUrls: { vendorx: 'https://bifrost.advai.net/v1' },
+      problems: [],
+    }],
+  });
+
+  const args = {
+    cwd, home, packageRoot: '/pkg', yes: true, detect,
+    providers: ['opencode/vendorx'], models: ['opencode-vendorx-deepseek-v4-flash-0731'],
+    roles: ['code'], scope: 'skip' as const, write,
+  };
+
+  it('writes a [native] table and generate.native when native flags are given', async () => {
+    const res = await cmdInit({
+      ...args, cwd, home, write,
+      nativeModels: ['vendorx-deepseek-v4-flash-0731'], nativeRoles: ['code'],
+    });
+
+    const toml = readFileSync(res.configPath, 'utf8');
+    expect(toml).toMatch(/\[native\.models\."vendorx-deepseek-v4-flash-0731"\]/);
+    expect(toml).toMatch(/\[native\.gateways\."vendorx"\]/);
+    expect(toml).toMatch(/\[generate\.native\]/);
+
+    const cfg = parseConfig(toml);
+    expect(cfg.native?.models['vendorx-deepseek-v4-flash-0731']).toEqual({
+      gateway: 'vendorx', id: 'deepseek-v4-flash-0731', contextWindow: 128000,
+    });
+    expect(cfg.native?.gateways.vendorx).toEqual({ baseUrl: 'https://bifrost.advai.net/v1' });
+    expect(cfg.native?.generate.code).toEqual(['vendorx-deepseek-v4-flash-0731']);
+  });
+
+  it('writes no [native] table when native is skipped', async () => {
+    const res = await cmdInit({ ...args, cwd, home, write });
+    expect(readFileSync(res.configPath, 'utf8')).not.toMatch(/\[native\]/);
+  });
+
+  it('writes no [native] table under --yes with no native flags', async () => {
+    // --yes selects no native models by default; native stays opt-in.
+    const res = await cmdInit({ ...args, cwd, home, write, yes: true });
+    expect(readFileSync(res.configPath, 'utf8')).not.toMatch(/\[native\]/);
+  });
+
+  it('rejects a native model key no gateway offers', async () => {
+    await expect(cmdInit({
+      ...args, cwd, home, write, nativeModels: ['nope'], nativeRoles: ['code'],
+    })).rejects.toThrow(/no native gateway offers nope/);
+  });
+
+  it('prints a key-source line for a chosen gateway with no discovered key', async () => {
+    await cmdInit({
+      ...args, cwd, home, write,
+      nativeModels: ['vendorx-deepseek-v4-flash-0731'], nativeRoles: ['code'],
+    });
+    expect(lines.some((l) => l.includes('vendorx') && l.includes('sonata auth add vendorx'))).toBe(true);
+  });
+
+  it('prints a key-source line naming the source when a key is discovered', async () => {
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'keys.json'), JSON.stringify({ vendorx: 'sk-test' }));
+
+    await cmdInit({
+      ...args, cwd, home, write,
+      nativeModels: ['vendorx-deepseek-v4-flash-0731'], nativeRoles: ['code'],
+    });
+    expect(lines.some((l) => l.includes('vendorx') && l.includes('key from sonata'))).toBe(true);
+  });
+
+  it('skips both native screens on a repeated run when only nativeRoles was given', async () => {
+    // nativeModels absent but nativeRoles present: chosenNative is empty, so
+    // the roles screen has nothing to ask regardless of the flag.
+    const res = await cmdInit({ ...args, cwd, home, write, nativeRoles: ['code'] });
+    expect(readFileSync(res.configPath, 'utf8')).not.toMatch(/\[native\]/);
+  });
+});
+
+describe('previousAskedStep — native screens', () => {
+  it('skips both flag-answered native steps, landing on the per-role-models step', () => {
+    // Mirrors cmdInit's asked[] shape: interactive session, but --native-models
+    // and --native-roles were both given, so steps 5 and 6 are never shown.
+    const asked = [true, true, true, true, true, false, false];
+    expect(previousAskedStep(asked, 6)).toBe(4);
+  });
+
+  it('back from the native-roles step lands on the native-models step when both are interactive', () => {
+    const asked = [true, true, true, true, true, true, true];
+    expect(previousAskedStep(asked, 6)).toBe(5);
   });
 });
