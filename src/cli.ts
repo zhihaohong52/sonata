@@ -30,9 +30,9 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata gc        kill finished tmux sessions
   sonata log       print a run's whole transcript (tail returns only new lines)
   sonata verify    confirm a dispatch actually happened
-  sonata auth      add, list or remove native gateway keys
-  sonata serve [--daemon]  start the native router and managed LiteLLM proxy
-  sonata code [-- args…]   start Claude Code through the native router
+  sonata serve     start the native routing proxy (router + litellm)
+  sonata code      launch a claude session routed through sonata serve
+  sonata auth      manage gateway API keys (add/list/remove)
   sonata mcp       start the stdio JSON-RPC server (started by Claude Code; not run by hand)
 
   init flags (skip the prompts):
