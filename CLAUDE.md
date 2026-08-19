@@ -206,6 +206,12 @@ Sonata launches other coding agents on your machine — they run **as you**, wit
   output was tried and is measured *worse* than one line: the newest line sits at the window's end, so it is
   exactly what the clip removes (a screenshot showed four old commands and the live one cut to `$ nod…`). Hence
   one line per notification. Live history has no channel here; it belongs in the transcript.
+- **`notifications/message` renders nothing.** Probed 2026-08-19 in the subagent view, with `logging: {}`
+  declared in the initialize response first — a compliant client may discard log notifications from a server that
+  never declared the capability, so emitting without declaring would have made silence unreadable. Declared and
+  emitted per line, still only the latest progress line appeared. **The tool result is the only channel into
+  conversation history**, which is what makes `transcript: true` the whole-run answer and a chunked `wait` the
+  only possible interleaved one.
 - **The harness conversation cannot be *pushed* into Claude Code turn by turn.** A subagent receives text only as tool results, and its parent receives only its final message, so no push channel exists to stream into. Two channels carry the conversation anyway: the progress window above shows it live, and `dispatch`/`wait` accept `transcript: true`, which returns the run's whole recorded transcript — `sonata log`'s content — beside the report, budgeted so the report can never be pushed out of the result. It is opt-in because a transcript is far larger than a report and lands in the wrapper's context. Outside Claude Code, `tmux attach -r -t sonata-<id>` is the live view and `sonata log <id>` the after-the-fact one; `sonata tail` remains a human/debugging CLI command.
 
 ## Conventions
