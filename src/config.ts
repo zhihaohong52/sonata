@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 
-export const KNOWN_HARNESSES = ['opencode', 'codex', 'pi', 'reasonix'] as const;
+export const KNOWN_HARNESSES = ['opencode', 'codex', 'pi', 'reasonix', 'claude'] as const;
 export const KNOWN_ROLES = ['review', 'code', 'explore', 'plan'] as const;
 
 /** Harnesses whose `--model` needs a provider segment; codex takes a bare id. */
