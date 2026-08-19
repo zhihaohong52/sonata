@@ -42,6 +42,7 @@ Not yet published to npm — install from source (below). Read
 - **Node 22+**
 - **tmux** — every harness runs inside a tmux session (`brew install tmux`,
   `apt install tmux`)
+- **LiteLLM (optional, native path only)** — install with `pip install 'litellm[proxy]'`
 - **macOS or Linux.** Sonata launches bash scripts inside tmux and manages
   process groups directly; Windows is not supported. WSL should work but is
   untested.

@@ -15,7 +15,8 @@ The wrapper agent (MCP-only, relays rather than reasons) calls the `dispatch` to
 - Node 22+
 - tmux (every harness runs inside a tmux session) — `brew install tmux`
 - macOS or Linux (Windows unsupported; WSL untested)
-- At least one harness authenticated: OpenCode, Codex CLI (`codex login`), Pi, or Reasonix (`reasonix setup`)
+- At least one harness authenticated: OpenCode, Codex CLI (`codex login`), Pi, Reasonix (`reasonix setup`), or Claude Code
+- LiteLLM for the native path (`pip install 'litellm[proxy]'`)
 
 ## Commands
 
@@ -120,6 +121,7 @@ Sonata mirrors the Claude Code permission mode onto the harness; a sonata agent 
   - `--permission-mode plan` is **refused by `reasonix run`** ("requires an interactive session", exit 2), so read-only work uses `dontAsk` instead. That is real enforcement, probed: a run asked to read one file and write another read it fine and was refused both the write tool and the shell fallback. It cannot write `report.md` either, so `canWriteReport` is false.
   - **Never use `-y`/`--auto`.** It aliases reasonix's own `auto`, which is wider than Claude Code's — it skips risk prompts for things like `git push`. Claude's `auto` maps to `acceptEdits`, so always pass `--permission-mode` explicitly.
   - Reasonix loads the working directory's `.mcp.json` on top of its own config. In this repository that hands a dispatched model sonata's own dispatch/wait/approve tools, so it can dispatch further runs. `sonata doctor` warns when a `.mcp.json` is present.
+- **Claude Code** (`claude -p` is headless and has no TUI): `plan`, `default`, `acceptEdits`, and `bypassPermissions` map directly to Claude Code's corresponding permission modes. Read-only roles use Claude's restricted tool set; native runs assume `sonata serve` is already up so the session is routed to the foreign model.
 
 The permission mode is not exposed as an env var, so this needs a **PreToolUse hook** (`hooks/capture-mode.mjs`), which `sonata init` offers to install at project or global scope. Without it sonata assumes `default` — for opencode/pi that means dispatches refuse, so `sonata doctor` reports a missing hook as a blocker.
 
@@ -139,7 +141,7 @@ A project config **replaces** the machine one; they are never merged, so it is a
 ```toml
 # sonata.toml
 [models."opencode-openrouter-deepseek-v4-flash"]
-harness = "opencode"                # opencode | codex | pi | reasonix
+harness = "opencode"                # opencode | codex | pi | reasonix | claude
 id = "openrouter/deepseek-v4-flash"     # provider/model for opencode, pi and reasonix; a bare id for codex
 
 [generate.roles]
@@ -166,6 +168,7 @@ dispatch_window_seconds = 1500 # blocking window; must stay under MCP's 30-minut
 ## Security
 
 Sonata launches other coding agents on your machine — they run **as you**, with your files and credentials. Codex and reasonix both offer a real sandbox (reasonix reports its own `write_roots`, which follow `--dir`); pi has none, and opencode's is advisory. Sonata never bypasses a harness's own safety flags; credentials stay with the harness (sonata reads harness config for health reporting but does not copy/forward/log API keys). Prompt injection is a real risk with foreign models — for untrusted code, dispatch read-only roles or run in a container.
+The native router transits the session credential locally and unmodified; native keys flow store → environment → LiteLLM only.
 
 ## Known Limitations
 
@@ -213,6 +216,20 @@ Sonata launches other coding agents on your machine — they run **as you**, wit
   conversation history**, which is what makes `transcript: true` the whole-run answer and a chunked `wait` the
   only possible interleaved one.
 - **The harness conversation cannot be *pushed* into Claude Code turn by turn.** A subagent receives text only as tool results, and its parent receives only its final message, so no push channel exists to stream into. Two channels carry the conversation anyway: the progress window above shows it live, and `dispatch`/`wait` accept `transcript: true`, which returns the run's whole recorded transcript — `sonata log`'s content — beside the report, budgeted so the report can never be pushed out of the result. It is opt-in because a transcript is far larger than a report and lands in the wrapper's context. Outside Claude Code, `tmux attach -r -t sonata-<id>` is the live view and `sonata log <id>` the after-the-fact one; `sonata tail` remains a human/debugging CLI command.
+
+## Native path
+
+The native path runs foreign models inside Claude Code's own loop, tools, and permission modes through a local routing proxy. The harness path instead runs the foreign model's own loop in OpenCode, Codex, Pi, or Reasonix.
+
+Its `[native]` config surface describes foreign `models`, `gateways`, and their `ports`; `[generate.native]` assigns native model keys to roles. `sonata serve` runs the router and managed LiteLLM child, while `sonata code` launches a Claude Code session routed through it. LiteLLM is an external prerequisite, like tmux: install it with `pip install 'litellm[proxy]'`.
+
+There are two deliverables: (A) `sonata serve`/`sonata code` for a complete local routing path, and (B) the `claude` harness adapter for dispatching foreign-on-Claude-loop through the existing MCP path.
+
+Remote Control is the trade-off: `ANTHROPIC_BASE_URL` is process-wide, and `isFirstPartyAnthropicBaseUrl` gates Remote Control. Sessions launched by `sonata code` therefore lose Remote Control while routed through the local proxy.
+
+The `claude-` prefix is load-bearing because the router sends that prefix to Anthropic. Native model keys and ids beginning with `claude-` are refused at parse time. Credentials flow only store → memory → LiteLLM environment; keys are never logged or put in a Claude conversation. The user starts `sonata serve`: the classifier correctly blocks launching an auth-forwarding proxy from inside a session.
+
+The `claude` harness adapter is the simplest adapter: it runs headless `claude -p`, has no TUI, and maps permission modes directly. For native dispatches it assumes `sonata serve` is already running.
 
 ## Conventions
 
