@@ -448,28 +448,27 @@ describe('reduce — filtering', () => {
 });
 
 describe('redraw', () => {
-  // Found by an independent review run: runList moved the cursor up by the
-  // height of the block it was ABOUT to write, not the one already on screen.
-  // Harmless while the height was fixed; the viewport and filter made it vary,
-  // so a scroll (12 -> 13 lines) or a filter shrink (9 -> 6) left the cursor
-  // in the wrong row and stale text below.
-  it('moves up by the height already on screen, not the new one', () => {
+  it('does not clear-screen on the first draw', () => {
     const first = redraw('a\nb\nc', 0);
     expect(first.height).toBe(3);
-    expect(first.out).not.toContain('A');          // nothing on screen yet
-
-    const grown = redraw('a\nb\nc\nd', first.height);
-    expect(grown.out.startsWith('\u001b[3A')).toBe(true);   // the OLD height
-    expect(grown.height).toBe(4);
-
-    const shrunk = redraw('a', grown.height);
-    expect(shrunk.out.startsWith('\u001b[4A')).toBe(true);  // the OLD height
-    expect(shrunk.height).toBe(1);
+    expect(first.out).not.toContain('\u001b[2J');
   });
 
-  it('clears each line, so a shrinking block leaves no stale tail', () => {
-    const { out } = redraw('a\nb', 2);
-    expect(out.match(/\u001b\[2K/g)).toHaveLength(2);
+  it('clear-screens on subsequent draws so the block is fully replaced', () => {
+    const first = redraw('a\nb\nc', 0);
+    const second = redraw('a\nb\nc\nd', first.height);
+    expect(second.out).toContain('\u001b[2J');
+    expect(second.out).toContain('\u001b[H');
+    expect(second.height).toBe(4);
+  });
+
+  it('tracks height correctly across draws of different sizes', () => {
+    const first = redraw('a\nb\nc', 0);
+    expect(first.height).toBe(3);
+    const grown = redraw('a\nb\nc\nd', first.height);
+    expect(grown.height).toBe(4);
+    const shrunk = redraw('a', grown.height);
+    expect(shrunk.height).toBe(1);
   });
 });
 
