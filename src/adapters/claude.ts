@@ -49,11 +49,13 @@ function buildScript(input: PlanInput): LaunchPlan {
     'set -o pipefail',
     ...envLines,
     `cd ${shellQuote(input.cwd)} || exit 97`,
-    // No tee — claude -p hangs when its stdout is piped (same class of bug
-    // as codex's TUI through tee). Redirect to report.md directly; the pane
-    // captures terminal output for harness.log equivalent via sonata's event
-    // recording.
-    `claude ${flags.join(' ')} "$(cat ${shellQuote(input.instructionsPath)})" > ${shellQuote(`${input.runDir}/report.md`)} 2>&1`,
+    // No tee — both anomalies observed on this adapter (a hang, and a run
+    // that fabricated instead of calling tools) happened with claude -p piped
+    // through tee, and neither reproduced without it. Stdout also must NOT be
+    // report.md: the instructions ask the model to Write report.md itself, and
+    // two writers to one file corrupt whichever finishes second. The final
+    // message lands in last-message.txt as the fallback report instead.
+    `claude ${flags.join(' ')} "$(cat ${shellQuote(input.instructionsPath)})" > ${shellQuote(`${input.runDir}/last-message.txt`)} 2>&1`,
     `echo $? > ${shellQuote(`${input.runDir}/exit`)}`,
     '',
   ].join('\n');
@@ -73,4 +75,5 @@ export const claudeAdapter: HarnessAdapter = {
     return null;
   },
   approveKeys: { yes: [], no: [] },
+  fallbackReportFile: 'last-message.txt',
 };
