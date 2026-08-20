@@ -70,11 +70,26 @@ export function parseOpenCodeModels(text: string): OpenCodeModel[] {
 // Well-known provider endpoints for providers that have real HTTP APIs.
 // Providers like opencode-go are internal to the opencode CLI and have no
 // standalone API endpoint — they must not appear here.
+// Built-in provider endpoints from https://opencode.ai/docs/providers/
+// Only providers whose models appear in `opencode models` or other harness
+// catalogues are listed — the rest are reachable but not discoverable.
 const WELL_KNOWN_PROVIDER_URLS: Record<string, string> = {
   'openai': 'https://api.openai.com/v1',
   'openai-codex': 'https://api.openai.com/v1',
   'codex': 'https://api.openai.com/v1',
+  'opencode': 'https://api.opencode.ai/v1',
   'opencode-go': 'https://opencode.ai/zen/go/v1',
+  'anthropic': 'https://api.anthropic.com/v1',
+  'deepseek': 'https://api.deepseek.com/v1',
+  'google': 'https://generativelanguage.googleapis.com/v1beta',
+  'groq': 'https://api.groq.com/v1',
+  'mistral': 'https://api.mistral.ai/v1',
+  'openrouter': 'https://openrouter.ai/api/v1',
+  'together': 'https://api.together.xyz/v1',
+  'fireworks': 'https://api.fireworks.ai/inference/v1',
+  'xai': 'https://api.x.ai/v1',
+  'cerebras': 'https://api.cerebras.ai/v1',
+  'deep-infra': 'https://api.deepinfra.com/v1',
 };
 
 export function parseOpenCodeProviderBaseUrls(text: string): Record<string, string> {
