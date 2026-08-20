@@ -136,11 +136,21 @@ export function cmdSync(opts: SyncOptions): SyncResult {
     written.push(path);
   }
 
+  // Native models get both a native agent (for sonata code sessions) and a
+  // wrapper agent (for MCP dispatch from normal sessions via the claude harness).
   const nativeWanted = generatedNativeAgents(config);
   for (const { role, model } of nativeWanted) {
-    const path = join(opts.agentsDir, `native-${role}-${model}.md`);
-    writeFileSync(path, nativeAgentMarkdown({ role, model }));
-    written.push(path);
+    const nativePath = join(opts.agentsDir, `native-${role}-${model}.md`);
+    writeFileSync(nativePath, nativeAgentMarkdown({ role, model }));
+    written.push(nativePath);
+
+    // Skip the wrapper if a harness-based one already covers this role+model
+    const wrapperName = `${role}-${model}`;
+    if (!wanted.some((a) => `${a.role}-${a.model}` === wrapperName)) {
+      const wrapperPath = join(opts.agentsDir, `${wrapperName}.md`);
+      writeFileSync(wrapperPath, agentMarkdown({ role, model, harness: 'claude' }));
+      written.push(wrapperPath);
+    }
   }
 
   return {
@@ -148,6 +158,10 @@ export function cmdSync(opts: SyncOptions): SyncResult {
     stale: staleAgents(opts.agentsDir, [
       ...wanted.map((a) => `${a.role}-${a.model}`),
       ...nativeWanted.map((a) => `native-${a.role}-${a.model}`),
+      // Wrapper agents generated for native models (claude harness)
+      ...nativeWanted
+        .filter((a) => !wanted.some((w) => `${w.role}-${w.model}` === `${a.role}-${a.model}`))
+        .map((a) => `${a.role}-${a.model}`),
     ]),
   };
 }
