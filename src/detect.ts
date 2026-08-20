@@ -172,8 +172,17 @@ export function parseOpenCodeRefs(stdout: string): ModelRef[] {
   return out;
 }
 
+/**
+ * Sources of a picker row that are not a detected harness.
+ *
+ * `config` is a gateway already named in sonata.toml; `byok` is a well-known
+ * provider the user can name directly. Both are real rows the user selects, so
+ * the type says so rather than being cast away at each use.
+ */
+export type PseudoHarness = 'config' | 'byok';
+
 export interface ProviderSummary {
-  harness: ProviderHarness;
+  harness: ProviderHarness | PseudoHarness;
   provider: string;
   count: number;
   /** `harness/provider` — identifies a picker row. */
