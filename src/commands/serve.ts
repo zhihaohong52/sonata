@@ -6,7 +6,8 @@ import { dirname, join } from 'node:path';
 
 import { loadConfig } from '../config.js';
 import { resolveKeys } from '../native/credentials.js';
-import { codexAuthPath, readCodexOAuth } from '../native/codex-auth.js';
+import { codexAuthPath, opencodeAuthPath, readChatGptOAuth } from '../native/codex-auth.js';
+import { readCopilotToken } from '../native/copilot-auth.js';
 import { envVarForGateway, litellmConfigYaml } from '../native/litellm.js';
 import { createRouterServer } from '../native/router.js';
 
@@ -142,17 +143,35 @@ export async function cmdServe(
     // A codex-oauth gateway carries no key: LiteLLM's chatgpt provider reads the
     // subscription token from its own auth file and refreshes it in place.
     if (Object.values(native.gateways).some((gateway) => gateway.auth === 'codex-oauth')) {
-      const record = readCodexOAuth(opts.home);
+      const record = readChatGptOAuth(opts.home);
       if (record === null) {
         throw new Error(
           'sonata serve: a native gateway uses codex-oauth but no ChatGPT credential was found ' +
-          `at ${codexAuthPath(opts.home)} — run \`codex login\`.`,
+          `in ${codexAuthPath(opts.home)} or ${opencodeAuthPath(opts.home)} — ` +
+          'run `codex login` (or `opencode auth login` and choose openai).',
         );
       }
       const tokenDir = join(tempDir, 'chatgpt');
       mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
       writeFileSync(join(tokenDir, 'auth.json'), JSON.stringify(record), { mode: 0o600 });
       childEnv.CHATGPT_TOKEN_DIR = tokenDir;
+    }
+
+    // Likewise for Copilot: opencode holds a GitHub OAuth token, and LiteLLM's
+    // github_copilot provider exchanges it for a short-lived Copilot key. The
+    // provider reads the GitHub token from a plain `access-token` file.
+    if (Object.values(native.gateways).some((gateway) => gateway.auth === 'copilot-oauth')) {
+      const token = readCopilotToken(opts.home);
+      if (token === null) {
+        throw new Error(
+          'sonata serve: a native gateway uses copilot-oauth but no Copilot login was found ' +
+          `in ${opencodeAuthPath(opts.home)} — run \`opencode auth login\` and choose github-copilot.`,
+        );
+      }
+      const tokenDir = join(tempDir, 'copilot');
+      mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(tokenDir, 'access-token'), token, { mode: 0o600 });
+      childEnv.GITHUB_COPILOT_TOKEN_DIR = tokenDir;
     }
 
     // A predecessor's orphaned litellm would hold the port and answer with the
