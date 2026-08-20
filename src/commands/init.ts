@@ -12,10 +12,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
-  KNOWN_ROLES, configPath, GLOBAL_CONFIG_RELATIVE, parseConfig, CODEX_OAUTH_BASE_URL,
+  KNOWN_ROLES, configPath, GLOBAL_CONFIG_RELATIVE, parseConfig,
+  isOauthGatewayAuth, oauthGatewayBaseUrl, isAnthropicRoutedName,
   type SonataConfig, type NativeGatewayAuth,
 } from '../config.js';
-import { readChatGptOAuth } from '../native/codex-auth.js';
+import { readChatGptOAuth, readOpencodeChatGptOAuth } from '../native/codex-auth.js';
+import { readCopilotToken, copilotTokenCanExchange } from '../native/copilot-auth.js';
 import type { ModelRef } from '../types.js';
 import {
   detectTmux, detectHarnesses, offerableProviders,
@@ -142,38 +144,86 @@ export interface NativeCandidate {
 /**
  * Native candidates from detected refs, deduplicated by (provider, id).
  *
- * `oauthProviders` names providers whose credential is a subscription login
- * rather than a key — today, codex when `codex login` used a ChatGPT account.
- * Such a provider must not be written with a base URL: its token is refused by
- * the metered API and reaches only the Codex backend, which LiteLLM's own
- * provider addresses.
+ * `oauthProviders` maps a provider to the OAuth kind its credential actually
+ * is — a subscription login rather than a key. Such a provider must not be
+ * written with a base URL: its token is refused by the metered endpoint and
+ * reaches only the provider's own backend, which LiteLLM addresses itself.
  */
 export function nativeCandidatesFrom(
   refs: ModelRef[],
   providerBaseUrls: Record<string, string>,
-  oauthProviders: ReadonlySet<string> = new Set(),
+  oauthProviders: ReadonlyMap<string, NativeGatewayAuth> = new Map(),
 ): NativeCandidate[] {
   const seen = new Set<string>();
   return refs
     .filter((r) => {
       // An oauth provider needs no discovered URL — LiteLLM supplies it.
       if (providerBaseUrls[r.provider] === undefined && !oauthProviders.has(r.provider)) return false;
+      // Copilot, anexto and anthropic all serve Claude models, but the router
+      // sends this prefix to Anthropic, so parseConfig refuses such an entry.
+      // Offering one would let init write a config it cannot read back.
+      const key = r.ref.replace(/\//g, '-');
+      if (isAnthropicRoutedName(key) || isAnthropicRoutedName(r.id ?? r.ref)) return false;
       const dedup = `${r.provider}/${r.id}`;
       if (seen.has(dedup)) return false;
       seen.add(dedup);
       return true;
     })
     .map((r) => {
-      const auth: NativeGatewayAuth = oauthProviders.has(r.provider) ? 'codex-oauth' : 'api-key';
+      const auth: NativeGatewayAuth = oauthProviders.get(r.provider) ?? 'api-key';
       return {
         key: r.ref.replace(/\//g, '-'),
         gateway: r.provider,
         id: r.id ?? r.ref,
         contextWindow: 128000,
-        baseUrl: auth === 'codex-oauth' ? CODEX_OAUTH_BASE_URL : providerBaseUrls[r.provider],
+        baseUrl: isOauthGatewayAuth(auth)
+          ? oauthGatewayBaseUrl(auth)
+          : providerBaseUrls[r.provider],
         auth,
       };
     });
+}
+
+/**
+ * Which detected providers authenticate by OAuth rather than a key, judged by
+ * reading the credential rather than by provider name.
+ *
+ * Naming alone would be wrong in both directions: opencode's `openai` provider
+ * holds a ChatGPT subscription on this machine but a real API key on another,
+ * and marking it by name would either write a metered base URL a subscription
+ * cannot use, or refuse a base URL a real key needs.
+ */
+export function oauthProvidersFor(
+  refs: ModelRef[],
+  home: string,
+  deps: {
+    chatGpt?: (home: string) => unknown;
+    opencodeChatGpt?: (home: string) => unknown;
+    copilot?: (home: string) => unknown;
+  } = {},
+): Map<string, NativeGatewayAuth> {
+  const chatGpt = deps.chatGpt ?? readChatGptOAuth;
+  const opencodeChatGpt = deps.opencodeChatGpt ?? readOpencodeChatGptOAuth;
+  const copilot = deps.copilot ?? readCopilotToken;
+
+  const out = new Map<string, NativeGatewayAuth>();
+
+  // codex's own provider, when `codex login` used a ChatGPT account.
+  if (chatGpt(home) !== null) {
+    for (const ref of refs) {
+      if (ref.harness === 'codex') out.set(ref.provider, 'codex-oauth');
+    }
+  }
+  // opencode serves the same subscription under `openai`.
+  if (opencodeChatGpt(home) !== null) {
+    if (refs.some((ref) => ref.provider === 'openai')) out.set('openai', 'codex-oauth');
+  }
+  if (copilot(home) !== null) {
+    if (refs.some((ref) => ref.provider === 'github-copilot')) {
+      out.set('github-copilot', 'copilot-oauth');
+    }
+  }
+  return out;
 }
 
 export function nativeLabel(c: NativeCandidate): string {
@@ -273,9 +323,9 @@ export function nativeTomlFor(
 
   for (const [gateway, { baseUrl, auth }] of gateways) {
     lines.push(`[native.gateways.${tomlKey(gateway)}]`);
-    // A codex-oauth gateway takes no base_url: the credential reaches only the
-    // Codex backend, and LiteLLM's chatgpt provider already knows that URL.
-    if (auth === 'codex-oauth') lines.push(`auth = ${tomlKey(auth)}`);
+    // An OAuth gateway takes no base_url: the credential reaches only its own
+    // provider's backend, and LiteLLM already knows that URL.
+    if (isOauthGatewayAuth(auth)) lines.push(`auth = ${tomlKey(auth)}`);
     else lines.push(`base_url = ${tomlKey(baseUrl)}`);
     lines.push('');
   }
@@ -378,16 +428,26 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
       if (!providerBaseUrls[k]) providerBaseUrls[k] = v;
     }
   }
-  // Codex logged in with a ChatGPT account holds a subscription credential, not
-  // an API key. Writing such a provider with a metered base URL produces a
-  // gateway that authenticates and is then refused for quota, which reads to the
-  // user as a missing key. Record how it actually authenticates instead.
-  const codexSubscription = readChatGptOAuth(opts.home) !== null;
-  const oauthProviders = new Set(
-    codexSubscription
-      ? allRefs.filter((ref) => ref.harness === 'codex').map((ref) => ref.provider)
-      : [],
-  );
+  // A harness logged in with a subscription holds an OAuth credential, not an
+  // API key. Writing such a provider with a metered base URL produces a gateway
+  // that authenticates and is then refused for quota, which reads to the user as
+  // a missing key. Record how each provider actually authenticates instead.
+  // Copilot needs one extra question answered before it can be offered: whether
+  // the stored GitHub token carries the `copilot` scope. opencode requests only
+  // `read:user`, so the exchange 403s and LiteLLM drops the model — offering it
+  // would write a config that fails at first use with an unrelated-looking
+  // error. Fails closed, so an offline machine simply does not offer Copilot.
+  const copilotToken = readCopilotToken(opts.home);
+  const copilotUsable = copilotToken !== null
+    && await copilotTokenCanExchange(copilotToken);
+  if (copilotToken !== null && !copilotUsable) {
+    out('  ! github-copilot: the stored token cannot mint a Copilot key ' +
+        '(needs the `copilot` scope) — not offering its models');
+  }
+
+  const oauthProviders = oauthProvidersFor(allRefs, opts.home, {
+    copilot: () => (copilotUsable ? copilotToken : null),
+  });
   const detectedNativeCandidates = nativeCandidatesFrom(allRefs, providerBaseUrls, oauthProviders);
   const allNativeCandidates = [...new Map([
     ...detectedNativeCandidates.map((candidate) => [candidate.key, candidate] as const),
