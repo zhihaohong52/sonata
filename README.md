@@ -46,7 +46,9 @@ Not yet published to npm — install from source (below). Read
 - **macOS or Linux.** Sonata launches bash scripts inside tmux and manages
   process groups directly; Windows is not supported. WSL should work but is
   untested.
-- At least one harness, authenticated:
+- **A provider.** Either an API key for one of ~30 well-known providers (see
+  [BYOK](#byok-bring-your-own-key) — no harness needed), or at least one of the
+  harnesses below, authenticated:
   - **[OpenCode](https://opencode.ai)** — any provider it supports
   - **[Codex CLI](https://github.com/openai/codex)** — `codex login`
   - **[Pi](https://github.com/earendil-works/pi-mono)** — any provider it
@@ -136,6 +138,38 @@ Every prompt has a flag, so it also works unattended:
 ```bash
 sonata init --yes --providers opencode/openai --models opencode-openai-gpt-5.6-sol --roles code,review --scope project
 ```
+
+### BYOK (bring your own key)
+
+Sonata does not need a harness. `sonata init` lists ~30 well-known providers
+alongside anything your harnesses discovered; pick one, enter its API key, and
+choose from the models it reports.
+
+The key is stored in sonata's own key store — never in `sonata.toml`, never in
+an agent file, and never on the command line. It is written only after you
+confirm the summary, so cancelling the wizard stores nothing.
+
+Unattended, with the key stored first so it stays out of argv and shell history:
+
+```bash
+sonata auth add deepseek
+sonata init --yes --providers byok/deepseek --models deepseek-deepseek-v4-flash --roles code
+```
+
+BYOK models use the [native path](#native-path), so they run inside Claude
+Code's own loop, tools and permission modes.
+
+Two things worth knowing before you pick a provider:
+
+- **Model discovery is a convention, not a guarantee.** Sonata asks the provider
+  for `GET <base_url>/models`, which every provider in its list implements. If
+  yours does not answer — offline, a different shape, a key it rejects — the
+  wizard asks you to type the model ids instead. That is a fallback, not an
+  error.
+- **`claude-*` models are not offered.** The router forwards that prefix to
+  Anthropic, so a `claude-` id cannot be served through a gateway. Aggregators
+  such as OpenRouter list plenty of them; sonata filters them out rather than
+  writing a config it would then refuse to load.
 
 ### Adding Codex models
 
