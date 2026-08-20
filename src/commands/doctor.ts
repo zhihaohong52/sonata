@@ -6,6 +6,7 @@ import {
   configPath,
   GLOBAL_CONFIG_RELATIVE,
   expectedAgentNames,
+  isOauthGatewayAuth,
 } from '../config.js';
 import { staleAgents, disabledOpencodeAgents, enableOpencodeAgent,
 } from '../detect.js';
@@ -23,6 +24,7 @@ import { join } from 'node:path';
 import { findLitellm } from '../native/litellm.js';
 import { keyReport } from '../native/credentials.js';
 import { codexAuthReport } from '../native/codex-auth.js';
+import { copilotAuthReport } from '../native/copilot-auth.js';
 import { serveHealthUrl } from './serve.js';
 
 const run = promisify(execFile);
@@ -131,24 +133,32 @@ export async function cmdDoctor(
       checks.push({ name: 'serve health', ok: true, detail: 'not running — start with `sonata serve`' });
     }
 
-    // A codex-oauth gateway holds no key at all — its credential is codex's own
-    // ChatGPT login, which LiteLLM reads and refreshes. Reporting it through
-    // keyReport would tell the user to `sonata auth add` a key that would be
-    // ignored, and that no usable credential exists when one does.
+    // An OAuth gateway holds no key at all — its credential is a harness login
+    // that LiteLLM reads and refreshes. Reporting it through keyReport would
+    // tell the user to `sonata auth add` a key that would be ignored, and claim
+    // no usable credential exists when one does.
     const gatewayNames = Object.keys(config.native.gateways);
     const oauthGateways = gatewayNames.filter(
-      (name) => config.native!.gateways[name].auth === 'codex-oauth');
+      (name) => isOauthGatewayAuth(config.native!.gateways[name].auth));
 
-    if (oauthGateways.length > 0) {
-      const report = codexAuthReport(home);
-      for (const gateway of oauthGateways) {
+    for (const gateway of oauthGateways) {
+      if (config.native.gateways[gateway].auth === 'copilot-oauth') {
+        const report = copilotAuthReport(home);
         checks.push({
           name: `key source: ${gateway}`,
           ok: report.problem === undefined,
-          detail: report.problem
-            ?? `ChatGPT subscription from codex${report.expired ? ' (expired, refreshes on use)' : ''}`,
+          detail: report.problem ?? 'GitHub Copilot login from opencode',
         });
+        continue;
       }
+      const report = codexAuthReport(home);
+      checks.push({
+        name: `key source: ${gateway}`,
+        ok: report.problem === undefined,
+        detail: report.problem
+          ?? `ChatGPT subscription from ${report.source ?? 'codex'}` +
+             (report.expired ? ' (expired, refreshes on use)' : ''),
+      });
     }
 
     const keyGateways = gatewayNames.filter((name) => !oauthGateways.includes(name));

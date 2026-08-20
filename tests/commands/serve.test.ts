@@ -202,3 +202,76 @@ describe('cmdServe — codex-oauth gateways', () => {
     expect(existsSync(authFile)).toBe(false);
   });
 });
+
+const COPILOT_CONFIG = `
+[native.models."gpt4o-copilot"]
+gateway = "copilot"
+id = "gpt-4o"
+context_window = 128000
+
+[native.gateways."copilot"]
+auth = "copilot-oauth"
+
+[native.ports]
+router = 0
+litellm = 4000
+`;
+
+function writeOpencodeAuth(at: string, entries: Record<string, unknown>): void {
+  mkdirSync(join(at, '.local', 'share', 'opencode'), { recursive: true });
+  writeFileSync(join(at, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify(entries));
+}
+
+describe('cmdServe — copilot-oauth gateways', () => {
+  it('writes the GitHub token where LiteLLM expects it and points at the dir', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), COPILOT_CONFIG);
+    writeOpencodeAuth(home, { 'github-copilot': { type: 'oauth', access: 'gho_tok', refresh: 'r' } });
+
+    let captured: NodeJS.ProcessEnv = {};
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: (_c, env) => { captured = env; return { pid: 1, kill() {} }; },
+    });
+    handles.push(handle);
+
+    const dir = captured.GITHUB_COPILOT_TOKEN_DIR!;
+    expect(dir).toBeDefined();
+    // LiteLLM's provider reads the GitHub token from a plain `access-token`
+    // file and exchanges it for a Copilot key itself.
+    expect(readFileSync(join(dir, 'access-token'), 'utf8')).toBe('gho_tok');
+    expect(statSync(join(dir, 'access-token')).mode & 0o077).toBe(0);
+    expect(captured).not.toHaveProperty('SONATA_KEY_COPILOT');
+  });
+
+  it('refuses to start without a Copilot login, naming the fix', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), COPILOT_CONFIG);
+    await expect(cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    })).rejects.toThrow(/opencode auth login/);
+  });
+
+  it('sources a ChatGPT credential from opencode when codex has none', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), CODEX_CONFIG);
+    const exp = Math.floor(Date.now() / 1000) + 3600;
+    const body = Buffer.from(JSON.stringify({
+      exp, client_id: 'app_EMoamEEZ73f0CkXaXp7hrann',
+    })).toString('base64url');
+    writeOpencodeAuth(home, {
+      openai: { type: 'oauth', access: `h.${body}.s`, refresh: 'rt-oc', accountId: 'acct-oc' },
+    });
+
+    let captured: NodeJS.ProcessEnv = {};
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: (_c, env) => { captured = env; return { pid: 1, kill() {} }; },
+    });
+    handles.push(handle);
+
+    const record = JSON.parse(readFileSync(join(captured.CHATGPT_TOKEN_DIR!, 'auth.json'), 'utf8'));
+    expect(record.refresh_token).toBe('rt-oc');
+    expect(record.account_id).toBe('acct-oc');
+  });
+});

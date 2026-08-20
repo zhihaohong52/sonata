@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { envVarForGateway, litellmConfig } from '../../src/native/litellm.js';
-import { CODEX_OAUTH_BASE_URL } from '../../src/config.js';
+import { CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL } from '../../src/config.js';
 
 describe('LiteLLM config', () => {
   it('emits one model_list entry per native model, keyed by env, never the key itself', () => {
@@ -77,5 +77,28 @@ describe('LiteLLM config — codex-oauth gateways', () => {
     expect(byName['ds'].litellm_params.model).toBe('openai/deepseek-v4-flash-0731');
     expect(byName['ds'].litellm_params.api_key).toBe('os.environ/SONATA_KEY_ANEXTO');
     expect(byName['ds'].model_info).toBeUndefined();
+  });
+});
+
+describe('LiteLLM config — copilot-oauth gateways', () => {
+  const cfg = () => litellmConfig({
+    models: { 'gpt4o-copilot': { gateway: 'copilot', id: 'gpt-4o', contextWindow: 128000 } },
+    gateways: { copilot: { baseUrl: COPILOT_OAUTH_BASE_URL, auth: 'copilot-oauth' } },
+    ports: { router: 4100, litellm: 4000 },
+    generate: {},
+  }, 'sk-master');
+
+  it('routes through the github_copilot provider', () => {
+    expect(cfg().model_list[0].litellm_params.model).toBe('github_copilot/gpt-4o');
+  });
+
+  it('passes neither api_base nor api_key', () => {
+    const params = cfg().model_list[0].litellm_params;
+    expect(params).not.toHaveProperty('api_base');
+    expect(params).not.toHaveProperty('api_key');
+  });
+
+  it('sets no mode override — Copilot speaks chat-completions', () => {
+    expect(cfg().model_list[0].model_info).toBeUndefined();
   });
 });
