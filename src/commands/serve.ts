@@ -89,8 +89,19 @@ export function serveHealthUrl(routerPort: number): string {
   return `http://localhost:${routerPort}/__sonata_health`;
 }
 
+/**
+ * LiteLLM's own output is the only place a per-model startup failure appears.
+ *
+ * It drops a deployment it cannot authenticate and carries on, so the model
+ * simply vanishes from the catalogue and the next request answers "no healthy
+ * deployments for this model" — with the actual cause (for one real case, a 403
+ * from GitHub's Copilot token exchange) written only to a stream nobody read.
+ */
 function defaultSpawnLitellm(configPath: string, env: NodeJS.ProcessEnv, port: number): { pid: number; kill(): void } {
-  const child = spawn('litellm', ['--config', configPath, '--port', String(port)], { env });
+  const child = spawn('litellm', ['--config', configPath, '--port', String(port)], {
+    env,
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
   return { pid: child.pid ?? 0, kill: () => child.kill() };
 }
 

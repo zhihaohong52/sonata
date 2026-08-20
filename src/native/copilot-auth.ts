@@ -56,6 +56,42 @@ export function readCopilotToken(home: string): string | null {
   return str(entry.access) ?? null;
 }
 
+/** The scope GitHub requires before it will mint a Copilot key. */
+export const COPILOT_SCOPE = 'copilot';
+
+/**
+ * Whether the stored GitHub token may be exchanged for a Copilot key.
+ *
+ * It usually may not. opencode requests only `read:user`, so GitHub answers the
+ * exchange with 403 and LiteLLM silently drops the deployment — the request
+ * then fails as "no healthy deployments", naming neither the token nor the
+ * scope. Checking first is what keeps a credential that cannot work from being
+ * offered as if it could.
+ *
+ * Scopes are not in the token (it is opaque), so this asks GitHub, which
+ * returns them in `x-oauth-scopes`. **Fails closed**: any error, timeout or
+ * offline machine yields false, because "unknown" must not be treated as usable.
+ */
+export async function copilotTokenCanExchange(
+  token: string,
+  opts: { fetch?: typeof fetch; timeoutMs?: number } = {},
+): Promise<boolean> {
+  const doFetch = opts.fetch ?? fetch;
+  try {
+    const response = await doFetch('https://api.github.com/user', {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
+    });
+    if (!response.ok) return false;
+    const scopes = (response.headers.get('x-oauth-scopes') ?? '')
+      .split(',')
+      .map((scope) => scope.trim());
+    return scopes.includes(COPILOT_SCOPE);
+  } catch {
+    return false;
+  }
+}
+
 /** Health information, carrying no secret material. */
 export function copilotAuthReport(home: string, now: number = Date.now()): CopilotAuthReport {
   const entry = copilotEntry(home);

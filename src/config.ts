@@ -44,6 +44,21 @@ export function isOauthGatewayAuth(auth: NativeGatewayAuth): boolean {
   return OAUTH_GATEWAY_AUTHS.includes(auth);
 }
 
+/**
+ * The prefix the router reserves for Anthropic.
+ *
+ * A native model whose key or id starts with it can never be reached, because
+ * the router forwards that prefix upstream rather than to LiteLLM. Several
+ * gateways legitimately serve Claude models — Copilot, vendorx, anthropic — so
+ * this is a real limitation, not a theoretical one: `init` must not offer such
+ * a model, or it writes a config that `parseConfig` then refuses to load.
+ */
+export const ANTHROPIC_ROUTED_PREFIX = 'claude-';
+
+export function isAnthropicRoutedName(name: string): boolean {
+  return name.startsWith(ANTHROPIC_ROUTED_PREFIX);
+}
+
 /** Where LiteLLM's `chatgpt` provider sends Codex traffic. */
 export const CODEX_OAUTH_BASE_URL = 'https://chatgpt.com/backend-api/codex';
 
@@ -198,9 +213,9 @@ export function parseConfig(text: string): SonataConfig {
           `sonata.toml: native model "${name}" needs string "gateway", string "id" and number "context_window"`,
         );
       }
-      if (name.startsWith('claude-') || d.id.startsWith('claude-')) {
+      if (isAnthropicRoutedName(name) || isAnthropicRoutedName(d.id)) {
         throw new Error(
-          `sonata.toml: native model "${name}" cannot use the "claude-" prefix because the router routes it to Anthropic.`,
+          `sonata.toml: native model "${name}" cannot use the "${ANTHROPIC_ROUTED_PREFIX}" prefix because the router routes it to Anthropic.`,
         );
       }
       if (!gateways[d.gateway]) {
