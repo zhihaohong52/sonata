@@ -469,25 +469,25 @@ export async function select<T>(title: string, choices: Choice<T>[], back = fals
   return picked[0];
 }
 
-const SELECT_ALL = Symbol('selectAll');
-const DESELECT_ALL = Symbol('deselectAll');
+const TOGGLE_ALL = Symbol('toggleAll');
 
 export async function multiselect<T>(
   title: string, choices: Choice<T>[], back = false,
 ): Promise<T[]> {
   if (choices.length === 0) return [];
 
-  // Synthetic action items, always at the top. They are real choices in the
-  // list — visible, navigable, toggleable with space — but they act on all
-  // other choices instead of being returned.
-  type Extended = T | typeof SELECT_ALL | typeof DESELECT_ALL;
-  const extended: Choice<Extended>[] = [
-    { value: SELECT_ALL as Extended, label: '[ Select All ]' },
-    { value: DESELECT_ALL as Extended, label: '[ Deselect All ]' },
-    ...choices as Choice<Extended>[],
-  ];
+  type Extended = T | typeof TOGGLE_ALL;
+  const OFFSET = 1;
+  let allSelected = false;
 
-  const OFFSET = 2;
+  function buildExtended(): Choice<Extended>[] {
+    return [
+      { value: TOGGLE_ALL as Extended, label: allSelected ? '[ Deselect All ]' : '[ Select All ]' },
+      ...choices as Choice<Extended>[],
+    ];
+  }
+
+  let extended = buildExtended();
   let state = initialState(extended);
   const stdin = process.stdin;
   const stdout = process.stdout;
@@ -508,40 +508,18 @@ export async function multiselect<T>(
     await readKeys(stdin, (chunk) => {
       const key = parseKey(chunk, true);
 
-      // Intercept space on the action items to select/deselect all real choices
-      if (key.kind === 'space') {
-        const view = visibleIndices(extended, state.filter);
-        const under = view[state.cursor];
-        if (under === 0) {
-          // Select All — check every enabled real choice
-          const checked = new Set(state.checked);
-          checked.delete(0); checked.delete(1);
+      // Intercept space on the toggle-all item or ctrl-a
+      const isToggleKey = key.kind === 'toggleAll'
+        || (key.kind === 'space' && visibleIndices(extended, state.filter)[state.cursor] === 0);
+      if (isToggleKey) {
+        const checked = new Set<number>();
+        if (!allSelected) {
           for (let i = OFFSET; i < extended.length; i++) {
             if (!extended[i].disabled) checked.add(i);
           }
-          state = { ...state, checked };
-          draw();
-          return false;
         }
-        if (under === 1) {
-          // Deselect All — uncheck every real choice
-          const checked = new Set<number>();
-          state = { ...state, checked };
-          draw();
-          return false;
-        }
-      }
-
-      // toggleAll (ctrl-a) — same as Select All
-      if (key.kind === 'toggleAll') {
-        const checked = new Set(state.checked);
-        checked.delete(0); checked.delete(1);
-        const realIndices = Array.from({ length: extended.length - OFFSET }, (_, i) => i + OFFSET)
-          .filter((i) => !extended[i].disabled);
-        const allChecked = realIndices.every((i) => checked.has(i));
-        for (const i of realIndices) {
-          if (allChecked) checked.delete(i); else checked.add(i);
-        }
+        allSelected = !allSelected;
+        extended = buildExtended();
         state = { ...state, checked };
         draw();
         return false;
