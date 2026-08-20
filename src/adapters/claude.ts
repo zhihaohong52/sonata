@@ -49,7 +49,11 @@ function buildScript(input: PlanInput): LaunchPlan {
     'set -o pipefail',
     ...envLines,
     `cd ${shellQuote(input.cwd)} || exit 97`,
-    `claude ${flags.join(' ')} "$(cat ${shellQuote(input.instructionsPath)})" 2>&1 | tee -a ${shellQuote(`${input.runDir}/harness.log`)} ${shellQuote(`${input.runDir}/report.md`)}`,
+    // No tee — claude -p hangs when its stdout is piped (same class of bug
+    // as codex's TUI through tee). Redirect to report.md directly; the pane
+    // captures terminal output for harness.log equivalent via sonata's event
+    // recording.
+    `claude ${flags.join(' ')} "$(cat ${shellQuote(input.instructionsPath)})" > ${shellQuote(`${input.runDir}/report.md`)} 2>&1`,
     `echo $? > ${shellQuote(`${input.runDir}/exit`)}`,
     '',
   ].join('\n');
