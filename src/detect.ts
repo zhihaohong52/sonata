@@ -67,29 +67,60 @@ export function parseOpenCodeModels(text: string): OpenCodeModel[] {
   }
   return out;
 }
-// Well-known provider endpoints for providers that have real HTTP APIs.
-// Providers like opencode-go are internal to the opencode CLI and have no
-// standalone API endpoint — they must not appear here.
-// Built-in provider endpoints from https://opencode.ai/docs/providers/
-// Only providers whose models appear in `opencode models` or other harness
-// catalogues are listed — the rest are reachable but not discoverable.
+
+// Well-known provider endpoints, merged from:
+// - https://opencode.ai/docs/providers/ (opencode's built-in providers)
+// - litellm.openai_compatible_endpoints (litellm's authoritative list)
+// - https://docs.litellm.ai/docs/providers (litellm docs)
+// Custom/self-hosted provider URLs are discovered from harness configs.
 const WELL_KNOWN_PROVIDER_URLS: Record<string, string> = {
+  // OpenAI ecosystem
   'openai': 'https://api.openai.com/v1',
   'openai-codex': 'https://api.openai.com/v1',
   'codex': 'https://api.openai.com/v1',
+
+  // OpenCode's own gateways
   'opencode': 'https://api.opencode.ai/v1',
   'opencode-go': 'https://opencode.ai/zen/go/v1',
+
+  // Major providers
   'anthropic': 'https://api.anthropic.com/v1',
   'deepseek': 'https://api.deepseek.com/v1',
   'google': 'https://generativelanguage.googleapis.com/v1beta',
-  'groq': 'https://api.groq.com/v1',
   'mistral': 'https://api.mistral.ai/v1',
-  'openrouter': 'https://openrouter.ai/api/v1',
-  'together': 'https://api.together.xyz/v1',
-  'fireworks': 'https://api.fireworks.ai/inference/v1',
   'xai': 'https://api.x.ai/v1',
+  'meta_llama': 'https://api.llama.com/compat/v1',
+
+  // Aggregators / routers
+  'openrouter': 'https://openrouter.ai/api/v1',
+
+  // Inference providers
+  'groq': 'https://api.groq.com/openai/v1',
+  'together': 'https://api.together.xyz/v1',
+  'together_ai': 'https://api.together.xyz/v1',
+  'fireworks': 'https://api.fireworks.ai/inference/v1',
+  'fireworks_ai': 'https://api.fireworks.ai/inference/v1',
   'cerebras': 'https://api.cerebras.ai/v1',
   'deep-infra': 'https://api.deepinfra.com/v1',
+  'deepinfra': 'https://api.deepinfra.com/v1/openai',
+  'sambanova': 'https://api.sambanova.ai/v1',
+  'nebius': 'https://api.studio.nebius.ai/v1',
+  'lambda_ai': 'https://api.lambda.ai/v1',
+  'hyperbolic': 'https://api.hyperbolic.xyz/v1',
+  'perplexity': 'https://api.perplexity.ai',
+  'nvidia_nim': 'https://integrate.api.nvidia.com/v1',
+  'featherless_ai': 'https://api.featherless.ai/v1',
+  'novita': 'https://api.novita.ai/v3/openai',
+  'nscale': 'https://inference.api.nscale.com/v1',
+
+  // Other known providers
+  'moonshot': 'https://api.moonshot.ai/v1',
+  'dashscope': 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+  'galadriel': 'https://api.galadriel.ai/v1',
+  'friendliai': 'https://api.friendli.ai/serverless/v1',
+  'chutes': 'https://llm.chutes.ai/v1',
+  'empower': 'https://app.empower.dev/api/v1',
+  'morph': 'https://api.morphllm.com/v1',
 };
 
 export function parseOpenCodeProviderBaseUrls(text: string): Record<string, string> {
