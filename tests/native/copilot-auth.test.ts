@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { copilotAuthReport, readCopilotToken } from '../../src/native/copilot-auth.js';
+import { copilotAuthReport, readCopilotToken, copilotTokenCanExchange } from '../../src/native/copilot-auth.js';
 
 let home: string;
 
@@ -83,5 +83,38 @@ describe('copilotAuthReport — opencode writes expires: 0', () => {
     expect(report.expiresAt).toBeUndefined();
     expect(report.expired).toBe(false);
     expect(report.problem).toBeUndefined();
+  });
+});
+
+describe('copilotTokenCanExchange', () => {
+  const headers = (scopes: string) => new Headers({ 'x-oauth-scopes': scopes });
+
+  it('accepts a token whose scopes include copilot', async () => {
+    const fake = async () => new Response('{}', { status: 200, headers: headers('read:user, copilot') });
+    expect(await copilotTokenCanExchange('gho_x', { fetch: fake })).toBe(true);
+  });
+
+  it('rejects the read:user-only token opencode actually stores', async () => {
+    // Observed on a real machine. GitHub then answers the Copilot exchange with
+    // 403 and LiteLLM drops the deployment, so the model must not be offered.
+    const fake = async () => new Response('{}', { status: 200, headers: headers('read:user') });
+    expect(await copilotTokenCanExchange('gho_x', { fetch: fake })).toBe(false);
+  });
+
+  it('fails closed on a network error, a timeout, or a non-200', async () => {
+    const boom = async () => { throw new Error('offline'); };
+    expect(await copilotTokenCanExchange('gho_x', { fetch: boom })).toBe(false);
+    const unauthorized = async () => new Response('', { status: 401 });
+    expect(await copilotTokenCanExchange('gho_x', { fetch: unauthorized })).toBe(false);
+  });
+
+  it('fails closed when the scope header is absent', async () => {
+    const fake = async () => new Response('{}', { status: 200 });
+    expect(await copilotTokenCanExchange('gho_x', { fetch: fake })).toBe(false);
+  });
+
+  it('does not mistake a scope that merely contains the word', async () => {
+    const fake = async () => new Response('{}', { status: 200, headers: headers('copilot-editor') });
+    expect(await copilotTokenCanExchange('gho_x', { fetch: fake })).toBe(false);
   });
 });

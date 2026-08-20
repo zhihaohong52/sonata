@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import { findLitellm } from '../native/litellm.js';
 import { keyReport } from '../native/credentials.js';
 import { codexAuthReport } from '../native/codex-auth.js';
-import { copilotAuthReport } from '../native/copilot-auth.js';
+import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
 import { serveHealthUrl } from './serve.js';
 
 const run = promisify(execFile);
@@ -144,11 +144,23 @@ export async function cmdDoctor(
     for (const gateway of oauthGateways) {
       if (config.native.gateways[gateway].auth === 'copilot-oauth') {
         const report = copilotAuthReport(home);
-        checks.push({
-          name: `key source: ${gateway}`,
-          ok: report.problem === undefined,
-          detail: report.problem ?? 'GitHub Copilot login from opencode',
-        });
+        if (report.problem !== undefined) {
+          checks.push({ name: `key source: ${gateway}`, ok: false, detail: report.problem });
+          continue;
+        }
+        // Having a token is not the same as being able to use it: opencode
+        // requests only `read:user`, and GitHub then refuses the Copilot
+        // exchange with a 403 that LiteLLM turns into "no healthy deployments".
+        const token = readCopilotToken(home);
+        const usable = token !== null && await copilotTokenCanExchange(token);
+        checks.push(usable
+          ? { name: `key source: ${gateway}`, ok: true, detail: 'GitHub Copilot login from opencode' }
+          : {
+              name: `key source: ${gateway}`,
+              ok: false,
+              detail: 'the stored GitHub token cannot mint a Copilot key — it needs the ' +
+                '`copilot` scope (opencode requests only read:user)',
+            });
         continue;
       }
       const report = codexAuthReport(home);
