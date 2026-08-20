@@ -68,6 +68,7 @@ Key design points:
 - **Completion is read from an exit sentinel and a report file**, never scraped from the terminal. If a harness dies without a report, sonata returns the captured pane and marks the result `degraded`.
 - **Progress comes from diffing the tmux pane.** You can attach to any live run: `tmux attach -t sonata-<id>` (`-r` read-only) — so you can correct a cheap model mid-run.
 - **`run_timeout_seconds` is a hard cap** enforced by a watchdog inside the launched shell (not by the MCP wait loop); on expiry the whole process group is killed and the run is reported `DONE`, `degraded`, report beginning `[timed out: …]`.
+- **`sonata init`'s interactive TUI is an Ink app** (`src/tui-ink/`), not the hand-rolled prompt functions. The pure list primitives in `src/tui.ts` (`parseKey`/`reduce`/`renderList`) and the `select`/`confirm`/`runList` prompts are retained for the non-Ink interactive prompts that remain — init's hook-scope and confirm steps, and `cli.ts`'s `confirm` — and are intentionally not deleted.
 
 ### Source layout
 
@@ -83,7 +84,7 @@ src/
 ├── settings.ts           permission-hook scope settings
 ├── store.ts              run state storage
 ├── tmux.ts               tmux session lifecycle (detached sessions, pane diffing)
-├── tui.ts                Minimal zero-dependency TUI primitives — pure parseKey/reduce/renderList so list behaviour is testable without a TTY
+├── tui.ts                Minimal zero-dependency TUI primitives — pure parseKey/reduce/renderList so list behaviour is testable without a TTY; retained for the non-Ink prompts (init's hook scope, prune confirm)
 ├── watchdog.ts           run timeout enforcement
 ├── mode.ts               permission-mode mapping (plan/default/acceptEdits/bypassPermissions/auto)
 ├── native/               native path — credentials.ts (gateway keys), litellm.ts (managed LiteLLM child config), router.ts (local routing proxy)
