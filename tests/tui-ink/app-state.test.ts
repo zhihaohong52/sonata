@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyStep,
+  byokProviderKey,
+  byokProviderName,
   candidatesForProviders,
   providersForHarnesses,
   type CandidateOption,
@@ -79,5 +81,66 @@ describe('InitWizard state', () => {
     expect(candidatesForProviders(candidates, availableProviders, ['pi-anthropic'])).toEqual([
       candidates[1],
     ]);
+  });
+});
+
+describe('BYOK providers', () => {
+  const providers: ProviderOption[] = [
+    { key: 'byok/deepseek', harness: 'byok', provider: 'deepseek', count: 0 },
+    { key: 'config/moonshot', harness: 'config', provider: 'moonshot', count: 1 },
+    { key: 'opencode-groq', harness: 'opencode', provider: 'groq', count: 3 },
+  ];
+
+  it('keeps byok providers when no harness is selected', () => {
+    // The whole point of BYOK is the zero-harness case, so the harness filter
+    // must not be what removes it.
+    expect(providersForHarnesses(providers, []).map((p) => p.key))
+      .toEqual(['byok/deepseek', 'config/moonshot']);
+  });
+
+  it('keeps byok providers alongside a selected harness', () => {
+    expect(providersForHarnesses(providers, ['opencode']).map((p) => p.key))
+      .toEqual(['byok/deepseek', 'config/moonshot', 'opencode-groq']);
+  });
+
+  it('round-trips the byok picker key', () => {
+    expect(byokProviderKey('deepseek')).toBe('byok/deepseek');
+    expect(byokProviderName('byok/deepseek')).toBe('deepseek');
+    expect(byokProviderName('opencode-groq')).toBeUndefined();
+  });
+
+  it('records byok models into byokModels and nativeKeys', () => {
+    const next = applyStep({ nativeKeys: ['a'] }, 6, {
+      provider: 'deepseek',
+      ids: ['deepseek-v4-flash'],
+    });
+    expect(next.byokModels).toEqual({ deepseek: ['deepseek-v4-flash'] });
+    expect(next.nativeKeys).toEqual(['a', 'deepseek-deepseek-v4-flash']);
+  });
+
+  it('does not duplicate a key already in nativeKeys', () => {
+    const next = applyStep(
+      { nativeKeys: ['deepseek-deepseek-v4-flash'], byokModels: { deepseek: ['deepseek-v4-flash'] } },
+      6,
+      { provider: 'deepseek', ids: ['deepseek-v4-flash'] },
+    );
+    expect(next.nativeKeys).toEqual(['deepseek-deepseek-v4-flash']);
+  });
+
+  it('drops a deselected model on a revisit', () => {
+    // Walking back into the step and unticking a model has to remove its key,
+    // or the config is written with a model the user just removed.
+    const first = applyStep({}, 6, { provider: 'deepseek', ids: ['a', 'b'] });
+    const second = applyStep(first, 6, { provider: 'deepseek', ids: ['b'] });
+    expect(second.byokModels).toEqual({ deepseek: ['b'] });
+    expect(second.nativeKeys).toEqual(['deepseek-b']);
+  });
+
+  it('leaves another provider\'s models alone on a revisit', () => {
+    let state = applyStep({}, 6, { provider: 'deepseek', ids: ['a'] });
+    state = applyStep(state, 6, { provider: 'groq', ids: ['x'] });
+    state = applyStep(state, 6, { provider: 'deepseek', ids: ['b'] });
+    expect(state.nativeKeys).toEqual(['groq-x', 'deepseek-b']);
+    expect(state.byokModels).toEqual({ deepseek: ['b'], groq: ['x'] });
   });
 });
