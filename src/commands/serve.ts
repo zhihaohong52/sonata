@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 
 import { loadConfig } from '../config.js';
 import { resolveKeys } from '../native/credentials.js';
+import { codexAuthPath, readCodexOAuth } from '../native/codex-auth.js';
 import { envVarForGateway, litellmConfigYaml } from '../native/litellm.js';
 import { createRouterServer } from '../native/router.js';
 
@@ -19,6 +20,14 @@ export interface ServeDeps {
   spawnLitellm?: (configPath: string, env: NodeJS.ProcessEnv, port: number) => { pid: number; kill(): void };
   /** Test seam: resolves when litellm answers on its port, rejects on timeout. */
   waitForLitellm?: (port: number) => Promise<void>;
+  /**
+   * Where the generated litellm config and any credential file are written.
+   *
+   * Injected by tests so a run never writes a 0600 master-key file into the
+   * real system temp directory — two such files, carrying a test fixture's
+   * gateway URL, were found there after a suite run.
+   */
+  tempDir?: string;
 }
 
 /**
@@ -112,49 +121,75 @@ export async function cmdServe(
 
   const native = config.native;
   const masterKey = `sk-sonata-${randomBytes(32).toString('hex')}`;
-  const tempDir = mkdtempSync(join(tmpdir(), 'sonata-litellm-'));
-  const configPath = join(tempDir, 'config.json');
-  writeFileSync(configPath, litellmConfigYaml(native, masterKey), { mode: 0o600 });
+  const tempDir = opts.tempDir ?? mkdtempSync(join(tmpdir(), 'sonata-litellm-'));
+  mkdirSync(tempDir, { recursive: true });
 
-  // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
-  const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
-  for (const { gateway, key } of resolveKeys(Object.keys(native.gateways), opts.home)) {
-    childEnv[envVarForGateway(gateway)] = key;
-  }
-
-  // A predecessor's orphaned litellm would hold the port and answer with the
-  // wrong master key; kill it (recorded pid only) before spawning our own.
-  killRecordedOrphan(opts.home);
-
-  const child = (opts.spawnLitellm ?? defaultSpawnLitellm)(configPath, childEnv, native.ports.litellm);
-  recordLitellmPid(opts.home, child.pid);
-
+  // Everything from here to a listening router owns `tempDir`. Cleanup used to
+  // be duplicated on two failure branches and absent from every other throw, so
+  // a run that died in between left its config behind.
+  let child: { pid: number; kill(): void } | undefined;
+  let router: ReturnType<typeof createRouterServer> | undefined;
   try {
-    await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
-  } catch (error) {
-    child.kill();
-    rmSync(tempDir, { force: true, recursive: true });
-    throw error;
-  }
-  const router = createRouterServer({
-    fetch,
-    litellmBase: `http://localhost:${native.ports.litellm}`,
-    litellmKey: masterKey,
-    health: true,
-  });
+    const configPath = join(tempDir, 'config.json');
+    writeFileSync(configPath, litellmConfigYaml(native, masterKey), { mode: 0o600 });
 
-  try {
-    await listen(router, native.ports.router);
-  } catch (error) {
-    child.kill();
-    rmSync(tempDir, { force: true, recursive: true });
-    if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-      throw new Error(`sonata serve: router port ${native.ports.router} is occupied by a non-sonata listener`);
+    // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
+    const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
+    for (const { gateway, key } of resolveKeys(Object.keys(native.gateways), opts.home)) {
+      childEnv[envVarForGateway(gateway)] = key;
     }
+
+    // A codex-oauth gateway carries no key: LiteLLM's chatgpt provider reads the
+    // subscription token from its own auth file and refreshes it in place.
+    if (Object.values(native.gateways).some((gateway) => gateway.auth === 'codex-oauth')) {
+      const record = readCodexOAuth(opts.home);
+      if (record === null) {
+        throw new Error(
+          'sonata serve: a native gateway uses codex-oauth but no ChatGPT credential was found ' +
+          `at ${codexAuthPath(opts.home)} — run \`codex login\`.`,
+        );
+      }
+      const tokenDir = join(tempDir, 'chatgpt');
+      mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(tokenDir, 'auth.json'), JSON.stringify(record), { mode: 0o600 });
+      childEnv.CHATGPT_TOKEN_DIR = tokenDir;
+    }
+
+    // A predecessor's orphaned litellm would hold the port and answer with the
+    // wrong master key; kill it (recorded pid only) before spawning our own.
+    killRecordedOrphan(opts.home);
+
+    child = (opts.spawnLitellm ?? defaultSpawnLitellm)(configPath, childEnv, native.ports.litellm);
+    recordLitellmPid(opts.home, child.pid);
+
+    await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
+
+    router = createRouterServer({
+      fetch,
+      litellmBase: `http://localhost:${native.ports.litellm}`,
+      litellmKey: masterKey,
+      health: true,
+    });
+
+    try {
+      await listen(router, native.ports.router);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+        throw new Error(`sonata serve: router port ${native.ports.router} is occupied by a non-sonata listener`);
+      }
+      throw error;
+    }
+  } catch (error) {
+    child?.kill();
+    rmSync(tempDir, { force: true, recursive: true });
     throw error;
   }
 
-  const address = router.address();
+  // Both are assigned by the time the try block completes; the catch rethrows.
+  const startedChild = child as { pid: number; kill(): void };
+  const startedRouter = router as ReturnType<typeof createRouterServer>;
+
+  const address = startedRouter.address();
   const routerPort = typeof address === 'object' && address !== null ? address.port : native.ports.router;
   let stopped = false;
 
@@ -164,10 +199,10 @@ export async function cmdServe(
     async stop(): Promise<void> {
       if (stopped) return;
       stopped = true;
-      child.kill();
+      startedChild.kill();
       try { unlinkSync(serveStatePath(opts.home)); } catch { /* already gone */ }
       try {
-        await close(router);
+        await close(startedRouter);
       } finally {
         rmSync(tempDir, { force: true, recursive: true });
       }

@@ -19,7 +19,28 @@ export function isReadOnlyRole(role: string): boolean {
 export interface ModelConfig { harness: string; id: string }
 
 export interface NativeModelConfig { gateway: string; id: string; contextWindow: number }
-export interface NativeGatewayConfig { baseUrl: string }
+
+/**
+ * How a gateway authenticates.
+ *
+ * `api-key` is a bearer key from the credential store, sent to `base_url`.
+ *
+ * `codex-oauth` is a ChatGPT subscription credential written by `codex login`.
+ * It is NOT an API key: the metered api.openai.com refuses it with
+ * `insufficient_quota` *after* accepting the bearer and its scopes, because a
+ * subscription is not API credit. It works only against the Codex backend, over
+ * the Responses wire API, with streaming mandatory. LiteLLM's `chatgpt`
+ * provider speaks all of that and refreshes the token itself, so sonata
+ * supplies neither a base URL nor a key. See docs/codex-subscription.md.
+ */
+export type NativeGatewayAuth = 'api-key' | 'codex-oauth';
+
+export const NATIVE_GATEWAY_AUTHS: readonly NativeGatewayAuth[] = ['api-key', 'codex-oauth'];
+
+/** Where LiteLLM's `chatgpt` provider sends Codex traffic. */
+export const CODEX_OAUTH_BASE_URL = 'https://chatgpt.com/backend-api/codex';
+
+export interface NativeGatewayConfig { baseUrl: string; auth: NativeGatewayAuth }
 export interface NativeConfig {
   models: Record<string, NativeModelConfig>;
   gateways: Record<string, NativeGatewayConfig>;
@@ -124,10 +145,32 @@ export function parseConfig(text: string): SonataConfig {
     const gateways: Record<string, NativeGatewayConfig> = {};
     for (const [name, def] of Object.entries((rawNative.gateways ?? {}) as Record<string, unknown>)) {
       const d = def as Record<string, unknown>;
+      const rawAuth = d.auth ?? 'api-key';
+      if (typeof rawAuth !== 'string' || !NATIVE_GATEWAY_AUTHS.includes(rawAuth as NativeGatewayAuth)) {
+        throw new Error(
+          `sonata.toml: native gateway "${name}" has unknown auth "${String(rawAuth)}". ` +
+          `Known: ${NATIVE_GATEWAY_AUTHS.join(', ')}`,
+        );
+      }
+      const auth = rawAuth as NativeGatewayAuth;
+      // A codex-oauth gateway is addressed by LiteLLM's own `chatgpt` provider,
+      // which knows the URL; accepting one here would only let a config claim a
+      // base URL that is never used.
+      if (auth === 'codex-oauth') {
+        if (d.base_url !== undefined && d.base_url !== CODEX_OAUTH_BASE_URL) {
+          throw new Error(
+            `sonata.toml: native gateway "${name}" is codex-oauth, so it cannot set base_url ` +
+            `to "${String(d.base_url)}" — that credential only reaches ${CODEX_OAUTH_BASE_URL}. ` +
+            'Remove base_url.',
+          );
+        }
+        gateways[name] = { baseUrl: CODEX_OAUTH_BASE_URL, auth };
+        continue;
+      }
       if (typeof d.base_url !== 'string') {
         throw new Error(`sonata.toml: native gateway "${name}" needs string "base_url"`);
       }
-      gateways[name] = { baseUrl: d.base_url };
+      gateways[name] = { baseUrl: d.base_url, auth };
     }
 
     const nativeModels: Record<string, NativeModelConfig> = {};

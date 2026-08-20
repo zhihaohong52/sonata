@@ -97,7 +97,19 @@ async function ensureNativeServe(cwd: string): Promise<void> {
   } catch {
     // Not up — start it.
   }
-  await cmdServe({ cwd, home: homedir(), daemon: true });
+  // The handle owns a temp directory holding the generated master key, and for
+  // a codex-oauth gateway the ChatGPT credential. Discarding it left both in
+  // the system temp directory for every auto-started serve.
+  const handle = await cmdServe({ cwd, home: homedir(), daemon: true });
+  let stopping = false;
+  const shutdown = () => {
+    if (stopping) return;
+    stopping = true;
+    void handle.stop();
+  };
+  process.once('exit', shutdown);
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }
 
 export async function cmdRun(opts: RunOptions): Promise<RunResult> {

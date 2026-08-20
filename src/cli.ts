@@ -264,6 +264,22 @@ async function main(argv: string[]): Promise<number> {
     // TODO: detach and register daemon lifecycle with gc.
     const handle = await cmdServe({ cwd: process.cwd(), home: homedir(), daemon: values.daemon });
     console.log(`router listening on ${handle.routerPort}; litellm listening on ${handle.litellmPort}`);
+
+    // serve runs until it is killed, so the signal handlers ARE its normal exit
+    // path — without them `stop()` never runs and the run's temp directory
+    // survives. That directory holds the generated master key, and for a
+    // codex-oauth gateway the ChatGPT credential too; one was found in the
+    // system temp directory after a Ctrl-C.
+    let stopping = false;
+    const shutdown = (signal: NodeJS.Signals) => {
+      if (stopping) return;
+      stopping = true;
+      void handle.stop().finally(() => process.kill(process.pid, signal));
+    };
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
+    process.once('SIGHUP', shutdown);
+
     await new Promise<void>(() => {});
     return 0;
   }

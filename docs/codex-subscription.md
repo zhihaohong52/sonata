@@ -131,18 +131,54 @@ open since 2026-04-09, fix PR
 [#31332](https://github.com/BerriAI/litellm/pull/31332) still unmerged. No
 stable release contains it. Reproduced on 1.82.3 here.
 
-## What sonata still needs for Route 2
+## How sonata implements Route 2
 
-1. **A gateway auth kind.** A codex-OAuth gateway must emit
-   `model: chatgpt/<id>` plus `model_info.mode: responses`, and must omit
-   `api_base`/`api_key` — not the current `openai/<id>` + `api_base` +
-   `os.environ/SONATA_KEY_*` shape.
-2. **Write the flattened auth file** and point `CHATGPT_TOKEN_DIR` at it when
-   spawning LiteLLM.
-3. **Fix the well-known URL table.** `sonata init` maps `codex` →
-   `https://api.openai.com/v1`, which is only correct for API-key auth and
-   silently produces a gateway that can never authenticate.
-4. **Teach `opencodeKeys()` to read OAuth entries.** It reads only
-   `credential.key ?? credential.apiKey`, so every `type: oauth` entry in
-   opencode's `auth.json` (`openai`, `github-copilot`) is invisible and reported
-   as "no key" when a usable credential is present.
+Configure it by marking the gateway — nothing else is needed:
+
+```toml
+[native.gateways."codex"]
+auth = "codex-oauth"
+
+[native.models."gpt-5.6-luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+context_window = 128000
+```
+
+`base_url` is refused here: a config naming the metered API would describe a
+gateway that can never authenticate. `sonata init` writes this form by itself
+when `codex login` used a ChatGPT account.
+
+What each piece does:
+
+- **`src/config.ts`** parses `auth`, defaulting to `api-key` so existing configs
+  are unaffected, and supplies `CODEX_OAUTH_BASE_URL` for codex-oauth.
+- **`src/native/litellm.ts`** emits `model: chatgpt/<id>` with
+  `model_info.mode: responses` and **no** `api_base`/`api_key` — passing either
+  would override the provider and break it.
+- **`src/native/codex-auth.ts`** flattens `~/.codex/auth.json` into the record
+  LiteLLM reads, deriving `expires_at` from the JWT.
+- **`src/commands/serve.ts`** writes that record 0600 into its own temp
+  directory and sets `CHATGPT_TOKEN_DIR`, then removes it on stop.
+- **`src/commands/doctor.ts`** reports the credential as a subscription rather
+  than telling the user to add a key that would be ignored.
+
+Verified end to end: an Anthropic `/v1/messages` streaming request to
+`sonata serve`'s router returned `"text": "OK"` from `gpt-5.6-luna`.
+
+### The credential must not outlive serve
+
+`serve` runs until killed, so its signal handlers *are* its normal exit path.
+Without them `stop()` never runs and the temp directory survives — carrying the
+generated master key and, for a codex-oauth gateway, the ChatGPT credential. One
+such token was found in the system temp directory during development. `cli.ts`
+now stops the handle on SIGINT/SIGTERM/SIGHUP, and `run.ts` retains the handle
+it used to discard for auto-started serves.
+
+## Still outstanding
+
+**`opencodeKeys()` ignores OAuth entries.** It reads only
+`credential.key ?? credential.apiKey`, so every `type: oauth` entry in
+opencode's `auth.json` (`openai`, `github-copilot`) is invisible and reported as
+"no key" when a usable credential is present. Unrelated to codex — opencode
+stores its own ChatGPT OAuth under `openai` — but the same class of bug.
