@@ -43,7 +43,7 @@ describe('cmdServe', () => {
     const handle = await cmdServe({
       cwd,
       home,
-      spawnLitellm: (_configPath, env) => {
+      waitForLitellm: async () => {}, spawnLitellm: (_configPath, env) => {
         captured = env;
         return { pid: 1, kill() {} };
       },
@@ -55,7 +55,7 @@ describe('cmdServe', () => {
   });
 
   it('serves a health endpoint on the router port', async () => {
-    const handle = await cmdServe({ cwd, home, spawnLitellm: () => ({ pid: 1, kill() {} }) });
+    const handle = await cmdServe({ cwd, home, waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }) });
     handles.push(handle);
 
     const response = await fetch(serveHealthUrl(handle.routerPort));
