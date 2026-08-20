@@ -46,12 +46,17 @@ describe('claudeAdapter.plan', () => {
     expect(plan.interactive).toBe(false);
   });
 
-  it('reads the task from the instructions file and writes the report and exit sentinel', () => {
+  it('reads the task from the instructions file, keeps report.md for the model', () => {
     const plan = claudeAdapter.plan({ ...base, mode: 'acceptEdits' });
 
     expect(plan.script).toContain(`cat '${base.instructionsPath}'`);
-    expect(plan.script).toContain(`'${base.runDir}/report.md'`);
+    // stdout goes to the fallback file, never report.md — the model writes
+    // report.md itself, and two writers to one file corrupt it.
+    expect(plan.script).toContain(`'${base.runDir}/last-message.txt'`);
+    expect(plan.script).not.toContain(`> '${base.runDir}/report.md'`);
+    expect(plan.script).not.toContain('tee');
     expect(plan.script).toContain(`echo $? > '${base.runDir}/exit'`);
+    expect(claudeAdapter.fallbackReportFile).toBe('last-message.txt');
   });
 
   it('bakes the router URL from config into the script', () => {
