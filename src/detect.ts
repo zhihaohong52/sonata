@@ -74,6 +74,7 @@ const WELL_KNOWN_PROVIDER_URLS: Record<string, string> = {
   'openai': 'https://api.openai.com/v1',
   'openai-codex': 'https://api.openai.com/v1',
   'codex': 'https://api.openai.com/v1',
+  'opencode-go': 'https://opencode.ai/zen/go/v1',
 };
 
 export function parseOpenCodeProviderBaseUrls(text: string): Record<string, string> {
