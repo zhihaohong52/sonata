@@ -469,10 +469,101 @@ export async function select<T>(title: string, choices: Choice<T>[], back = fals
   return picked[0];
 }
 
+const SELECT_ALL = Symbol('selectAll');
+const DESELECT_ALL = Symbol('deselectAll');
+
 export async function multiselect<T>(
   title: string, choices: Choice<T>[], back = false,
 ): Promise<T[]> {
-  return runList(title, choices, true, back);
+  if (choices.length === 0) return [];
+
+  // Synthetic action items, always at the top. They are real choices in the
+  // list — visible, navigable, toggleable with space — but they act on all
+  // other choices instead of being returned.
+  type Extended = T | typeof SELECT_ALL | typeof DESELECT_ALL;
+  const extended: Choice<Extended>[] = [
+    { value: SELECT_ALL as Extended, label: '[ Select All ]' },
+    { value: DESELECT_ALL as Extended, label: '[ Deselect All ]' },
+    ...choices as Choice<Extended>[],
+  ];
+
+  const OFFSET = 2;
+  let state = initialState(extended);
+  const stdin = process.stdin;
+  const stdout = process.stdout;
+  const height = listHeight();
+
+  stdout.write('\u001b[?1049h');
+
+  let lastHeight = 0;
+  const draw = (): void => {
+    const { out, height: drawn } =
+      redraw(renderList(title, extended, state, true, height, back), lastHeight);
+    stdout.write(out);
+    lastHeight = drawn;
+  };
+
+  try {
+    draw();
+    await readKeys(stdin, (chunk) => {
+      const key = parseKey(chunk, true);
+
+      // Intercept space on the action items to select/deselect all real choices
+      if (key.kind === 'space') {
+        const view = visibleIndices(extended, state.filter);
+        const under = view[state.cursor];
+        if (under === 0) {
+          // Select All — check every enabled real choice
+          const checked = new Set(state.checked);
+          checked.delete(0); checked.delete(1);
+          for (let i = OFFSET; i < extended.length; i++) {
+            if (!extended[i].disabled) checked.add(i);
+          }
+          state = { ...state, checked };
+          draw();
+          return false;
+        }
+        if (under === 1) {
+          // Deselect All — uncheck every real choice
+          const checked = new Set<number>();
+          state = { ...state, checked };
+          draw();
+          return false;
+        }
+      }
+
+      // toggleAll (ctrl-a) — same as Select All
+      if (key.kind === 'toggleAll') {
+        const checked = new Set(state.checked);
+        checked.delete(0); checked.delete(1);
+        const realIndices = Array.from({ length: extended.length - OFFSET }, (_, i) => i + OFFSET)
+          .filter((i) => !extended[i].disabled);
+        const allChecked = realIndices.every((i) => checked.has(i));
+        for (const i of realIndices) {
+          if (allChecked) checked.delete(i); else checked.add(i);
+        }
+        state = { ...state, checked };
+        draw();
+        return false;
+      }
+
+      state = reduce(state, key, extended, true);
+      if (state.done) return true;
+      draw();
+      return false;
+    });
+  } finally {
+    stdout.write('\u001b[?1049l');
+  }
+
+  if (state.cancelled) throw new CancelledError();
+  if (state.back && back) throw new BackError();
+
+  // Return only the real choices, stripping the synthetic action items
+  return [...state.checked]
+    .filter((i) => i >= OFFSET)
+    .sort((a, b) => a - b)
+    .map((i) => extended[i].value as T);
 }
 
 /**
