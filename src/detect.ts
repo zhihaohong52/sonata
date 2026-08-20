@@ -73,6 +73,7 @@ export function parseOpenCodeModels(text: string): OpenCodeModel[] {
 const WELL_KNOWN_PROVIDER_URLS: Record<string, string> = {
   'openai': 'https://api.openai.com/v1',
   'openai-codex': 'https://api.openai.com/v1',
+  'codex': 'https://api.openai.com/v1',
 };
 
 export function parseOpenCodeProviderBaseUrls(text: string): Record<string, string> {
