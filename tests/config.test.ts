@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents, expectedAgentNames, CODEX_OAUTH_BASE_URL } from '../src/config.js';
+import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents, expectedAgentNames, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL } from '../src/config.js';
 
 const VALID = `
 [models.deepseek-v4-flash]
@@ -451,5 +451,46 @@ code=["m"]
 
   it('is empty for a config that generates nothing', () => {
     expect(expectedAgentNames(config('[run]\n'))).toEqual([]);
+  });
+});
+
+describe('parseConfig — copilot-oauth gateways', () => {
+  const withGateway = (body: string) => `
+[native.gateways."g"]
+${body}
+
+[native.models."m"]
+gateway="g"
+id="m1"
+context_window=1000
+`;
+
+  it('accepts copilot-oauth and supplies the Copilot URL itself', () => {
+    const cfg = parseConfig(withGateway('auth="copilot-oauth"'));
+    expect(cfg.native!.gateways.g).toEqual({
+      baseUrl: COPILOT_OAUTH_BASE_URL, auth: 'copilot-oauth',
+    });
+  });
+
+  it('refuses a copilot-oauth gateway that claims a different base_url', () => {
+    expect(() => parseConfig(withGateway(
+      'auth="copilot-oauth"\nbase_url="https://api.openai.com/v1"',
+    ))).toThrow(/only reaches https:\/\/api\.githubcopilot\.com/);
+  });
+});
+
+describe('parseConfig — the claude- prefix and Copilot', () => {
+  it('still refuses a claude- id on a copilot gateway, which Copilot does serve', () => {
+    // Copilot offers claude-sonnet-4 and friends, but the router sends any
+    // `claude-` model to Anthropic, so such an id cannot be reached through the
+    // native path. Documented so the collision is not rediscovered as a bug.
+    expect(() => parseConfig(`
+[native.gateways."copilot"]
+auth="copilot-oauth"
+[native.models."sonnet"]
+gateway="copilot"
+id="claude-sonnet-4"
+context_window=1000
+`)).toThrow(/cannot use the "claude-" prefix/);
   });
 });

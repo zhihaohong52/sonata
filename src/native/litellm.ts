@@ -26,14 +26,25 @@ export function envVarForGateway(gateway: string): string {
 
 export function litellmConfig(native: NativeConfig, masterKey: string): LiteLLMConfig {
   const modelList = Object.entries(native.models).map(([modelName, model]): LiteLLMModelConfig => {
-    // A codex-oauth gateway is served by LiteLLM's own `chatgpt` provider, which
-    // supplies the base URL, the bearer, the account header and token refresh.
+    // An OAuth gateway is served by one of LiteLLM's own providers, which
+    // supplies the base URL, the bearer and any refresh or token exchange.
     // Passing api_base or api_key here would override that and break it.
-    if (native.gateways[model.gateway].auth === 'codex-oauth') {
+    const auth = native.gateways[model.gateway].auth;
+    if (auth === 'codex-oauth') {
       return {
         model_name: modelName,
         litellm_params: { model: `chatgpt/${model.id}` },
+        // Without this LiteLLM uses chat-completions and POSTs to the bare
+        // backend-api/codex/ URL, which serves the ChatGPT web app.
         model_info: { mode: 'responses' },
+      };
+    }
+    if (auth === 'copilot-oauth') {
+      // Copilot speaks chat-completions, so it needs no mode override; the
+      // provider exchanges the GitHub token for a Copilot key itself.
+      return {
+        model_name: modelName,
+        litellm_params: { model: `github_copilot/${model.id}` },
       };
     }
     return {

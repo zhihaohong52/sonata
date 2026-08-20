@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { codexAuthPath, codexAuthReport, jwtExpiry, readCodexOAuth } from '../../src/native/codex-auth.js';
+import { codexAuthPath, codexAuthReport, jwtExpiry, readCodexOAuth, readOpencodeChatGptOAuth, readChatGptOAuth } from '../../src/native/codex-auth.js';
 
 let home: string;
 
@@ -120,5 +120,91 @@ describe('codexAuthReport', () => {
 
   it('names the auth file path it reads', () => {
     expect(codexAuthPath('/h')).toBe(join('/h', '.codex', 'auth.json'));
+  });
+});
+
+/** A JWT carrying both exp and client_id, as the real ChatGPT tokens do. */
+function chatgptJwt(exp: number, clientId = 'app_EMoamEEZ73f0CkXaXp7hrann'): string {
+  const body = Buffer.from(JSON.stringify({ exp, client_id: clientId })).toString('base64url');
+  return `header.${body}.sig`;
+}
+
+function writeOpencodeAuth(home: string, entries: Record<string, unknown>): void {
+  mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+  writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify(entries));
+}
+
+describe('readOpencodeChatGptOAuth', () => {
+  const exp = 1787806005;
+
+  it('flattens opencode field names into the LiteLLM record', () => {
+    // opencode calls them access/refresh/accountId; codex nests them under tokens.
+    writeOpencodeAuth(home, {
+      openai: {
+        type: 'oauth', access: chatgptJwt(exp), refresh: 'rt-oc',
+        expires: (exp + 60) * 1000, accountId: 'acct-oc',
+      },
+    });
+    expect(readOpencodeChatGptOAuth(home)).toEqual({
+      access_token: chatgptJwt(exp),
+      refresh_token: 'rt-oc',
+      expires_at: exp,
+      account_id: 'acct-oc',
+    });
+  });
+
+  it('ignores an api-key entry, which is not an oauth credential', () => {
+    writeOpencodeAuth(home, { openai: { type: 'api', key: 'sk-real' } });
+    expect(readOpencodeChatGptOAuth(home)).toBeNull();
+  });
+
+  it('refuses a token from a different OAuth app', () => {
+    // Only the codex/opencode ChatGPT app's tokens work with LiteLLM's chatgpt
+    // provider; another OpenAI grant would fail confusingly downstream.
+    writeOpencodeAuth(home, {
+      openai: { type: 'oauth', access: chatgptJwt(exp, 'app_somethingelse') },
+    });
+    expect(readOpencodeChatGptOAuth(home)).toBeNull();
+  });
+
+  it('returns null when opencode has no openai entry', () => {
+    writeOpencodeAuth(home, { vendorx: { type: 'api', key: 'k' } });
+    expect(readOpencodeChatGptOAuth(home)).toBeNull();
+  });
+});
+
+describe('readChatGptOAuth', () => {
+  const exp = 1787806005;
+
+  it('prefers codex when both harnesses hold a login', () => {
+    writeAuth({ auth_mode: 'chatgpt', tokens: { access_token: jwt(exp), refresh_token: 'rt-codex' } });
+    writeOpencodeAuth(home, { openai: { type: 'oauth', access: chatgptJwt(exp), refresh: 'rt-oc' } });
+    expect(readChatGptOAuth(home)?.refresh_token).toBe('rt-codex');
+  });
+
+  it('falls back to opencode when codex is not logged in', () => {
+    writeOpencodeAuth(home, { openai: { type: 'oauth', access: chatgptJwt(exp), refresh: 'rt-oc' } });
+    expect(readChatGptOAuth(home)?.refresh_token).toBe('rt-oc');
+  });
+
+  it('returns null when neither has one', () => {
+    expect(readChatGptOAuth(home)).toBeNull();
+  });
+});
+
+describe('codexAuthReport — source', () => {
+  const NOW = 1_700_000_000_000;
+
+  it('names opencode when that is where the login came from', () => {
+    const exp = Math.floor(NOW / 1000) + 3600;
+    writeOpencodeAuth(home, { openai: { type: 'oauth', access: chatgptJwt(exp), refresh: 'rt' } });
+    const report = codexAuthReport(home, NOW);
+    expect(report.present).toBe(true);
+    expect(report.source).toBe('opencode');
+    expect(report.problem).toBeUndefined();
+  });
+
+  it('mentions both harnesses when neither has a login', () => {
+    expect(codexAuthReport(home, NOW).problem).toMatch(/codex or opencode/);
   });
 });

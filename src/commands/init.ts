@@ -15,7 +15,7 @@ import {
   KNOWN_ROLES, configPath, GLOBAL_CONFIG_RELATIVE, parseConfig, CODEX_OAUTH_BASE_URL,
   type SonataConfig, type NativeGatewayAuth,
 } from '../config.js';
-import { readCodexOAuth } from '../native/codex-auth.js';
+import { readChatGptOAuth } from '../native/codex-auth.js';
 import type { ModelRef } from '../types.js';
 import {
   detectTmux, detectHarnesses, offerableProviders,
@@ -382,7 +382,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   // an API key. Writing such a provider with a metered base URL produces a
   // gateway that authenticates and is then refused for quota, which reads to the
   // user as a missing key. Record how it actually authenticates instead.
-  const codexSubscription = readCodexOAuth(opts.home) !== null;
+  const codexSubscription = readChatGptOAuth(opts.home) !== null;
   const oauthProviders = new Set(
     codexSubscription
       ? allRefs.filter((ref) => ref.harness === 'codex').map((ref) => ref.provider)

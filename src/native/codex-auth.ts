@@ -25,6 +25,8 @@ export interface ChatGptAuthRecord {
 
 export interface CodexAuthReport {
   present: boolean;
+  /** Which harness's login supplied it. */
+  source?: 'codex' | 'opencode';
   /** `chatgpt` for a subscription login, `apikey` when codex holds a real key. */
   mode?: string;
   expiresAt?: number;
@@ -36,6 +38,20 @@ export interface CodexAuthReport {
 export function codexAuthPath(home: string): string {
   return join(home, '.codex', 'auth.json');
 }
+
+export function opencodeAuthPath(home: string): string {
+  return join(home, '.local', 'share', 'opencode', 'auth.json');
+}
+
+/**
+ * The OAuth app both codex and opencode use for a ChatGPT login.
+ *
+ * Checked before treating an opencode `openai` entry as a ChatGPT credential:
+ * that key could in principle hold some other OpenAI OAuth grant, and handing a
+ * non-subscription token to the chatgpt provider would fail in the confusing
+ * way this whole module exists to avoid.
+ */
+export const CHATGPT_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 
 /** The `exp` claim of a JWT, without verifying the signature. */
 export function jwtExpiry(token: string): number | undefined {
@@ -85,26 +101,94 @@ export function readCodexOAuth(home: string): ChatGptAuthRecord | null {
   };
 }
 
-/** Health information about the codex credential, carrying no secret material. */
-export function codexAuthReport(home: string, now: number = Date.now()): CodexAuthReport {
+/** The `client_id` claim of a JWT, used to identify which OAuth app issued it. */
+function jwtClientId(token: string): string | undefined {
+  const payload = token.split('.')[1];
+  if (payload === undefined) return undefined;
+  try {
+    const padded = payload.padEnd(payload.length + ((4 - (payload.length % 4)) % 4), '=');
+    const claims: unknown = JSON.parse(Buffer.from(padded, 'base64url').toString('utf8'));
+    if (claims === null || typeof claims !== 'object') return undefined;
+    const id = (claims as Record<string, unknown>).client_id;
+    return typeof id === 'string' ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The ChatGPT credential opencode stores under `openai`.
+ *
+ * opencode writes `{type: "oauth", access, refresh, expires, accountId}` — the
+ * same subscription credential codex holds, under different field names. It is
+ * NOT an API key: `opencodeKeys` is right to skip it, because handing it to a
+ * gateway as a bearer produces a 429 from the metered API after the token has
+ * already authenticated.
+ */
+export function readOpencodeChatGptOAuth(home: string): ChatGptAuthRecord | null {
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(codexAuthPath(home), 'utf8'));
+    raw = JSON.parse(readFileSync(opencodeAuthPath(home), 'utf8'));
   } catch {
-    return { present: false, problem: 'not logged in — run `codex login`' };
+    return null;
   }
-  const mode = str((raw as Record<string, unknown>)?.auth_mode);
-  const record = readCodexOAuth(home);
+  if (raw === null || typeof raw !== 'object') return null;
+  const entry = (raw as Record<string, unknown>).openai;
+  if (entry === null || typeof entry !== 'object') return null;
+  const e = entry as Record<string, unknown>;
+  if (e.type !== 'oauth') return null;
+
+  const accessToken = str(e.access);
+  if (accessToken === undefined) return null;
+  if (jwtClientId(accessToken) !== CHATGPT_CLIENT_ID) return null;
+
+  // opencode records `expires` in milliseconds; the JWT is authoritative.
+  const expires = typeof e.expires === 'number' ? Math.floor(e.expires / 1000) : undefined;
+
+  return {
+    access_token: accessToken,
+    refresh_token: str(e.refresh),
+    expires_at: jwtExpiry(accessToken) ?? expires,
+    account_id: str(e.accountId),
+  };
+}
+
+/**
+ * A ChatGPT credential from whichever harness has one.
+ *
+ * codex is preferred only because it is the harness the gateway is usually
+ * named after; either file yields the same subscription.
+ */
+export function readChatGptOAuth(home: string): ChatGptAuthRecord | null {
+  return readCodexOAuth(home) ?? readOpencodeChatGptOAuth(home);
+}
+
+/** Health information about the codex credential, carrying no secret material. */
+export function codexAuthReport(home: string, now: number = Date.now()): CodexAuthReport {
+  const fromCodex = readCodexOAuth(home);
+  const record = fromCodex ?? readOpencodeChatGptOAuth(home);
   if (record === null) {
-    return { present: false, mode, problem: 'no ChatGPT tokens — run `codex login`' };
+    return {
+      present: false,
+      problem: 'no ChatGPT login found in codex or opencode — run `codex login`',
+    };
+  }
+  const source: 'codex' | 'opencode' = fromCodex === null ? 'opencode' : 'codex';
+
+  let mode: string | undefined;
+  if (source === 'codex') {
+    try {
+      const raw: unknown = JSON.parse(readFileSync(codexAuthPath(home), 'utf8'));
+      mode = str((raw as Record<string, unknown>)?.auth_mode);
+    } catch { /* the record parsed, so this is only the label */ }
   }
 
   const expired = record.expires_at !== undefined && now / 1000 >= record.expires_at;
   // LiteLLM refreshes on demand, so an expired access token with a refresh
   // token is healthy; without one it needs a fresh login.
   const problem = expired && record.refresh_token === undefined
-    ? 'token expired and no refresh token — run `codex login`'
+    ? `token expired and no refresh token — run \`${source === 'codex' ? 'codex login' : 'opencode auth login'}\``
     : undefined;
 
-  return { present: true, mode, expiresAt: record.expires_at, expired, problem };
+  return { present: true, source, mode, expiresAt: record.expires_at, expired, problem };
 }
