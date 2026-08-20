@@ -173,6 +173,7 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     harnessScriptPath: harnessPath,
     runDir: dir,
     timeoutSeconds: config.run.runTimeoutSeconds,
+    interactive: plan.interactive,
   }), { mode: 0o755 });
 
   writeMeta(opts.cwd, {
