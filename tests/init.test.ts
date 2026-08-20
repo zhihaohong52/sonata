@@ -1088,6 +1088,27 @@ describe('cmdInit — BYOK', () => {
     expect(existsSync(res.configPath)).toBe(true);
   });
 
+  it('leaves BYOK out of the default provider set', async () => {
+    // `--yes` with no --providers defaults to everything on offer, and BYOK
+    // rows are on offer — so without an opt-in rule this asks for a key for all
+    // thirty well-known providers and refuses a command that used to work.
+    const withOpenrouter = async () => ({
+      tmux: { installed: true, version: '3.7b', problems: [] },
+      harnesses: [{
+        name: 'opencode', installed: true, version: '1.18.16', supported: true,
+        refs: parseOpenCodeRefs('openrouter/kimi-k3\n'),
+        authedProviders: ['openrouter'], problems: [],
+        providerBaseUrls: { openrouter: 'https://openrouter.ai/api/v1' },
+      }],
+    });
+    const res = await cmdInit({
+      packageRoot: '/pkg', yes: true, detect: withOpenrouter, cwd, home, write,
+      models: ['openrouter-kimi-k3'], roles: ['code'], scope: 'skip' as const,
+      mcpRunner: () => ({ ok: true, output: 'Added' }),
+    });
+    expect(res.models).toEqual(['openrouter-kimi-k3']);
+  });
+
   it('refuses a BYOK provider with no stored key', async () => {
     await expect(cmdInit({ ...args, cwd, home, write }))
       .rejects.toThrow(/sonata auth add deepseek/);

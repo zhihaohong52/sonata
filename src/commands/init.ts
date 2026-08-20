@@ -591,7 +591,13 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     ticked = preTickedNative(configText, allNativeCandidates);
     const d = parsedConfig ? deriveInitState(parsedConfig, configScope, offered) : { configScope };
 
-    providerKeys = opts.providers ?? d.providerKeys ?? offered.map((p) => p.key);
+    // BYOK is opt-in. The default is "everything on offer", and BYOK rows are
+    // now on offer — so without this, a plain `--yes` with no --providers asks
+    // for a key for all thirty well-known providers and refuses. Only an
+    // explicit `--providers byok/x`, or a config that already names one,
+    // engages BYOK here.
+    providerKeys = opts.providers ?? d.providerKeys
+      ?? offered.filter((p) => p.harness !== 'byok').map((p) => p.key);
     const unknownProviders = providerKeys.filter((k) => !offered.some((p) => p.key === k));
     if (unknownProviders.length > 0) {
       throw new Error(

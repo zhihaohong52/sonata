@@ -219,6 +219,17 @@ The native router transits the session credential locally and unmodified; native
   into a STALLED one: the report was written, the quit watcher sent Ctrl-D, nothing happened, and no exit sentinel
   was ever produced. Clearing the line before quitting would fix the second half; the first half needs prompt
   detection to know what it has already answered.
+- **A mistyped BYOK key has no recovery path inside the wizard.** `fetchModels`
+  returns `[]` for a 401 exactly as it does for an unreachable host, so a wrong
+  key lands the user in manual-id entry under a hint that says "could not read
+  …/models" — true, but a misdiagnosis. There is no way back to the key prompt
+  once `byokKeys` holds a value, and the bad key is stored on confirm.
+  `sonata auth add <gateway>` overwrites it. Distinguishing 401 from unreachable
+  and offering a re-prompt is the fix; it needs `fetchModels` to report *why* it
+  failed, which is the distinction it currently and deliberately collapses.
+  Related: hand-typed `claude-*` ids are dropped silently by `parseIds`, and if
+  they were the only input the message is "enter at least one model id" rather
+  than the reason.
 - No streaming granularity guarantees — progress is whatever the harness prints.
 - **`default` mode is verified live on codex and reasonix** (2026-08-18). A codex dispatch surfaced its
   directory-trust prompt as `PAUSED`, took `approve`, did the work and reached `DONE` un-degraded — the first
