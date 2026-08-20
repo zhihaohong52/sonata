@@ -12,6 +12,7 @@ import {
 } from '../src/commands/init.js';
 import { providersForHarnesses } from '../src/tui-ink/app-state.js';
 import { readSettings } from '../src/settings.js';
+import { writeSonataKey } from '../src/native/credentials.js';
 import { parseConfig, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL } from '../src/config.js';
 
 // Shape taken verbatim from a real ~/.config/opencode/opencode.json.
@@ -1036,5 +1037,113 @@ describe('nativeCandidatesFrom — models the router cannot reach', () => {
     ];
     const got = nativeCandidatesFrom(refs, { anthropic: 'https://a/v1', vendorx: 'https://b/v1' });
     expect(() => parseConfig(nativeTomlFor({ code: got }))).not.toThrow();
+  });
+});
+
+describe('cmdInit — BYOK', () => {
+  let cwd: string;
+  let home: string;
+  let lines: string[];
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'init-byok-cwd-'));
+    home = mkdtempSync(join(tmpdir(), 'init-byok-home-'));
+    lines = [];
+  });
+
+  const write = (l: string) => { lines.push(l); };
+
+  /** A machine with nothing installed — the case BYOK exists for. */
+  const noHarness = async () => ({
+    tmux: { installed: true, version: '3.7b', problems: [] },
+    harnesses: [{
+      name: 'opencode', installed: false, version: undefined, supported: false,
+      refs: [], authedProviders: [], problems: [],
+    }],
+  });
+
+  const args = {
+    packageRoot: '/pkg', yes: true, detect: noHarness,
+    providers: ['byok/deepseek'], models: ['deepseek-deepseek-v4-flash'],
+    roles: ['code'], scope: 'skip' as const,
+  };
+
+  it('writes BYOK models to the native config with no harness installed', async () => {
+    writeSonataKey(home, 'deepseek', 'sk-test');
+    const res = await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
+
+    const toml = readFileSync(res.configPath, 'utf8');
+    expect(toml).toMatch(/\[native\.gateways\."deepseek"\]/);
+    expect(toml).toMatch(/base_url = "https:\/\/api\.deepseek\.com\/v1"/);
+    expect(toml).toMatch(/\[native\.models\."deepseek-deepseek-v4-flash"\]/);
+    expect(toml).toMatch(/id = "deepseek-v4-flash"/);
+  });
+
+  it('does not make a missing harness fatal', async () => {
+    // Before BYOK this returned early with severity 'error' and wrote nothing.
+    writeSonataKey(home, 'deepseek', 'sk-test');
+    const res = await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
+    expect(res.problems.some((p) => p.severity === 'error')).toBe(false);
+    expect(res.problems.some((p) => p.severity === 'warn')).toBe(true);
+    expect(existsSync(res.configPath)).toBe(true);
+  });
+
+  it('refuses a BYOK provider with no stored key', async () => {
+    await expect(cmdInit({ ...args, cwd, home, write }))
+      .rejects.toThrow(/sonata auth add deepseek/);
+  });
+
+  it('does not offer a BYOK row for a provider a harness already covers', async () => {
+    const withOpenrouter = async () => ({
+      tmux: { installed: true, version: '3.7b', problems: [] },
+      harnesses: [{
+        name: 'opencode', installed: true, version: '1.18.16', supported: true,
+        refs: parseOpenCodeRefs('openrouter/kimi-k3\n'),
+        authedProviders: ['openrouter'], problems: [],
+        providerBaseUrls: { openrouter: 'https://openrouter.ai/api/v1' },
+      }],
+    });
+    // There must be no byok/openrouter row at all: offering the same provider
+    // twice, once with a catalogue and once without, is the confusing outcome.
+    // The unknown-provider error lists what is on offer, so it is the evidence.
+    await expect(cmdInit({
+      ...args, detect: withOpenrouter, cwd, home, write,
+      providers: ['byok/openrouter'], models: ['openrouter-kimi-k3'],
+    })).rejects.toThrow(/no harness offers byok\/openrouter/);
+
+    // …while the harness row for the same provider still works.
+    const res = await cmdInit({
+      ...args, detect: withOpenrouter, cwd, home, write,
+      providers: ['opencode/openrouter'], models: ['openrouter-kimi-k3'],
+      mcpRunner: () => ({ ok: true, output: 'Added' }),
+    });
+    expect(readFileSync(res.configPath, 'utf8')).toMatch(/\[native\.models\."openrouter-kimi-k3"\]/);
+  });
+
+  // The double-init bug, now for a gateway no harness can rediscover.
+  it('re-derives a BYOK config on a second init', async () => {
+    writeSonataKey(home, 'deepseek', 'sk-test');
+    const res = await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
+
+    const config = parseConfig(readFileSync(res.configPath, 'utf8'));
+    const state = deriveInitState(config, 'project', []);
+
+    expect(state.nativeKeys).toEqual(['deepseek-deepseek-v4-flash']);
+    expect(state.providerKeys).toEqual(['config/deepseek']);
+    expect(state.perRoleModels).toEqual({ code: ['deepseek-deepseek-v4-flash'] });
+  });
+
+  it('carries a BYOK config through a second init unchanged', async () => {
+    writeSonataKey(home, 'deepseek', 'sk-test');
+    const first = await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
+    const before = readFileSync(first.configPath, 'utf8');
+
+    // No flags this time: everything must come back from the config on disk.
+    const second = await cmdInit({
+      packageRoot: '/pkg', yes: true, detect: noHarness, cwd, home, write,
+      scope: 'skip' as const, mcpRunner: () => ({ ok: true, output: 'Added' }),
+    });
+    expect(second.models).toEqual(['deepseek-deepseek-v4-flash']);
+    expect(readFileSync(second.configPath, 'utf8')).toBe(before);
   });
 });

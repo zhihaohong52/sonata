@@ -1,4 +1,31 @@
+import { byokCandidateKey } from '../native/models.js';
 import type { InitState } from './types.js';
+
+/**
+ * Pseudo-harnesses: providers that come from somewhere other than a detected
+ * harness catalogue, and so must survive the harness filter in step 2.
+ *
+ * `config` is a gateway already named in sonata.toml; `byok` is a well-known
+ * provider the user can name directly. Neither belongs to a harness, so
+ * deselecting every harness must not hide them — which is the whole point for
+ * `byok`, whose case is having no harness at all.
+ */
+export const PSEUDO_HARNESSES: readonly string[] = ['config', 'byok'];
+
+/** The `byok/<name>` picker key for a provider. */
+export function byokProviderKey(name: string): string {
+  return `byok/${name}`;
+}
+
+/** The provider name behind a `byok/<name>` picker key, or undefined. */
+export function byokProviderName(key: string): string | undefined {
+  return key.startsWith('byok/') ? key.slice('byok/'.length) : undefined;
+}
+
+export interface ByokModelsValue {
+  provider: string;
+  ids: string[];
+}
 
 export interface ProviderOption {
   key: string;
@@ -38,6 +65,24 @@ export function applyStep(state: InitState, step: number, value: unknown): InitS
         perRoleModels: { ...state.perRoleModels, [role]: models },
       };
     }
+    case 6: {
+      // A BYOK provider's chosen models. They join `nativeKeys` here rather than
+      // later, because step 5 offers roles a choice from `nativeKeys` — a model
+      // missing from it cannot be assigned to any role, so the wizard would
+      // appear to accept it and then write nothing.
+      const { provider, ids } = value as ByokModelsValue;
+      const keys = ids.map((id) => byokCandidateKey(provider, id));
+      // Drop what this provider contributed last time before adding what it
+      // contributes now: the user can walk back into this step and deselect,
+      // and a key left behind would still be written to the config.
+      const stale = new Set((state.byokModels?.[provider] ?? []).map((id) => byokCandidateKey(provider, id)));
+      const kept = (state.nativeKeys ?? []).filter((key) => !stale.has(key));
+      return {
+        ...state,
+        byokModels: { ...state.byokModels, [provider]: ids },
+        nativeKeys: [...kept, ...keys.filter((key) => !kept.includes(key))],
+      };
+    }
     default:
       return state;
   }
@@ -45,7 +90,8 @@ export function applyStep(state: InitState, step: number, value: unknown): InitS
 
 export function providersForHarnesses(providers: ProviderOption[], harnesses: string[] | undefined): ProviderOption[] {
   const selected = new Set(harnesses);
-  return providers.filter((provider) => provider.harness === 'config' || selected.has(provider.harness));
+  return providers.filter((provider) =>
+    PSEUDO_HARNESSES.includes(provider.harness) || selected.has(provider.harness));
 }
 
 export function candidatesForProviders(candidates: CandidateOption[], providers: ProviderOption[], providerKeys: string[] | undefined): CandidateOption[] {

@@ -30,7 +30,9 @@ import {
 import { pruneAgents } from '../detect.js';
 import { cmdSync } from './sync.js';
 import { select, confirm, isInteractive, banner, CancelledError } from '../tui.js';
-import { keyReport } from '../native/credentials.js';
+import { keyReport, resolveKeys, writeSonataKey } from '../native/credentials.js';
+import { byokCandidateKey, wellKnownProviders } from '../native/models.js';
+import { byokProviderKey, byokProviderName } from '../tui-ink/app-state.js';
 import { runInitTui } from '../tui-ink/run.js';
 import type { WizardData } from '../tui-ink/app.js';
 import type { InitState } from '../tui-ink/types.js';
@@ -418,7 +420,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   }
   for (const [gateway, count] of configuredGateways) {
     if (!offered.some((provider) => provider.provider === gateway)) {
-      offered.push({ harness: 'config' as ProviderSummary['harness'], provider: gateway, key: `config/${gateway}`, count });
+      offered.push({ harness: 'config', provider: gateway, key: `config/${gateway}`, count });
     }
   }
 
@@ -454,11 +456,28 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     ...Object.values(configsByScope).flatMap((config) => configNativeCandidates(config!)).map((candidate) => [candidate.key, candidate] as const),
   ]).values()];
 
-  if (offered.length === 0) {
+  // Providers a user can name without any harness installed. Offered alongside
+  // the discovered ones, minus any whose name a real provider already covers —
+  // otherwise deepseek appears twice, once with a catalogue and once without.
+  const byokProviders = wellKnownProviders()
+    .filter((provider) => !offered.some((existing) => existing.provider === provider.name));
+  for (const provider of byokProviders) {
+    offered.push({
+      harness: 'byok',
+      provider: provider.name,
+      key: byokProviderKey(provider.name),
+      count: 0,
+    });
+  }
+
+  // Having no harness is no longer fatal: BYOK is exactly that case, and the
+  // wizard can reach a working config from it. It is still worth saying, so it
+  // stays a problem — a warning, which does not stop the run.
+  if (offered.every((provider) => provider.harness === 'byok')) {
     problems.push({
-      severity: 'error',
+      severity: 'warn',
       message: 'no harness reported a usable model provider',
-      fix: 'opencode auth login',
+      fix: 'pick a provider below and enter its API key, or run `opencode auth login`',
     });
   }
 
@@ -486,7 +505,28 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   let chosenNative!: NativeCandidate[];
   let roles!: string[];
   let nativeRoleModels: Record<string, NativeCandidate[]> = {};
+  /** BYOK keys typed in the wizard, written only after the confirm gate. */
+  let byokKeys: Record<string, string> = {};
   const nativeByKey = new Map(allNativeCandidates.map((c) => [c.key, c]));
+  const byokUrls = new Map(byokProviders.map((provider) => [provider.name, provider.url]));
+
+  /**
+   * Candidates for models a user named directly.
+   *
+   * These must join `nativeByKey` before `nativeKeys` is resolved through it,
+   * or every BYOK key looks up `undefined` and is filtered out silently — a
+   * wizard that appears to work and writes an empty config.
+   */
+  const addByokCandidates = (byokModels: Record<string, string[]>): void => {
+    for (const [gateway, ids] of Object.entries(byokModels)) {
+      const baseUrl = byokUrls.get(gateway);
+      if (baseUrl === undefined) continue;
+      for (const id of ids) {
+        const key = byokCandidateKey(gateway, id);
+        nativeByKey.set(key, { key, gateway, id, contextWindow: 128000, baseUrl, auth: 'api-key' });
+      }
+    }
+  };
 
   if (interactive) {
     const existingConfigPath = configPath(opts.cwd, opts.home);
@@ -505,6 +545,11 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
       providers: offered.map((p) => ({ key: p.key, harness: p.harness, provider: p.provider, count: p.count })),
       candidates: allNativeCandidates.map((c) => ({ key: c.key, gateway: c.gateway, id: c.id, label: nativeLabel(c) })),
       roles: [...KNOWN_ROLES],
+      byokProviders,
+      storedKeys: Object.fromEntries(
+        resolveKeys(byokProviders.map((provider) => provider.name), opts.home)
+          .map((source) => [source.gateway, source.key]),
+      ),
       initialState,
       initialStateByScope,
     };
@@ -522,6 +567,8 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     // Map result.state to the variables the write path needs:
     configScope = result.state.configScope ?? 'project';
     configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
+    addByokCandidates(result.state.byokModels ?? {});
+    byokKeys = result.state.byokKeys ?? {};
     nativeKeys = result.state.nativeKeys ?? [];
     roles = result.state.roles ?? [...KNOWN_ROLES];
     chosenNative = nativeKeys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined);
@@ -556,6 +603,36 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     // Scope native candidates to the selected providers.
     const selectedProviders = new Set(providerKeys.map((k) => k.split('/')[1] ?? k));
     inScopeNative = allNativeCandidates.filter((c) => selectedProviders.has(c.gateway));
+
+    // A BYOK provider has no local catalogue, so each --models entry is taken
+    // as a raw model id. Validating it would mean a network call, and a scripted
+    // path must not depend on one.
+    const byokSelected = providerKeys
+      .map(byokProviderName)
+      .filter((name): name is string => name !== undefined);
+    if (byokSelected.length > 0) {
+      const stored = new Set(resolveKeys(byokSelected, opts.home).map((source) => source.gateway));
+      const missing = byokSelected.filter((name) => !stored.has(name));
+      if (missing.length > 0) {
+        throw new Error(
+          `sonata init: no key for ${missing.join(', ')}. ` +
+          `Store it first: ${missing.map((name) => `sonata auth add ${name}`).join('; ')}`,
+        );
+      }
+      const byokModels: Record<string, string[]> = {};
+      for (const name of byokSelected) {
+        const prefix = `${name}-`;
+        byokModels[name] = (opts.models ?? [])
+          .filter((key) => key.startsWith(prefix))
+          .map((key) => key.slice(prefix.length));
+      }
+      addByokCandidates(byokModels);
+      inScopeNative = [
+        ...inScopeNative,
+        ...Object.values(byokModels).flat().length === 0 ? [] : byokSelected.flatMap((name) =>
+          byokModels[name].map((id) => nativeByKey.get(byokCandidateKey(name, id))!)),
+      ];
+    }
 
     nativeKeys = opts.models ?? d.nativeKeys ?? inScopeNative.filter((c) => ticked.has(c.key)).map((c) => c.key);
     const inScopeNativeByKey = new Map(inScopeNative.map((c) => [c.key, c]));
@@ -651,6 +728,13 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   }
 
   // ---- write ------------------------------------------------------------
+  // Keys typed in the wizard are stored here and nowhere earlier: a cancelled
+  // run must leave no credential behind. The gateway is printed, never the key.
+  for (const [gateway, key] of Object.entries(byokKeys)) {
+    writeSonataKey(opts.home, gateway, key);
+    out(`  ✓ stored the key for ${gateway}`);
+  }
+
   mkdirSync(dirname(configPathResolved), { recursive: true });
   writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels));
   out(`  ✓ wrote ${configPathResolved}`);
