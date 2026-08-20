@@ -78,7 +78,7 @@ src/
 ├── commands/             command implementations (approve, auth, code, doctor, gc, init, log, run, serve, sync, tail, verify, wait)
 ├── mcp/                  stdio JSON-RPC MCP server — protocol.ts (handshake + captured fixtures), server.ts (`runMcpStdio`), tools.ts (dispatch/wait/approve tools)
 ├── config.ts             config resolution (project → machine), sonata.toml parsing, KNOWN_HARNESSES, isReadOnlyRole
-├── detect.ts             harness catalogues (`opencode models`, `pi --list-models`, reasonix doctor) → ModelRef, provider grouping
+├── detect.ts             harness catalogues (`opencode models`, `pi --list-models`, reasonix doctor) → ModelRef, provider grouping; WELL_KNOWN_PROVIDER_URLS
 ├── normalize.ts          config/model normalization
 ├── roles.ts              role prompt composition
 ├── settings.ts           permission-hook scope settings
@@ -87,7 +87,7 @@ src/
 ├── tui.ts                Minimal zero-dependency TUI primitives — pure parseKey/reduce/renderList so list behaviour is testable without a TTY; retained for the non-Ink prompts (init's hook scope, prune confirm)
 ├── watchdog.ts           run timeout enforcement
 ├── mode.ts               permission-mode mapping (plan/default/acceptEdits/bypassPermissions/auto)
-├── native/               native path — credentials.ts (gateway keys), litellm.ts (managed LiteLLM child config), router.ts (local routing proxy)
+├── native/               native path — credentials.ts (gateway keys), litellm.ts (managed LiteLLM child config), router.ts (local routing proxy), models.ts (BYOK /models discovery)
 ├── types.ts              shared types
 └── adapters/
     ├── types.ts          HarnessAdapter interface (plan, canPromptForApproval, promptPatterns, describePrompt, health)
@@ -169,6 +169,26 @@ dispatch_window_seconds = 1500 # blocking window; must stay under MCP's 30-minut
 - **Each role chooses its own models** through `[generate.roles]`; the old flat `roles`/`models` pair is no longer accepted. `sonata init` rewrites an old config to the per-role format.
 - Four roles ship: `code`, `review`, `explore`, `plan`. The last three are read-only, enforced by the harness (read-only sandbox on codex, tool allowlist on pi, read-only agent on opencode, `dontAsk` on reasonix).
 - `sonata init` discovers OpenCode, Pi and Reasonix models (reasonix's catalogue and its per-provider auth state both come from `reasonix doctor --json`). Codex has no provider dimension and is added by hand; hand-written entries survive `sonata init`, which carries through any model whose harness it does not manage.
+- **BYOK: a provider can be named directly, with no harness installed.** `init`
+  offers ~30 well-known providers from `WELL_KNOWN_PROVIDER_URLS` as a `byok`
+  pseudo-harness, alongside the existing `config` one — both bypass the harness
+  filter in `providersForHarnesses`, which is what makes the zero-harness case
+  work. A provider a harness already covers gets no BYOK row, so it is never
+  offered twice. Having no harness is a **warning**, not the blocking error it
+  used to be; that downgrade is where the zero-harness claim actually lives.
+  - Models come from `GET <base_url>/models` (`src/native/models.ts`).
+    Unreachable, wrong-shaped and 401 all return `[]` — one outcome, because
+    the fallback is the same for all three: the user types ids. Fetched ids run
+    through `isAnthropicRoutedName` for the same reason harness candidates do.
+  - **Keys are written once, after the confirm gate.** They live in
+    `InitState.byokKeys` in memory only — `runInitTui` renders in-process and
+    serializes nothing — so a cancelled wizard leaves no credential behind.
+    There is deliberately **no `--key` flag**: it would put a credential in argv
+    and shell history. The scripted path requires `sonata auth add <gateway>`
+    first and refuses by name if the key is missing.
+  - `byokCandidateKey` is exported and shared rather than inlined: the wizard
+    puts the key into `nativeKeys` and `cmdInit` looks the candidate up by it,
+    so two copies of the formula is how the two stop agreeing.
 - Run `sonata sync` after editing the config; Claude Code picks up the generated agents automatically. Reconnect the sonata MCP server with `/mcp` only when sonata's MCP tool surface changes.
 
 ## Security
