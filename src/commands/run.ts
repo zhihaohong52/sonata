@@ -103,11 +103,23 @@ async function ensureNativeServe(cwd: string): Promise<void> {
 export async function cmdRun(opts: RunOptions): Promise<RunResult> {
   const config = loadConfig(opts.cwd);
 
-  const modelCfg = config.models[opts.model];
+  let modelCfg = config.models[opts.model];
+
+  // A native model key dispatches through the claude harness automatically —
+  // no separate [models] entry needed. The claude adapter runs `claude -p`
+  // with the proxy env, so the native model reaches its gateway.
+  if (!modelCfg && config.native?.models[opts.model]) {
+    modelCfg = { harness: 'claude', id: opts.model };
+  }
+
   if (!modelCfg) {
+    const all = [
+      ...Object.keys(config.models),
+      ...Object.keys(config.native?.models ?? {}),
+    ];
     throw new Error(
       `sonata: unknown model "${opts.model}". ` +
-      `Defined models: ${Object.keys(config.models).join(', ')}`,
+      `Defined models: ${all.join(', ')}`,
     );
   }
 
