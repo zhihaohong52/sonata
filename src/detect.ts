@@ -67,25 +67,12 @@ export function parseOpenCodeModels(text: string): OpenCodeModel[] {
   }
   return out;
 }
-
-/**
- * Provider name → base URL, read from opencode's own config.
- *
- * `sonata init`'s native-model screen needs an endpoint per gateway, and
- * opencode already carries one for every custom/self-hosted provider under
- * `provider.<name>.options.baseURL`. Providers with no `options.baseURL`
- * (opencode's own built-in ones) are simply absent from the result, which is
- * exactly the filter the native picker wants.
- */
-// Well-known provider endpoints. Opencode's built-in providers use implicit
-// defaults that never appear in the config file, so a provider with no
-// `options.baseURL` isn't necessarily one without an endpoint — it is one
-// whose endpoint is well-known. Native models need an explicit URL, so we
-// supply the defaults here.
+// Well-known provider endpoints for providers that have real HTTP APIs.
+// Providers like opencode-go are internal to the opencode CLI and have no
+// standalone API endpoint — they must not appear here.
 const WELL_KNOWN_PROVIDER_URLS: Record<string, string> = {
   'openai': 'https://api.openai.com/v1',
   'openai-codex': 'https://api.openai.com/v1',
-  'opencode-go': 'https://opencode.ai/api/v1',
 };
 
 export function parseOpenCodeProviderBaseUrls(text: string): Record<string, string> {
