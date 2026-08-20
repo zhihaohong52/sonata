@@ -16,6 +16,7 @@ export interface WizardData {
   candidates: CandidateOption[];
   roles: string[];
   initialState?: InitState;
+  initialStateByScope?: Partial<Record<'project' | 'global', InitState>>;
 }
 
 export interface InitWizardProps {
@@ -91,11 +92,17 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     setState((current) => applyStep(current, step, value));
     setStep((current) => current + 1);
   };
+  const chooseScope = (scope: InitState['configScope']) => {
+    setState(data.initialStateByScope?.[scope!] ?? { configScope: scope });
+    setSameModels(undefined);
+    setRoleIndex(0);
+    setStep(1);
+  };
   const back = () => setStep((current) => Math.max(0, current - 1));
 
   switch (step) {
     case 0:
-      return <Choice key="config-scope" title="Config scope" choices={[{ value: 'project', label: 'Project' }, { value: 'global', label: 'Global' }]} initial={state.configScope} onSubmit={next} onCancel={cancel} />;
+      return <Choice key="config-scope" title="Config scope" choices={[{ value: 'project', label: 'Project' }, { value: 'global', label: 'Global' }]} initial={state.configScope} onSubmit={chooseScope} onCancel={cancel} />;
     case 1: {
       const harnesses = data.harnesses.filter((harness) => harness.installed);
       return <MultiSelect key="harnesses" title="Harnesses" items={harnesses.map((harness) => ({ value: harness.name, label: harness.name }))} initialSelected={new Set(state.harnesses ?? harnesses.map((harness) => harness.name))} onSubmit={next} onBack={back} onCancel={cancel} filterable={false} />;

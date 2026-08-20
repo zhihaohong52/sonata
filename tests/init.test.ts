@@ -7,8 +7,10 @@ import { parsePiRefs } from '../src/adapters/pi.js';
 import {
   cmdInit, duplicateKeys, previousAskedStep, nativeCandidatesFrom,
   nativeTomlFor, preTickedNative, configPathFor, agentsDirFor,
+  deriveInitState, configNativeCandidates,
   type NativeCandidate,
 } from '../src/commands/init.js';
+import { providersForHarnesses } from '../src/tui-ink/app-state.js';
 import { readSettings } from '../src/settings.js';
 import { parseConfig } from '../src/config.js';
 
@@ -681,7 +683,7 @@ describe('cmdInit — key check', () => {
   });
 });
 
-describe('wizard-state.json persistence', () => {
+describe('cmdInit — re-init from existing config', () => {
   let cwd: string;
   let home: string;
   const lines: string[] = [];
@@ -694,21 +696,18 @@ describe('wizard-state.json persistence', () => {
     lines.length = 0;
   });
 
-  it('writes wizard-state.json next to the config', async () => {
+  it('round-trips the selected config on a second run', async () => {
     await cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'skip', write,
     });
-    const statePath = join(cwd, 'wizard-state.json');
-    expect(existsSync(statePath)).toBe(true);
-    const state = JSON.parse(readFileSync(statePath, 'utf8'));
-    expect(state.nativeKeys).toEqual(['opencode-deepseek-v4-flash']);
-    expect(state.roles).toEqual(['code']);
-    expect(state.perRoleModels).toEqual({ code: ['opencode-deepseek-v4-flash'] });
+    const toml1 = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
+    await cmdInit({ cwd, home, packageRoot: '/pkg', yes: true, detect, scope: 'skip', write });
+    expect(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).toBe(toml1);
   });
 
-  it('second run reads the saved state and produces identical config', async () => {
+  it('second run with the same flags produces identical config', async () => {
     const args = {
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
@@ -721,7 +720,7 @@ describe('wizard-state.json persistence', () => {
     expect(toml2).toBe(toml1);
   });
 
-  it('second run without flags reads wizard-state.json and preserves selections', async () => {
+  it('second run without flags reads the TOML and preserves selections', async () => {
     // First run: explicit flags.
     await cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect,
@@ -730,7 +729,7 @@ describe('wizard-state.json persistence', () => {
     });
     const toml1 = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
 
-    // Second run: no providers/models/roles flags — should read wizard-state.json.
+    // Second run: no providers/models/roles flags — should read sonata.toml.
     await cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       scope: 'skip', write,
@@ -747,16 +746,87 @@ describe('wizard-state.json persistence', () => {
     expect(toml2).not.toContain('"plan"');
   });
 
-  it('writes wizard-state.json to global config dir', async () => {
+  it('re-initializes a global config from its TOML', async () => {
     await cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect, configScope: 'global',
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'skip', write,
     });
-    const statePath = join(home, '.config', 'sonata', 'wizard-state.json');
-    expect(existsSync(statePath)).toBe(true);
-    const state = JSON.parse(readFileSync(statePath, 'utf8'));
-    expect(state.nativeKeys).toEqual(['opencode-deepseek-v4-flash']);
+    const toml1 = readFileSync(join(home, '.config', 'sonata', 'sonata.toml'), 'utf8');
+    await cmdInit({ cwd, home, packageRoot: '/pkg', yes: true, detect, configScope: 'global', scope: 'skip', write });
+    expect(readFileSync(join(home, '.config', 'sonata', 'sonata.toml'), 'utf8')).toBe(toml1);
+  });
+});
+
+describe('deriveInitState', () => {
+  const config = (models: Record<string, { gateway: string; id: string }>, generate: Record<string, string[]> = { code: Object.keys(models) }) => parseConfig([
+    ...Object.entries(models).flatMap(([key, model]) => [
+      `[native.models."${key}"]`, `gateway = "${model.gateway}"`, `id = "${model.id}"`, 'context_window = 128000', '',
+    ]),
+    ...[...new Set(Object.values(models).map((model) => model.gateway))].flatMap((gateway) => [
+      `[native.gateways."${gateway}"]`, `base_url = "https://${gateway}.example/v1"`, '',
+    ]),
+    '[generate.native]',
+    ...Object.entries(generate).map(([role, keys]) => `"${role}" = [${keys.map((key) => `"${key}"`).join(', ')}]`),
+  ].join('\n'));
+
+  it('derives a detected gateway provider and harness', () => {
+    const state = deriveInitState(config({ m: { gateway: 'acme', id: 'm' } }), 'project', [
+      { harness: 'opencode', provider: 'acme', count: 1, key: 'opencode/acme' },
+    ]);
+    expect(state.providerKeys).toEqual(['opencode/acme']);
+    expect(state.harnesses).toEqual(['opencode']);
+  });
+
+  it('uses a synthetic provider for a gateway absent from detection', () => {
+    const state = deriveInitState(config({ m: { gateway: 'hand', id: 'm' } }), 'project', []);
+    expect(state.providerKeys).toEqual(['config/hand']);
+    expect(state.harnesses).toEqual([]);
+  });
+
+  it('keeps every harness serving a gateway', () => {
+    const state = deriveInitState(config({ m: { gateway: 'shared', id: 'm' } }), 'project', [
+      { harness: 'opencode', provider: 'shared', count: 1, key: 'opencode/shared' },
+      { harness: 'pi', provider: 'shared', count: 1, key: 'pi/shared' },
+    ]);
+    expect(state.providerKeys).toEqual(['opencode/shared', 'pi/shared']);
+    expect(state.harnesses).toEqual(['opencode', 'pi']);
+  });
+
+  it('copies roles and per-role models from generate.native', () => {
+    const state = deriveInitState(config({ m: { gateway: 'g', id: 'm' } }, { review: ['m'] }), 'global', []);
+    expect(state.roles).toEqual(['review']);
+    expect(state.perRoleModels).toEqual({ review: ['m'] });
+  });
+
+  it('returns only the scope when native config is absent', () => {
+    const plain = parseConfig('[generate.native]\n');
+    expect(deriveInitState(plain, 'global', [])).toEqual({ configScope: 'global' });
+  });
+});
+
+describe('configNativeCandidates and provider filtering', () => {
+  it('makes a hand-configured model a candidate with its configured URL', () => {
+    const config = parseConfig(`
+[native.gateways."hand"]
+base_url = "https://hand.example/v1"
+[native.models."hand-model"]
+gateway = "hand"
+id = "model-id"
+context_window = 64000
+`);
+    expect(configNativeCandidates(config)).toEqual([{
+      key: 'hand-model', gateway: 'hand', id: 'model-id', contextWindow: 64000, baseUrl: 'https://hand.example/v1',
+    }]);
+  });
+
+  it('keeps config providers while filtering ordinary providers', () => {
+    const providers = [
+      { harness: 'config', provider: 'hand', count: 1, key: 'config/hand' },
+      { harness: 'opencode', provider: 'live', count: 1, key: 'opencode/live' },
+    ];
+    expect(providersForHarnesses(providers, ['pi']).map((provider) => provider.key)).toEqual(['config/hand']);
+    expect(providersForHarnesses(providers, ['opencode']).map((provider) => provider.key)).toEqual(['config/hand', 'opencode/live']);
   });
 });
 
