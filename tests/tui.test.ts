@@ -472,6 +472,35 @@ describe('redraw', () => {
   });
 });
 
+describe('toggleAll', () => {
+  const choices = [
+    { value: 'a', label: 'A', checked: false },
+    { value: 'b', label: 'B', checked: false },
+    { value: 'c', label: 'C', checked: true },
+  ];
+
+  it('selects all visible when not all are checked', () => {
+    const state = reduce(initialState(choices), { kind: 'toggleAll' }, choices, true);
+    expect(state.checked).toEqual(new Set([0, 1, 2]));
+  });
+
+  it('deselects all when all are already checked', () => {
+    const all = { ...initialState(choices), checked: new Set([0, 1, 2]) };
+    const state = reduce(all, { kind: 'toggleAll' }, choices, true);
+    expect(state.checked).toEqual(new Set());
+  });
+
+  it('is ignored in single-select mode', () => {
+    const state = reduce(initialState(choices), { kind: 'toggleAll' }, choices, false);
+    expect(state.checked).toEqual(new Set([2]));
+  });
+
+  it('ctrl-a parses as toggleAll', () => {
+    expect(parseKey('\u0001', true)).toEqual({ kind: 'toggleAll' });
+    expect(parseKey('\u0001', false)).toEqual({ kind: 'toggleAll' });
+  });
+});
+
 describe('banner', () => {
   it('renders the wordmark', () => {
     const lines = banner().split('\n');
