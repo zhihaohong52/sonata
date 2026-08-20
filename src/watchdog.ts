@@ -4,6 +4,11 @@ export interface WatchdogInput {
   harnessScriptPath: string;
   runDir: string;
   timeoutSeconds: number;
+  /** When false, skip `fg` and use `wait` — the harness does not read the
+   *  terminal so SIGTTIN is not a risk, and `fg` can interfere with output
+   *  redirection (measured: `claude -p` with redirected stdout hangs under
+   *  `fg` in a tmux pane but completes fine under `wait`). */
+  interactive?: boolean;
 }
 
 /**
@@ -62,13 +67,22 @@ export function wrapWithTimeout(input: WatchdogInput): string {
     '#',
     '# With no terminal there is nothing to hand over and no job control to do it',
     '# with, so fall back to the plain wait.',
-    'if [ -t 0 ]; then',
-    '  fg %1',
-    '  STATUS=$?',
-    'else',
-    '  wait $HARNESS_PID',
-    '  STATUS=$?',
-    'fi',
+    ...(input.interactive !== false
+      ? [
+        'if [ -t 0 ]; then',
+        '  fg %1',
+        '  STATUS=$?',
+        'else',
+        '  wait $HARNESS_PID',
+        '  STATUS=$?',
+        'fi',
+      ]
+      : [
+        '# Non-interactive harness: skip fg, use wait. fg interferes with',
+        '# output redirection in some harnesses (claude -p hangs under fg).',
+        'wait $HARNESS_PID',
+        'STATUS=$?',
+      ]),
     '',
     'kill $WATCHDOG_PID 2>/dev/null',
     'pkill -P $WATCHDOG_PID 2>/dev/null',
