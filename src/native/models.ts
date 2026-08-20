@@ -1,0 +1,100 @@
+/**
+ * Model discovery for BYOK — bringing a provider and a key, with no harness.
+ *
+ * Every harness path learns its models from a catalogue sonata can read locally
+ * (`opencode models`, `pi --list-models`, `reasonix doctor --json`). A provider
+ * the user names directly has no such catalogue, so the only place to ask is the
+ * provider itself: `GET <base>/models`, the OpenAI-compatible convention that
+ * every gateway in `WELL_KNOWN_PROVIDER_URLS` follows.
+ *
+ * It is a convention, not a guarantee. A provider may not implement it, may
+ * shape the payload differently, or may simply be unreachable — so `fetchModels`
+ * **never throws and never distinguishes those cases**: they all return `[]`, and
+ * the caller falls back to letting the user type ids. Reporting them separately
+ * would imply a difference the caller cannot act on.
+ */
+import { WELL_KNOWN_PROVIDER_URLS } from '../detect.js';
+
+export interface FetchedModel {
+  id: string;
+  name?: string;
+}
+
+/** Where a provider's model list lives, given its base url. */
+function modelsUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/, '')}/models`;
+}
+
+/**
+ * The models a provider reports, or `[]` if it reports none we can read.
+ *
+ * Timeout-bounded and failure-closed, matching `copilotTokenCanExchange`: an
+ * offline machine gets the manual-entry path rather than a hang.
+ */
+export async function fetchModels(
+  baseUrl: string,
+  apiKey: string,
+  opts: { fetch?: typeof fetch; timeoutMs?: number } = {},
+): Promise<FetchedModel[]> {
+  const doFetch = opts.fetch ?? fetch;
+  try {
+    const response = await doFetch(modelsUrl(baseUrl), {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
+    });
+    if (!response.ok) return [];
+
+    const payload = await response.json() as unknown;
+    const data = (payload as { data?: unknown })?.data;
+    if (!Array.isArray(data)) return [];
+
+    const seen = new Set<string>();
+    const models: FetchedModel[] = [];
+    for (const entry of data) {
+      if (entry === null || typeof entry !== 'object') continue;
+      const { id, name } = entry as { id?: unknown; name?: unknown };
+      if (typeof id !== 'string' || id.trim() === '' || seen.has(id)) continue;
+      seen.add(id);
+      models.push(typeof name === 'string' && name.trim() !== '' ? { id, name } : { id });
+    }
+    return models;
+  } catch {
+    // Unreachable, timed out, or not JSON — one outcome for the caller.
+    return [];
+  }
+}
+
+/**
+ * Providers a user can name without having any harness installed.
+ *
+ * Deduplicated **by url, keeping the first name**: the underlying map lists
+ * `openai` before its `openai-codex` and `codex` aliases, so keep-first is what
+ * makes the picker say `openai`.
+ *
+ * `anthropic` is excluded. Every model it serves is `claude-*`, a prefix the
+ * router reserves for Anthropic and `parseConfig` refuses, so its catalogue
+ * filters to nothing — offering a provider that can yield no usable model is
+ * worse than not offering it.
+ */
+export function wellKnownProviders(): Array<{ name: string; url: string }> {
+  const byUrl = new Map<string, string>();
+  for (const [name, url] of Object.entries(WELL_KNOWN_PROVIDER_URLS)) {
+    if (name === 'anthropic') continue;
+    if (!byUrl.has(url)) byUrl.set(url, name);
+  }
+  return [...byUrl.entries()]
+    .map(([url, name]) => ({ name, url }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * The config key for a BYOK model.
+ *
+ * Shared by the wizard and `cmdInit` on purpose: the wizard puts this key into
+ * `nativeKeys` and `cmdInit` looks the candidate up by it, so computing the
+ * formula twice is how the two silently stop agreeing. Slashes are flattened to
+ * dashes exactly as harness-discovered keys are.
+ */
+export function byokCandidateKey(gateway: string, id: string): string {
+  return `${gateway}-${id}`.replace(/\//g, '-');
+}
