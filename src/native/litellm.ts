@@ -5,6 +5,13 @@ import type { NativeConfig } from '../config.js';
 export interface LiteLLMModelConfig {
   model_name: string;
   litellm_params: Record<string, unknown>;
+  /**
+   * Present only for codex-oauth. Without `mode: responses` LiteLLM takes its
+   * chat-completions path and POSTs to the bare `backend-api/codex/` URL, which
+   * serves the ChatGPT *web app* — the reply is a Cloudflare HTML challenge
+   * surfaced as an opaque ChatgptException.
+   */
+  model_info?: { mode: string };
 }
 
 export interface LiteLLMConfig {
@@ -18,14 +25,26 @@ export function envVarForGateway(gateway: string): string {
 }
 
 export function litellmConfig(native: NativeConfig, masterKey: string): LiteLLMConfig {
-  const modelList = Object.entries(native.models).map(([modelName, model]) => ({
-    model_name: modelName,
-    litellm_params: {
-      model: `openai/${model.id}`,
-      api_base: native.gateways[model.gateway].baseUrl,
-      api_key: `os.environ/${envVarForGateway(model.gateway)}`,
-    },
-  }));
+  const modelList = Object.entries(native.models).map(([modelName, model]): LiteLLMModelConfig => {
+    // A codex-oauth gateway is served by LiteLLM's own `chatgpt` provider, which
+    // supplies the base URL, the bearer, the account header and token refresh.
+    // Passing api_base or api_key here would override that and break it.
+    if (native.gateways[model.gateway].auth === 'codex-oauth') {
+      return {
+        model_name: modelName,
+        litellm_params: { model: `chatgpt/${model.id}` },
+        model_info: { mode: 'responses' },
+      };
+    }
+    return {
+      model_name: modelName,
+      litellm_params: {
+        model: `openai/${model.id}`,
+        api_base: native.gateways[model.gateway].baseUrl,
+        api_key: `os.environ/${envVarForGateway(model.gateway)}`,
+      },
+    };
+  });
 
   return {
     model_list: modelList,
