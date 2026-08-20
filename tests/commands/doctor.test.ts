@@ -54,7 +54,7 @@ code = ["m"]
     expect(c?.ok).toBe(true);
     // With two possible sources, a model count alone cannot be debugged from.
     expect(c?.detail).toContain(join(home, '.config', 'sonata', 'sonata.toml'));
-    expect(c?.detail).toContain('1 model');
+    expect(c?.detail).toContain('1 harness');
   });
 
   it('reports the project config path when the repo has one', async () => {
