@@ -45,7 +45,7 @@ export function applyStep(state: InitState, step: number, value: unknown): InitS
 
 export function providersForHarnesses(providers: ProviderOption[], harnesses: string[] | undefined): ProviderOption[] {
   const selected = new Set(harnesses);
-  return providers.filter((provider) => selected.has(provider.harness));
+  return providers.filter((provider) => provider.harness === 'config' || selected.has(provider.harness));
 }
 
 export function candidatesForProviders(candidates: CandidateOption[], providers: ProviderOption[], providerKeys: string[] | undefined): CandidateOption[] {
