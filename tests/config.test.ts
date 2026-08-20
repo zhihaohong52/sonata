@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents } from '../src/config.js';
+import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents, CODEX_OAUTH_BASE_URL } from '../src/config.js';
 
 const VALID = `
 [models.deepseek-v4-flash]
@@ -354,5 +354,56 @@ gateway="nope"
 id="a1"
 context_window=1000
 `)).toThrow(/unknown gateway "nope"/);
+  });
+});
+
+describe('parseConfig — native gateway auth', () => {
+  const withGateway = (body: string) => `
+[native.gateways."g"]
+${body}
+
+[native.models."m"]
+gateway="g"
+id="m1"
+context_window=1000
+`;
+
+  it('defaults an unmarked gateway to api-key, preserving existing configs', () => {
+    const cfg = parseConfig(withGateway('base_url="https://x.example/v1"'));
+    expect(cfg.native!.gateways.g).toEqual({
+      baseUrl: 'https://x.example/v1', auth: 'api-key',
+    });
+  });
+
+  it('accepts codex-oauth and supplies the Codex backend URL itself', () => {
+    const cfg = parseConfig(withGateway('auth="codex-oauth"'));
+    expect(cfg.native!.gateways.g).toEqual({
+      baseUrl: CODEX_OAUTH_BASE_URL, auth: 'codex-oauth',
+    });
+    expect(CODEX_OAUTH_BASE_URL).toBe('https://chatgpt.com/backend-api/codex');
+  });
+
+  it('still requires base_url for an api-key gateway', () => {
+    expect(() => parseConfig(withGateway('auth="api-key"'))).toThrow(/needs string "base_url"/);
+  });
+
+  it('refuses a codex-oauth gateway that claims a different base_url', () => {
+    // A ChatGPT OAuth credential is refused by the metered api.openai.com with
+    // insufficient_quota, so a config naming it would never authenticate.
+    expect(() => parseConfig(withGateway(
+      'auth="codex-oauth"\nbase_url="https://api.openai.com/v1"',
+    ))).toThrow(/only reaches https:\/\/chatgpt\.com\/backend-api\/codex/);
+  });
+
+  it('allows codex-oauth to restate the correct base_url', () => {
+    const cfg = parseConfig(withGateway(
+      `auth="codex-oauth"\nbase_url="${CODEX_OAUTH_BASE_URL}"`,
+    ));
+    expect(cfg.native!.gateways.g.auth).toBe('codex-oauth');
+  });
+
+  it('names the known auth kinds when given an unknown one', () => {
+    expect(() => parseConfig(withGateway('auth="oauth2"\nbase_url="https://x/v1"')))
+      .toThrow(/unknown auth "oauth2".*api-key, codex-oauth/s);
   });
 });

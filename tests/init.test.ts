@@ -12,7 +12,7 @@ import {
 } from '../src/commands/init.js';
 import { providersForHarnesses } from '../src/tui-ink/app-state.js';
 import { readSettings } from '../src/settings.js';
-import { parseConfig } from '../src/config.js';
+import { parseConfig, CODEX_OAUTH_BASE_URL } from '../src/config.js';
 
 // Shape taken verbatim from a real ~/.config/opencode/opencode.json.
 const OC_CONFIG = JSON.stringify({
@@ -629,7 +629,31 @@ describe('nativeCandidatesFrom', () => {
       id: 'deepseek-v4-flash-0731',
       contextWindow: 128000,
       baseUrl: 'https://bifrost.advai.net/v1',
+      auth: 'api-key',
     }]);
+  });
+
+  it('marks an oauth provider codex-oauth and gives it the Codex backend URL', () => {
+    const codexRefs = [
+      { harness: 'codex' as const, provider: 'codex', id: 'gpt-5.6-luna', ref: 'codex/gpt-5.6-luna' },
+    ];
+    // No discovered base URL for codex: a subscription credential reaches only
+    // the Codex backend, which LiteLLM's own provider addresses.
+    expect(nativeCandidatesFrom(codexRefs, {}, new Set(['codex']))).toEqual([{
+      key: 'codex-gpt-5.6-luna',
+      gateway: 'codex',
+      id: 'gpt-5.6-luna',
+      contextWindow: 128000,
+      baseUrl: CODEX_OAUTH_BASE_URL,
+      auth: 'codex-oauth',
+    }]);
+  });
+
+  it('drops a non-oauth provider with no known base URL', () => {
+    const unknown = [
+      { harness: 'codex' as const, provider: 'codex', id: 'gpt-5.6-luna', ref: 'codex/gpt-5.6-luna' },
+    ];
+    expect(nativeCandidatesFrom(unknown, {})).toEqual([]);
   });
 
   it('is empty when no provider has a known base URL', () => {
@@ -816,7 +840,23 @@ id = "model-id"
 context_window = 64000
 `);
     expect(configNativeCandidates(config)).toEqual([{
-      key: 'hand-model', gateway: 'hand', id: 'model-id', contextWindow: 64000, baseUrl: 'https://hand.example/v1',
+      key: 'hand-model', gateway: 'hand', id: 'model-id', contextWindow: 64000,
+      baseUrl: 'https://hand.example/v1', auth: 'api-key',
+    }]);
+  });
+
+  it('carries a codex-oauth gateway through as a candidate', () => {
+    const config = parseConfig(`
+[native.gateways."codex"]
+auth = "codex-oauth"
+[native.models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+context_window = 128000
+`);
+    expect(configNativeCandidates(config)).toEqual([{
+      key: 'luna', gateway: 'codex', id: 'gpt-5.6-luna', contextWindow: 128000,
+      baseUrl: CODEX_OAUTH_BASE_URL, auth: 'codex-oauth',
     }]);
   });
 
@@ -845,5 +885,39 @@ describe('previousAskedStep', () => {
   it('returns the same step when there is no earlier interactive step', () => {
     const asked = [false, false, true, true, true];
     expect(previousAskedStep(asked, 2)).toBe(2);
+  });
+});
+
+describe('nativeTomlFor — codex-oauth gateways', () => {
+  const codexCandidate: NativeCandidate = {
+    key: 'luna', gateway: 'codex', id: 'gpt-5.6-luna',
+    contextWindow: 128000, baseUrl: CODEX_OAUTH_BASE_URL, auth: 'codex-oauth',
+  };
+  const keyCandidate: NativeCandidate = {
+    key: 'ds', gateway: 'vendorx', id: 'deepseek-v4-flash-0731',
+    contextWindow: 128000, baseUrl: 'https://bifrost.advai.net/v1', auth: 'api-key',
+  };
+
+  it('writes auth instead of base_url for a subscription gateway', () => {
+    const toml = nativeTomlFor({ code: [codexCandidate] });
+    expect(toml).toContain('[native.gateways."codex"]');
+    expect(toml).toContain('auth = "codex-oauth"');
+    // A metered URL here is the exact config that authenticates then 429s.
+    expect(toml).not.toContain('api.openai.com');
+    expect(toml).not.toContain('base_url');
+  });
+
+  it('still writes base_url for an api-key gateway alongside it', () => {
+    const toml = nativeTomlFor({ code: [codexCandidate, keyCandidate] });
+    expect(toml).toContain('auth = "codex-oauth"');
+    expect(toml).toContain('base_url = "https://bifrost.advai.net/v1"');
+  });
+
+  it('round-trips through parseConfig', () => {
+    const config = parseConfig(nativeTomlFor({ code: [codexCandidate, keyCandidate] }));
+    expect(config.native!.gateways.codex).toEqual({
+      baseUrl: CODEX_OAUTH_BASE_URL, auth: 'codex-oauth',
+    });
+    expect(config.native!.gateways.vendorx.auth).toBe('api-key');
   });
 });

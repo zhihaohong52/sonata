@@ -23,6 +23,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { findLitellm } from '../native/litellm.js';
 import { keyReport } from '../native/credentials.js';
+import { codexAuthReport } from '../native/codex-auth.js';
 import { serveHealthUrl } from './serve.js';
 
 const run = promisify(execFile);
@@ -132,7 +133,28 @@ export async function cmdDoctor(
       checks.push({ name: 'serve health', ok: true, detail: 'not running — start with `sonata serve`' });
     }
 
-    for (const report of keyReport(Object.keys(config.native.gateways), home)) {
+    // A codex-oauth gateway holds no key at all — its credential is codex's own
+    // ChatGPT login, which LiteLLM reads and refreshes. Reporting it through
+    // keyReport would tell the user to `sonata auth add` a key that would be
+    // ignored, and that no usable credential exists when one does.
+    const gatewayNames = Object.keys(config.native.gateways);
+    const oauthGateways = gatewayNames.filter(
+      (name) => config.native!.gateways[name].auth === 'codex-oauth');
+
+    if (oauthGateways.length > 0) {
+      const report = codexAuthReport(home);
+      for (const gateway of oauthGateways) {
+        checks.push({
+          name: `key source: ${gateway}`,
+          ok: report.problem === undefined,
+          detail: report.problem
+            ?? `ChatGPT subscription from codex${report.expired ? ' (expired, refreshes on use)' : ''}`,
+        });
+      }
+    }
+
+    const keyGateways = gatewayNames.filter((name) => !oauthGateways.includes(name));
+    for (const report of keyReport(keyGateways, home)) {
       checks.push(report.source
         ? { name: `key source: ${report.gateway}`, ok: true, detail: `from ${report.source}` }
         : {
