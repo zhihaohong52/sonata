@@ -72,7 +72,7 @@ export async function cmdDoctor(
     checks.push({
       name: 'sonata.toml',
       ok: true,
-      detail: `${resolved} · ${Object.keys(config.models).length} models`,
+      detail: `${resolved} · ${Object.keys(config.models).length} harness + ${Object.keys(config.native?.models ?? {}).length} native models`,
     });
   } catch (err) {
     checks.push({ name: 'sonata.toml', ok: false, detail: (err as Error).message });
