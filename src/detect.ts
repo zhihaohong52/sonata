@@ -73,7 +73,7 @@ export function parseOpenCodeModels(text: string): OpenCodeModel[] {
 // - litellm.openai_compatible_endpoints (litellm's authoritative list)
 // - https://docs.litellm.ai/docs/providers (litellm docs)
 // Custom/self-hosted provider URLs are discovered from harness configs.
-const WELL_KNOWN_PROVIDER_URLS: Record<string, string> = {
+export const WELL_KNOWN_PROVIDER_URLS: Record<string, string> = {
   // OpenAI ecosystem
   'openai': 'https://api.openai.com/v1',
   'openai-codex': 'https://api.openai.com/v1',
