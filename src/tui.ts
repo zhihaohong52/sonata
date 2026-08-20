@@ -318,7 +318,7 @@ export function renderText(title: string, state: TextState, hint?: string): stri
  */
 export function redraw(body: string, lastHeight: number): { out: string; height: number } {
   const lines = body.split('\n');
-  const clear = lastHeight > 0 ? '\u001b[2J\u001b[H' : '';
+  const clear = '\u001b[2J\u001b[H';
   return {
     out: `${clear}${lines.join('\n')}\n`,
     height: lines.length,

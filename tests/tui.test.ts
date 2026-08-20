@@ -448,10 +448,10 @@ describe('reduce — filtering', () => {
 });
 
 describe('redraw', () => {
-  it('does not clear-screen on the first draw', () => {
+  it('clear-screens even on the first draw', () => {
     const first = redraw('a\nb\nc', 0);
     expect(first.height).toBe(3);
-    expect(first.out).not.toContain('\u001b[2J');
+    expect(first.out).toContain('\u001b[2J');
   });
 
   it('clear-screens on subsequent draws so the block is fully replaced', () => {
