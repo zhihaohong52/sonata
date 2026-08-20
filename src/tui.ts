@@ -9,7 +9,7 @@
 export type ListKey =
   | { kind: 'up' } | { kind: 'down' } | { kind: 'space' }
   | { kind: 'enter' } | { kind: 'cancel' } | { kind: 'back' }
-  | { kind: 'backspace' } | { kind: 'ignore' }
+  | { kind: 'backspace' } | { kind: 'ignore' } | { kind: 'toggleAll' }
   | { kind: 'char'; value: string };
 
 export interface Choice<T> {
@@ -36,6 +36,7 @@ export function parseKey(seq: string, filterable: boolean): ListKey {
     // one, so the filter never needs a space.
     case ' ': return { kind: 'space' };
     case '\r': case '\n': return { kind: 'enter' };
+    case '\u0001': return { kind: 'toggleAll' };
     case '\u0003': case '\u001b': return { kind: 'cancel' };
     case '\u007f': case '\b': return { kind: 'backspace' };
     default: break;
@@ -135,6 +136,16 @@ export function reduce<T>(
       return multi ? withFilter(state, choices, state.filter + key.value) : state;
     case 'backspace':
       return multi ? withFilter(state, choices, state.filter.slice(0, -1)) : state;
+    case 'toggleAll': {
+      if (!multi) return state;
+      const enabled = view.filter((i) => !choices[i].disabled);
+      const allChecked = enabled.every((i) => state.checked.has(i));
+      const checked = new Set(state.checked);
+      for (const i of enabled) {
+        if (allChecked) checked.delete(i); else checked.add(i);
+      }
+      return { ...state, checked };
+    }
     case 'cancel':
       return { ...state, cancelled: true, done: true };
     case 'back':
@@ -424,6 +435,8 @@ async function runList<T>(
   const stdout = process.stdout;
   const height = listHeight();
 
+  stdout.write('\u001b[?1049h');
+
   let lastHeight = 0;
   const draw = (): void => {
     const { out, height: drawn } =
@@ -432,13 +445,17 @@ async function runList<T>(
     lastHeight = drawn;
   };
 
-  draw();
-  await readKeys(stdin, (chunk) => {
-    state = reduce(state, parseKey(chunk, multi), choices, multi);
-    if (state.done) return true;
+  try {
     draw();
-    return false;
-  });
+    await readKeys(stdin, (chunk) => {
+      state = reduce(state, parseKey(chunk, multi), choices, multi);
+      if (state.done) return true;
+      draw();
+      return false;
+    });
+  } finally {
+    stdout.write('\u001b[?1049l');
+  }
 
   if (state.cancelled) throw new CancelledError();
   // Only honoured where the caller said a previous step exists; otherwise Left
