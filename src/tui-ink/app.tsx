@@ -98,7 +98,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       return <Choice key="config-scope" title="Config scope" choices={[{ value: 'project', label: 'Project' }, { value: 'global', label: 'Global' }]} initial={state.configScope} onSubmit={next} onCancel={cancel} />;
     case 1: {
       const harnesses = data.harnesses.filter((harness) => harness.installed);
-      return <MultiSelect key="harnesses" title="Harnesses" items={harnesses.map((harness) => ({ value: harness.name, label: harness.name }))} initialSelected={new Set(state.harnesses ?? harnesses.map((harness) => harness.name))} onSubmit={next} onBack={back} onCancel={cancel} />;
+      return <MultiSelect key="harnesses" title="Harnesses" items={harnesses.map((harness) => ({ value: harness.name, label: harness.name }))} initialSelected={new Set(state.harnesses ?? harnesses.map((harness) => harness.name))} onSubmit={next} onBack={back} onCancel={cancel} filterable={false} />;
     }
     case 2: {
       const providers = providersForHarnesses(data.providers, state.harnesses);
@@ -110,7 +110,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       return <MultiSelect key="models" title="Models" items={candidates.map((candidate) => ({ value: candidate.key, label: candidate.label, hint: candidate.id }))} initialSelected={new Set(state.nativeKeys)} onSubmit={next} onBack={back} onCancel={cancel} />;
     }
     case 4:
-      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={back} onCancel={cancel} />;
+      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={back} onCancel={cancel} filterable={false} />;
     case 5: {
       const roles = state.roles ?? [];
       if (sameModels === undefined) {
