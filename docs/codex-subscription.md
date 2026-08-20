@@ -211,9 +211,35 @@ codex-oauth needs does not apply. `serve` writes the GitHub token to
 `access-token` in its temp directory and sets `GITHUB_COPILOT_TOKEN_DIR`;
 LiteLLM performs the exchange and caches the Copilot key itself.
 
+**opencode's token usually cannot be used.** Measured on a real machine: the
+stored `gho_` token carries scope **`read:user` only** — both the `access` and
+`refresh` fields are the same token — so GitHub answers the exchange with
+
+```
+403 Forbidden — https://api.github.com/copilot_internal/v2/token
+```
+
+LiteLLM then drops the deployment and carries on, and the next request fails as
+`no healthy deployments for this model`, naming neither the token nor the scope.
+So sonata checks the scope before offering Copilot at all: `init` prints a line
+and omits its models, and `doctor` fails the check with the reason. The check
+asks GitHub (scopes are not in the opaque token) and **fails closed**, so an
+offline machine simply does not offer Copilot rather than offering it wrongly.
+
+To actually use `copilot-oauth`, the token must carry the `copilot` scope —
+LiteLLM's own device-code login produces one, writing it to its token
+directory.
+
 **Known collision:** Copilot serves Claude models, but the router sends any
-`claude-`-prefixed model to Anthropic, so `parseConfig` refuses such an id. A
-Claude model cannot currently be reached through Copilot on the native path.
+`claude-`-prefixed model to Anthropic, so `parseConfig` refuses such an id.
+5 of the 8 Copilot models on this machine are Claude. `init` filters every
+candidate the router cannot reach — otherwise it would write a config that
+`parseConfig` then refuses to load. 27 such candidates were being offered
+across `acme`, `anthropic` and `github-copilot`.
 
 **opencode writes `expires: 0`** on the Copilot entry, meaning "does not
 expire". Read literally that reports a working token as expired since 1970.
+
+**LiteLLM's output is now inherited** by `serve`. A per-model startup failure
+appears only there; discarding it is what made the 403 above surface as an
+unrelated-looking "no healthy deployments".

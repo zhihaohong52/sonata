@@ -7,12 +7,12 @@ import { parsePiRefs } from '../src/adapters/pi.js';
 import {
   cmdInit, duplicateKeys, previousAskedStep, nativeCandidatesFrom,
   nativeTomlFor, preTickedNative, configPathFor, agentsDirFor,
-  deriveInitState, configNativeCandidates,
+  deriveInitState, configNativeCandidates, oauthProvidersFor,
   type NativeCandidate,
 } from '../src/commands/init.js';
 import { providersForHarnesses } from '../src/tui-ink/app-state.js';
 import { readSettings } from '../src/settings.js';
-import { parseConfig, CODEX_OAUTH_BASE_URL } from '../src/config.js';
+import { parseConfig, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL } from '../src/config.js';
 
 // Shape taken verbatim from a real ~/.config/opencode/opencode.json.
 const OC_CONFIG = JSON.stringify({
@@ -639,7 +639,7 @@ describe('nativeCandidatesFrom', () => {
     ];
     // No discovered base URL for codex: a subscription credential reaches only
     // the Codex backend, which LiteLLM's own provider addresses.
-    expect(nativeCandidatesFrom(codexRefs, {}, new Set(['codex']))).toEqual([{
+    expect(nativeCandidatesFrom(codexRefs, {}, new Map([['codex', 'codex-oauth' as const]]))).toEqual([{
       key: 'codex-gpt-5.6-luna',
       gateway: 'codex',
       id: 'gpt-5.6-luna',
@@ -919,5 +919,122 @@ describe('nativeTomlFor — codex-oauth gateways', () => {
       baseUrl: CODEX_OAUTH_BASE_URL, auth: 'codex-oauth',
     });
     expect(config.native!.gateways.acme.auth).toBe('api-key');
+  });
+});
+
+describe('oauthProvidersFor', () => {
+  const refs = [
+    { harness: 'codex' as const, provider: 'codex', id: 'gpt-5.6-luna', ref: 'codex/gpt-5.6-luna' },
+    { harness: 'opencode' as const, provider: 'openai', id: 'gpt-4o', ref: 'openai/gpt-4o' },
+    { harness: 'opencode' as const, provider: 'github-copilot', id: 'gpt-4o', ref: 'github-copilot/gpt-4o' },
+    { harness: 'opencode' as const, provider: 'acme', id: 'deepseek', ref: 'acme/deepseek' },
+  ];
+  const none = () => null;
+  const some = () => ({});
+
+  it('marks nothing when no harness holds an OAuth login', () => {
+    expect(oauthProvidersFor(refs, '/h', {
+      chatGpt: none, opencodeChatGpt: none, copilot: none,
+    })).toEqual(new Map());
+  });
+
+  it('marks codex when codex logged in with a ChatGPT account', () => {
+    const got = oauthProvidersFor(refs, '/h', {
+      chatGpt: some, opencodeChatGpt: none, copilot: none,
+    });
+    expect(got.get('codex')).toBe('codex-oauth');
+    expect(got.has('openai')).toBe(false);
+  });
+
+  it('marks opencode openai, which serves the same subscription', () => {
+    // Left unmarked, init would write base_url = api.openai.com for a
+    // subscription credential — a gateway that authenticates and then 429s.
+    const got = oauthProvidersFor(refs, '/h', {
+      chatGpt: none, opencodeChatGpt: some, copilot: none,
+    });
+    expect(got.get('openai')).toBe('codex-oauth');
+  });
+
+  it('marks github-copilot as copilot-oauth', () => {
+    const got = oauthProvidersFor(refs, '/h', {
+      chatGpt: none, opencodeChatGpt: none, copilot: some,
+    });
+    expect(got.get('github-copilot')).toBe('copilot-oauth');
+  });
+
+  it('never marks a provider the harnesses do not actually offer', () => {
+    const got = oauthProvidersFor([], '/h', {
+      chatGpt: some, opencodeChatGpt: some, copilot: some,
+    });
+    expect(got).toEqual(new Map());
+  });
+
+  it('leaves api-key providers alone', () => {
+    const got = oauthProvidersFor(refs, '/h', {
+      chatGpt: some, opencodeChatGpt: some, copilot: some,
+    });
+    expect(got.has('acme')).toBe(false);
+  });
+});
+
+describe('nativeCandidatesFrom — copilot', () => {
+  it('gives a copilot provider the Copilot URL and copilot-oauth', () => {
+    const refs = [
+      { harness: 'opencode' as const, provider: 'github-copilot', id: 'gpt-4o', ref: 'github-copilot/gpt-4o' },
+    ];
+    expect(nativeCandidatesFrom(refs, {}, new Map([['github-copilot', 'copilot-oauth' as const]]))).toEqual([{
+      key: 'github-copilot-gpt-4o',
+      gateway: 'github-copilot',
+      id: 'gpt-4o',
+      contextWindow: 128000,
+      baseUrl: COPILOT_OAUTH_BASE_URL,
+      auth: 'copilot-oauth',
+    }]);
+  });
+});
+
+describe('nativeTomlFor — copilot-oauth', () => {
+  it('writes auth and no base_url, and round-trips', () => {
+    const candidate: NativeCandidate = {
+      key: 'copilot-gpt4o', gateway: 'github-copilot', id: 'gpt-4o',
+      contextWindow: 128000, baseUrl: COPILOT_OAUTH_BASE_URL, auth: 'copilot-oauth',
+    };
+    const toml = nativeTomlFor({ code: [candidate] });
+    expect(toml).toContain('auth = "copilot-oauth"');
+    expect(toml).not.toContain('base_url');
+
+    const config = parseConfig(toml);
+    expect(config.native!.gateways['github-copilot']).toEqual({
+      baseUrl: COPILOT_OAUTH_BASE_URL, auth: 'copilot-oauth',
+    });
+  });
+});
+
+describe('nativeCandidatesFrom — models the router cannot reach', () => {
+  it('drops a claude- model, which parseConfig would refuse', () => {
+    // Copilot really does serve these; offering one would let init write a
+    // config that then fails to load.
+    const refs = [
+      { harness: 'opencode' as const, provider: 'github-copilot', id: 'claude-opus-4.6', ref: 'github-copilot/claude-opus-4.6' },
+      { harness: 'opencode' as const, provider: 'github-copilot', id: 'gpt-5.4', ref: 'github-copilot/gpt-5.4' },
+    ];
+    const got = nativeCandidatesFrom(refs, {}, new Map([['github-copilot', 'copilot-oauth' as const]]));
+    expect(got.map((c) => c.id)).toEqual(['gpt-5.4']);
+  });
+
+  it('drops one whose flattened key starts with the prefix', () => {
+    const refs = [
+      { harness: 'opencode' as const, provider: 'claude', id: 'x', ref: 'claude-x' },
+    ];
+    expect(nativeCandidatesFrom(refs, { claude: 'https://x/v1' })).toEqual([]);
+  });
+
+  it('every candidate it returns survives parseConfig', () => {
+    const refs = [
+      { harness: 'opencode' as const, provider: 'anthropic', id: 'claude-opus-4.6', ref: 'anthropic/claude-opus-4.6' },
+      { harness: 'opencode' as const, provider: 'acme', id: 'deepseek-v4', ref: 'acme/deepseek-v4' },
+    ];
+    const got = nativeCandidatesFrom(refs, { anthropic: 'https://a/v1', acme: 'https://b/v1' });
+    expect(() => parseConfig(nativeTomlFor({ code: got }))).not.toThrow();
   });
 });
