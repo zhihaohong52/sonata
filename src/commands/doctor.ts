@@ -5,8 +5,7 @@ import {
   loadConfig,
   configPath,
   GLOBAL_CONFIG_RELATIVE,
-  generatedAgents,
-  generatedNativeAgents,
+  expectedAgentNames,
 } from '../config.js';
 import { staleAgents, disabledOpencodeAgents, enableOpencodeAgent,
 } from '../detect.js';
@@ -92,13 +91,12 @@ export async function cmdDoctor(
   }
 
   const agentsDir = join(opts.cwd, '.claude', 'agents');
-  const wanted = [
-    ...generatedAgents(config).map((a) => `${a.role}-${a.model}`),
-    ...generatedNativeAgents(config).map((a) => `native-${a.role}-${a.model}`),
-  ];
-  const stale = staleAgents(agentsDir, wanted);
+  // Shared with `sync`, which writes these files. Computing the set separately
+  // made sync write a native model's wrapper that doctor then called stale.
+  const expected = expectedAgentNames(config);
+  const stale = staleAgents(agentsDir, expected);
   checks.push(stale.length === 0
-    ? { name: 'agents', ok: true, detail: `${wanted.length} generated, none stale` }
+    ? { name: 'agents', ok: true, detail: `${expected.length} generated, none stale` }
     : {
         name: 'agents',
         ok: false,

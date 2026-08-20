@@ -300,3 +300,26 @@ export function generatedNativeAgents(config: SonataConfig): { role: string; mod
   }
   return out;
 }
+
+/**
+ * Every agent filename stem `sonata sync` writes, and therefore the exact set
+ * that is not stale.
+ *
+ * A native model gets two files: `native-<role>-<model>` for a `sonata code`
+ * session, and a `<role>-<model>` wrapper for MCP dispatch through the claude
+ * harness — unless a harness model already claims that name. `sync` and
+ * `doctor` computed this separately and disagreed, so `sync` wrote a file that
+ * `doctor` then reported as stale, on every run.
+ */
+export function expectedAgentNames(config: SonataConfig): string[] {
+  const harness = generatedAgents(config);
+  const native = generatedNativeAgents(config);
+  const harnessNames = harness.map((a) => `${a.role}-${a.model}`);
+  return [
+    ...harnessNames,
+    ...native.map((a) => `native-${a.role}-${a.model}`),
+    ...native
+      .map((a) => `${a.role}-${a.model}`)
+      .filter((name) => !harnessNames.includes(name)),
+  ];
+}

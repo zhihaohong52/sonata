@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents, CODEX_OAUTH_BASE_URL } from '../src/config.js';
+import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents, expectedAgentNames, CODEX_OAUTH_BASE_URL } from '../src/config.js';
 
 const VALID = `
 [models.deepseek-v4-flash]
@@ -405,5 +405,51 @@ context_window=1000
   it('names the known auth kinds when given an unknown one', () => {
     expect(() => parseConfig(withGateway('auth="oauth2"\nbase_url="https://x/v1"')))
       .toThrow(/unknown auth "oauth2".*api-key, codex-oauth/s);
+  });
+});
+
+describe('expectedAgentNames', () => {
+  const config = (toml: string) => parseConfig(toml);
+
+  it('includes the wrapper sync writes for a native model', () => {
+    // sync writes native-<role>-<model> AND <role>-<model>; doctor computed the
+    // set separately and omitted the second, so every sync left a "stale" file.
+    const names = expectedAgentNames(config(`
+[native.gateways."g"]
+base_url="https://x/v1"
+[native.models."m"]
+gateway="g"
+id="m1"
+context_window=1000
+[generate.native]
+code=["m"]
+`));
+    expect(names).toContain('native-code-m');
+    expect(names).toContain('code-m');
+  });
+
+  it('does not duplicate a name a harness model already claims', () => {
+    const names = expectedAgentNames(config(`
+[models."m"]
+harness="codex"
+id="m1"
+[generate.roles]
+code=["m"]
+
+[native.gateways."g"]
+base_url="https://x/v1"
+[native.models."m"]
+gateway="g"
+id="m1"
+context_window=1000
+[generate.native]
+code=["m"]
+`));
+    expect(names.filter((n) => n === 'code-m')).toHaveLength(1);
+    expect(names).toContain('native-code-m');
+  });
+
+  it('is empty for a config that generates nothing', () => {
+    expect(expectedAgentNames(config('[run]\n'))).toEqual([]);
   });
 });

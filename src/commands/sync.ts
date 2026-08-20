@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { generatedAgents, generatedNativeAgents, isReadOnlyRole, loadConfig } from '../config.js';
+import { generatedAgents, generatedNativeAgents, expectedAgentNames, isReadOnlyRole, loadConfig } from '../config.js';
 import { staleAgents } from '../detect.js';
 
 export interface AgentSpec { role: string; model: string; harness: string }
@@ -155,13 +155,6 @@ export function cmdSync(opts: SyncOptions): SyncResult {
 
   return {
     written,
-    stale: staleAgents(opts.agentsDir, [
-      ...wanted.map((a) => `${a.role}-${a.model}`),
-      ...nativeWanted.map((a) => `native-${a.role}-${a.model}`),
-      // Wrapper agents generated for native models (claude harness)
-      ...nativeWanted
-        .filter((a) => !wanted.some((w) => `${w.role}-${w.model}` === `${a.role}-${a.model}`))
-        .map((a) => `${a.role}-${a.model}`),
-    ]),
+    stale: staleAgents(opts.agentsDir, expectedAgentNames(config)),
   };
 }
