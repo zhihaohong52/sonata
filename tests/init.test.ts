@@ -721,6 +721,32 @@ describe('wizard-state.json persistence', () => {
     expect(toml2).toBe(toml1);
   });
 
+  it('second run without flags reads wizard-state.json and preserves selections', async () => {
+    // First run: explicit flags.
+    await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
+      roles: ['code'], scope: 'skip', write,
+    });
+    const toml1 = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
+
+    // Second run: no providers/models/roles flags — should read wizard-state.json.
+    await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      scope: 'skip', write,
+    });
+    const toml2 = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
+
+    // The config should be identical — same models, same roles, same per-role.
+    expect(toml2).toBe(toml1);
+
+    // Specifically: roles should NOT expand to all 4 defaults.
+    expect(toml2).toContain('"code"');
+    expect(toml2).not.toContain('"review"');
+    expect(toml2).not.toContain('"explore"');
+    expect(toml2).not.toContain('"plan"');
+  });
+
   it('writes wizard-state.json to global config dir', async () => {
     await cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect, configScope: 'global',
