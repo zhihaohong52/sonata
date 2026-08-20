@@ -33,12 +33,27 @@ export interface NativeModelConfig { gateway: string; id: string; contextWindow:
  * provider speaks all of that and refreshes the token itself, so sonata
  * supplies neither a base URL nor a key. See docs/codex-subscription.md.
  */
-export type NativeGatewayAuth = 'api-key' | 'codex-oauth';
+export type NativeGatewayAuth = 'api-key' | 'codex-oauth' | 'copilot-oauth';
 
-export const NATIVE_GATEWAY_AUTHS: readonly NativeGatewayAuth[] = ['api-key', 'codex-oauth'];
+export const NATIVE_GATEWAY_AUTHS: readonly NativeGatewayAuth[] = ['api-key', 'codex-oauth', 'copilot-oauth'];
+
+/** Gateway auths whose credential is an OAuth login, not a stored bearer key. */
+export const OAUTH_GATEWAY_AUTHS: readonly NativeGatewayAuth[] = ['codex-oauth', 'copilot-oauth'];
+
+export function isOauthGatewayAuth(auth: NativeGatewayAuth): boolean {
+  return OAUTH_GATEWAY_AUTHS.includes(auth);
+}
 
 /** Where LiteLLM's `chatgpt` provider sends Codex traffic. */
 export const CODEX_OAUTH_BASE_URL = 'https://chatgpt.com/backend-api/codex';
+
+/** Where LiteLLM's `github_copilot` provider sends Copilot traffic. */
+export const COPILOT_OAUTH_BASE_URL = 'https://api.githubcopilot.com';
+
+/** The endpoint an OAuth gateway's provider addresses on its own. */
+export function oauthGatewayBaseUrl(auth: NativeGatewayAuth): string {
+  return auth === 'copilot-oauth' ? COPILOT_OAUTH_BASE_URL : CODEX_OAUTH_BASE_URL;
+}
 
 export interface NativeGatewayConfig { baseUrl: string; auth: NativeGatewayAuth }
 export interface NativeConfig {
@@ -153,18 +168,20 @@ export function parseConfig(text: string): SonataConfig {
         );
       }
       const auth = rawAuth as NativeGatewayAuth;
-      // A codex-oauth gateway is addressed by LiteLLM's own `chatgpt` provider,
-      // which knows the URL; accepting one here would only let a config claim a
-      // base URL that is never used.
-      if (auth === 'codex-oauth') {
-        if (d.base_url !== undefined && d.base_url !== CODEX_OAUTH_BASE_URL) {
+      // An OAuth gateway is addressed by LiteLLM's own provider, which knows the
+      // URL; accepting one here would only let a config claim a base URL that is
+      // never used — or worse, name the metered endpoint the credential cannot
+      // reach, which authenticates and then fails for quota.
+      if (isOauthGatewayAuth(auth)) {
+        const implied = oauthGatewayBaseUrl(auth);
+        if (d.base_url !== undefined && d.base_url !== implied) {
           throw new Error(
-            `sonata.toml: native gateway "${name}" is codex-oauth, so it cannot set base_url ` +
-            `to "${String(d.base_url)}" — that credential only reaches ${CODEX_OAUTH_BASE_URL}. ` +
+            `sonata.toml: native gateway "${name}" is ${auth}, so it cannot set base_url ` +
+            `to "${String(d.base_url)}" — that credential only reaches ${implied}. ` +
             'Remove base_url.',
           );
         }
-        gateways[name] = { baseUrl: CODEX_OAUTH_BASE_URL, auth };
+        gateways[name] = { baseUrl: implied, auth };
         continue;
       }
       if (typeof d.base_url !== 'string') {

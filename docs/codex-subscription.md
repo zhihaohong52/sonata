@@ -175,10 +175,45 @@ such token was found in the system temp directory during development. `cli.ts`
 now stops the handle on SIGINT/SIGTERM/SIGHUP, and `run.ts` retains the handle
 it used to discard for auto-started serves.
 
-## Still outstanding
+## opencode's OAuth logins
 
-**`opencodeKeys()` ignores OAuth entries.** It reads only
-`credential.key ?? credential.apiKey`, so every `type: oauth` entry in
-opencode's `auth.json` (`openai`, `github-copilot`) is invisible and reported as
-"no key" when a usable credential is present. Unrelated to codex — opencode
-stores its own ChatGPT OAuth under `openai` — but the same class of bug.
+opencode stores two OAuth credentials beside its API keys, and neither is a
+bearer key:
+
+| Entry | Value | What it actually is |
+| --- | --- | --- |
+| `openai` | JWT, `client_id: app_EMoamEEZ73f0CkXaXp7hrann` | The **same** ChatGPT subscription credential codex holds — same OAuth app. As an `api_key` it 429s. |
+| `github-copilot` | opaque `gho_…` | A GitHub OAuth token. Must be exchanged at `api.github.com/copilot_internal/v2/token` for a short-lived Copilot key. |
+
+`opencodeKeys()` is therefore **right** to skip them — it resolves API keys, and
+these are not API keys. The bug was that they were then invisible, so `doctor`
+reported "no key" for a gateway whose credential was sitting on disk. They are
+now read by dedicated readers instead:
+
+- `readOpencodeChatGptOAuth` flattens the `openai` entry into the same record
+  `readCodexOAuth` produces, **after checking `client_id`** — another OpenAI
+  OAuth grant would fail confusingly inside LiteLLM's chatgpt provider.
+- `readChatGptOAuth` prefers codex and falls back to opencode, so
+  `auth = "codex-oauth"` works for a machine that only has opencode.
+- `readCopilotToken` reads the `github-copilot` entry for the
+  `copilot-oauth` gateway kind.
+
+### `auth = "copilot-oauth"`
+
+```toml
+[native.gateways."copilot"]
+auth = "copilot-oauth"
+```
+
+Emits `model: github_copilot/<id>` with no `api_base`/`api_key` and **no** mode
+override — Copilot speaks chat-completions, so the Responses bridge that
+codex-oauth needs does not apply. `serve` writes the GitHub token to
+`access-token` in its temp directory and sets `GITHUB_COPILOT_TOKEN_DIR`;
+LiteLLM performs the exchange and caches the Copilot key itself.
+
+**Known collision:** Copilot serves Claude models, but the router sends any
+`claude-`-prefixed model to Anthropic, so `parseConfig` refuses such an id. A
+Claude model cannot currently be reached through Copilot on the native path.
+
+**opencode writes `expires: 0`** on the Copilot entry, meaning "does not
+expire". Read literally that reports a working token as expired since 1970.
