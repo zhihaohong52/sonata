@@ -681,6 +681,59 @@ describe('cmdInit — key check', () => {
   });
 });
 
+describe('wizard-state.json persistence', () => {
+  let cwd: string;
+  let home: string;
+  const lines: string[] = [];
+  const write = (l: string) => { lines.push(l); };
+  const detect = makeDetect();
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'ws-cwd-'));
+    home = mkdtempSync(join(tmpdir(), 'ws-home-'));
+    lines.length = 0;
+  });
+
+  it('writes wizard-state.json next to the config', async () => {
+    await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
+      roles: ['code'], scope: 'skip', write,
+    });
+    const statePath = join(cwd, 'wizard-state.json');
+    expect(existsSync(statePath)).toBe(true);
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    expect(state.nativeKeys).toEqual(['opencode-deepseek-v4-flash']);
+    expect(state.roles).toEqual(['code']);
+    expect(state.perRoleModels).toEqual({ code: ['opencode-deepseek-v4-flash'] });
+  });
+
+  it('second run reads the saved state and produces identical config', async () => {
+    const args = {
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
+      roles: ['code'], scope: 'skip' as const, write,
+    };
+    await cmdInit(args);
+    const toml1 = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
+    await cmdInit(args);
+    const toml2 = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
+    expect(toml2).toBe(toml1);
+  });
+
+  it('writes wizard-state.json to global config dir', async () => {
+    await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect, configScope: 'global',
+      providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
+      roles: ['code'], scope: 'skip', write,
+    });
+    const statePath = join(home, '.config', 'sonata', 'wizard-state.json');
+    expect(existsSync(statePath)).toBe(true);
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    expect(state.nativeKeys).toEqual(['opencode-deepseek-v4-flash']);
+  });
+});
+
 describe('previousAskedStep', () => {
   it('skips flag-answered steps', () => {
     // Steps 0, 3, 4 are interactive; steps 1 and 2 are flag-answered.
