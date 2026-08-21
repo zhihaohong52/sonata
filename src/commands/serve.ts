@@ -244,6 +244,12 @@ export async function cmdServe(
       litellmBase: `http://localhost:${native.ports.litellm}`,
       litellmKey: masterKey,
       health: true,
+      // Goes to serve's stdout, which --daemon captures to its log file. This
+      // is the only record of which upstream served a request: litellm's access
+      // log has the path and status but not the model, so without it "did that
+      // agent really run on the foreign model?" cannot be answered from
+      // evidence.
+      log: (line) => console.log(line),
     });
 
     try {

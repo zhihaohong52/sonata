@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { routeRequest, flattenSystemBlocks } from '../../src/native/router.js';
+import { routeRequest, flattenSystemBlocks, requestedModel } from '../../src/native/router.js';
 
 function fakeFetch(record: any[]) {
   return async (url: string, init: any) => {
@@ -156,5 +156,48 @@ describe('routeRequest — system blocks', () => {
     const req = request('claude-sonnet-4');
     await routeRequest(req, { ...deps, anthropicBase: 'http://anthropic' });
     expect(seen[0]).toBe(req.body.toString());
+  });
+});
+
+describe('requestedModel', () => {
+  it('reads the model from a JSON body', () => {
+    expect(requestedModel(Buffer.from(JSON.stringify({ model: 'gpt-5.6-terra' })))).toBe('gpt-5.6-terra');
+  });
+
+  it('is undefined for a non-JSON or model-less body', () => {
+    expect(requestedModel(Buffer.from('not json'))).toBeUndefined();
+    expect(requestedModel(Buffer.from(JSON.stringify({ messages: [] })))).toBeUndefined();
+  });
+});
+
+describe('routeRequest — logging', () => {
+  const ok: typeof fetch = (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+
+  const logFor = async (model: string): Promise<string> => {
+    const lines: string[] = [];
+    await routeRequest({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: {},
+      body: Buffer.from(JSON.stringify({ model, messages: [] })),
+    }, {
+      fetch: ok,
+      litellmBase: 'http://litellm',
+      anthropicBase: 'http://anthropic',
+      litellmKey: 'k',
+      log: (line) => lines.push(line),
+    });
+    return lines.join('\n');
+  };
+
+  it('records the model and the upstream that served it', async () => {
+    // The routing decision is otherwise invisible: litellm's access log has the
+    // path and status but not the model, so "did this agent really run on the
+    // foreign model?" could only be answered by inference.
+    expect(await logFor('gpt-5.6-terra')).toBe('POST /v1/messages model=gpt-5.6-terra -> litellm');
+  });
+
+  it('names anthropic for a claude- model', async () => {
+    expect(await logFor('claude-sonnet-4')).toBe('POST /v1/messages model=claude-sonnet-4 -> anthropic');
   });
 });
