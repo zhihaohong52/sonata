@@ -149,6 +149,11 @@ context_window = 128000
 gateway that can never authenticate. `sonata init` writes this form by itself
 when `codex login` used a ChatGPT account.
 
+A sonata-initiated login identifies itself to OpenAI as the Codex CLI. This is
+not new behavior: LiteLLM's own Codex provider already makes that identification
+on every native Codex request. It is simply a more visible position now that
+sonata's own UI starts the login.
+
 What each piece does:
 
 - **`src/config.ts`** parses `auth`, defaulting to `api-key` so existing configs
