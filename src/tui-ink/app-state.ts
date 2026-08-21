@@ -54,8 +54,8 @@ export interface CredentialRow {
 }
 
 export interface AvailableCredentials {
-  codex: { expiresInDays: number } | null;
-  opencode: { expiresInDays: number } | null;
+  codex: { expiresInDays: number | null } | null;
+  opencode: { expiresInDays: number | null } | null;
   key: { source: string } | null;
 }
 
@@ -75,7 +75,11 @@ export function credentialRowsFor(gateway: string, have: AvailableCredentials): 
     rows.push({
       source: name,
       label: `Import from ${name}`,
-      detail: found.expiresInDays < 0 ? 'expired — re-login in that tool' : `expires in ${found.expiresInDays}d`,
+      detail: found.expiresInDays === null
+        ? 'expiry unknown'
+        : found.expiresInDays < 0
+          ? 'expired — re-login in that tool'
+          : `expires in ${found.expiresInDays}d`,
     });
   }
   rows.push({ source: 'sonata-key', label: 'Enter an API key', detail: 'metered billing' });

@@ -32,7 +32,7 @@ import { cmdSync } from './sync.js';
 import { select, confirm, isInteractive, banner, CancelledError } from '../tui.js';
 import { keyReport, resolveKeys, writeSonataKey } from '../native/credentials.js';
 import { byokCandidateKey, wellKnownProviders } from '../native/models.js';
-import { byokProviderKey, byokProviderName } from '../tui-ink/app-state.js';
+import { byokProviderKey, byokProviderName, type AvailableCredentials } from '../tui-ink/app-state.js';
 import { runInitTui } from '../tui-ink/run.js';
 import { openInitLog, type InitLog } from './init-log.js';
 import type { WizardData } from '../tui-ink/app.js';
@@ -54,6 +54,31 @@ export const defaultDetector: Detector = async (env) => ({
 });
 
 export type ConfigScope = 'project' | 'global';
+
+/** Build wizard credential rows only for the gateway auth type they can serve. */
+export function credentialAvailabilityFor(
+  providers: Array<{ provider: string }>,
+  oauthProviders: Map<string, NativeGatewayAuth>,
+  credentials: {
+    codex: { expiresInDays: number | null } | null;
+    opencode: { expiresInDays: number | null } | null;
+    copilot: { expiresInDays: number | null } | null;
+  },
+  hasKey: (gateway: string) => boolean,
+): Record<string, AvailableCredentials> {
+  return Object.fromEntries(providers.map((provider) => {
+    const auth = oauthProviders.get(provider.provider);
+    return [provider.provider, {
+      codex: auth === 'codex-oauth' ? credentials.codex : null,
+      opencode: auth === 'copilot-oauth'
+        ? credentials.copilot
+        : auth === 'codex-oauth'
+          ? credentials.opencode
+          : null,
+      key: hasKey(provider.provider) ? { source: 'sonata' } : null,
+    }];
+  }));
+}
 
 /**
  * Where a config is written for a scope. The read-side counterpart is
@@ -596,8 +621,8 @@ async function runInit(
 
     const codexCredential = readChatGptOAuth(opts.home, 'codex');
     const opencodeCredential = readOpencodeChatGptOAuth(opts.home);
-    const daysUntil = (expiresAt: number | undefined): number => expiresAt === undefined
-      ? 0
+    const daysUntil = (expiresAt: number | undefined): number | null => expiresAt === undefined
+      ? null
       : Math.floor((expiresAt * 1000 - Date.now()) / (24 * 60 * 60 * 1000));
     const data: WizardData = {
       harnesses: harnesses.map((h) => ({ name: h.name, installed: h.installed })),
@@ -609,14 +634,16 @@ async function runInit(
         resolveKeys(byokProviders.map((provider) => provider.name), opts.home)
           .map((source) => [source.gateway, source.key]),
       ),
-      credentialAvailability: Object.fromEntries(offered.map((provider) => [provider.provider, {
-        codex: provider.provider === 'github-copilot' || codexCredential === null
-          ? null : { expiresInDays: daysUntil(codexCredential.expires_at) },
-        opencode: provider.provider === 'github-copilot'
-          ? (copilotToken === null ? null : { expiresInDays: 0 })
-          : (opencodeCredential === null ? null : { expiresInDays: daysUntil(opencodeCredential.expires_at) }),
-        key: resolveKeys([provider.provider], opts.home)[0] ? { source: 'sonata' } : null,
-      }])),
+      credentialAvailability: credentialAvailabilityFor(
+        offered,
+        oauthProviders,
+        {
+          codex: codexCredential === null ? null : { expiresInDays: daysUntil(codexCredential.expires_at) },
+          opencode: opencodeCredential === null ? null : { expiresInDays: daysUntil(opencodeCredential.expires_at) },
+          copilot: copilotToken === null ? null : { expiresInDays: null },
+        },
+        (gateway) => resolveKeys([gateway], opts.home)[0] !== undefined,
+      ),
       initialState,
       initialStateByScope,
     };

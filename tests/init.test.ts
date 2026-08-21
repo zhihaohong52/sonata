@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { parseOpenCodeModels, parseAuthedProviders, staleAgents, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
 import { parsePiRefs } from '../src/adapters/pi.js';
 import {
-  cmdInit, duplicateKeys, previousAskedStep, nativeCandidatesFrom,
+  cmdInit, credentialAvailabilityFor, duplicateKeys, previousAskedStep, nativeCandidatesFrom,
   nativeTomlFor, preTickedNative, configPathFor, agentsDirFor,
   deriveInitState, configNativeCandidates, oauthProvidersFor,
   type NativeCandidate,
@@ -921,6 +921,32 @@ describe('nativeTomlFor — codex-oauth gateways', () => {
       baseUrl: CODEX_OAUTH_BASE_URL, auth: 'codex-oauth',
     });
     expect(config.native!.gateways.acme.auth).toBe('api-key');
+  });
+});
+
+describe('credentialAvailabilityFor', () => {
+  it('only offers imports compatible with each gateway auth type', () => {
+    const availability = credentialAvailabilityFor(
+      [{ provider: 'openrouter' }, { provider: 'codex' }, { provider: 'github-copilot' }],
+      new Map([
+        ['codex', 'codex-oauth' as const],
+        ['github-copilot', 'copilot-oauth' as const],
+      ]),
+      {
+        codex: { expiresInDays: 2 },
+        opencode: { expiresInDays: 3 },
+        copilot: { expiresInDays: null },
+      },
+      () => false,
+    );
+
+    expect(availability.openrouter).toMatchObject({ codex: null, opencode: null });
+    expect(availability.codex).toMatchObject({
+      codex: { expiresInDays: 2 }, opencode: { expiresInDays: 3 },
+    });
+    expect(availability['github-copilot']).toMatchObject({
+      codex: null, opencode: { expiresInDays: null },
+    });
   });
 });
 
