@@ -42,6 +42,7 @@ The CLI (after `npm link`):
 - `sonata verify <id> [--model <key>]` — verify a completed run
 - `sonata auth` — manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`; keys live in the store, never logged)
 - `sonata serve` — run the native router and its managed LiteLLM child. `--daemon` re-execs the CLI detached, **waits until the router answers**, then prints the pid, port and log path; a detached child that failed would otherwise report success and leave no server. Its output goes to `~/.config/sonata/logs/serve-<timestamp>.log`, since a detached process has nowhere else to say why it stopped
+- `sonata restart` — kills whatever sonata router currently holds the configured port (a stale daemon, or one MCP-hosted inside a `sonata mcp` process) using only a pid `cmdServe` itself recorded, then starts a fresh daemon. Plain `sonata serve --daemon` cannot recover from this case: it just times out against `EADDRINUSE` with "the daemon did not answer", which reads as a startup failure rather than "something else already has it". See `stopServe`/`cmdRestart` in Configuration below.
 - `sonata code` — launch a Claude Code session routed through the local proxy (passes `claude` args through); auto-starts `sonata serve --daemon` when the router is down
 - `sonata gc` — kill finished tmux sessions
 
@@ -293,6 +294,22 @@ old message called that "a non-sonata listener", sending the user to hunt a
 foreign program that did not exist (a day-old `sonata mcp` was found holding
 4100 and answering its own health endpoint). `occupiedPortMessage` asks the
 health endpoint first, which costs one request and makes the message true.
+
+**`sonata restart` clears that occupant instead of just naming it.** `cmdServe`
+now records `process.pid` as `routerPid` in `serve-state.json` once the router
+successfully binds — true whether that process is a foreground/daemon `sonata
+serve` or an in-process router started inside `sonata mcp` (both call `cmdServe`
+the same way; `src/commands/run.ts` is the second call site). `stopServe` reads
+that file, kills only the pids sonata itself recorded (never a pid found by
+scanning the OS — the same discipline as the pre-existing litellm-orphan kill),
+and polls the health endpoint until the port actually frees before returning.
+`cmdRestart` runs that then `startServeDaemon`. If the port answers as a sonata
+router but the state file has no matching pid (a different sonata install, or
+state left by an older version), `stopServe` refuses rather than guessing —
+same principle as `occupiedPortMessage`. Killing an MCP-hosted router's pid
+ends the `sonata mcp` process it lives in, dropping that session's MCP
+connection until Claude Code reconnects; `restart` makes that trade explicitly
+instead of leaving a stale router unreachable forever.
 
 **The router logs which upstream served each request** — `POST /v1/messages
 model=gpt-5.6-terra -> litellm`. `serve` never passed a `log` before, so that

@@ -17,7 +17,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, realpathSync } from 'node:fs';
 import { cmdAuthAdd, cmdAuthList, cmdAuthRemove } from './commands/auth.js';
-import { cmdServe, startServeDaemon } from './commands/serve.js';
+import { cmdServe, cmdRestart, startServeDaemon } from './commands/serve.js';
 import { cmdCode } from './commands/code.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
@@ -32,6 +32,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata log       print a run's whole transcript (tail returns only new lines)
   sonata verify    confirm a dispatch actually happened
   sonata serve     start the native routing proxy (router + litellm)
+  sonata restart   kill any router holding the port and start a fresh daemon
   sonata code      launch a claude session routed through sonata serve
   sonata auth      manage gateway API keys (add/list/remove)
   sonata mcp       start the stdio JSON-RPC server (started by Claude Code; not run by hand)
@@ -304,6 +305,21 @@ async function main(argv: string[]): Promise<number> {
   if (command === 'code') {
     const passthrough = rest[0] === '--' ? rest.slice(1) : rest;
     await cmdCode({ cwd: process.cwd(), home: homedir(), passthrough });
+    return 0;
+  }
+
+  if (command === 'restart') {
+    // Kills whatever sonata router currently holds the configured port (a
+    // stale daemon, or one MCP-hosted inside a `sonata mcp` process) using
+    // only the pid `cmdServe` recorded for itself, then starts a fresh
+    // daemon. Plain `sonata serve --daemon` cannot do this: it just times
+    // out against `EADDRINUSE` with "the daemon did not answer", which reads
+    // as a startup failure rather than "something else is already there".
+    const self = fileURLToPath(import.meta.url);
+    const restarted = await cmdRestart(homedir(), [process.execPath, self, 'serve'], { cwd: process.cwd() });
+    console.log(`sonata serve restarted (pid ${restarted.pid}) on port ${restarted.port}`);
+    console.log(`  log:  ${restarted.logPath}`);
+    console.log(`  stop: kill ${restarted.pid}`);
     return 0;
   }
 
