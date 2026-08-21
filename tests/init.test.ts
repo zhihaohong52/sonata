@@ -735,6 +735,51 @@ describe('cmdInit --credential-source', () => {
     expect(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).toMatch(/credential_source = "sonata"/);
   });
 
+  // These declare the gateway's auth directly in sonata.toml (auth =
+  // "codex-oauth") rather than relying on harness-detected OAuth, so the
+  // credential's presence/absence at report time is fully controlled by
+  // tuiMocks.codexCredential rather than also gating whether gpt-5 is even
+  // offered as a candidate.
+  const codexOauthConfig = `
+[native.gateways.codex]
+auth = "codex-oauth"
+[native.models.gpt-5]
+gateway = "codex"
+id = "gpt-5"
+context_window = 128000
+[generate.native]
+code = ["gpt-5"]
+`;
+
+  it('reports a healthy oauth credential from its recorded source in the key check', async () => {
+    // Regression: the key-check summary used to fall through to keyReport
+    // (a bearer-key store lookup) for any non-api-key gateway, so a healthy
+    // codex-sourced codex-oauth credential printed "no key — sonata auth add".
+    writeFileSync(join(cwd, 'sonata.toml'), codexOauthConfig);
+    tuiMocks.codexCredential = true;
+    const lines: string[] = [];
+    await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      scope: 'skip',
+      write: (l: string) => { lines.push(l); },
+      credentialSource: ['codex=codex'],
+    });
+    expect(lines.some((l) => l.includes('codex: credential from codex'))).toBe(true);
+  });
+
+  it('gives a `codex login` repair hint for a missing codex-sourced oauth credential', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), codexOauthConfig);
+    tuiMocks.codexCredential = false;
+    const lines: string[] = [];
+    await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      scope: 'skip',
+      write: (l: string) => { lines.push(l); },
+      credentialSource: ['codex=codex'],
+    });
+    expect(lines.some((l) => l.includes('no credential from codex') && l.includes('codex login'))).toBe(true);
+  });
+
   it('refuses by name when the named source has no credential', async () => {
     tuiMocks.codexCredential = true;
     await expect(init(['codex=sonata'])).rejects.toThrow(

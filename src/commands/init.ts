@@ -881,11 +881,35 @@ async function runInit(
     // used, not whichever store `keyReport`'s automatic precedence happens
     // to find first.
     const source = credentialSources[gateway];
-    if (gatewayAuths.get(gateway) === 'api-key' && (source === 'sonata' || source === 'opencode')) {
+    const auth = gatewayAuths.get(gateway);
+    if (auth === 'api-key' && (source === 'sonata' || source === 'opencode')) {
       const found = resolveKeyFromSource(gateway, opts.home, source) !== undefined;
       out(found
         ? `  ✓ ${gateway}: key from ${source}`
-        : `  ! ${gateway}: no key from ${source} — run \`sonata auth add ${gateway}\``);
+        : source === 'sonata'
+          ? `  ! ${gateway}: no key from sonata — run \`sonata auth add ${gateway}\``
+          : `  ! ${gateway}: no key from opencode — log into opencode itself, sonata does not manage its credentials`);
+      continue;
+    }
+    if (auth !== undefined && isOauthGatewayAuth(auth) && source !== undefined) {
+      // Bearer keys and device-login OAuth credentials live in different
+      // stores per source, so presence and the repair hint both branch on
+      // (source, auth) rather than reusing the api-key path above.
+      const found = source === 'sonata'
+        ? existsSync(join(credentialDir(opts.home, gateway), credentialFileFor(auth)))
+        : auth === 'copilot-oauth'
+          ? readCopilotToken(opts.home) !== null
+          : readChatGptOAuth(opts.home, source) !== null;
+      const repair = source === 'sonata'
+        ? `run \`sonata auth login ${gateway}\``
+        : source === 'codex'
+          ? 'log in with `codex login`'
+          : auth === 'copilot-oauth'
+            ? 'log into opencode with a GitHub Copilot account'
+            : 'log into opencode with a ChatGPT account';
+      out(found
+        ? `  ✓ ${gateway}: credential from ${source}`
+        : `  ! ${gateway}: no credential from ${source} — ${repair}`);
       continue;
     }
     const auto = autoSources.get(gateway) ?? null;
