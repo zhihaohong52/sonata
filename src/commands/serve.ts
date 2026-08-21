@@ -35,7 +35,7 @@ export interface ServeDeps {
 }
 
 /**
- * Where a serve instance records its litellm child's pid.
+ * Where a serve instance records its own pid and its litellm child's pid.
  *
  * The router dies with the process that started serve (an MCP reconnect kills
  * it), but the spawned litellm child is reparented and survives. The next
@@ -44,29 +44,57 @@ export interface ServeDeps {
  * virtual-key lookup fails as "No connected db". Measured 2026-08-20, twice.
  * Recording the pid lets the next serve kill its predecessor's orphan —
  * only a pid sonata itself recorded is ever killed.
+ *
+ * `routerPid` is `process.pid` at the point the router successfully binds —
+ * true whether this process is a foreground/daemon `sonata serve` or an
+ * in-process router started inside `sonata mcp` by a native dispatch
+ * (`cmdServe` is the one call site for both, per `src/commands/run.ts`).
+ * `sonata restart` reads it to kill a stale router without guessing a pid by
+ * scanning the OS.
  */
 export function serveStatePath(home: string): string {
   return join(home, '.config', 'sonata', 'serve-state.json');
 }
 
-function killRecordedOrphan(home: string): void {
+interface ServeState {
+  routerPid?: number;
+  litellmPid?: number;
+  recordedAt: string;
+}
+
+function readServeState(home: string): ServeState | undefined {
   const path = serveStatePath(home);
-  if (!existsSync(path)) return;
+  if (!existsSync(path)) return undefined;
   try {
-    const state = JSON.parse(readFileSync(path, 'utf8')) as { litellmPid?: number };
-    if (typeof state.litellmPid === 'number' && state.litellmPid > 0) {
-      process.kill(state.litellmPid);
-    }
+    return JSON.parse(readFileSync(path, 'utf8')) as ServeState;
   } catch {
-    // Already dead, or unreadable state — either way there is nothing to kill.
+    return undefined;
   }
-  try { unlinkSync(path); } catch { /* gone is the goal */ }
+}
+
+function writeServeState(home: string, state: Omit<ServeState, 'recordedAt'>): void {
+  const path = serveStatePath(home);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({ ...state, recordedAt: new Date().toISOString() }));
+}
+
+function killPid(pid: number | undefined): void {
+  if (typeof pid !== 'number' || pid <= 0) return;
+  try { process.kill(pid); } catch { /* already dead */ }
+}
+
+function killRecordedOrphan(home: string): void {
+  const state = readServeState(home);
+  killPid(state?.litellmPid);
+  try { unlinkSync(serveStatePath(home)); } catch { /* gone is the goal */ }
 }
 
 function recordLitellmPid(home: string, pid: number): void {
-  const path = serveStatePath(home);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify({ litellmPid: pid, recordedAt: new Date().toISOString() }));
+  writeServeState(home, { ...readServeState(home), litellmPid: pid });
+}
+
+function recordRouterPid(home: string, pid: number): void {
+  writeServeState(home, { ...readServeState(home), routerPid: pid });
 }
 
 /** Polls litellm until it answers, so a silent bind failure surfaces here. */
@@ -260,6 +288,7 @@ export async function cmdServe(
       }
       throw error;
     }
+    recordRouterPid(opts.home, process.pid);
   } catch (error) {
     child?.kill();
     rmSync(tempDir, { force: true, recursive: true });
@@ -354,4 +383,96 @@ export async function startServeDaemon(
     }
     await sleep(500);
   }
+}
+
+export interface StopDeps {
+  probeHealth?: typeof fetch;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  timeoutMs?: number;
+  /** Test seam — production default is `process.kill`. */
+  kill?: (pid: number) => void;
+}
+
+export interface StopResult {
+  /** False when nothing was running — `restart` on a clean slate is not an error. */
+  killed: boolean;
+}
+
+/**
+ * Kills whatever sonata router currently holds the configured port, using
+ * only the pids `cmdServe` itself recorded — never a pid found by scanning
+ * the OS, which could belong to an unrelated process reusing the port after
+ * a previous sonata instance already exited.
+ *
+ * The recorded router pid is `process.pid` of whichever process called
+ * `cmdServe` last and won the bind — a foreground/daemon `sonata serve`, or
+ * an in-process router started inside `sonata mcp` by an earlier native
+ * dispatch (`src/commands/run.ts` calls `cmdServe` the same way). Killing
+ * that pid in the second case ends the `sonata mcp` process it lives in,
+ * which drops that session's MCP connection until Claude Code reconnects —
+ * the same trade `occupiedPortMessage` already describes as "restart Claude
+ * Code to retire it". `restart` makes that trade explicitly instead of
+ * leaving a stale router unreachable forever.
+ */
+export async function stopServe(
+  opts: { cwd: string; home: string } & StopDeps,
+): Promise<StopResult> {
+  const config = loadConfig(opts.cwd, opts.home);
+  if (!config.native) throw new Error('sonata restart: no [native] table');
+  const port = config.native.ports.router;
+  const probeHealth = opts.probeHealth;
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+
+  if (!(await isSonataRouter(port, probeHealth))) return { killed: false };
+
+  const state = readServeState(opts.home);
+  if (state?.routerPid === undefined && state?.litellmPid === undefined) {
+    throw new Error(
+      `sonata restart: router port ${port} answers as a sonata router, but no recorded pid for it ` +
+      `was found in ${serveStatePath(opts.home)} — it may have been started by a different sonata ` +
+      'install or an older version. Kill it by hand (or restart Claude Code, if it is MCP-hosted), ' +
+      'then run `sonata serve --daemon`.',
+    );
+  }
+
+  const kill = opts.kill ?? killPid;
+  if (state.routerPid !== undefined) kill(state.routerPid);
+  if (state.litellmPid !== undefined) kill(state.litellmPid);
+  try { unlinkSync(serveStatePath(opts.home)); } catch { /* already gone */ }
+
+  const deadline = now() + timeoutMs;
+  while (await isSonataRouter(port, probeHealth)) {
+    if (now() > deadline) {
+      throw new Error(
+        `sonata restart: killed the recorded process(es) but port ${port} is still answering ` +
+        `after ${Math.round(timeoutMs / 1000)}s.`,
+      );
+    }
+    await sleep(300);
+  }
+
+  return { killed: true };
+}
+
+/**
+ * Stops whatever router currently holds the configured port, then starts a
+ * fresh daemon in its place. The two-step split — rather than one call that
+ * always wins the bind — exists so a stale MCP-hosted router or a daemon left
+ * over from a previous build gets cleared out first: `startServeDaemon` alone
+ * just times out with "the daemon did not answer" against `EADDRINUSE`,
+ * which reads as a startup failure rather than the actual cause.
+ */
+export async function cmdRestart(
+  home: string,
+  argv: string[],
+  opts: { cwd: string } & StopDeps & DaemonDeps = { cwd: process.cwd() },
+): Promise<DaemonResult> {
+  await stopServe({
+    cwd: opts.cwd, home,
+    probeHealth: opts.probeHealth, now: opts.now, sleep: opts.sleep, timeoutMs: opts.timeoutMs, kill: opts.kill,
+  });
+  return startServeDaemon(home, argv, opts);
 }
