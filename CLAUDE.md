@@ -285,6 +285,15 @@ There are two deliverables: (A) `sonata serve`/`sonata code` for a complete loca
 
 **`init` must never offer a model the router cannot reach.** Copilot, vendorx and anthropic all serve Claude models, and the router sends `claude-` upstream, so `parseConfig` refuses those ids — 27 such candidates were being offered, and selecting one wrote a config that then failed to load. `isAnthropicRoutedName` is the single definition, used by both the parser and the candidate filter.
 
+**The router port's occupant is usually sonata.** An MCP dispatch to a native
+model starts a router *inside* the `sonata mcp` process, and that router lives
+as long as the MCP server does — until Claude Code restarts, not until the
+dispatch ends. So `serve` after any native dispatch hits `EADDRINUSE`, and its
+old message called that "a non-sonata listener", sending the user to hunt a
+foreign program that did not exist (a day-old `sonata mcp` was found holding
+4100 and answering its own health endpoint). `occupiedPortMessage` asks the
+health endpoint first, which costs one request and makes the message true.
+
 **`serve` inherits LiteLLM's stdio.** A per-model startup failure appears only in LiteLLM's own output; discarding it is what turned a plain 403 into an unrelated-looking "no healthy deployments for this model".
 
 **opencode's OAuth entries are not API keys.** `opencodeKeys()` resolves `type: api` entries only, which is correct — but the `type: oauth` ones (`openai`, `github-copilot`) were then invisible, so doctor reported "no key" for a credential sitting on disk. opencode's `openai` entry is the *same* ChatGPT credential codex holds (identical `client_id`), so `readChatGptOAuth` prefers codex and falls back to opencode; the `client_id` is checked, because another OpenAI grant would fail confusingly inside LiteLLM. opencode writes `expires: 0` on the Copilot entry to mean "never expires".
