@@ -145,12 +145,28 @@ export async function cmdDoctor(
     // tell the user to `sonata auth add` a key that would be ignored, and claim
     // no usable credential exists when one does.
     const gatewayNames = Object.keys(config.native.gateways);
-    const oauthGateways = gatewayNames.filter(
-      (name) => isOauthGatewayAuth(config.native!.gateways[name].auth));
+    // A gateway with a recorded source gets exactly one check, right here — the
+    // legacy automatic-sniffing checks below are skipped for it. Running both
+    // meant a valid `credential_source = "sonata"` could pass its own check and
+    // then fail the legacy codex/opencode sniff, making `doctor` exit 1 for a
+    // correctly configured gateway.
+    const sourcedGateways = new Set(
+      gatewayNames.filter((name) => config.native!.gateways[name].credentialSource !== undefined),
+    );
 
     for (const [name, gateway] of Object.entries(config.native.gateways)) {
       const source = gateway.credentialSource;
-      if (source === undefined) continue;
+      if (source === undefined) {
+        // Distinct name from the `key source: <gateway>` checks below — this is
+        // informational only, and the automatic-resolution checks further down
+        // still own verifying that gateway's credential.
+        checks.push({
+          name: `credential source: ${name}`,
+          ok: true,
+          detail: `${name}: credential resolved automatically (no credential_source recorded)`,
+        });
+        continue;
+      }
       const present = source === 'sonata'
         ? existsSync(join(credentialDir(home, name), credentialFileFor(gateway.auth)))
         : hasCredentialFrom(source, gateway.auth, home);
@@ -162,6 +178,9 @@ export async function cmdDoctor(
           : `${name}: credential from ${source}\n  ! ${name}: no credential from ${source} — run \`sonata auth login ${name}\``,
       });
     }
+
+    const oauthGateways = gatewayNames.filter(
+      (name) => isOauthGatewayAuth(config.native!.gateways[name].auth) && !sourcedGateways.has(name));
 
     for (const gateway of oauthGateways) {
       if (config.native.gateways[gateway].auth === 'copilot-oauth') {
@@ -195,7 +214,8 @@ export async function cmdDoctor(
       });
     }
 
-    const keyGateways = gatewayNames.filter((name) => !oauthGateways.includes(name));
+    const keyGateways = gatewayNames.filter(
+      (name) => !oauthGateways.includes(name) && !sourcedGateways.has(name));
     for (const report of keyReport(keyGateways, home)) {
       checks.push(report.source
         ? { name: `key source: ${report.gateway}`, ok: true, detail: `from ${report.source}` }
