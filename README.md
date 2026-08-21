@@ -423,6 +423,7 @@ install will not litter unrelated repositories.
 | `sonata verify <id> [--model <key>]` | Verify a completed run |
 | `sonata auth` | Manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`) |
 | `sonata serve` | Run the native router and its managed LiteLLM child (`--daemon` detaches) |
+| `sonata restart` | Kill whatever sonata router currently holds the port (a stale daemon, or one MCP-hosted inside `sonata mcp`) and start a fresh daemon |
 | `sonata code` | Launch a Claude Code session routed through the local proxy (passes `claude` args through) |
 | `sonata gc` | Kill finished tmux sessions |
 
@@ -496,6 +497,7 @@ version and auth, and the permission hook.
 | A codex run sits in `PAUSED` at startup | Codex has not been trusted in this directory. Run `codex` there once and answer "Yes, continue". |
 | A run reports `degraded` | The harness exited without writing a report; the text you get is scraped pane output. Treat it as untrustworthy. |
 | A run never finishes | It is capped by `run_timeout_seconds`. Attach with `tmux attach -t sonata-<id>` to watch it. |
+| `sonata serve --daemon` times out with "the daemon did not answer" | Something already holds the router port — often a stale daemon, or a router still living inside a `sonata mcp` process from an earlier native dispatch. Run `sonata restart` instead; it kills the recorded occupant first. |
 
 ## Security
 
@@ -540,6 +542,10 @@ Worth knowing before you depend on this:
   seam for adopting it.
 - **No streaming granularity guarantees.** Progress is whatever the harness
   prints.
+- **ChatGPT's Codex endpoint occasionally returns an empty completion under
+  concurrent load** instead of a 429, which LiteLLM surfaces as a 500. The
+  router recognizes this specific case and re-emits it as 529 (overloaded) so
+  Claude Code retries automatically instead of treating it as a hard failure.
 
 ## Development
 
