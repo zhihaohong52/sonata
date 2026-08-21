@@ -25,7 +25,14 @@ jobs:
 
       - run: npm run typecheck
 
-      - run: npm test
+      - name: Run npm test
+        timeout-minutes: 5
+        run: node_modules/.bin/vitest run --reporter=default --reporter=hanging-process
+
+      - name: Dump active handles if the process is still alive
+        if: always()
+        run: |
+          ps aux | grep -iE 'node|vitest|esbuild|tmux' | grep -v grep || true
 
       # Catches the packaging mistakes that only appear at publish time:
       # a missing runtime asset, or a bin target excluded by `files`.
