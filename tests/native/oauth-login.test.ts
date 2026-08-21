@@ -79,4 +79,24 @@ describe('loginGateway', () => {
     expect(result.ok).toBe(false);
     expect(result.problem).toMatch(/litellm/i);
   });
+
+  it('fixes up the credential file to 0600 even if litellm wrote it looser', async () => {
+    const result = await loginGateway({
+      home, gateway: 'codex', auth: 'codex-oauth', progress, interpreter: FAKE,
+    });
+    expect(result.ok).toBe(true);
+    const path = join(credentialDir(home, 'codex'), 'auth.json');
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it('resolves immediately without spawning when the signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = await loginGateway({
+      home, gateway: 'codex', auth: 'codex-oauth', progress, interpreter: FAKE, signal: controller.signal,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.problem).toMatch(/cancelled/i);
+    expect(existsSync(join(credentialDir(home, 'codex'), 'auth.json'))).toBe(false);
+  });
 });
