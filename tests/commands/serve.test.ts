@@ -68,6 +68,38 @@ router = 0
 litellm = 4000
 `;
 
+// Runs cmdServe far enough to capture the env it built for litellm, then stops.
+async function serveWith(
+  gatewayToml: string,
+  o: { withCodexAuth?: boolean; withSonataCredential?: boolean } = {},
+) {
+  const home = mkdtempSync(join(tmpdir(), 'serve-src-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'serve-src-cwd-'));
+  const tempDir = mkdtempSync(join(tmpdir(), 'serve-src-temp-'));
+  writeFileSync(join(cwd, 'sonata.toml'),
+    `[native]\n[native.ports]\nrouter = 0\nlitellm = 4101\n${gatewayToml}`);
+  if (o.withCodexAuth) {
+    mkdirSync(join(home, '.codex'), { recursive: true });
+    writeFileSync(join(home, '.codex/auth.json'), JSON.stringify({ tokens: { access_token: 'x' } }));
+  }
+  if (o.withSonataCredential !== false) {
+    mkdirSync(join(home, '.config/sonata/credentials/codex'), { recursive: true });
+    writeFileSync(join(home, '.config/sonata/credentials/codex/auth.json'), '{}');
+  }
+  let env: NodeJS.ProcessEnv = {};
+  const stop = await cmdServe({
+    home, cwd, tempDir,
+    spawnLitellm: (_c, e) => { env = e; return { pid: 1, kill() {} }; },
+    waitForLitellm: async () => {},
+  });
+  const cleanup = async () => {
+    await stop.stop();
+    rmSync(home, { force: true, recursive: true });
+    rmSync(cwd, { force: true, recursive: true });
+  };
+  return { home, cwd, tempDir, env, cleanup };
+}
+
 describe('cmdServe', () => {
   it('resolves keys into the LiteLLM child environment under the gateway variable', async () => {
     writeSonataKey(home, 'anexto', 'the-key');
@@ -239,6 +271,46 @@ function writeOpencodeAuth(at: string, entries: Record<string, unknown>): void {
   mkdirSync(join(at, '.local', 'share', 'opencode'), { recursive: true });
   writeFileSync(join(at, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify(entries));
 }
+
+describe('credential source', () => {
+  it('points the token dir at the persistent path and writes no temp copy', async () => {
+    const { home, tempDir, env, cleanup } = await serveWith(`
+[native.gateways.codex]
+auth = "codex-oauth"
+credential_source = "sonata"
+`);
+    try {
+      expect(env.CHATGPT_TOKEN_DIR).toBe(join(home, '.config/sonata/credentials/codex'));
+      // LiteLLM refreshes tokens into this file; a temp copy throws that away.
+      expect(existsSync(join(tempDir, 'chatgpt'))).toBe(false);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('still flattens codex auth into the temp dir for the codex source', async () => {
+    const { tempDir, env, home, cleanup } = await serveWith(`
+[native.gateways.codex]
+auth = "codex-oauth"
+credential_source = "codex"
+`, { withCodexAuth: true });
+    try {
+      expect(env.CHATGPT_TOKEN_DIR).toBe(join(tempDir, 'chatgpt'));
+      expect(statSync(join(tempDir, 'chatgpt/auth.json')).mode & 0o777).toBe(0o600);
+      expect(home).toBeTruthy();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('refuses with the login remedy when the sonata credential is missing', async () => {
+    await expect(serveWith(`
+[native.gateways.codex]
+auth = "codex-oauth"
+credential_source = "sonata"
+`, { withSonataCredential: false })).rejects.toThrow(/sonata auth login codex/);
+  });
+});
 
 describe('cmdServe — copilot-oauth gateways', () => {
   it('writes the GitHub token where LiteLLM expects it and points at the dir', async () => {
