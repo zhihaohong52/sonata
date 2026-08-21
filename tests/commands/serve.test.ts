@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { spawn as spawnType } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { cmdServe, serveHealthUrl, type ServeHandle, isSonataRouter, occupiedPortMessage } from '../../src/commands/serve.js';
+import { cmdServe, serveHealthUrl, type ServeHandle, isSonataRouter, occupiedPortMessage, startServeDaemon } from '../../src/commands/serve.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
 
 let cwd: string;
@@ -313,5 +314,79 @@ describe('isSonataRouter', () => {
     const notJson = (async () => new Response('<html>')) as unknown as typeof fetch;
     expect(await isSonataRouter(4100, ok)).toBe(true);
     expect(await isSonataRouter(4100, notJson)).toBe(false);
+  });
+});
+
+describe('startServeDaemon', () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'sonata-daemon-home-'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), `
+[native.gateways."g"]
+base_url = "http://gateway.example/v1"
+[native.models."m"]
+gateway = "g"
+id = "model"
+context_window = 128000
+`);
+  });
+  afterEach(() => { rmSync(home, { force: true, recursive: true }); });
+
+  const fakeSpawn = (pid = 4242) => (() => ({
+    pid,
+    unref: () => {},
+  })) as unknown as typeof spawnType;
+
+  it('detaches and returns once the router answers', async () => {
+    // The flag used to be parsed, handed to cmdServe and ignored, so
+    // `sonata serve --daemon` blocked exactly like the foreground command.
+    const opts: Parameters<typeof spawnType>[2][] = [];
+    const spy = ((_cmd: string, _args: string[], o: never) => {
+      opts.push(o);
+      return { pid: 4242, unref: () => {} };
+    }) as unknown as typeof spawnType;
+
+    const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: spy,
+      probe: async () => true,
+    });
+
+    expect(result.pid).toBe(4242);
+    expect(result.port).toBe(4100);
+    expect(opts[0]).toMatchObject({ detached: true });
+    expect(existsSync(result.logPath)).toBe(true);
+  });
+
+  it('waits for the router rather than reporting success immediately', async () => {
+    // A detached child that fails would otherwise leave the user with a
+    // success message and no server.
+    let attempts = 0;
+    const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: fakeSpawn(),
+      probe: async () => ++attempts >= 3,
+      sleep: async () => {},
+    });
+    expect(attempts).toBe(3);
+    expect(result.port).toBe(4100);
+  });
+
+  it('gives up with the log path when the daemon never answers', async () => {
+    let clock = 0;
+    await expect(startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: fakeSpawn(),
+      probe: async () => false,
+      sleep: async () => { clock += 500; },
+      now: () => clock,
+      timeoutMs: 2000,
+    })).rejects.toThrow(/did not answer on port 4100.*serve-/s);
+  });
+
+  it('writes the daemon log into the shared log directory', async () => {
+    const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: fakeSpawn(), probe: async () => true,
+    });
+    expect(result.logPath).toContain(join('.config', 'sonata', 'logs'));
+    expect(result.logPath).toMatch(/serve-.*\.log$/);
   });
 });

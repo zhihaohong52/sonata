@@ -17,7 +17,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, realpathSync } from 'node:fs';
 import { cmdAuthAdd, cmdAuthList, cmdAuthRemove } from './commands/auth.js';
-import { cmdServe } from './commands/serve.js';
+import { cmdServe, startServeDaemon } from './commands/serve.js';
 import { cmdCode } from './commands/code.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
@@ -267,7 +267,18 @@ async function main(argv: string[]): Promise<number> {
       args: rest,
       options: { daemon: { type: 'boolean', default: false } },
     });
-    // TODO: detach and register daemon lifecycle with gc.
+    if (values.daemon) {
+      // Re-exec this same CLI in the foreground, detached. The flag used to be
+      // parsed, handed to cmdServe and ignored, so `--daemon` blocked exactly
+      // like the foreground command.
+      const self = fileURLToPath(import.meta.url);
+      const daemon = await startServeDaemon(homedir(), [process.execPath, self, 'serve']);
+      console.log(`sonata serve running in the background (pid ${daemon.pid}) on port ${daemon.port}`);
+      console.log(`  log:  ${daemon.logPath}`);
+      console.log(`  stop: kill ${daemon.pid}`);
+      return 0;
+    }
+
     const handle = await cmdServe({ cwd: process.cwd(), home: homedir(), daemon: values.daemon });
     console.log(`router listening on ${handle.routerPort}; litellm listening on ${handle.litellmPort}`);
 

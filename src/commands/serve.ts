@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -10,6 +10,7 @@ import { codexAuthPath, opencodeAuthPath, readChatGptOAuth } from '../native/cod
 import { readCopilotToken } from '../native/copilot-auth.js';
 import { envVarForGateway, litellmConfigYaml } from '../native/litellm.js';
 import { createRouterServer } from '../native/router.js';
+import { timestampedLogPath } from './init-log.js';
 
 export interface ServeHandle {
   routerPort: number;
@@ -282,4 +283,69 @@ export async function cmdServe(
       }
     },
   };
+}
+
+export interface DaemonDeps {
+  spawn?: typeof spawn;
+  /** Resolves true once the router answers on `port`. */
+  probe?: (port: number) => Promise<boolean>;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  timeoutMs?: number;
+}
+
+export interface DaemonResult {
+  pid: number;
+  port: number;
+  logPath: string;
+}
+
+/**
+ * Starts `sonata serve` in a detached child and waits until it answers.
+ *
+ * `--daemon` used to be parsed, passed to `cmdServe`, and then ignored — the
+ * command blocked forever like the foreground one, which is what "the flag does
+ * nothing" looked like from a shell.
+ *
+ * The wait is the part worth keeping: a detached child that fails (an occupied
+ * port, a gateway LiteLLM drops) would otherwise exit silently, leaving the
+ * user with a success message and no server. Its output goes to a log file for
+ * the same reason — a detached process has nowhere else to say why it stopped.
+ */
+export async function startServeDaemon(
+  home: string,
+  argv: string[],
+  deps: DaemonDeps = {},
+): Promise<DaemonResult> {
+  const spawnFn = deps.spawn ?? spawn;
+  const probe = deps.probe ?? ((port: number) => isSonataRouter(port));
+  const now = deps.now ?? Date.now;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const timeoutMs = deps.timeoutMs ?? 60_000;
+
+  const config = loadConfig(process.cwd(), home);
+  if (!config.native) throw new Error('sonata serve: no [native] table');
+  const port = config.native.ports.router;
+
+  const logPath = timestampedLogPath(home, 'serve');
+  mkdirSync(dirname(logPath), { recursive: true });
+  const log = openSync(logPath, 'a');
+
+  const child = spawnFn(argv[0], argv.slice(1), {
+    detached: true,
+    stdio: ['ignore', log, log],
+  });
+  child.unref();
+
+  const deadline = now() + timeoutMs;
+  for (;;) {
+    if (await probe(port)) return { pid: child.pid ?? 0, port, logPath };
+    if (now() > deadline) {
+      throw new Error(
+        `sonata serve: the daemon did not answer on port ${port} within ${Math.round(timeoutMs / 1000)}s. ` +
+        `See ${logPath}`,
+      );
+    }
+    await sleep(500);
+  }
 }
