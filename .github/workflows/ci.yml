@@ -41,12 +41,14 @@ jobs:
       - name: Run npm test
         timeout-minutes: 3
         continue-on-error: true
-        # stdbuf forces line-buffered stdout: Node block-buffers when writing
-        # to a pipe (not a TTY), so a killed-mid-block process can lose the
-        # last several already-printed lines from what the reader sees —
-        # confirmed live: one run showed 46/47 files despite the terminal
-        # view (which Actions captures through something TTY-like) showing 47/47.
-        run: stdbuf -oL -eL node_modules/.bin/vitest run --reporter=default 2>&1 | tee /tmp/vitest-output.log
+        # Written straight to a file, no tee: when stdout is a file, Node's
+        # writes are synchronous, so every printed line is durably on disk
+        # the moment it appears. Through a pipe the tail gets lost — measured
+        # twice: the job-timeout kill terminated `tee` with its final stdio
+        # block unflushed, and the last checkmark (always e2e.test.ts, the
+        # slowest file) vanished from the capture despite showing live in the
+        # Actions UI, failing the count at 46/47.
+        run: node_modules/.bin/vitest run --reporter=default > /tmp/vitest-output.log 2>&1
 
       - name: Check test results
         run: |
@@ -54,6 +56,7 @@ jobs:
           # even though local redirected output doesn't, and they sit between
           # the checkmark glyph and the filename, breaking a plain substring match.
           sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' /tmp/vitest-output.log > /tmp/vitest-output-plain.log
+          cat /tmp/vitest-output-plain.log
           expected=$(find tests -name '*.test.ts' | wc -l | tr -d ' ')
           passed=$(/usr/bin/grep -cE '✓ tests/' /tmp/vitest-output-plain.log || true)
           echo "$passed/$expected test files reported passing."
