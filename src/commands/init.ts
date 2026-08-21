@@ -78,7 +78,7 @@ export function credentialAvailabilityFor(
       key: hasKey(provider.provider) ? { source: 'sonata' } : null,
       // Only an OAuth gateway needs an override target; everything else
       // already authenticates with a key, so entering one always works.
-      keyEntryAvailable: auth === undefined || WELL_KNOWN_PROVIDER_URLS[provider.provider] !== undefined,
+      keyEntryAvailable: auth === undefined || !isOauthGatewayAuth(auth) || WELL_KNOWN_PROVIDER_URLS[provider.provider] !== undefined,
     }];
   }));
 }

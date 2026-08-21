@@ -1034,6 +1034,17 @@ describe('credentialAvailabilityFor', () => {
     });
   });
 
+  it('allows key entry for an explicit api-key gateway even with an unrecognized name', () => {
+    const availability = credentialAvailabilityFor(
+      [{ provider: 'work-openai' }],
+      new Map([['work-openai', 'api-key' as const]]),
+      { codex: null, opencode: null, copilot: null },
+      () => false,
+    );
+
+    expect(availability['work-openai']).toMatchObject({ keyEntryAvailable: true });
+  });
+
   it('retains imports for a config-only OAuth gateway', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'init-config-oauth-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'init-config-oauth-home-'));
