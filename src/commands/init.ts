@@ -594,6 +594,11 @@ async function runInit(
       if (configsByScope[scope]) initialStateByScope[scope] = deriveInitState(configsByScope[scope]!, scope, offered);
     }
 
+    const codexCredential = readChatGptOAuth(opts.home, 'codex');
+    const opencodeCredential = readOpencodeChatGptOAuth(opts.home);
+    const daysUntil = (expiresAt: number | undefined): number => expiresAt === undefined
+      ? 0
+      : Math.floor((expiresAt * 1000 - Date.now()) / (24 * 60 * 60 * 1000));
     const data: WizardData = {
       harnesses: harnesses.map((h) => ({ name: h.name, installed: h.installed })),
       providers: offered.map((p) => ({ key: p.key, harness: p.harness, provider: p.provider, count: p.count })),
@@ -604,6 +609,14 @@ async function runInit(
         resolveKeys(byokProviders.map((provider) => provider.name), opts.home)
           .map((source) => [source.gateway, source.key]),
       ),
+      credentialAvailability: Object.fromEntries(offered.map((provider) => [provider.provider, {
+        codex: provider.provider === 'github-copilot' || codexCredential === null
+          ? null : { expiresInDays: daysUntil(codexCredential.expires_at) },
+        opencode: provider.provider === 'github-copilot'
+          ? (copilotToken === null ? null : { expiresInDays: 0 })
+          : (opencodeCredential === null ? null : { expiresInDays: daysUntil(opencodeCredential.expires_at) }),
+        key: resolveKeys([provider.provider], opts.home)[0] ? { source: 'sonata' } : null,
+      }])),
       initialState,
       initialStateByScope,
     };

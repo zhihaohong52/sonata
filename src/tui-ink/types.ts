@@ -1,3 +1,5 @@
+import type { CredentialSource } from '../config.js';
+
 export type ConfigScope = 'project' | 'global';
 export type HookScope = 'project' | 'global' | 'skip';
 
@@ -20,6 +22,12 @@ export interface InitState {
   byokKeys?: Record<string, string>;
   /** BYOK provider -> the model ids chosen or typed for it. */
   byokModels?: Record<string, string[]>;
+  /**
+   * Gateway -> where its credential comes from. A recorded choice, unlike
+   * `oauthProvidersFor`'s sniffing, which now only computes the default.
+   * Holds no credential material — a login writes through LiteLLM to disk.
+   */
+  credentialSources?: Record<string, CredentialSource>;
 }
 
 // The JSON written by the Ink app, read by cmdInit
