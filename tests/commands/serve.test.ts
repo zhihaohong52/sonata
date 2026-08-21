@@ -2,9 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { spawn as spawnType } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
-import { cmdServe, serveHealthUrl, type ServeHandle, isSonataRouter, occupiedPortMessage, startServeDaemon } from '../../src/commands/serve.js';
+import {
+  cmdServe, serveHealthUrl, type ServeHandle, isSonataRouter, occupiedPortMessage, startServeDaemon,
+  serveStatePath, stopServe, cmdRestart,
+} from '../../src/commands/serve.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
 
 let cwd: string;
@@ -127,6 +130,20 @@ describe('cmdServe', () => {
 
     const after = readdirSync(tmpdir()).filter((n) => n.startsWith('sonata-litellm-'));
     expect(after).toEqual(before);
+  });
+
+  it('records its own pid as routerPid once the router is listening, alongside the litellm pid', async () => {
+    // `sonata restart` reads this to kill a stale router without scanning the
+    // OS for a pid to guess at.
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 4242, kill() {} }),
+    });
+    handles.push(handle);
+
+    const state = JSON.parse(readFileSync(serveStatePath(home), 'utf8'));
+    expect(state.routerPid).toBe(process.pid);
+    expect(state.litellmPid).toBe(4242);
   });
 });
 
@@ -388,5 +405,130 @@ context_window = 128000
     });
     expect(result.logPath).toContain(join('.config', 'sonata', 'logs'));
     expect(result.logPath).toMatch(/serve-.*\.log$/);
+  });
+});
+
+const notSonataFetch: typeof fetch = (async () => new Response('', { status: 500 })) as unknown as typeof fetch;
+
+describe('stopServe', () => {
+  let cwd: string;
+  let home: string;
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-stop-cwd-'));
+    home = mkdtempSync(join(tmpdir(), 'sonata-stop-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways."g"]
+base_url = "http://gateway.example/v1"
+[native.models."m"]
+gateway = "g"
+id = "model"
+context_window = 128000
+[native.ports]
+router = 4100
+litellm = 4000
+`);
+  });
+
+  afterEach(() => {
+    rmSync(cwd, { force: true, recursive: true });
+    rmSync(home, { force: true, recursive: true });
+  });
+
+  const notSonata: typeof fetch = (async () => new Response('', { status: 500 })) as unknown as typeof fetch;
+  const sonataHealth: typeof fetch = (async () =>
+    new Response(JSON.stringify({ status: 'ok', sonata: true }))) as unknown as typeof fetch;
+
+  it('is a no-op when nothing is running on the port', async () => {
+    const result = await stopServe({ cwd, home, probeHealth: notSonata });
+    expect(result.killed).toBe(false);
+  });
+
+  it('kills the recorded router and litellm pids and clears the state file', async () => {
+    mkdirSync(dirname(serveStatePath(home)), { recursive: true });
+    writeFileSync(serveStatePath(home), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
+    const killed: number[] = [];
+    // The health probe answers sonata the first time, then reports gone —
+    // stopServe polls until the port actually frees before returning.
+    let calls = 0;
+    const probe: typeof fetch = (async () => {
+      calls += 1;
+      return calls === 1 ? new Response(JSON.stringify({ sonata: true })) : new Response('', { status: 500 });
+    }) as unknown as typeof fetch;
+
+    const result = await stopServe({
+      cwd, home, probeHealth: probe, kill: (pid) => killed.push(pid), sleep: async () => {},
+    });
+
+    expect(result.killed).toBe(true);
+    expect(killed.sort()).toEqual([111, 222]);
+    expect(existsSync(serveStatePath(home))).toBe(false);
+  });
+
+  it('refuses to kill when the port answers sonata but no pid was ever recorded', async () => {
+    // Never guess a pid by scanning the OS — only a pid sonata itself
+    // recorded is ever killed.
+    await expect(stopServe({ cwd, home, probeHealth: sonataHealth }))
+      .rejects.toThrow(/no recorded pid/);
+  });
+
+  it('throws if the port is still answering after the kill, rather than reporting success', async () => {
+    mkdirSync(dirname(serveStatePath(home)), { recursive: true });
+    writeFileSync(serveStatePath(home), JSON.stringify({ routerPid: 111 }));
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, kill: () => {}, sleep: async () => {},
+      now: (() => { let t = 0; return () => (t += 1000); })(), timeoutMs: 2000,
+    }).catch((e) => e as Error);
+    expect((result as Error).message).toMatch(/still answering/);
+  });
+});
+
+describe('cmdRestart', () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'sonata-restart-home-'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), `
+[native.gateways."g"]
+base_url = "http://gateway.example/v1"
+[native.models."m"]
+gateway = "g"
+id = "model"
+context_window = 128000
+`);
+  });
+  afterEach(() => { rmSync(home, { force: true, recursive: true }); });
+
+  it('stops a stale router before starting a fresh daemon', async () => {
+    writeFileSync(join(home, '.config', 'sonata', 'serve-state.json'), JSON.stringify({ routerPid: 111 }));
+    const killed: number[] = [];
+    let healthCalls = 0;
+    // First call (inside stopServe): reports the stale router alive, then
+    // gone. Later calls (inside startServeDaemon's probe): the fresh one.
+    const probeHealth: typeof fetch = (async () => {
+      healthCalls += 1;
+      return healthCalls === 1 ? new Response(JSON.stringify({ sonata: true })) : new Response('', { status: 500 });
+    }) as unknown as typeof fetch;
+
+    const spawnSpy = (() => ({ pid: 999, unref: () => {} })) as unknown as typeof spawnType;
+
+    const result = await cmdRestart(home, ['node', 'cli.js', 'serve'], {
+      cwd: home,
+      probeHealth, kill: (pid) => killed.push(pid), sleep: async () => {},
+      spawn: spawnSpy, probe: async () => true,
+    });
+
+    expect(killed).toEqual([111]);
+    expect(result.pid).toBe(999);
+  });
+
+  it('starts fresh with nothing to stop when the port was already clear', async () => {
+    const spawnSpy = (() => ({ pid: 777, unref: () => {} })) as unknown as typeof spawnType;
+    const result = await cmdRestart(home, ['node', 'cli.js', 'serve'], {
+      cwd: home,
+      probeHealth: notSonataFetch, sleep: async () => {},
+      spawn: spawnSpy, probe: async () => true,
+    });
+    expect(result.pid).toBe(777);
   });
 });
