@@ -201,3 +201,80 @@ describe('routeRequest — logging', () => {
     expect(await logFor('claude-sonnet-4')).toBe('POST /v1/messages model=claude-sonnet-4 -> anthropic');
   });
 });
+
+describe('routeRequest — 529 rewrite for empty Codex completions', () => {
+  const emptyOutputBody = JSON.stringify({
+    error: { message: 'Unknown items in responses API response: []' },
+  });
+
+  const make529Fetch = (): typeof fetch =>
+    (async () => new Response(emptyOutputBody, { status: 500 })) as unknown as typeof fetch;
+
+  it('rewrites 500 with empty-output message to 529 for non-claude models', async () => {
+    const result = await routeRequest({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: {},
+      body: Buffer.from(JSON.stringify({ model: 'gpt-5.6-luna', messages: [] })),
+    }, {
+      fetch: make529Fetch(),
+      litellmBase: 'http://litellm',
+      anthropicBase: 'http://anthropic',
+      litellmKey: 'k',
+    });
+    expect(result.status).toBe(529);
+    const body = Buffer.isBuffer(result.body) ? result.body : Buffer.concat(
+      await (async () => { const chunks: Buffer[] = []; for await (const c of result.body as AsyncIterable<Buffer>) chunks.push(c); return chunks; })()
+    );
+    expect(JSON.parse(body.toString()).type).toBe('overloaded_error');
+  });
+
+  it('does not rewrite 500 for claude models (goes to anthropic, not litellm)', async () => {
+    // Claude requests go to Anthropic directly; a 500 there is a real error.
+    const result = await routeRequest({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: {},
+      body: Buffer.from(JSON.stringify({ model: 'claude-sonnet-5', messages: [] })),
+    }, {
+      fetch: make529Fetch(),
+      litellmBase: 'http://litellm',
+      anthropicBase: 'http://anthropic',
+      litellmKey: 'k',
+    });
+    expect(result.status).toBe(500);
+  });
+
+  it('does not rewrite 500 whose body does not match the empty-output pattern', async () => {
+    const otherFetch = (async () => new Response('{"error":"something else"}', { status: 500 })) as unknown as typeof fetch;
+    const result = await routeRequest({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: {},
+      body: Buffer.from(JSON.stringify({ model: 'gpt-5.6-luna', messages: [] })),
+    }, {
+      fetch: otherFetch,
+      litellmBase: 'http://litellm',
+      anthropicBase: 'http://anthropic',
+      litellmKey: 'k',
+    });
+    expect(result.status).toBe(500);
+  });
+
+  it('logs the rewrite with the model name', async () => {
+    const lines: string[] = [];
+    await routeRequest({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: {},
+      body: Buffer.from(JSON.stringify({ model: 'gpt-5.6-luna', messages: [] })),
+    }, {
+      fetch: make529Fetch(),
+      litellmBase: 'http://litellm',
+      anthropicBase: 'http://anthropic',
+      litellmKey: 'k',
+      log: (l) => lines.push(l),
+    });
+    expect(lines.some(l => l.includes('529') && l.includes('gpt-5.6-luna'))).toBe(true);
+  });
+});
