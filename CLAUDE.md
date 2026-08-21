@@ -200,6 +200,23 @@ dispatch_window_seconds = 1500 # blocking window; must stay under MCP's 30-minut
   - `byokCandidateKey` is exported and shared rather than inlined: the wizard
     puts the key into `nativeKeys` and `cmdInit` looks the candidate up by it,
     so two copies of the formula is how the two stop agreeing.
+- **A prompt must `ref()` stdin while it waits** (`src/tui.ts`, `readKeys`). A
+  paused stdin's handle is *unreferenced*, so waiting on a keystroke is not work
+  node knows about: with nothing else pending the process exits, code 0,
+  mid-prompt. Nothing paused stdin before the Ink wizard existed; Ink pauses it
+  on unmount, so **every prompt after the wizard died the instant it was
+  drawn** — prompt on screen, shell back, exit 0, nothing written. That was
+  "sonata init never saves the config", and it left no error because there was
+  no error. `unref()` on the way out, or the last prompt hangs instead.
+- **`sonata init` writes a log** (`src/commands/init-log.ts`) to
+  `~/.config/sonata/logs/init-<timestamp>.log`, newest ten kept. The wizard owns
+  the screen — Ink repaints and the list prompts use the alternate buffer, which
+  is discarded on exit — so a run that dies mid-wizard otherwise leaves a
+  restored shell and no trace. Every printed line is teed there, along with the
+  resolved selections and any error. Keys are recorded as the gateway they
+  belong to, never as their value. `cli.ts` prints the directory when a run
+  fails or cancels. Logging never throws: an unwritable home degrades to
+  `nullInitLog` rather than failing the command it was meant to explain.
 - Run `sonata sync` after editing the config; Claude Code picks up the generated agents automatically. Reconnect the sonata MCP server with `/mcp` only when sonata's MCP tool surface changes.
 
 ## Security
