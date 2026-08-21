@@ -166,6 +166,11 @@ describe('credential source step', () => {
     expect(rows.find((r) => r.source === 'codex')!.detail).toMatch(/expired/);
   });
 
+  it('distinguishes an unknown expiry from an imminent expiration', () => {
+    const rows = credentialRowsFor('openai', { codex: { expiresInDays: null }, opencode: null, key: null });
+    expect(rows.find((r) => r.source === 'codex')!.detail).toBe('expiry unknown');
+  });
+
   it('records the chosen source in state and allows going back', () => {
     let state = reduceInit({ step: 3, state: {} }, { type: 'chooseCredentialSource', gateway: 'openai', source: 'codex' });
     expect(state.state.credentialSources).toEqual({ openai: 'codex' });
