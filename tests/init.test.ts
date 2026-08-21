@@ -1025,12 +1025,12 @@ describe('credentialAvailabilityFor', () => {
       () => false,
     );
 
-    expect(availability.openrouter).toMatchObject({ codex: null, opencode: null });
+    expect(availability.openrouter).toMatchObject({ codex: null, opencode: null, keyEntryAvailable: true });
     expect(availability.codex).toMatchObject({
-      codex: { expiresInDays: 2 }, opencode: { expiresInDays: 3 },
+      codex: { expiresInDays: 2 }, opencode: { expiresInDays: 3 }, keyEntryAvailable: true,
     });
     expect(availability['github-copilot']).toMatchObject({
-      codex: null, opencode: { expiresInDays: null },
+      codex: null, opencode: { expiresInDays: null }, keyEntryAvailable: false,
     });
   });
 
