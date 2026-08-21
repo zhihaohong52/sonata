@@ -294,6 +294,14 @@ foreign program that did not exist (a day-old `sonata mcp` was found holding
 4100 and answering its own health endpoint). `occupiedPortMessage` asks the
 health endpoint first, which costs one request and makes the message true.
 
+**The router logs which upstream served each request** — `POST /v1/messages
+model=gpt-5.6-terra -> litellm`. `serve` never passed a `log` before, so that
+line had never produced output, and LiteLLM's access log records the path and
+status but not the model. That left "did this native agent really run on the
+foreign model, or fall back to Claude?" answerable only by inference. It is now
+evidence: a `claude-`-prefixed model logs `-> anthropic` and never reaches
+LiteLLM at all, so a foreign-model line in `serve`'s log is proof of routing.
+
 **Claude Code's `system` array must be flattened for codex.** Claude Code always
 sends `system` as an array of text blocks. LiteLLM turns a *string* system prompt
 into a `developer` message the Codex backend accepts, but leaves block arrays as

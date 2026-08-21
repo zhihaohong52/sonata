@@ -58,6 +58,22 @@ async function* responseBody(body: ReadableStream<Uint8Array>): AsyncIterable<Ui
   }
 }
 
+/**
+ * The model a request names, for logging which upstream served it.
+ *
+ * Without this the routing decision is invisible: LiteLLM's access log records
+ * the path and status but not the model, so "did this agent really run on the
+ * foreign model?" could only be answered by inference.
+ */
+export function requestedModel(body: Buffer): string | undefined {
+  try {
+    const model = (JSON.parse(body.toString()) as { model?: unknown }).model;
+    return typeof model === 'string' ? model : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function isClaudeRequest(body: Buffer): boolean {
   try {
     return JSON.parse(body.toString()).model?.startsWith('claude-') === true;
@@ -125,7 +141,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     headers.authorization = `Bearer ${deps.litellmKey}`;
   }
 
-  deps.log?.(`${req.method} ${req.url} -> ${upstream}`);
+  deps.log?.(`${req.method} ${req.url} model=${requestedModel(req.body) ?? '?'} -> ${upstream}`);
 
   try {
     const response = await deps.fetch(
