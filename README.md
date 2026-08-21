@@ -285,6 +285,7 @@ Code's own loop, tools, and permission modes, through a local routing proxy:
   `sonata serve --daemon` if the router is down
 - `sonata auth` — manages per-gateway keys that the router forwards to LiteLLM;
   keys live in the store and are never logged or put in a conversation
+- `sonata auth login <gateway>` — starts LiteLLM's device login for an OAuth gateway
 
 The `claude` harness adapter completes the picture: it dispatches a
 foreign-on-Claude-loop session through the existing MCP path, running headless

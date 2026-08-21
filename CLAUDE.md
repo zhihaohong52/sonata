@@ -164,7 +164,7 @@ run_timeout_seconds   = 1800   # hard cap; the run is killed at this point
 dispatch_window_seconds = 1500 # blocking window; must stay under MCP's 30-minute stdio idle limit
 ```
 
-- **Keys are always quoted.** An unquoted `[models.grok-4.5]` nests as `models → "grok-4" → "5"` and silently stops describing the model it names. Every key and value is written through `tomlKey`, which also escapes control characters.
+- **Keys are always quoted.** An unquoted `[models.grok-4.5]` nests as `models → "grok-4" → "5"` and silently stops describing the model it names. Every key and value is written through `tomlKey`, which also escapes control characters. This includes `credential_source` on `[native.gateways]`: its values are `sonata`, `codex`, and `opencode`; when absent, today's credential resolution is unchanged. `parseConfig` refuses `credential_source = "codex"` with `auth = "api-key"` because a Codex subscription is not a bearer API key and the metered endpoint authenticates before failing on quota — see `docs/codex-subscription.md`.
 - **The key is `<harness>-<provider>-<model>`, slashes flattened to dashes**, and doubles as the agent filename (`code-<key>.md`). The harness segment is load-bearing: pi and opencode can serve the identical ref. Flattening is *not* injective (`opencode/go-x` and `opencode-go/x` collide), so `init` checks the keys it is about to write.
 - **Ids are provider-qualified for opencode, pi and reasonix**, bare for codex; `parseConfig` enforces this per harness. Picker rows are labelled `<harness>/<provider>/<model>` (`refLabel`), because opencode and pi can serve the identical `provider/model` — labelling by ref alone printed two identical rows that also shared a selection value.
 - **Each role chooses its own models** through `[generate.roles]`; the old flat `roles`/`models` pair is no longer accepted. `sonata init` rewrites an old config to the per-role format.
@@ -277,6 +277,12 @@ The native router transits the session credential locally and unmodified; native
 The native path runs foreign models inside Claude Code's own loop, tools, and permission modes through a local routing proxy. The harness path instead runs the foreign model's own loop in OpenCode, Codex, Pi, or Reasonix.
 
 Its `[native]` config surface describes foreign `models`, `gateways`, and their `ports`; `[generate.native]` assigns native model keys to roles. `sonata serve` runs the router and managed LiteLLM child, while `sonata code` launches a Claude Code session routed through it. LiteLLM is an external prerequisite, like tmux: install it with `pip install 'litellm[proxy]'`.
+
+Sonata implements no OAuth itself; it drives LiteLLM's own authenticator as a subprocess, so no token passes through sonata's process memory. A login needs neither the codex CLI nor a prior `codex login`: LiteLLM's authenticator is a self-contained HTTP client, and the Codex OAuth app id is compiled into it. The login script calls `get_access_token()`, never `_login()` — only the former persists the token, while `_login()` starts a second device flow against an empty directory.
+
+For Copilot, `api-key.json`, written by `get_api_key()`, proves entitlement. A bare `ghu_` token proves nothing: LiteLLM's Copilot credential is a GitHub App token with no OAuth scopes, while opencode's stored `gho_` token has only `read:user` and cannot be exchanged for a Copilot key. These are different credential kinds and remain distinct sources. Copilot's device flow polls for 60 seconds; ChatGPT's polls for 15 minutes. Copilot retries three times, with a fresh code each time.
+
+The `sonata` credential source points LiteLLM's token directory at `~/.config/sonata/credentials/<gateway>/`, so refreshes persist across runs. The old temp-directory approach silently discarded every refresh; Copilot's `api-key.json` is short-lived and re-exchanged in place, so persistence is load-bearing. Never pass `api_base` for Copilot: `get_api_base()` reads `endpoints.api` from `api-key.json`, and business tenants have different endpoints.
 
 There are two deliverables: (A) `sonata serve`/`sonata code` for a complete local routing path, and (B) the `claude` harness adapter for dispatching foreign-on-Claude-loop through the existing MCP path.
 
