@@ -16,7 +16,7 @@ import type { HookScope } from './settings.js';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, realpathSync } from 'node:fs';
-import { cmdAuthAdd, cmdAuthList, cmdAuthRemove } from './commands/auth.js';
+import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove } from './commands/auth.js';
 import { cmdServe, cmdRestart, startServeDaemon } from './commands/serve.js';
 import { cmdCode } from './commands/code.js';
 
@@ -34,7 +34,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata serve     start the native routing proxy (router + litellm)
   sonata restart   kill any router holding the port and start a fresh daemon
   sonata code      launch a claude session routed through sonata serve
-  sonata auth      manage gateway API keys (add/list/remove)
+  sonata auth      manage gateway credentials (list/add/remove/login)
   sonata mcp       start the stdio JSON-RPC server (started by Claude Code; not run by hand)
 
   init flags (skip the prompts):
@@ -248,6 +248,11 @@ async function main(argv: string[]): Promise<number> {
       console.log(cmdAuthList({ home: homedir(), gateways }).text);
       return 0;
     }
+    if (action === 'login') {
+      if (!gateway) throw new Error('sonata auth login requires a gateway');
+      await cmdAuthLogin({ home: homedir(), cwd: process.cwd(), gateway, out: (l) => console.log(l) });
+      return 0;
+    }
     if (action === 'remove') {
       if (!gateway) throw new Error('sonata auth remove requires a gateway');
       cmdAuthRemove({ home: homedir(), gateway });
@@ -260,7 +265,7 @@ async function main(argv: string[]): Promise<number> {
       cmdAuthAdd({ home: homedir(), gateway, key });
       return 0;
     }
-    throw new Error('sonata auth requires list, add <gateway> or remove <gateway>');
+    throw new Error('sonata auth requires list, add <gateway>, remove <gateway> or login <gateway>');
   }
 
   if (command === 'serve') {
