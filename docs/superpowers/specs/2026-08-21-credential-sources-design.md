@@ -52,6 +52,8 @@ providers.
 | Copilot device login exists | `github_copilot/authenticator.py:341` `_login()` |
 | It uses a Copilot GitHub App | `GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98"`, `authenticator.py:21` |
 | That app is live and issues device codes | `POST github.com/login/device/code` returned `user_code`, `expires_in: 899`, `interval: 5` |
+| **Its token really can exchange for a Copilot key** | Authorized login 2026-08-22: `ghu_` token, `x-oauth-scopes` empty, `copilot_internal/v2/token` returned a 419-char key, `sku: copilot_for_business_seat_quota` |
+| Poll windows differ sharply | ChatGPT `DEVICE_CODE_TIMEOUT_SECONDS = 15*60`; Copilot `max_attempts = 12` × 5 s = **60 s**, then 3 retries each issuing a new code |
 | The interpreter is discoverable | `head -1 $(command -v litellm)` names it; both authenticators import from it |
 | **Login needs no codex install and no prior codex login** | Probed 2026-08-22: with `PATH=/usr/bin:/bin` (so `shutil.which("codex")` is `None`) and an empty `CHATGPT_TOKEN_DIR`, `_request_device_code()` returned a live `user_code`. `authenticator.py` contains no `subprocess`, no `shutil.which`, and no reference to the codex binary or to `~/.codex/auth.json`. |
 
@@ -214,8 +216,16 @@ Mechanics:
    credential file existing — an exit code alone is not evidence, the same
    discipline the run engine applies to report files.
 
-The flow is cancellable: `signal` kills the child, because a device login blocks
+The flow is cancellable: `signal` kills the child, because a ChatGPT login blocks
 for up to fifteen minutes and a user who changed their mind must not be stuck.
+(Copilot blocks for 60 seconds per attempt — see the Copilot section below; the
+two providers differ by a factor of fifteen and the UI must not assume either.)
+
+**Entry point, per provider:** ChatGPT `Authenticator().get_access_token()`;
+Copilot `Authenticator().get_access_token()` followed by `get_api_key()`. Copilot
+needs both because the device login and the Copilot exchange are separate calls,
+and only the second proves the credential is usable. Never call `_login()` — it
+does not persist.
 
 **Cooldown is real and must be surfaced.** `DEVICE_CODE_COOLDOWN_SECONDS` is 300
 (`authenticator.py:27`). An abandoned login followed by a retry inside five
@@ -370,17 +380,58 @@ The suite runs with no API keys and no network, so:
 - Wizard cases: the source screen is skipped when only one source exists; back
   works from it; a recorded source lands in the emitted TOML.
 
-## Validation gate before building the Copilot half
+## Validation gate before building the Copilot half — PASSED 2026-08-22
 
-**Unproven:** that LiteLLM's GitHub App yields a token which can exchange at
-`api.github.com/copilot_internal/v2/token`. The app is live and issues device
-codes (probed above), and the `Iv1.` prefix means it is a GitHub App whose
-entitlement comes from the app rather than the requested `read:user` scope — but
-that is inference. opencode's token is *measured* to fail this exchange with 403.
+**Settled by an authorized device login.** The Copilot half is unblocked; build
+it. What was inference is now measurement:
 
-One authorized device login settles it. If it fails, `copilot-oauth` stays
-import-only and the login path ships for `codex-oauth` alone. Everything else in
-this design is unaffected either way.
+| Check | Result |
+| --- | --- |
+| Device login completes | `ghu_…`, 40 chars |
+| Scopes GitHub granted | `x-oauth-scopes: ''` — **empty** |
+| `copilot_internal/v2/token` exchange | **succeeded**, key 419 chars |
+| Entitlement | `sku: copilot_for_business_seat_quota`, `chat_enabled: true` |
+| Endpoints returned | `api: https://api.business.githubcopilot.com` (+ exp, proxy, telemetry) |
+
+**The empty scope string is the whole explanation.** LiteLLM's token is `ghu_`, a
+GitHub *App* user-to-server token, and it carries no OAuth scopes at all — its
+entitlement comes from the app installation. opencode's is `gho_` with
+`read:user`, an OAuth-App token whose scope cannot authorize the exchange. So the
+two credentials are not the same kind of thing, and "opencode has a GitHub token"
+never implied "Copilot will work". Sonata must keep treating them as distinct
+sources rather than interchangeable GitHub tokens.
+
+Three consequences for implementation, each learned from this run:
+
+- **Call `get_access_token()`, never `_login()`.** Only the former writes
+  `access-token`. Calling `_login()` returns a valid token and persists nothing,
+  so the next call starts a *second* device flow against an empty directory —
+  observed exactly once here, costing a wasted authorization.
+- **Never hardcode `api.githubcopilot.com`.** This account resolved to a
+  business tenant. `get_api_base()` (`authenticator.py:135-150`) reads
+  `endpoints.api` out of `api-key.json`, so the right behaviour is to let LiteLLM
+  resolve it and to pass no `api_base` — the same rule the codex gateway already
+  follows for a different reason.
+- **`api-key.json` is short-lived and refreshed in place.** `get_api_key()`
+  compares `expires_at` against now and re-exchanges when stale
+  (`authenticator.py:93-114`). That makes the persistent credential directory
+  load-bearing rather than a tidiness preference: under today's temp directory
+  the exchange is redone from scratch every `serve`, and any failure to re-obtain
+  it surfaces as "no healthy deployments".
+
+**The 60-second window is the real UX risk, not entitlement.** Copilot polls
+`max_attempts = 12` × 5 s = **60 seconds** (`authenticator.py:285`), where ChatGPT
+allows `DEVICE_CODE_TIMEOUT_SECONDS = 15 * 60`. On expiry `get_access_token()`
+retries `_login()` three times (`authenticator.py:64-76`), and **each retry issues
+a brand-new code**, so a user still reading the first one authorizes a code that
+is no longer being polled. This timed out on the first live attempt here.
+
+The login screen must therefore, for Copilot specifically: show the URL and code
+the instant they are printed; render a visible countdown of the 60 seconds;
+and when a new code supersedes an old one, **replace** it and say so, never
+accumulate codes. A pre-flight line — open the page first, then start — belongs
+in the screen, because the minute begins at code issuance, not at the user's
+first glance.
 
 ## Out of scope
 
