@@ -37,6 +37,16 @@ export type NativeGatewayAuth = 'api-key' | 'codex-oauth' | 'copilot-oauth';
 
 export const NATIVE_GATEWAY_AUTHS: readonly NativeGatewayAuth[] = ['api-key', 'codex-oauth', 'copilot-oauth'];
 
+/**
+ * Where a gateway's credential comes from. Absent means "resolve as today":
+ * `resolveKeys`'s fixed precedence for keys, `readChatGptOAuth`'s for OAuth.
+ * Recording it makes the choice survive a re-run of `sonata init`, which
+ * otherwise re-sniffs and can silently answer differently.
+ */
+export type CredentialSource = 'sonata' | 'codex' | 'opencode';
+
+export const CREDENTIAL_SOURCES: readonly CredentialSource[] = ['sonata', 'codex', 'opencode'];
+
 /** Gateway auths whose credential is an OAuth login, not a stored bearer key. */
 export const OAUTH_GATEWAY_AUTHS: readonly NativeGatewayAuth[] = ['codex-oauth', 'copilot-oauth'];
 
@@ -70,7 +80,11 @@ export function oauthGatewayBaseUrl(auth: NativeGatewayAuth): string {
   return auth === 'copilot-oauth' ? COPILOT_OAUTH_BASE_URL : CODEX_OAUTH_BASE_URL;
 }
 
-export interface NativeGatewayConfig { baseUrl: string; auth: NativeGatewayAuth }
+export interface NativeGatewayConfig {
+  baseUrl: string;
+  auth: NativeGatewayAuth;
+  credentialSource?: CredentialSource;
+}
 export interface NativeConfig {
   models: Record<string, NativeModelConfig>;
   gateways: Record<string, NativeGatewayConfig>;
@@ -183,6 +197,26 @@ export function parseConfig(text: string): SonataConfig {
         );
       }
       const auth = rawAuth as NativeGatewayAuth;
+      let credentialSource: CredentialSource | undefined;
+      if (d.credential_source !== undefined) {
+        const raw = d.credential_source;
+        if (typeof raw !== 'string' || !CREDENTIAL_SOURCES.includes(raw as CredentialSource)) {
+          throw new Error(
+            `sonata.toml: native gateway "${name}" has unknown credential_source "${String(raw)}". ` +
+            `Known: ${CREDENTIAL_SOURCES.join(', ')}`,
+          );
+        }
+        credentialSource = raw as CredentialSource;
+        // codex holds a ChatGPT subscription, never a bearer key. Sending it to
+        // a metered endpoint passes auth and then fails for quota, which reads
+        // as a missing key — see docs/codex-subscription.md. Die here instead.
+        if (credentialSource === 'codex' && auth === 'api-key') {
+          throw new Error(
+            `sonata.toml: native gateway "${name}" is auth = "api-key", so it ` +
+            'cannot take its credential from codex — that is a subscription, not a key.',
+          );
+        }
+      }
       // An OAuth gateway is addressed by LiteLLM's own provider, which knows the
       // URL; accepting one here would only let a config claim a base URL that is
       // never used — or worse, name the metered endpoint the credential cannot
@@ -196,13 +230,13 @@ export function parseConfig(text: string): SonataConfig {
             'Remove base_url.',
           );
         }
-        gateways[name] = { baseUrl: implied, auth };
+        gateways[name] = { baseUrl: implied, auth, credentialSource };
         continue;
       }
       if (typeof d.base_url !== 'string') {
         throw new Error(`sonata.toml: native gateway "${name}" needs string "base_url"`);
       }
-      gateways[name] = { baseUrl: d.base_url, auth };
+      gateways[name] = { baseUrl: d.base_url, auth, credentialSource };
     }
 
     const nativeModels: Record<string, NativeModelConfig> = {};

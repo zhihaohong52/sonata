@@ -12,7 +12,8 @@ export interface KeyReport {
   source: string | null;
 }
 
-interface CredentialSource {
+/** A place keys are read from, in precedence order. Not the config's CredentialSource union. */
+interface KeyStoreSource {
   name: string;
   read(home: string): Record<string, string>;
 }
@@ -52,7 +53,7 @@ function opencodeKeys(home: string): Record<string, string> {
   );
 }
 
-const SOURCES: CredentialSource[] = [
+const SOURCES: KeyStoreSource[] = [
   { name: 'sonata', read: sonataKeys },
   { name: 'opencode', read: opencodeKeys },
 ];
