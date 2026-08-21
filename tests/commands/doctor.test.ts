@@ -349,6 +349,31 @@ credential_source = "sonata"
     }
   });
 
+  it('flags a missing sonata-sourced api-key credential with the add command, not login', async () => {
+    // Regression: the repair hint used to always say `sonata auth login`,
+    // which manages OAuth credentials — wrong for a bearer key, whose fix is
+    // `sonata auth add`.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-api-source-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-api-source-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.anexto]
+base_url = "https://gateway.example/v1"
+credential_source = "sonata"
+`);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      expect(checks.find((c) => c.name === 'key source: anexto')).toEqual({
+        name: 'key source: anexto', ok: false,
+        detail: 'anexto: credential from sonata\n  ! anexto: no credential from sonata — ' +
+          'run `sonata auth add anexto`',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('flags a missing api-key credential from its recorded source', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-api-source-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-api-source-home-'));
@@ -364,7 +389,8 @@ credential_source = "opencode"
       const { checks } = await cmdDoctor({ cwd, home });
       expect(checks.find((c) => c.name === 'key source: anexto')).toEqual({
         name: 'key source: anexto', ok: false,
-        detail: 'anexto: credential from opencode\n  ! anexto: no credential from opencode — run `sonata auth login anexto`',
+        detail: 'anexto: credential from opencode\n  ! anexto: no credential from opencode — ' +
+          'log into opencode itself — sonata does not manage opencode credentials',
       });
     } finally {
       globalThis.fetch = originalFetch;
