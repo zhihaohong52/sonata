@@ -440,7 +440,7 @@ install will not litter unrelated repositories.
 | `sonata mcp` | Run the Sonata MCP server |
 | `sonata log <id>` | Print a run's whole transcript |
 | `sonata verify <id> [--model <key>]` | Verify a completed run |
-| `sonata auth` | Manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`) |
+| `sonata auth` | Manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`, `login <gateway>`) |
 | `sonata serve` | Run the native router and its managed LiteLLM child (`--daemon` detaches) |
 | `sonata restart` | Kill whatever sonata router currently holds the port (a stale daemon, or one MCP-hosted inside `sonata mcp`) and start a fresh daemon |
 | `sonata code` | Launch a Claude Code session routed through the local proxy (passes `claude` args through) |
