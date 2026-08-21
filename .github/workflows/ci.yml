@@ -25,7 +25,49 @@ jobs:
 
       - run: npm run typecheck
 
-      - run: npm test
+      # Every test consistently passes — locally and on every CI attempt — but
+      # the vitest process itself sometimes never exits afterward on Linux
+      # (worker pinned at ~100% CPU in teardown; root cause not established
+      # after profiling, including with --prof). The JSON/JUnit reporters
+      # don't help here: their output file is written in vitest's final
+      # aggregation step, which is the same step that hangs — confirmed live,
+      # a run with every file passing left no results file at all. The
+      # 'default' reporter's per-file lines DO stream live (also confirmed:
+      # every file's checkmark reliably appears well before the hang), so
+      # gate on those instead: bound the step, then check the captured
+      # output has one passing checkmark per known test file and no failure
+      # marker. A genuine test failure still fails the job; a process that
+      # won't exit after everything passed no longer blocks every push.
+      - name: Run npm test
+        timeout-minutes: 3
+        continue-on-error: true
+        # Written straight to a file, no tee: when stdout is a file, Node's
+        # writes are synchronous, so every printed line is durably on disk
+        # the moment it appears. Through a pipe the tail gets lost — measured
+        # twice: the job-timeout kill terminated `tee` with its final stdio
+        # block unflushed, and the last checkmark (always e2e.test.ts, the
+        # slowest file) vanished from the capture despite showing live in the
+        # Actions UI, failing the count at 46/47.
+        run: node_modules/.bin/vitest run --reporter=default > /tmp/vitest-output.log 2>&1
+
+      - name: Check test results
+        run: |
+          # Strip ANSI color codes first — CI's captured output carries them
+          # even though local redirected output doesn't, and they sit between
+          # the checkmark glyph and the filename, breaking a plain substring match.
+          sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' /tmp/vitest-output.log > /tmp/vitest-output-plain.log
+          cat /tmp/vitest-output-plain.log
+          expected=$(find tests -name '*.test.ts' | wc -l | tr -d ' ')
+          passed=$(/usr/bin/grep -cE '✓ tests/' /tmp/vitest-output-plain.log || true)
+          echo "$passed/$expected test files reported passing."
+          if /usr/bin/grep -qE '(^ ×| FAIL | ✗)' /tmp/vitest-output-plain.log; then
+            echo "A failure marker was found in the output."
+            exit 1
+          fi
+          if [ "$passed" != "$expected" ]; then
+            echo "Not every test file reported passing before the run ended."
+            exit 1
+          fi
 
       # Catches the packaging mistakes that only appear at publish time:
       # a missing runtime asset, or a bin target excluded by `files`.

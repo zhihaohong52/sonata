@@ -43,7 +43,13 @@ describe('openInitLog', () => {
 
   it('never throws when the home cannot be written', () => {
     // Logging must not be able to fail the command it is logging.
-    const log = openInitLog(join('/proc', 'nonexistent-and-unwritable'));
+    // The unwritable home is a plain file, so mkdir fails ENOTDIR on every
+    // platform. Never point this at /proc: on Linux the EACCES mid-walk sends
+    // recursive mkdirSync into a synchronous spin that no test timeout can
+    // interrupt — it hung every CI run while passing on /proc-less macOS.
+    const fileAsHome = join(home, 'not-a-directory');
+    writeFileSync(fileAsHome, '');
+    const log = openInitLog(fileAsHome);
     expect(() => { log.line('x'); log.fail(new Error('y')); }).not.toThrow();
   });
 
