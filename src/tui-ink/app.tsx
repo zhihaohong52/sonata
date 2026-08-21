@@ -339,7 +339,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
           />;
         }
         const rows = credentialRowsFor(credentialGateway, data.credentialAvailability?.[credentialGateway] ?? {
-          codex: null, opencode: null, key: null,
+          codex: null, opencode: null, key: null, keyEntryAvailable: true,
         });
         return <Choice
           key={`credential-source-${credentialGateway}`}
@@ -347,10 +347,15 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
           choices={rows.map((row) => ({ value: row.source, label: `${row.label} — ${row.detail}` }))}
           initial={state.credentialSources?.[credentialGateway] ?? 'sonata'}
           onSubmit={(source) => {
-            setState((current) => ({
-              ...current,
-              credentialSources: { ...current.credentialSources, [credentialGateway]: source === 'sonata-key' ? 'sonata' : source },
-            }));
+            setState((current) => {
+              const byokKeys = { ...current.byokKeys };
+              if (source !== 'sonata-key') delete byokKeys[credentialGateway];
+              return {
+                ...current,
+                byokKeys,
+                credentialSources: { ...current.credentialSources, [credentialGateway]: source === 'sonata-key' ? 'sonata' : source },
+              };
+            });
             if (source === 'sonata-key') setEnteringCredentialKey(true);
             else setCredentialIndex((current) => current + 1);
           }}

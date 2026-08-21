@@ -149,12 +149,12 @@ describe('BYOK providers', () => {
 
 describe('credential source step', () => {
   it('always offers login and api-key, even with no harness credentials', () => {
-    const rows = credentialRowsFor('openai', { codex: null, opencode: null, key: null });
+    const rows = credentialRowsFor('openai', { codex: null, opencode: null, key: null, keyEntryAvailable: true });
     expect(rows.map((r) => r.source)).toEqual(['sonata', 'sonata-key']);
   });
 
   it('adds an import row only when that credential exists', () => {
-    const rows = credentialRowsFor('openai', { codex: { expiresInDays: 6 }, opencode: null, key: null });
+    const rows = credentialRowsFor('openai', { codex: { expiresInDays: 6 }, opencode: null, key: null, keyEntryAvailable: true });
     expect(rows.map((r) => r.source)).toContain('codex');
     expect(rows.find((r) => r.source === 'codex')!.detail).toContain('6d');
   });
@@ -162,13 +162,19 @@ describe('credential source step', () => {
   it('lists an unhealthy credential with its problem rather than hiding it', () => {
     // "codex has one but it expired" is the answer to a question the user is
     // about to ask.
-    const rows = credentialRowsFor('openai', { codex: { expiresInDays: -1 }, opencode: null, key: null });
+    const rows = credentialRowsFor('openai', { codex: { expiresInDays: -1 }, opencode: null, key: null, keyEntryAvailable: true });
     expect(rows.find((r) => r.source === 'codex')!.detail).toMatch(/expired/);
   });
 
   it('distinguishes an unknown expiry from an imminent expiration', () => {
-    const rows = credentialRowsFor('openai', { codex: { expiresInDays: null }, opencode: null, key: null });
+    const rows = credentialRowsFor('openai', { codex: { expiresInDays: null }, opencode: null, key: null, keyEntryAvailable: true });
     expect(rows.find((r) => r.source === 'codex')!.detail).toBe('expiry unknown');
+  });
+
+  it('hides the api-key row for an OAuth-only gateway with no known base URL', () => {
+    const rows = credentialRowsFor('work-openai', { codex: { expiresInDays: 6 }, opencode: null, key: null, keyEntryAvailable: false });
+    expect(rows.map((r) => r.source)).not.toContain('sonata-key');
+    expect(rows.map((r) => r.source)).toContain('codex');
   });
 
   it('records the chosen source in state and allows going back', () => {

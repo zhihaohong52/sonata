@@ -57,13 +57,22 @@ export interface AvailableCredentials {
   codex: { expiresInDays: number | null } | null;
   opencode: { expiresInDays: number | null } | null;
   key: { source: string } | null;
+  /**
+   * Whether entering an API key for this gateway actually goes anywhere: true
+   * for a gateway that already authenticates with a key, or an OAuth gateway
+   * whose real API base URL is known (so the wizard can switch it over). An
+   * OAuth-only gateway with an unrecognized name has nowhere for a typed key
+   * to be sent, so the row is worth hiding rather than accepting input that
+   * fails after the wizard has already exited.
+   */
+  keyEntryAvailable: boolean;
 }
 
 /**
- * Login and api-key are unconditional: neither depends on another tool being
- * installed, so a machine with no harness at all still shows both. Only the
- * import rows are gated on the credential actually existing — an import row
- * that leads nowhere is the thing worth hiding.
+ * Login is unconditional: it doesn't depend on another tool being installed,
+ * so a machine with no harness at all still shows it. Import rows are gated
+ * on the credential actually existing, and the api-key row is gated on
+ * `keyEntryAvailable` — a row that leads nowhere is the thing worth hiding.
  */
 export function credentialRowsFor(gateway: string, have: AvailableCredentials): CredentialRow[] {
   const rows: CredentialRow[] = [
@@ -82,7 +91,9 @@ export function credentialRowsFor(gateway: string, have: AvailableCredentials): 
           : `expires in ${found.expiresInDays}d`,
     });
   }
-  rows.push({ source: 'sonata-key', label: 'Enter an API key', detail: 'metered billing' });
+  if (have.keyEntryAvailable) {
+    rows.push({ source: 'sonata-key', label: 'Enter an API key', detail: 'metered billing' });
+  }
   return rows;
 }
 
