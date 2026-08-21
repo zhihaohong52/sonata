@@ -20,7 +20,7 @@ import { readChatGptOAuth, readOpencodeChatGptOAuth } from '../native/codex-auth
 import { readCopilotToken, copilotTokenCanExchange } from '../native/copilot-auth.js';
 import type { ModelRef } from '../types.js';
 import {
-  detectTmux, detectHarnesses, offerableProviders,
+  detectTmux, detectHarnesses, offerableProviders, WELL_KNOWN_PROVIDER_URLS,
   type Problem, type HarnessStatus, type DetectEnv, type ProviderSummary,
 } from '../detect.js';
 import {
@@ -529,6 +529,13 @@ async function runInit(
   const oauthProviders = oauthProvidersFor(allRefs, opts.home, {
     copilot: () => (copilotUsable ? copilotToken : null),
   });
+  const gatewayAuth = new Map<string, NativeGatewayAuth>();
+  for (const config of Object.values(configsByScope)) {
+    for (const [gateway, gatewayConfig] of Object.entries(config?.native?.gateways ?? {})) {
+      gatewayAuth.set(gateway, gatewayConfig.auth);
+    }
+  }
+  for (const [gateway, auth] of oauthProviders) gatewayAuth.set(gateway, auth);
   const detectedNativeCandidates = nativeCandidatesFrom(allRefs, providerBaseUrls, oauthProviders);
   const allNativeCandidates = [...new Map([
     ...detectedNativeCandidates.map((candidate) => [candidate.key, candidate] as const),
@@ -636,7 +643,7 @@ async function runInit(
       ),
       credentialAvailability: credentialAvailabilityFor(
         offered,
-        oauthProviders,
+        gatewayAuth,
         {
           codex: codexCredential === null ? null : { expiresInDays: daysUntil(codexCredential.expires_at) },
           opencode: opencodeCredential === null ? null : { expiresInDays: daysUntil(opencodeCredential.expires_at) },
@@ -668,6 +675,16 @@ async function runInit(
     configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
     addByokCandidates(result.state.byokModels ?? {});
     byokKeys = result.state.byokKeys ?? {};
+    for (const gateway of Object.keys(byokKeys)) {
+      for (const [key, candidate] of nativeByKey) {
+        if (candidate.gateway !== gateway || candidate.auth === 'api-key') continue;
+        const baseUrl = WELL_KNOWN_PROVIDER_URLS[gateway];
+        if (baseUrl === undefined) {
+          throw new Error(`sonata init: no API base URL is known for ${gateway}; cannot use an API key.`);
+        }
+        nativeByKey.set(key, { ...candidate, baseUrl, auth: 'api-key' });
+      }
+    }
     nativeKeys = result.state.nativeKeys ?? [];
     roles = result.state.roles ?? [...KNOWN_ROLES];
     chosenNative = nativeKeys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined);
