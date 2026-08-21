@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { loadConfig } from '../config.js';
-import { resolveKeys } from '../native/credentials.js';
+import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
 import { codexAuthPath, opencodeAuthPath, readChatGptOAuth } from '../native/codex-auth.js';
 import { credentialDir } from '../native/oauth-login.js';
 import { readCopilotToken } from '../native/copilot-auth.js';
@@ -221,8 +221,23 @@ export async function cmdServe(
 
     // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
     const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
-    for (const { gateway, key } of resolveKeys(Object.keys(native.gateways), opts.home)) {
+    const automaticallyResolved = Object.entries(native.gateways)
+      .filter(([, gateway]) => gateway.auth !== 'api-key' || gateway.credentialSource === undefined)
+      .map(([name]) => name);
+    for (const { gateway, key } of resolveKeys(automaticallyResolved, opts.home)) {
       childEnv[envVarForGateway(gateway)] = key;
+    }
+    for (const [name, gateway] of Object.entries(native.gateways)) {
+      const source = gateway.credentialSource;
+      if (gateway.auth !== 'api-key' || (source !== 'sonata' && source !== 'opencode')) continue;
+      const key = resolveKeyFromSource(name, opts.home, source);
+      if (key === undefined) {
+        throw new Error(
+          `sonata serve: gateway "${name}" takes its credential from ${source} but none was found — ` +
+          `run \`sonata auth add ${name}\` (for sonata) or check opencode's own credential store.`,
+        );
+      }
+      childEnv[envVarForGateway(name)] = key;
     }
 
     // A sonata-owned credential is already in LiteLLM's native format. Point
