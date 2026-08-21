@@ -34,6 +34,7 @@ import { keyReport, resolveKeys, writeSonataKey } from '../native/credentials.js
 import { byokCandidateKey, wellKnownProviders } from '../native/models.js';
 import { byokProviderKey, byokProviderName } from '../tui-ink/app-state.js';
 import { runInitTui } from '../tui-ink/run.js';
+import { openInitLog, type InitLog } from './init-log.js';
 import type { WizardData } from '../tui-ink/app.js';
 import type { InitState } from '../tui-ink/types.js';
 
@@ -95,6 +96,8 @@ export interface InitOptions {
   prune?: boolean;
   write?: (line: string) => void;
   detect?: Detector;
+  /** Injected by tests so a suite never writes into the real log directory. */
+  log?: InitLog;
 }
 
 export interface InitResult {
@@ -408,8 +411,28 @@ export function duplicateKeys(keys: string[]): string[] {
 }
 
 export async function cmdInit(opts: InitOptions): Promise<InitResult> {
-  const out = opts.write ?? ((l: string) => console.log(l));
+  const log = opts.log ?? openInitLog(opts.home);
+  const print = opts.write ?? ((l: string) => console.log(l));
+  // Everything the command says is teed to the log. The wizard owns the screen
+  // — Ink repaints and the list prompts use the alternate buffer — so what is
+  // on the terminal after a failed run is not what the run said.
+  const out = (line: string): void => { print(line); log.line(line); };
   const interactive = !opts.yes && isInteractive();
+  log.line(`cwd=${opts.cwd} home=${opts.home} interactive=${interactive} yes=${opts.yes ?? false}`);
+  try {
+    return await runInit(opts, out, log, interactive);
+  } catch (error) {
+    log.fail(error);
+    throw error;
+  }
+}
+
+async function runInit(
+  opts: InitOptions,
+  out: (line: string) => void,
+  log: InitLog,
+  interactive: boolean,
+): Promise<InitResult> {
 
   out('');
   out(interactive ? banner() : '  sonata init');
@@ -584,7 +607,12 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
       initialState,
       initialStateByScope,
     };
-    const result = await runInitTui(data);
+    log.line(`wizard: offering ${data.providers.length} providers, ${data.candidates.length} models`);
+    const result = await runInitTui(data, (line) => log.line(line));
+    // Keys are recorded as the gateways they belong to, never as their value.
+    log.line(`wizard returned: cancelled=${result.cancelled} scope=${result.state.configScope} ` +
+      `providers=[${result.state.providerKeys ?? []}] models=[${result.state.nativeKeys ?? []}] ` +
+      `roles=[${result.state.roles ?? []}] keysEnteredFor=[${Object.keys(result.state.byokKeys ?? {})}]`);
     if (result.cancelled) {
       out('  Nothing written.');
       return {
@@ -726,6 +754,7 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     scope = 'skip';
   } else if (interactive) {
     out('');
+    log.line('prompting for hook scope');
     scope = await select<HookScope | 'skip'>('Install the permission hook', [
       { value: 'project', label: 'This project only', hint: 'no effect on your other repos' },
       { value: 'global', label: 'All projects', hint: 'adds ~40ms per Bash call everywhere' },
@@ -746,6 +775,8 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   out(`    config  ${configPathResolved}`);
   out('');
 
+  log.line(`hook scope resolved: ${scope}`);
+  if (interactive) log.line('prompting for write confirmation');
   if (interactive && !(await confirm('Write these changes?', true))) {
     out('  Nothing written.');
     return {

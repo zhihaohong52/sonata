@@ -9,6 +9,7 @@ import { cmdSync } from './commands/sync.js';
 import { cmdDoctor } from './commands/doctor.js';
 import { cmdGc } from './commands/gc.js';
 import { cmdInit, isCancellation } from './commands/init.js';
+import { initLogDir } from './commands/init-log.js';
 import { banner, isInteractive, confirm } from './tui.js';
 import { pruneAgents } from './detect.js';
 import type { HookScope } from './settings.js';
@@ -112,10 +113,15 @@ async function main(argv: string[]): Promise<number> {
       if (res.cancelled) return 1;
       return res.problems.some((p) => p.severity === 'error') ? 1 : 0;
     } catch (err) {
+      // The wizard owns the screen, so a failure's own output may already be
+      // gone with the alternate buffer. Point at the log that survived it.
+      const logDir = initLogDir(homedir());
       if (isCancellation(err)) {
         console.log('\n  Cancelled. Nothing written.');
+        console.log(`  Log: ${logDir}`);
         return 130;
       }
+      console.error(`\n  sonata init failed. Log: ${logDir}`);
       throw err;
     }
   }

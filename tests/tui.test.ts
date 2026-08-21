@@ -158,6 +158,35 @@ describe('readKeys', () => {
     expect(stdin.destroyed).toBe(false);
   });
 
+  /**
+   * The prompt has to keep the event loop alive while it waits.
+   *
+   * A paused stdin's handle is unreferenced, so waiting on a keystroke is not
+   * work node knows about: with nothing else pending the process exits, code 0,
+   * mid-prompt. Nothing paused stdin before the Ink wizard existed; Ink pauses
+   * it on unmount, so every prompt after the wizard died the instant it was
+   * drawn — prompt on screen, shell back, no config written.
+   */
+  it('references the stream handle while waiting, and releases it after', async () => {
+    const calls: string[] = [];
+    const stdin = Object.assign(new PassThrough(), {
+      ref: () => { calls.push('ref'); },
+      unref: () => { calls.push('unref'); },
+    });
+
+    setTimeout(() => stdin.write('x'), 0);
+    await readKeys(stdin as never, () => true);
+
+    expect(calls).toEqual(['ref', 'unref']);
+  });
+
+  it('works on a stream with no refcounting at all', async () => {
+    // A PassThrough has no ref/unref; the optional calls must not throw.
+    const stdin = new PassThrough();
+    setTimeout(() => stdin.write('x'), 0);
+    await expect(readKeys(stdin, () => true)).resolves.toBeUndefined();
+  });
+
   it('keeps reading until the handler reports done', async () => {
     const stdin = new PassThrough();
     const seen: string[] = [];
