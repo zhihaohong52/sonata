@@ -159,7 +159,12 @@ export function readOpencodeChatGptOAuth(home: string): ChatGptAuthRecord | null
  * codex is preferred only because it is the harness the gateway is usually
  * named after; either file yields the same subscription.
  */
-export function readChatGptOAuth(home: string): ChatGptAuthRecord | null {
+export function readChatGptOAuth(
+  home: string,
+  source?: 'codex' | 'opencode',
+): ChatGptAuthRecord | null {
+  if (source === 'codex') return readCodexOAuth(home);
+  if (source === 'opencode') return readOpencodeChatGptOAuth(home);
   return readCodexOAuth(home) ?? readOpencodeChatGptOAuth(home);
 }
 
