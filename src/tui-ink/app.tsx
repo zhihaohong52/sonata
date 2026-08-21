@@ -252,10 +252,11 @@ function parseIds(value: string): string[] {
 }
 
 function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWizardProps['onDone']; onBack: () => void }): React.ReactElement {
+  const hasModels = (state.nativeKeys?.length ?? 0) > 0;
   useInput((_, key) => {
     if (key.escape) onDone({ cancelled: true, state });
     if (key.leftArrow) onBack();
-    if (key.return) onDone({ cancelled: false, state });
+    if (key.return && hasModels) onDone({ cancelled: false, state });
   });
 
   return (
@@ -265,11 +266,12 @@ function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWiza
       <Text>Harnesses: {state.harnesses?.join(', ') || 'none'}</Text>
       <Text>Providers: {state.providerKeys?.join(', ') || 'none'}</Text>
       <Text>Models: {state.nativeKeys?.join(', ') || 'none'}</Text>
+      {!hasModels && <Text color="red">Select at least one model before continuing.</Text>}
       <Text>Roles: {state.roles?.join(', ') || 'none'}</Text>
       {(state.roles ?? []).map((role) => (
         <Text key={role}>  {role}: {(state.perRoleModels?.[role]?.join(', ') ?? state.nativeKeys?.join(', ')) || 'none'}</Text>
       ))}
-      <Text dimColor>enter confirm · ← back · esc cancel</Text>
+      <Text dimColor>{hasModels ? 'enter confirm' : '← back to select models'} · ← back · esc cancel</Text>
     </Box>
   );
 }
@@ -281,6 +283,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
   const [roleIndex, setRoleIndex] = useState(0);
   // Walks the selected credential gateways within step 3, before models.
   const [credentialIndex, setCredentialIndex] = useState(0);
+  const [enteringCredentialKey, setEnteringCredentialKey] = useState(false);
   // Walks the selected BYOK providers within step 3, the way roleIndex walks
   // roles within step 5.
   const [byokIndex, setByokIndex] = useState(0);
@@ -316,6 +319,25 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         .map((provider) => provider.provider))];
       const credentialGateway = credentialGateways[credentialIndex];
       if (credentialGateway !== undefined) {
+        if (enteringCredentialKey) {
+          return <TextInput
+            key={`credential-key-${credentialGateway}`}
+            title={`API key for ${credentialGateway}`}
+            hint="stored in sonata's key store, not shown again"
+            mask
+            validate={(value) => value.trim() === '' ? 'A key is required.' : undefined}
+            onSubmit={(value) => {
+              setState((current) => ({
+                ...current,
+                byokKeys: { ...current.byokKeys, [credentialGateway]: value.trim() },
+              }));
+              setEnteringCredentialKey(false);
+              setCredentialIndex((current) => current + 1);
+            }}
+            onBack={() => setEnteringCredentialKey(false)}
+            onCancel={cancel}
+          />;
+        }
         const rows = credentialRowsFor(credentialGateway, data.credentialAvailability?.[credentialGateway] ?? {
           codex: null, opencode: null, key: null,
         });
@@ -329,7 +351,8 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
               ...current,
               credentialSources: { ...current.credentialSources, [credentialGateway]: source === 'sonata-key' ? 'sonata' : source },
             }));
-            setCredentialIndex((current) => current + 1);
+            if (source === 'sonata-key') setEnteringCredentialKey(true);
+            else setCredentialIndex((current) => current + 1);
           }}
           onBack={() => {
             if (credentialIndex === 0) back();
@@ -360,7 +383,10 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
           setState((current) => applyStep(current, 3, [...(keys as string[]), ...kept]));
           if (byok.length > 0) setByokIndex(1);
           else setStep(4);
-        }} onBack={back} onCancel={cancel} />;
+        }} onBack={() => {
+          if (credentialGateways.length > 0) setCredentialIndex(credentialGateways.length - 1);
+          else back();
+        }} onCancel={cancel} />;
       }
 
       // `byokIndex` is 1-based so that 0 can mean "still on the candidate list".
