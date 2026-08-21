@@ -14,9 +14,10 @@ import { dirname, join } from 'node:path';
 import {
   KNOWN_ROLES, configPath, GLOBAL_CONFIG_RELATIVE, parseConfig,
   isOauthGatewayAuth, oauthGatewayBaseUrl, isAnthropicRoutedName,
-  type SonataConfig, type NativeGatewayAuth,
+  CREDENTIAL_SOURCES, type SonataConfig, type NativeGatewayAuth, type CredentialSource,
 } from '../config.js';
 import { readChatGptOAuth, readOpencodeChatGptOAuth } from '../native/codex-auth.js';
+import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { readCopilotToken, copilotTokenCanExchange } from '../native/copilot-auth.js';
 import type { ModelRef } from '../types.js';
 import {
@@ -119,6 +120,8 @@ export interface InitOptions {
   scope?: HookScope | 'skip';
   /** Where the config and its agents are written. Defaults to `project`. */
   configScope?: ConfigScope;
+  /** Repeatable gateway=source overrides for the scripted path. */
+  credentialSource?: string[];
   /** Injected in tests so registration never shells out to the real binary. */
   mcpRunner?: Runner;
   prune?: boolean;
@@ -126,6 +129,24 @@ export interface InitOptions {
   detect?: Detector;
   /** Injected by tests so a suite never writes into the real log directory. */
   log?: InitLog;
+}
+
+export function parseCredentialSourceFlags(values: string[]): Record<string, CredentialSource> {
+  const out: Record<string, CredentialSource> = {};
+  for (const value of values) {
+    const [gateway, source] = value.split('=', 2);
+    if (!gateway || !source) {
+      throw new Error(`sonata init: --credential-source expects <gateway>=<source>, got "${value}"`);
+    }
+    if (!CREDENTIAL_SOURCES.includes(source as CredentialSource)) {
+      throw new Error(
+        `sonata init: --credential-source "${value}" names unknown source "${source}". ` +
+        `Known: ${CREDENTIAL_SOURCES.join(', ')}`,
+      );
+    }
+    out[gateway] = source as CredentialSource;
+  }
+  return out;
 }
 
 export interface InitResult {
@@ -327,6 +348,11 @@ export function deriveInitState(
     perRoleModels: Object.fromEntries(
       Object.entries(config.native.generate).map(([role, models]) => [role, [...models]]),
     ),
+    credentialSources: Object.fromEntries(
+      Object.entries(config.native.gateways)
+        .filter(([, gateway]) => gateway.credentialSource !== undefined)
+        .map(([gateway, config]) => [gateway, config.credentialSource!]),
+    ),
   };
 }
 
@@ -367,6 +393,7 @@ export function preTickedNative(configText: string, candidates: NativeCandidate[
  */
 export function nativeTomlFor(
   roleModels: Record<string, NativeCandidate[]>,
+  credentialSources: Record<string, CredentialSource> = {},
 ): string {
   const allModels = new Map<string, NativeCandidate>();
   for (const cands of Object.values(roleModels)) {
@@ -391,6 +418,8 @@ export function nativeTomlFor(
     // provider's backend, and LiteLLM already knows that URL.
     if (isOauthGatewayAuth(auth)) lines.push(`auth = ${tomlKey(auth)}`);
     else lines.push(`base_url = ${tomlKey(baseUrl)}`);
+    const source = credentialSources[gateway];
+    if (source !== undefined) lines.push(`credential_source = ${tomlKey(source)}`);
     lines.push('');
   }
 
@@ -594,6 +623,7 @@ async function runInit(
   let chosenNative!: NativeCandidate[];
   let roles!: string[];
   let nativeRoleModels: Record<string, NativeCandidate[]> = {};
+  let credentialSources: Record<string, CredentialSource> = {};
   /** BYOK keys typed in the wizard, written only after the confirm gate. */
   let byokKeys: Record<string, string> = {};
   const nativeByKey = new Map(allNativeCandidates.map((c) => [c.key, c]));
@@ -690,6 +720,7 @@ async function runInit(
         nativeByKey.set(key, { ...candidate, baseUrl, auth: 'api-key' });
       }
     }
+    credentialSources = result.state.credentialSources ?? {};
     nativeKeys = result.state.nativeKeys ?? [];
     roles = result.state.roles ?? [...KNOWN_ROLES];
     chosenNative = nativeKeys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined);
@@ -711,6 +742,10 @@ async function runInit(
     const parsedConfig = configsByScope[configScope];
     ticked = preTickedNative(configText, allNativeCandidates);
     const d = parsedConfig ? deriveInitState(parsedConfig, configScope, offered) : { configScope };
+    credentialSources = {
+      ...d.credentialSources,
+      ...parseCredentialSourceFlags(opts.credentialSource ?? []),
+    };
 
     // BYOK is opt-in. The default is "everything on offer", and BYOK rows are
     // now on offer — so without this, a plain `--yes` with no --providers asks
@@ -774,6 +809,20 @@ async function runInit(
       throw new Error('sonata init: no models selected — nothing to generate.');
     }
     chosenNative = nativeKeys.map((k) => inScopeNativeByKey.get(k)!);
+
+    // --yes cannot pause for a browser-based device login. Require a credential
+    // that sonata already minted before recording that source in the config.
+    const nativeGateways = new Map(chosenNative.map((candidate) => [candidate.gateway, candidate]));
+    for (const [gateway, source] of Object.entries(credentialSources)) {
+      if (source !== 'sonata') continue;
+      const auth = nativeGateways.get(gateway)?.auth;
+      if (auth === undefined || !isOauthGatewayAuth(auth)) continue;
+      if (existsSync(join(credentialDir(opts.home, gateway), credentialFileFor(auth)))) continue;
+      throw new Error(
+        `sonata init: gateway "${gateway}" needs a credential. ` +
+        `Log in first: sonata auth login ${gateway}`,
+      );
+    }
 
     roles = opts.roles ?? d.roles ?? [...KNOWN_ROLES];
     const badRoles = roles.filter((r) => !KNOWN_ROLES.includes(r as never));
@@ -857,7 +906,7 @@ async function runInit(
   }
 
   mkdirSync(dirname(configPathResolved), { recursive: true });
-  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels));
+  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources));
   out(`  ✓ wrote ${configPathResolved}`);
 
   let hookChanged = false;

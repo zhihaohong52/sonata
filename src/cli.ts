@@ -42,6 +42,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
     --providers opencode/openrouter,pi/opencode-go   providers to draw models from
     --models a,b             models to enable (config keys)
     --roles code,review      roles to generate
+    --credential-source gateway=sonata|codex|opencode   record a gateway credential source
     --config-scope project|global   where the config and its agents go
     --scope project|global|skip   where to install the permission hook
     --prune                    delete stale sonata agent files
@@ -75,6 +76,7 @@ async function main(argv: string[]): Promise<number> {
         providers: { type: 'string' },
         models: { type: 'string' },
         roles: { type: 'string' },
+        'credential-source': { type: 'string', multiple: true },
         'config-scope': { type: 'string' },
         scope: { type: 'string' },
         // No default: `undefined` means "unanswered", which lets cmdInit fall
@@ -107,6 +109,7 @@ async function main(argv: string[]): Promise<number> {
         providers: split(values.providers),
         models: split(values.models),
         roles: split(values.roles),
+        credentialSource: values['credential-source'],
         scope,
         configScope,
         prune: values.prune,
