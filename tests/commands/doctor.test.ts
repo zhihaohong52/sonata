@@ -328,6 +328,49 @@ credential_source = "sonata"
     }
   });
 
+  it('reports an api-key credential from its recorded source', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-api-source-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-api-source-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.vendorx]
+base_url = "https://gateway.example/v1"
+credential_source = "sonata"
+`);
+    writeSonataKey(home, 'vendorx', 'source-key');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      expect(checks.find((c) => c.name === 'key source: vendorx')).toEqual({
+        name: 'key source: vendorx', ok: true, detail: 'vendorx: credential from sonata',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('flags a missing api-key credential from its recorded source', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-api-source-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-api-source-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.vendorx]
+base_url = "https://gateway.example/v1"
+credential_source = "opencode"
+`);
+    writeSonataKey(home, 'vendorx', 'wrong-source-key');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      expect(checks.find((c) => c.name === 'key source: vendorx')).toEqual({
+        name: 'key source: vendorx', ok: false,
+        detail: 'vendorx: credential from opencode\n  ! vendorx: no credential from opencode — run `sonata auth login vendorx`',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('reports native serve health and key source without exposing key values', async () => {
     const { cwd, home } = setup();
     writeSonataKey(home, 'vendorx', 'super-secret-key');

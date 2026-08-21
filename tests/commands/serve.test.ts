@@ -120,6 +120,61 @@ describe('cmdServe', () => {
     expect(captured).not.toHaveProperty('ANTHROPIC_API_KEY');
   });
 
+  it('honors an api-key gateway credential_source over automatic precedence', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.models."deepseek-v4-flash"]
+gateway = "vendorx"
+id = "deepseek-v4-flash-0731"
+context_window = 128000
+
+[native.gateways."vendorx"]
+base_url = "https://gateway.example/v1"
+credential_source = "opencode"
+
+[native.ports]
+router = 0
+litellm = 4000
+`);
+    writeSonataKey(home, 'vendorx', 'sonata-key');
+    mkdirSync(join(home, '.local/share/opencode'), { recursive: true });
+    writeFileSync(join(home, '.local/share/opencode/auth.json'), JSON.stringify({ vendorx: { key: 'opencode-key' } }));
+    let captured: NodeJS.ProcessEnv = {};
+
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: (_configPath, env) => {
+        captured = env;
+        return { pid: 1, kill() {} };
+      },
+    });
+    handles.push(handle);
+
+    expect(captured.SONATA_KEY_VENDORX).toBe('opencode-key');
+  });
+
+  it('refuses an api-key gateway with a missing configured credential source', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.models."deepseek-v4-flash"]
+gateway = "vendorx"
+id = "deepseek-v4-flash-0731"
+context_window = 128000
+
+[native.gateways."vendorx"]
+base_url = "https://gateway.example/v1"
+credential_source = "opencode"
+
+[native.ports]
+router = 0
+litellm = 4000
+`);
+    writeSonataKey(home, 'vendorx', 'sonata-key');
+
+    await expect(cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    })).rejects.toThrow(/takes its credential from opencode but none was found/);
+  });
+
   it('serves a health endpoint on the router port', async () => {
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),

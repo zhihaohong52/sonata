@@ -62,6 +62,15 @@ export function sonataKeyStorePath(home: string): string {
   return join(home, '.config/sonata/keys.json');
 }
 
+export function resolveKeyFromSource(
+  gateway: string,
+  home: string,
+  source: 'sonata' | 'opencode',
+): string | undefined {
+  const reader = SOURCES.find((candidate) => candidate.name === source);
+  return reader?.read(home)[gateway];
+}
+
 export function resolveKeys(gateways: string[], home: string): KeySource[] {
   const sources = SOURCES.map((source) => ({ name: source.name, keys: source.read(home) }));
   const resolved: KeySource[] = [];

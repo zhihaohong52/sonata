@@ -23,7 +23,7 @@ import {
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { findLitellm } from '../native/litellm.js';
-import { keyReport } from '../native/credentials.js';
+import { keyReport, resolveKeyFromSource } from '../native/credentials.js';
 import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
@@ -167,9 +167,11 @@ export async function cmdDoctor(
         });
         continue;
       }
-      const present = source === 'sonata'
-        ? existsSync(join(credentialDir(home, name), credentialFileFor(gateway.auth)))
-        : hasCredentialFrom(source, gateway.auth, home);
+      const present = gateway.auth === 'api-key'
+        ? (source === 'sonata' || source === 'opencode') && resolveKeyFromSource(name, home, source) !== undefined
+        : source === 'sonata'
+          ? existsSync(join(credentialDir(home, name), credentialFileFor(gateway.auth)))
+          : hasCredentialFrom(source, gateway.auth, home);
       checks.push({
         name: `key source: ${name}`,
         ok: present,
