@@ -7,9 +7,19 @@
 [![node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
 
 Claude Code's subagents are excellent, but they are always Claude. Sonata lets
-you dispatch a subagent backed by a different model — running in that model's
-own harness — through the ordinary Agent tool. Same interface, same working
-directory, same report contract. Different brain.
+you dispatch a subagent backed by a different model, through the ordinary
+Agent tool — same interface, same working directory, same report contract.
+Different brain.
+
+Two ways to run it:
+
+- **Native** — the foreign model runs *inside Claude Code's own loop*: its
+  tools, its permission modes, no separate TUI. A local routing proxy
+  (`sonata serve`) makes this possible; see [Native path](#native-path).
+- **Harness** — the foreign model runs in *its own* CLI (OpenCode, Codex, Pi,
+  Reasonix), launched in a detached tmux session and driven through MCP. No
+  proxy required — this is the simpler on-ramp if you already have one of
+  those harnesses authenticated.
 
 Two reasons you might want that:
 
@@ -31,8 +41,12 @@ Two reasons you might want that:
 
 ## Status
 
-**Working, early.** The engine and the OpenCode, Codex, Pi and Reasonix adapters are
-complete and tested, each verified end to end against a real model.
+**Working, early.** The engine and the OpenCode, Codex, Pi and Reasonix
+harness adapters are complete and tested, each verified end to end against a
+real model. The native path (`sonata serve`/`sonata code`/`sonata restart`
+and the `claude` harness adapter) is also complete and verified live —
+routing, permission modes, and the router's Codex-overload handling have all
+been confirmed against real dispatches.
 
 Not yet published to npm — install from source (below). Read
 [Limitations](#limitations) and [Security](#security) before depending on it.
@@ -209,6 +223,10 @@ workflows, and `isolation: "worktree"` (the harness inherits the wrapper's
 working directory, so worktree isolation works with no extra configuration).
 
 ## How it works
+
+This section covers the harness path — dispatching into a foreign model's own
+CLI. For running natively inside Claude Code's own loop, jump to
+[Native path](#native-path).
 
 ```
 Claude Code
