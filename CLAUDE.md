@@ -41,7 +41,7 @@ The CLI (after `npm link`):
 - `sonata log <id>` — print a run's whole transcript; the after-the-fact companion to `tmux attach`
 - `sonata verify <id> [--model <key>]` — verify a completed run
 - `sonata auth` — manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`; keys live in the store, never logged)
-- `sonata serve` — run the native router and its managed LiteLLM child (`--daemon` detaches); prints both ports
+- `sonata serve` — run the native router and its managed LiteLLM child. `--daemon` re-execs the CLI detached, **waits until the router answers**, then prints the pid, port and log path; a detached child that failed would otherwise report success and leave no server. Its output goes to `~/.config/sonata/logs/serve-<timestamp>.log`, since a detached process has nowhere else to say why it stopped
 - `sonata code` — launch a Claude Code session routed through the local proxy (passes `claude` args through); auto-starts `sonata serve --daemon` when the router is down
 - `sonata gc` — kill finished tmux sessions
 

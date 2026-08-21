@@ -76,3 +76,16 @@ export function openInitLog(home: string, startedAt: Date = new Date()): InitLog
     },
   };
 }
+
+/**
+ * The shared log directory. `initLogDir` is the same path under its original
+ * name, kept because `cli.ts` and the init tests already use it.
+ */
+export function logsDir(home: string): string {
+  return initLogDir(home);
+}
+
+/** A timestamped log path for one run of a long-lived command. */
+export function timestampedLogPath(home: string, prefix: string, at: Date = new Date()): string {
+  return join(logsDir(home), `${prefix}-${at.toISOString().replace(/[:.]/g, '-')}.log`);
+}
