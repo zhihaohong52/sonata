@@ -839,6 +839,23 @@ describe('cmdInit — key check', () => {
     });
     expect(lines.some((l) => l.includes('vendorx') && l.includes('key from sonata'))).toBe(true);
   });
+
+  it('honors a recorded credential source over automatic precedence', async () => {
+    // Regression: the key-check summary used to call keyReport with no
+    // knowledge of credentialSources, so it reported whichever store
+    // resolveKeys found first rather than the source init was told to pin.
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'keys.json'), JSON.stringify({ vendorx: 'sk-test' }));
+
+    await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['opencode/vendorx'], models: ['vendorx-deepseek-v4-flash-0731'],
+      roles: ['code'], scope: 'skip', write,
+      credentialSource: ['vendorx=opencode'],
+    });
+    expect(lines.some((l) => l.includes('vendorx') && l.includes('no key from opencode'))).toBe(true);
+    expect(lines.some((l) => l.includes('key from sonata'))).toBe(false);
+  });
 });
 
 describe('cmdInit — re-init from existing config', () => {
@@ -1100,6 +1117,40 @@ context_window = 128000
     expect(parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).native!.gateways.codex).toEqual({
       baseUrl: 'https://api.openai.com/v1', auth: 'api-key',
     });
+  });
+
+  it('refuses codex as the source for an api-key gateway chosen through the wizard', async () => {
+    // Regression: the codex-combo check used to live only in the scripted
+    // (--credential-source) branch, so a stale wizard result could still
+    // write this incompatible combination.
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.codex]
+base_url = "https://gateway.example/v1"
+[native.models.gpt-5]
+gateway = "codex"
+id = "gpt-5"
+context_window = 128000
+[generate.native]
+"code" = ["gpt-5"]
+`);
+    tuiMocks.interactive = true;
+    tuiMocks.result = {
+      cancelled: false,
+      state: {
+        configScope: 'project', providerKeys: ['config/codex'], nativeKeys: ['gpt-5'],
+        roles: ['code'], perRoleModels: { code: ['gpt-5'] }, byokKeys: {},
+        credentialSources: { codex: 'codex' },
+      },
+    };
+    const detect = async () => ({
+      tmux: { installed: true, version: '3.7b', problems: [] },
+      harnesses: [],
+    });
+
+    await expect(cmdInit({
+      cwd, home, packageRoot: '/pkg', detect, scope: 'skip',
+      mcpRunner: () => ({ ok: true, output: 'Added' }), write: () => {},
+    })).rejects.toThrow(/auth = "api-key".*cannot take its credential from codex/);
   });
 });
 

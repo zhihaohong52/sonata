@@ -172,12 +172,21 @@ export async function cmdDoctor(
         : source === 'sonata'
           ? existsSync(join(credentialDir(home, name), credentialFileFor(gateway.auth)))
           : hasCredentialFrom(source, gateway.auth, home);
+      // The fix differs by what the source actually stores: a device-login
+      // credential is repaired with `sonata auth login`, but a bearer key is
+      // repaired with `sonata auth add` — or, for an opencode-sourced key,
+      // by logging into opencode itself, which sonata does not manage.
+      const repairHint = gateway.auth === 'api-key'
+        ? source === 'sonata'
+          ? `run \`sonata auth add ${name}\``
+          : `log into opencode itself — sonata does not manage opencode credentials`
+        : `run \`sonata auth login ${name}\``;
       checks.push({
         name: `key source: ${name}`,
         ok: present,
         detail: present
           ? `${name}: credential from ${source}`
-          : `${name}: credential from ${source}\n  ! ${name}: no credential from ${source} — run \`sonata auth login ${name}\``,
+          : `${name}: credential from ${source}\n  ! ${name}: no credential from ${source} — ${repairHint}`,
       });
     }
 

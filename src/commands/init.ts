@@ -31,7 +31,7 @@ import {
 import { pruneAgents } from '../detect.js';
 import { cmdSync } from './sync.js';
 import { select, confirm, isInteractive, banner, CancelledError } from '../tui.js';
-import { keyReport, resolveKeys, writeSonataKey } from '../native/credentials.js';
+import { keyReport, resolveKeyFromSource, resolveKeys, writeSonataKey } from '../native/credentials.js';
 import { byokCandidateKey, wellKnownProviders } from '../native/models.js';
 import { byokProviderKey, byokProviderName, type AvailableCredentials } from '../tui-ink/app-state.js';
 import { runInitTui } from '../tui-ink/run.js';
@@ -821,8 +821,34 @@ async function runInit(
         `Known gateways: ${[...nativeGateways.keys()].join(', ') || '(none)'}`,
       );
     }
+    roles = opts.roles ?? d.roles ?? [...KNOWN_ROLES];
+    const badRoles = roles.filter((r) => !KNOWN_ROLES.includes(r as never));
+    if (badRoles.length > 0) {
+      throw new Error(`sonata init: unknown role(s) ${badRoles.join(', ')}`);
+    }
+    if (roles.length === 0) {
+      throw new Error('sonata init: no roles selected — nothing to generate.');
+    }
+
+    nativeRoleModels = Object.fromEntries(
+      Object.entries(reconcilePerRoleModels(d.perRoleModels, d.nativeKeys ?? [], nativeKeys, roles))
+        .map(([role, keys]) => [
+          role,
+          keys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined),
+        ]),
+    );
+  }
+
+  // A codex-sourced credential applies to neither an api-key gateway (codex
+  // holds a subscription, not a bearer key) nor a copilot-oauth gateway
+  // (Copilot logins come only from opencode). The wizard's picker already
+  // hides these combinations, but stale state or a picker regression could
+  // still produce one, so this is checked for both paths rather than trusted
+  // to the interactive UI alone.
+  {
+    const gatewayAuths = new Map(chosenNative.map((candidate) => [candidate.gateway, candidate.auth]));
     for (const [gateway, source] of Object.entries(credentialSources)) {
-      const auth = nativeGateways.get(gateway)?.auth;
+      const auth = gatewayAuths.get(gateway);
       if (source === 'codex' && auth === 'api-key') {
         throw new Error(
           `sonata init: gateway "${gateway}" is auth = "api-key", so it cannot take its credential from codex — ` +
@@ -842,32 +868,30 @@ async function runInit(
         `Log in first: sonata auth login ${gateway}`,
       );
     }
-
-    roles = opts.roles ?? d.roles ?? [...KNOWN_ROLES];
-    const badRoles = roles.filter((r) => !KNOWN_ROLES.includes(r as never));
-    if (badRoles.length > 0) {
-      throw new Error(`sonata init: unknown role(s) ${badRoles.join(', ')}`);
-    }
-    if (roles.length === 0) {
-      throw new Error('sonata init: no roles selected — nothing to generate.');
-    }
-
-    nativeRoleModels = Object.fromEntries(
-      Object.entries(reconcilePerRoleModels(d.perRoleModels, d.nativeKeys ?? [], nativeKeys, roles))
-        .map(([role, keys]) => [
-          role,
-          keys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined),
-        ]),
-    );
   }
 
   // ---- key check --------------------------------------------------------
   out('');
   const gateways = [...new Set(chosenNative.map((c) => c.gateway))];
-  for (const report of keyReport(gateways, opts.home)) {
-    out(report.source
-      ? `  ✓ ${report.gateway}: key from ${report.source}`
-      : `  ! ${report.gateway}: no key — run \`sonata auth add ${report.gateway}\``);
+  const gatewayAuths = new Map(chosenNative.map((c) => [c.gateway, c.auth]));
+  const autoSources = new Map(keyReport(gateways, opts.home).map((r) => [r.gateway, r.source]));
+  for (const gateway of gateways) {
+    // A gateway with a recorded credentialSource is about to be written
+    // pinned to that source — report on the source that will actually be
+    // used, not whichever store `keyReport`'s automatic precedence happens
+    // to find first.
+    const source = credentialSources[gateway];
+    if (gatewayAuths.get(gateway) === 'api-key' && (source === 'sonata' || source === 'opencode')) {
+      const found = resolveKeyFromSource(gateway, opts.home, source) !== undefined;
+      out(found
+        ? `  ✓ ${gateway}: key from ${source}`
+        : `  ! ${gateway}: no key from ${source} — run \`sonata auth add ${gateway}\``);
+      continue;
+    }
+    const auto = autoSources.get(gateway) ?? null;
+    out(auto
+      ? `  ✓ ${gateway}: key from ${auto}`
+      : `  ! ${gateway}: no key — run \`sonata auth add ${gateway}\``);
   }
 
   // ---- hook scope -------------------------------------------------------
