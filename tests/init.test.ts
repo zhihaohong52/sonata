@@ -1,4 +1,34 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+const tuiMocks = vi.hoisted(() => ({
+  interactive: false,
+  codexCredential: false,
+  opencodeCredential: false,
+  data: undefined as import('../src/tui-ink/app.js').WizardData | undefined,
+  result: undefined as { cancelled: boolean; state: import('../src/tui-ink/types.js').InitState } | undefined,
+}));
+
+vi.mock('../src/tui.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/tui.js')>();
+  return {
+    ...actual,
+    isInteractive: () => tuiMocks.interactive,
+    confirm: async () => true,
+  };
+});
+
+vi.mock('../src/tui-ink/run.js', () => ({
+  runInitTui: async (data: import('../src/tui-ink/app.js').WizardData) => {
+    tuiMocks.data = data;
+    if (tuiMocks.result === undefined) throw new Error('missing wizard result');
+    return tuiMocks.result;
+  },
+}));
+
+vi.mock('../src/native/codex-auth.js', () => ({
+  readChatGptOAuth: () => tuiMocks.codexCredential ? { expires_at: Date.now() / 1000 + 86400 } : null,
+  readOpencodeChatGptOAuth: () => tuiMocks.opencodeCredential ? { expires_at: Date.now() / 1000 + 86400 } : null,
+}));
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +45,14 @@ import { providersForHarnesses } from '../src/tui-ink/app-state.js';
 import { readSettings } from '../src/settings.js';
 import { writeSonataKey } from '../src/native/credentials.js';
 import { parseConfig, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL } from '../src/config.js';
+
+beforeEach(() => {
+  tuiMocks.interactive = false;
+  tuiMocks.codexCredential = false;
+  tuiMocks.opencodeCredential = false;
+  tuiMocks.data = undefined;
+  tuiMocks.result = undefined;
+});
 
 // Shape taken verbatim from a real ~/.config/opencode/opencode.json.
 const OC_CONFIG = JSON.stringify({
@@ -924,6 +962,53 @@ describe('nativeTomlFor — codex-oauth gateways', () => {
   });
 });
 
+describe('cmdInit — wizard API key credential source', () => {
+  let cwd: string;
+  let home: string;
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'init-wizard-cwd-'));
+    home = mkdtempSync(join(tmpdir(), 'init-wizard-home-'));
+  });
+
+  it('switches a codex-oauth gateway to metered API-key auth when a key is entered', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways."codex"]
+auth = "codex-oauth"
+[native.models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+context_window = 128000
+[generate.native]
+"code" = ["luna"]
+`);
+    tuiMocks.interactive = true;
+    tuiMocks.result = {
+      cancelled: false,
+      state: {
+        configScope: 'project', providerKeys: ['config/codex'], nativeKeys: ['luna'],
+        roles: ['code'], perRoleModels: { code: ['luna'] }, byokKeys: { codex: 'sk-test' },
+      },
+    };
+    const detect = async () => ({
+      tmux: { installed: true, version: '3.7b', problems: [] },
+      harnesses: [{
+        name: 'codex', installed: false, version: undefined, supported: false,
+        refs: [], authedProviders: [], problems: [],
+      }],
+    });
+
+    await cmdInit({
+      cwd, home, packageRoot: '/pkg', detect, scope: 'skip',
+      mcpRunner: () => ({ ok: true, output: 'Added' }), write: () => {},
+    });
+
+    expect(parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).native!.gateways.codex).toEqual({
+      baseUrl: 'https://api.openai.com/v1', auth: 'api-key',
+    });
+  });
+});
+
 describe('credentialAvailabilityFor', () => {
   it('only offers imports compatible with each gateway auth type', () => {
     const availability = credentialAvailabilityFor(
@@ -947,6 +1032,37 @@ describe('credentialAvailabilityFor', () => {
     expect(availability['github-copilot']).toMatchObject({
       codex: null, opencode: { expiresInDays: null },
     });
+  });
+
+  it('retains imports for a config-only OAuth gateway', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'init-config-oauth-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'init-config-oauth-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways."codex"]
+auth = "codex-oauth"
+[native.models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+context_window = 128000
+[generate.native]
+"code" = ["luna"]
+`);
+    tuiMocks.interactive = true;
+    tuiMocks.codexCredential = true;
+    tuiMocks.opencodeCredential = true;
+    tuiMocks.result = { cancelled: true, state: { configScope: 'project' } };
+    const detect = async () => ({
+      tmux: { installed: true, version: '3.7b', problems: [] },
+      harnesses: [{
+        name: 'codex', installed: false, version: undefined, supported: false,
+        refs: [], authedProviders: [], problems: [],
+      }],
+    });
+
+    await cmdInit({ cwd, home, packageRoot: '/pkg', detect, write: () => {} });
+
+    expect(tuiMocks.data!.credentialAvailability.codex.codex).not.toBeNull();
+    expect(tuiMocks.data!.credentialAvailability.codex.opencode).not.toBeNull();
   });
 });
 
