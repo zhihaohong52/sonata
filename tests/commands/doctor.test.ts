@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkVersion, cmdDoctor } from '../../src/commands/doctor.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
+import { credentialDir } from '../../src/native/oauth-login.js';
 
 vi.mock('../../src/native/litellm.js', () => ({
   findLitellm: () => '/usr/local/bin/litellm',
@@ -271,6 +272,48 @@ code = ["deepseek-v4-flash"]
         name: 'key source: missing', ok: false, detail: 'no key — `sonata auth add missing`',
       });
       expect(checks.find((c) => c.name === 'agents')?.ok).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('names the recorded source and flags one that has no credential', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-source-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-source-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.codex]
+auth = "codex-oauth"
+credential_source = "codex"
+`);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      const text = checks.map((check) => check.detail).join('\n');
+      expect(text).toContain('codex: credential from codex');
+      expect(text).toMatch(/no credential.*sonata auth login codex/s);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('reports a healthy sonata-sourced credential', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-source-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-source-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.codex]
+auth = "codex-oauth"
+credential_source = "sonata"
+`);
+    mkdirSync(credentialDir(home, 'codex'), { recursive: true });
+    writeFileSync(join(credentialDir(home, 'codex'), 'auth.json'), '{}');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      const text = checks.map((check) => check.detail).join('\n');
+      expect(text).toContain('codex: credential from sonata');
+      expect(text).not.toContain('no credential');
     } finally {
       globalThis.fetch = originalFetch;
     }
