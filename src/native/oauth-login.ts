@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { NativeGatewayAuth } from '../config.js';
@@ -89,10 +89,14 @@ export async function loginGateway(opts: {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
 
   // PATH plus the one token-directory variable. No other parent value is
-  // forwarded, matching how serve builds childEnv.
+  // forwarded, matching how serve builds childEnv. FAKE_MODE only crosses over
+  // when a test-injected interpreter is in play, so production can never leak
+  // it through an ambient env var.
   const env: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
   env[tokenDirEnvVar(opts.auth)] = dir;
-  if (process.env.FAKE_MODE) env.FAKE_MODE = process.env.FAKE_MODE;
+  if (opts.interpreter && process.env.FAKE_MODE) env.FAKE_MODE = process.env.FAKE_MODE;
+
+  if (opts.signal?.aborted) return { ok: false, problem: 'login cancelled' };
 
   return await new Promise<LoginResult>((resolve) => {
     let child;
@@ -121,9 +125,13 @@ export async function loginGateway(opts: {
       if (cancelled) return resolve({ ok: false, problem: 'login cancelled' });
       if (code !== 0) return resolve({ ok: false, problem: `litellm's authenticator exited ${code}` });
       // An exit code alone is not evidence.
-      if (!existsSync(join(dir, credentialFileFor(opts.auth)))) {
+      const credentialPath = join(dir, credentialFileFor(opts.auth));
+      if (!existsSync(credentialPath)) {
         return resolve({ ok: false, problem: 'the login reported success but wrote no credential' });
       }
+      // LiteLLM writes with the process umask, commonly 0644 - fix it up rather
+      // than trust an interpreter we don't control to have written 0600.
+      chmodSync(credentialPath, 0o600);
       resolve({ ok: true });
     });
   });
