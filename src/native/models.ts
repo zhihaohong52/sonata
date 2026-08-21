@@ -20,33 +20,56 @@ export interface FetchedModel {
   name?: string;
 }
 
+/**
+ * Why a catalogue could not be read — but only to the resolution the caller can
+ * act on.
+ *
+ * `unauthorized` is the one that earns its own case: it means the key is wrong,
+ * and the user's next move is to type a different one. Everything else —
+ * no such endpoint, rate limited, HTML instead of JSON, a payload with no
+ * `data` array — leads to the same place, typing model ids by hand, so
+ * splitting them further would be a distinction without a difference.
+ *
+ * Only 401 and 403 map to `unauthorized`. A 404 means the provider has no
+ * `/models` endpoint, and re-prompting for a key there would misdiagnose in the
+ * opposite direction from the bug this exists to fix.
+ */
+export type FetchModelsResult =
+  | { outcome: 'ok'; models: FetchedModel[] }
+  | { outcome: 'unauthorized'; status: number }
+  | { outcome: 'unreachable' }
+  | { outcome: 'unreadable' };
+
 /** Where a provider's model list lives, given its base url. */
 function modelsUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, '')}/models`;
 }
 
 /**
- * The models a provider reports, or `[]` if it reports none we can read.
+ * The models a provider reports, or why it would not say.
  *
- * Timeout-bounded and failure-closed, matching `copilotTokenCanExchange`: an
- * offline machine gets the manual-entry path rather than a hang.
+ * Timeout-bounded and non-throwing, matching `copilotTokenCanExchange`: an
+ * offline machine gets an answer rather than a hang.
  */
 export async function fetchModels(
   baseUrl: string,
   apiKey: string,
   opts: { fetch?: typeof fetch; timeoutMs?: number } = {},
-): Promise<FetchedModel[]> {
+): Promise<FetchModelsResult> {
   const doFetch = opts.fetch ?? fetch;
   try {
     const response = await doFetch(modelsUrl(baseUrl), {
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
     });
-    if (!response.ok) return [];
+    if (response.status === 401 || response.status === 403) {
+      return { outcome: 'unauthorized', status: response.status };
+    }
+    if (!response.ok) return { outcome: 'unreadable' };
 
     const payload = await response.json() as unknown;
     const data = (payload as { data?: unknown })?.data;
-    if (!Array.isArray(data)) return [];
+    if (!Array.isArray(data)) return { outcome: 'unreadable' };
 
     const seen = new Set<string>();
     const models: FetchedModel[] = [];
@@ -57,10 +80,10 @@ export async function fetchModels(
       seen.add(id);
       models.push(typeof name === 'string' && name.trim() !== '' ? { id, name } : { id });
     }
-    return models;
+    return { outcome: 'ok', models };
   } catch {
-    // Unreachable, timed out, or not JSON — one outcome for the caller.
-    return [];
+    // Refused, timed out, DNS failure, or a body that would not parse.
+    return { outcome: 'unreachable' };
   }
 }
 

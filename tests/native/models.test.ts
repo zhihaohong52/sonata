@@ -13,17 +13,17 @@ function json(body: unknown, status = 200): typeof fetch {
 
 describe('fetchModels', () => {
   it('parses an OpenAI /models response', async () => {
-    const models = await fetchModels('https://api.example.com/v1', 'sk-test', {
+    const result = await fetchModels('https://api.example.com/v1', 'sk-test', {
       fetch: json({ data: [{ id: 'gpt-5.6-luna', object: 'model' }, { id: 'gpt-5.6-terra' }] }),
     });
-    expect(models).toEqual([{ id: 'gpt-5.6-luna' }, { id: 'gpt-5.6-terra' }]);
+    expect(result).toEqual({ outcome: 'ok', models: [{ id: 'gpt-5.6-luna' }, { id: 'gpt-5.6-terra' }] });
   });
 
   it('carries a display name when the provider sends one', async () => {
-    const models = await fetchModels('https://api.example.com/v1', 'sk-test', {
+    const result = await fetchModels('https://api.example.com/v1', 'sk-test', {
       fetch: json({ data: [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }] }),
     });
-    expect(models).toEqual([{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }]);
+    expect(result).toEqual({ outcome: 'ok', models: [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }] });
   });
 
   it('sends the key as a bearer to <base>/models', async () => {
@@ -51,43 +51,70 @@ describe('fetchModels', () => {
     expect(seenUrl).toBe('https://api.example.com/v1/models');
   });
 
-  // Every failure below is the same outcome for the caller: an empty list, and
-  // the wizard falls back to typing ids by hand. None of them may throw — a
-  // provider being unreachable is an ordinary case, not an error.
-  it('returns [] on network error', async () => {
-    const offline = (async () => { throw new Error('offline'); }) as unknown as typeof fetch;
-    expect(await fetchModels('https://api.example.com/v1', 'sk-test', { fetch: offline })).toEqual([]);
-  });
-
-  it('returns [] on a non-JSON response', async () => {
-    const html = (async () => new Response('<html>not found</html>', { status: 404 })) as unknown as typeof fetch;
-    expect(await fetchModels('https://api.example.com/v1', 'sk-test', { fetch: html })).toEqual([]);
-  });
-
-  it('returns [] on a 401, rather than reporting models that need another key', async () => {
-    expect(await fetchModels('https://api.example.com/v1', 'bad', {
-      fetch: json({ error: { message: 'invalid api key' } }, 401),
-    })).toEqual([]);
-  });
-
-  it('returns [] when the payload has no data array', async () => {
-    expect(await fetchModels('https://api.example.com/v1', 'sk-test', {
-      fetch: json({ models: ['a', 'b'] }),
-    })).toEqual([]);
-  });
-
   it('skips entries with no usable id', async () => {
-    const models = await fetchModels('https://api.example.com/v1', 'sk-test', {
+    const result = await fetchModels('https://api.example.com/v1', 'sk-test', {
       fetch: json({ data: [{ id: 'good' }, { id: '' }, { id: 42 }, {}, null] }),
     });
-    expect(models).toEqual([{ id: 'good' }]);
+    expect(result).toEqual({ outcome: 'ok', models: [{ id: 'good' }] });
   });
 
   it('deduplicates repeated ids', async () => {
-    const models = await fetchModels('https://api.example.com/v1', 'sk-test', {
+    const result = await fetchModels('https://api.example.com/v1', 'sk-test', {
       fetch: json({ data: [{ id: 'a' }, { id: 'a' }, { id: 'b' }] }),
     });
-    expect(models).toEqual([{ id: 'a' }, { id: 'b' }]);
+    expect(result).toEqual({ outcome: 'ok', models: [{ id: 'a' }, { id: 'b' }] });
+  });
+
+  // A rejected key is the one failure whose fix is a different key, so it is
+  // the one failure with its own outcome. The rest lead to the same place.
+  it('reports a 401 as unauthorized', async () => {
+    expect(await fetchModels('https://api.example.com/v1', 'bad', {
+      fetch: json({ error: { message: 'invalid api key' } }, 401),
+    })).toEqual({ outcome: 'unauthorized', status: 401 });
+  });
+
+  it('reports a 403 as unauthorized', async () => {
+    expect(await fetchModels('https://api.example.com/v1', 'bad', {
+      fetch: json({ error: { message: 'forbidden' } }, 403),
+    })).toEqual({ outcome: 'unauthorized', status: 403 });
+  });
+
+  it('does NOT report a 404 as unauthorized', async () => {
+    // A provider with no /models endpoint has nothing wrong with its key, and
+    // re-prompting there misdiagnoses in the opposite direction from the bug
+    // this distinction exists to fix.
+    const html = (async () => new Response('<html>not found</html>', { status: 404 })) as unknown as typeof fetch;
+    expect(await fetchModels('https://api.example.com/v1', 'sk-test', { fetch: html }))
+      .toEqual({ outcome: 'unreadable' });
+  });
+
+  it('does not report a 429 as unauthorized', async () => {
+    expect(await fetchModels('https://api.example.com/v1', 'sk-test', {
+      fetch: json({ error: 'slow down' }, 429),
+    })).toEqual({ outcome: 'unreadable' });
+  });
+
+  it('reports a network error as unreachable', async () => {
+    const offline = (async () => { throw new Error('offline'); }) as unknown as typeof fetch;
+    expect(await fetchModels('https://api.example.com/v1', 'sk-test', { fetch: offline }))
+      .toEqual({ outcome: 'unreachable' });
+  });
+
+  it('reports a 200 whose body is not JSON as unreachable', async () => {
+    const notJson = (async () => new Response('<html>hi</html>', { status: 200 })) as unknown as typeof fetch;
+    expect(await fetchModels('https://api.example.com/v1', 'sk-test', { fetch: notJson }))
+      .toEqual({ outcome: 'unreachable' });
+  });
+
+  it('reports a payload with no data array as unreadable', async () => {
+    expect(await fetchModels('https://api.example.com/v1', 'sk-test', {
+      fetch: json({ models: ['a', 'b'] }),
+    })).toEqual({ outcome: 'unreadable' });
+  });
+
+  it('never throws', async () => {
+    const hostile = (async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch;
+    await expect(fetchModels('https://api.example.com/v1', 'k', { fetch: hostile })).resolves.toBeDefined();
   });
 });
 
