@@ -29,6 +29,8 @@ export interface ServeDeps {
    * gateway URL, were found there after a suite run.
    */
   tempDir?: string;
+  /** Test seam for the "who holds the router port?" probe. */
+  probeHealth?: typeof fetch;
 }
 
 /**
@@ -87,6 +89,48 @@ async function defaultWaitForLitellm(port: number): Promise<void> {
 
 export function serveHealthUrl(routerPort: number): string {
   return `http://localhost:${routerPort}/__sonata_health`;
+}
+
+/** Whether whatever holds a port is a sonata router. */
+export async function isSonataRouter(
+  port: number,
+  doFetch: typeof fetch = fetch,
+): Promise<boolean> {
+  try {
+    const response = await doFetch(serveHealthUrl(port), {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!response.ok) return false;
+    const body = await response.json() as { sonata?: unknown };
+    return body?.sonata === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What to say when the router port is taken.
+ *
+ * The occupant is usually sonata itself: an MCP dispatch to a native model
+ * starts a router inside the `sonata mcp` process, and that router lives as
+ * long as the MCP server does — which is until Claude Code is restarted, not
+ * until the dispatch ends. A day-old one was found holding this port and
+ * answering its health endpoint, while `serve` called it "a non-sonata
+ * listener" and sent the user looking for a foreign program. The health
+ * endpoint already exists; asking it costs one request and makes the message
+ * true.
+ */
+export async function occupiedPortMessage(
+  port: number,
+  doFetch: typeof fetch = fetch,
+): Promise<string> {
+  if (await isSonataRouter(port, doFetch)) {
+    return `sonata serve: router port ${port} is already served by another sonata router — ` +
+      'usually one started inside a `sonata mcp` process by an earlier native dispatch, ' +
+      'which lives until Claude Code restarts. Use that one, restart Claude Code to retire it, ' +
+      `or give this instance a different [native.ports] router port.`;
+  }
+  return `sonata serve: router port ${port} is occupied by a non-sonata listener`;
 }
 
 /**
@@ -205,7 +249,7 @@ export async function cmdServe(
       await listen(router, native.ports.router);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-        throw new Error(`sonata serve: router port ${native.ports.router} is occupied by a non-sonata listener`);
+        throw new Error(await occupiedPortMessage(native.ports.router, opts.probeHealth));
       }
       throw error;
     }
