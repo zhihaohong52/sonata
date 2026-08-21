@@ -10,6 +10,7 @@ import {
   deriveInitState, configNativeCandidates, oauthProvidersFor,
   type NativeCandidate,
 } from '../src/commands/init.js';
+import { reconcilePerRoleModels } from '../src/commands/init.js';
 import { providersForHarnesses } from '../src/tui-ink/app-state.js';
 import { readSettings } from '../src/settings.js';
 import { writeSonataKey } from '../src/native/credentials.js';
@@ -1166,5 +1167,51 @@ describe('cmdInit — BYOK', () => {
     });
     expect(second.models).toEqual(['deepseek-deepseek-v4-flash']);
     expect(readFileSync(second.configPath, 'utf8')).toBe(before);
+  });
+});
+
+describe('reconcilePerRoleModels', () => {
+  it('keeps a saved assignment when the selection is unchanged', () => {
+    expect(reconcilePerRoleModels({ code: ['a'], review: ['b'] }, ['a', 'b'], ['a', 'b'], ['code', 'review']))
+      .toEqual({ code: ['a'], review: ['b'] });
+  });
+
+  it('replaces the saved assignment when a different model is selected', () => {
+    // The bug this exists for: `--models <new>` printed the new model in the
+    // summary and wrote the old one, because a role already in the config kept
+    // its saved list and the selection was discarded whole.
+    expect(reconcilePerRoleModels({ code: ['vendorx-kimi-k3'] }, ['vendorx-kimi-k3'], ['gpt-5.6-luna'], ['code']))
+      .toEqual({ code: ['gpt-5.6-luna'] });
+  });
+
+  it('adds a newly selected model to every role', () => {
+    expect(reconcilePerRoleModels(
+      { code: ['old'], review: ['old'] }, ['old'], ['old', 'new'], ['code', 'review'],
+    )).toEqual({ code: ['old', 'new'], review: ['old', 'new'] });
+  });
+
+  it('drops a model that is no longer selected', () => {
+    expect(reconcilePerRoleModels({ code: ['a', 'b'] }, ['a', 'b'], ['a'], ['code']))
+      .toEqual({ code: ['a'] });
+  });
+
+  it('gives a role with nothing left the whole selection', () => {
+    // An empty list would generate no agent for that role at all.
+    expect(reconcilePerRoleModels({ code: ['gone'] }, ['gone', 'a'], ['a'], ['code']))
+      .toEqual({ code: ['a'] });
+  });
+
+  it('covers a role that has no saved assignment', () => {
+    expect(reconcilePerRoleModels({ code: ['a'] }, ['a'], ['a'], ['code', 'plan']))
+      .toEqual({ code: ['a'], plan: ['a'] });
+  });
+
+  it('omits a role that is no longer selected', () => {
+    expect(reconcilePerRoleModels({ code: ['a'], plan: ['a'] }, ['a'], ['a'], ['code']))
+      .toEqual({ code: ['a'] });
+  });
+
+  it('handles no saved state at all', () => {
+    expect(reconcilePerRoleModels(undefined, [], ['a'], ['code'])).toEqual({ code: ['a'] });
   });
 });
