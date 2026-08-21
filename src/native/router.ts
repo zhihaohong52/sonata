@@ -66,10 +66,57 @@ function isClaudeRequest(body: Buffer): boolean {
   }
 }
 
+/**
+ * Flattens an Anthropic `system` block array into a single string.
+ *
+ * Claude Code always sends `system` as an array of text blocks. LiteLLM turns a
+ * *string* system prompt into a `developer` message, which the Codex backend
+ * accepts, but leaves block arrays as role `system` — and that backend answers
+ * `{"detail":"System messages are not allowed"}`, a 400 naming neither the
+ * field nor the shape. Probed directly: a string system prompt succeeds, the
+ * identical text as a one-element array fails.
+ *
+ * So the array is joined here, before LiteLLM sees it. The text is unchanged
+ * and its order preserved; only the shape differs, and the string form is the
+ * one both sides agree on. `cache_control` is dropped with the blocks, which
+ * costs prompt caching on this path — the alternative is a request that cannot
+ * be sent at all.
+ *
+ * Returns the body untouched unless it is JSON with a non-empty `system` array:
+ * an empty array is already accepted, and a non-JSON body is not ours to parse.
+ */
+export function flattenSystemBlocks(body: Buffer): Buffer {
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(body.toString()) as Record<string, unknown>;
+  } catch {
+    return body;
+  }
+  const system = payload.system;
+  if (!Array.isArray(system) || system.length === 0) return body;
+
+  const text = system
+    .map((block) => {
+      if (typeof block === 'string') return block;
+      const { type, text: blockText } = (block ?? {}) as { type?: unknown; text?: unknown };
+      // Only text blocks carry a prompt. Anything else (an image, a shape added
+      // later) has no string form, so leaving the body alone is safer than
+      // silently dropping content.
+      return type === 'text' && typeof blockText === 'string' ? blockText : null;
+    })
+    .filter((part): part is string => part !== null);
+
+  if (text.length !== system.length) return body;
+  return Buffer.from(JSON.stringify({ ...payload, system: text.join('\n\n') }));
+}
+
 export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promise<RouterResponse> {
   const anthropic = isClaudeRequest(req.body);
   const headers = requestHeaders(req.headers);
   const upstream = anthropic ? 'anthropic' : 'litellm';
+  // Anthropic understands its own block arrays; only the foreign path needs the
+  // string form, so the request Anthropic receives stays byte-identical.
+  const body = anthropic ? req.body : flattenSystemBlocks(req.body);
 
   if (!anthropic) {
     for (const name of Object.keys(headers)) {
@@ -83,7 +130,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   try {
     const response = await deps.fetch(
       targetUrl(anthropic ? (deps.anthropicBase ?? 'https://api.anthropic.com') : deps.litellmBase, req.url),
-      { method: req.method, headers, body: req.body.length > 0 ? req.body as unknown as BodyInit : undefined },
+      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined },
     );
     return {
       status: response.status,
