@@ -78,7 +78,7 @@ export function credentialAvailabilityFor(
       key: hasKey(provider.provider) ? { source: 'sonata' } : null,
       // Only an OAuth gateway needs an override target; everything else
       // already authenticates with a key, so entering one always works.
-      keyEntryAvailable: auth === undefined || !isOauthGatewayAuth(auth) || WELL_KNOWN_PROVIDER_URLS[provider.provider] !== undefined,
+      keyEntryAvailable: auth === undefined || !isOauthGatewayAuth(auth) || Object.hasOwn(WELL_KNOWN_PROVIDER_URLS, provider.provider),
     }];
   }));
 }
@@ -681,10 +681,10 @@ async function runInit(
     for (const gateway of Object.keys(byokKeys)) {
       for (const [key, candidate] of nativeByKey) {
         if (candidate.gateway !== gateway || candidate.auth === 'api-key') continue;
-        const baseUrl = WELL_KNOWN_PROVIDER_URLS[gateway];
-        if (baseUrl === undefined) {
+        if (!Object.hasOwn(WELL_KNOWN_PROVIDER_URLS, gateway)) {
           throw new Error(`sonata init: no API base URL is known for ${gateway}; cannot use an API key.`);
         }
+        const baseUrl = WELL_KNOWN_PROVIDER_URLS[gateway];
         nativeByKey.set(key, { ...candidate, baseUrl, auth: 'api-key' });
       }
     }
