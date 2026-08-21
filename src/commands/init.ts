@@ -898,12 +898,14 @@ async function runInit(
       // A stored GitHub token is not the same as a usable one: opencode's own
       // login requests only `read:user`, and GitHub then refuses the Copilot
       // exchange with a 403 — so presence alone would report a credential as
-      // healthy that `sonata serve` cannot actually use.
-      const copilotToken = auth === 'copilot-oauth' ? readCopilotToken(opts.home) : null;
+      // healthy that `sonata serve` cannot actually use. `copilotUsable` above
+      // already answered this for the one token opencode can hold — reuse it
+      // rather than probing GitHub a second time, which could also disagree
+      // with the first probe on a flaky connection.
       const found = source === 'sonata'
         ? existsSync(join(credentialDir(opts.home, gateway), credentialFileFor(auth)))
         : auth === 'copilot-oauth'
-          ? copilotToken !== null && await copilotTokenCanExchange(copilotToken)
+          ? copilotUsable
           : readChatGptOAuth(opts.home, source) !== null;
       const repair = source === 'sonata'
         ? `run \`sonata auth login ${gateway}\``
