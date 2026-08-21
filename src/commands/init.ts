@@ -232,6 +232,37 @@ export function nativeLabel(c: NativeCandidate): string {
   return `${c.gateway}/${c.id}`;
 }
 
+/**
+ * Per-role model assignments after the selected model set has changed.
+ *
+ * The saved assignment is a **default for models that are still selected** —
+ * never an override of the selection. Treating it as an override is what made
+ * `sonata init --models <new>` report the new model in its summary and then
+ * write the old ones: a role already present in the config kept its saved list
+ * and the selection was discarded in full.
+ *
+ * So, per role: keep what was assigned and is still selected, and add whatever
+ * is newly selected, because "I just added codex" means codex should be usable.
+ * A role left with nothing gets the whole selection rather than an empty list,
+ * which would generate no agent for it at all.
+ */
+export function reconcilePerRoleModels(
+  saved: Record<string, string[]> | undefined,
+  savedKeys: readonly string[],
+  chosen: readonly string[],
+  roles: readonly string[],
+): Record<string, string[]> {
+  const selected = new Set(chosen);
+  const added = chosen.filter((key) => !savedKeys.includes(key));
+  const out: Record<string, string[]> = {};
+  for (const role of roles) {
+    const kept = (saved?.[role] ?? []).filter((key) => selected.has(key));
+    const merged = [...kept, ...added.filter((key) => !kept.includes(key))];
+    out[role] = merged.length > 0 ? merged : [...chosen];
+  }
+  return out;
+}
+
 export function deriveInitState(
   config: SonataConfig,
   configScope: ConfigScope,
@@ -572,16 +603,16 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
     nativeKeys = result.state.nativeKeys ?? [];
     roles = result.state.roles ?? [...KNOWN_ROLES];
     chosenNative = nativeKeys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined);
-    if (result.state.perRoleModels) {
-      nativeRoleModels = Object.fromEntries(
-        Object.entries(result.state.perRoleModels).map(([role, keys]) => [
+    // Reconciled against the roles and models actually selected: the wizard's
+    // per-role map starts from the existing config, so iterating *it* rather
+    // than `roles` kept a role the user had just deselected.
+    nativeRoleModels = Object.fromEntries(
+      Object.entries(reconcilePerRoleModels(result.state.perRoleModels, nativeKeys, nativeKeys, roles))
+        .map(([role, keys]) => [
           role,
           keys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined),
         ]),
-      );
-    } else {
-      nativeRoleModels = Object.fromEntries(roles.map((r) => [r, chosenNative]));
-    }
+    );
   } else {
     // ---- flag-driven (non-interactive) path -----------------------------
     configScope = opts.configScope ?? 'project';
@@ -663,22 +694,13 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
       throw new Error('sonata init: no roles selected — nothing to generate.');
     }
 
-    if (d.perRoleModels) {
-      nativeRoleModels = Object.fromEntries(
-        Object.entries(d.perRoleModels)
-          .filter(([role]) => roles.includes(role))
-          .map(([role, keys]) => [
-            role,
-            keys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined),
-          ]),
-      );
-      // Fill any new roles not in the saved state.
-      for (const r of roles) {
-        if (!nativeRoleModels[r]) nativeRoleModels[r] = chosenNative;
-      }
-    } else {
-      nativeRoleModels = Object.fromEntries(roles.map((r) => [r, chosenNative]));
-    }
+    nativeRoleModels = Object.fromEntries(
+      Object.entries(reconcilePerRoleModels(d.perRoleModels, d.nativeKeys ?? [], nativeKeys, roles))
+        .map(([role, keys]) => [
+          role,
+          keys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined),
+        ]),
+    );
   }
 
   // ---- key check --------------------------------------------------------
