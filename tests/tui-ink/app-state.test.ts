@@ -4,7 +4,9 @@ import {
   byokProviderKey,
   byokProviderName,
   candidatesForProviders,
+  credentialRowsFor,
   providersForHarnesses,
+  reduceInit,
   type CandidateOption,
   type ProviderOption,
 } from '../../src/tui-ink/app-state.js';
@@ -142,5 +144,32 @@ describe('BYOK providers', () => {
     state = applyStep(state, 6, { provider: 'deepseek', ids: ['b'] });
     expect(state.nativeKeys).toEqual(['groq-x', 'deepseek-b']);
     expect(state.byokModels).toEqual({ deepseek: ['b'], groq: ['x'] });
+  });
+});
+
+describe('credential source step', () => {
+  it('always offers login and api-key, even with no harness credentials', () => {
+    const rows = credentialRowsFor('openai', { codex: null, opencode: null, key: null });
+    expect(rows.map((r) => r.source)).toEqual(['sonata', 'sonata-key']);
+  });
+
+  it('adds an import row only when that credential exists', () => {
+    const rows = credentialRowsFor('openai', { codex: { expiresInDays: 6 }, opencode: null, key: null });
+    expect(rows.map((r) => r.source)).toContain('codex');
+    expect(rows.find((r) => r.source === 'codex')!.detail).toContain('6d');
+  });
+
+  it('lists an unhealthy credential with its problem rather than hiding it', () => {
+    // "codex has one but it expired" is the answer to a question the user is
+    // about to ask.
+    const rows = credentialRowsFor('openai', { codex: { expiresInDays: -1 }, opencode: null, key: null });
+    expect(rows.find((r) => r.source === 'codex')!.detail).toMatch(/expired/);
+  });
+
+  it('records the chosen source in state and allows going back', () => {
+    let state = reduceInit({ step: 3, state: {} }, { type: 'chooseCredentialSource', gateway: 'openai', source: 'codex' });
+    expect(state.state.credentialSources).toEqual({ openai: 'codex' });
+    state = reduceInit(state, { type: 'back' });
+    expect(state.step).toBe(2);
   });
 });
