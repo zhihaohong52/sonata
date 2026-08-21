@@ -294,6 +294,21 @@ foreign program that did not exist (a day-old `sonata mcp` was found holding
 4100 and answering its own health endpoint). `occupiedPortMessage` asks the
 health endpoint first, which costs one request and makes the message true.
 
+**Claude Code's `system` array must be flattened for codex.** Claude Code always
+sends `system` as an array of text blocks. LiteLLM turns a *string* system prompt
+into a `developer` message the Codex backend accepts, but leaves block arrays as
+role `system` — and that backend answers `{"detail":"System messages are not
+allowed"}`, a 400 naming neither the field nor the shape, so it reads as a model
+or auth problem. Probed directly: a string system prompt streams fine, the
+identical text as a one-element array 400s, an empty array is accepted.
+`flattenSystemBlocks` (`src/native/router.ts`) joins the blocks with blank lines
+on the **litellm path only** — an Anthropic request stays byte-identical, since
+Anthropic understands its own shape. `cache_control` is dropped with the block
+wrapper, costing prompt caching on this path; the alternative is a request that
+cannot be sent. A non-text block (an image) has no string form, so the body is
+passed through unchanged rather than silently losing content. Verified live: the
+model obeys the flattened prompt, not just accepts it.
+
 **`serve` inherits LiteLLM's stdio.** A per-model startup failure appears only in LiteLLM's own output; discarding it is what turned a plain 403 into an unrelated-looking "no healthy deployments for this model".
 
 **opencode's OAuth entries are not API keys.** `opencodeKeys()` resolves `type: api` entries only, which is correct — but the `type: oauth` ones (`openai`, `github-copilot`) were then invisible, so doctor reported "no key" for a credential sitting on disk. opencode's `openai` entry is the *same* ChatGPT credential codex holds (identical `client_id`), so `readChatGptOAuth` prefers codex and falls back to opencode; the `client_id` is checked, because another OpenAI grant would fail confusingly inside LiteLLM. opencode writes `expires: 0` on the Copilot entry to mean "never expires".
