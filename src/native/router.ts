@@ -148,6 +148,30 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       targetUrl(anthropic ? (deps.anthropicBase ?? 'https://api.anthropic.com') : deps.litellmBase, req.url),
       { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined },
     );
+    // LiteLLM returns 500 when ChatGPT's Codex endpoint yields output:[]. That
+    // usually means the upstream was overloaded and returned an empty completion
+    // rather than a real error. Re-emitting it as 529 (overloaded) lets Claude
+    // Code treat it as a retriable backpressure signal rather than a hard fault.
+    if (response.status === 500 && !anthropic) {
+      const responseBodyBuf = response.body === null
+        ? Buffer.alloc(0)
+        : Buffer.concat(await async function() { const chunks: Buffer[] = []; for await (const c of responseBody(response.body!)) chunks.push(Buffer.from(c)); return chunks; }());
+      const text = responseBodyBuf.toString();
+      if (text.includes('Unknown items in responses API response')) {
+        const msg = 'upstream returned empty completion (overloaded) — retry';
+        deps.log?.(`router: 500 from litellm rewritten to 529 (${requestedModel(req.body) ?? '?'}): empty output`);
+        return {
+          status: 529,
+          headers: { 'content-type': 'application/json' },
+          body: Buffer.from(JSON.stringify({ type: 'overloaded_error', message: msg })),
+        };
+      }
+      return {
+        status: response.status,
+        headers: responseHeaders(response.headers),
+        body: responseBodyBuf,
+      };
+    }
     return {
       status: response.status,
       headers: responseHeaders(response.headers),
