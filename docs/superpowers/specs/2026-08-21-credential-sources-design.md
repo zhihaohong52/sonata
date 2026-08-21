@@ -53,8 +53,29 @@ providers.
 | It uses a Copilot GitHub App | `GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98"`, `authenticator.py:21` |
 | That app is live and issues device codes | `POST github.com/login/device/code` returned `user_code`, `expires_in: 899`, `interval: 5` |
 | The interpreter is discoverable | `head -1 $(command -v litellm)` names it; both authenticators import from it |
+| **Login needs no codex install and no prior codex login** | Probed 2026-08-22: with `PATH=/usr/bin:/bin` (so `shutil.which("codex")` is `None`) and an empty `CHATGPT_TOKEN_DIR`, `_request_device_code()` returned a live `user_code`. `authenticator.py` contains no `subprocess`, no `shutil.which`, and no reference to the codex binary or to `~/.codex/auth.json`. |
 
-Two consequences shape everything below.
+Three consequences shape everything below.
+
+**A user who has never installed codex can still sign in.** This is the case the
+feature exists for, so it is stated as its own consequence rather than left to be
+inferred. LiteLLM's authenticator is a self-contained HTTP client against
+`auth.openai.com`; the Codex CLI's OAuth app id is a string constant compiled
+into LiteLLM, not something read from a codex installation. `get_access_token()`
+reads the auth file, finds nothing (`_read_auth_file() -> None`), and falls
+through to `_login_device_code()` at `authenticator.py:71`. Nothing on that path
+touches codex.
+
+The distinction that matters: **codex is one possible credential *source*, never
+a prerequisite for the `sonata` source.** Picking `credentialSource: 'codex'`
+imports an existing `~/.codex/auth.json` and does require codex; picking
+`credentialSource: 'sonata'` runs the device flow and requires only a ChatGPT
+account and a browser. Today's code offers only the first, and `serve` throws
+when that file is absent (`serve.ts:230-236`) — which is precisely why "I never
+installed codex" and "I have codex but never used its OAuth login" are both dead
+ends right now. The wizard must therefore offer `sonata` **unconditionally**, and
+gate only the `codex`/`opencode` import rows on the corresponding credential file
+actually existing.
 
 **Sonata never has to hold the token.** LiteLLM's authenticator writes the
 credential into a directory sonata chooses. Sonata sets an environment variable
@@ -178,6 +199,17 @@ Mechanics:
 4. Stream stdout line by line into `progress.line`. LiteLLM's own text includes
    "Device codes are a common phishing target. Never share this code."
    **Relay that line verbatim; do not reformat it away.**
+
+   **The printed block is the only source of the verification URL.** Probed
+   2026-08-22: ChatGPT's device-code response carries exactly
+   `device_auth_id`, `user_code`, `interval` — no `verification_uri`, no
+   `expires_in` (`authenticator.py:195-207`). The URL is the constant
+   `CHATGPT_DEVICE_VERIFY_URL = "https://auth.openai.com/codex/device"`,
+   interpolated into a fixed four-line print at `authenticator.py:162-168`. So
+   sonata cannot read a URL field out of a structured response and must not
+   invent one: it relays those printed lines. Do not re-derive the URL in
+   sonata's own code — a second copy of the constant is one LiteLLM upgrade away
+   from pointing users at the wrong page.
 5. Resolve when the child exits. Success is the child exiting 0 *and* the
    credential file existing — an exit code alone is not evidence, the same
    discipline the run engine applies to report files.
@@ -226,6 +258,14 @@ Rows are built from what actually exists: `readCodexOAuth`, `readOpencodeChatGpt
 healthy". An unhealthy credential is listed with its problem rather than hidden,
 because "codex has one but it expired" is the answer to a question the user is
 about to ask.
+
+**Only the import rows are conditional.** "Log in" and "Enter an API key" are
+always offered, because neither depends on another tool being installed — a
+machine with no codex, no opencode and no harness at all still shows both. The
+"more than one available source" rule above is therefore about hiding *import*
+rows that would lead nowhere, never about hiding login. A provider whose only
+row is "Log in" still shows this screen when its auth is OAuth, since consenting
+to a browser login is itself the decision being asked about.
 
 Choosing "Log in" pushes a sub-screen that renders `progress.line` output live,
 with the URL and code prominent, and Escape to cancel. On success the wizard
