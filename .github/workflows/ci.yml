@@ -41,7 +41,12 @@ jobs:
       - name: Run npm test
         timeout-minutes: 3
         continue-on-error: true
-        run: node_modules/.bin/vitest run --reporter=default 2>&1 | tee /tmp/vitest-output.log
+        # stdbuf forces line-buffered stdout: Node block-buffers when writing
+        # to a pipe (not a TTY), so a killed-mid-block process can lose the
+        # last several already-printed lines from what the reader sees —
+        # confirmed live: one run showed 46/47 files despite the terminal
+        # view (which Actions captures through something TTY-like) showing 47/47.
+        run: stdbuf -oL -eL node_modules/.bin/vitest run --reporter=default 2>&1 | tee /tmp/vitest-output.log
 
       - name: Check test results
         run: |
