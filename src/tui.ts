@@ -282,6 +282,9 @@ export class BackError extends Error {
 interface KeySource extends NodeJS.ReadableStream {
   setRawMode?(mode: boolean): void;
   iterator(opts: { destroyOnReturn: boolean }): AsyncIterableIterator<unknown>;
+  /** tty.ReadStream's handle refcounting. Absent on a plain test double. */
+  ref?(): void;
+  unref?(): void;
 }
 
 /**
@@ -297,6 +300,13 @@ interface KeySource extends NodeJS.ReadableStream {
  *   - no `resume()` — that switches stdin to flowing mode, where chunks are
  *     dropped in the gap before the next prompt's iterator attaches. The
  *     iterator pulls on its own; it needs no help.
+ *   - `ref()` — a paused stdin's handle is *unreferenced*, so it does not keep
+ *     the event loop alive. Waiting on a keystroke is then not work Node knows
+ *     about: with nothing else pending it exits, code 0, mid-prompt. Nothing
+ *     paused stdin before the Ink wizard existed; Ink pauses it on unmount, so
+ *     every prompt after the wizard died the moment it was drawn — the prompt
+ *     on screen, the shell back, and no config written. That was
+ *     "sonata init never saves".
  */
 export async function readKeys(
   stdin: KeySource,
@@ -304,6 +314,7 @@ export async function readKeys(
 ): Promise<void> {
   stdin.setRawMode?.(true);
   stdin.setEncoding('utf8');
+  stdin.ref?.();
   try {
     for await (const chunk of stdin.iterator({ destroyOnReturn: false })) {
       if (step(String(chunk))) return;
@@ -311,6 +322,9 @@ export async function readKeys(
   } finally {
     stdin.setRawMode?.(false);
     stdin.pause();
+    // Released again, or the process would hang after the last prompt instead
+    // of exiting — the same refcount, in the opposite direction.
+    stdin.unref?.();
   }
 }
 
