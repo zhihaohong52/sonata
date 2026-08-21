@@ -25,20 +25,32 @@ jobs:
 
       - run: npm run typecheck
 
+      # Every test consistently passes — locally and on every CI attempt — but
+      # the vitest process itself sometimes never exits afterward on Linux
+      # (worker pinned at ~100% CPU in teardown; root cause not established
+      # after profiling). Bounding the step and gating on the JSON reporter's
+      # result, written the moment tests finish, makes CI deterministic
+      # without papering over a real failure: a genuine test failure still
+      # fails the job, but a process that won't exit after everything passed
+      # no longer blocks every push for hours.
       - name: Run npm test
-        timeout-minutes: 2
-        run: node_modules/.bin/vitest run --reporter=default
+        timeout-minutes: 3
+        continue-on-error: true
+        id: test
+        run: node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile=/tmp/vitest-result.json
 
-      - name: Dump active handles and CPU profile if the process is still alive
-        if: always()
+      - name: Check test results
         run: |
-          ps aux | grep -iE 'node|vitest|esbuild|tmux' | grep -v grep || true
-          echo "--- isolate logs found ---"
-          find . -name "isolate-*.log" 2>/dev/null
-          for f in $(find . -name "isolate-*.log" 2>/dev/null); do
-            echo "=== $f ==="
-            node --prof-process "$f" 2>&1 | head -80
-          done
+          node -e '
+            const fs = require("fs");
+            if (!fs.existsSync("/tmp/vitest-result.json")) {
+              console.error("No results file — vitest did not get far enough to report.");
+              process.exit(1);
+            }
+            const r = JSON.parse(fs.readFileSync("/tmp/vitest-result.json", "utf8"));
+            console.log(`${r.numPassedTests}/${r.numTotalTests} tests passed, ${r.numFailedTests} failed.`);
+            if (!r.success || r.numFailedTests > 0) process.exit(1);
+          '
 
       # Catches the packaging mistakes that only appear at publish time:
       # a missing runtime asset, or a bin target excluded by `files`.
