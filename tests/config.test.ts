@@ -494,3 +494,72 @@ context_window=1000
 `)).toThrow(/cannot use the "claude-" prefix/);
   });
 });
+
+describe('native gateway credential_source', () => {
+  it('round-trips each valid source', () => {
+    for (const source of ['sonata', 'codex', 'opencode']) {
+      const config = parseConfig(`
+[native]
+[native.ports]
+router = 4100
+litellm = 4101
+[native.gateways.codex]
+auth = "codex-oauth"
+credential_source = "${source}"
+`, '/tmp/x');
+      expect(config.native!.gateways.codex.credentialSource).toBe(source);
+    }
+  });
+
+  it('leaves the field undefined when absent, preserving today\'s resolution', () => {
+    const config = parseConfig(`
+[native]
+[native.ports]
+router = 4100
+litellm = 4101
+[native.gateways.codex]
+auth = "codex-oauth"
+`, '/tmp/x');
+    expect(config.native!.gateways.codex.credentialSource).toBeUndefined();
+  });
+
+  it('refuses an unknown source by name, listing the valid ones', () => {
+    expect(() => parseConfig(`
+[native]
+[native.ports]
+router = 4100
+litellm = 4101
+[native.gateways.codex]
+auth = "codex-oauth"
+credential_source = "keychain"
+`, '/tmp/x')).toThrow(/unknown credential_source "keychain".*sonata, codex, opencode/s);
+  });
+
+  it('refuses codex as the source for an api-key gateway', () => {
+    // codex holds a subscription, not a bearer key; a metered endpoint
+    // authenticates it and then 429s, which reads as a missing key.
+    expect(() => parseConfig(`
+[native]
+[native.ports]
+router = 4100
+litellm = 4101
+[native.gateways.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+credential_source = "codex"
+`, '/tmp/x')).toThrow(/cannot take its credential from codex/);
+  });
+
+  it('allows opencode as the source for an api-key gateway', () => {
+    // opencode holds API keys as well as OAuth entries.
+    const config = parseConfig(`
+[native]
+[native.ports]
+router = 4100
+litellm = 4101
+[native.gateways.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+credential_source = "opencode"
+`, '/tmp/x');
+    expect(config.native!.gateways.openrouter.credentialSource).toBe('opencode');
+  });
+});
