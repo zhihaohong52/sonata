@@ -35,7 +35,7 @@ import { join } from 'node:path';
 import { parseOpenCodeModels, parseAuthedProviders, staleAgents, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
 import { parsePiRefs } from '../src/adapters/pi.js';
 import {
-  cmdInit, credentialAvailabilityFor, duplicateKeys, previousAskedStep, nativeCandidatesFrom,
+  cmdInit, credentialAvailabilityFor, duplicateKeys, parseCredentialSourceFlags, previousAskedStep, nativeCandidatesFrom,
   nativeTomlFor, preTickedNative, configPathFor, agentsDirFor,
   deriveInitState, configNativeCandidates, oauthProvidersFor,
   type NativeCandidate,
@@ -748,6 +748,50 @@ describe('cmdInit --credential-source', () => {
 
   it('refuses an unknown source, listing the valid ones', async () => {
     await expect(init(['codex=keychain'])).rejects.toThrow(/sonata, codex, opencode/);
+  });
+
+  it('refuses a pair with an extra equals sign', () => {
+    expect(() => parseCredentialSourceFlags(['codex=sonata=typo']))
+      .toThrow(/--credential-source expects <gateway>=<source>/);
+  });
+
+  it('refuses a source for a gateway outside the selected models', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.codex]
+base_url = "https://gateway.example/v1"
+[native.models.gpt-5]
+gateway = "codex"
+id = "gpt-5"
+context_window = 128000
+[generate.native]
+code = ["gpt-5"]
+`);
+    await expect(cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['codex/codex'], models: ['gpt-5'], roles: ['code'], scope: 'skip', write,
+      credentialSource: ['codxe=sonata'],
+    })).rejects.toThrow(/--credential-source names gateway "codxe".*Known gateways: codex/);
+  });
+
+  it('refuses codex as the source for an api-key gateway', async () => {
+    const apiKeyInit = () => cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['codex/codex'], models: ['gpt-5'], roles: ['code'], scope: 'skip', write,
+      credentialSource: ['codex=codex'],
+    });
+    // The fixture's Codex provider resolves as codex-oauth, so use an existing
+    // config-only api-key gateway to exercise the unified validation loop.
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.codex]
+base_url = "https://gateway.example/v1"
+[native.models.gpt-5]
+gateway = "codex"
+id = "gpt-5"
+context_window = 128000
+[generate.native]
+code = ["gpt-5"]
+`);
+    await expect(apiKeyInit()).rejects.toThrow(/auth = "api-key".*cannot take its credential from codex/);
   });
 });
 

@@ -328,6 +328,49 @@ credential_source = "sonata"
     }
   });
 
+  it('reports an api-key credential from its recorded source', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-api-source-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-api-source-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+credential_source = "sonata"
+`);
+    writeSonataKey(home, 'acme', 'source-key');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      expect(checks.find((c) => c.name === 'key source: acme')).toEqual({
+        name: 'key source: acme', ok: true, detail: 'acme: credential from sonata',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('flags a missing api-key credential from its recorded source', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-api-source-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-api-source-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+credential_source = "opencode"
+`);
+    writeSonataKey(home, 'acme', 'wrong-source-key');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      expect(checks.find((c) => c.name === 'key source: acme')).toEqual({
+        name: 'key source: acme', ok: false,
+        detail: 'acme: credential from opencode\n  ! acme: no credential from opencode — run `sonata auth login acme`',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('reports native serve health and key source without exposing key values', async () => {
     const { cwd, home } = setup();
     writeSonataKey(home, 'acme', 'super-secret-key');
