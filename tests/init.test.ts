@@ -44,6 +44,7 @@ import { reconcilePerRoleModels } from '../src/commands/init.js';
 import { providersForHarnesses } from '../src/tui-ink/app-state.js';
 import { readSettings } from '../src/settings.js';
 import { writeSonataKey } from '../src/native/credentials.js';
+import { credentialDir, credentialFileFor } from '../src/native/oauth-login.js';
 import { parseConfig, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL } from '../src/config.js';
 
 beforeEach(() => {
@@ -698,6 +699,55 @@ describe('nativeCandidatesFrom', () => {
 
   it('is empty when no provider has a known base URL', () => {
     expect(nativeCandidatesFrom(refs, {})).toEqual([]);
+  });
+});
+
+describe('cmdInit --credential-source', () => {
+  let cwd: string;
+  let home: string;
+  const write = () => {};
+  const detect = async () => ({
+    tmux: { installed: true, version: '3.7b', problems: [] },
+    harnesses: [{
+      name: 'codex', installed: true, version: '1.0.0', supported: true,
+      refs: [{ harness: 'codex' as const, provider: 'codex', id: 'gpt-5', ref: 'gpt-5' }],
+      authedProviders: ['codex'], providerBaseUrls: {}, problems: [],
+    }],
+  });
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'init-source-cwd-'));
+    home = mkdtempSync(join(tmpdir(), 'init-source-home-'));
+    tuiMocks.codexCredential = false;
+  });
+
+  const init = (credentialSource?: string[]) => cmdInit({
+    cwd, home, packageRoot: '/pkg', yes: true, detect,
+    providers: ['codex/codex'], models: ['gpt-5'], roles: ['code'], scope: 'skip', write,
+    credentialSource,
+  });
+
+  it('records a credential source given on the command line', async () => {
+    tuiMocks.codexCredential = true;
+    mkdirSync(credentialDir(home, 'codex'), { recursive: true });
+    writeFileSync(join(credentialDir(home, 'codex'), credentialFileFor('codex-oauth')), '{}');
+    await init(['codex=sonata']);
+    expect(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).toMatch(/credential_source = "sonata"/);
+  });
+
+  it('refuses by name when the named source has no credential', async () => {
+    tuiMocks.codexCredential = true;
+    await expect(init(['codex=sonata'])).rejects.toThrow(
+      /gateway "codex" needs a credential.*sonata auth login codex/s,
+    );
+  });
+
+  it('refuses a malformed pair', async () => {
+    await expect(init(['codex'])).rejects.toThrow(/--credential-source expects <gateway>=<source>/);
+  });
+
+  it('refuses an unknown source, listing the valid ones', async () => {
+    await expect(init(['codex=keychain'])).rejects.toThrow(/sonata, codex, opencode/);
   });
 });
 
