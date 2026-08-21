@@ -292,6 +292,10 @@ credential_source = "codex"
       const text = checks.map((check) => check.detail).join('\n');
       expect(text).toContain('codex: credential from codex');
       expect(text).toMatch(/no credential.*sonata auth login codex/s);
+      // Exactly one real check for this gateway — no duplicate/legacy sniff.
+      const sourceChecks = checks.filter((c) => c.name === 'key source: codex');
+      expect(sourceChecks).toHaveLength(1);
+      expect(sourceChecks[0]?.ok).toBe(false);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -313,7 +317,12 @@ credential_source = "sonata"
       const { checks } = await cmdDoctor({ cwd, home });
       const text = checks.map((check) => check.detail).join('\n');
       expect(text).toContain('codex: credential from sonata');
-      expect(text).not.toContain('no credential');
+      expect(text).not.toMatch(/no credential|no ChatGPT login/);
+      // Exactly one real check for this gateway — the legacy automatic
+      // ChatGPT sniff must not also run and fail behind a healthy sonata source.
+      const sourceChecks = checks.filter((c) => c.name === 'key source: codex');
+      expect(sourceChecks).toHaveLength(1);
+      expect(sourceChecks[0]?.ok).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
     }

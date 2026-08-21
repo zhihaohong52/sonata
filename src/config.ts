@@ -216,6 +216,16 @@ export function parseConfig(text: string): SonataConfig {
             'cannot take its credential from codex — that is a subscription, not a key.',
           );
         }
+        // codex's read-through credential is a ChatGPT subscription; GitHub
+        // Copilot has no such relationship to it. Accepting this combination
+        // would silently fall back to opencode's Copilot login regardless of
+        // what the config claims to import from.
+        if (credentialSource === 'codex' && auth === 'copilot-oauth') {
+          throw new Error(
+            `sonata.toml: native gateway "${name}" is copilot-oauth, so it ` +
+            'cannot take its credential from codex — Copilot logins come only from opencode.',
+          );
+        }
       }
       // An OAuth gateway is addressed by LiteLLM's own provider, which knows the
       // URL; accepting one here would only let a config claim a base URL that is
