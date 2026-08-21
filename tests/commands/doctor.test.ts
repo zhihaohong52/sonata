@@ -328,6 +328,49 @@ credential_source = "sonata"
     }
   });
 
+  it('reports an api-key credential from its recorded source', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-api-source-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-api-source-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.anexto]
+base_url = "https://gateway.example/v1"
+credential_source = "sonata"
+`);
+    writeSonataKey(home, 'anexto', 'source-key');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      expect(checks.find((c) => c.name === 'key source: anexto')).toEqual({
+        name: 'key source: anexto', ok: true, detail: 'anexto: credential from sonata',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('flags a missing api-key credential from its recorded source', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-api-source-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-api-source-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.anexto]
+base_url = "https://gateway.example/v1"
+credential_source = "opencode"
+`);
+    writeSonataKey(home, 'anexto', 'wrong-source-key');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      expect(checks.find((c) => c.name === 'key source: anexto')).toEqual({
+        name: 'key source: anexto', ok: false,
+        detail: 'anexto: credential from opencode\n  ! anexto: no credential from opencode — run `sonata auth login anexto`',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('reports native serve health and key source without exposing key values', async () => {
     const { cwd, home } = setup();
     writeSonataKey(home, 'anexto', 'super-secret-key');
