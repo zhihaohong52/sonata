@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { cmdServe, serveHealthUrl, type ServeHandle } from '../../src/commands/serve.js';
+import { cmdServe, serveHealthUrl, type ServeHandle, isSonataRouter, occupiedPortMessage } from '../../src/commands/serve.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
 
 let cwd: string;
@@ -273,5 +273,45 @@ describe('cmdServe — copilot-oauth gateways', () => {
     const record = JSON.parse(readFileSync(join(captured.CHATGPT_TOKEN_DIR!, 'auth.json'), 'utf8'));
     expect(record.refresh_token).toBe('rt-oc');
     expect(record.account_id).toBe('acct-oc');
+  });
+});
+
+describe('occupiedPortMessage', () => {
+  const health = (body: unknown, ok = true): typeof fetch =>
+    (async () => new Response(JSON.stringify(body), { status: ok ? 200 : 500 })) as unknown as typeof fetch;
+
+  it('names sonata when the port is held by a sonata router', async () => {
+    // The occupant is usually sonata itself: an MCP dispatch to a native model
+    // starts a router inside the `sonata mcp` process, and it lives until
+    // Claude Code restarts. Calling that "a non-sonata listener" sent a user
+    // looking for a foreign program that did not exist.
+    const message = await occupiedPortMessage(4100, health({ status: 'ok', sonata: true }));
+    expect(message).toMatch(/another sonata router/);
+    expect(message).toMatch(/sonata mcp/);
+    expect(message).not.toMatch(/non-sonata/);
+  });
+
+  it('says non-sonata when something else holds the port', async () => {
+    const message = await occupiedPortMessage(4100, health({ hello: 'world' }));
+    expect(message).toMatch(/occupied by a non-sonata listener/);
+  });
+
+  it('says non-sonata when nothing answers the health endpoint', async () => {
+    const dead = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
+    expect(await occupiedPortMessage(4100, dead)).toMatch(/non-sonata/);
+  });
+
+  it('says non-sonata when the endpoint errors', async () => {
+    const message = await occupiedPortMessage(4100, health({ sonata: true }, false));
+    expect(message).toMatch(/non-sonata/);
+  });
+});
+
+describe('isSonataRouter', () => {
+  it('is true only for the sonata health payload', async () => {
+    const ok = (async () => new Response(JSON.stringify({ status: 'ok', sonata: true }))) as unknown as typeof fetch;
+    const notJson = (async () => new Response('<html>')) as unknown as typeof fetch;
+    expect(await isSonataRouter(4100, ok)).toBe(true);
+    expect(await isSonataRouter(4100, notJson)).toBe(false);
   });
 });
