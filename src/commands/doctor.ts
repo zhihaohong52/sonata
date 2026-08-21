@@ -8,6 +8,7 @@ import {
   expectedAgentNames,
   isOauthGatewayAuth,
 } from '../config.js';
+import type { NativeGatewayAuth } from '../config.js';
 import { staleAgents, disabledOpencodeAgents, enableOpencodeAgent,
 } from '../detect.js';
 import { getAdapter } from '../adapters/index.js';
@@ -23,11 +24,17 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { findLitellm } from '../native/litellm.js';
 import { keyReport } from '../native/credentials.js';
-import { codexAuthReport } from '../native/codex-auth.js';
+import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
+import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { serveHealthUrl } from './serve.js';
 
 const run = promisify(execFile);
+
+function hasCredentialFrom(source: 'codex' | 'opencode', auth: NativeGatewayAuth, home: string): boolean {
+  if (auth === 'copilot-oauth') return readCopilotToken(home) !== null;
+  return readChatGptOAuth(home, source) !== null;
+}
 
 function triple(v: string): [number, number, number] {
   const m = v.replace(/^v/, '').match(/(\d+)\.(\d+)\.(\d+)/);
@@ -140,6 +147,21 @@ export async function cmdDoctor(
     const gatewayNames = Object.keys(config.native.gateways);
     const oauthGateways = gatewayNames.filter(
       (name) => isOauthGatewayAuth(config.native!.gateways[name].auth));
+
+    for (const [name, gateway] of Object.entries(config.native.gateways)) {
+      const source = gateway.credentialSource;
+      if (source === undefined) continue;
+      const present = source === 'sonata'
+        ? existsSync(join(credentialDir(home, name), credentialFileFor(gateway.auth)))
+        : hasCredentialFrom(source, gateway.auth, home);
+      checks.push({
+        name: `key source: ${name}`,
+        ok: present,
+        detail: present
+          ? `${name}: credential from ${source}`
+          : `${name}: credential from ${source}\n  ! ${name}: no credential from ${source} — run \`sonata auth login ${name}\``,
+      });
+    }
 
     for (const gateway of oauthGateways) {
       if (config.native.gateways[gateway].auth === 'copilot-oauth') {
