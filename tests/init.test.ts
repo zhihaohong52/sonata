@@ -787,6 +787,43 @@ code = ["gpt-5"]
     );
   });
 
+  const copilotOauthConfig = `
+[native.gateways."github-copilot"]
+auth = "copilot-oauth"
+[native.models.gpt-4o]
+gateway = "github-copilot"
+id = "gpt-4o"
+context_window = 128000
+[generate.native]
+code = ["gpt-4o"]
+`;
+
+  it('flags an opencode Copilot token that exists but cannot exchange for a Copilot key', async () => {
+    // Regression: presence of a stored GitHub token was treated as a healthy
+    // credential, but opencode's login only grants `read:user` — GitHub
+    // refuses the Copilot exchange, so the token cannot actually be used.
+    writeFileSync(join(cwd, 'sonata.toml'), copilotOauthConfig);
+    mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+    writeFileSync(
+      join(home, '.local', 'share', 'opencode', 'auth.json'),
+      JSON.stringify({ 'github-copilot': { type: 'oauth', access: 'gho_x', refresh: 'r' } }),
+    );
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response('{}', { status: 200, headers: { 'x-oauth-scopes': 'read:user' } });
+    const lines: string[] = [];
+    try {
+      await cmdInit({
+        cwd, home, packageRoot: '/pkg', yes: true, detect,
+        scope: 'skip',
+        write: (l: string) => { lines.push(l); },
+        credentialSource: ['github-copilot=opencode'],
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(lines.some((l) => l.includes('no credential from opencode') && l.includes('GitHub Copilot'))).toBe(true);
+  });
+
   it('refuses a malformed pair', async () => {
     await expect(init(['codex'])).rejects.toThrow(/--credential-source expects <gateway>=<source>/);
   });
