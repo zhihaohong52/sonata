@@ -12,13 +12,15 @@ import {
   type CandidateOption,
   type ProviderOption,
 } from './app-state.js';
-import { isAnthropicRoutedName } from '../config.js';
+import { isAnthropicRoutedName, isOauthGatewayAuth, type NativeGatewayAuth } from '../config.js';
 import {
   byokCandidateKey, fetchModels as defaultFetchModels, type FetchModelsResult,
 } from '../native/models.js';
+import { LoginScreen } from './components/login-screen.js';
 import type { InitState, TuiResult } from './types.js';
 
 export interface WizardData {
+  home: string;
   harnesses: Array<{ name: string; installed: boolean }>;
   providers: ProviderOption[];
   candidates: CandidateOption[];
@@ -35,6 +37,8 @@ export interface WizardData {
   storedKeys: Record<string, string>;
   /** Existing importable credentials, by gateway. Contains health metadata only. */
   credentialAvailability?: Record<string, AvailableCredentials>;
+  /** Resolved native gateway authentication, used by the device-login screen. */
+  gatewayAuth?: Record<string, NativeGatewayAuth>;
   /** Injected so tests never reach the network. */
   fetchModels?: typeof defaultFetchModels;
   initialState?: InitState;
@@ -284,6 +288,8 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
   // Walks the selected credential gateways within step 3, before models.
   const [credentialIndex, setCredentialIndex] = useState(0);
   const [enteringCredentialKey, setEnteringCredentialKey] = useState(false);
+  const [enteringLogin, setEnteringLogin] = useState(false);
+  const [credentialProblem, setCredentialProblem] = useState<string | undefined>(undefined);
   // Walks the selected BYOK providers within step 3, the way roleIndex walks
   // roles within step 5.
   const [byokIndex, setByokIndex] = useState(0);
@@ -319,6 +325,24 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         .map((provider) => provider.provider))];
       const credentialGateway = credentialGateways[credentialIndex];
       if (credentialGateway !== undefined) {
+        const credentialAuth = data.gatewayAuth?.[credentialGateway];
+        if (enteringLogin && credentialAuth !== undefined && isOauthGatewayAuth(credentialAuth)) {
+          return <LoginScreen
+            key={`credential-login-${credentialGateway}`}
+            home={data.home}
+            gateway={credentialGateway}
+            auth={credentialAuth}
+            onDone={(result) => {
+              setEnteringLogin(false);
+              if (result.ok) {
+                setCredentialProblem(undefined);
+                setCredentialIndex((current) => current + 1);
+              } else {
+                setCredentialProblem(result.problem ?? 'Login failed.');
+              }
+            }}
+          />;
+        }
         if (enteringCredentialKey) {
           return <TextInput
             key={`credential-key-${credentialGateway}`}
@@ -341,30 +365,46 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         const rows = credentialRowsFor(credentialGateway, data.credentialAvailability?.[credentialGateway] ?? {
           codex: null, opencode: null, key: null, keyEntryAvailable: true,
         });
-        return <Choice
-          key={`credential-source-${credentialGateway}`}
-          title={`Credential for ${credentialGateway}`}
-          choices={rows.map((row) => ({ value: row.source, label: `${row.label} — ${row.detail}` }))}
-          initial={state.credentialSources?.[credentialGateway] ?? 'sonata'}
-          onSubmit={(source) => {
-            setState((current) => {
-              const byokKeys = { ...current.byokKeys };
-              if (source !== 'sonata-key') delete byokKeys[credentialGateway];
-              return {
-                ...current,
-                byokKeys,
-                credentialSources: { ...current.credentialSources, [credentialGateway]: source === 'sonata-key' ? 'sonata' : source },
-              };
-            });
-            if (source === 'sonata-key') setEnteringCredentialKey(true);
-            else setCredentialIndex((current) => current + 1);
-          }}
-          onBack={() => {
-            if (credentialIndex === 0) back();
-            else setCredentialIndex((current) => current - 1);
-          }}
-          onCancel={cancel}
-        />;
+        return (
+          <Box flexDirection="column">
+            {credentialProblem !== undefined && <Text color="red">{credentialProblem}</Text>}
+            <Choice
+              key={`credential-source-${credentialGateway}`}
+              title={`Credential for ${credentialGateway}`}
+              choices={rows.map((row) => ({ value: row.source, label: `${row.label} — ${row.detail}` }))}
+              initial={state.credentialSources?.[credentialGateway] ?? 'sonata'}
+              onSubmit={(source) => {
+                setState((current) => {
+                  const byokKeys = { ...current.byokKeys };
+                  if (source !== 'sonata-key') delete byokKeys[credentialGateway];
+                  return {
+                    ...current,
+                    byokKeys,
+                    credentialSources: { ...current.credentialSources, [credentialGateway]: source === 'sonata-key' ? 'sonata' : source },
+                  };
+                });
+                setCredentialProblem(undefined);
+                if (source === 'sonata-key') {
+                  setEnteringCredentialKey(true);
+                } else if (source === 'sonata') {
+                  if (credentialAuth === undefined || !isOauthGatewayAuth(credentialAuth)) {
+                    setCredentialProblem(`Cannot log in to ${credentialGateway}: it is not an OAuth gateway.`);
+                  } else {
+                    setEnteringLogin(true);
+                  }
+                } else {
+                  setCredentialIndex((current) => current + 1);
+                }
+              }}
+              onBack={() => {
+                setCredentialProblem(undefined);
+                if (credentialIndex === 0) back();
+                else setCredentialIndex((current) => current - 1);
+              }}
+              onCancel={cancel}
+            />
+          </Box>
+        );
       }
 
       const candidates = candidatesForProviders(data.candidates, providers, state.providerKeys);

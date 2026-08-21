@@ -635,6 +635,7 @@ async function runInit(
       ? null
       : Math.floor((expiresAt * 1000 - Date.now()) / (24 * 60 * 60 * 1000));
     const data: WizardData = {
+      home: opts.home,
       harnesses: harnesses.map((h) => ({ name: h.name, installed: h.installed })),
       providers: offered.map((p) => ({ key: p.key, harness: p.harness, provider: p.provider, count: p.count })),
       candidates: allNativeCandidates.map((c) => ({ key: c.key, gateway: c.gateway, id: c.id, label: nativeLabel(c) })),
@@ -654,6 +655,7 @@ async function runInit(
         },
         (gateway) => resolveKeys([gateway], opts.home)[0] !== undefined,
       ),
+      gatewayAuth: Object.fromEntries(gatewayAuth),
       initialState,
       initialStateByScope,
     };
