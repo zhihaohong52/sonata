@@ -1,4 +1,5 @@
 import { byokCandidateKey } from '../native/models.js';
+import type { CredentialSource } from '../config.js';
 import type { InitState } from './types.js';
 
 /**
@@ -44,6 +45,61 @@ export interface CandidateOption {
 export interface PerRoleModelsValue {
   role: string;
   models: string[];
+}
+
+export interface CredentialRow {
+  source: CredentialSource | 'sonata-key';
+  label: string;
+  detail: string;
+}
+
+export interface AvailableCredentials {
+  codex: { expiresInDays: number } | null;
+  opencode: { expiresInDays: number } | null;
+  key: { source: string } | null;
+}
+
+/**
+ * Login and api-key are unconditional: neither depends on another tool being
+ * installed, so a machine with no harness at all still shows both. Only the
+ * import rows are gated on the credential actually existing — an import row
+ * that leads nowhere is the thing worth hiding.
+ */
+export function credentialRowsFor(gateway: string, have: AvailableCredentials): CredentialRow[] {
+  const rows: CredentialRow[] = [
+    { source: 'sonata', label: `Log in with ${gateway}`, detail: 'device code, no API key needed' },
+  ];
+  for (const name of ['codex', 'opencode'] as const) {
+    const found = have[name];
+    if (found === null) continue;
+    rows.push({
+      source: name,
+      label: `Import from ${name}`,
+      detail: found.expiresInDays < 0 ? 'expired — re-login in that tool' : `expires in ${found.expiresInDays}d`,
+    });
+  }
+  rows.push({ source: 'sonata-key', label: 'Enter an API key', detail: 'metered billing' });
+  return rows;
+}
+
+export type InitAction =
+  | { type: 'chooseCredentialSource'; gateway: string; source: CredentialSource }
+  | { type: 'back' };
+
+export function reduceInit(prev: { step: number; state: InitState }, action: InitAction): { step: number; state: InitState } {
+  switch (action.type) {
+    case 'chooseCredentialSource':
+      return {
+        ...prev,
+        step: prev.step,
+        state: {
+          ...prev.state,
+          credentialSources: { ...prev.state.credentialSources, [action.gateway]: action.source },
+        },
+      };
+    case 'back':
+      return { ...prev, step: Math.max(0, prev.step - 1) };
+  }
 }
 
 export function applyStep(state: InitState, step: number, value: unknown): InitState {

@@ -6,7 +6,9 @@ import {
   applyStep,
   byokProviderName,
   candidatesForProviders,
+  credentialRowsFor,
   providersForHarnesses,
+  type AvailableCredentials,
   type CandidateOption,
   type ProviderOption,
 } from './app-state.js';
@@ -31,6 +33,8 @@ export interface WizardData {
    * them in memory here exposes nothing new.
    */
   storedKeys: Record<string, string>;
+  /** Existing importable credentials, by gateway. Contains health metadata only. */
+  credentialAvailability?: Record<string, AvailableCredentials>;
   /** Injected so tests never reach the network. */
   fetchModels?: typeof defaultFetchModels;
   initialState?: InitState;
@@ -275,6 +279,8 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
   const [state, setState] = useState<InitState>(data.initialState ?? {});
   const [sameModels, setSameModels] = useState<boolean | undefined>(undefined);
   const [roleIndex, setRoleIndex] = useState(0);
+  // Walks the selected credential gateways within step 3, before models.
+  const [credentialIndex, setCredentialIndex] = useState(0);
   // Walks the selected BYOK providers within step 3, the way roleIndex walks
   // roles within step 5.
   const [byokIndex, setByokIndex] = useState(0);
@@ -287,6 +293,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     setState(data.initialStateByScope?.[scope!] ?? { configScope: scope });
     setSameModels(undefined);
     setRoleIndex(0);
+    setCredentialIndex(0);
     setStep(1);
   };
   const back = () => setStep((current) => Math.max(0, current - 1));
@@ -304,6 +311,34 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     }
     case 3: {
       const providers = providersForHarnesses(data.providers, state.harnesses);
+      const credentialGateways = [...new Set(providers
+        .filter((provider) => (state.providerKeys ?? []).includes(provider.key) && provider.harness !== 'byok')
+        .map((provider) => provider.provider))];
+      const credentialGateway = credentialGateways[credentialIndex];
+      if (credentialGateway !== undefined) {
+        const rows = credentialRowsFor(credentialGateway, data.credentialAvailability?.[credentialGateway] ?? {
+          codex: null, opencode: null, key: null,
+        });
+        return <Choice
+          key={`credential-source-${credentialGateway}`}
+          title={`Credential for ${credentialGateway}`}
+          choices={rows.map((row) => ({ value: row.source, label: `${row.label} — ${row.detail}` }))}
+          initial={state.credentialSources?.[credentialGateway] ?? 'sonata'}
+          onSubmit={(source) => {
+            setState((current) => ({
+              ...current,
+              credentialSources: { ...current.credentialSources, [credentialGateway]: source === 'sonata-key' ? 'sonata' : source },
+            }));
+            setCredentialIndex((current) => current + 1);
+          }}
+          onBack={() => {
+            if (credentialIndex === 0) back();
+            else setCredentialIndex((current) => current - 1);
+          }}
+          onCancel={cancel}
+        />;
+      }
+
       const candidates = candidatesForProviders(data.candidates, providers, state.providerKeys);
       // BYOK providers have no local catalogue, so they are not among
       // `candidates` and get their own pass below, one provider at a time.
