@@ -31,8 +31,13 @@ import { serveHealthUrl } from './serve.js';
 
 const run = promisify(execFile);
 
-function hasCredentialFrom(source: 'codex' | 'opencode', auth: NativeGatewayAuth, home: string): boolean {
-  if (auth === 'copilot-oauth') return readCopilotToken(home) !== null;
+async function hasCredentialFrom(source: 'codex' | 'opencode', auth: NativeGatewayAuth, home: string): Promise<boolean> {
+  if (auth === 'copilot-oauth') {
+    // A stored GitHub token is not the same as a usable one — see the
+    // matching check on the legacy (unsourced) copilot-oauth path below.
+    const token = readCopilotToken(home);
+    return token !== null && await copilotTokenCanExchange(token);
+  }
   return readChatGptOAuth(home, source) !== null;
 }
 
@@ -171,7 +176,7 @@ export async function cmdDoctor(
         ? (source === 'sonata' || source === 'opencode') && resolveKeyFromSource(name, home, source) !== undefined
         : source === 'sonata'
           ? existsSync(join(credentialDir(home, name), credentialFileFor(gateway.auth)))
-          : hasCredentialFrom(source, gateway.auth, home);
+          : await hasCredentialFrom(source, gateway.auth, home);
       // The fix differs by what the source actually stores: a device-login
       // credential is repaired with `sonata auth login`, but a bearer key is
       // repaired with `sonata auth add` — or, for an opencode-sourced key,

@@ -895,10 +895,15 @@ async function runInit(
       // Bearer keys and device-login OAuth credentials live in different
       // stores per source, so presence and the repair hint both branch on
       // (source, auth) rather than reusing the api-key path above.
+      // A stored GitHub token is not the same as a usable one: opencode's own
+      // login requests only `read:user`, and GitHub then refuses the Copilot
+      // exchange with a 403 — so presence alone would report a credential as
+      // healthy that `sonata serve` cannot actually use.
+      const copilotToken = auth === 'copilot-oauth' ? readCopilotToken(opts.home) : null;
       const found = source === 'sonata'
         ? existsSync(join(credentialDir(opts.home, gateway), credentialFileFor(auth)))
         : auth === 'copilot-oauth'
-          ? readCopilotToken(opts.home) !== null
+          ? copilotToken !== null && await copilotTokenCanExchange(copilotToken)
           : readChatGptOAuth(opts.home, source) !== null;
       const repair = source === 'sonata'
         ? `run \`sonata auth login ${gateway}\``
