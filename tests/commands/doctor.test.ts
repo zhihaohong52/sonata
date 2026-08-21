@@ -440,6 +440,34 @@ credential_source = "opencode"
     }
   });
 
+  it('flags an opencode Copilot token that exists but cannot exchange for a Copilot key', async () => {
+    // A stored GitHub token is not the same as a usable one: opencode's own
+    // login requests only `read:user`, so GitHub refuses the Copilot
+    // exchange. Presence alone must not be reported as a healthy credential.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-copilot-unusable-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-copilot-unusable-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways."github-copilot"]
+auth = "copilot-oauth"
+credential_source = "opencode"
+`);
+    mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+    writeFileSync(
+      join(home, '.local', 'share', 'opencode', 'auth.json'),
+      JSON.stringify({ 'github-copilot': { type: 'oauth', access: 'gho_x', refresh: 'r' } }),
+    );
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response('{}', { status: 200, headers: { 'x-oauth-scopes': 'read:user' } });
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      const text = checks.map((check) => check.detail).join('\n');
+      expect(text).toContain('github-copilot: credential from opencode');
+      expect(text).toMatch(/no credential from opencode.*log into opencode with a GitHub Copilot account/s);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('reports native serve health and key source without exposing key values', async () => {
     const { cwd, home } = setup();
     writeSonataKey(home, 'vendorx', 'super-secret-key');
