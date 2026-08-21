@@ -180,7 +180,13 @@ export async function cmdDoctor(
         ? source === 'sonata'
           ? `run \`sonata auth add ${name}\``
           : `log into opencode itself — sonata does not manage opencode credentials`
-        : `run \`sonata auth login ${name}\``;
+        : source === 'sonata'
+          ? `run \`sonata auth login ${name}\``
+          : source === 'codex'
+            ? 'log in with `codex login`'
+            : gateway.auth === 'copilot-oauth'
+              ? 'log into opencode with a GitHub Copilot account'
+              : 'log into opencode with a ChatGPT account';
       checks.push({
         name: `key source: ${name}`,
         ok: present,

@@ -291,7 +291,7 @@ credential_source = "codex"
       const { checks } = await cmdDoctor({ cwd, home });
       const text = checks.map((check) => check.detail).join('\n');
       expect(text).toContain('codex: credential from codex');
-      expect(text).toMatch(/no credential.*sonata auth login codex/s);
+      expect(text).toMatch(/no credential.*codex login/s);
       // Exactly one real check for this gateway — no duplicate/legacy sniff.
       const sourceChecks = checks.filter((c) => c.name === 'key source: codex');
       expect(sourceChecks).toHaveLength(1);
@@ -392,6 +392,49 @@ credential_source = "opencode"
         detail: 'vendorx: credential from opencode\n  ! vendorx: no credential from opencode — ' +
           'log into opencode itself — sonata does not manage opencode credentials',
       });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('points an opencode-sourced ChatGPT credential at opencode, not `sonata auth login`', async () => {
+    // Regression: the OAuth repair hint used to always say `sonata auth
+    // login`, which only repairs a sonata-managed credential — wrong for a
+    // codex-oauth gateway imported from opencode's own ChatGPT login.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-oauth-source-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-oauth-source-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.codex]
+auth = "codex-oauth"
+credential_source = "opencode"
+`);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      const text = checks.map((check) => check.detail).join('\n');
+      expect(text).toContain('codex: credential from opencode');
+      expect(text).toMatch(/no credential from opencode.*log into opencode with a ChatGPT account/s);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('points an opencode-sourced Copilot credential at opencode with the right account', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-copilot-source-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-copilot-source-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways."github-copilot"]
+auth = "copilot-oauth"
+credential_source = "opencode"
+`);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      const text = checks.map((check) => check.detail).join('\n');
+      expect(text).toContain('github-copilot: credential from opencode');
+      expect(text).toMatch(/no credential from opencode.*log into opencode with a GitHub Copilot account/s);
     } finally {
       globalThis.fetch = originalFetch;
     }
