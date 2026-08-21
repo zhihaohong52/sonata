@@ -12,7 +12,7 @@ import {
 } from './app-state.js';
 import { isAnthropicRoutedName } from '../config.js';
 import {
-  byokCandidateKey, fetchModels as defaultFetchModels, type FetchedModel,
+  byokCandidateKey, fetchModels as defaultFetchModels, type FetchModelsResult,
 } from '../native/models.js';
 import type { InitState, TuiResult } from './types.js';
 
@@ -99,40 +99,63 @@ interface ByokStepProps {
  */
 function ByokStep(props: ByokStepProps): React.ReactElement {
   const { provider, apiKey, initialIds, fetchModels, onKey, onSubmit, onBack, onCancel } = props;
-  const [models, setModels] = useState<FetchedModel[] | undefined>(undefined);
+  const [result, setResult] = useState<FetchModelsResult | undefined>(undefined);
   const [dropped, setDropped] = useState(0);
+  // Bumped on every re-entered key. Without it, retyping the *same* key changes
+  // no dependency and the effect never re-runs, which is the shape a retry
+  // usually takes: the user believes they mistyped and types it again.
+  const [attempt, setAttempt] = useState(0);
+  // Set when the user answers a rejection with "type ids anyway", so a provider
+  // that refuses to list models but works otherwise is not a dead end.
+  const [ignoreRejection, setIgnoreRejection] = useState(false);
+  // Set when they answer it with "re-enter" — shows the key prompt again over a
+  // rejection that has not been cleared yet.
+  const [retrying, setRetrying] = useState(false);
 
   useEffect(() => {
     if (apiKey === undefined) return;
     let cancelled = false;
     void fetchModels(provider.url, apiKey).then((found) => {
       if (cancelled) return;
-      // The router sends `claude-` upstream to Anthropic and parseConfig refuses
-      // such an id, so offering one would let init write a config it cannot read
-      // back. Aggregators serve plenty of them.
-      const usable = found.filter((model) => !isAnthropicRoutedName(model.id));
-      setDropped(found.length - usable.length);
-      setModels(usable);
+      if (found.outcome === 'ok') {
+        // The router sends `claude-` upstream to Anthropic and parseConfig
+        // refuses such an id, so offering one would let init write a config it
+        // cannot read back. Aggregators serve plenty of them.
+        const usable = found.models.filter((model) => !isAnthropicRoutedName(model.id));
+        setDropped(found.models.length - usable.length);
+        setResult({ outcome: 'ok', models: usable });
+      } else {
+        setResult(found);
+      }
     });
     return () => { cancelled = true; };
-  }, [apiKey, provider.url, fetchModels]);
+  }, [apiKey, provider.url, fetchModels, attempt]);
 
-  if (apiKey === undefined) {
+  const retryKey = (): void => {
+    // Clear the result too, or the stale rejection renders over the retry
+    // instead of the fetching frame.
+    setResult(undefined);
+    setIgnoreRejection(false);
+    setRetrying(false);
+    setAttempt((n) => n + 1);
+  };
+
+  if (apiKey === undefined || (result?.outcome === 'unauthorized' && retrying)) {
     return (
       <TextInput
-        key={`byok-key-${provider.name}`}
+        key={`byok-key-${provider.name}-${attempt}`}
         title={`API key for ${provider.name}`}
         hint={`${provider.url} · stored in sonata's key store, not shown again`}
         mask
         validate={(value) => value.trim() === '' ? 'A key is required to list this provider\'s models.' : undefined}
-        onSubmit={(value) => onKey(value.trim())}
+        onSubmit={(value) => { onKey(value.trim()); retryKey(); }}
         onBack={onBack}
         onCancel={onCancel}
       />
     );
   }
 
-  if (models === undefined) {
+  if (result === undefined) {
     return (
       <Box flexDirection="column">
         <Text bold>{provider.name}</Text>
@@ -141,16 +164,35 @@ function ByokStep(props: ByokStepProps): React.ReactElement {
     );
   }
 
-  if (models.length === 0) {
-    // Unreachable, not OpenAI-shaped, or a key this provider rejects — one
-    // fallback for all three, because the user's next move is the same.
+  // A rejected key is the one failure whose fix is a different key, so it gets
+  // its own screen rather than the manual-ids fallback. It offers a way past
+  // itself as well: some providers refuse to list models for a key that is
+  // perfectly good for inference, and a forced retry loop would trap that user.
+  if (result.outcome === 'unauthorized' && !ignoreRejection) {
+    return (
+      <Choice
+        key={`byok-rejected-${provider.name}`}
+        title={`${provider.name} rejected that key (HTTP ${result.status})`}
+        choices={[
+          { value: 'retry' as const, label: 'Re-enter the key' },
+          { value: 'manual' as const, label: 'Keep it and type model ids by hand' },
+        ]}
+        initial={'retry' as const}
+        onSubmit={(choice) => choice === 'retry' ? setRetrying(true) : setIgnoreRejection(true)}
+        onBack={onBack}
+        onCancel={onCancel}
+      />
+    );
+  }
+
+  if (result.outcome !== 'ok' || result.models.length === 0) {
     return (
       <TextInput
         key={`byok-ids-${provider.name}`}
         title={`Model ids for ${provider.name} (comma-separated)`}
-        hint={`could not read ${provider.url}/models — enter ids by hand`}
+        hint={hintFor(result, provider.url)}
         initial={initialIds?.join(', ')}
-        validate={(value) => parseIds(value).length === 0 ? 'Enter at least one model id.' : undefined}
+        validate={validateIds}
         onSubmit={(value) => onSubmit(parseIds(value))}
         onBack={onBack}
         onCancel={onCancel}
@@ -168,7 +210,7 @@ function ByokStep(props: ByokStepProps): React.ReactElement {
       <MultiSelect
         key={`byok-models-${provider.name}`}
         title={`Models for ${provider.name}`}
-        items={models.map((model) => ({ value: model.id, label: model.name ?? model.id, hint: model.id }))}
+        items={result.models.map((model) => ({ value: model.id, label: model.name ?? model.id, hint: model.id }))}
         initialSelected={new Set(initialIds)}
         onSubmit={onSubmit}
         onBack={onBack}
@@ -176,6 +218,28 @@ function ByokStep(props: ByokStepProps): React.ReactElement {
       />
     </Box>
   );
+}
+
+/** Says what actually happened, so the fallback is not read as a diagnosis. */
+function hintFor(result: FetchModelsResult, url: string): string {
+  switch (result.outcome) {
+    case 'unauthorized':
+      return `${url} rejected the key for listing models — enter ids by hand`;
+    case 'unreachable':
+      return `could not reach ${url} — enter ids by hand`;
+    default:
+      return `${url} did not return a model list — enter ids by hand`;
+  }
+}
+
+function validateIds(value: string): string | undefined {
+  if (parseIds(value).length > 0) return undefined;
+  // Distinguish "typed nothing" from "typed only ids sonata cannot use" —
+  // otherwise the reserved-prefix rule looks like the field ignoring input.
+  const typed = value.split(',').map((id) => id.trim()).filter((id) => id !== '');
+  return typed.length > 0
+    ? 'None of those can be used: the router reserves `claude-` for Anthropic.'
+    : 'Enter at least one model id.';
 }
 
 function parseIds(value: string): string[] {

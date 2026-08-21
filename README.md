@@ -163,9 +163,13 @@ Two things worth knowing before you pick a provider:
 
 - **Model discovery is a convention, not a guarantee.** Sonata asks the provider
   for `GET <base_url>/models`, which every provider in its list implements. If
-  yours does not answer — offline, a different shape, a key it rejects — the
-  wizard asks you to type the model ids instead. That is a fallback, not an
-  error.
+  yours does not answer — offline, or a different shape — the wizard asks you to
+  type the model ids instead, saying which of those happened. That is a
+  fallback, not an error.
+- **A rejected key gets its own screen.** If the provider answers 401 or 403,
+  sonata says so and offers to take a different key. It also offers to keep the
+  one you gave and type ids by hand, because some providers refuse to list
+  models for a key that works perfectly well for inference.
 - **`claude-*` models are not offered.** The router forwards that prefix to
   Anthropic, so a `claude-` id cannot be served through a gateway. Aggregators
   such as OpenRouter list plenty of them; sonata filters them out rather than
