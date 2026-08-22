@@ -368,6 +368,7 @@ export function configNativeCandidates(config: SonataConfig): NativeCandidate[] 
     contextWindow: model.contextWindow,
     baseUrl: config.native!.gateways[model.gateway].baseUrl,
     auth: config.native!.gateways[model.gateway].auth,
+    wireFormat: config.native!.gateways[model.gateway].wireFormat,
   }));
 }
 

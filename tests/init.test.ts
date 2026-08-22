@@ -1078,6 +1078,23 @@ context_window = 64000
     }]);
   });
 
+  it('carries wire_format through when reconstructing a candidate from an existing config', () => {
+    const config = parseConfig(`
+[native.gateways."custom"]
+auth = "api-key"
+base_url = "https://custom.example/v1"
+wire_format = "anthropic"
+[native.models."custom-model"]
+gateway = "custom"
+id = "model-id"
+context_window = 64000
+`);
+    expect(configNativeCandidates(config)).toEqual([{
+      key: 'custom-model', gateway: 'custom', id: 'model-id', contextWindow: 64000,
+      baseUrl: 'https://custom.example/v1', auth: 'api-key', wireFormat: 'anthropic',
+    }]);
+  });
+
   it('carries a codex-oauth gateway through as a candidate', () => {
     const config = parseConfig(`
 [native.gateways."codex"]
