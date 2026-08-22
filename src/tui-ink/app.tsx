@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { MultiSelect } from './components/multi-select.js';
 import { TextInput } from './components/text-input.js';
@@ -17,6 +17,7 @@ import {
   byokCandidateKey, fetchModels as defaultFetchModels, type FetchModelsResult,
 } from '../native/models.js';
 import { LoginScreen } from './components/login-screen.js';
+import { ByokStep } from './components/byok-step.js';
 import type { InitState, TuiResult } from './types.js';
 
 export interface WizardData {
@@ -83,176 +84,6 @@ function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: Choi
       <Text dimColor>↑↓ choose · enter confirm{onBack ? ' · ← back' : ''} · esc cancel</Text>
     </Box>
   );
-}
-
-interface ByokStepProps {
-  provider: { name: string; url: string };
-  /** The key already stored for this provider, or typed earlier in this run. */
-  apiKey?: string;
-  initialIds?: string[];
-  fetchModels: typeof defaultFetchModels;
-  onKey: (key: string) => void;
-  onSubmit: (ids: string[]) => void;
-  onBack: () => void;
-  onCancel: () => void;
-}
-
-/**
- * One BYOK provider: get a key if we lack one, ask the provider what it serves,
- * and let the user choose — or type ids, when it will not say.
- *
- * This is the wizard's only asynchronous step. The fetch runs in an effect and
- * the reducer never blocks on it; a `cancelled` flag keeps a late response from
- * writing into a screen the user has already left.
- */
-function ByokStep(props: ByokStepProps): React.ReactElement {
-  const { provider, apiKey, initialIds, fetchModels, onKey, onSubmit, onBack, onCancel } = props;
-  const [result, setResult] = useState<FetchModelsResult | undefined>(undefined);
-  const [dropped, setDropped] = useState(0);
-  // Bumped on every re-entered key. Without it, retyping the *same* key changes
-  // no dependency and the effect never re-runs, which is the shape a retry
-  // usually takes: the user believes they mistyped and types it again.
-  const [attempt, setAttempt] = useState(0);
-  // Set when the user answers a rejection with "type ids anyway", so a provider
-  // that refuses to list models but works otherwise is not a dead end.
-  const [ignoreRejection, setIgnoreRejection] = useState(false);
-  // Set when they answer it with "re-enter" — shows the key prompt again over a
-  // rejection that has not been cleared yet.
-  const [retrying, setRetrying] = useState(false);
-
-  useEffect(() => {
-    if (apiKey === undefined) return;
-    let cancelled = false;
-    void fetchModels(provider.url, apiKey).then((found) => {
-      if (cancelled) return;
-      if (found.outcome === 'ok') {
-        // The router sends `claude-` upstream to Anthropic and parseConfig
-        // refuses such an id, so offering one would let init write a config it
-        // cannot read back. Aggregators serve plenty of them.
-        const usable = found.models.filter((model) => !isAnthropicRoutedName(model.id));
-        setDropped(found.models.length - usable.length);
-        setResult({ outcome: 'ok', models: usable });
-      } else {
-        setResult(found);
-      }
-    });
-    return () => { cancelled = true; };
-  }, [apiKey, provider.url, fetchModels, attempt]);
-
-  const retryKey = (): void => {
-    // Clear the result too, or the stale rejection renders over the retry
-    // instead of the fetching frame.
-    setResult(undefined);
-    setIgnoreRejection(false);
-    setRetrying(false);
-    setAttempt((n) => n + 1);
-  };
-
-  if (apiKey === undefined || (result?.outcome === 'unauthorized' && retrying)) {
-    return (
-      <TextInput
-        key={`byok-key-${provider.name}-${attempt}`}
-        title={`API key for ${provider.name}`}
-        hint={`${provider.url} · stored in sonata's key store, not shown again`}
-        mask
-        validate={(value) => value.trim() === '' ? 'A key is required to list this provider\'s models.' : undefined}
-        onSubmit={(value) => { onKey(value.trim()); retryKey(); }}
-        onBack={onBack}
-        onCancel={onCancel}
-      />
-    );
-  }
-
-  if (result === undefined) {
-    return (
-      <Box flexDirection="column">
-        <Text bold>{provider.name}</Text>
-        <Text dimColor>fetching models from {provider.url}…</Text>
-      </Box>
-    );
-  }
-
-  // A rejected key is the one failure whose fix is a different key, so it gets
-  // its own screen rather than the manual-ids fallback. It offers a way past
-  // itself as well: some providers refuse to list models for a key that is
-  // perfectly good for inference, and a forced retry loop would trap that user.
-  if (result.outcome === 'unauthorized' && !ignoreRejection) {
-    return (
-      <Choice
-        key={`byok-rejected-${provider.name}`}
-        title={`${provider.name} rejected that key (HTTP ${result.status})`}
-        choices={[
-          { value: 'retry' as const, label: 'Re-enter the key' },
-          { value: 'manual' as const, label: 'Keep it and type model ids by hand' },
-        ]}
-        initial={'retry' as const}
-        onSubmit={(choice) => choice === 'retry' ? setRetrying(true) : setIgnoreRejection(true)}
-        onBack={onBack}
-        onCancel={onCancel}
-      />
-    );
-  }
-
-  if (result.outcome !== 'ok' || result.models.length === 0) {
-    return (
-      <TextInput
-        key={`byok-ids-${provider.name}`}
-        title={`Model ids for ${provider.name} (comma-separated)`}
-        hint={hintFor(result, provider.url)}
-        initial={initialIds?.join(', ')}
-        validate={validateIds}
-        onSubmit={(value) => onSubmit(parseIds(value))}
-        onBack={onBack}
-        onCancel={onCancel}
-      />
-    );
-  }
-
-  return (
-    <Box flexDirection="column">
-      {dropped > 0 && (
-        <Text dimColor>
-          {dropped} claude-* model{dropped === 1 ? '' : 's'} not shown — the router reserves that prefix
-        </Text>
-      )}
-      <MultiSelect
-        key={`byok-models-${provider.name}`}
-        title={`Models for ${provider.name}`}
-        items={result.models.map((model) => ({ value: model.id, label: model.name ?? model.id, hint: model.id }))}
-        initialSelected={new Set(initialIds)}
-        onSubmit={onSubmit}
-        onBack={onBack}
-        onCancel={onCancel}
-      />
-    </Box>
-  );
-}
-
-/** Says what actually happened, so the fallback is not read as a diagnosis. */
-function hintFor(result: FetchModelsResult, url: string): string {
-  switch (result.outcome) {
-    case 'unauthorized':
-      return `${url} rejected the key for listing models — enter ids by hand`;
-    case 'unreachable':
-      return `could not reach ${url} — enter ids by hand`;
-    default:
-      return `${url} did not return a model list — enter ids by hand`;
-  }
-}
-
-function validateIds(value: string): string | undefined {
-  if (parseIds(value).length > 0) return undefined;
-  // Distinguish "typed nothing" from "typed only ids sonata cannot use" —
-  // otherwise the reserved-prefix rule looks like the field ignoring input.
-  const typed = value.split(',').map((id) => id.trim()).filter((id) => id !== '');
-  return typed.length > 0
-    ? 'None of those can be used: the router reserves `claude-` for Anthropic.'
-    : 'Enter at least one model id.';
-}
-
-function parseIds(value: string): string[] {
-  return [...new Set(value.split(',').map((id) => id.trim()).filter((id) => id !== ''))]
-    .filter((id) => !isAnthropicRoutedName(id));
 }
 
 function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWizardProps['onDone']; onBack: () => void }): React.ReactElement {
