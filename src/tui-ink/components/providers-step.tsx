@@ -98,6 +98,8 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
   } = props;
   const [screen, setScreen] = useState<Screen>({ kind: 'menu' });
   const [problem, setProblem] = useState<string | undefined>(undefined);
+  const [pendingCustomFormat, setPendingCustomFormat] = useState<'anthropic' | undefined>(undefined);
+  const [pendingCustomKey, setPendingCustomKey] = useState<string | undefined>(undefined);
 
   const configured = configuredProviderNames(state.providerKeys ?? [], providers);
   const existingNames = [
@@ -192,7 +194,9 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
           }
           const auth = gatewayAuth[provider.provider];
           if (auth !== undefined && isOauthGatewayAuth(auth)) {
-            setScreen({ kind: 'credential-choice', provider });
+            setScreen(credentialAvailability[provider.provider]?.keyEntryAvailable
+              ? { kind: 'credential-choice', provider }
+              : { kind: 'login', provider });
           } else {
             setScreen({ kind: 'key-entry', provider });
           }
@@ -243,13 +247,7 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
         ]}
         initial={'openai' as const}
         onSubmit={(format) => {
-          onChange((current) => ({
-            ...current,
-            customProviders: [...(current.customProviders ?? []), { name, url }],
-            customWireFormats: format === 'anthropic'
-              ? { ...current.customWireFormats, [name]: 'anthropic' as const }
-              : current.customWireFormats,
-          }));
+          setPendingCustomFormat(format === 'anthropic' ? 'anthropic' : undefined);
           setScreen({ kind: 'byok', name, url });
         }}
         onBack={() => setScreen({ kind: 'custom-url', name })}
@@ -336,25 +334,47 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
 
   // screen.kind === 'byok'
   const { name, url } = screen;
+  const isCustom = !byokProviders.some((provider) => provider.name === name);
+  const apiKey = isCustom
+    ? pendingCustomKey ?? state.byokKeys?.[name] ?? storedKeys[name]
+    : state.byokKeys?.[name] ?? storedKeys[name];
   return (
     <ByokStep
       key={`providers-byok-${name}`}
       provider={{ name, url }}
-      apiKey={state.byokKeys?.[name] ?? storedKeys[name]}
+      apiKey={apiKey}
       initialIds={state.byokModels?.[name]}
       fetchModels={fetchModels}
-      onKey={(key) => onChange((current) => ({ ...current, byokKeys: { ...current.byokKeys, [name]: key } }))}
+      onKey={(key) => {
+        if (isCustom) setPendingCustomKey(key);
+        else onChange((current) => ({ ...current, byokKeys: { ...current.byokKeys, [name]: key } }));
+      }}
       onSubmit={(ids) => {
         onChange((current) => {
           const withModels = applyStep(current, 6, { provider: name, ids });
           return {
             ...withModels,
+            ...(isCustom && {
+              byokKeys: pendingCustomKey === undefined
+                ? withModels.byokKeys
+                : { ...withModels.byokKeys, [name]: pendingCustomKey },
+              customProviders: [...(withModels.customProviders ?? []), { name, url }],
+              customWireFormats: pendingCustomFormat === 'anthropic'
+                ? { ...withModels.customWireFormats, [name]: 'anthropic' as const }
+                : withModels.customWireFormats,
+            }),
             providerKeys: [...new Set([...(withModels.providerKeys ?? []), byokProviderKey(name)])],
           };
         });
+        setPendingCustomFormat(undefined);
+        setPendingCustomKey(undefined);
         setScreen({ kind: 'menu' });
       }}
-      onBack={() => setScreen({ kind: 'pick' })}
+      onBack={() => {
+        setPendingCustomFormat(undefined);
+        setPendingCustomKey(undefined);
+        setScreen({ kind: 'pick' });
+      }}
       onCancel={onCancel}
     />
   );
