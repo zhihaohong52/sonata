@@ -258,16 +258,19 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
 
   if (screen.kind === 'credential-choice') {
     const { provider } = screen;
+    const choices = [
+      { value: 'login' as const, label: 'Run OAuth login' },
+      ...(credentialAvailability[provider.provider]?.keyEntryAvailable
+        ? [{ value: 'key' as const, label: 'Enter an API key' }]
+        : []),
+    ];
     return (
       <Box flexDirection="column">
         {problem !== undefined && <Text color="red">{problem}</Text>}
         <Choice
           key={`providers-credential-choice-${provider.provider}`}
           title={`Credential for ${provider.provider}`}
-          choices={[
-            { value: 'login' as const, label: 'Run OAuth login' },
-            { value: 'key' as const, label: 'Enter an API key' },
-          ]}
+          choices={choices}
           initial={'login' as const}
           onSubmit={(choice) => {
             setProblem(undefined);
