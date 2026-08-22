@@ -22,6 +22,10 @@ export interface InitState {
   byokKeys?: Record<string, string>;
   /** BYOK provider -> the model ids chosen or typed for it. */
   byokModels?: Record<string, string[]>;
+  /** Providers typed in directly through the wizard's "Add a custom provider" flow. */
+  customProviders?: Array<{ name: string; url: string }>;
+  /** Custom-provider name -> wire format, only recorded for the non-default choice. */
+  customWireFormats?: Record<string, 'anthropic'>;
   /**
    * Gateway -> where its credential comes from. A recorded choice, unlike
    * `oauthProvidersFor`'s sniffing, which now only computes the default.

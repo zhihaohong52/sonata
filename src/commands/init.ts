@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import {
   KNOWN_ROLES, configPath, GLOBAL_CONFIG_RELATIVE, parseConfig,
   isOauthGatewayAuth, oauthGatewayBaseUrl, isAnthropicRoutedName,
-  CREDENTIAL_SOURCES, type SonataConfig, type NativeGatewayAuth, type CredentialSource,
+  CREDENTIAL_SOURCES, type SonataConfig, type NativeGatewayAuth, type NativeGatewayWireFormat, type CredentialSource,
 } from '../config.js';
 import { readChatGptOAuth, readOpencodeChatGptOAuth } from '../native/codex-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
@@ -194,6 +194,7 @@ export interface NativeCandidate {
   contextWindow: number;
   baseUrl: string;
   auth: NativeGatewayAuth;
+  wireFormat?: NativeGatewayWireFormat;
 }
 
 /**
@@ -408,12 +409,14 @@ export function nativeTomlFor(
     );
   }
 
-  const gateways = new Map<string, { baseUrl: string; auth: NativeGatewayAuth }>();
-  for (const c of allModels.values()) gateways.set(c.gateway, { baseUrl: c.baseUrl, auth: c.auth });
+  const gateways = new Map<string, { baseUrl: string; auth: NativeGatewayAuth; wireFormat?: NativeGatewayWireFormat }>();
+  for (const c of allModels.values()) gateways.set(c.gateway, {
+    baseUrl: c.baseUrl, auth: c.auth, wireFormat: c.wireFormat,
+  });
 
   const lines: string[] = [];
 
-  for (const [gateway, { baseUrl, auth }] of gateways) {
+  for (const [gateway, { baseUrl, auth, wireFormat }] of gateways) {
     lines.push(`[native.gateways.${tomlKey(gateway)}]`);
     // An OAuth gateway takes no base_url: the credential reaches only its own
     // provider's backend, and LiteLLM already knows that URL.
@@ -421,6 +424,7 @@ export function nativeTomlFor(
     else lines.push(`base_url = ${tomlKey(baseUrl)}`);
     const source = credentialSources[gateway];
     if (source !== undefined) lines.push(`credential_source = ${tomlKey(source)}`);
+    if (wireFormat === 'anthropic') lines.push(`wire_format = ${tomlKey(wireFormat)}`);
     lines.push('');
   }
 
@@ -637,13 +641,20 @@ async function runInit(
    * or every BYOK key looks up `undefined` and is filtered out silently — a
    * wizard that appears to work and writes an empty config.
    */
-  const addByokCandidates = (byokModels: Record<string, string[]>): void => {
+  const addByokCandidates = (
+    byokModels: Record<string, string[]>,
+    wireFormats: Record<string, 'anthropic'> = {},
+  ): void => {
     for (const [gateway, ids] of Object.entries(byokModels)) {
       const baseUrl = byokUrls.get(gateway);
       if (baseUrl === undefined) continue;
+      const wireFormat = wireFormats[gateway];
       for (const id of ids) {
         const key = byokCandidateKey(gateway, id);
-        nativeByKey.set(key, { key, gateway, id, contextWindow: 128000, baseUrl, auth: 'api-key' });
+        nativeByKey.set(key, {
+          key, gateway, id, contextWindow: 128000, baseUrl, auth: 'api-key',
+          ...(wireFormat !== undefined ? { wireFormat } : {}),
+        });
       }
     }
   };
@@ -709,7 +720,10 @@ async function runInit(
     // Map result.state to the variables the write path needs:
     configScope = result.state.configScope ?? 'project';
     configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
-    addByokCandidates(result.state.byokModels ?? {});
+    for (const provider of result.state.customProviders ?? []) {
+      byokUrls.set(provider.name, provider.url);
+    }
+    addByokCandidates(result.state.byokModels ?? {}, result.state.customWireFormats);
     byokKeys = result.state.byokKeys ?? {};
     for (const gateway of Object.keys(byokKeys)) {
       for (const [key, candidate] of nativeByKey) {

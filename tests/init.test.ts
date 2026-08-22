@@ -1121,6 +1121,29 @@ describe('previousAskedStep', () => {
   });
 });
 
+describe('nativeTomlFor — wire_format', () => {
+  it('emits wire_format for an anthropic-wire-format candidate', () => {
+    const toml = nativeTomlFor({
+      code: [{
+        key: 'custom-claude-clone', gateway: 'custom', id: 'claude-clone',
+        contextWindow: 128000, baseUrl: 'https://example.com/v1', auth: 'api-key',
+        wireFormat: 'anthropic',
+      }],
+    });
+    expect(toml).toMatch(/\[native\.gateways\."custom"\][\s\S]*wire_format = "anthropic"/);
+  });
+
+  it('omits wire_format for an openai (default) candidate', () => {
+    const toml = nativeTomlFor({
+      code: [{
+        key: 'custom-gpt', gateway: 'custom', id: 'gpt',
+        contextWindow: 128000, baseUrl: 'https://example.com/v1', auth: 'api-key',
+      }],
+    });
+    expect(toml).not.toContain('wire_format');
+  });
+});
+
 describe('nativeTomlFor — codex-oauth gateways', () => {
   const codexCandidate: NativeCandidate = {
     key: 'luna', gateway: 'codex', id: 'gpt-5.6-luna',
@@ -1233,6 +1256,34 @@ context_window = 128000
       cwd, home, packageRoot: '/pkg', detect, scope: 'skip',
       mcpRunner: () => ({ ok: true, output: 'Added' }), write: () => {},
     })).rejects.toThrow(/auth = "api-key".*cannot take its credential from codex/);
+  });
+});
+
+describe('cmdInit — custom provider wire format', () => {
+  it('writes wire_format for a custom provider added through the wizard', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'init-custom-provider-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'init-custom-provider-home-'));
+    const detect = makeDetect();
+    tuiMocks.interactive = true;
+    tuiMocks.result = {
+      cancelled: false,
+      state: {
+        configScope: 'project',
+        harnesses: [],
+        providerKeys: ['byok/my-proxy'],
+        nativeKeys: ['my-proxy-proxy-model'],
+        roles: ['code'],
+        perRoleModels: { code: ['my-proxy-proxy-model'] },
+        byokKeys: { 'my-proxy': 'sk-test' },
+        byokModels: { 'my-proxy': ['proxy-model'] },
+        customProviders: [{ name: 'my-proxy', url: 'https://my-proxy.example.com/v1' }],
+        customWireFormats: { 'my-proxy': 'anthropic' },
+      },
+    };
+    await cmdInit({ cwd, home, packageRoot: '/pkg', yes: false, detect, scope: 'skip', write: () => {} });
+    const written = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
+    expect(written).toMatch(/\[native\.gateways\."my-proxy"\][\s\S]*base_url = "https:\/\/my-proxy\.example\.com\/v1"[\s\S]*wire_format = "anthropic"/);
+    expect(written).toContain('id = "proxy-model"');
   });
 });
 
