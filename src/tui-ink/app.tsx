@@ -4,7 +4,6 @@ import { MultiSelect } from './components/multi-select.js';
 import { ProvidersStep } from './components/providers-step.js';
 import {
   applyStep,
-  byokProviderName,
   candidatesForProviders,
   providersForHarnesses,
   type AvailableCredentials,
@@ -12,9 +11,7 @@ import {
   type ProviderOption,
 } from './app-state.js';
 import { type NativeGatewayAuth } from '../config.js';
-import {
-  byokCandidateKey, fetchModels as defaultFetchModels, type FetchModelsResult,
-} from '../native/models.js';
+import { byokCandidateKey, fetchModels as defaultFetchModels } from '../native/models.js';
 import type { InitState, TuiResult } from './types.js';
 
 export interface WizardData {
