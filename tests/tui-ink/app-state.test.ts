@@ -4,7 +4,11 @@ import {
   byokProviderKey,
   byokProviderName,
   candidatesForProviders,
-  credentialRowsFor,
+  addProviderCatalog,
+  configuredProviderNames,
+  importableProviders,
+  validateCustomProviderName,
+  validateProviderUrl,
   providersForHarnesses,
   reduceInit,
   type CandidateOption,
@@ -147,40 +151,102 @@ describe('BYOK providers', () => {
   });
 });
 
-describe('credential source step', () => {
-  it('always offers login and api-key, even with no harness credentials', () => {
-    const rows = credentialRowsFor('openai', { codex: null, opencode: null, key: null, keyEntryAvailable: true });
-    expect(rows.map((r) => r.source)).toEqual(['sonata', 'sonata-key']);
+describe('importableProviders', () => {
+  const providers: ProviderOption[] = [
+    { key: 'opencode-openai', harness: 'opencode', provider: 'openai', count: 2 },
+    { key: 'codex-codex', harness: 'codex', provider: 'codex', count: 1 },
+    { key: 'byok/groq', harness: 'byok', provider: 'groq', count: 0 },
+  ];
+
+  it('keeps only providers with a detected codex or opencode credential', () => {
+    const availability = {
+      openai: { codex: { expiresInDays: 5 }, opencode: null, key: null, keyEntryAvailable: true },
+      codex: { codex: null, opencode: null, key: null, keyEntryAvailable: true },
+      groq: { codex: null, opencode: { expiresInDays: 3 }, key: null, keyEntryAvailable: true },
+    };
+    expect(importableProviders(providers, availability).map((p) => p.provider)).toEqual(['openai', 'groq']);
   });
 
-  it('adds an import row only when that credential exists', () => {
-    const rows = credentialRowsFor('openai', { codex: { expiresInDays: 6 }, opencode: null, key: null, keyEntryAvailable: true });
-    expect(rows.map((r) => r.source)).toContain('codex');
-    expect(rows.find((r) => r.source === 'codex')!.detail).toContain('6d');
+  it('is empty when nothing has a detected credential', () => {
+    const availability = {
+      openai: { codex: null, opencode: null, key: null, keyEntryAvailable: true },
+    };
+    expect(importableProviders(providers, availability)).toEqual([]);
   });
 
-  it('lists an unhealthy credential with its problem rather than hiding it', () => {
-    // "codex has one but it expired" is the answer to a question the user is
-    // about to ask.
-    const rows = credentialRowsFor('openai', { codex: { expiresInDays: -1 }, opencode: null, key: null, keyEntryAvailable: true });
-    expect(rows.find((r) => r.source === 'codex')!.detail).toMatch(/expired/);
+  it('dedupes by provider name across multiple harness entries', () => {
+    const dup: ProviderOption[] = [
+      { key: 'opencode-openai', harness: 'opencode', provider: 'openai', count: 2 },
+      { key: 'pi-openai', harness: 'pi', provider: 'openai', count: 1 },
+    ];
+    const availability = { openai: { codex: { expiresInDays: 5 }, opencode: null, key: null, keyEntryAvailable: true } };
+    expect(importableProviders(dup, availability).map((p) => p.key)).toEqual(['opencode-openai']);
+  });
+});
+
+describe('addProviderCatalog', () => {
+  const providers: ProviderOption[] = [
+    { key: 'opencode-openai', harness: 'opencode', provider: 'openai', count: 2 },
+    { key: 'codex-codex', harness: 'codex', provider: 'codex', count: 1 },
+    { key: 'byok/groq', harness: 'byok', provider: 'groq', count: 0 },
+  ];
+
+  it('excludes already-configured gateways', () => {
+    expect(addProviderCatalog(providers, ['openai']).map((p) => p.provider)).toEqual(['codex', 'groq']);
   });
 
-  it('distinguishes an unknown expiry from an imminent expiration', () => {
-    const rows = credentialRowsFor('openai', { codex: { expiresInDays: null }, opencode: null, key: null, keyEntryAvailable: true });
-    expect(rows.find((r) => r.source === 'codex')!.detail).toBe('expiry unknown');
+  it('dedupes by provider name and sorts alphabetically', () => {
+    const dup: ProviderOption[] = [...providers, { key: 'pi-openai', harness: 'pi', provider: 'openai', count: 3 }];
+    expect(addProviderCatalog(dup, []).map((p) => p.provider)).toEqual(['codex', 'groq', 'openai']);
+  });
+});
+
+describe('configuredProviderNames', () => {
+  const providers: ProviderOption[] = [
+    { key: 'opencode-openai', harness: 'opencode', provider: 'openai', count: 2 },
+  ];
+
+  it('resolves a catalogued key through the provider list', () => {
+    expect(configuredProviderNames(['opencode-openai'], providers)).toEqual(['openai']);
   });
 
-  it('hides the api-key row for an OAuth-only gateway with no known base URL', () => {
-    const rows = credentialRowsFor('work-openai', { codex: { expiresInDays: 6 }, opencode: null, key: null, keyEntryAvailable: false });
-    expect(rows.map((r) => r.source)).not.toContain('sonata-key');
-    expect(rows.map((r) => r.source)).toContain('codex');
+  it('resolves a byok/custom key through byokProviderName', () => {
+    expect(configuredProviderNames(['byok/my-proxy'], providers)).toEqual(['my-proxy']);
   });
 
-  it('records the chosen source in state and allows going back', () => {
-    let state = reduceInit({ step: 3, state: {} }, { type: 'chooseCredentialSource', gateway: 'openai', source: 'codex' });
-    expect(state.state.credentialSources).toEqual({ openai: 'codex' });
-    state = reduceInit(state, { type: 'back' });
-    expect(state.step).toBe(2);
+  it('drops a key matching neither', () => {
+    expect(configuredProviderNames(['config/ghost'], providers)).toEqual([]);
+  });
+});
+
+describe('validateCustomProviderName', () => {
+  it('requires a non-empty name', () => {
+    expect(validateCustomProviderName('  ', [])).toMatch(/required/);
+  });
+
+  it('rejects a name colliding case-insensitively with an existing provider', () => {
+    expect(validateCustomProviderName('OpenAI', ['openai'])).toMatch(/already a provider/);
+  });
+
+  it('accepts a unique name', () => {
+    expect(validateCustomProviderName('my-proxy', ['openai', 'codex'])).toBeUndefined();
+  });
+});
+
+describe('validateProviderUrl', () => {
+  it('requires a non-empty URL', () => {
+    expect(validateProviderUrl('')).toMatch(/required/);
+  });
+
+  it('rejects a non-URL string', () => {
+    expect(validateProviderUrl('not a url')).toMatch(/https:\/\//);
+  });
+
+  it('rejects a non-http(s) scheme', () => {
+    expect(validateProviderUrl('ftp://example.com')).toMatch(/http:\/\/ or https:\/\//);
+  });
+
+  it('accepts a well-formed https URL', () => {
+    expect(validateProviderUrl('https://example.com/v1')).toBeUndefined();
   });
 });
