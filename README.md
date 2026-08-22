@@ -96,8 +96,9 @@ sonata init
 `sonata init` detects your environment, reports anything broken with the command
 that fixes it, and asks which providers, models and roles you want.
 
-The same model id is often served by several providers, and they are different
-choices — different routing, different billing. So you pick a provider first:
+Provider setup is a menu, modeled on opencode's own `/connect`: bulk-import
+everything you're already logged into elsewhere, or add providers one at a
+time — including one sonata has never heard of.
 
 ```
   ███████╗ ██████╗ ███╗   ██╗ █████╗ ████████╗ █████╗
@@ -110,23 +111,54 @@ choices — different routing, different billing. So you pick a provider first:
   foreign-model subagents for Claude Code
 
   ✓ tmux 3.7b
-  ✓ opencode 1.18.16 · 496 models
-  · pi not installed
+  ✓ opencode 1.18.19 · 520 models
+  ✓ codex codex-cli 0.149.0 · 6 models
 
-  Providers
+  Set up providers
+  ❯ Import from other harnesses
+    Add provider
+
+  ↑↓ choose · enter confirm · ← back · esc cancel
+```
+
+**Import from other harnesses** bulk-selects providers your installed
+harnesses are already authenticated for — nothing to type, nothing to
+re-enter:
+
+```
+  Import from other harnesses
 
   filter: █
 
-  ❯ ◉ opencode · openai        · 13 models
-    ○ opencode · opencode-go   · 18 models
-    ○ opencode · openrouter    · 341 models
-    ○ pi · opencode-go         · 12 models
+  ❯ ○ codex     · expires in 8d
+    ○ openai    · expires in 8d
 
-  9 of 9 · space toggle · type to filter · enter confirm · esc cancel
+  2 of 2 · space toggle · type to filter · enter confirm · esc cancel
 ```
 
-then the models within them. Long lists scroll and filter as you type, because
-one provider alone can offer several hundred:
+**Add provider** searches the merged catalogue of every provider a harness
+knows about plus ~30 well-known BYOK providers — or lets you type in one
+sonata has never seen:
+
+```
+  Add provider
+
+  filter: █
+
+  ❯ acme              · opencode
+    anthropic           · opencode
+    codex               · codex
+    deepseek            · byok
+    ⋮
+    Add a custom provider…
+
+  38 of 38 · ↑↓ choose · type to filter · enter confirm · ← back · esc cancel
+```
+
+Picking a known provider offers **Run OAuth login** (for `codex` and
+`github-copilot`, the two providers sonata can authenticate on its own — see
+[Native path](#native-path)) or **Enter an API key**. Picking a
+harness-catalogued provider then shows its models to select from:
 
 ```
   Models to enable
@@ -155,9 +187,13 @@ sonata init --yes --providers opencode/openai --models opencode-openai-gpt-5.6-s
 
 ### BYOK (bring your own key)
 
-Sonata does not need a harness. `sonata init` lists ~30 well-known providers
-alongside anything your harnesses discovered; pick one, enter its API key, and
-choose from the models it reports.
+Sonata does not need a harness. **Add provider** lists ~30 well-known
+providers alongside anything your harnesses discovered; pick one, enter its
+API key, and choose from the models it reports. A provider not on that
+list — an internal proxy, a self-hosted endpoint — doesn't need to be:
+**Add a custom provider…**, at the bottom of that same search list, asks for
+a name, a base URL, and whether it speaks OpenAI's or Anthropic's wire
+format, then drops into the same key-entry flow.
 
 The key is stored in sonata's own key store — never in `sonata.toml`, never in
 an agent file, and never on the command line. It is written only after you
