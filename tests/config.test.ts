@@ -79,6 +79,52 @@ plan = ["a"]
   });
 });
 
+describe('native gateway wire_format', () => {
+  it('parses wire_format = "anthropic" on an api-key gateway', () => {
+    const config = parseConfig(`
+[native.gateways.custom]
+auth = "api-key"
+base_url = "https://example.com/v1"
+wire_format = "anthropic"
+`);
+    expect(config.native!.gateways.custom.wireFormat).toBe('anthropic');
+  });
+
+  it('defaults to no wireFormat when absent, unchanged from today', () => {
+    const config = parseConfig(`
+[native.gateways.custom]
+auth = "api-key"
+base_url = "https://example.com/v1"
+`);
+    expect(config.native!.gateways.custom.wireFormat).toBeUndefined();
+  });
+
+  it('refuses wire_format on an unknown value', () => {
+    expect(() => parseConfig(`
+[native.gateways.custom]
+auth = "api-key"
+base_url = "https://example.com/v1"
+wire_format = "grpc"
+`)).toThrow(/unknown wire_format "grpc".*openai, anthropic/s);
+  });
+
+  it('refuses wire_format on a codex-oauth gateway', () => {
+    expect(() => parseConfig(`
+[native.gateways.codex]
+auth = "codex-oauth"
+wire_format = "anthropic"
+`)).toThrow(/codex-oauth, so it cannot set wire_format/);
+  });
+
+  it('refuses wire_format on a copilot-oauth gateway', () => {
+    expect(() => parseConfig(`
+[native.gateways."github-copilot"]
+auth = "copilot-oauth"
+wire_format = "anthropic"
+`)).toThrow(/copilot-oauth, so it cannot set wire_format/);
+  });
+});
+
 describe('dispatch window', () => {
   it('defaults to 1500 seconds, inside the 30-minute MCP idle window', () => {
     const c = parseConfig(`

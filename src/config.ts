@@ -37,6 +37,10 @@ export type NativeGatewayAuth = 'api-key' | 'codex-oauth' | 'copilot-oauth';
 
 export const NATIVE_GATEWAY_AUTHS: readonly NativeGatewayAuth[] = ['api-key', 'codex-oauth', 'copilot-oauth'];
 
+export type NativeGatewayWireFormat = 'openai' | 'anthropic';
+
+export const NATIVE_GATEWAY_WIRE_FORMATS: readonly NativeGatewayWireFormat[] = ['openai', 'anthropic'];
+
 /**
  * Where a gateway's credential comes from. Absent means "resolve as today":
  * `resolveKeys`'s fixed precedence for keys, `readChatGptOAuth`'s for OAuth.
@@ -84,6 +88,7 @@ export interface NativeGatewayConfig {
   baseUrl: string;
   auth: NativeGatewayAuth;
   credentialSource?: CredentialSource;
+  wireFormat?: NativeGatewayWireFormat;
 }
 export interface NativeConfig {
   models: Record<string, NativeModelConfig>;
@@ -227,6 +232,24 @@ export function parseConfig(text: string): SonataConfig {
           );
         }
       }
+      let wireFormat: NativeGatewayWireFormat | undefined;
+      if (d.wire_format !== undefined) {
+        const rawFormat = d.wire_format;
+        if (typeof rawFormat !== 'string' || !NATIVE_GATEWAY_WIRE_FORMATS.includes(rawFormat as NativeGatewayWireFormat)) {
+          throw new Error(
+            `sonata.toml: native gateway "${name}" has unknown wire_format "${String(rawFormat)}". ` +
+            `Known: ${NATIVE_GATEWAY_WIRE_FORMATS.join(', ')}`,
+          );
+        }
+        // OAuth gateway wire formats are fixed by their auth provider.
+        if (isOauthGatewayAuth(auth)) {
+          throw new Error(
+            `sonata.toml: native gateway "${name}" is ${auth}, so it cannot set wire_format — ` +
+            'that credential\'s wire format is fixed by its auth kind. Remove wire_format.',
+          );
+        }
+        wireFormat = rawFormat as NativeGatewayWireFormat;
+      }
       // An OAuth gateway is addressed by LiteLLM's own provider, which knows the
       // URL; accepting one here would only let a config claim a base URL that is
       // never used — or worse, name the metered endpoint the credential cannot
@@ -246,7 +269,7 @@ export function parseConfig(text: string): SonataConfig {
       if (typeof d.base_url !== 'string') {
         throw new Error(`sonata.toml: native gateway "${name}" needs string "base_url"`);
       }
-      gateways[name] = { baseUrl: d.base_url, auth, credentialSource };
+      gateways[name] = { baseUrl: d.base_url, auth, credentialSource, wireFormat };
     }
 
     const nativeModels: Record<string, NativeModelConfig> = {};
