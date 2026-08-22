@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .sonata/
+.superpowers/
 
 # Generated per-user by `sonata init` (contains absolute paths)
 .claude/settings.json
