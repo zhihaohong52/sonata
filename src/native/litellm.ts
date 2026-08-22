@@ -47,6 +47,16 @@ export function litellmConfig(native: NativeConfig, masterKey: string): LiteLLMC
         litellm_params: { model: `github_copilot/${model.id}` },
       };
     }
+    if (native.gateways[model.gateway].wireFormat === 'anthropic') {
+      return {
+        model_name: modelName,
+        litellm_params: {
+          model: `anthropic/${model.id}`,
+          api_base: native.gateways[model.gateway].baseUrl,
+          api_key: `os.environ/${envVarForGateway(model.gateway)}`,
+        },
+      };
+    }
     return {
       model_name: modelName,
       litellm_params: {
