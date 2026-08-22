@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { envVarForGateway, litellmConfig } from '../../src/native/litellm.js';
-import { CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL } from '../../src/config.js';
+import { CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL, type NativeConfig } from '../../src/config.js';
 
 describe('LiteLLM config', () => {
   it('emits one model_list entry per native model, keyed by env, never the key itself', () => {
@@ -77,6 +77,40 @@ describe('LiteLLM config — codex-oauth gateways', () => {
     expect(byName['ds'].litellm_params.model).toBe('openai/deepseek-v4-flash-0731');
     expect(byName['ds'].litellm_params.api_key).toBe('os.environ/SONATA_KEY_ACME');
     expect(byName['ds'].model_info).toBeUndefined();
+  });
+});
+
+describe('LiteLLM config — anthropic wire format', () => {
+  const native: NativeConfig = {
+    models: { 'custom-claude-clone': { gateway: 'custom', id: 'claude-clone', contextWindow: 128000 } },
+    gateways: { custom: { baseUrl: 'https://example.com/v1', auth: 'api-key', wireFormat: 'anthropic' } },
+    ports: { router: 4100, litellm: 4000 },
+    generate: {},
+  };
+
+  it('routes through the anthropic custom_llm_provider instead of openai', () => {
+    const config = litellmConfig(native, 'k');
+    expect(config.model_list[0]!.litellm_params.model).toBe('anthropic/claude-clone');
+  });
+
+  it('still passes api_base and api_key, unlike the OAuth branches', () => {
+    const config = litellmConfig(native, 'k');
+    expect(config.model_list[0]!.litellm_params.api_base).toBe('https://example.com/v1');
+    expect(config.model_list[0]!.litellm_params.api_key).toBe('os.environ/SONATA_KEY_CUSTOM');
+  });
+
+  it('sets no mode override — only codex-oauth needs one', () => {
+    const config = litellmConfig(native, 'k');
+    expect(config.model_list[0]!.model_info).toBeUndefined();
+  });
+
+  it('leaves an absent wire_format on the openai/<id> path, unchanged', () => {
+    const openaiNative: NativeConfig = {
+      ...native,
+      gateways: { custom: { baseUrl: 'https://example.com/v1', auth: 'api-key' } },
+    };
+    const config = litellmConfig(openaiNative, 'k');
+    expect(config.model_list[0]!.litellm_params.model).toBe('openai/claude-clone');
   });
 });
 
