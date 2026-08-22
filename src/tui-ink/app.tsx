@@ -143,7 +143,10 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         fetchModels={data.fetchModels ?? defaultFetchModels}
         state={state}
         onChange={setState}
-        onContinue={() => setStep(3)}
+        onContinue={() => {
+          const candidates = candidatesForProviders(data.candidates, providers, state.providerKeys);
+          setStep(candidates.length > 0 ? 3 : 4);
+        }}
         onBack={back}
         onCancel={cancel}
       />;
