@@ -109,7 +109,7 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
   ];
 
   if (screen.kind === 'menu') {
-    const importable = importableProviders(providers, credentialAvailability);
+    const importable = importableProviders(providers, credentialAvailability, configured);
     const choices: Array<{ value: 'import' | 'add' | 'continue'; label: string }> = [];
     if (importable.length > 0) choices.push({ value: 'import', label: 'Import from other harnesses' });
     choices.push({ value: 'add', label: 'Add provider' });
@@ -136,7 +136,7 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
   }
 
   if (screen.kind === 'import') {
-    const importable = importableProviders(providers, credentialAvailability);
+    const importable = importableProviders(providers, credentialAvailability, configured);
     return (
       <MultiSelect
         key="providers-import"

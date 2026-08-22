@@ -146,11 +146,13 @@ export function candidatesForProviders(candidates: CandidateOption[], providers:
 export function importableProviders(
   providers: ProviderOption[],
   availability: Record<string, AvailableCredentials>,
+  configuredGateways: readonly string[] = [],
 ): ProviderOption[] {
+  const configured = new Set(configuredGateways);
   const seen = new Set<string>();
   const out: ProviderOption[] = [];
   for (const provider of providers) {
-    if (seen.has(provider.provider)) continue;
+    if (configured.has(provider.provider) || seen.has(provider.provider)) continue;
     const have = availability[provider.provider];
     if (have === undefined || (have.codex === null && have.opencode === null)) continue;
     seen.add(provider.provider);
