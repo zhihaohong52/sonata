@@ -47,12 +47,6 @@ export interface PerRoleModelsValue {
   models: string[];
 }
 
-export interface CredentialRow {
-  source: CredentialSource | 'sonata-key';
-  label: string;
-  detail: string;
-}
-
 export interface AvailableCredentials {
   codex: { expiresInDays: number | null } | null;
   opencode: { expiresInDays: number | null } | null;
@@ -66,35 +60,6 @@ export interface AvailableCredentials {
    * fails after the wizard has already exited.
    */
   keyEntryAvailable: boolean;
-}
-
-/**
- * Login is unconditional: it doesn't depend on another tool being installed,
- * so a machine with no harness at all still shows it. Import rows are gated
- * on the credential actually existing, and the api-key row is gated on
- * `keyEntryAvailable` — a row that leads nowhere is the thing worth hiding.
- */
-export function credentialRowsFor(gateway: string, have: AvailableCredentials): CredentialRow[] {
-  const rows: CredentialRow[] = [
-    { source: 'sonata', label: `Log in with ${gateway}`, detail: 'device code, no API key needed' },
-  ];
-  for (const name of ['codex', 'opencode'] as const) {
-    const found = have[name];
-    if (found === null) continue;
-    rows.push({
-      source: name,
-      label: `Import from ${name}`,
-      detail: found.expiresInDays === null
-        ? 'expiry unknown'
-        : found.expiresInDays < 0
-          ? 'expired — re-login in that tool'
-          : `expires in ${found.expiresInDays}d`,
-    });
-  }
-  if (have.keyEntryAvailable) {
-    rows.push({ source: 'sonata-key', label: 'Enter an API key', detail: 'metered billing' });
-  }
-  return rows;
 }
 
 export type InitAction =
@@ -171,4 +136,81 @@ export function candidatesForProviders(candidates: CandidateOption[], providers:
     providers.filter((provider) => selectedKeys.has(provider.key)).map((provider) => provider.provider),
   );
   return candidates.filter((candidate) => gateways.has(candidate.gateway));
+}
+
+/**
+ * Providers with an actually detected codex or opencode credential — the
+ * bulk-import screen's contents. A harness's model catalogue listing a
+ * provider is not the same as a credential existing for it.
+ */
+export function importableProviders(
+  providers: ProviderOption[],
+  availability: Record<string, AvailableCredentials>,
+): ProviderOption[] {
+  const seen = new Set<string>();
+  const out: ProviderOption[] = [];
+  for (const provider of providers) {
+    if (seen.has(provider.provider)) continue;
+    const have = availability[provider.provider];
+    if (have === undefined || (have.codex === null && have.opencode === null)) continue;
+    seen.add(provider.provider);
+    out.push(provider);
+  }
+  return out;
+}
+
+/**
+ * The Add-provider search list: every known provider not already configured
+ * in this run, deduped by name (a provider can appear once per harness that
+ * knows it) and sorted for a stable, scannable list.
+ */
+export function addProviderCatalog(
+  providers: ProviderOption[],
+  configuredGateways: readonly string[],
+): ProviderOption[] {
+  const configured = new Set(configuredGateways);
+  const seen = new Set<string>();
+  const out: ProviderOption[] = [];
+  for (const provider of providers) {
+    if (configured.has(provider.provider) || seen.has(provider.provider)) continue;
+    seen.add(provider.provider);
+    out.push(provider);
+  }
+  return out.sort((a, b) => a.provider.localeCompare(b.provider));
+}
+
+/**
+ * The gateway names already configured in this run, resolved from
+ * `providerKeys` — a catalogued provider's key resolves through the provider
+ * list, a byok/custom provider's key resolves through `byokProviderName`.
+ */
+export function configuredProviderNames(providerKeys: readonly string[], providers: ProviderOption[]): string[] {
+  const byKey = new Map(providers.map((p) => [p.key, p.provider]));
+  return providerKeys
+    .map((key) => byokProviderName(key) ?? byKey.get(key))
+    .filter((name): name is string => name !== undefined);
+}
+
+export function validateCustomProviderName(name: string, existingNames: readonly string[]): string | undefined {
+  const trimmed = name.trim();
+  if (trimmed === '') return 'A name is required.';
+  if (existingNames.some((existing) => existing.toLowerCase() === trimmed.toLowerCase())) {
+    return `"${trimmed}" is already a provider — pick a different name.`;
+  }
+  return undefined;
+}
+
+export function validateProviderUrl(url: string): string | undefined {
+  const trimmed = url.trim();
+  if (trimmed === '') return 'A base URL is required.';
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return 'Enter a full URL, including https://.';
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return 'The URL must start with http:// or https://.';
+  }
+  return undefined;
 }
