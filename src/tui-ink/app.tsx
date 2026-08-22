@@ -174,8 +174,11 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         onCancel={cancel}
       />;
     }
-    case 4:
-      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={back} onCancel={cancel} filterable={false} />;
+    case 4: {
+      const providers = providersForHarnesses(data.providers, state.harnesses);
+      const candidates = candidatesForProviders(data.candidates, providers, state.providerKeys);
+      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={() => setStep(candidates.length > 0 ? 3 : 2)} onCancel={cancel} filterable={false} />;
+    }
     case 5: {
       const roles = state.roles ?? [];
       if (sameModels === undefined) {
