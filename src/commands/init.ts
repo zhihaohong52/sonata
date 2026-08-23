@@ -551,21 +551,28 @@ async function runInit(
   // API key. Writing such a provider with a metered base URL produces a gateway
   // that authenticates and is then refused for quota, which reads to the user as
   // a missing key. Record how each provider actually authenticates instead.
-  // Copilot needs one extra question answered before it can be offered: whether
-  // the stored GitHub token carries the `copilot` scope. opencode requests only
-  // `read:user`, so the exchange 403s and LiteLLM drops the model — offering it
-  // would write a config that fails at first use with an unrelated-looking
-  // error. Fails closed, so an offline machine simply does not offer Copilot.
+  // opencode's stored GitHub token usually cannot mint a Copilot key: opencode
+  // requests only `read:user`, so the exchange 403s and LiteLLM drops the
+  // model. That is a property of *opencode's specific credential*, not of the
+  // github-copilot gateway itself — the gateway is always OAuth-authenticated,
+  // and "Add provider" can still run its own device-flow login (which asks
+  // for the `copilot` scope directly) independent of opencode's token. So
+  // `copilotUsable` gates only whether opencode's token is offered for
+  // *import* — it must not stop the gateway from being recognized as OAuth,
+  // or the models opencode already lists for it would be filtered out of the
+  // candidate set entirely (nativeCandidatesFrom drops any provider absent
+  // from both providerBaseUrls and oauthProviders), leaving "Add provider"'s
+  // fresh login with nothing to select afterward.
   const copilotToken = readCopilotToken(opts.home);
   const copilotUsable = copilotToken !== null
     && await copilotTokenCanExchange(copilotToken);
   if (copilotToken !== null && !copilotUsable) {
-    out('  ! github-copilot: the stored token cannot mint a Copilot key ' +
-        '(needs the `copilot` scope) — not offering its models');
+    out('  ! github-copilot: the stored opencode token cannot mint a Copilot key ' +
+        '(needs the `copilot` scope) — not importable from opencode; use Add provider to log in directly');
   }
 
   const oauthProviders = oauthProvidersFor(allRefs, opts.home, {
-    copilot: () => (copilotUsable ? copilotToken : null),
+    copilot: () => copilotToken,
   });
   const gatewayAuth = new Map<string, NativeGatewayAuth>();
   for (const config of Object.values(configsByScope)) {
@@ -694,7 +701,10 @@ async function runInit(
         {
           codex: codexCredential === null ? null : { expiresInDays: daysUntil(codexCredential.expires_at) },
           opencode: opencodeCredential === null ? null : { expiresInDays: daysUntil(opencodeCredential.expires_at) },
-          copilot: copilotToken === null ? null : { expiresInDays: null },
+          // Unlike the `oauthProviders` call above, this specifically reports
+          // whether *opencode's* token is importable — so it stays gated on
+          // exchangeability, not mere presence.
+          copilot: copilotUsable ? { expiresInDays: null } : null,
         },
         (gateway) => resolveKeys([gateway], opts.home)[0] !== undefined,
       ),
