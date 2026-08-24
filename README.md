@@ -145,7 +145,7 @@ sonata has never seen:
 
   filter: █
 
-  ❯ acme              · opencode
+  ❯ acme                · opencode
     anthropic           · opencode
     codex               · codex
     deepseek            · byok
