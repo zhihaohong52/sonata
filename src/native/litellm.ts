@@ -16,7 +16,7 @@ export interface LiteLLMModelConfig {
 
 export interface LiteLLMConfig {
   model_list: LiteLLMModelConfig[];
-  litellm_settings: { drop_params: true };
+  litellm_settings: { drop_params: true; use_chat_completions_url_for_anthropic_messages: true };
   general_settings: { master_key: string };
 }
 
@@ -69,7 +69,16 @@ export function litellmConfig(native: NativeConfig, masterKey: string): LiteLLMC
 
   return {
     model_list: modelList,
-    litellm_settings: { drop_params: true },
+    // LiteLLM 1.82+ silently routes any `openai/<id>` model hit through its
+    // Anthropic /v1/messages passthrough to the OpenAI Responses API rather
+    // than chat/completions (see _should_route_to_responses_api in
+    // llms/anthropic/experimental_pass_through/messages/handler.py). Every
+    // api-key gateway sonata generates uses `openai/<id>`, and not every
+    // OpenAI-compatible backend implements the Responses API — acme's own
+    // proxy rejects the `output_text` content-block type Responses mode uses
+    // to replay a prior assistant turn, breaking any multi-turn conversation.
+    // This flag is LiteLLM's own documented opt-out.
+    litellm_settings: { drop_params: true, use_chat_completions_url_for_anthropic_messages: true },
     general_settings: { master_key: masterKey },
   };
 }

@@ -26,6 +26,20 @@ describe('LiteLLM config', () => {
     expect(JSON.stringify(cfg)).not.toContain('sk-master-value');
   });
 
+  it('opts every api-key gateway out of LiteLLM\'s Responses-API routing for /v1/messages', () => {
+    // Not every openai-compatible backend implements the Responses API —
+    // acme's own proxy 400s on it (rejects the `output_text` content
+    // type Responses mode uses to replay a prior assistant turn). LiteLLM
+    // silently opts `openai/<id>` models into that path unless this is set.
+    const cfg = litellmConfig({
+      models: { 'deepseek-v4-flash': { gateway: 'acme', id: 'deepseek-v4-flash-0731', contextWindow: 128000 } },
+      gateways: { acme: { baseUrl: 'https://gateway.acme.example/v1', auth: 'api-key' } },
+      ports: { router: 4100, litellm: 4000 },
+      generate: {},
+    }, 'sk-master');
+    expect(cfg.litellm_settings.use_chat_completions_url_for_anthropic_messages).toBe(true);
+  });
+
   it('maps a gateway name to an env var', () => {
     expect(envVarForGateway('acme')).toBe('SONATA_KEY_ACME');
     expect(envVarForGateway('open-router')).toBe('SONATA_KEY_OPEN_ROUTER');
