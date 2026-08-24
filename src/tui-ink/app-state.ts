@@ -137,9 +137,13 @@ export function candidatesForProviders(candidates: CandidateOption[], providers:
 }
 
 /**
- * Providers with an actually detected codex or opencode credential — the
- * bulk-import screen's contents. A harness's model catalogue listing a
- * provider is not the same as a credential existing for it.
+ * Providers with an actually detected credential — the bulk-import screen's
+ * contents. A harness's model catalogue listing a provider is not the same as
+ * a credential existing for it. Covers both a codex/opencode OAuth grant and a
+ * plain API key sitting in another harness's own store (e.g. opencode's
+ * `auth.json`): the latter is resolved live at request time by
+ * `resolveKeys`/`resolveKeyFromSource`, never copied into sonata's own store,
+ * so it is exactly as safe to list here as the OAuth case.
  */
 export function importableProviders(
   providers: ProviderOption[],
@@ -152,7 +156,7 @@ export function importableProviders(
   for (const provider of providers) {
     if (configured.has(provider.provider) || seen.has(provider.provider)) continue;
     const have = availability[provider.provider];
-    if (have === undefined || (have.codex === null && have.opencode === null)) continue;
+    if (have === undefined || (have.codex === null && have.opencode === null && have.key === null)) continue;
     seen.add(provider.provider);
     out.push(provider);
   }

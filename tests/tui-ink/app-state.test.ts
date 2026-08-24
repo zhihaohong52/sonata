@@ -179,6 +179,15 @@ describe('importableProviders', () => {
     expect(importableProviders(providers, availability)).toEqual([]);
   });
 
+  it('includes a provider whose only credential is a plain API key', () => {
+    const availability = {
+      openai: { codex: null, opencode: null, key: { source: 'opencode' }, keyEntryAvailable: true },
+      codex: { codex: null, opencode: null, key: null, keyEntryAvailable: true },
+      groq: { codex: null, opencode: null, key: null, keyEntryAvailable: true },
+    };
+    expect(importableProviders(providers, availability).map((p) => p.provider)).toEqual(['openai']);
+  });
+
   it('dedupes by provider name across multiple harness entries', () => {
     const dup: ProviderOption[] = [
       { key: 'opencode-openai', harness: 'opencode', provider: 'openai', count: 2 },

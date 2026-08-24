@@ -165,9 +165,11 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
         title="Import from other harnesses"
         items={importable.map((provider) => {
           const have = credentialAvailability[provider.provider]!;
-          const fromCodex = have.codex !== null;
-          const days = (fromCodex ? have.codex : have.opencode)?.expiresInDays ?? null;
-          const hint = days === null ? 'expiry unknown' : days < 0 ? 'expired — re-login in that tool' : `expires in ${days}d`;
+          const oauth = have.codex !== null ? have.codex : have.opencode !== null ? have.opencode : null;
+          const hint = oauth !== null
+            ? (oauth.expiresInDays === null ? 'expiry unknown'
+              : oauth.expiresInDays < 0 ? 'expired — re-login in that tool' : `expires in ${oauth.expiresInDays}d`)
+            : `key from ${have.key!.source}`;
           return { value: provider.key, label: provider.provider, hint };
         })}
         initialSelected={new Set<string>()}
@@ -178,7 +180,12 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
               const provider = importable.find((p) => p.key === key);
               if (provider === undefined) continue;
               const have = credentialAvailability[provider.provider]!;
-              nextCredentialSources[provider.provider] = have.codex !== null ? 'codex' : 'opencode';
+              // A plain API key is left unset here: `resolveKeys` already
+              // checks sonata's own store then opencode's live, in that
+              // order, so pinning a source would only foreclose that
+              // fallback without buying anything.
+              if (have.codex !== null) nextCredentialSources[provider.provider] = 'codex';
+              else if (have.opencode !== null) nextCredentialSources[provider.provider] = 'opencode';
             }
             return {
               ...current,
