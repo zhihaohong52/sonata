@@ -164,12 +164,12 @@ describe('importableProviders', () => {
     expect(importableProviders(providers, availability).map((p) => p.provider)).toEqual(['openai', 'groq']);
   });
 
-  it('excludes a provider already configured in this run', () => {
+  it('includes a provider already configured in this run — the list doubles as an unimport toggle', () => {
     const availability = {
       openai: { codex: { expiresInDays: 5 }, opencode: null, key: null, keyEntryAvailable: true },
       groq: { codex: null, opencode: { expiresInDays: 3 }, key: null, keyEntryAvailable: true },
     };
-    expect(importableProviders(providers, availability, ['openai']).map((p) => p.provider)).toEqual(['groq']);
+    expect(importableProviders(providers, availability).map((p) => p.provider)).toEqual(['openai', 'groq']);
   });
 
   it('is empty when nothing has a detected credential', () => {

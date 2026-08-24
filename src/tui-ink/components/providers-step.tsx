@@ -9,6 +9,7 @@ import {
   addProviderCatalog,
   applyStep,
   byokProviderKey,
+  byokProviderName,
   configuredProviderNames,
   importableProviders,
   providersForHarnesses,
@@ -112,7 +113,7 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
   ];
 
   if (screen.kind === 'menu') {
-    const importable = importableProviders(providers, credentialAvailability, configured);
+    const importable = importableProviders(providers, credentialAvailability);
     const choices: Array<{ value: 'import' | 'add' | 'continue'; label: string }> = [];
     if (importable.length > 0) choices.push({ value: 'import', label: 'Import from other harnesses' });
     choices.push({ value: 'add', label: 'Add provider' });
@@ -158,7 +159,7 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
   }
 
   if (screen.kind === 'import') {
-    const importable = importableProviders(providersForHarnesses(providers, state.harnesses), credentialAvailability, configured);
+    const importable = importableProviders(providersForHarnesses(providers, state.harnesses), credentialAvailability);
     return (
       <MultiSelect
         key="providers-import"
@@ -172,13 +173,18 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
             : `key from ${have.key!.source}`;
           return { value: provider.key, label: provider.provider, hint };
         })}
-        initialSelected={new Set<string>()}
+        initialSelected={new Set(importable.filter((p) => configured.includes(p.provider)).map((p) => p.key))}
         onSubmit={(keys: string[]) => {
           onChange((current) => {
+            const checked = new Set(keys);
             const nextCredentialSources = { ...current.credentialSources };
-            for (const key of keys) {
-              const provider = importable.find((p) => p.key === key);
-              if (provider === undefined) continue;
+            for (const provider of importable) {
+              if (!checked.has(provider.key)) {
+                // Unchecked, whether newly or already configured: unimport —
+                // no source pins a provider that is about to leave providerKeys.
+                delete nextCredentialSources[provider.provider];
+                continue;
+              }
               const have = credentialAvailability[provider.provider]!;
               // A plain API key is left unset here: `resolveKeys` already
               // checks sonata's own store then opencode's live, in that
@@ -186,10 +192,22 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
               // fallback without buying anything.
               if (have.codex !== null) nextCredentialSources[provider.provider] = 'codex';
               else if (have.opencode !== null) nextCredentialSources[provider.provider] = 'opencode';
+              else delete nextCredentialSources[provider.provider];
             }
+            // This screen owns every provider it can show, by name — not by
+            // key, since an earlier run may have stored the same provider
+            // under a different harness's key. Drop all of those, then add
+            // back whatever is checked now: this is how unchecking an
+            // already-imported provider actually removes it.
+            const shownNames = new Set(importable.map((p) => p.provider));
+            const byKey = new Map(providers.map((p) => [p.key, p.provider]));
+            const kept = (current.providerKeys ?? []).filter((key) => {
+              const name = byokProviderName(key) ?? byKey.get(key);
+              return name === undefined || !shownNames.has(name);
+            });
             return {
               ...current,
-              providerKeys: [...new Set([...(current.providerKeys ?? []), ...keys])],
+              providerKeys: [...new Set([...kept, ...keys])],
               credentialSources: nextCredentialSources,
             };
           });

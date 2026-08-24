@@ -144,17 +144,19 @@ export function candidatesForProviders(candidates: CandidateOption[], providers:
  * `auth.json`): the latter is resolved live at request time by
  * `resolveKeys`/`resolveKeyFromSource`, never copied into sonata's own store,
  * so it is exactly as safe to list here as the OAuth case.
+ *
+ * Already-configured providers are NOT excluded: the screen doubles as a
+ * toggle — the caller pre-checks whichever of these are already configured
+ * and unchecking one is how a provider gets removed again.
  */
 export function importableProviders(
   providers: ProviderOption[],
   availability: Record<string, AvailableCredentials>,
-  configuredGateways: readonly string[] = [],
 ): ProviderOption[] {
-  const configured = new Set(configuredGateways);
   const seen = new Set<string>();
   const out: ProviderOption[] = [];
   for (const provider of providers) {
-    if (configured.has(provider.provider) || seen.has(provider.provider)) continue;
+    if (seen.has(provider.provider)) continue;
     const have = availability[provider.provider];
     if (have === undefined || (have.codex === null && have.opencode === null && have.key === null)) continue;
     seen.add(provider.provider);
