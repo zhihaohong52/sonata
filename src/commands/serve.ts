@@ -195,8 +195,37 @@ function listen(server: ReturnType<typeof createRouterServer>, port: number): Pr
   });
 }
 
+/**
+ * A shutdown, not a graceful drain: `server.close()` alone stops accepting
+ * new connections but waits for every existing one to end on its own —
+ * including idle keep-alive sockets, which under an active session can sit
+ * open well past any reasonable restart timeout. That's what made a live
+ * `sonata restart` report a killed router pid as "still running" long after
+ * the process should have exited (observed 2026-08-24, `stopServe`'s 10s
+ * wait). Idle connections are closed immediately, since nothing is lost;
+ * anything genuinely in-flight gets a short grace window before every
+ * remaining connection is forced closed, so this can never hang forever.
+ */
 function close(server: ReturnType<typeof createRouterServer>): Promise<void> {
-  return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    server.close((error) => {
+      if (settled) return;
+      settled = true;
+      error ? reject(error) : resolve();
+    });
+    server.closeIdleConnections();
+    // `closeIdleConnections()` only reaches keep-alive sockets that already
+    // completed a request — measured directly against a connection that
+    // never sent one (e.g. a lingering TCP probe), it does nothing. A
+    // restart wants to be fast, not gentle: losing an in-flight response is
+    // an acceptable cost of the user explicitly asking to restart, so this
+    // window is short.
+    setTimeout(() => {
+      if (settled) return;
+      server.closeAllConnections();
+    }, 500).unref();
+  });
 }
 
 export async function cmdServe(
@@ -436,6 +465,24 @@ export interface StopDeps {
   timeoutMs?: number;
   /** Test seam — production default is `process.kill`. */
   kill?: (pid: number) => void;
+  /** Test seam — production default checks the OS for the pid. */
+  isAlive?: (pid: number) => boolean;
+}
+
+/**
+ * Whether a pid still exists. `process.kill(pid, 0)` sends no signal, only
+ * probes: `ESRCH` means the process is gone, anything else (including
+ * `EPERM` — exists, just not owned by us) means it is still alive. An
+ * unrecognized error is treated as alive too, so a probe failure never makes
+ * `stopServe` declare victory early.
+ */
+function defaultIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
 }
 
 export interface StopResult {
@@ -483,16 +530,26 @@ export async function stopServe(
   }
 
   const kill = opts.kill ?? killPid;
-  if (state.routerPid !== undefined) kill(state.routerPid);
-  if (state.litellmPid !== undefined) kill(state.litellmPid);
+  const isAlive = opts.isAlive ?? defaultIsAlive;
+  const pids = [state.routerPid, state.litellmPid].filter((pid): pid is number => pid !== undefined);
+  for (const pid of pids) kill(pid);
   try { unlinkSync(serveStatePath(opts.home)); } catch { /* already gone */ }
 
+  // Wait for the pids we killed to actually exit — not for the port to go
+  // quiet. Polling the port instead confused "still dying" with "already
+  // replaced": an external supervisor that respawns `sonata serve` the
+  // instant the port frees can put a brand-new, legitimate router on the
+  // same port before our old process has finished exiting, so the port
+  // never stops answering and this used to time out reporting failure even
+  // though the kill had already succeeded. Checking the specific pids
+  // sidesteps that race entirely.
   const deadline = now() + timeoutMs;
-  while (await isSonataRouter(port, probeHealth)) {
+  while (pids.some((pid) => isAlive(pid))) {
     if (now() > deadline) {
+      const stillAlive = pids.filter((pid) => isAlive(pid));
       throw new Error(
-        `sonata restart: killed the recorded process(es) but port ${port} is still answering ` +
-        `after ${Math.round(timeoutMs / 1000)}s.`,
+        `sonata restart: killed the recorded process(es) but pid(s) ${stillAlive.join(', ')} ` +
+        `are still running after ${Math.round(timeoutMs / 1000)}s.`,
       );
     }
     await sleep(300);

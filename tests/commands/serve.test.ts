@@ -232,6 +232,35 @@ litellm = 4000
     expect(state.routerPid).toBe(process.pid);
     expect(state.litellmPid).toBe(4242);
   });
+
+  it('stop() resolves promptly even with an open idle keep-alive connection', async () => {
+    // Plain server.close() waits for every open connection to end on its
+    // own — an idle keep-alive socket that outlives the request it served
+    // can sit open indefinitely, which is what made a live restart wait
+    // past its own timeout for a router that had actually been told to
+    // stop. Simulate that lingering socket directly with net, since a real
+    // keep-alive HTTP client would close it once idle and hide the bug.
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+
+    const net = await import('node:net');
+    const socket = net.connect(handle.routerPort, 'localhost');
+    await new Promise<void>((resolve, reject) => {
+      socket.once('connect', () => resolve());
+      socket.once('error', reject);
+    });
+    // Give the server side a moment to register the connection — otherwise
+    // stop() can race ahead of the server's own 'connection' event.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const started = Date.now();
+    await handle.stop();
+    expect(Date.now() - started).toBeLessThan(1500);
+
+    socket.destroy();
+  });
 });
 
 describe('cmdServe — codex-oauth gateways', () => {
@@ -575,16 +604,10 @@ litellm = 4000
     mkdirSync(dirname(serveStatePath(home)), { recursive: true });
     writeFileSync(serveStatePath(home), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
     const killed: number[] = [];
-    // The health probe answers sonata the first time, then reports gone —
-    // stopServe polls until the port actually frees before returning.
-    let calls = 0;
-    const probe: typeof fetch = (async () => {
-      calls += 1;
-      return calls === 1 ? new Response(JSON.stringify({ sonata: true })) : new Response('', { status: 500 });
-    }) as unknown as typeof fetch;
 
     const result = await stopServe({
-      cwd, home, probeHealth: probe, kill: (pid) => killed.push(pid), sleep: async () => {},
+      cwd, home, probeHealth: sonataHealth, kill: (pid) => killed.push(pid), sleep: async () => {},
+      isAlive: () => false,
     });
 
     expect(result.killed).toBe(true);
@@ -599,14 +622,31 @@ litellm = 4000
       .rejects.toThrow(/no recorded pid/);
   });
 
-  it('throws if the port is still answering after the kill, rather than reporting success', async () => {
+  it('throws if the killed pid is still alive, rather than reporting success', async () => {
     mkdirSync(dirname(serveStatePath(home)), { recursive: true });
     writeFileSync(serveStatePath(home), JSON.stringify({ routerPid: 111 }));
     const result = await stopServe({
       cwd, home, probeHealth: sonataHealth, kill: () => {}, sleep: async () => {},
       now: (() => { let t = 0; return () => (t += 1000); })(), timeoutMs: 2000,
+      isAlive: () => true,
     }).catch((e) => e as Error);
-    expect((result as Error).message).toMatch(/still answering/);
+    expect((result as Error).message).toMatch(/still running/);
+  });
+
+  it('does not mistake a supervisor-respawned router for the old one still dying', async () => {
+    // A terminal running a keep-alive loop around `sonata serve` can grab the
+    // port again within ~1s of it freeing — a brand-new, legitimate router.
+    // The port never goes quiet, but the pids we killed are genuinely gone,
+    // so this must report success rather than timing out.
+    mkdirSync(dirname(serveStatePath(home)), { recursive: true });
+    writeFileSync(serveStatePath(home), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
+
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, kill: () => {}, sleep: async () => {},
+      isAlive: () => false,
+    });
+
+    expect(result.killed).toBe(true);
   });
 });
 
