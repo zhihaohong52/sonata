@@ -87,21 +87,19 @@ export function applyStep(state: InitState, step: number, value: unknown): InitS
     case 0:
       return { ...state, configScope: value as InitState['configScope'] };
     case 1:
-      return { ...state, harnesses: value as string[] };
-    case 2:
       return { ...state, providerKeys: value as string[] };
-    case 3:
+    case 2:
       return { ...state, nativeKeys: value as string[] };
-    case 4:
+    case 3:
       return { ...state, roles: value as string[] };
-    case 5: {
+    case 4: {
       const { role, models } = value as PerRoleModelsValue;
       return {
         ...state,
         perRoleModels: { ...state.perRoleModels, [role]: models },
       };
     }
-    case 6: {
+    case 5: {
       // A BYOK provider's chosen models. They join `nativeKeys` here rather than
       // later, because step 5 offers roles a choice from `nativeKeys` — a model
       // missing from it cannot be assigned to any role, so the wizard would

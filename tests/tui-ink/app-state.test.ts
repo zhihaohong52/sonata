@@ -19,14 +19,12 @@ describe('InitWizard state', () => {
   it('accumulates values from each step without clearing earlier selections', () => {
     let state = {};
     state = applyStep(state, 0, 'project');
-    state = applyStep(state, 1, ['opencode', 'pi']);
-    state = applyStep(state, 2, ['opencode-openai']);
-    state = applyStep(state, 3, ['openai-gpt-5']);
-    state = applyStep(state, 4, ['code', 'review']);
+    state = applyStep(state, 1, ['opencode-openai']);
+    state = applyStep(state, 2, ['openai-gpt-5']);
+    state = applyStep(state, 3, ['code', 'review']);
 
     expect(state).toEqual({
       configScope: 'project',
-      harnesses: ['opencode', 'pi'],
       providerKeys: ['opencode-openai'],
       nativeKeys: ['openai-gpt-5'],
       roles: ['code', 'review'],
@@ -36,28 +34,27 @@ describe('InitWizard state', () => {
   it('replaces only the field for a revisited step', () => {
     const initial = {
       configScope: 'project' as const,
-      harnesses: ['opencode'],
       providerKeys: ['opencode-openai'],
       nativeKeys: ['openai-gpt-5'],
       roles: ['code'],
     };
 
-    expect(applyStep(initial, 1, ['pi'])).toEqual({
+    expect(applyStep(initial, 1, ['pi-openai'])).toEqual({
       ...initial,
-      harnesses: ['pi'],
+      providerKeys: ['pi-openai'],
     });
   });
 
   it('accumulates per-role selections through a round-trip', () => {
-    const code = applyStep({ nativeKeys: ['a', 'b'] }, 5, {
+    const code = applyStep({ nativeKeys: ['a', 'b'] }, 4, {
       role: 'code',
       models: ['a'],
     });
-    const review = applyStep(code, 5, {
+    const review = applyStep(code, 4, {
       role: 'review',
       models: ['b'],
     });
-    const revisitedCode = applyStep(review, 5, {
+    const revisitedCode = applyStep(review, 4, {
       role: 'code',
       models: ['a', 'b'],
     });
@@ -116,7 +113,7 @@ describe('BYOK providers', () => {
   });
 
   it('records byok models into byokModels and nativeKeys', () => {
-    const next = applyStep({ nativeKeys: ['a'] }, 6, {
+    const next = applyStep({ nativeKeys: ['a'] }, 5, {
       provider: 'deepseek',
       ids: ['deepseek-v4-flash'],
     });
@@ -127,7 +124,7 @@ describe('BYOK providers', () => {
   it('does not duplicate a key already in nativeKeys', () => {
     const next = applyStep(
       { nativeKeys: ['deepseek-deepseek-v4-flash'], byokModels: { deepseek: ['deepseek-v4-flash'] } },
-      6,
+      5,
       { provider: 'deepseek', ids: ['deepseek-v4-flash'] },
     );
     expect(next.nativeKeys).toEqual(['deepseek-deepseek-v4-flash']);
@@ -136,16 +133,16 @@ describe('BYOK providers', () => {
   it('drops a deselected model on a revisit', () => {
     // Walking back into the step and unticking a model has to remove its key,
     // or the config is written with a model the user just removed.
-    const first = applyStep({}, 6, { provider: 'deepseek', ids: ['a', 'b'] });
-    const second = applyStep(first, 6, { provider: 'deepseek', ids: ['b'] });
+    const first = applyStep({}, 5, { provider: 'deepseek', ids: ['a', 'b'] });
+    const second = applyStep(first, 5, { provider: 'deepseek', ids: ['b'] });
     expect(second.byokModels).toEqual({ deepseek: ['b'] });
     expect(second.nativeKeys).toEqual(['deepseek-b']);
   });
 
   it('leaves another provider\'s models alone on a revisit', () => {
-    let state = applyStep({}, 6, { provider: 'deepseek', ids: ['a'] });
-    state = applyStep(state, 6, { provider: 'groq', ids: ['x'] });
-    state = applyStep(state, 6, { provider: 'deepseek', ids: ['b'] });
+    let state = applyStep({}, 5, { provider: 'deepseek', ids: ['a'] });
+    state = applyStep(state, 5, { provider: 'groq', ids: ['x'] });
+    state = applyStep(state, 5, { provider: 'deepseek', ids: ['b'] });
     expect(state.nativeKeys).toEqual(['groq-x', 'deepseek-b']);
     expect(state.byokModels).toEqual({ deepseek: ['b'], groq: ['x'] });
   });

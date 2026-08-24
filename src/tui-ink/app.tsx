@@ -5,7 +5,6 @@ import { ProvidersStep } from './components/providers-step.js';
 import {
   applyStep,
   candidatesForProviders,
-  providersForHarnesses,
   type AvailableCredentials,
   type CandidateOption,
   type ProviderOption,
@@ -45,7 +44,7 @@ export interface InitWizardProps {
   onDone: (result: TuiResult) => void;
 }
 
-export { applyStep, candidatesForProviders, providersForHarnesses } from './app-state.js';
+export { applyStep, candidatesForProviders } from './app-state.js';
 
 interface ChoiceProps<T> {
   title: string;
@@ -127,14 +126,11 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     case 0:
       return <Choice key="config-scope" title="Config scope" choices={[{ value: 'project', label: 'Project' }, { value: 'global', label: 'Global' }]} initial={state.configScope} onSubmit={chooseScope} onCancel={cancel} />;
     case 1: {
-      const harnesses = data.harnesses.filter((harness) => harness.installed);
-      return <MultiSelect key="harnesses" title="Harnesses" items={harnesses.map((harness) => ({ value: harness.name, label: harness.name }))} initialSelected={new Set(state.harnesses ?? harnesses.map((harness) => harness.name))} onSubmit={next} onBack={back} onCancel={cancel} filterable={false} />;
-    }
-    case 2: {
-      const providers = providersForHarnesses(data.providers, state.harnesses);
+      const providers = data.providers;
       return <ProvidersStep
         key="providers-step"
         home={data.home}
+        harnesses={data.harnesses}
         providers={providers}
         byokProviders={data.byokProviders}
         credentialAvailability={data.credentialAvailability ?? {}}
@@ -145,15 +141,14 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         onChange={setState}
         onContinue={() => {
           const candidates = candidatesForProviders(data.candidates, providers, state.providerKeys);
-          setStep(candidates.length > 0 ? 3 : 4);
+          setStep(candidates.length > 0 ? 2 : 3);
         }}
         onBack={back}
         onCancel={cancel}
       />;
     }
-    case 3: {
-      const providers = providersForHarnesses(data.providers, state.harnesses);
-      const candidates = candidatesForProviders(data.candidates, providers, state.providerKeys);
+    case 2: {
+      const candidates = candidatesForProviders(data.candidates, data.providers, state.providerKeys);
       if (candidates.length === 0) return <Summary state={state} onDone={onDone} onBack={back} />;
       return <MultiSelect
         key="models"
@@ -167,19 +162,18 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
           const byokKeys = new Set(Object.entries(state.byokModels ?? {}).flatMap(([provider, ids]) =>
             ids.map((id) => byokCandidateKey(provider, id))));
           const kept = (state.nativeKeys ?? []).filter((key) => byokKeys.has(key));
-          setState((current) => applyStep(current, 3, [...(keys as string[]), ...kept]));
-          setStep(4);
+          setState((current) => applyStep(current, 2, [...(keys as string[]), ...kept]));
+          setStep(3);
         }}
         onBack={back}
         onCancel={cancel}
       />;
     }
-    case 4: {
-      const providers = providersForHarnesses(data.providers, state.harnesses);
-      const candidates = candidatesForProviders(data.candidates, providers, state.providerKeys);
-      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={() => setStep(candidates.length > 0 ? 3 : 2)} onCancel={cancel} filterable={false} />;
+    case 3: {
+      const candidates = candidatesForProviders(data.candidates, data.providers, state.providerKeys);
+      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={() => setStep(candidates.length > 0 ? 2 : 1)} onCancel={cancel} filterable={false} />;
     }
-    case 5: {
+    case 4: {
       const roles = state.roles ?? [];
       if (sameModels === undefined) {
         return <Choice key="same-models" title="Use the same models for every role?" choices={[{ value: true, label: 'Yes' }, { value: false, label: 'No' }]} initial={true} onSubmit={(value) => {
@@ -188,9 +182,9 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
               ...current,
               perRoleModels: Object.fromEntries(roles.map((role) => [role, current.nativeKeys ?? []])),
             }));
-            setStep(6);
+            setStep(5);
           } else if (roles.length === 0) {
-            setStep(6);
+            setStep(5);
           } else {
             setSameModels(false);
             setRoleIndex(0);
@@ -200,9 +194,9 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const role = roles[roleIndex];
       if (!role) return <Summary state={state} onDone={onDone} onBack={back} />;
       return <MultiSelect key={`role-${role}`} title={`Models for ${role}`} items={(state.nativeKeys ?? []).map((key) => ({ value: key, label: key }))} initialSelected={new Set(state.perRoleModels?.[role] ?? state.nativeKeys ?? [])} onSubmit={(models) => {
-        setState((current) => applyStep(current, 5, { role, models }));
+        setState((current) => applyStep(current, 4, { role, models }));
         if (roleIndex + 1 < roles.length) setRoleIndex((current) => current + 1);
-        else setStep(6);
+        else setStep(5);
       }} onBack={() => {
         if (roleIndex === 0) setSameModels(undefined);
         else setRoleIndex((current) => current - 1);

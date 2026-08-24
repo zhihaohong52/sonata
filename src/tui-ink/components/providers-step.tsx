@@ -11,6 +11,7 @@ import {
   byokProviderKey,
   configuredProviderNames,
   importableProviders,
+  providersForHarnesses,
   validateCustomProviderName,
   validateProviderUrl,
   type AvailableCredentials,
@@ -60,6 +61,7 @@ function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: Choi
 
 export interface ProvidersStepProps {
   home: string;
+  harnesses: Array<{ name: string; installed: boolean }>;
   providers: ProviderOption[];
   byokProviders: Array<{ name: string; url: string }>;
   credentialAvailability: Record<string, AvailableCredentials>;
@@ -75,6 +77,7 @@ export interface ProvidersStepProps {
 
 type Screen =
   | { kind: 'menu' }
+  | { kind: 'import-harnesses' }
   | { kind: 'import' }
   | { kind: 'pick' }
   | { kind: 'custom-name' }
@@ -93,7 +96,7 @@ type Screen =
  */
 export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
   const {
-    home, providers, byokProviders, credentialAvailability, gatewayAuth, storedKeys,
+    home, harnesses, providers, byokProviders, credentialAvailability, gatewayAuth, storedKeys,
     fetchModels = defaultFetchModels, state, onChange, onContinue, onBack, onCancel,
   } = props;
   const [screen, setScreen] = useState<Screen>({ kind: 'menu' });
@@ -124,7 +127,7 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
           initial={choices[0]?.value}
           onSubmit={(choice) => {
             setProblem(undefined);
-            if (choice === 'import') setScreen({ kind: 'import' });
+            if (choice === 'import') setScreen({ kind: 'import-harnesses' });
             else if (choice === 'add') setScreen({ kind: 'pick' });
             else onContinue();
           }}
@@ -135,8 +138,27 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
     );
   }
 
+  if (screen.kind === 'import-harnesses') {
+    const installed = harnesses.filter((harness) => harness.installed);
+    return (
+      <MultiSelect
+        key="providers-import-harnesses"
+        title="Import from which harnesses?"
+        items={installed.map((harness) => ({ value: harness.name, label: harness.name }))}
+        initialSelected={new Set(state.harnesses ?? installed.map((harness) => harness.name))}
+        onSubmit={(names) => {
+          onChange((current) => ({ ...current, harnesses: names as string[] }));
+          setScreen({ kind: 'import' });
+        }}
+        onBack={() => setScreen({ kind: 'menu' })}
+        onCancel={onCancel}
+        filterable={false}
+      />
+    );
+  }
+
   if (screen.kind === 'import') {
-    const importable = importableProviders(providers, credentialAvailability, configured);
+    const importable = importableProviders(providersForHarnesses(providers, state.harnesses), credentialAvailability, configured);
     return (
       <MultiSelect
         key="providers-import"
@@ -166,7 +188,7 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
           });
           setScreen({ kind: 'menu' });
         }}
-        onBack={() => setScreen({ kind: 'menu' })}
+        onBack={() => setScreen({ kind: 'import-harnesses' })}
         onCancel={onCancel}
       />
     );
@@ -354,7 +376,7 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
       }}
       onSubmit={(ids) => {
         onChange((current) => {
-          const withModels = applyStep(current, 6, { provider: name, ids });
+          const withModels = applyStep(current, 5, { provider: name, ids });
           return {
             ...withModels,
             ...(isCustom && {
