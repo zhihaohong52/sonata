@@ -1054,7 +1054,9 @@ async function runInit(
   }
 
   out('');
-  out('  Done. Restart Claude Code so it picks up the agents and the MCP server.');
+  out(mcp.changed
+    ? '  Done. Run /reload-plugins to pick up the new agents, then /mcp to reconnect the sonata MCP server.'
+    : '  Done. Run /reload-plugins to pick up the new agents.');
   out('');
 
   return {
