@@ -123,14 +123,18 @@ time — including one sonata has never heard of.
 
 **Import from other harnesses** bulk-selects providers your installed
 harnesses are already authenticated for — nothing to type, nothing to
-re-enter:
+re-enter. It lists every provider with a detected credential (an OAuth grant
+or a plain API key sitting in another harness's own store), whether or not
+it is already configured, and pre-checks the ones that are — so the same
+screen doubles as a toggle: unchecking an already-imported provider removes
+it, along with its models and any role assignments that used them:
 
 ```
   Import from other harnesses
 
   filter: █
 
-  ❯ ○ codex     · expires in 8d
+  ❯ ◉ codex     · expires in 8d
     ○ openai    · expires in 8d
 
   2 of 2 · space toggle · type to filter · enter confirm · esc cancel
@@ -606,7 +610,7 @@ Worth knowing before you depend on this:
 
 ```bash
 npm install
-npm test          # 596 tests; needs tmux
+npm test          # 855 tests; needs tmux
 npm run typecheck
 npm run build
 ```
