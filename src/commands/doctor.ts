@@ -108,6 +108,13 @@ export async function cmdDoctor(
       ok: true,
       detail: `${resolved} · ${Object.keys(config.models).length} harness + ${Object.keys(config.native?.models ?? {}).length} native models`,
     });
+    if (config.tiers === undefined && (Object.keys(config.generate.roles).length > 0 || Object.keys(config.native?.generate ?? {}).length > 0)) {
+      checks.push({
+        name: 'legacy config',
+        ok: true,
+        detail: 'config predates [tiers] — run `sonata init` to migrate',
+      });
+    }
   } catch (err) {
     checks.push({ name: 'sonata.toml', ok: false, detail: (err as Error).message });
     return { ok: false, checks };

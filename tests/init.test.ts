@@ -204,6 +204,43 @@ describe('cmdInit (non-interactive)', () => {
     }
   });
 
+  it('migrates legacy generate selections into tier lists', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways."openai"]
+base_url = "https://openai.example/v1"
+
+[native.models."gpt-5.6-luna"]
+gateway = "openai"
+id = "gpt-5.6-luna"
+context_window = 128000
+
+[native.models."native-only"]
+gateway = "openai"
+id = "native-only"
+context_window = 128000
+
+[models."opencode-openai-gpt-5.6-luna"]
+harness = "opencode"
+id = "openai/gpt-5.6-luna"
+
+[generate.roles]
+code = ["opencode-openai-gpt-5.6-luna"]
+
+[generate.native]
+code = ["native-only"]
+`);
+    const legacyDetect = makeDetect({
+      extraRefs: 'openai/gpt-5.6-luna\nopenai/native-only\n',
+      providerBaseUrls: { openai: 'https://openai.example/v1' },
+    });
+    await cmdInit({ cwd, home, packageRoot: '/pkg', yes: true, detect: legacyDetect, scope: 'skip', write });
+
+    const cfg = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
+    expect(cfg.tiers?.code.simple).toEqual(['native-only', 'gpt-5.6-luna']);
+    expect(cfg.tiers?.code.complex).toEqual(['native-only', 'gpt-5.6-luna']);
+    expect(cfg.tiers?.code.simple).toEqual(expect.arrayContaining(['native-only', 'gpt-5.6-luna']));
+  });
+
   it('is idempotent across repeated runs', async () => {
     const args = {
       cwd, home, packageRoot: '/pkg', yes: true, detect,

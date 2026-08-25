@@ -4,10 +4,13 @@
  * Interactive by default; every choice also has a flag so the command works in
  * CI and scripts. Nothing is written until the user confirms the summary.
  *
- * The wizard writes native models only — foreign models running inside Claude
- * Code's own loop via a local routing proxy. The harness-based wrapper path
- * (`[models]`/`[generate.roles]`) is still supported by the config parser and
- * by `sonata sync`, but `init` does not generate or carry through those entries.
+ * The wizard writes the unified `[models]` registry plus `[tiers.<role>]`
+ * ranked lists — discovered native candidates keep `gateway`/`id`, and
+ * harness-discovered ones keep `harness`/`harness_id` (both, for a model
+ * reachable either way). A config still written in the older
+ * `[generate.roles]`/`[generate.native]` shape is migrated on load
+ * (`migrateLegacyConfig`, `src/normalize.ts`) rather than left behind or
+ * silently dropped.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -34,6 +37,7 @@ import { select, confirm, isInteractive, banner, CancelledError } from '../tui.j
 import { keyReport, resolveKeyFromSource, resolveKeys, writeSonataKey } from '../native/credentials.js';
 import { byokCandidateKey, wellKnownProviders } from '../native/models.js';
 import { loadAaCatalog, proposeTiers } from '../catalog.js';
+import { migrateLegacyConfig } from '../normalize.js';
 import { byokProviderKey, byokProviderName, type AvailableCredentials } from '../tui-ink/app-state.js';
 import { runInitTui } from '../tui-ink/run.js';
 import { openInitLog, type InitLog } from './init-log.js';
@@ -328,7 +332,8 @@ export function deriveInitState(
 ): InitState {
   const nativeModels = config.native?.models ?? {};
   const unifiedModels = config.unifiedModels;
-  const modelKeys = Object.keys(config.tiers ? unifiedModels : nativeModels);
+  const modelKeys = Object.keys(config.tiers ? unifiedModels : nativeModels)
+    .filter((key) => (unifiedModels[key]?.gateway ?? nativeModels[key]?.gateway) !== undefined);
   if (modelKeys.length === 0) return { configScope };
 
   const gateways = [...new Set(modelKeys.map((key) =>
@@ -430,6 +435,7 @@ export function nativeTomlFor(
   roleModels: Record<string, NativeCandidate[]>,
   credentialSources: Record<string, CredentialSource> = {},
   selectedTiers?: Record<string, { simple: string[]; complex: string[] }>,
+  extraModels: Record<string, { harness?: string; harnessId?: string }> = {},
 ): string {
   const allModels = new Map<string, NativeCandidate>();
   for (const cands of Object.values(roleModels)) {
@@ -474,6 +480,10 @@ export function nativeTomlFor(
       lines.push(`harness = ${tomlKey(c.harness)}`, `harness_id = ${tomlKey(c.harnessId ?? c.id)}`);
     }
     lines.push('');
+  }
+  for (const [key, model] of Object.entries(extraModels)) {
+    if (allModels.has(key) || model.harness === undefined || model.harnessId === undefined) continue;
+    lines.push(`[models.${tomlKey(key)}]`, `harness = ${tomlKey(model.harness)}`, `id = ${tomlKey(model.harnessId)}`, '');
   }
 
   for (const [role, lists] of Object.entries(tierLists)) {
@@ -558,7 +568,23 @@ async function runInit(
     const path = configPathFor(scope, opts.cwd, opts.home);
     if (!existsSync(path)) continue;
     try {
-      configsByScope[scope] = parseConfig(readFileSync(path, 'utf8'));
+      const parsed = parseConfig(readFileSync(path, 'utf8'));
+      if (parsed.tiers === undefined && (Object.keys(parsed.generate.roles).length > 0 || Object.keys(parsed.native?.generate ?? {}).length > 0)) {
+        const migrated = migrateLegacyConfig(parsed);
+        configsByScope[scope] = {
+          ...parsed,
+          unifiedModels: migrated.models,
+          tiers: migrated.tiers,
+          native: parsed.native === undefined ? undefined : {
+            ...parsed.native,
+            generate: Object.fromEntries(Object.entries(migrated.tiers).map(([role, lists]) => [
+              role, [...new Set([...lists.simple, ...lists.complex])],
+            ])),
+          },
+        };
+      } else {
+        configsByScope[scope] = parsed;
+      }
     } catch (err) {
       out(`  ! could not read ${path}; init is starting from defaults: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -673,6 +699,7 @@ async function runInit(
   let nativeRoleModels: Record<string, NativeCandidate[]> = {};
   let tiers: Record<string, { simple: string[]; complex: string[] }> = {};
   let credentialSources: Record<string, CredentialSource> = {};
+  let migratedModels: Record<string, { harness?: string; harnessId?: string }> = {};
   /** BYOK keys typed in the wizard, written only after the confirm gate. */
   let byokKeys: Record<string, string> = {};
   const nativeByKey = new Map(allNativeCandidates.map((c) => [c.key, c]));
@@ -767,6 +794,11 @@ async function runInit(
     // Map result.state to the variables the write path needs:
     configScope = result.state.configScope ?? 'project';
     configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
+    const existingForScope = configsByScope[configScope];
+    if (existingForScope?.tiers !== undefined &&
+        (Object.keys(existingForScope.generate.roles).length > 0 || Object.keys(existingForScope.native?.generate ?? {}).length > 0)) {
+      migratedModels = migrateLegacyConfig(existingForScope).models;
+    }
     for (const provider of result.state.customProviders ?? []) {
       byokUrls.set(provider.name, provider.url);
     }
@@ -803,6 +835,10 @@ async function runInit(
     configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
     configText = existsSync(configPathResolved) ? readFileSync(configPathResolved, 'utf8') : '';
     const parsedConfig = configsByScope[configScope];
+    if (parsedConfig && parsedConfig.tiers !== undefined &&
+        (Object.keys(parsedConfig.generate.roles).length > 0 || Object.keys(parsedConfig.native?.generate ?? {}).length > 0)) {
+      migratedModels = migrateLegacyConfig(parsedConfig).models;
+    }
     ticked = preTickedNative(configText, allNativeCandidates);
     const d = parsedConfig ? deriveInitState(parsedConfig, configScope, offered) : { configScope };
     credentialSources = {
@@ -1046,7 +1082,7 @@ async function runInit(
   }
 
   mkdirSync(dirname(configPathResolved), { recursive: true });
-  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources, tiers));
+  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources, tiers, migratedModels));
   out(`  ✓ wrote ${configPathResolved}`);
 
   let hookChanged = false;

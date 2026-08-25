@@ -2,6 +2,9 @@
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
 const SPINNER_ONLY = /^[⠁-⣿|/\\-]+$/;
 
+import type { SonataConfig, TierLists, UnifiedModelConfig } from './config.js';
+import { normalizeModelName } from './catalog.js';
+
 export function stripAnsi(s: string): string {
   return s.replace(ANSI, '');
 }
@@ -25,4 +28,55 @@ export function newLines(prev: string[], next: string[]): string[] {
     }
   }
   return next;
+}
+
+
+/**
+ * Convert the pre-tier registry and generators into the unified registry and
+ * ranked lists. Legacy keys are retained when normalization would confuse two
+ * different upstream models.
+ */
+export function migrateLegacyConfig(config: SonataConfig): {
+  models: Record<string, UnifiedModelConfig>;
+  tiers: Record<string, TierLists>;
+} {
+  const models: Record<string, UnifiedModelConfig> = {};
+  const normalizedUpstreams = new Map<string, string>();
+
+  for (const [key, model] of Object.entries(config.native?.models ?? {})) {
+    models[key] = { gateway: model.gateway, id: model.id, contextWindow: model.contextWindow };
+    normalizedUpstreams.set(normalizeModelName(model.id), key);
+  }
+
+  const migratedKeys = new Map<string, string>();
+  for (const [oldKey, model] of Object.entries(config.models)) {
+    const candidate = normalizeModelName(oldKey);
+    const upstream = normalizeModelName(model.id);
+    const existingKey = normalizedUpstreams.get(upstream);
+    if (existingKey !== undefined) {
+      models[existingKey] = { ...models[existingKey], harness: model.harness, harnessId: model.id };
+      migratedKeys.set(oldKey, existingKey);
+      continue;
+    }
+    const occupied = models[candidate];
+    if (occupied !== undefined) {
+      // Same normalized key, but different upstream: keep the legacy spelling.
+      models[oldKey] = { harness: model.harness, harnessId: model.id };
+      migratedKeys.set(oldKey, oldKey);
+      continue;
+    }
+    models[candidate] = { harness: model.harness, harnessId: model.id };
+    normalizedUpstreams.set(upstream, candidate);
+    migratedKeys.set(oldKey, candidate);
+  }
+
+  const tiers: Record<string, TierLists> = {};
+  const roles = new Set([...Object.keys(config.generate.roles), ...Object.keys(config.native?.generate ?? {})]);
+  for (const role of roles) {
+    const native = config.native?.generate?.[role] ?? [];
+    const harness = (config.generate.roles[role] ?? []).map((key) => migratedKeys.get(key) ?? key);
+    const ordered = [...native, ...harness].filter((key, index, list) => list.indexOf(key) === index);
+    tiers[role] = { simple: [...ordered], complex: [...ordered] };
+  }
+  return { models, tiers };
 }

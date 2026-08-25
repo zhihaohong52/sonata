@@ -41,3 +41,55 @@ describe('newLines', () => {
     expect(newLines(['a'], ['x', 'y'])).toEqual(['x', 'y']);
   });
 });
+
+import { parseConfig } from '../src/config.js';
+import { migrateLegacyConfig } from '../src/normalize.js';
+
+describe('migrateLegacyConfig', () => {
+  it('merges routes, preserves distinct collisions, and seeds native-first tiers', () => {
+    const config = parseConfig(`
+[native.gateways."openai"]
+base_url = "https://openai.example/v1"
+
+[native.models."gpt-5.6-luna"]
+gateway = "openai"
+id = "gpt-5.6-luna"
+context_window = 128000
+
+[native.models."native-only"]
+gateway = "openai"
+id = "native-only"
+context_window = 128000
+
+[models."opencode-openai-gpt-5.6-luna"]
+harness = "opencode"
+id = "openai/gpt-5.6-luna"
+
+[models."pi-openrouter-kimi-k3"]
+harness = "pi"
+id = "openrouter/kimi-k3"
+
+[models."opencode-openai-native-only"]
+harness = "opencode"
+id = "openai/different-model"
+
+[generate.roles]
+code = ["opencode-openai-gpt-5.6-luna", "pi-openrouter-kimi-k3"]
+review = ["opencode-openai-native-only"]
+
+[generate.native]
+code = ["gpt-5.6-luna", "native-only"]
+review = ["native-only"]
+`);
+    const migrated = migrateLegacyConfig(config);
+    expect(migrated.models['gpt-5.6-luna']).toMatchObject({
+      gateway: 'openai', id: 'gpt-5.6-luna', harness: 'opencode', harnessId: 'openai/gpt-5.6-luna',
+    });
+    expect(migrated.models['kimi-k3']).toMatchObject({ harness: 'pi', harnessId: 'openrouter/kimi-k3' });
+    expect(migrated.models['native-only']).toMatchObject({ gateway: 'openai', id: 'native-only' });
+    expect(migrated.models['opencode-openai-native-only']).toMatchObject({ harness: 'opencode' });
+    expect(migrated.tiers.code.simple).toEqual(['gpt-5.6-luna', 'native-only', 'kimi-k3']);
+    expect(migrated.tiers.code.complex).toEqual(['gpt-5.6-luna', 'native-only', 'kimi-k3']);
+    expect(migrated.tiers.review.simple).toEqual(['native-only', 'opencode-openai-native-only']);
+  });
+});
