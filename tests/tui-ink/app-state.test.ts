@@ -11,6 +11,7 @@ import {
   validateProviderUrl,
   providersForHarnesses,
   reduceInit,
+  tierPickerKeys,
   type CandidateOption,
   type ProviderOption,
 } from '../../src/tui-ink/app-state.js';
@@ -275,5 +276,23 @@ describe('validateProviderUrl', () => {
 
   it('accepts a well-formed https URL', () => {
     expect(validateProviderUrl('https://example.com/v1')).toBeUndefined();
+  });
+});
+
+describe('tierPickerKeys', () => {
+  it('keeps native keys in order when nothing is missing', () => {
+    expect(tierPickerKeys(['a', 'b'], ['b', 'a'])).toEqual(['a', 'b']);
+  });
+
+  it('appends a saved ranking key that has no native route, so it survives a no-op confirm', () => {
+    // RankedSelect's initialIndices silently drops any initialRanked value
+    // missing from items — a harness-only fallback preserved in state.tiers
+    // but absent from nativeKeys must still appear here or merely confirming
+    // the screen would rewrite the tier without it.
+    expect(tierPickerKeys(['a', 'b'], ['harness-only', 'a'])).toEqual(['a', 'b', 'harness-only']);
+  });
+
+  it('is empty when there are no native keys and nothing saved', () => {
+    expect(tierPickerKeys([], [])).toEqual([]);
   });
 });

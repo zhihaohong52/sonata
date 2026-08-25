@@ -156,6 +156,21 @@ export function candidatesForProviders(candidates: CandidateOption[], providers:
 }
 
 /**
+ * The keys a tier's RankedSelect screen offers, in stable order.
+ *
+ * A saved ranking can name a harness-only key that has no native route and
+ * is therefore absent from `nativeKeys` — RankedSelect's `initialIndices`
+ * silently drops any `initialRanked` value missing from `items`, so building
+ * items from `nativeKeys` alone would make merely confirming this screen
+ * rewrite the tier without that fallback. Appending the missing keys keeps
+ * them selectable and preserved across a no-op confirm.
+ */
+export function tierPickerKeys(nativeKeys: string[], initialRanked: string[]): string[] {
+  const fallbackKeys = initialRanked.filter((key) => !nativeKeys.includes(key));
+  return [...nativeKeys, ...fallbackKeys];
+}
+
+/**
  * Providers with an actually detected credential — the bulk-import screen's
  * contents. A harness's model catalogue listing a provider is not the same as
  * a credential existing for it. Covers both a codex/opencode OAuth grant and a

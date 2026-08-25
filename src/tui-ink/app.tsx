@@ -7,6 +7,7 @@ import { loadAaCatalog, proposeTiers } from '../catalog.js';
 import {
   applyStep,
   candidatesForProviders,
+  tierPickerKeys,
   type AvailableCredentials,
   type CandidateOption,
   type ProviderOption,
@@ -195,7 +196,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       return <RankedSelect
         key={`${role}-${tier}`}
         title={`${role}: ${tier} models`}
-        items={(state.nativeKeys ?? []).map((key) => ({ value: key, label: key }))}
+        items={tierPickerKeys(state.nativeKeys ?? [], initialRanked).map((key) => ({ value: key, label: key }))}
         initialRanked={initialRanked}
         footer={footer}
         onSubmit={(ranked) => {
