@@ -190,6 +190,7 @@ export function parseConfig(text: string): SonataConfig {
       const harnessId = typeof d.harness === 'string'
         ? (typeof d.harness_id === 'string'
           ? d.harness_id
+          : d.harness === 'claude' ? name
           : QUALIFIED_ID_HARNESSES.includes(d.harness) ? `${d.gateway}/${d.id}` : d.id)
         : undefined;
       unifiedModels[name] = {

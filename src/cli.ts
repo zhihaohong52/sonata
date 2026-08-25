@@ -69,7 +69,7 @@ function packageRoot(): string {
   return join(fileURLToPath(new URL('.', import.meta.url)), '..');
 }
 
-async function main(argv: string[]): Promise<number> {
+export async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
 
   if (!command || command === 'help' || command === '--help' || command === '-h') {
@@ -229,6 +229,7 @@ async function main(argv: string[]): Promise<number> {
       }
       return 1;
     }
+    if (res.state === 'STALLED') return 3;
     return 0;
   }
 

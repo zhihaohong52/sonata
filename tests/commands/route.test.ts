@@ -417,28 +417,30 @@ describe('cmdRouteSession', () => {
     expect(readSessions(routeSessionsFile(cwd))).toEqual([]);
   });
 
-  it('rechecks the registry before turning routing off after the last session ends', async () => {
+  it('serializes a last-session end against a concurrent start through the lock', async () => {
     const o = opts();
     await cmdRouteSession('start', 's1', o, deps);
 
-    // The race: ending the last session empties the registry, and the old code
-    // then turned routing off unconditionally. A concurrent SessionStart landing
-    // in that gap registered a new id and was then un-routed by the stale `off`.
-    // Reproduced deterministically by exploiting the microtask boundary: the end
-    // call's synchronous body removes s1 and defers the recheck to a queued
-    // microtask, so a start issued before `await`-ing it writes s2 to the
-    // registry first — exactly the interleaving the recheck must see.
+    // Issue the last-session end and a new SessionStart back to back. The end's
+    // critical section acquires the lock synchronously and runs read-write-decide
+    // atomically, so it sees only s1 and commits to `off`; the start blocks on
+    // the lock and, once released, registers s2 and turns routing back on. Under
+    // the old two-lock code the end's recheck ran on a later tick and observed
+    // s2 written in the gap — leaving routing silently off while s2 was counted.
     const endPromise = cmdRouteSession('end', 's1', o, deps);
     const startPromise = cmdRouteSession('start', 's2', o, deps);
 
     const ended = await endPromise;
-    // The recheck observed s2 and left routing alone instead of firing `off`.
-    expect(ended).toEqual({ sessions: 1, routing: 'on' });
-    await startPromise;
+    // The end ran first and committed to off against the empty registry.
+    expect(ended).toEqual({ sessions: 0, routing: 'off' });
+    const started = await startPromise;
+    // The start then re-registered on top of the completed write, not mid-write.
+    expect(started).toEqual({ sessions: 1, routing: 'on' });
+    // Registry and routing agree: s2 is counted and routing is on.
+    expect(readSessions(routeSessionsFile(cwd))).toEqual(['s2']);
     expect((await cmdRoute('status', o))?.on).toBe(true);
 
-    // Now genuinely the last session — the recheck sees an empty registry and
-    // commits to off.
+    // Now genuinely the last session — routing turns off.
     const last = await cmdRouteSession('end', 's2', o, deps);
     expect(last).toEqual({ sessions: 0, routing: 'off' });
     expect((await cmdRoute('status', o))?.on).toBe(false);
@@ -526,6 +528,11 @@ describe('cmdRouteSession', () => {
 
     const o = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
     await expect(cmdRouteSession('start', 's1', o)).rejects.toThrow(/different sonata configuration/);
+    // The identity collision is detected before any state is written: the
+    // session is not registered and routing is not turned on for a router that
+    // would serve the wrong config.
+    expect(existsSync(routeSessionsFile(cwd))).toBe(false);
+    expect(existsSync(routeSettingsFile(cwd))).toBe(false);
   });
 });
 describe('configless route sessions', () => {

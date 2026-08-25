@@ -676,6 +676,30 @@ base_url = "https://openai.example/v1"
     expect(config.models['gpt-5.6-sol']).toEqual({ harness: 'codex', id: 'gpt-5.6-sol' });
   });
 
+  it('defaults a unified claude harness id to the config key when no harness_id is set', () => {
+    // The claude harness dispatches `claude -p` for the config's own key; the
+    // unified entry's `id` names the native upstream model, which is not the
+    // model the harness launches. Defaulting to that id (or to a synthesized
+    // `<gateway>/<id>`) would send `sonata dispatch` an id that names no
+    // reachable Claude Code model — the key is what `harnessModelFor` must
+    // report.
+    const config = parseConfig(`
+[models."my-model"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+harness = "claude"
+
+[native.gateways."acme"]
+base_url = "https://acme.example/v1"
+`);
+    expect(config.unifiedModels['my-model']).toMatchObject({
+      harness: 'claude', harnessId: 'my-model',
+    });
+    expect(config.models['my-model']).toEqual({ harness: 'claude', id: 'my-model' });
+    expect(harnessModelFor(config, 'my-model'))
+      .toEqual({ harness: 'claude', id: 'my-model' });
+  });
+
   it('resolveTierAlias returns ranked routes for sonata-<role>-<tier>', () => {
     const config = parseConfig(TIERED);
     const resolved = resolveTierAlias(config, 'sonata-code-complex');

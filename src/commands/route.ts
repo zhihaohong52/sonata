@@ -247,7 +247,7 @@ export function writeSessions(file: string, ids: string[]): void {
   writeFileSync(file, `${JSON.stringify(ids, null, 2)}\n`);
 }
 
-async function withSessionLock<T>(file: string, fn: () => T): Promise<T> {
+async function withSessionLock<T>(file: string, fn: () => T | Promise<T>): Promise<T> {
   const lock = `${file}.lock`;
   mkdirSync(dirname(file), { recursive: true });
   const deadline = Date.now() + 2000;
@@ -267,7 +267,7 @@ async function withSessionLock<T>(file: string, fn: () => T): Promise<T> {
     }
   }
   try {
-    return fn();
+    return await fn();
   } finally {
     if (held) { try { rmSync(lock, { recursive: true, force: true }); } catch { /* already gone */ } }
   }
@@ -526,35 +526,34 @@ export async function cmdRouteSession(
   loadConfig(opts.cwd, opts.home);
 
   if (phase === 'end') {
-    const remaining = await withSessionLock(registry, () => {
+    // The zero-session decision and the `off` transition must be one atomic
+    // critical section — deciding "zero remain" and then acting on it as two
+    // separate lock acquisitions leaves a gap where a concurrent SessionStart
+    // can register and turn routing on, only for this stale decision to turn
+    // it back off. Doing the read, write, decision, and (conditionally)
+    // `cmdRoute('off')` inside a single lock hold closes that gap: whichever
+    // of a concurrent start/end's lock acquisitions runs second always sees
+    // the other's completed write.
+    return await withSessionLock(registry, async () => {
       const current = readSessions(registry);
       const left = current.filter((id) => id !== sessionId);
       writeSessions(registry, left);
-      return left;
+      if (left.length > 0) return { sessions: left.length, routing: 'on' };
+      await cmdRoute('off', opts);
+      return { sessions: 0, routing: 'off' };
     });
-    if (remaining.length > 0) return { sessions: remaining.length, routing: 'on' };
-    // A concurrent SessionStart could have registered a new session in the
-    // gap between the write above and here — recheck under the lock right
-    // before committing to the `off` transition so that race can't turn
-    // routing off underneath a session that just started.
-    const stillEmpty = await withSessionLock(registry, () => readSessions(registry).length === 0);
-    if (!stillEmpty) {
-      return { sessions: readSessions(registry).length, routing: 'on' };
-    }
-    await cmdRoute('off', opts);
-    return { sessions: 0, routing: 'off' };
   }
-
-  await withSessionLock(registry, () => {
-    const current = readSessions(registry);
-    writeSessions(registry, current.includes(sessionId) ? current : [...current, sessionId]);
-  });
-  await cmdRoute('on', opts);
 
   // `route on` installs the ensure-serve hook, but that hook cannot fire in the
   // session that just started — it was added after launch. So auto mode starts
   // the router here, the way `sonata code` does, or the session's first native
   // dispatch caches a connection error from a router that is not there.
+  //
+  // This whole block runs BEFORE the session is registered or routing is
+  // turned on: the SessionStart hook that calls this command ignores a
+  // thrown/nonzero exit, so if this validation happened after those writes,
+  // a same-port-different-config collision would still leave the session
+  // registered and routed through the wrong router despite the error.
   const probe = deps.probe ?? isSonataRouter;
   const startDaemon = deps.startDaemon ?? startServeDaemon;
   // Global routing is one shared router for every project — its config has
@@ -588,6 +587,12 @@ export async function cmdRouteSession(
       await startDaemon(opts.home, opts.serveArgv, {}, configCwd);
     }
   }
+
+  await withSessionLock(registry, () => {
+    const current = readSessions(registry);
+    writeSessions(registry, current.includes(sessionId) ? current : [...current, sessionId]);
+  });
+  await cmdRoute('on', opts);
 
   const after = readSessions(registry);
   return { sessions: after.length, routing: 'on' };
