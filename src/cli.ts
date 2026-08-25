@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { cmdRun } from './commands/run.js';
 import { cmdDispatch } from './commands/dispatch.js';
 import { cmdTail } from './commands/tail.js';
+import { cmdWait } from './commands/wait.js';
 import { loadConfig } from './config.js';
 import { cmdApprove } from './commands/approve.js';
 import { cmdSync } from './commands/sync.js';
@@ -32,6 +33,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata run       launch a harness run, print its id
   sonata dispatch  run a ranked tier with harness fallback
   sonata tail      poll a run for progress
+  sonata wait      resume a RUNNING or approved run and block for its next state
   sonata approve   answer a pending approval
   sonata gc        kill finished tmux sessions
   sonata log       print a run's whole transcript (tail returns only new lines)
@@ -185,12 +187,16 @@ async function main(argv: string[]): Promise<number> {
       options: {
         tier: { type: 'string' },
         model: { type: 'string' },
+        role: { type: 'string' },
         'task-file': { type: 'string' },
         'roles-dir': { type: 'string' },
       },
     });
     if ((values.tier === undefined) === (values.model === undefined)) {
       throw new Error('sonata dispatch requires exactly one of --tier or --model');
+    }
+    if (values.role !== undefined && values.tier !== undefined) {
+      throw new Error('sonata dispatch: --role only applies to --model; --tier\'s alias already names a role');
     }
     if (values['task-file'] !== undefined && positionals.length > 0) {
       throw new Error('sonata dispatch accepts positional task text only without --task-file');
@@ -204,6 +210,7 @@ async function main(argv: string[]): Promise<number> {
       home: homedir(),
       tier: values.tier,
       model: values.model,
+      role: values.role,
       task,
       rolesDir: values['roles-dir'] ?? join(packageRoot(), 'roles'),
       sessionId: process.env.CLAUDE_CODE_SESSION_ID,
@@ -244,6 +251,31 @@ async function main(argv: string[]): Promise<number> {
       console.log(res.state);
       for (const l of res.lines) console.log(`  ${l}`);
       if (res.prompt) console.log(`  PROMPT: ${res.prompt}`);
+      if (res.report) console.log(`\n${res.report}`);
+    }
+    return res.state === 'STALLED' ? 3 : 0;
+  }
+
+  if (command === 'wait') {
+    const { values, positionals } = parseArgs({
+      args: rest,
+      allowPositionals: true,
+      options: { json: { type: 'boolean', default: false } },
+    });
+    const id = positionals[0];
+    if (!id) throw new Error('sonata wait requires a run id');
+    const res = await cmdWait({ cwd: process.cwd(), id });
+    if (values.json) {
+      console.log(JSON.stringify(res));
+    } else {
+      console.log(res.state);
+      for (const l of res.lines) console.log(`  ${l}`);
+      if (res.prompt) {
+        console.log(`  PROMPT: ${res.prompt}`);
+        console.log(`sonata approve ${id}`);
+      } else if (res.state === 'RUNNING') {
+        console.log(`sonata wait ${id}`);
+      }
       if (res.report) console.log(`\n${res.report}`);
     }
     return res.state === 'STALLED' ? 3 : 0;

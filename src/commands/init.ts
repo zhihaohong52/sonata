@@ -1085,6 +1085,13 @@ async function runInit(
   const alreadyGlobal = hookInstalled(readSettings(settingsPath('global', opts.cwd, opts.home)), command);
   const alreadyProject = hookInstalled(readSettings(settingsPath('project', opts.cwd, opts.home)), command);
 
+  // Where an already-installed hook actually lives — kept separate from
+  // `scope` so an upgrade (hook present, but its settings file still carries
+  // the pre-dispatch-CLI MCP tool names) still gets its allow-list checked
+  // below, even though `scope` itself becomes 'skip' for "no new hook to ask
+  // about".
+  const existingHookScope: HookScope | undefined = alreadyGlobal ? 'global' : alreadyProject ? 'project' : undefined;
+
   let scope: HookScope | 'skip';
   if (opts.scope) {
     scope = opts.scope;
@@ -1156,13 +1163,23 @@ async function runInit(
   out(`  ✓ wrote ${configPathResolved}`);
 
   let hookChanged = false;
-  if (scope !== 'skip') {
-    const path = settingsPath(scope, opts.cwd, opts.home);
-    const withHook = installHook(readSettings(path), command);
+  // Refresh the allow-list at whichever scope the hook actually lives in —
+  // scope !== 'skip' for a fresh install, or existingHookScope when it was
+  // already there (an upgrade from the MCP-based release otherwise keeps
+  // its old mcp__sonata__* entries forever, since "hook already installed"
+  // used to mean skipping this whole block).
+  const allowListScope = scope !== 'skip' ? scope : existingHookScope;
+  if (allowListScope !== undefined) {
+    const path = settingsPath(allowListScope, opts.cwd, opts.home);
+    const withHook = scope !== 'skip'
+      ? installHook(readSettings(path), command)
+      : { settings: readSettings(path), changed: false };
     const withAllow = allowSonataTools(withHook.settings);
     if (withHook.changed || withAllow.changed) writeSettings(path, withAllow.settings);
     hookChanged = withHook.changed;
-    out(withHook.changed ? `  ✓ installed hook in ${path}` : `  · hook already present in ${path}`);
+    if (scope !== 'skip') {
+      out(withHook.changed ? `  ✓ installed hook in ${path}` : `  · hook already present in ${path}`);
+    }
     out(withAllow.changed
       ? `  ✓ allow-listed the sonata tools in ${path}`
       : `  · sonata tools already allow-listed in ${path}`);

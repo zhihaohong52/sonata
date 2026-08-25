@@ -128,4 +128,15 @@ describe('cmdDispatch', () => {
     await expect(cmdDispatch({ ...opts(), tier: undefined, model: 'missing' }, {}))
       .rejects.toThrow(/missing/);
   });
+
+  it('--model defaults to the code role, but --role overrides it', async () => {
+    const seenRoles: string[] = [];
+    const run = async (o: { role: string }) => { seenRoles.push(o.role); return { id: 'r1', session: 's', interactive: false }; };
+    const wait = async () => ({ id: 'r1', state: 'DONE', report: 'ok', degraded: false, lines: [] }) as never;
+
+    await cmdDispatch({ ...opts(), tier: undefined, model: 'terra' }, { run, wait });
+    await cmdDispatch({ ...opts(), tier: undefined, model: 'terra', role: 'review' }, { run, wait });
+
+    expect(seenRoles).toEqual(['code', 'review']);
+  });
 });

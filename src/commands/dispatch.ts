@@ -18,6 +18,8 @@ export interface DispatchOptions {
   home: string;
   tier?: string;
   model?: string;
+  /** Role to dispatch as — only meaningful with --model; --tier's alias already names one. */
+  role?: string;
   task: string;
   rolesDir: string;
   sessionId?: string;
@@ -80,6 +82,11 @@ export async function cmdDispatch(
     if (!harnessModelFor(config, opts.model!)) {
       throw new Error(`sonata dispatch: model "${opts.model}" has no harness route`);
     }
+    // Unlike --tier, a bare --model key carries no role of its own — a
+    // legacy config's review-<model>/explore-<model> wrapper depends on
+    // this being right, since running the wrong role's prompt under a
+    // read-only role's own permission policy would let it write.
+    role = opts.role ?? 'code';
     candidates.push(opts.model!);
   }
 

@@ -42,7 +42,7 @@ import {
 } from '../src/commands/init.js';
 import { reconcilePerRoleModels } from '../src/commands/init.js';
 import { providersForHarnesses } from '../src/tui-ink/app-state.js';
-import { readSettings } from '../src/settings.js';
+import { readSettings, writeSettings, installHook, hookCommand } from '../src/settings.js';
 import { writeSonataKey } from '../src/native/credentials.js';
 import { credentialDir, credentialFileFor } from '../src/native/oauth-login.js';
 import { parseConfig, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL } from '../src/config.js';
@@ -675,6 +675,45 @@ describe('cmdInit — per-role models', () => {
     expect(cfg.native?.generate.code?.sort()).toEqual(['openrouter-grok-4.5', 'openrouter-kimi-k3']);
     expect(cfg.native?.generate.review).toHaveLength(2);
     expect(res.agentsWritten.length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe('cmdInit — allow-list upgrade', () => {
+  it('refreshes a stale Bash allow-list even when the hook is already installed', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'init-upgrade-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'init-upgrade-home-'));
+    const detect = async () => ({
+      tmux: { installed: true, version: '3.7b', problems: [] },
+      harnesses: [{
+        name: 'opencode', installed: true, version: '1.18.16', supported: true,
+        refs: parseOpenCodeRefs('openrouter/kimi-k3\n'),
+        authedProviders: ['openrouter'], problems: [],
+        providerBaseUrls: { openrouter: 'https://openrouter.ai/api/v1' },
+      }],
+    });
+
+    // Simulate a settings file from before the MCP -> dispatch-CLI switch:
+    // the hook is installed (so init would normally treat it as "nothing to
+    // do here"), but permissions.allow still names the removed MCP tools.
+    const settingsPath = join(cwd, '.claude', 'settings.json');
+    const { settings } = installHook({}, hookCommand('/pkg'));
+    writeSettings(settingsPath, {
+      ...settings,
+      permissions: { allow: ['mcp__sonata__dispatch', 'mcp__sonata__wait', 'mcp__sonata__approve'] },
+    });
+
+    await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['opencode/openrouter'], models: ['openrouter-kimi-k3'],
+      roles: ['code'], write: () => {},
+    });
+
+    const after = readSettings(settingsPath);
+    expect(after.permissions?.allow).toEqual(expect.arrayContaining([
+      'Bash(sonata dispatch:*)', 'Bash(sonata wait:*)', 'Bash(sonata approve:*)',
+    ]));
+    // The stale entries are harmless to keep, but the point is the new ones exist.
+    expect(after.permissions?.allow).toContain('mcp__sonata__dispatch');
   });
 });
 
