@@ -27,6 +27,8 @@ export interface DispatchAttempt {
   modelKey: string;
   state: string;
   degraded: boolean;
+  /** Set when the launch or wait itself threw, before any run state existed. */
+  error?: string;
 }
 
 export interface DispatchOutcome {
@@ -101,7 +103,10 @@ export async function cmdDispatch(
       launched = await run(runOpts);
       lastId = launched.id;
     } catch (err) {
-      attempts.push({ modelKey, state: 'FAILED', degraded: true });
+      attempts.push({
+        modelKey, state: 'FAILED', degraded: true,
+        error: err instanceof Error ? err.message : String(err),
+      });
       continue;
     }
 
@@ -111,7 +116,10 @@ export async function cmdDispatch(
         result = await wait({ cwd: opts.cwd, id: launched.id });
       } while (result.state === 'RUNNING');
     } catch (err) {
-      attempts.push({ modelKey, state: 'FAILED', degraded: true });
+      attempts.push({
+        modelKey, state: 'FAILED', degraded: true,
+        error: err instanceof Error ? err.message : String(err),
+      });
       continue;
     }
 

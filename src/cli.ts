@@ -86,6 +86,7 @@ async function main(argv: string[]): Promise<number> {
         'credential-source': { type: 'string', multiple: true },
         'config-scope': { type: 'string' },
         scope: { type: 'string' },
+        routing: { type: 'string' },
         // No default: `undefined` means "unanswered", which lets cmdInit fall
         // through to the interactive prompt. `false` would suppress it.
         prune: { type: 'boolean' },
@@ -95,6 +96,11 @@ async function main(argv: string[]): Promise<number> {
     const scope = values.scope as HookScope | 'skip' | undefined;
     if (scope && !['project', 'global', 'skip'].includes(scope)) {
       throw new Error(`sonata init: --scope must be project, global or skip (got "${scope}")`);
+    }
+
+    const routing = values.routing as 'project' | 'global' | 'skip' | undefined;
+    if (routing && !['project', 'global', 'skip'].includes(routing)) {
+      throw new Error(`sonata init: --routing must be project, global or skip (got "${routing}")`);
     }
 
     const configScope = values['config-scope'] as 'project' | 'global' | undefined;
@@ -118,6 +124,7 @@ async function main(argv: string[]): Promise<number> {
         roles: split(values.roles),
         credentialSource: values['credential-source'],
         scope,
+        routing,
         configScope,
         prune: values.prune,
       });
@@ -211,7 +218,7 @@ async function main(argv: string[]): Promise<number> {
     }
     if (res.state === 'FAILED') {
       for (const attempt of res.attempts) {
-        console.log(`  ${attempt.modelKey}: ${attempt.state}${attempt.degraded ? ' (degraded)' : ''}`);
+        console.log(`  ${attempt.modelKey}: ${attempt.state}${attempt.degraded ? ' (degraded)' : ''}${attempt.error ? ` — ${attempt.error}` : ''}`);
       }
       return 1;
     }

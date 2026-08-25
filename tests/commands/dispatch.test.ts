@@ -67,6 +67,7 @@ describe('cmdDispatch', () => {
     });
     expect(ran).toEqual(['flash', 'terra']);
     expect(outcome.state).toBe('DONE');
+    expect(outcome.attempts[0]).toMatchObject({ modelKey: 'flash', state: 'FAILED', error: 'database is locked' });
   });
 
   it('returns PAUSED immediately — an approval is not a failure', async () => {
