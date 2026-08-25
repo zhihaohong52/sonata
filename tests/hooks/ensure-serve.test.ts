@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { createServer } from 'node:http';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, delimiter } from 'node:path';
 
 const run = promisify(execFile);
 
@@ -17,9 +17,10 @@ const SCRIPT = join(process.cwd(), 'hooks', 'ensure-serve.mjs');
 async function invoke(
   args: string[],
   cwd = process.cwd(),
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ code: number | null; signal: string | null; stderr: string }> {
   try {
-    await run('node', [SCRIPT, ...args], { cwd, timeout: 15000 });
+    await run('node', [SCRIPT, ...args], { cwd, timeout: 15000, env });
     return { code: 0, signal: null, stderr: '' };
   } catch (err) {
     const e = err as { code: number | null; signal: string | null; stdout: string; stderr: string };
@@ -61,6 +62,49 @@ describe('ensure-serve SessionStart hook', () => {
     const port = typeof addr === 'object' && addr ? addr.port : 0;
     try {
       const { code, signal, stderr } = await invoke([String(port)], cwd);
+      expect(code).toBe(1);
+      expect(signal).toBe(null);
+      expect(stderr).toContain('different sonata configuration');
+    } finally {
+      server.close();
+    }
+  });
+
+  it('exits 1 when its own post-spawn probe reports a different config', async () => {
+    // Simulates the race the pre-spawn check alone cannot catch: nothing is
+    // listening on the first probe (so the hook spawns its own daemon), but by
+    // the time the wait loop's first health probe goes out, another project's
+    // daemon has won the port — the hook must fail loud, not quietly adopt a
+    // router whose config it never checked.
+    const cwd = mkdtempSync(join(tmpdir(), 'ensure-serve-race-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '');
+
+    // The spawned daemon is detached with stdio ignored, but `spawn('sonata', …)`
+    // still has to resolve a binary — put a no-op stub on PATH so the ENOENT
+    // uncaught 'error' event doesn't kill the hook before its wait loop runs.
+    const binDir = mkdtempSync(join(tmpdir(), 'ensure-serve-bin-'));
+    writeFileSync(join(binDir, 'sonata'), '#!/usr/bin/env node\nprocess.exit(0);\n', { mode: 0o755 });
+
+    let probes = 0;
+    const server = createServer((_req, res) => {
+      probes += 1;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (probes === 1) {
+        // "Nothing running yet": the pre-spawn probe finds no router at all.
+        res.end('{}');
+      } else {
+        res.end(JSON.stringify({ status: 'ok', sonata: true, configPath: '/some/other/project/sonata.toml' }));
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    try {
+      const { code, signal, stderr } = await invoke(
+        [String(port)],
+        cwd,
+        { ...process.env, PATH: `${binDir}${delimiter}${process.env.PATH}` },
+      );
       expect(code).toBe(1);
       expect(signal).toBe(null);
       expect(stderr).toContain('different sonata configuration');

@@ -457,6 +457,7 @@ export function nativeTomlFor(
   selectedTiers?: Record<string, { simple: string[]; complex: string[] }>,
   extraModels: Record<string, { harness?: string; harnessId?: string }> = {},
   allChosen: readonly NativeCandidate[] = [],
+  existingRun?: SonataConfig['run'],
 ): string {
   const allModels = new Map<string, NativeCandidate>();
   for (const cands of Object.values(roleModels)) {
@@ -514,9 +515,10 @@ export function nativeTomlFor(
 
   lines.push(
     '[run]',
-    'tail_window_seconds = 20',
-    'stall_timeout_seconds = 120',
-    'run_timeout_seconds = 1800',
+    `tail_window_seconds = ${existingRun?.tailWindowSeconds ?? 20}`,
+    `stall_timeout_seconds = ${existingRun?.stallTimeoutSeconds ?? 120}`,
+    `run_timeout_seconds = ${existingRun?.runTimeoutSeconds ?? 1800}`,
+    `dispatch_window_seconds = ${existingRun?.dispatchWindowSeconds ?? 1500}`,
     '',
   );
   return lines.join('\n');
@@ -1173,7 +1175,7 @@ async function runInit(
   }
 
   mkdirSync(dirname(configPathResolved), { recursive: true });
-  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources, tiers, migratedModels, chosenNative));
+  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources, tiers, migratedModels, chosenNative, configsByScope[configScope]?.run));
   out(`  ✓ wrote ${configPathResolved}`);
 
   let hookChanged = false;

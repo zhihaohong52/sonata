@@ -548,6 +548,34 @@ describe('nativeTomlFor', () => {
     expect(cfg.tiers?.code.simple).toEqual(['opencode-kimi-k3']);
     expect([...(cfg.tiers?.review.complex ?? [])].sort()).toEqual(['opencode-grok-4.5', 'opencode-kimi-k3']);
   });
+
+  it('emits hardcoded [run] defaults when no existing run settings are given', () => {
+    const out = nativeTomlFor({ code: [cand('opencode', 'kimi-k3')] });
+    expect(out).toContain('tail_window_seconds = 20');
+    expect(out).toContain('stall_timeout_seconds = 120');
+    expect(out).toContain('run_timeout_seconds = 1800');
+    expect(out).toContain('dispatch_window_seconds = 1500');
+  });
+
+  it('preserves existing [run] settings when given', () => {
+    const out = nativeTomlFor(
+      { code: [cand('opencode', 'kimi-k3')] },
+      {},
+      undefined,
+      {},
+      [],
+      {
+        tailWindowSeconds: 33,
+        stallTimeoutSeconds: 222,
+        runTimeoutSeconds: 4444,
+        dispatchWindowSeconds: 3000,
+      },
+    );
+    expect(out).toContain('tail_window_seconds = 33');
+    expect(out).toContain('stall_timeout_seconds = 222');
+    expect(out).toContain('run_timeout_seconds = 4444');
+    expect(out).toContain('dispatch_window_seconds = 3000');
+  });
 });
 
 describe('HarnessStatus.refs', () => {

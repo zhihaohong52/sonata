@@ -82,9 +82,28 @@ if (Number.isInteger(port) && port > 0) {
     daemon.unref();
 
     const deadline = Date.now() + 10_000;
+    let started = null;
     while (Date.now() < deadline) {
-      if (await probeHealth(1000)) break;
+      started = await probeHealth(1000);
+      if (started) break;
       await new Promise((r) => setTimeout(r, 500));
+    }
+    if (started) {
+      // A concurrent `route on` in another project could have won the race
+      // to bind this same default port with ITS daemon between the probe
+      // above and this wait loop breaking — verify identity again now that
+      // something is confirmed to be listening, the same check the
+      // pre-existing branch above already does.
+      const expected = expectedConfigPath();
+      if (expected !== null && typeof started.configPath === 'string' && started.configPath !== expected) {
+        console.error(
+          `sonata: router port ${port} is already serving a different sonata configuration ` +
+          `(${started.configPath}) than this session resolves to (${expected}). Two ` +
+          'projects cannot share one router port — set a different [native.ports].router ' +
+          'in one of the two configs, then restart the router with `sonata restart`.',
+        );
+        process.exit(1);
+      }
     }
   } catch {
     // A hook must never break the session it observes.

@@ -59,17 +59,24 @@ answering.
       spec once reached the model as a single sentence, so it never saw the
       instructions it was meant to follow.
     - If the caller instead gave you the task as inline text, pipe it
-      through stdin using a single-quoted heredoc — the quotes around the
-      delimiter disable all shell expansion inside the heredoc body, so
-      backticks, \`$(...)\`, and \`$HOME\`-style text pass through byte for
-      byte with nothing to escape:
+      through stdin using a single-quoted heredoc whose delimiter you
+      generate randomly first — never the same literal delimiter every
+      time, since a task that happens to contain that exact line as text
+      would terminate the heredoc early and leak the remainder of the task
+      into the shell as commands:
 
-          sonata dispatch --model ${spec.model} --role ${spec.role} --task-stdin <<'SONATA_TASK_EOF'
+          DELIM="SONATA_TASK_$(head -c 16 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
+          sonata dispatch --model ${spec.model} --role ${spec.role} --task-stdin <<"$DELIM"
           <task text verbatim, byte for byte>
-          SONATA_TASK_EOF
+          $DELIM
 
-      Never rewrite, summarise, or add anything to the text between the
-      heredoc markers — reproduce the caller's task exactly as given.
+      The \`<<"$DELIM"\` form still disables all shell expansion in the body
+      (quoting any part of the delimiter word does that, not just quoting
+      a literal string) while using a freshly random value each time —
+      generated independently of the task, so nothing in the task content
+      can predict or reproduce it. Never rewrite, summarise, or add
+      anything to the text between the heredoc markers — reproduce the
+      caller's task exactly as given.
 
    The command blocks until the run is worth reporting, so one call is
    usually the whole job. Do not add your own waiting.
