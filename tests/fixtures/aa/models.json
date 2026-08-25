@@ -1,0 +1,22 @@
+{
+  "data": [
+    {
+      "name": "OpenAI GPT-5.6 Luna",
+      "slug": "openai/gpt-5.6-luna-0731",
+      "evaluations": {"artificial_analysis_coding_index": 72.5},
+      "pricing": {"price_1m_blended_3_to_1": 0.42}
+    },
+    {
+      "name": "DeepSeek V4 Flash",
+      "slug": "deepseek/deepseek-v4-flash",
+      "evaluations": {"artificial_analysis_coding_index": 48},
+      "pricing": {"price_1m_blended_3_to_1": 0.18}
+    },
+    {
+      "name": "Example Model",
+      "slug": "openrouter/example-model",
+      "evaluations": {"artificial_analysis_coding_index": 31},
+      "pricing": {"price_1m_blended_3_to_1": 2.75}
+    }
+  ]
+}

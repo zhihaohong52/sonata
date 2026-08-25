@@ -16,11 +16,13 @@ import { pruneAgents } from './detect.js';
 import type { HookScope } from './settings.js';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove } from './commands/auth.js';
 import { cmdServe, cmdRestart, startServeDaemon } from './commands/serve.js';
 import { cmdCode } from './commands/code.js';
 import { cmdRoute, cmdRouteSession, type RouteAction } from './commands/route.js';
+import { cmdCatalogUpdate } from './commands/catalog.js';
+import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
 
@@ -40,6 +42,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata route     on|off|status — route plain claude sessions through sonata serve
                    auto|manual — route each session for its lifetime, keeping Remote Control
   sonata auth      manage gateway credentials (list/add/remove/login)
+  sonata catalog   show or refresh the Artificial Analysis model catalog
 
   init flags (skip the prompts):
     --yes                    accept defaults, no prompts
@@ -290,6 +293,31 @@ async function main(argv: string[]): Promise<number> {
     });
     for (const c of checks) console.log(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: ${c.detail}`);
     return ok ? 0 : 1;
+  }
+
+  if (command === 'catalog') {
+    const action = rest[0];
+    if (action !== undefined && action !== 'update') {
+      throw new Error('sonata catalog requires update or no subcommand');
+    }
+    if (action === 'update') {
+      const result = await cmdCatalogUpdate(homedir());
+      console.log(`catalog updated: ${result.models} models`);
+      console.log(`  path: ${result.path}`);
+      console.log(`  fetched: ${result.fetchedAt}`);
+      console.log(AA_ATTRIBUTION);
+      return 0;
+    }
+    const path = aaCatalogPath(homedir());
+    const catalog = loadAaCatalog(homedir());
+    if (!catalog || !existsSync(path)) {
+      console.log('no catalog — run sonata catalog update');
+      return 0;
+    }
+    const age = Math.max(0, Date.now() - Date.parse(catalog.fetchedAt));
+    console.log(`catalog: ${catalog.models ? Object.keys(catalog.models).length : 0} models; age ${Math.floor(age / 1000)}s`);
+    console.log(`  path: ${path}`);
+    return 0;
   }
 
   if (command === 'auth') {
