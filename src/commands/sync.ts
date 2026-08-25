@@ -20,7 +20,7 @@ export function agentMarkdown(spec: AgentSpec): string {
 name: ${name}
 description: Delegates ${blurb} to ${spec.model} running under ${spec.harness}. Use when this work should run on ${spec.model} rather than Claude — typically to save cost on bulk work, or to get a different model's judgement.
 model: haiku
-tools: mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve
+tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)
 ---
 
 You are a forwarding wrapper around the sonata runtime. You run ${spec.model}
@@ -177,7 +177,7 @@ export function cmdSync(opts: SyncOptions): SyncResult {
   }
 
   // Native models get both a native agent (for sonata code sessions) and a
-  // wrapper agent (for MCP dispatch from normal sessions via the claude harness).
+  // wrapper agent (for dispatch from normal sessions via the claude harness).
   const nativeWanted = generatedNativeAgents(config);
   for (const { role, model } of nativeWanted) {
     const nativePath = join(opts.agentsDir, `native-${role}-${model}.md`);

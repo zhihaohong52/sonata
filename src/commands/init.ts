@@ -26,7 +26,7 @@ import {
 } from '../detect.js';
 import {
   settingsPath, readSettings, writeSettings, installHook, allowSonataTools,
-  hookInstalled, hookCommand, registerMcp, type HookScope, type Runner,
+  hookInstalled, hookCommand, type HookScope,
 } from '../settings.js';
 import { pruneAgents } from '../detect.js';
 import { cmdSync } from './sync.js';
@@ -122,8 +122,6 @@ export interface InitOptions {
   configScope?: ConfigScope;
   /** Repeatable gateway=source overrides for the scripted path. */
   credentialSource?: string[];
-  /** Injected in tests so registration never shells out to the real binary. */
-  mcpRunner?: Runner;
   prune?: boolean;
   write?: (line: string) => void;
   detect?: Detector;
@@ -158,7 +156,6 @@ export interface InitResult {
   hookChanged: boolean;
   agentsWritten: string[];
   configPath: string;
-  mcpChanged: boolean;
   pruned: string[];
   cancelled?: boolean;
 }
@@ -620,7 +617,7 @@ async function runInit(
     return {
       problems, models: [], roles: [], scope: 'skip', hookChanged: false,
       agentsWritten: [], configPath: join(opts.cwd, 'sonata.toml'),
-      mcpChanged: false, pruned: [],
+      pruned: [],
     };
   }
   for (const p of problems) out(renderProblem(p));
@@ -724,7 +721,7 @@ async function runInit(
         problems, models: [], roles: [], scope: 'skip', hookChanged: false,
         agentsWritten: [], configPath: configPathFor(
           result.state.configScope ?? 'project', opts.cwd, opts.home),
-        mcpChanged: false, pruned: [], cancelled: true,
+        pruned: [], cancelled: true,
       };
     }
 
@@ -992,7 +989,7 @@ async function runInit(
     return {
       problems, models: nativeKeys, roles, scope, hookChanged: false,
       agentsWritten: [], configPath: configPathResolved, cancelled: true,
-      mcpChanged: false, pruned: [],
+      pruned: [],
     };
   }
 
@@ -1026,16 +1023,6 @@ async function runInit(
   const agentsWritten = sync.written;
   out(`  ✓ generated ${agentsWritten.length} agents in ${agentsDir}`);
 
-  const mcpScope = configScope === 'global' ? 'user' : 'project';
-  const mcp = registerMcp(mcpScope, opts.cwd, opts.packageRoot, opts.mcpRunner);
-  if (mcp.changed) {
-    out(`  ✓ registered the sonata MCP server (${mcpScope} scope)`);
-  } else if (mcp.ok) {
-    out('  · MCP server already registered');
-  } else {
-    out('  ! could not register the MCP server — run this by hand:');
-    out(`      ${mcp.command}`);
-  }
 
   const stale = sync.stale;
   let pruned: string[] = [];
@@ -1054,15 +1041,13 @@ async function runInit(
   }
 
   out('');
-  out(mcp.changed
-    ? '  Done. Run /reload-plugins to pick up the new agents, then /mcp to reconnect the sonata MCP server.'
-    : '  Done. Run /reload-plugins to pick up the new agents.');
+  out('  Done. Run /reload-plugins to pick up the new agents.');
   out('  Native sessions: run `sonata code`, or `sonata route on` to route plain claude sessions.');
   out('');
 
   return {
     problems, models: nativeKeys, roles, scope, hookChanged, agentsWritten,
-    configPath: configPathResolved, mcpChanged: mcp.changed, pruned,
+    configPath: configPathResolved, pruned,
   };
 }
 

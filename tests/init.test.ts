@@ -516,7 +516,7 @@ describe('cmdInit — config scope', () => {
   });
 
   it('defaults to the project scope', async () => {
-    const res = await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
+    const res = await cmdInit({ ...args, cwd, home, write });
     expect(res.configPath).toBe(join(cwd, 'sonata.toml'));
   });
 
@@ -589,14 +589,14 @@ describe('cmdInit — per-role models', () => {
   });
 });
 
-describe('cmdInit — MCP and pruning', () => {
+describe('cmdInit — pruning', () => {
   let cwd: string;
   let home: string;
   const write = (_line: string) => {};
 
   beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), 'init-mcp-cwd-'));
-    home = mkdtempSync(join(tmpdir(), 'init-mcp-home-'));
+    cwd = mkdtempSync(join(tmpdir(), 'init-prune-cwd-'));
+    home = mkdtempSync(join(tmpdir(), 'init-prune-home-'));
   });
 
   const detect = async () => ({
@@ -614,38 +614,18 @@ describe('cmdInit — MCP and pruning', () => {
     roles: ['code'], scope: 'skip' as const, configScope: 'project' as const,
   };
 
-  it('asks the claude CLI to register the server at the config\'s scope', async () => {
-    const calls: string[][] = [];
-    const res = await cmdInit({
-      ...args, cwd, home, write,
-      mcpRunner: (_cmd, a) => { calls.push(a); return { ok: true, output: 'Added' }; },
-    });
-
-    expect(res.mcpChanged).toBe(true);
-    expect(calls[0].slice(0, 5)).toEqual(['mcp', 'add', '--scope', 'project', 'sonata']);
-  });
-
-  it('uses the user scope when the config is machine-scoped', async () => {
-    const calls: string[][] = [];
-    await cmdInit({
-      ...args, cwd, home, write, configScope: 'global',
-      mcpRunner: (_cmd, a) => { calls.push(a); return { ok: true, output: 'Added' }; },
-    });
-    expect(calls[0].slice(0, 4)).toEqual(['mcp', 'add', '--scope', 'user']);
-  });
-
   it('does not delete stale agents unless asked', async () => {
-    await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
+    await cmdInit({ ...args, cwd, home, write });
     const dir = join(cwd, '.claude', 'agents');
     writeFileSync(join(dir, 'code-gone.md'), 'forwarding wrapper around the sonata runtime');
 
-    const res = await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
+    const res = await cmdInit({ ...args, cwd, home, write });
     expect(res.pruned).toEqual([]);
     expect(existsSync(join(dir, 'code-gone.md'))).toBe(true);
   });
 
-  it('deletes them when --prune is given', async () => {
-    await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
+  it('deletes stale agents when --prune is given', async () => {
+    await cmdInit({ ...args, cwd, home, write });
     const dir = join(cwd, '.claude', 'agents');
     writeFileSync(join(dir, 'code-gone.md'), 'forwarding wrapper around the sonata runtime');
 
@@ -1232,8 +1212,7 @@ context_window = 128000
     });
 
     await cmdInit({
-      cwd, home, packageRoot: '/pkg', detect, scope: 'skip',
-      mcpRunner: () => ({ ok: true, output: 'Added' }), write: () => {},
+      cwd, home, packageRoot: '/pkg', detect, scope: 'skip', write: () => {},
     });
 
     expect(parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).native!.gateways.codex).toEqual({
@@ -1270,8 +1249,7 @@ context_window = 128000
     });
 
     await expect(cmdInit({
-      cwd, home, packageRoot: '/pkg', detect, scope: 'skip',
-      mcpRunner: () => ({ ok: true, output: 'Added' }), write: () => {},
+      cwd, home, packageRoot: '/pkg', detect, scope: 'skip', write: () => {},
     })).rejects.toThrow(/auth = "api-key".*cannot take its credential from codex/);
   });
 });
@@ -1519,7 +1497,7 @@ describe('cmdInit — BYOK', () => {
 
   it('writes BYOK models to the native config with no harness installed', async () => {
     writeSonataKey(home, 'deepseek', 'sk-test');
-    const res = await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
+    const res = await cmdInit({ ...args, cwd, home, write });
 
     const toml = readFileSync(res.configPath, 'utf8');
     expect(toml).toMatch(/\[native\.gateways\."deepseek"\]/);
@@ -1531,7 +1509,7 @@ describe('cmdInit — BYOK', () => {
   it('does not make a missing harness fatal', async () => {
     // Before BYOK this returned early with severity 'error' and wrote nothing.
     writeSonataKey(home, 'deepseek', 'sk-test');
-    const res = await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
+    const res = await cmdInit({ ...args, cwd, home, write });
     expect(res.problems.some((p) => p.severity === 'error')).toBe(false);
     expect(res.problems.some((p) => p.severity === 'warn')).toBe(true);
     expect(existsSync(res.configPath)).toBe(true);
@@ -1553,7 +1531,6 @@ describe('cmdInit — BYOK', () => {
     const res = await cmdInit({
       packageRoot: '/pkg', yes: true, detect: withOpenrouter, cwd, home, write,
       models: ['openrouter-kimi-k3'], roles: ['code'], scope: 'skip' as const,
-      mcpRunner: () => ({ ok: true, output: 'Added' }),
     });
     expect(res.models).toEqual(['openrouter-kimi-k3']);
   });
@@ -1585,7 +1562,6 @@ describe('cmdInit — BYOK', () => {
     const res = await cmdInit({
       ...args, detect: withOpenrouter, cwd, home, write,
       providers: ['opencode/openrouter'], models: ['openrouter-kimi-k3'],
-      mcpRunner: () => ({ ok: true, output: 'Added' }),
     });
     expect(readFileSync(res.configPath, 'utf8')).toMatch(/\[native\.models\."openrouter-kimi-k3"\]/);
   });
@@ -1593,7 +1569,7 @@ describe('cmdInit — BYOK', () => {
   // The double-init bug, now for a gateway no harness can rediscover.
   it('re-derives a BYOK config on a second init', async () => {
     writeSonataKey(home, 'deepseek', 'sk-test');
-    const res = await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
+    const res = await cmdInit({ ...args, cwd, home, write });
 
     const config = parseConfig(readFileSync(res.configPath, 'utf8'));
     const state = deriveInitState(config, 'project', []);
@@ -1605,13 +1581,13 @@ describe('cmdInit — BYOK', () => {
 
   it('carries a BYOK config through a second init unchanged', async () => {
     writeSonataKey(home, 'deepseek', 'sk-test');
-    const first = await cmdInit({ ...args, cwd, home, write, mcpRunner: () => ({ ok: true, output: 'Added' }) });
+    const first = await cmdInit({ ...args, cwd, home, write });
     const before = readFileSync(first.configPath, 'utf8');
 
     // No flags this time: everything must come back from the config on disk.
     const second = await cmdInit({
       packageRoot: '/pkg', yes: true, detect: noHarness, cwd, home, write,
-      scope: 'skip' as const, mcpRunner: () => ({ ok: true, output: 'Added' }),
+      scope: 'skip' as const,
     });
     expect(second.models).toEqual(['deepseek-deepseek-v4-flash']);
     expect(readFileSync(second.configPath, 'utf8')).toBe(before);

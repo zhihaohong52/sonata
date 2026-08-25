@@ -566,13 +566,10 @@ describe('occupiedPortMessage', () => {
     (async () => new Response(JSON.stringify(body), { status: ok ? 200 : 500 })) as unknown as typeof fetch;
 
   it('names sonata when the port is held by a sonata router', async () => {
-    // The occupant is usually sonata itself: an MCP dispatch to a native model
-    // starts a router inside the `sonata mcp` process, and it lives until
-    // Claude Code restarts. Calling that "a non-sonata listener" sent a user
-    // looking for a foreign program that did not exist.
+    // Health probing distinguishes a Sonata router from an unrelated listener.
     const message = await occupiedPortMessage(4100, health({ status: 'ok', sonata: true }));
     expect(message).toMatch(/another sonata router/);
-    expect(message).toMatch(/sonata mcp/);
+    expect(message).toMatch(/restart it/);
     expect(message).not.toMatch(/non-sonata/);
   });
 

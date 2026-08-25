@@ -40,7 +40,6 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata route     on|off|status — route plain claude sessions through sonata serve
                    auto|manual — route each session for its lifetime, keeping Remote Control
   sonata auth      manage gateway credentials (list/add/remove/login)
-  sonata mcp       start the stdio JSON-RPC server (started by Claude Code; not run by hand)
 
   init flags (skip the prompts):
     --yes                    accept defaults, no prompts
@@ -409,7 +408,7 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === 'restart') {
     // Kills whatever sonata router currently holds the configured port (a
-    // stale daemon, or one MCP-hosted inside a `sonata mcp` process) using
+    // stale daemon or an in-process native router) using
     // only the pid `cmdServe` recorded for itself, then starts a fresh
     // daemon. Plain `sonata serve --daemon` cannot do this: it just times
     // out against `EADDRINUSE` with "the daemon did not answer", which reads
@@ -450,16 +449,6 @@ async function main(argv: string[]): Promise<number> {
     return res.ok ? 0 : 1;
   }
 
-  if (command === 'mcp') {
-    const { runMcpStdio } = await import('./mcp/server.js');
-    await runMcpStdio({
-      cwd: process.cwd(),
-      home: homedir(),
-      rolesDir: join(packageRoot(), 'roles'),
-      sessionId: process.env.CLAUDE_CODE_SESSION_ID,
-    });
-    return 0;
-  }
 
   console.error(`sonata: unknown command "${command ?? ''}"`);
   return 2;

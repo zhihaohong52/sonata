@@ -6,6 +6,13 @@ import type { RunOptions } from './run.js';
 import { cmdWait } from './wait.js';
 import type { WaitResult } from './wait.js';
 
+export const MAX_REPORT_CHARS = 40_000;
+
+export function truncateReport(report: string, id: string, max = MAX_REPORT_CHARS): string {
+  if (report.length <= max) return report;
+  return `${report.slice(0, max)}\n\n[truncated: full transcript at \`sonata log ${id}\`]`;
+}
+
 export interface DispatchOptions {
   cwd: string;
   home: string;
@@ -119,7 +126,7 @@ export async function cmdDispatch(
       id: result.id,
       state: result.state,
       modelKey,
-      report: result.report,
+      report: result.report === undefined ? undefined : truncateReport(result.report, result.id),
       prompt: result.prompt ?? (result.state === 'PAUSED' && result.lines.length > 0
         ? result.lines.join('\n')
         : undefined),

@@ -14,11 +14,6 @@ describe('allow-listing the sonata tools', () => {
     ]);
   });
 
-  it('does not name the removed polling tools', () => {
-    expect(SONATA_TOOLS).not.toContain('mcp__sonata__run');
-    expect(SONATA_TOOLS).not.toContain('mcp__sonata__tail');
-  });
-
   it('adds every tool to an empty settings file', () => {
     const { settings, changed } = allowSonataTools({});
     expect(changed).toBe(true);

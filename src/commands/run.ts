@@ -53,13 +53,11 @@ export function repoContext(cwd: string): string {
 }
 
 /**
- * Whether the working directory hands a harness sonata's own MCP tools.
+ * Whether the working directory still has a stale sonata MCP registration.
  *
  * Reasonix — and any harness that reads a project `.mcp.json` — loads those
- * servers on top of its own config, and reasonix's docs call them "trusted
- * configuration [that needs] no separate launch confirmation". In a repo where
- * sonata is registered at project scope, a dispatched model therefore receives
- * `mcp__sonata__dispatch`/`wait`/`approve` and can start further sonata runs.
+ * servers on top of its own config. A stale registration can therefore expose
+ * a removed server to dispatched models and should be cleaned up by the user.
  *
  * There is no per-run way to withhold them: `reasonix run` has no deny flag,
  * and `reasonix mcp disable` writes the user's own config, which is not

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c ' *)",
+      "Bash(rtk git *)",
+      "Bash(rtk npm *)",
+      "Bash(npm test *)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "sonata"
+  ]
+}

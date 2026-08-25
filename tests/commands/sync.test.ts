@@ -29,11 +29,11 @@ describe('agentMarkdown', () => {
   it('declares a cheap tool-only wrapper', () => {
     expect(md).toContain('name: code-deepseek-v4-flash');
     expect(md).toContain('model: haiku');
-    expect(md).toContain('tools: mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve');
+    expect(md).toContain('tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
   });
 
-  it('does not grant Bash or shell commands', () => {
-    expect(md).not.toMatch(/^tools:.*\bBash\b/m);
+  it('grants only the three sonata Bash commands', () => {
+    expect(md).toContain('tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
     expect(md).not.toContain('sonata run --role');
   });
 
@@ -55,16 +55,17 @@ describe('agentMarkdown', () => {
 describe('agentMarkdown — tool grant', () => {
   const md = () => agentMarkdown({ role: 'code', model: 'm', harness: 'opencode' });
 
-  it('grants only the three sonata MCP tools', () => {
+  it('grants only the three sonata commands', () => {
     expect(md()).toContain(
-      'tools: mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve');
+      'tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
   });
 
-  it('never grants Bash', () => {
-    expect(md()).not.toMatch(/^tools:.*\bBash\b/m);
+  it('does not grant unrelated Bash commands', () => {
+    expect(md()).not.toContain('Bash(ls:*)');
+    expect(md()).not.toContain('Bash(sonata run:*)');
   });
 
-  it('tells the wrapper to call tools, not shell commands', () => {
+  it('tells the wrapper to run only the sonata commands', () => {
     expect(md()).not.toContain('sonata run --role');
   });
 });
@@ -72,8 +73,8 @@ describe('agentMarkdown — tool grant', () => {
 describe('agentMarkdown — one-call dispatch', () => {
   const md = agentMarkdown({ role: 'code', model: 'm', harness: 'opencode' });
 
-  it('grants the three tools the wrapper holds', () => {
-    expect(md).toContain('tools: mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve');
+  it('grants the three commands the wrapper runs', () => {
+    expect(md).toContain('tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
   });
 
   it('never tells the wrapper to poll', () => {
@@ -92,11 +93,11 @@ describe('agentMarkdown — one-call dispatch', () => {
 });
 
 describe('nativeAgentMarkdown', () => {
-  it('generates a native agent with the model id in frontmatter and no MCP tools', () => {
+  it('generates a native agent with the model id in frontmatter and no dispatch tools', () => {
     const md = nativeAgentMarkdown({ role: 'code', model: 'deepseek-v4-flash' });
     expect(md).toMatch(/^name: native-code-deepseek-v4-flash$/m);
     expect(md).toMatch(/^model: deepseek-v4-flash$/m);
-    expect(md).not.toMatch(/mcp__sonata__/);
+    expect(md).not.toMatch(/mcp__legacy__/);
     expect(md).not.toMatch(/forwarding wrapper/);
     expect(md).toContain('sonata code');
   });

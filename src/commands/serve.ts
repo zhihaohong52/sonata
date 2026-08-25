@@ -52,18 +52,16 @@ export interface ServeDeps {
 /**
  * Where a serve instance records its own pid and its litellm child's pid.
  *
- * The router dies with the process that started serve (an MCP reconnect kills
- * it), but the spawned litellm child is reparented and survives. The next
+ * The router dies with the process that started serve, but the spawned litellm
+ * child is reparented and survives. The next
  * serve then cannot bind the litellm port: its own child dies silently, and
  * the new router forwards a new master key to the ORPHANED litellm, whose
  * virtual-key lookup fails as "No connected db". Measured 2026-08-20, twice.
  * Recording the pid lets the next serve kill its predecessor's orphan —
  * only a pid sonata itself recorded is ever killed.
  *
- * `routerPid` is `process.pid` at the point the router successfully binds —
- * true whether this process is a foreground/daemon `sonata serve` or an
- * in-process router started inside `sonata mcp` by a native dispatch
- * (`cmdServe` is the one call site for both, per `src/commands/run.ts`).
+ * `routerPid` is `process.pid` at the point the router successfully binds,
+ * allowing `sonata restart` to stop only a process Sonata recorded itself.
  * `sonata restart` reads it to kill a stale router without guessing a pid by
  * scanning the OS.
  */
@@ -155,14 +153,9 @@ export async function isSonataRouter(
 /**
  * What to say when the router port is taken.
  *
- * The occupant is usually sonata itself: an MCP dispatch to a native model
- * starts a router inside the `sonata mcp` process, and that router lives as
- * long as the MCP server does — which is until Claude Code is restarted, not
- * until the dispatch ends. A day-old one was found holding this port and
- * answering its health endpoint, while `serve` called it "a non-sonata
- * listener" and sent the user looking for a foreign program. The health
- * endpoint already exists; asking it costs one request and makes the message
- * true.
+ * The occupant may be another Sonata process. Probe the health endpoint
+ * before describing the listener so the error tells the user what actually
+ * holds the port.
  */
 export async function occupiedPortMessage(
   port: number,
@@ -170,8 +163,7 @@ export async function occupiedPortMessage(
 ): Promise<string> {
   if (await isSonataRouter(port, doFetch)) {
     return `sonata serve: router port ${port} is already served by another sonata router — ` +
-      'usually one started inside a `sonata mcp` process by an earlier native dispatch, ' +
-      'which lives until Claude Code restarts. Use that one, restart Claude Code to retire it, ' +
+      'usually an earlier native router. Use that one, restart it to retire it, ' +
       `or give this instance a different [native.ports] router port.`;
   }
   return `sonata serve: router port ${port} is occupied by a non-sonata listener`;
@@ -562,15 +554,10 @@ export interface StopResult {
  * the OS, which could belong to an unrelated process reusing the port after
  * a previous sonata instance already exited.
  *
- * The recorded router pid is `process.pid` of whichever process called
- * `cmdServe` last and won the bind — a foreground/daemon `sonata serve`, or
- * an in-process router started inside `sonata mcp` by an earlier native
- * dispatch (`src/commands/run.ts` calls `cmdServe` the same way). Killing
- * that pid in the second case ends the `sonata mcp` process it lives in,
- * which drops that session's MCP connection until Claude Code reconnects —
- * the same trade `occupiedPortMessage` already describes as "restart Claude
- * Code to retire it". `restart` makes that trade explicitly instead of
- * leaving a stale router unreachable forever.
+ * The recorded router pid is `process.pid` of the process that called
+ * `cmdServe` and won the bind. Killing it is intentional: `sonata restart`
+ * makes the lifecycle trade explicit instead of leaving a stale router
+ * unreachable forever.
  */
 export async function stopServe(
   opts: { cwd: string; home: string } & StopDeps,
@@ -590,8 +577,7 @@ export async function stopServe(
     throw new Error(
       `sonata restart: router port ${port} answers as a sonata router, but no recorded pid for it ` +
       `was found in ${serveStatePath(opts.home)} — it may have been started by a different sonata ` +
-      'install or an older version. Kill it by hand (or restart Claude Code, if it is MCP-hosted), ' +
-      'then run `sonata serve --daemon`.',
+      'install or an older version. Kill it by hand, then run `sonata serve --daemon`.',
     );
   }
 
@@ -627,7 +613,7 @@ export async function stopServe(
 /**
  * Stops whatever router currently holds the configured port, then starts a
  * fresh daemon in its place. The two-step split — rather than one call that
- * always wins the bind — exists so a stale MCP-hosted router or a daemon left
+ * always wins the bind — exists so a stale in-process router or a daemon left
  * over from a previous build gets cleared out first: `startServeDaemon` alone
  * just times out with "the daemon did not answer" against `EADDRINUSE`,
  * which reads as a startup failure rather than the actual cause.

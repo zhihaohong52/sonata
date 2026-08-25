@@ -18,7 +18,6 @@ import {
   readSettings,
   settingsPath,
   missingAllowEntries,
-  mcpRegistered,
 } from '../settings.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -68,6 +67,25 @@ export function checkVersion(actual: string, range: string): boolean {
 }
 
 export interface Check { name: string; ok: boolean; detail: string }
+
+export function staleMcpRegistration(cwd: string, home: string): string | undefined {
+  for (const path of [join(cwd, '.mcp.json'), join(home, '.claude.json')]) {
+    if (!existsSync(path)) continue;
+    try {
+      const doc = JSON.parse(readFileSync(path, 'utf8')) as {
+        mcpServers?: Record<string, unknown>;
+      };
+      if (doc.mcpServers !== null && typeof doc.mcpServers === 'object'
+        && Object.hasOwn(doc.mcpServers, 'sonata')) {
+        return `${path} still registers the removed sonata server — run \`claude mcp remove sonata\``;
+      }
+    } catch {
+      // A malformed user file is not evidence of a stale registration.
+    }
+  }
+  return undefined;
+}
+
 
 export async function cmdDoctor(
   opts: { cwd: string; home?: string; packageRoot?: string },
@@ -300,7 +318,7 @@ export async function cmdDoctor(
   const withBash = wrappers.filter((f) =>
     /^tools:\s*Bash\s*$/m.test(readFileSync(join(agentsDir, f), 'utf8')));
   const stalePolling = wrappers.filter((f) =>
-    /mcp__sonata__(run|tail)\b/.test(readFileSync(join(agentsDir, f), 'utf8')));
+    /mcp__[^_\s]+__(run|tail)\b/.test(readFileSync(join(agentsDir, f), 'utf8')));
   checks.push(stalePolling.length === 0
     ? { name: 'agent tools', ok: withBash.length === 0, detail: withBash.length === 0
         ? 'no wrapper grants Bash'
@@ -334,20 +352,10 @@ export async function cmdDoctor(
     });
   }
 
-  // Where Claude Code would look depends on which config is in effect: a
-  // project config pairs with ./.mcp.json, a machine config with the user
-  // scope in ~/.claude.json.
-  const mcpScope = resolved === join(opts.cwd, 'sonata.toml') ? 'project' : 'user';
-  const registered = opts.packageRoot !== undefined
-    && mcpRegistered(mcpScope, opts.cwd, home, opts.packageRoot);
-  checks.push(registered
-    ? { name: 'mcp server', ok: true, detail: `registered at ${mcpScope} scope` }
-    : {
-        name: 'mcp server',
-        ok: false,
-        detail: `not registered at ${mcpScope} scope — wrappers would have no tools at all; ` +
-          'run `sonata init`',
-      });
+  const staleMcp = staleMcpRegistration(opts.cwd, home);
+  if (staleMcp !== undefined) {
+    checks.push({ name: 'stale MCP registration', ok: true, detail: staleMcp });
+  }
 
   const harnesses = new Set(Object.values(config.models).map((m) => m.harness));
 

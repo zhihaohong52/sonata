@@ -7,7 +7,6 @@
  * duplicate hook entries.
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 
 export type HookScope = 'project' | 'global';
@@ -168,78 +167,4 @@ export function uninstallHook(
 /** The command string sonata installs, pointing at this installation's hook. */
 export function hookCommand(packageRoot: string): string {
   return `node ${JSON.stringify(join(packageRoot, 'hooks', 'capture-mode.mjs'))}`;
-}
-
-export type McpScope = 'project' | 'user';
-
-/** How `claude mcp add` records a stdio server pointing at this install. */
-function mcpArgs(packageRoot: string): string[] {
-  return ['node', join(packageRoot, 'dist', 'cli.js'), 'mcp'];
-}
-
-/**
- * Whether Claude Code can already see a sonata server for this install.
- *
- * Reads the two places Claude Code actually keeps them: `./.mcp.json` for
- * project scope, and the top-level `mcpServers` of `~/.claude.json` for user
- * scope. An earlier version wrote `~/.claude/mcp.json`, which Claude Code
- * never reads — the registration was invisible everywhere except the one repo
- * that also had a project file, while `doctor` reported it healthy.
- */
-export function mcpRegistered(
-  scope: McpScope,
-  cwd: string,
-  home: string,
-  packageRoot: string,
-): boolean {
-  const path = scope === 'user'
-    ? join(home, '.claude.json')
-    : join(cwd, '.mcp.json');
-  if (!existsSync(path)) return false;
-
-  let doc: { mcpServers?: Record<string, { args?: string[] }> };
-  try {
-    doc = JSON.parse(readFileSync(path, 'utf8'));
-  } catch {
-    return false;
-  }
-  const want = mcpArgs(packageRoot).slice(1).join(' ');
-  return (doc.mcpServers?.sonata?.args ?? []).join(' ') === want;
-}
-
-export interface RunResult { ok: boolean; output: string }
-export type Runner = (cmd: string, args: string[]) => RunResult;
-
-const defaultRunner: Runner = (cmd, args) => {
-  const r = spawnSync(cmd, args, { encoding: 'utf8' });
-  return {
-    ok: r.status === 0,
-    output: `${r.stdout ?? ''}${r.stderr ?? ''}${r.error ? r.error.message : ''}`,
-  };
-};
-
-/**
- * Registers the server by asking Claude Code to do it.
- *
- * `~/.claude.json` is Claude Code's live state — a hundred keys of session and
- * project data that every running session writes. Read-modify-write from here
- * could silently drop a concurrent write, so the CLI that owns the file does
- * the writing. Sonata is useless without Claude Code, so requiring its binary
- * costs nothing.
- */
-export function registerMcp(
-  scope: McpScope,
-  cwd: string,
-  packageRoot: string,
-  run: Runner = defaultRunner,
-): { ok: boolean; changed: boolean; command: string } {
-  const args = ['mcp', 'add', '--scope', scope, 'sonata', '--', ...mcpArgs(packageRoot)];
-  const command = `claude ${args.join(' ')}`;
-  const res = run('claude', args);
-
-  // Re-registering is not a failure; it is the common case on a second init.
-  if (!res.ok && /already exists/i.test(res.output)) {
-    return { ok: true, changed: false, command };
-  }
-  return { ok: res.ok, changed: res.ok, command };
 }
