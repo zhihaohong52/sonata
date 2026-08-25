@@ -334,6 +334,46 @@ describe('cmdServe — litellm respawn', () => {
   });
 });
 
+describe('cmdServe — tier resolution', () => {
+  it('wires resolveTier so a sonata-<role>-<tier> alias resolves against the config', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43119
+`);
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+
+    const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    // Nothing is actually listening on the (distinctly unused) litellm port in
+    // this test, so the request cannot succeed — but a resolved alias fails as
+    // an upstream connection error (529, every candidate exhausted), never the
+    // "unknown alias" 400 an unresolved one would produce.
+    expect(res.status).toBe(529);
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain('unknown sonata tier alias');
+    expect(JSON.stringify(body)).toContain('sonata dispatch --tier code-simple');
+  });
+});
+
 describe('cmdServe — codex-oauth gateways', () => {
   it('writes the flattened ChatGPT credential and points LiteLLM at it', async () => {
     writeFileSync(join(cwd, 'sonata.toml'), CODEX_CONFIG);

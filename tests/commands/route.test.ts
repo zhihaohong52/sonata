@@ -171,6 +171,7 @@ function loadNativeConfig() {
       models: { deepseek: { gateway: 'g', id: 'deepseek-v4-flash', contextWindow: 64000 } },
       gateways: {},
     },
+    unifiedModels: {},
   } as never;
 }
 

@@ -27,7 +27,12 @@ export function nativeSessionEnv(config: SonataConfig): Record<string, string> {
   const env: Record<string, string> = {
     ANTHROPIC_BASE_URL: `http://localhost:${config.native.ports.router}`,
   };
-  const windows = Object.values(config.native.models).map((model) => model.contextWindow);
+  const windows = [
+    ...Object.values(config.native.models).map((model) => model.contextWindow),
+    ...Object.values(config.unifiedModels)
+      .map((model) => model.contextWindow)
+      .filter((window): window is number => window !== undefined),
+  ];
   if (windows.length > 0) {
     env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(Math.min(...windows));
   }

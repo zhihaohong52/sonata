@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unl
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { loadConfig } from '../config.js';
+import { loadConfig, resolveTierAlias } from '../config.js';
 import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
 import { codexAuthPath, opencodeAuthPath, readChatGptOAuth } from '../native/codex-auth.js';
 import { credentialDir } from '../native/oauth-login.js';
@@ -271,7 +271,7 @@ export async function cmdServe(
   const respawnTimestamps: number[] = [];
   try {
     const configPath = join(tempDir, 'config.json');
-    writeFileSync(configPath, litellmConfigYaml(native, masterKey), { mode: 0o600 });
+    writeFileSync(configPath, litellmConfigYaml(native, masterKey, config.unifiedModels), { mode: 0o600 });
 
     // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
     const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
@@ -412,6 +412,9 @@ export async function cmdServe(
       // agent really run on the foreign model?" cannot be answered from
       // evidence.
       log: (line) => console.log(line),
+      // Config is re-read per call (not the `config`/`native` closed over
+      // above) so a tier edit in sonata.toml takes effect without a restart.
+      resolveTier: (alias) => resolveTierAlias(loadConfig(opts.cwd, opts.home), alias),
     });
 
     try {

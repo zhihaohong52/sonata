@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 
-import type { NativeConfig } from '../config.js';
+import type { NativeConfig, UnifiedModelConfig } from '../config.js';
 
 export interface LiteLLMModelConfig {
   model_name: string;
@@ -24,48 +24,70 @@ export function envVarForGateway(gateway: string): string {
   return `SONATA_KEY_${gateway.toUpperCase().replace(/-/g, '_')}`;
 }
 
-export function litellmConfig(native: NativeConfig, masterKey: string): LiteLLMConfig {
-  const modelList = Object.entries(native.models).map(([modelName, model]): LiteLLMModelConfig => {
-    // An OAuth gateway is served by one of LiteLLM's own providers, which
-    // supplies the base URL, the bearer and any refresh or token exchange.
-    // Passing api_base or api_key here would override that and break it.
-    const auth = native.gateways[model.gateway].auth;
-    if (auth === 'codex-oauth') {
-      return {
-        model_name: modelName,
-        litellm_params: { model: `chatgpt/${model.id}` },
-        // Without this LiteLLM uses chat-completions and POSTs to the bare
-        // backend-api/codex/ URL, which serves the ChatGPT web app.
-        model_info: { mode: 'responses' },
-      };
-    }
-    if (auth === 'copilot-oauth') {
-      // Copilot speaks chat-completions, so it needs no mode override; the
-      // provider exchanges the GitHub token for a Copilot key itself.
-      return {
-        model_name: modelName,
-        litellm_params: { model: `github_copilot/${model.id}` },
-      };
-    }
-    if (native.gateways[model.gateway].wireFormat === 'anthropic') {
-      return {
-        model_name: modelName,
-        litellm_params: {
-          model: `anthropic/${model.id}`,
-          api_base: native.gateways[model.gateway].baseUrl,
-          api_key: `os.environ/${envVarForGateway(model.gateway)}`,
-        },
-      };
-    }
+function litellmModelEntry(
+  modelName: string,
+  gateway: string,
+  id: string,
+  gateways: NativeConfig['gateways'],
+): LiteLLMModelConfig {
+  // An OAuth gateway is served by one of LiteLLM's own providers, which
+  // supplies the base URL, the bearer and any refresh or token exchange.
+  // Passing api_base or api_key here would override that and break it.
+  const auth = gateways[gateway].auth;
+  if (auth === 'codex-oauth') {
+    return {
+      model_name: modelName,
+      litellm_params: { model: `chatgpt/${id}` },
+      // Without this LiteLLM uses chat-completions and POSTs to the bare
+      // backend-api/codex/ URL, which serves the ChatGPT web app.
+      model_info: { mode: 'responses' },
+    };
+  }
+  if (auth === 'copilot-oauth') {
+    // Copilot speaks chat-completions, so it needs no mode override; the
+    // provider exchanges the GitHub token for a Copilot key itself.
+    return {
+      model_name: modelName,
+      litellm_params: { model: `github_copilot/${id}` },
+    };
+  }
+  if (gateways[gateway].wireFormat === 'anthropic') {
     return {
       model_name: modelName,
       litellm_params: {
-        model: `openai/${model.id}`,
-        api_base: native.gateways[model.gateway].baseUrl,
-        api_key: `os.environ/${envVarForGateway(model.gateway)}`,
+        model: `anthropic/${id}`,
+        api_base: gateways[gateway].baseUrl,
+        api_key: `os.environ/${envVarForGateway(gateway)}`,
       },
     };
-  });
+  }
+  return {
+    model_name: modelName,
+    litellm_params: {
+      model: `openai/${id}`,
+      api_base: gateways[gateway].baseUrl,
+      api_key: `os.environ/${envVarForGateway(gateway)}`,
+    },
+  };
+}
+
+export function litellmConfig(
+  native: NativeConfig,
+  masterKey: string,
+  unifiedModels: Record<string, UnifiedModelConfig> = {},
+): LiteLLMConfig {
+  const modelList = Object.entries(native.models).map(
+    ([modelName, model]) => litellmModelEntry(modelName, model.gateway, model.id, native.gateways),
+  );
+
+  // Legacy native.models entries stay authoritative during migration: a
+  // unified [models] entry sharing a key with one is skipped rather than
+  // emitting a duplicate model_name LiteLLM would then pick between.
+  for (const [modelName, model] of Object.entries(unifiedModels)) {
+    if (modelName in native.models) continue;
+    if (model.gateway === undefined || model.id === undefined) continue;
+    modelList.push(litellmModelEntry(modelName, model.gateway, model.id, native.gateways));
+  }
 
   return {
     model_list: modelList,
@@ -84,8 +106,12 @@ export function litellmConfig(native: NativeConfig, masterKey: string): LiteLLMC
 }
 
 /** LiteLLM accepts JSON config files, so keep serialization dependency-free and stable. */
-export function litellmConfigYaml(native: NativeConfig, masterKey: string): string {
-  return `${JSON.stringify(litellmConfig(native, masterKey), null, 2)}\n`;
+export function litellmConfigYaml(
+  native: NativeConfig,
+  masterKey: string,
+  unifiedModels: Record<string, UnifiedModelConfig> = {},
+): string {
+  return `${JSON.stringify(litellmConfig(native, masterKey, unifiedModels), null, 2)}\n`;
 }
 
 export function findLitellm(): string | null {
