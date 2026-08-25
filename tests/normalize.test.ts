@@ -92,4 +92,46 @@ review = ["native-only"]
     expect(migrated.tiers.code.complex).toEqual(['gpt-5.6-luna', 'native-only', 'kimi-k3']);
     expect(migrated.tiers.review.simple).toEqual(['native-only', 'opencode-openai-native-only']);
   });
+
+  it('never merges a legacy entry into either native model when their upstream ids collide', () => {
+    // "openai-latest" and "anexto-latest" both normalize to "latest" — two
+    // different gateways, no shared identity beyond the coincidence. A
+    // legacy harness entry whose id also normalizes to "latest" must not be
+    // silently merged into whichever of the two happened to be inserted
+    // last: that would pair one provider's harness route with a different
+    // provider's native route without anyone choosing that pairing.
+    const config = parseConfig(`
+[native.gateways."gw-a"]
+base_url = "https://gw-a.example/v1"
+[native.gateways."gw-b"]
+base_url = "https://gw-b.example/v1"
+
+[native.models."model-a"]
+gateway = "gw-a"
+id = "openai-latest"
+context_window = 128000
+
+[native.models."model-b"]
+gateway = "gw-b"
+id = "anexto-latest"
+context_window = 128000
+
+[models."harness-latest"]
+harness = "opencode"
+id = "openrouter/latest"
+
+[generate.roles]
+code = ["harness-latest"]
+
+[generate.native]
+code = ["model-a", "model-b"]
+`);
+    const migrated = migrateLegacyConfig(config);
+    expect(migrated.models['model-a']).toEqual({ gateway: 'gw-a', id: 'openai-latest', contextWindow: 128000 });
+    expect(migrated.models['model-b']).toEqual({ gateway: 'gw-b', id: 'anexto-latest', contextWindow: 128000 });
+    // Kept under its own legacy key, harness-only — never merged into
+    // model-a or model-b.
+    expect(migrated.models['harness-latest']).toEqual({ harness: 'opencode', harnessId: 'openrouter/latest' });
+    expect(migrated.tiers.code.simple).toEqual(['model-a', 'model-b', 'harness-latest']);
+  });
 });
