@@ -456,11 +456,13 @@ export function nativeTomlFor(
   credentialSources: Record<string, CredentialSource> = {},
   selectedTiers?: Record<string, { simple: string[]; complex: string[] }>,
   extraModels: Record<string, { harness?: string; harnessId?: string }> = {},
+  allChosen: readonly NativeCandidate[] = [],
 ): string {
   const allModels = new Map<string, NativeCandidate>();
   for (const cands of Object.values(roleModels)) {
     for (const c of cands) allModels.set(c.key, c);
   }
+  for (const c of allChosen) allModels.set(c.key, c);
   const tierLists = selectedTiers ?? Object.fromEntries(
     Object.entries(roleModels).map(([role, candidates]) => {
       const proposal = proposeTiers(candidates.map((candidate) => candidate.key));
@@ -860,8 +862,9 @@ async function runInit(
     // Reconciled against the roles and models actually selected: the wizard's
     // per-role map starts from the existing config, so iterating *it* rather
     // than `roles` kept a role the user had just deselected.
+    const savedNativeKeys = initialStateByScope[configScope]?.nativeKeys ?? [];
     nativeRoleModels = Object.fromEntries(
-      Object.entries(reconcilePerRoleModels(result.state.perRoleModels, nativeKeys, nativeKeys, roles))
+      Object.entries(reconcilePerRoleModels(result.state.perRoleModels, savedNativeKeys, nativeKeys, roles))
         .map(([role, keys]) => [
           role,
           keys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined),
@@ -1159,7 +1162,7 @@ async function runInit(
   }
 
   mkdirSync(dirname(configPathResolved), { recursive: true });
-  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources, tiers, migratedModels));
+  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources, tiers, migratedModels, chosenNative));
   out(`  ✓ wrote ${configPathResolved}`);
 
   let hookChanged = false;

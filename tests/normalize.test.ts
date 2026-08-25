@@ -134,4 +134,26 @@ code = ["model-a", "model-b"]
     expect(migrated.models['harness-latest']).toEqual({ harness: 'opencode', harnessId: 'openrouter/latest' });
     expect(migrated.tiers.code.simple).toEqual(['model-a', 'model-b', 'harness-latest']);
   });
+
+  it('keeps two harness routes to the same upstream model as separate entries', () => {
+    // Two different harnesses reach the identical upstream id. Neither is
+    // native, and both normalize to the same upstream, so a second would
+    // otherwise silently overwrite the first's fields.
+    const config = parseConfig(`
+[models."opencode-openrouter-kimi-k3"]
+harness = "opencode"
+id = "openrouter/kimi-k3"
+
+[models."pi-openrouter-kimi-k3"]
+harness = "pi"
+id = "openrouter/kimi-k3"
+`);
+    const migrated = migrateLegacyConfig(config);
+    const entries = Object.values(migrated.models);
+    const opencode = entries.find((m) => m.harness === 'opencode');
+    const pi = entries.find((m) => m.harness === 'pi');
+    expect(opencode).toMatchObject({ harness: 'opencode', harnessId: 'openrouter/kimi-k3' });
+    expect(pi).toMatchObject({ harness: 'pi', harnessId: 'openrouter/kimi-k3' });
+    expect(entries).toHaveLength(2);
+  });
 });

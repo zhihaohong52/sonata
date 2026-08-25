@@ -82,7 +82,6 @@ export function migrateLegacyConfig(config: SonataConfig): {
       continue;
     }
     models[candidate] = { harness: model.harness, harnessId: model.id };
-    normalizedUpstreams.set(upstream, candidate);
     migratedKeys.set(oldKey, candidate);
   }
 

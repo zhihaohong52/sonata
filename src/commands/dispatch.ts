@@ -98,7 +98,9 @@ export async function cmdDispatch(
       throw new Error(`sonata dispatch: tier "${opts.tier}" has no harness routes`);
     }
   } else {
-    if (!harnessModelFor(config, opts.model!)) {
+    if (!harnessModelFor(config, opts.model!)
+      && !config.models[opts.model!]
+      && !config.native?.models[opts.model!]) {
       throw new Error(`sonata dispatch: model "${opts.model}" has no harness route`);
     }
     // Unlike --tier, a bare --model key carries no role of its own — a

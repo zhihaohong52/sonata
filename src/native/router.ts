@@ -78,6 +78,13 @@ async function* responseBody(body: ReadableStream<Uint8Array>): AsyncIterable<Ui
   }
 }
 
+async function drainBody(body: AsyncIterable<Uint8Array> | Buffer): Promise<void> {
+  if (Buffer.isBuffer(body)) return;
+  try {
+    for await (const _chunk of body) { /* discard */ }
+  } catch { /* the body failing to drain is not itself an error */ }
+}
+
 /**
  * The model a request names, for logging which upstream served it.
  *
@@ -281,6 +288,7 @@ async function routeTierRequest(req: RouterRequest, deps: RouterDeps, alias: str
     // exactly the transient case ranked fallback exists for. Every other 4xx
     // means the request itself was wrong, which retrying can't fix.
     if (response.status >= 500 || response.status === 429) {
+      await drainBody(response.body);
       cooldowns.set(route.key, now() + TIER_COOLDOWN_MS);
       deps.log?.(`router: ${route.key} failed (${response.status}), trying next`);
       continue;

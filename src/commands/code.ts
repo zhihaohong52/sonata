@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 
 import { loadConfig, type SonataConfig } from '../config.js';
-import { serveHealthUrl } from './serve.js';
+import { isSonataRouter, startServeDaemon } from './serve.js';
 
 export interface CodePlan {
   env: Record<string, string>;
@@ -54,15 +54,8 @@ async function defaultEnsureServe(cwd: string, home: string): Promise<number> {
   const config = loadConfig(cwd, home);
   if (!config.native) throw new Error('sonata code: no [native] table');
   const port = config.native.ports.router;
-  try {
-    const response = await fetch(serveHealthUrl(port));
-    if (response.ok) return port;
-  } catch {
-    // Start the user-owned daemon below when the health probe cannot connect.
-  }
-
-  const child = spawn('sonata', ['serve', '--daemon'], { detached: true, stdio: 'ignore' });
-  child.unref();
+  if (await isSonataRouter(port)) return port;
+  await startServeDaemon(home, ['sonata', 'serve', '--daemon'], {}, cwd);
   return port;
 }
 

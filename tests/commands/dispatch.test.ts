@@ -139,6 +139,25 @@ describe('cmdDispatch', () => {
 
     expect(seenRoles).toEqual(['code', 'review']);
   });
+
+  it('--model reaches run for a legacy native-only model with no [models] entry', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways."g"]
+base_url = "http://gateway.example/v1"
+
+[native.models."x"]
+gateway = "g"
+id = "x"
+context_window = 128000
+`);
+    const ran: string[] = [];
+    const outcome = await cmdDispatch({ ...opts(), tier: undefined, model: 'x' }, {
+      run: async (o) => { ran.push(o.model); return { id: 'r1', session: 's', interactive: false }; },
+      wait: async () => ({ id: 'r1', state: 'DONE', report: 'ok', degraded: false, lines: [] }) as never,
+    });
+    expect(ran).toEqual(['x']);
+    expect(outcome.modelKey).toBe('x');
+  });
 });
 
 describe('truncateReport', () => {

@@ -13,16 +13,22 @@ import { homedir } from 'node:os';
 const port = Number(process.argv[2]);
 const global = process.argv[3] === '--global';
 if (Number.isInteger(port) && port > 0) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 1000);
-  try {
-    const res = await fetch(`http://localhost:${port}/__sonata_health`, { signal: ctrl.signal });
-    if (res.ok) process.exit(0);
-  } catch {
-    // Fall through to starting the daemon below when the health probe fails.
-  } finally {
-    clearTimeout(timer);
-  }
+  const healthy = async (timeoutMs) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(`http://localhost:${port}/__sonata_health`, { signal: ctrl.signal });
+      if (!res.ok) return false;
+      const body = await res.json();
+      return body?.sonata === true;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  if (await healthy(1000)) process.exit(0);
 
   try {
     // Global routing is one shared router for every project — it has to
@@ -36,6 +42,12 @@ if (Number.isInteger(port) && port > 0) {
       ...(global ? { cwd: homedir() } : {}),
     });
     daemon.unref();
+
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      if (await healthy(1000)) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
   } catch {
     // A hook must never break the session it observes.
   }

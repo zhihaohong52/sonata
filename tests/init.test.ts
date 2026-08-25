@@ -1174,6 +1174,40 @@ complex = ["opencode-deepseek-v4-flash", "harness-only-thing"]
     expect([...cfg2.tiers!.code.simple, ...cfg2.tiers!.code.complex]).not.toContain('opencode-kimi-k3');
     expect(toml2).not.toContain('opencode-kimi-k3');
   });
+
+  it('writes a newly added model when the wizard keeps the existing [tiers]', async () => {
+    // Pre-existing config: one native model `a` listed in [tiers].
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways."opencode"]
+base_url = "https://opencode.ai/api/v1"
+
+[models."opencode-deepseek-v4-flash"]
+gateway = "opencode"
+id = "deepseek-v4-flash"
+context_window = 128000
+
+[tiers.code]
+simple = ["opencode-deepseek-v4-flash"]
+complex = ["opencode-deepseek-v4-flash"]
+`);
+    // The wizard keeps `a` and adds a second model `b`.
+    tuiMocks.interactive = true;
+    tuiMocks.result = {
+      cancelled: false,
+      state: {
+        configScope: 'project',
+        providerKeys: ['opencode/opencode'],
+        nativeKeys: ['opencode-deepseek-v4-flash', 'opencode-kimi-k3'],
+        perRoleModels: { code: ['opencode-deepseek-v4-flash', 'opencode-kimi-k3'] },
+        roles: ['code'],
+        byokKeys: {},
+      },
+    };
+    await cmdInit({ cwd, home, packageRoot: '/pkg', detect, scope: 'skip', routing: 'skip', write });
+    const toml = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
+    expect(toml).toContain('[models."opencode-deepseek-v4-flash"]');
+    expect(toml).toContain('[models."opencode-kimi-k3"]');
+  });
 });
 
 describe('deriveInitState', () => {

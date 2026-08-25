@@ -362,8 +362,10 @@ async function main(argv: string[]): Promise<number> {
   if (command === 'auth') {
     const { positionals } = parseArgs({ args: rest, allowPositionals: true, options: {} });
     const [action, gateway] = positionals;
-    const config = loadConfig(process.cwd(), homedir());
-    const gateways = Object.keys(config.native?.gateways ?? {});
+    let gateways: string[] = [];
+    try {
+      gateways = Object.keys(loadConfig(process.cwd(), homedir()).native?.gateways ?? {});
+    } catch { /* no config yet — add/remove/login do not need one */ }
 
     if (action === 'list') {
       console.log(cmdAuthList({ home: homedir(), gateways }).text);

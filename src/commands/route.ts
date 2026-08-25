@@ -14,7 +14,7 @@
  * daemon, and the first thing an unrouted session would do is cache the error
  * from a router that is not there.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -247,6 +247,32 @@ export function writeSessions(file: string, ids: string[]): void {
   writeFileSync(file, `${JSON.stringify(ids, null, 2)}\n`);
 }
 
+async function withSessionLock<T>(file: string, fn: () => T): Promise<T> {
+  const lock = `${file}.lock`;
+  mkdirSync(dirname(file), { recursive: true });
+  const deadline = Date.now() + 2000;
+  let held = false;
+  for (;;) {
+    try {
+      mkdirSync(lock);
+      held = true;
+      break;
+    } catch {
+      try {
+        const age = Date.now() - statSync(lock).mtimeMs;
+        if (age > 5000) rmSync(lock, { recursive: true, force: true });
+      } catch { /* raced with the holder releasing it */ }
+      if (Date.now() > deadline) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    if (held) { try { rmSync(lock, { recursive: true, force: true }); } catch { /* already gone */ } }
+  }
+}
+
 /**
  * The SessionStart/SessionEnd command auto mode installs.
  *
@@ -406,7 +432,7 @@ export async function cmdRoute(
   // into ANTHROPIC_BASE_URL even though the daemon (per bd72ec4) resolves the
   // machine config, pointing settings at a port the daemon never opens.
   const projectLoaded = loadOrEmpty(opts.cwd);
-  const globalLoaded = scope === 'global' ? loadOrEmpty(opts.home) : projectLoaded;
+  const globalLoaded = loadOrEmpty(opts.home);
   const active = scope === 'global' ? globalLoaded : projectLoaded;
   // route off/status can still describe a broken config; route on needs it.
   if (action === 'on' && active.error !== undefined) throw active.error;
@@ -488,7 +514,6 @@ export async function cmdRouteSession(
   // would turn off the single shared router while another project's global
   // sessions, tracked in a registry this one never sees, are still live.
   const registry = routeSessionsFile(opts.cwd, opts.scope ?? 'project', opts.home);
-  const ids = readSessions(registry);
 
   // A global hook runs in every directory; validate the project before touching
   // its own registry (project scope) or the shared one (global scope) so an
@@ -496,14 +521,21 @@ export async function cmdRouteSession(
   loadConfig(opts.cwd, opts.home);
 
   if (phase === 'end') {
-    const remaining = ids.filter((id) => id !== sessionId);
-    writeSessions(registry, remaining);
+    const remaining = await withSessionLock(registry, () => {
+      const current = readSessions(registry);
+      const left = current.filter((id) => id !== sessionId);
+      writeSessions(registry, left);
+      return left;
+    });
     if (remaining.length > 0) return { sessions: remaining.length, routing: 'on' };
     await cmdRoute('off', opts);
     return { sessions: 0, routing: 'off' };
   }
 
-  writeSessions(registry, ids.includes(sessionId) ? ids : [...ids, sessionId]);
+  await withSessionLock(registry, () => {
+    const current = readSessions(registry);
+    writeSessions(registry, current.includes(sessionId) ? current : [...current, sessionId]);
+  });
   await cmdRoute('on', opts);
 
   // `route on` installs the ensure-serve hook, but that hook cannot fire in the

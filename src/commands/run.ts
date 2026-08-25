@@ -7,7 +7,7 @@ import { loadRole, composeInstructions } from '../roles.js';
 import { readPermissionMode } from '../mode.js';
 import { newSession, runScript } from '../tmux.js';
 import { wrapWithTimeout } from '../watchdog.js';
-import { serveHealthUrl, cmdServe } from './serve.js';
+import { isSonataRouter, startServeDaemon } from './serve.js';
 import { homedir } from 'node:os';
 
 export interface RunOptions {
@@ -89,25 +89,8 @@ async function ensureNativeServe(cwd: string): Promise<void> {
     );
   }
   const port = config.native.ports.router;
-  try {
-    const res = await fetch(serveHealthUrl(port));
-    if (res.ok) return;
-  } catch {
-    // Not up — start it.
-  }
-  // The handle owns a temp directory holding the generated master key, and for
-  // a codex-oauth gateway the ChatGPT credential. Discarding it left both in
-  // the system temp directory for every auto-started serve.
-  const handle = await cmdServe({ cwd, home: homedir(), daemon: true });
-  let stopping = false;
-  const shutdown = () => {
-    if (stopping) return;
-    stopping = true;
-    void handle.stop();
-  };
-  process.once('exit', shutdown);
-  process.once('SIGINT', shutdown);
-  process.once('SIGTERM', shutdown);
+  if (await isSonataRouter(port)) return;
+  await startServeDaemon(homedir(), ['sonata', 'serve', '--daemon'], {}, cwd);
 }
 
 export async function cmdRun(opts: RunOptions): Promise<RunResult> {
