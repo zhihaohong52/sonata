@@ -59,6 +59,7 @@ export async function cmdDispatch(
 ): Promise<DispatchOutcome> {
   const config = loadConfig(opts.cwd, opts.home);
   const candidates: string[] = [];
+  let role = 'code';
 
   if ((opts.tier === undefined) === (opts.model === undefined)) {
     throw new Error('sonata dispatch requires exactly one of --tier or --model');
@@ -68,6 +69,7 @@ export async function cmdDispatch(
     const alias = opts.tier.startsWith('sonata-') ? opts.tier : `sonata-${opts.tier}`;
     const resolved = resolveTierAlias(config, alias);
     if (!resolved) throw new Error(`sonata dispatch: unknown tier "${opts.tier}"`);
+    role = resolved.role;
     for (const route of resolved.routes) {
       if (route.harness !== undefined) candidates.push(route.key);
     }
@@ -94,7 +96,7 @@ export async function cmdDispatch(
     try {
       const runOpts: RunOptions = {
         cwd: opts.cwd,
-        role: opts.tier?.split('-')[0] ?? 'code',
+        role,
         model: modelKey,
         taskFile,
         rolesDir: opts.rolesDir,
@@ -112,15 +114,26 @@ export async function cmdDispatch(
 
     let result: WaitResult;
     try {
-      do {
-        result = await wait({ cwd: opts.cwd, id: launched.id });
-      } while (result.state === 'RUNNING');
+      result = await wait({ cwd: opts.cwd, id: launched.id });
     } catch (err) {
+      // The launch succeeded — the harness may still be running. Trying the
+      // next candidate here would race it on the same working tree, so this
+      // stops rather than falling through, surfacing the launched run's id
+      // instead of silently doubling up.
       attempts.push({
         modelKey, state: 'FAILED', degraded: true,
         error: err instanceof Error ? err.message : String(err),
       });
-      continue;
+      return { id: launched.id, state: 'FAILED', modelKey, attempts };
+    }
+
+    if (result.state === 'RUNNING') {
+      // The wait window elapsed with the run still in progress — not a
+      // failure, just unresolved. Return control to the caller (`sonata wait
+      // <id>` resumes it) rather than reopening another full wait window,
+      // which would block indefinitely and starve whatever invoked this.
+      attempts.push({ modelKey, state: 'RUNNING', degraded: false });
+      return { id: result.id, state: 'RUNNING', modelKey, attempts };
     }
 
     const degraded = result.degraded === true;

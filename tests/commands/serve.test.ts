@@ -332,6 +332,31 @@ describe('cmdServe — litellm respawn', () => {
 
     expect(spawnCount).toBe(1);
   });
+
+  it('does not schedule a respawn when the child exits while startup itself is failing', async () => {
+    let spawnCount = 0;
+    const handle = cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      respawnDelayMs: 0,
+      // waitForLitellm throwing simulates a startup failure after the child
+      // spawned; kill() firing its own exit synchronously simulates the real
+      // child process actually dying when told to.
+      waitForLitellm: async () => { throw new Error('never came up'); },
+      spawnLitellm: () => {
+        spawnCount += 1;
+        let onExit: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+        return {
+          pid: spawnCount,
+          kill: () => onExit?.(null, 'SIGTERM'),
+          onExit: (cb) => { onExit = cb; },
+        };
+      },
+    });
+    await expect(handle).rejects.toThrow(/never came up/);
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(spawnCount).toBe(1);
+  });
 });
 
 describe('cmdServe — tier resolution', () => {
@@ -791,6 +816,10 @@ context_window = 128000
       cwd: home,
       probeHealth, kill: (pid) => killed.push(pid), sleep: async () => {},
       spawn: spawnSpy, probe: async () => true,
+      // Never assert real OS process liveness on a fake pid — 111 happens to
+      // be a real, running process on at least one CI runner, which turned
+      // this into a 10s timeout there while passing instantly on macOS.
+      isAlive: () => false,
     });
 
     expect(killed).toEqual([111]);

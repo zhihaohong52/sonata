@@ -270,6 +270,9 @@ id = "simple"
 gateway = "gateway"
 id = "complex"
 
+[native.gateways."gateway"]
+base_url = "https://gateway.example/v1"
+
 [tiers.code]
 simple = ["simple-model"]
 complex = ["complex-model"]
@@ -302,6 +305,9 @@ complex = ["simple-model"]
 [models."simple-model"]
 gateway = "gateway"
 id = "simple"
+
+[native.gateways."gateway"]
+base_url = "https://gateway.example/v1"
 
 [tiers.code]
 simple = ["simple-model"]

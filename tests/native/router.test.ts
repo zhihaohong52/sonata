@@ -152,6 +152,21 @@ describe('tier alias routing', () => {
     expect(seen).toEqual(['flash']);
   });
 
+  it('429 (rate-limited) falls back to the next candidate, not returned as-is', async () => {
+    const seen: string[] = [];
+    const res = await routeRequest(req('sonata-code-simple'), {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return new Response('rate limited', { status: model === 'flash' ? 429 : 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual(['flash', 'luna']);
+  });
+
   it('logs the resolution step', async () => {
     const lines: string[] = [];
     await routeRequest(req('sonata-code-simple'), {

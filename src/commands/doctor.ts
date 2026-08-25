@@ -125,8 +125,12 @@ export async function cmdDoctor(
   if (config.tiers !== undefined) {
     const projectSettings = readSettings(routeSettingsFile(opts.cwd, 'project', home));
     const globalSettings = readSettings(routeSettingsFile(opts.cwd, 'global', home));
+    // Presence alone isn't enough: a base URL left over from a since-changed
+    // [native.ports].router points a session at a port nothing is listening
+    // on, which reads as routed here and 502s on every native request.
+    const routerUrl = config.native !== undefined ? `http://localhost:${config.native.ports.router}` : undefined;
     const routed = [projectSettings, globalSettings].some((settings) =>
-      routeEnv(settings).ANTHROPIC_BASE_URL !== undefined ||
+      (routerUrl !== undefined && routeEnv(settings).ANTHROPIC_BASE_URL === routerUrl) ||
       (opts.packageRoot !== undefined && autoInstalled(settings, opts.packageRoot)),
     );
     if (!routed) {

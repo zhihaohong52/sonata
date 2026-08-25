@@ -714,6 +714,14 @@ complex = ["known"]
       .toThrow(/sonata init/);
   });
 
+  it('refuses a unified model whose gateway is not defined', () => {
+    expect(() => parseConfig(`
+[models."flash"]
+gateway = "missing-gateway"
+id = "deepseek-v4-flash-0731"
+`)).toThrow(/unknown gateway "missing-gateway"/);
+  });
+
   it('harnessModelFor exposes the harness route for the dispatch CLI', () => {
     const config = parseConfig(TIERED);
     expect(harnessModelFor(config, 'deepseek-v4-flash'))

@@ -1086,6 +1086,55 @@ describe('cmdInit — re-init from existing config', () => {
     await cmdInit({ cwd, home, packageRoot: '/pkg', yes: true, detect, configScope: 'global', scope: 'skip', write });
     expect(readFileSync(join(home, '.config', 'sonata', 'sonata.toml'), 'utf8')).toBe(toml1);
   });
+
+  it('preserves a harness-only model with no native route across a re-init', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."opencode-deepseek-v4-flash"]
+gateway = "opencode"
+id = "deepseek-v4-flash"
+context_window = 128000
+
+[models."harness-only-thing"]
+harness = "opencode"
+id = "anexto/some-model"
+
+[native.gateways."opencode"]
+base_url = "https://opencode.ai/api/v1"
+
+[tiers.code]
+simple = ["opencode-deepseek-v4-flash", "harness-only-thing"]
+complex = ["opencode-deepseek-v4-flash", "harness-only-thing"]
+`);
+    await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      models: ['opencode-deepseek-v4-flash'], roles: ['code'], scope: 'skip', write,
+    });
+    const toml2 = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
+    expect(toml2).toContain('[models."harness-only-thing"]');
+    expect(parseConfig(toml2).tiers?.code.complex).toContain('harness-only-thing');
+  });
+
+  it('drops a deselected model from [tiers] rather than writing a dangling reference', async () => {
+    await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['opencode/opencode'],
+      models: ['opencode-deepseek-v4-flash', 'opencode-kimi-k3'],
+      roles: ['code'], scope: 'skip', write,
+    });
+    const cfg1 = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
+    expect([...cfg1.tiers!.code.simple, ...cfg1.tiers!.code.complex]).toContain('opencode-kimi-k3');
+
+    // Re-init with only one of the two previously-selected models.
+    await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
+      roles: ['code'], scope: 'skip', write,
+    });
+    const toml2 = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
+    const cfg2 = parseConfig(toml2); // throws if [tiers] references an undefined model
+    expect([...cfg2.tiers!.code.simple, ...cfg2.tiers!.code.complex]).not.toContain('opencode-kimi-k3');
+    expect(toml2).not.toContain('opencode-kimi-k3');
+  });
 });
 
 describe('deriveInitState', () => {

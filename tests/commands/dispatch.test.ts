@@ -79,6 +79,37 @@ describe('cmdDispatch', () => {
     expect(outcome.attempts).toHaveLength(1);
   });
 
+  it('stops rather than falling through when wait itself throws after a successful launch', async () => {
+    const ran: string[] = [];
+    const outcome = await cmdDispatch(opts(), {
+      run: async (o) => { ran.push(o.model); return { id: 'r1', session: 's', interactive: false }; },
+      wait: async () => { throw new Error('run-state file unreadable'); },
+    });
+    // Only flash was launched — terra must never start, since flash's run
+    // may still be active and a second launch would race it on the same tree.
+    expect(ran).toEqual(['flash']);
+    expect(outcome).toMatchObject({ id: 'r1', state: 'FAILED', modelKey: 'flash' });
+    expect(outcome.attempts[0]).toMatchObject({ error: 'run-state file unreadable' });
+  });
+
+  it('returns RUNNING immediately rather than reopening the wait window', async () => {
+    let waitCalls = 0;
+    const outcome = await cmdDispatch(opts(), {
+      run: async () => ({ id: 'r1', session: 's', interactive: false }),
+      wait: async () => { waitCalls += 1; return { id: 'r1', state: 'RUNNING', lines: [] } as never; },
+    });
+    expect(waitCalls).toBe(1);
+    expect(outcome).toMatchObject({ id: 'r1', state: 'RUNNING', modelKey: 'flash' });
+  });
+
+  it('derives the role from the resolved alias, not by splitting a sonata-prefixed --tier', async () => {
+    const outcome = await cmdDispatch({ ...opts(), tier: 'sonata-code-simple' }, {
+      run: async (o) => { expect(o.role).toBe('code'); return { id: 'r1', session: 's', interactive: false }; },
+      wait: async () => ({ id: 'r1', state: 'DONE', report: 'ok', degraded: false, lines: [] }) as never,
+    });
+    expect(outcome.state).toBe('DONE');
+  });
+
   it('reports the exhausted list when every candidate fails', async () => {
     const outcome = await cmdDispatch(opts(), {
       run: async () => { throw new Error('down'); },

@@ -446,6 +446,20 @@ export function parseConfig(text: string): SonataConfig {
     };
   }
 
+  // Unlike [native.models], the unified [models] loop above runs before
+  // [native.gateways] is parsed, so it cannot validate a gateway reference
+  // there — do it now that `native` is built. Left unchecked, an unknown
+  // gateway here reaches litellmModelEntry via the native projection below
+  // and crashes on `gateways[gateway].auth` being undefined.
+  for (const [name, model] of Object.entries(unifiedModels)) {
+    if (model.gateway !== undefined && !native?.gateways[model.gateway]) {
+      throw new Error(
+        `sonata.toml: model "${name}" references unknown gateway "${model.gateway}". ` +
+        `Define [native.gateways."${model.gateway}"] first.`,
+      );
+    }
+  }
+
   // Tier configs are the unified format. Keep a native projection so the
   // router and older consumers can use the same gateway/model data while the
   // unified tier-aware consumers migrate.

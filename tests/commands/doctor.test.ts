@@ -510,6 +510,71 @@ credential_source = "opencode"
     }
   });
 
+  it('does not count a stale routed port as satisfying tier routing', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-tier-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-tier-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+
+[native.ports]
+router = 4100
+`);
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    // A base URL left behind from a since-changed router port — present, but
+    // not the configured one.
+    writeFileSync(join(cwd, '.claude', 'settings.local.json'),
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'http://localhost:9999' } }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      const c = checks.find((x) => x.name === 'tier routing');
+      expect(c?.ok).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('recognizes a routed port that matches the configured router for tier routing', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-tier-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-tier-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+
+[native.ports]
+router = 4100
+`);
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    writeFileSync(join(cwd, '.claude', 'settings.local.json'),
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'http://localhost:4100' } }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      expect(checks.find((x) => x.name === 'tier routing')).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('reports native serve health and key source without exposing key values', async () => {
     const { cwd, home } = setup();
     writeSonataKey(home, 'acme', 'super-secret-key');

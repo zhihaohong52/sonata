@@ -419,6 +419,11 @@ export async function cmdServe(
     }
     recordRouterPid(opts.home, process.pid);
   } catch (error) {
+    // Suppress the respawn watcher before killing the child — otherwise its
+    // `exit` handler schedules a respawn against `configPath`, which the
+    // `rmSync` below is about to delete, producing a doomed child spawned
+    // after this whole call has already thrown.
+    stopping = true;
     child?.kill();
     rmSync(tempDir, { force: true, recursive: true });
     throw error;

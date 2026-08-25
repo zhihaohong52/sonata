@@ -223,8 +223,9 @@ function litellmHeaders(headers: Record<string, string>, litellmKey: string): Re
 /**
  * Tries each native-routed candidate for a `sonata-<role>-<tier>` alias in
  * rank order, skipping any inside its post-failure cooldown window. The first
- * response with status < 500 goes to the client — retry is inherently
- * pre-first-byte, so this never interferes with an in-progress stream.
+ * response that is neither ≥500 nor 429 goes to the client — retry is
+ * inherently pre-first-byte, so this never interferes with an in-progress
+ * stream.
  */
 async function routeTierRequest(req: RouterRequest, deps: RouterDeps, alias: string): Promise<RouterResponse> {
   const resolved = deps.resolveTier?.(alias);
@@ -250,7 +251,11 @@ async function routeTierRequest(req: RouterRequest, deps: RouterDeps, alias: str
 
     const body = withModel(flattened, route.key);
     const response = await forwardToLitellm(body, headers, { ...req, body }, deps);
-    if (response.status >= 500) {
+    // 429 is treated as a failure alongside 5xx (not as one of "our" 4xx
+    // mistakes to return as-is): it's the upstream saying it's overloaded,
+    // exactly the transient case ranked fallback exists for. Every other 4xx
+    // means the request itself was wrong, which retrying can't fix.
+    if (response.status >= 500 || response.status === 429) {
       cooldowns.set(route.key, now() + TIER_COOLDOWN_MS);
       deps.log?.(`router: ${route.key} failed (${response.status}), trying next`);
       continue;
