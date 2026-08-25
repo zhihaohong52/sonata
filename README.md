@@ -331,6 +331,15 @@ Code's own loop, tools, and permission modes, through a local routing proxy:
   undoes it; `sonata route status` reports whether routing is on. The same
   Remote Control trade-off as `sonata code` applies, project-wide: every routed
   session loses Remote Control until you `sonata route off`.
+- `sonata route auto` — routes every session *and* keeps Remote Control. Instead
+  of leaving the routing env in the file, a SessionStart hook writes it just
+  after the session launches and a SessionEnd hook removes it again, so each
+  session launches from a clean file. Claude Code decides Remote Control once,
+  at launch, from `ANTHROPIC_BASE_URL`; it re-reads the settings `env` on every
+  request. Auto mode lives in that gap. Concurrent sessions are counted, so one
+  ending never cuts another's routing. `sonata route manual` removes the pair.
+  A session that dies without running its SessionEnd hook leaves routing on —
+  the next launch loses Remote Control once; `sonata route off` resets it.
 - `sonata auth` — manages per-gateway keys that the router forwards to LiteLLM;
   keys live in the store and are never logged or put in a conversation
 - `sonata auth login <gateway>` — starts LiteLLM's device login for an OAuth gateway
@@ -493,6 +502,7 @@ install will not litter unrelated repositories.
 | `sonata restart` | Kill whatever sonata router currently holds the port (a stale daemon, or one MCP-hosted inside `sonata mcp`) and start a fresh daemon |
 | `sonata code` | Launch a Claude Code session routed through the local proxy (passes `claude` args through) |
 | `sonata route on\|off\|status` | Route every plain `claude` session in the project through the proxy via `.claude/settings.local.json` |
+| `sonata route auto\|manual` | Route each session for its lifetime via SessionStart/SessionEnd hooks, keeping Remote Control |
 | `sonata gc` | Kill finished tmux sessions |
 
 ## Configuration

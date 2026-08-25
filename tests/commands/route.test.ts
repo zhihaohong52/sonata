@@ -6,11 +6,19 @@ import { join } from 'node:path';
 import {
   planRouteOn,
   planRouteOff,
+  planRouteAuto,
+  planRouteManual,
+  autoInstalled,
   routeStatus,
   routeSettingsFile,
+  routeSessionsFile,
+  readSessions,
+  writeSessions,
+  sessionHookCommand,
   ensureServeCommand,
   routeEnv,
   cmdRoute,
+  cmdRouteSession,
 } from '../../src/commands/route.js';
 import type { Settings, HookEntry } from '../../src/settings.js';
 
@@ -191,5 +199,112 @@ describe('cmdRoute', () => {
     const opts = { cwd, home, packageRoot: PACKAGE_ROOT };
     await cmdRoute('off', opts);
     expect(existsSync(routeSettingsFile(cwd))).toBe(false);
+  });
+});
+
+describe('the session registry', () => {
+  it('round-trips ids and deletes the file once the last one leaves', () => {
+    const file = routeSessionsFile(cwd);
+    writeSessions(file, ['a', 'b']);
+    expect(readSessions(file)).toEqual(['a', 'b']);
+    writeSessions(file, []);
+    expect(existsSync(file)).toBe(false);
+    expect(readSessions(file)).toEqual([]);
+  });
+
+  it('reads a corrupt registry as empty rather than failing a session start', () => {
+    const file = routeSessionsFile(cwd);
+    writeSessions(file, ['a']);
+    writeFileSync(file, '{ not json');
+    expect(readSessions(file)).toEqual([]);
+  });
+});
+
+describe('planRouteAuto / planRouteManual', () => {
+  it('installs both lifecycle hooks and removes exactly them', () => {
+    const auto = planRouteAuto({}, PACKAGE_ROOT);
+    expect(auto.changed).toBe(true);
+    expect(autoInstalled(auto.settings, PACKAGE_ROOT)).toBe(true);
+    const start = (auto.settings.hooks!.SessionStart as HookEntry[]).flatMap((e) => e.hooks);
+    expect(start.map((h) => h.command)).toContain(sessionHookCommand(PACKAGE_ROOT, 'start'));
+
+    const manual = planRouteManual(auto.settings, PACKAGE_ROOT);
+    expect(manual.changed).toBe(true);
+    expect(autoInstalled(manual.settings, PACKAGE_ROOT)).toBe(false);
+    expect('hooks' in manual.settings).toBe(false);
+  });
+
+  it('is idempotent in both directions', () => {
+    const once = planRouteAuto({}, PACKAGE_ROOT);
+    expect(planRouteAuto(once.settings, PACKAGE_ROOT).changed).toBe(false);
+    expect(planRouteManual({}, PACKAGE_ROOT).changed).toBe(false);
+  });
+
+  it('leaves auto mode installed when route off runs — that is how SessionEnd survives', () => {
+    const config = loadNativeConfig();
+    const auto = planRouteAuto({}, PACKAGE_ROOT);
+    const on = planRouteOn(auto.settings, config, PACKAGE_ROOT);
+    const off = planRouteOff(on.settings, PACKAGE_ROOT);
+    expect(autoInstalled(off.settings, PACKAGE_ROOT)).toBe(true);
+    expect(off.settings.env?.ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+});
+
+describe('cmdRouteSession', () => {
+  /** Never probes or spawns: the router's real state is irrelevant to counting. */
+  const deps = { probe: async () => true, startDaemon: async () => ({}) };
+
+  function opts() {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    return { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
+  }
+
+  it('routes on the first session start and off when the last one ends', async () => {
+    const o = opts();
+    const started = await cmdRouteSession('start', 's1', o, deps);
+    expect(started).toEqual({ sessions: 1, routing: 'on' });
+    expect((await cmdRoute('status', o))?.on).toBe(true);
+
+    const ended = await cmdRouteSession('end', 's1', o, deps);
+    expect(ended).toEqual({ sessions: 0, routing: 'off' });
+    expect((await cmdRoute('status', o))?.on).toBe(false);
+  });
+
+  it('keeps routing while a sibling session is still live', async () => {
+    const o = opts();
+    await cmdRouteSession('start', 's1', o, deps);
+    await cmdRouteSession('start', 's2', o, deps);
+
+    const first = await cmdRouteSession('end', 's1', o, deps);
+    expect(first).toEqual({ sessions: 1, routing: 'on' });
+    expect((await cmdRoute('status', o))?.on).toBe(true);
+
+    const last = await cmdRouteSession('end', 's2', o, deps);
+    expect(last.routing).toBe('off');
+    expect((await cmdRoute('status', o))?.on).toBe(false);
+  });
+
+  it('does not double-register a repeated session id', async () => {
+    const o = opts();
+    await cmdRouteSession('start', 's1', o, deps);
+    const again = await cmdRouteSession('start', 's1', o, deps);
+    expect(again.sessions).toBe(1);
+  });
+
+  it('starts the router only when it is not already answering', async () => {
+    const o = opts();
+    const started: string[] = [];
+    await cmdRouteSession('start', 's1', o, {
+      probe: async () => false,
+      startDaemon: async () => { started.push('spawned'); return {}; },
+    });
+    expect(started).toEqual(['spawned']);
+  });
+
+  it('explicit route off clears the registry so a stale id cannot re-route', async () => {
+    const o = opts();
+    await cmdRouteSession('start', 'crashed', o, deps);
+    await cmdRoute('off', o);
+    expect(readSessions(routeSessionsFile(cwd))).toEqual([]);
   });
 });

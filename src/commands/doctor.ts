@@ -29,7 +29,7 @@ import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '..
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { serveHealthUrl } from './serve.js';
 import { nativeSessionEnv } from './code.js';
-import { routeEnv, routeSettingsFile } from './route.js';
+import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile } from './route.js';
 
 const run = promisify(execFile);
 
@@ -169,6 +169,21 @@ export async function cmdDoctor(
           name: 'routed sessions',
           ok: true,
           detail: `claude sessions route through ${actualBase} (sonata route on)`,
+        });
+      }
+
+      // Auto mode is reported separately because it explains an otherwise
+      // confusing pair of observations: a settings file with no routing env in
+      // it, and sessions that route anyway. It also explains the reverse — a
+      // file left routed by a session that died before its SessionEnd hook.
+      if (opts.packageRoot !== undefined && autoInstalled(settings, opts.packageRoot)) {
+        const live = readSessions(routeSessionsFile(opts.cwd)).length;
+        checks.push({
+          name: 'route auto',
+          ok: true,
+          detail: live === 0
+            ? 'each session routes itself at start and un-routes at end; none live now'
+            : `${live} session(s) routed; routing stays on until the last one ends`,
         });
       }
     }
