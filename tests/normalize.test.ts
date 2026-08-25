@@ -135,6 +135,39 @@ code = ["model-a", "model-b"]
     expect(migrated.tiers.code.simple).toEqual(['model-a', 'model-b', 'harness-latest']);
   });
 
+  it('invents a distinct key rather than overwrite a native entry on an exact-key collision', () => {
+    // A legacy harness key that is *already* normalized (so oldKey ===
+    // candidate, e.g. [native.models."x"] and [models."x"]) and whose id does
+    // not merge with the native entry's upstream used to fall back to
+    // `models[oldKey]` — the same occupied slot the native entry already
+    // holds — silently overwriting it. The native entry must survive intact
+    // and the harness entry must land under a new suffixed key instead.
+    const config = parseConfig(`
+[native.gateways."gw"]
+base_url = "https://gw.example/v1"
+
+[native.models."x"]
+gateway = "gw"
+id = "native-alpha"
+context_window = 128000
+
+[models."x"]
+harness = "opencode"
+id = "openrouter/native-beta"
+
+[generate.roles]
+code = ["x"]
+
+[generate.native]
+code = ["x"]
+`);
+    const migrated = migrateLegacyConfig(config);
+    expect(migrated.models['x']).toEqual({ gateway: 'gw', id: 'native-alpha', contextWindow: 128000 });
+    expect(migrated.models['x-2']).toEqual({ harness: 'opencode', harnessId: 'openrouter/native-beta' });
+    expect(migrated.tiers.code.simple).toEqual(['x', 'x-2']);
+    expect(migrated.tiers.code.complex).toEqual(['x', 'x-2']);
+  });
+
   it('keeps two harness routes to the same upstream model as separate entries', () => {
     // Two different harnesses reach the identical upstream id. Neither is
     // native, and both normalize to the same upstream, so a second would

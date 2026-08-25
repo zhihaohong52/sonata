@@ -76,9 +76,20 @@ export function migrateLegacyConfig(config: SonataConfig): {
     }
     const occupied = models[candidate];
     if (occupied !== undefined) {
-      // Same normalized key, but different upstream: keep the legacy spelling.
-      models[oldKey] = { harness: model.harness, harnessId: model.id };
-      migratedKeys.set(oldKey, oldKey);
+      // Same normalized key, but different upstream. If the legacy spelling
+      // itself is already occupied too (an exact-key collision, e.g. a
+      // [native.models."x"] and a non-mergeable legacy [models."x"]), there
+      // is nothing distinct left to fall back to — invent a key that cannot
+      // collide with anything already in `models`, rather than overwriting
+      // whichever entry got there first.
+      let fallbackKey = oldKey;
+      if (models[fallbackKey] !== undefined) {
+        let suffix = 2;
+        while (models[`${oldKey}-${suffix}`] !== undefined) suffix++;
+        fallbackKey = `${oldKey}-${suffix}`;
+      }
+      models[fallbackKey] = { harness: model.harness, harnessId: model.id };
+      migratedKeys.set(oldKey, fallbackKey);
       continue;
     }
     models[candidate] = { harness: model.harness, harnessId: model.id };

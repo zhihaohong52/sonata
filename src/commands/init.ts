@@ -1123,11 +1123,22 @@ async function runInit(
     log.line('prompting for tier-agent routing');
     routing = await select<'project' | 'global' | 'skip'>('Route tier agents through the native router', [
       { value: 'project', label: 'sonata route auto', hint: 'this project only' },
-      { value: 'global', label: 'sonata route auto --global', hint: 'all projects' },
+      ...(configScope === 'project' ? [] : [
+        { value: 'global' as const, label: 'sonata route auto --global', hint: 'all projects' },
+      ]),
       { value: 'skip', label: 'Skip', hint: 'doctor will warn for tier agents' },
     ]);
   } else {
     routing = 'project';
+  }
+
+  if (routing === 'global' && configScope === 'project') {
+    throw new Error(
+      'sonata init: --routing global routes every project through the machine config ' +
+      '(~/.config/sonata/sonata.toml), but this config was written to the project ' +
+      '(./sonata.toml) — the two would silently disagree. Use --config-scope global ' +
+      'together with --routing global, or keep --routing project.',
+    );
   }
 
   // ---- confirm ----------------------------------------------------------

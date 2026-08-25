@@ -184,6 +184,14 @@ describe('cmdInit (non-interactive)', () => {
     expect(check?.detail).toBe('tier agents need a routed session — run `sonata route auto`');
   });
 
+  it('refuses --routing global when the config is project-scoped', async () => {
+    await expect(cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
+      roles: ['code'], scope: 'skip', configScope: 'project', routing: 'global', write,
+    })).rejects.toThrow(/routes every project through the machine config/);
+  });
+
   it('writes native config, installs the hook and generates agents', async () => {
     const res = await cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect,
