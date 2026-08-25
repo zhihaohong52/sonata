@@ -446,6 +446,32 @@ export function parseConfig(text: string): SonataConfig {
     };
   }
 
+  // Tier configs are the unified format. Keep a native projection so the
+  // router and older consumers can use the same gateway/model data while the
+  // unified tier-aware consumers migrate.
+  if (tiers !== undefined) {
+    const projectedModels: Record<string, NativeModelConfig> = { ...(native?.models ?? {}) };
+    for (const [key, model] of Object.entries(unifiedModels)) {
+      if (model.gateway !== undefined && model.id !== undefined) {
+        projectedModels[key] = {
+          gateway: model.gateway,
+          id: model.id,
+          contextWindow: model.contextWindow ?? 128000,
+        };
+      }
+    }
+    const projectedGenerate: Record<string, string[]> = {};
+    for (const [role, lists] of Object.entries(tiers)) {
+      projectedGenerate[role] = [...new Set([...lists.simple, ...lists.complex])];
+    }
+    native = {
+      models: projectedModels,
+      gateways: native?.gateways ?? {},
+      ports: native?.ports ?? { router: 4100, litellm: 4000 },
+      generate: projectedGenerate,
+    };
+  }
+
   return {
     models,
     unifiedModels,

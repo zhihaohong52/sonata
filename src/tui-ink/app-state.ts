@@ -47,6 +47,12 @@ export interface PerRoleModelsValue {
   models: string[];
 }
 
+export interface TierSelectionValue {
+  role: string;
+  tier: 'simple' | 'complex';
+  ranked: string[];
+}
+
 export interface AvailableCredentials {
   codex: { expiresInDays: number | null } | null;
   opencode: { expiresInDays: number | null } | null;
@@ -93,6 +99,19 @@ export function applyStep(state: InitState, step: number, value: unknown): InitS
     case 3:
       return { ...state, roles: value as string[] };
     case 4: {
+      if (typeof value === 'object' && value !== null && 'tier' in value) {
+        const { role, tier, ranked } = value as TierSelectionValue;
+        return {
+          ...state,
+          tiers: {
+            ...state.tiers,
+            [role]: {
+              ...(state.tiers?.[role] ?? { simple: [], complex: [] }),
+              [tier]: ranked,
+            },
+          },
+        };
+      }
       const { role, models } = value as PerRoleModelsValue;
       return {
         ...state,

@@ -33,6 +33,7 @@ import { cmdSync } from './sync.js';
 import { select, confirm, isInteractive, banner, CancelledError } from '../tui.js';
 import { keyReport, resolveKeyFromSource, resolveKeys, writeSonataKey } from '../native/credentials.js';
 import { byokCandidateKey, wellKnownProviders } from '../native/models.js';
+import { loadAaCatalog, proposeTiers } from '../catalog.js';
 import { byokProviderKey, byokProviderName, type AvailableCredentials } from '../tui-ink/app-state.js';
 import { runInitTui } from '../tui-ink/run.js';
 import { openInitLog, type InitLog } from './init-log.js';
@@ -191,6 +192,8 @@ export interface NativeCandidate {
   contextWindow: number;
   baseUrl: string;
   auth: NativeGatewayAuth;
+  harness?: string;
+  harnessId?: string;
   wireFormat?: NativeGatewayWireFormat;
 }
 
@@ -224,15 +227,19 @@ export function nativeCandidatesFrom(
     })
     .map((r) => {
       const auth: NativeGatewayAuth = oauthProviders.get(r.provider) ?? 'api-key';
+      const key = r.ref.replace(/\//g, '-');
+      const id = r.id ?? r.ref;
       return {
-        key: r.ref.replace(/\//g, '-'),
+        key,
         gateway: r.provider,
-        id: r.id ?? r.ref,
+        id,
         contextWindow: 128000,
         baseUrl: isOauthGatewayAuth(auth)
           ? oauthGatewayBaseUrl(auth)
           : providerBaseUrls[r.provider],
         auth,
+        harness: r.harness,
+        harnessId: r.harness === 'codex' ? id : r.ref,
       };
     });
 }
@@ -319,9 +326,14 @@ export function deriveInitState(
   configScope: ConfigScope,
   offered: ProviderSummary[],
 ): InitState {
-  if (!config.native) return { configScope };
+  const nativeModels = config.native?.models ?? {};
+  const unifiedModels = config.unifiedModels;
+  const modelKeys = Object.keys(config.tiers ? unifiedModels : nativeModels);
+  if (modelKeys.length === 0) return { configScope };
 
-  const gateways = [...new Set(Object.values(config.native.models).map((model) => model.gateway))];
+  const gateways = [...new Set(modelKeys.map((key) =>
+    unifiedModels[key]?.gateway ?? nativeModels[key]?.gateway,
+  ).filter((gateway): gateway is string => gateway !== undefined))];
   const providerKeys: string[] = [];
   const harnesses: string[] = [];
   for (const gateway of gateways) {
@@ -342,13 +354,19 @@ export function deriveInitState(
     configScope,
     harnesses,
     providerKeys,
-    nativeKeys: Object.keys(config.native.models),
-    roles: Object.keys(config.native.generate),
+    nativeKeys: modelKeys,
+    roles: Object.keys(config.tiers ?? config.native?.generate ?? {}),
+    tiers: config.tiers
+      ? Object.fromEntries(Object.entries(config.tiers).map(([role, lists]) => [role, { simple: [...lists.simple], complex: [...lists.complex] }]))
+      : undefined,
     perRoleModels: Object.fromEntries(
-      Object.entries(config.native.generate).map(([role, models]) => [role, [...models]]),
+      Object.entries(config.tiers ?? config.native?.generate ?? {}).map(([role, models]) => [
+        role,
+        config.tiers ? [...new Set([...models.simple, ...models.complex])] : [...models],
+      ]),
     ),
     credentialSources: Object.fromEntries(
-      Object.entries(config.native.gateways)
+      Object.entries(config.native?.gateways ?? {})
         .filter(([, gateway]) => gateway.credentialSource !== undefined)
         .map(([gateway, config]) => [gateway, config.credentialSource!]),
     ),
@@ -357,16 +375,32 @@ export function deriveInitState(
 
 /** NativeCandidates for every model in the config, from the config's own data. */
 export function configNativeCandidates(config: SonataConfig): NativeCandidate[] {
-  if (!config.native) return [];
-  return Object.entries(config.native.models).map(([key, model]) => ({
-    key,
-    gateway: model.gateway,
-    id: model.id,
-    contextWindow: model.contextWindow,
-    baseUrl: config.native!.gateways[model.gateway].baseUrl,
-    auth: config.native!.gateways[model.gateway].auth,
-    wireFormat: config.native!.gateways[model.gateway].wireFormat,
-  }));
+  const gateways = config.native?.gateways ?? {};
+  const unified = Object.entries(config.unifiedModels)
+    .filter(([, model]) => model.gateway !== undefined && model.id !== undefined)
+    .flatMap(([key, model]) => {
+      const gateway = model.gateway!;
+      const gatewayConfig = gateways[gateway];
+      if (gatewayConfig === undefined) return [];
+      return [{
+        key, gateway, id: model.id!,
+        contextWindow: model.contextWindow ?? 128000,
+        baseUrl: gatewayConfig.baseUrl, auth: gatewayConfig.auth,
+        ...(gatewayConfig.wireFormat !== undefined ? { wireFormat: gatewayConfig.wireFormat } : {}),
+        ...(model.harness !== undefined ? { harness: model.harness, harnessId: model.harnessId } : {}),
+      }];
+    });
+  if (unified.length > 0 || config.native === undefined) return unified;
+  return Object.entries(config.native.models).flatMap(([key, model]) => {
+    const gateway = config.native!.gateways[model.gateway];
+    if (gateway === undefined) return [];
+    return [{
+      key, gateway: model.gateway, id: model.id,
+      contextWindow: model.contextWindow,
+      baseUrl: gateway.baseUrl, auth: gateway.auth,
+      ...(gateway.wireFormat !== undefined ? { wireFormat: gateway.wireFormat } : {}),
+    }];
+  });
 }
 
 /**
@@ -375,8 +409,9 @@ export function configNativeCandidates(config: SonataConfig): NativeCandidate[] 
 export function preTickedNative(configText: string, candidates: NativeCandidate[]): Set<string> {
   try {
     const config = parseConfig(configText);
-    if (!config.native) return new Set();
-    const existing = config.native.models;
+    const existing = config.tiers
+      ? config.unifiedModels
+      : config.native?.models ?? {};
     const ticked = new Set<string>();
     for (const c of candidates) {
       if (existing[c.key]) ticked.add(c.key);
@@ -388,17 +423,24 @@ export function preTickedNative(configText: string, candidates: NativeCandidate[
 }
 
 /**
- * Emit a native-only config: `[native.gateways]`, `[native.models]`,
- * `[generate.native]`, and `[run]`. No `[models]` or `[generate.roles]`.
+ * Emit the unified model registry, tier lists, native gateway definitions,
+ * and runtime defaults.
  */
 export function nativeTomlFor(
   roleModels: Record<string, NativeCandidate[]>,
   credentialSources: Record<string, CredentialSource> = {},
+  selectedTiers?: Record<string, { simple: string[]; complex: string[] }>,
 ): string {
   const allModels = new Map<string, NativeCandidate>();
   for (const cands of Object.values(roleModels)) {
     for (const c of cands) allModels.set(c.key, c);
   }
+  const tierLists = selectedTiers ?? Object.fromEntries(
+    Object.entries(roleModels).map(([role, candidates]) => {
+      const proposal = proposeTiers(candidates.map((candidate) => candidate.key));
+      return [role, proposal];
+    }),
+  );
 
   const clashes = duplicateKeys([...allModels.keys()]);
   if (clashes.length > 0) {
@@ -427,20 +469,16 @@ export function nativeTomlFor(
   }
 
   for (const [key, c] of allModels) {
-    lines.push(
-      `[native.models.${tomlKey(key)}]`,
-      `gateway = ${tomlKey(c.gateway)}`,
-      `id = ${tomlKey(c.id)}`,
-      `context_window = ${c.contextWindow}`,
-      '',
-    );
+    lines.push(`[models.${tomlKey(key)}]`, `gateway = ${tomlKey(c.gateway)}`, `id = ${tomlKey(c.id)}`, `context_window = ${c.contextWindow}`);
+    if (c.harness !== undefined) {
+      lines.push(`harness = ${tomlKey(c.harness)}`, `harness_id = ${tomlKey(c.harnessId ?? c.id)}`);
+    }
+    lines.push('');
   }
 
-  lines.push('[generate.native]');
-  for (const [role, cands] of Object.entries(roleModels)) {
-    lines.push(`${tomlKey(role)} = [${cands.map((c) => tomlKey(c.key)).join(', ')}]`);
+  for (const [role, lists] of Object.entries(tierLists)) {
+    lines.push(`[tiers.${tomlKey(role)}]`, `simple = [${lists.simple.map(tomlKey).join(', ')}]`, `complex = [${lists.complex.map(tomlKey).join(', ')}]`, '');
   }
-  lines.push('');
 
   lines.push(
     '[run]',
@@ -633,6 +671,7 @@ async function runInit(
   let chosenNative!: NativeCandidate[];
   let roles!: string[];
   let nativeRoleModels: Record<string, NativeCandidate[]> = {};
+  let tiers: Record<string, { simple: string[]; complex: string[] }> = {};
   let credentialSources: Record<string, CredentialSource> = {};
   /** BYOK keys typed in the wizard, written only after the confirm gate. */
   let byokKeys: Record<string, string> = {};
@@ -746,6 +785,7 @@ async function runInit(
     credentialSources = result.state.credentialSources ?? {};
     nativeKeys = result.state.nativeKeys ?? [];
     roles = result.state.roles ?? [...KNOWN_ROLES];
+    tiers = result.state.tiers ?? Object.fromEntries(roles.map((role) => [role, proposeTiers(nativeKeys, loadAaCatalog(opts.home))]));
     chosenNative = nativeKeys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined);
     // Reconciled against the roles and models actually selected: the wizard's
     // per-role map starts from the existing config, so iterating *it* rather
@@ -859,6 +899,10 @@ async function runInit(
           keys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined),
         ]),
     );
+    tiers = Object.fromEntries(roles.map((role) => [
+      role,
+      d.tiers?.[role] ?? proposeTiers(nativeKeys, loadAaCatalog(opts.home)),
+    ]));
   }
 
   // A codex-sourced credential applies to neither an api-key gateway (codex
@@ -1002,7 +1046,7 @@ async function runInit(
   }
 
   mkdirSync(dirname(configPathResolved), { recursive: true });
-  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources));
+  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources, tiers));
   out(`  ✓ wrote ${configPathResolved}`);
 
   let hookChanged = false;

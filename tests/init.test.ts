@@ -170,14 +170,38 @@ describe('cmdInit (non-interactive)', () => {
     expect(res.hookChanged).toBe(true);
 
     const toml = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
-    expect(toml).toContain('[native.models."opencode-deepseek-v4-flash"]');
+    expect(toml).toContain('[models."opencode-deepseek-v4-flash"]');
     expect(toml).toContain('[native.gateways."opencode"]');
-    expect(toml).not.toContain('[models.');
+    expect(toml).not.toContain('[native.models.');
     expect(toml).not.toContain('[generate.roles]');
+    expect(toml).not.toContain('[generate.native]');
+    expect(toml).toContain('[tiers."code"]');
 
     const settings = readSettings(join(cwd, '.claude', 'settings.json'));
     expect(settings.hooks!.PreToolUse[0].hooks[0].command)
       .toBe('node "/pkg/hooks/capture-mode.mjs"');
+  });
+
+  it('--yes writes catalog-ranked tiers for every selected role, round-tripping through parseConfig', async () => {
+    const res = await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['opencode/opencode'],
+      models: ['opencode-deepseek-v4-flash', 'opencode-kimi-k3'],
+      roles: ['code', 'review'], scope: 'project', write,
+    });
+    expect(res.models.sort()).toEqual(['opencode-deepseek-v4-flash', 'opencode-kimi-k3']);
+
+    const toml = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
+    const cfg = parseConfig(toml);
+    for (const role of ['code', 'review']) {
+      const lists = cfg.tiers?.[role];
+      expect(lists).toBeDefined();
+      expect(lists!.simple.length).toBeGreaterThan(0);
+      expect(lists!.complex.length).toBeGreaterThan(0);
+      for (const key of [...lists!.simple, ...lists!.complex]) {
+        expect(['opencode-deepseek-v4-flash', 'opencode-kimi-k3']).toContain(key);
+      }
+    }
   });
 
   it('is idempotent across repeated runs', async () => {
@@ -420,36 +444,38 @@ describe('nativeTomlFor', () => {
     key: `${gw}-${id}`, gateway: gw, id, contextWindow: 128000, baseUrl: `https://${gw}.example/v1`,
   });
 
-  it('writes native gateways, models, and generate.native', () => {
+  it('writes native gateways, unified models, and tiers', () => {
     const out = nativeTomlFor({ code: [cand('opencode', 'deepseek-v4-flash')] });
     expect(out).toContain('[native.gateways."opencode"]');
-    expect(out).toContain('[native.models."opencode-deepseek-v4-flash"]');
-    expect(out).toContain('[generate.native]');
-    expect(out).not.toContain('[models.');
+    expect(out).toContain('[models."opencode-deepseek-v4-flash"]');
+    expect(out).toContain('[tiers."code"]');
+    expect(out).not.toContain('[native.models.');
+    expect(out).not.toContain('[generate.native]');
     expect(out).not.toContain('[generate.roles]');
 
     const cfg = parseConfig(out);
-    expect(cfg.native?.models['opencode-deepseek-v4-flash']).toEqual({
+    expect(cfg.unifiedModels['opencode-deepseek-v4-flash']).toEqual({
       gateway: 'opencode', id: 'deepseek-v4-flash', contextWindow: 128000,
     });
-    expect(cfg.native?.generate.code).toEqual(['opencode-deepseek-v4-flash']);
+    expect(cfg.tiers?.code.simple).toEqual(['opencode-deepseek-v4-flash']);
+    expect(cfg.tiers?.code.complex).toEqual(['opencode-deepseek-v4-flash']);
   });
 
   it('defines a model once even when several roles use it', () => {
     const c = cand('opencode', 'kimi-k3');
     const out = nativeTomlFor({ code: [c], plan: [c] });
-    expect(out.match(/\[native\.models\./g)).toHaveLength(1);
-    expect(parseConfig(out).native?.generate.plan).toEqual(['opencode-kimi-k3']);
+    expect(out.match(/\[models\./g)).toHaveLength(1);
+    expect(parseConfig(out).tiers?.plan.simple).toEqual(['opencode-kimi-k3']);
   });
 
-  it('writes each role with its own models', () => {
+  it('writes each role with its own tier lists', () => {
     const out = nativeTomlFor({
       code: [cand('opencode', 'kimi-k3')],
       review: [cand('opencode', 'kimi-k3'), cand('opencode', 'grok-4.5')],
     });
     const cfg = parseConfig(out);
-    expect(cfg.native?.generate.code).toEqual(['opencode-kimi-k3']);
-    expect(cfg.native?.generate.review?.sort()).toEqual(['opencode-grok-4.5', 'opencode-kimi-k3']);
+    expect(cfg.tiers?.code.simple).toEqual(['opencode-kimi-k3']);
+    expect([...(cfg.tiers?.review.complex ?? [])].sort()).toEqual(['opencode-grok-4.5', 'opencode-kimi-k3']);
   });
 });
 
@@ -651,6 +677,8 @@ describe('nativeCandidatesFrom', () => {
       contextWindow: 128000,
       baseUrl: 'https://gateway.acme.example/v1',
       auth: 'api-key',
+      harness: 'opencode',
+      harnessId: 'acme/deepseek-v4-flash-0731',
     }]);
   });
 
@@ -667,6 +695,8 @@ describe('nativeCandidatesFrom', () => {
       contextWindow: 128000,
       baseUrl: CODEX_OAUTH_BASE_URL,
       auth: 'codex-oauth',
+      harness: 'codex',
+      harnessId: 'gpt-5.6-luna',
     }]);
   });
 
@@ -1417,6 +1447,8 @@ describe('nativeCandidatesFrom — copilot', () => {
       contextWindow: 128000,
       baseUrl: COPILOT_OAUTH_BASE_URL,
       auth: 'copilot-oauth',
+      harness: 'opencode',
+      harnessId: 'github-copilot/gpt-4o',
     }]);
   });
 });
@@ -1502,7 +1534,7 @@ describe('cmdInit — BYOK', () => {
     const toml = readFileSync(res.configPath, 'utf8');
     expect(toml).toMatch(/\[native\.gateways\."deepseek"\]/);
     expect(toml).toMatch(/base_url = "https:\/\/api\.deepseek\.com\/v1"/);
-    expect(toml).toMatch(/\[native\.models\."deepseek-deepseek-v4-flash"\]/);
+    expect(toml).toMatch(/\[models\."deepseek-deepseek-v4-flash"\]/);
     expect(toml).toMatch(/id = "deepseek-v4-flash"/);
   });
 
@@ -1563,7 +1595,7 @@ describe('cmdInit — BYOK', () => {
       ...args, detect: withOpenrouter, cwd, home, write,
       providers: ['opencode/openrouter'], models: ['openrouter-kimi-k3'],
     });
-    expect(readFileSync(res.configPath, 'utf8')).toMatch(/\[native\.models\."openrouter-kimi-k3"\]/);
+    expect(readFileSync(res.configPath, 'utf8')).toMatch(/\[models\."openrouter-kimi-k3"\]/);
   });
 
   // The double-init bug, now for a gateway no harness can rediscover.

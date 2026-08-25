@@ -68,6 +68,19 @@ describe('InitWizard state', () => {
     });
   });
 
+  it('stores a tier ranking payload into state.tiers without disturbing other roles', () => {
+    const codeSimple = applyStep({}, 4, { role: 'code', tier: 'simple', ranked: ['flash'] });
+    const codeComplex = applyStep(codeSimple, 4, { role: 'code', tier: 'complex', ranked: ['terra', 'flash'] });
+    const reviewSimple = applyStep(codeComplex, 4, { role: 'review', tier: 'simple', ranked: ['sol'] });
+
+    expect(reviewSimple).toEqual({
+      tiers: {
+        code: { simple: ['flash'], complex: ['terra', 'flash'] },
+        review: { simple: ['sol'], complex: [] },
+      },
+    });
+  });
+
   it('filters providers by selected harnesses and candidates by selected providers', () => {
     const providers: ProviderOption[] = [
       { key: 'opencode-openai', harness: 'opencode', provider: 'openai', count: 2 },
