@@ -46,6 +46,7 @@ import { readSettings } from '../src/settings.js';
 import { writeSonataKey } from '../src/native/credentials.js';
 import { credentialDir, credentialFileFor } from '../src/native/oauth-login.js';
 import { parseConfig, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL } from '../src/config.js';
+import { cmdDoctor } from '../src/commands/doctor.js';
 
 beforeEach(() => {
   tuiMocks.interactive = false;
@@ -157,6 +158,31 @@ describe('cmdInit (non-interactive)', () => {
 
   const write = (l: string) => { lines.push(l); };
   const detect = makeDetect();
+
+  it('--yes installs the sonata loop skill and names the routing choice', async () => {
+    await cmdInit({
+      cwd, home, packageRoot: process.cwd(), yes: true, detect,
+      providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
+      roles: ['code'], scope: 'project', write,
+    });
+
+    expect(readFileSync(join(cwd, '.claude', 'skills', 'sonata-loop', 'SKILL.md'), 'utf8'))
+      .toBe(readFileSync(join(process.cwd(), 'skills', 'loop', 'SKILL.md'), 'utf8'));
+    expect(lines.join('\n')).toContain('routing');
+  });
+
+  it('leaving routing disabled warns in doctor for a tiered config', async () => {
+    await cmdInit({
+      cwd, home, packageRoot: process.cwd(), yes: true, detect,
+      providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
+      roles: ['code'], scope: 'skip', routing: 'skip', write,
+    });
+
+    const check = (await cmdDoctor({ cwd, home, packageRoot: process.cwd() })).checks
+      .find((candidate) => candidate.name === 'tier routing');
+    expect(check?.ok).toBe(false);
+    expect(check?.detail).toBe('tier agents need a routed session — run `sonata route auto`');
+  });
 
   it('writes native config, installs the hook and generates agents', async () => {
     const res = await cmdInit({
@@ -1279,7 +1305,7 @@ context_window = 128000
     });
 
     await cmdInit({
-      cwd, home, packageRoot: '/pkg', detect, scope: 'skip', write: () => {},
+      cwd, home, packageRoot: '/pkg', detect, scope: 'skip', routing: 'skip', write: () => {},
     });
 
     expect(parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).native!.gateways.codex).toEqual({
@@ -1342,7 +1368,7 @@ describe('cmdInit — custom provider wire format', () => {
         customWireFormats: { 'my-proxy': 'anthropic' },
       },
     };
-    await cmdInit({ cwd, home, packageRoot: '/pkg', yes: false, detect, scope: 'skip', write: () => {} });
+    await cmdInit({ cwd, home, packageRoot: '/pkg', yes: false, detect, scope: 'skip', routing: 'skip', write: () => {} });
     const written = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
     expect(written).toMatch(/\[native\.gateways\."my-proxy"\][\s\S]*base_url = "https:\/\/my-proxy\.example\.com\/v1"[\s\S]*wire_format = "anthropic"/);
     expect(written).toContain('id = "proxy-model"');

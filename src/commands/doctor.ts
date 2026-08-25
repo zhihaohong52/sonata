@@ -120,6 +120,24 @@ export async function cmdDoctor(
     return { ok: false, checks };
   }
 
+  // Tier agents call the native router first. Report a blocking warning when
+  // neither persistent routing nor route-auto hooks are configured.
+  if (config.tiers !== undefined) {
+    const projectSettings = readSettings(routeSettingsFile(opts.cwd, 'project', home));
+    const globalSettings = readSettings(routeSettingsFile(opts.cwd, 'global', home));
+    const routed = [projectSettings, globalSettings].some((settings) =>
+      routeEnv(settings).ANTHROPIC_BASE_URL !== undefined ||
+      (opts.packageRoot !== undefined && autoInstalled(settings, opts.packageRoot)),
+    );
+    if (!routed) {
+      checks.push({
+        name: 'tier routing',
+        ok: false,
+        detail: 'tier agents need a routed session — run `sonata route auto`',
+      });
+    }
+  }
+
   // `sonata init` run in $HOME used to write here, and nothing reads it. It
   // looks exactly like configuration, which is worse than not existing.
   const stray = join(home, 'sonata.toml');

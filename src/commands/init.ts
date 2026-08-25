@@ -33,6 +33,7 @@ import {
 } from '../settings.js';
 import { pruneAgents } from '../detect.js';
 import { cmdSync } from './sync.js';
+import { cmdRoute } from './route.js';
 import { select, confirm, isInteractive, banner, CancelledError } from '../tui.js';
 import { keyReport, resolveKeyFromSource, resolveKeys, writeSonataKey } from '../native/credentials.js';
 import { byokCandidateKey, wellKnownProviders } from '../native/models.js';
@@ -123,6 +124,8 @@ export interface InitOptions {
   models?: string[];
   roles?: string[];
   scope?: HookScope | 'skip';
+  /** Whether to install route-auto hooks for tier agents. */
+  routing?: 'project' | 'global' | 'skip';
   /** Where the config and its agents are written. Defaults to `project`. */
   configScope?: ConfigScope;
   /** Repeatable gateway=source overrides for the scripted path. */
@@ -158,6 +161,7 @@ export interface InitResult {
   models: string[];
   roles: string[];
   scope: HookScope | 'skip';
+  routing: 'project' | 'global' | 'skip';
   hookChanged: boolean;
   agentsWritten: string[];
   configPath: string;
@@ -679,7 +683,7 @@ async function runInit(
     out('');
     out('  Fix the errors above, then run `sonata init` again.');
     return {
-      problems, models: [], roles: [], scope: 'skip', hookChanged: false,
+      problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
       agentsWritten: [], configPath: join(opts.cwd, 'sonata.toml'),
       pruned: [],
     };
@@ -784,7 +788,7 @@ async function runInit(
     if (result.cancelled) {
       out('  Nothing written.');
       return {
-        problems, models: [], roles: [], scope: 'skip', hookChanged: false,
+        problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
         agentsWritten: [], configPath: configPathFor(
           result.state.configScope ?? 'project', opts.cwd, opts.home),
         pruned: [], cancelled: true,
@@ -1051,6 +1055,22 @@ async function runInit(
     scope = 'project';
   }
 
+  // ---- loop skill and routing ------------------------------------------
+  let routing: 'project' | 'global' | 'skip';
+  if (opts.routing) {
+    routing = opts.routing;
+  } else if (interactive) {
+    out('');
+    log.line('prompting for tier-agent routing');
+    routing = await select<'project' | 'global' | 'skip'>('Route tier agents through the native router', [
+      { value: 'project', label: 'sonata route auto', hint: 'this project only' },
+      { value: 'global', label: 'sonata route auto --global', hint: 'all projects' },
+      { value: 'skip', label: 'Skip', hint: 'doctor will warn for tier agents' },
+    ]);
+  } else {
+    routing = 'project';
+  }
+
   // ---- confirm ----------------------------------------------------------
   out('');
   out('  Summary');
@@ -1059,6 +1079,7 @@ async function runInit(
   const totalAgents = Object.values(nativeRoleModels).reduce((n, m) => n + m.length, 0);
   out(`    agents  ${totalAgents} files in .claude/agents/`);
   out(`    hook    ${scope === 'skip' ? 'not installed' : `${scope} settings.json`}`);
+  out(`    routing ${routing === 'skip' ? 'not configured' : `sonata route auto${routing === 'global' ? ' --global' : ''}`}`);
   out(`    config  ${configPathResolved}`);
   out('');
 
@@ -1067,7 +1088,7 @@ async function runInit(
   if (interactive && !(await confirm('Write these changes?', true))) {
     out('  Nothing written.');
     return {
-      problems, models: nativeKeys, roles, scope, hookChanged: false,
+      problems, models: nativeKeys, roles, scope, routing, hookChanged: false,
       agentsWritten: [], configPath: configPathResolved, cancelled: true,
       pruned: [],
     };
@@ -1098,6 +1119,25 @@ async function runInit(
       : `  · sonata tools already allow-listed in ${path}`);
   }
 
+  const skillPath = join(opts.cwd, '.claude', 'skills', 'sonata-loop', 'SKILL.md');
+  mkdirSync(dirname(skillPath), { recursive: true });
+  const packageSkill = join(opts.packageRoot, 'skills', 'loop', 'SKILL.md');
+  const skillSource = existsSync(packageSkill)
+    ? packageSkill
+    : join(process.cwd(), 'skills', 'loop', 'SKILL.md');
+  writeFileSync(skillPath, readFileSync(skillSource));
+  out(`  ✓ installed loop skill in ${skillPath}`);
+
+  if (routing !== 'skip') {
+    await cmdRoute('auto', {
+      cwd: opts.cwd,
+      home: opts.home,
+      packageRoot: opts.packageRoot,
+      scope: routing,
+    });
+    out(`  ✓ configured sonata route auto${routing === 'global' ? ' --global' : ''}`);
+  }
+
   const agentsDir = agentsDirFor(configScope, opts.cwd, opts.home);
   const sync = cmdSync({ cwd: opts.cwd, home: opts.home, agentsDir });
   const agentsWritten = sync.written;
@@ -1126,7 +1166,7 @@ async function runInit(
   out('');
 
   return {
-    problems, models: nativeKeys, roles, scope, hookChanged, agentsWritten,
+    problems, models: nativeKeys, roles, scope, routing, hookChanged, agentsWritten,
     configPath: configPathResolved, pruned,
   };
 }
