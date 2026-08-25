@@ -41,9 +41,10 @@ describe('agentMarkdown', () => {
     expect(md).toMatch(/do not (read|inspect|edit)/i);
   });
 
-  it('requires verbatim task forwarding and runs the CLI in the caller\'s own cwd', () => {
+  it('requires verbatim task forwarding via --task-file, never inline shell text', () => {
     expect(md).toMatch(/verbatim, byte for byte/i);
-    expect(md).toContain('sonata dispatch --model deepseek-v4-flash --role code');
+    expect(md).toContain('sonata dispatch --model deepseek-v4-flash --role code --task-file <path>');
+    expect(md).toMatch(/BLOCKED: task must be given as a file path/);
   });
 
   it('documents the PAUSED and STALLED handling', () => {

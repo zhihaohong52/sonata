@@ -360,6 +360,15 @@ export async function cmdServe(
     // why it's safe where `ensure-serve.mjs`'s external health-probe respawn
     // (bug D in the ledger) was not: there is only ever one spawn racing here,
     // never a second `serve` guessing whether an existing one is healthy.
+    // Resolves once the current child is confirmed healthy, or once serve has
+    // given up waiting on it — awaited by the router before every litellm-bound
+    // request so a request landing in a respawn's brief startup gap waits for
+    // it, rather than getting a connection-refused failure that would cool the
+    // candidate down for a crash it already recovered from. The `.catch` means
+    // a hard failure resolves this too: the router's own fetch then fails for
+    // real, and a genuine outage cools down exactly as before.
+    let litellmReady: Promise<void> = Promise.resolve();
+
     const spawnLitellmChild = (): SpawnedLitellm => {
       const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(configPath, childEnv, native.ports.litellm);
       recordLitellmPid(opts.home, spawned.pid);
@@ -379,12 +388,15 @@ export async function cmdServe(
           );
           return;
         }
-        void (async () => {
+        litellmReady = (async () => {
           await sleep(respawnDelayMs);
           if (stopping) return;
           console.error('sonata serve: respawning litellm...');
           child = spawnLitellmChild();
-        })();
+          await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
+        })().catch((error) => {
+          console.error(`sonata serve: respawned litellm never came up: ${String(error)}`);
+        });
       });
       return spawned;
     };
@@ -407,6 +419,7 @@ export async function cmdServe(
       // Config is re-read per call (not the `config`/`native` closed over
       // above) so a tier edit in sonata.toml takes effect without a restart.
       resolveTier: (alias) => resolveTierAlias(loadConfig(opts.cwd, opts.home), alias),
+      litellmReady: () => litellmReady,
     });
 
     try {

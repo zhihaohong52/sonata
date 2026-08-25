@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { cmdDispatch, truncateReport } from '../../src/commands/dispatch.js';
+import { cmdDispatch, truncateReport, taskPath } from '../../src/commands/dispatch.js';
 
 const TIERED = `
 [models."flash"]
@@ -160,5 +160,15 @@ describe('truncateReport', () => {
     const report = 'x'.repeat(200);
     const truncated = truncateReport(report, 'r1', 100);
     expect(truncated).toBe(`${'x'.repeat(100)}\n\n[truncated: full transcript at \`sonata log r1\`]`);
+  });
+});
+
+describe('taskPath', () => {
+  it('never collides across calls in the same millisecond', () => {
+    // Date.now() alone repeats within a millisecond under concurrent
+    // dispatch, which would let one task file silently overwrite another
+    // before either launch read it back.
+    const paths = new Set(Array.from({ length: 200 }, () => taskPath(cwd)));
+    expect(paths.size).toBe(200);
   });
 });

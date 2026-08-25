@@ -16,6 +16,17 @@ export interface RouterDeps {
   /** Resolves a `sonata-<role>-<tier>` alias to its ranked routes, or undefined if unknown. */
   resolveTier?: (alias: string) => { role: string; tier: string; routes: TierRoute[] } | undefined;
   now?: () => number;
+  /**
+   * Resolves once the current litellm child is confirmed healthy (or once
+   * serve has given up waiting on it). A respawn after a crash otherwise
+   * leaves a brief window where litellm is not listening yet; without this,
+   * a request landing in that window gets a connection-refused 502 that
+   * `routeTierRequest` cannot tell apart from a genuine model failure, and
+   * cools the candidate down for `TIER_COOLDOWN_MS` even though it recovers
+   * moments later. Awaited before every litellm-bound request; omitted by
+   * callers (and tests) that have no respawn to gate.
+   */
+  litellmReady?: () => Promise<void>;
 }
 
 export interface RouterRequest {
@@ -181,6 +192,7 @@ async function forwardToLitellm(
   deps: RouterDeps,
 ): Promise<RouterResponse> {
   try {
+    await deps.litellmReady?.();
     const response = await deps.fetch(
       targetUrl(deps.litellmBase, req.url),
       { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined },

@@ -357,6 +357,67 @@ describe('cmdServe — litellm respawn', () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(spawnCount).toBe(1);
   });
+
+  it('gates litellm-bound requests on the respawned child, not just the crashed one', async () => {
+    // Without gating, a request landing in the gap between the crash and the
+    // respawned child answering gets a connection-refused failure instead of
+    // waiting the brief moment for the recovery already in flight — which
+    // would cool the candidate down for a crash it had nothing to do with.
+    // Uses its own unlikely-to-collide litellm port rather than the shared
+    // beforeEach fixture's 4000, since nothing must actually be listening
+    // there for the post-release request to still fail on its own merits.
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.models."deepseek-v4-flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+context_window = 128000
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 39217
+`);
+
+    let waitCalls = 0;
+    let releaseRespawnWait: () => void = () => {};
+    let exitCb: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      respawnDelayMs: 0,
+      waitForLitellm: async () => {
+        waitCalls += 1;
+        if (waitCalls === 1) return;
+        await new Promise<void>((resolve) => { releaseRespawnWait = resolve; });
+      },
+      spawnLitellm: () => ({ pid: 1, kill() {}, onExit: (cb) => { exitCb = cb; } }),
+    });
+    handles.push(handle);
+    expect(waitCalls).toBe(1);
+
+    exitCb?.(1, null);
+    // Let the respawnDelayMs:0 tick fire and the second waitForLitellm start.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(waitCalls).toBe(2);
+
+    let settled = false;
+    const req = fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ model: 'deepseek-v4-flash' }),
+    }).then((res) => { settled = true; return res; });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(settled).toBe(false);
+
+    releaseRespawnWait();
+    const res = await req;
+    expect(settled).toBe(true);
+    // Nothing is actually listening on the litellm port in this test, so the
+    // request still fails once released — the point is it waited for the gate.
+    expect(res.status).toBe(502);
+  });
 });
 
 describe('cmdServe — tier resolution', () => {

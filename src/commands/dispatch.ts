@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { loadConfig, harnessModelFor, resolveTierAlias } from '../config.js';
 import { cmdRun } from './run.js';
@@ -60,10 +61,16 @@ interface DispatchDeps {
   wait?: typeof cmdWait;
 }
 
-function taskPath(cwd: string): string {
+/**
+ * `Date.now()` alone collides under concurrent dispatch — two calls in the
+ * same millisecond would overwrite each other's task file before either
+ * launch reads it back. The random suffix makes the name unique regardless
+ * of timing.
+ */
+export function taskPath(cwd: string): string {
   const dir = join(cwd, '.sonata', 'tasks');
   mkdirSync(dir, { recursive: true });
-  return join(dir, `${Date.now()}.md`);
+  return join(dir, `${Date.now()}-${randomBytes(4).toString('hex')}.md`);
 }
 
 /** Run a ranked harness route, trying the next route only on a failed finish. */

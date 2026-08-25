@@ -51,6 +51,28 @@ describe('routeRequest', () => {
     expect(res.status).toBe(502);
     expect(JSON.parse((res.body as Buffer).toString()).error.type).toBe('router_error');
   });
+
+  it('waits for litellmReady before forwarding to litellm', async () => {
+    // A respawned litellm child is not listening yet for a brief window;
+    // without this gate a request landing there gets connection-refused
+    // instead of the answer it would have gotten moments later.
+    const rec: any[] = [];
+    let released: () => void = () => {};
+    const ready = new Promise<void>((resolve) => { released = resolve; });
+    let readyAwaited = false;
+
+    const pending = routeRequest(
+      { method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from('{"model":"deepseek-v4-flash"}') },
+      { ...base, fetch: fakeFetch(rec), litellmReady: async () => { readyAwaited = true; await ready; } },
+    );
+
+    await Promise.resolve();
+    expect(rec.length).toBe(0);
+    released();
+    await pending;
+    expect(readyAwaited).toBe(true);
+    expect(rec.length).toBe(1);
+  });
 });
 
 describe('tier alias routing', () => {
