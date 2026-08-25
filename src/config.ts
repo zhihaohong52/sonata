@@ -590,6 +590,16 @@ export function generatedNativeAgents(config: SonataConfig): { role: string; mod
  * `doctor` then reported as stale, on every run.
  */
 export function expectedAgentNames(config: SonataConfig): string[] {
+  if (config.tiers !== undefined) {
+    const names: string[] = [];
+    for (const [role, lists] of Object.entries(config.tiers)) {
+      const collapsed = lists.simple.length === lists.complex.length &&
+        lists.simple.every((model, index) => model === lists.complex[index]);
+      if (collapsed) names.push(role);
+      else names.push(...TIER_NAMES.map((tier) => `${role}-${tier}`));
+    }
+    return names;
+  }
   const harness = generatedAgents(config);
   const native = generatedNativeAgents(config);
   const harnessNames = harness.map((a) => `${a.role}-${a.model}`);

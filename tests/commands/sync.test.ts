@@ -257,3 +257,68 @@ code = ["a"]
     expect(cmdSync({ cwd, agentsDir }).stale).toEqual([]);
   });
 });
+
+describe('cmdSync — tier agents', () => {
+  it('writes one agent per distinct tier and collapses identical tier lists', () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."simple-model"]
+gateway = "gateway"
+id = "simple"
+
+[models."complex-model"]
+gateway = "gateway"
+id = "complex"
+
+[tiers.code]
+simple = ["simple-model"]
+complex = ["complex-model"]
+
+[tiers.explore]
+simple = ["simple-model"]
+complex = ["simple-model"]
+`);
+    const agentsDir = join(cwd, '.claude', 'agents');
+    const res = cmdSync({ cwd, agentsDir });
+    expect(res.written.map((p) => p.split('/').pop()).sort()).toEqual([
+      'code-complex.md',
+      'code-simple.md',
+      'explore.md',
+    ]);
+    expect(readFileSync(join(agentsDir, 'code-simple.md'), 'utf8')).toContain('model: sonata-code-simple');
+    expect(readFileSync(join(agentsDir, 'code-complex.md'), 'utf8')).toContain('model: sonata-code-complex');
+    const explore = readFileSync(join(agentsDir, 'explore.md'), 'utf8');
+    expect(explore).toContain('model: sonata-explore');
+    expect(explore).toMatch(/^tools: Read, Grep, Glob$/m);
+    expect(existsSync(join(agentsDir, 'code-simple-model.md'))).toBe(false);
+    expect(existsSync(join(agentsDir, 'native-code-simple-model.md'))).toBe(false);
+  });
+
+  it('reports superseded legacy agents as stale', () => {
+    const agentsDir = join(cwd, '.claude', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(join(agentsDir, 'code-old.md'), 'forwarding wrapper around the sonata runtime');
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."simple-model"]
+gateway = "gateway"
+id = "simple"
+
+[tiers.code]
+simple = ["simple-model"]
+complex = ["simple-model"]
+`);
+    const res = cmdSync({ cwd, agentsDir });
+    expect(res.written.map((p) => p.split('/').pop())).toEqual(['code.md']);
+    expect(res.stale).toEqual(['code-old.md']);
+  });
+
+  it('keeps generating legacy agents when tiers are absent', () => {
+    const agentsDir = join(cwd, '.claude', 'agents');
+    const res = cmdSync({ cwd, agentsDir });
+    expect(res.written.map((p) => p.split('/').pop()).sort()).toEqual([
+      'code-deepseek-v4-flash.md',
+      'code-kimi-k3.md',
+      'review-deepseek-v4-flash.md',
+      'review-kimi-k3.md',
+    ]);
+  });
+});

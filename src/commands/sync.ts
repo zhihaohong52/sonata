@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { generatedAgents, generatedNativeAgents, expectedAgentNames, isReadOnlyRole, loadConfig } from '../config.js';
+import { generatedAgents, generatedNativeAgents, expectedAgentNames, isReadOnlyRole, loadConfig, TIER_NAMES } from '../config.js';
 import { staleAgents } from '../detect.js';
 
 export interface AgentSpec { role: string; model: string; harness: string }
@@ -114,6 +114,28 @@ Focus on ${blurb}.
 `;
 }
 
+export function tierAgentMarkdown(spec: { role: string; tier?: 'simple' | 'complex' }): string {
+  const blurb = ROLE_BLURB[spec.role] ?? spec.role;
+  const tier = spec.tier;
+  const name = tier === undefined ? spec.role : `${spec.role}-${tier}`;
+  const model = tier === undefined ? `sonata-${spec.role}` : `sonata-${spec.role}-${tier}`;
+  const tools = isReadOnlyRole(spec.role) ? 'tools: Read, Grep, Glob\n' : '';
+  const description = tier === undefined
+    ? `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop. Requires a routed session (sonata code, or sonata route on/auto).`
+    : `Runs ${blurb} on a ranked list of foreign models (${tier} tier), natively inside Claude Code's loop. Simple = mechanical, well-specified, contained work (single file, clear spec, bulk edits). Complex = cross-cutting, ambiguous, design-sensitive, or needs sustained reasoning. When unsure, use -complex. Requires a routed session (sonata code, or sonata route on/auto).`;
+
+  return `---
+name: ${name}
+description: ${description}
+model: ${model}
+${tools}---
+
+This agent only works in a routed session (sonata code, or sonata route on/auto).
+
+Focus on ${blurb}.
+`;
+}
+
 export interface SyncOptions { cwd: string; agentsDir: string; home?: string }
 
 export interface SyncResult {
@@ -126,6 +148,24 @@ export interface SyncResult {
 export function cmdSync(opts: SyncOptions): SyncResult {
   const config = loadConfig(opts.cwd, opts.home);
   mkdirSync(opts.agentsDir, { recursive: true });
+
+  if (config.tiers !== undefined) {
+    const written: string[] = [];
+    for (const [role, lists] of Object.entries(config.tiers)) {
+      const collapsed = lists.simple.length === lists.complex.length &&
+        lists.simple.every((model, index) => model === lists.complex[index]);
+      const tiers: ('simple' | 'complex' | undefined)[] = collapsed ? [undefined] : [...TIER_NAMES];
+      for (const tier of tiers) {
+        const path = join(opts.agentsDir, `${role}${tier === undefined ? '' : `-${tier}`}.md`);
+        writeFileSync(path, tierAgentMarkdown({ role, tier }));
+        written.push(path);
+      }
+    }
+    return {
+      written,
+      stale: staleAgents(opts.agentsDir, expectedAgentNames(config)),
+    };
+  }
 
   const wanted = generatedAgents(config);
   const written: string[] = [];
