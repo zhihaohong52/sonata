@@ -40,13 +40,24 @@ export interface AaCatalog {
  */
 export function normalizeModelName(raw: string): string {
   let name = raw.includes('/') ? raw.slice(raw.lastIndexOf('/') + 1) : raw;
-  const PREFIXES = ['opencode-', 'codex-', 'pi-', 'reasonix-', 'claude-harness-',
-    'anexto-', 'openrouter-', 'openai-', 'google-', 'anthropic-'];
-  let stripped = true;
-  while (stripped) {
-    stripped = false;
-    for (const p of PREFIXES) {
-      if (name.startsWith(p) && name.length > p.length) { name = name.slice(p.length); stripped = true; }
+  // Sonata keys are exactly `<harness>-<provider>-<model>`, so only the first
+  // two segments are ours to remove. A `while` loop re-matches its own output
+  // and keeps eating past that structure, corrupting a model whose real name
+  // happens to begin with a reserved word (`openai-…`, `pi-…`). So stripping
+  // is two ordered passes — at most one harness prefix, then at most one
+  // provider prefix — never a loop that can run again.
+  const HARNESS_PREFIXES = ['opencode-', 'codex-', 'pi-', 'reasonix-', 'claude-harness-'];
+  const PROVIDER_PREFIXES = ['anexto-', 'openrouter-', 'openai-', 'google-', 'anthropic-'];
+  for (const prefix of HARNESS_PREFIXES) {
+    if (name.startsWith(prefix) && name.length > prefix.length) {
+      name = name.slice(prefix.length);
+      break;
+    }
+  }
+  for (const prefix of PROVIDER_PREFIXES) {
+    if (name.startsWith(prefix) && name.length > prefix.length) {
+      name = name.slice(prefix.length);
+      break;
     }
   }
   return name.replace(/-\d{4}$/, '');
@@ -107,7 +118,10 @@ export function proposeTiers(modelKeys: string[], aa?: AaCatalog): TierProposal 
     .sort(byRank);
   // A tier must always resolve to something: with no capable model, everything
   // is complex-eligible; with no cheap-capable model, simple mirrors complex.
-  const complexFinal = complex.length > 0 ? complex : [...modelKeys];
+  // The fallback is sorted too — raw input order would break the documented
+  // "index descending, price ascending" ordering on exactly the path where no
+  // model cleared the threshold.
+  const complexFinal = complex.length > 0 ? complex : [...modelKeys].sort(byRank);
   const simpleFinal = simple.length > 0 ? simple : complexFinal;
   return { simple: simpleFinal, complex: complexFinal };
 }
@@ -122,7 +136,24 @@ export function loadAaCatalog(home: string): AaCatalog | undefined {
   try {
     const doc = JSON.parse(readFileSync(path, 'utf8')) as AaCatalog;
     if (typeof doc.fetchedAt !== 'string' || typeof doc.models !== 'object' || doc.models === null) return undefined;
-    return doc;
+    // Validate each entry, not just the top level: a missing, null, string or
+    // non-finite score passes the shape check and then misclassifies the model
+    // (`undefined >= 40` is `false`, silently "not capable"). A partially-
+    // corrupt cache is still useful, so drop the bad entries and keep the good;
+    // degrade to no cache only when nothing survives.
+    const models: Record<string, { codingIndex: number; blendedPriceUsd: number }> = {};
+    for (const [name, entry] of Object.entries(doc.models)) {
+      if (
+        entry !== null &&
+        typeof entry === 'object' &&
+        Number.isFinite(entry.codingIndex) &&
+        Number.isFinite(entry.blendedPriceUsd)
+      ) {
+        models[name] = entry;
+      }
+    }
+    if (Object.keys(models).length === 0) return undefined;
+    return { fetchedAt: doc.fetchedAt, models };
   } catch {
     return undefined;
   }

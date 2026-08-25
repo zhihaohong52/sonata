@@ -83,7 +83,7 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
         );
       })}
       <Text dimColor>
-        {footer ?? `space toggle · [ ] rank${onBack ? ' · ← back' : ''}${onCancel ? ' · esc cancel' : ''}`}
+        {footer ?? `space toggle · [ ] rank · enter confirm${onBack ? ' · ← back' : ''}${onCancel ? ' · esc cancel' : ''}`}
       </Text>
     </Box>
   );

@@ -26,6 +26,13 @@ describe('rsReduce', () => {
   it('move actions ignore an unselected cursor item', () => {
     const s = rsReduce({ cursor: 2, ranked: [0] }, { type: 'moveUp' }, 3);
     expect(s.ranked).toEqual([0]);
+    const down = rsReduce({ cursor: 2, ranked: [0] }, { type: 'moveDown' }, 3);
+    expect(down.ranked).toEqual([0]);
+  });
+
+  it('moveDown at the bottom rank is a no-op', () => {
+    const s = rsReduce({ cursor: 2, ranked: [0, 1, 2] }, { type: 'moveDown' }, 3);
+    expect(s.ranked).toEqual([0, 1, 2]);
   });
 
   it('cursor movement clamps to the item count', () => {
