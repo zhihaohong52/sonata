@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents, expectedAgentNames, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL } from '../src/config.js';
+import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents, expectedAgentNames, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL, resolveTierAlias, harnessModelFor } from '../src/config.js';
 
 const VALID = `
 [models.deepseek-v4-flash]
@@ -607,5 +607,92 @@ base_url = "https://openrouter.ai/api/v1"
 credential_source = "opencode"
 `, '/tmp/x');
     expect(config.native!.gateways.openrouter.credentialSource).toBe('opencode');
+  });
+});
+
+
+describe('unified [models] and [tiers]', () => {
+  const TIERED = `
+[models."deepseek-v4-flash"]
+gateway = "anexto"
+id = "deepseek-v4-flash-0731"
+harness = "opencode"
+
+[models."gpt-5.6-terra"]
+gateway = "openai"
+id = "gpt-5.6-terra"
+
+[models."kimi-harness-only"]
+harness = "opencode"
+id = "anexto/kimi-k3"
+
+[tiers.code]
+simple = ["deepseek-v4-flash"]
+complex = ["gpt-5.6-terra", "deepseek-v4-flash"]
+
+[tiers.explore]
+simple = ["deepseek-v4-flash"]
+complex = ["deepseek-v4-flash"]
+
+[native.gateways."anexto"]
+base_url = "http://gateway.example/v1"
+[native.gateways."openai"]
+base_url = "http://openai.example/v1"
+`;
+
+  it('parses unified models with native and harness routes', () => {
+    const config = parseConfig(TIERED);
+    expect(config.unifiedModels['deepseek-v4-flash']).toEqual({
+      gateway: 'anexto', id: 'deepseek-v4-flash-0731', contextWindow: 128000,
+      harness: 'opencode', harnessId: 'anexto/deepseek-v4-flash-0731',
+    });
+    expect(config.unifiedModels['kimi-harness-only']).toMatchObject({
+      harness: 'opencode', harnessId: 'anexto/kimi-k3',
+    });
+    expect(config.tiers?.code.complex).toEqual(['gpt-5.6-terra', 'deepseek-v4-flash']);
+  });
+
+  it('resolveTierAlias returns ranked routes for sonata-<role>-<tier>', () => {
+    const config = parseConfig(TIERED);
+    const resolved = resolveTierAlias(config, 'sonata-code-complex');
+    expect(resolved?.routes.map((r) => r.key)).toEqual(['gpt-5.6-terra', 'deepseek-v4-flash']);
+    expect(resolved?.routes[1].native).toEqual({ gateway: 'anexto', id: 'deepseek-v4-flash-0731' });
+    expect(resolved?.routes[1].harness).toEqual({ harness: 'opencode', id: 'anexto/deepseek-v4-flash-0731' });
+  });
+
+  it('resolveTierAlias accepts a collapsed sonata-<role> alias when the lists are identical', () => {
+    const config = parseConfig(TIERED);
+    expect(resolveTierAlias(config, 'sonata-explore')?.routes.map((r) => r.key))
+      .toEqual(['deepseek-v4-flash']);
+    expect(resolveTierAlias(config, 'sonata-nonsense')).toBeUndefined();
+  });
+
+  it('refuses a tier entry that names no [models] key', () => {
+    expect(() => parseConfig(`
+[models."known"]
+harness = "opencode"
+id = "anexto/known"
+
+[tiers.code]
+simple = ["missing-model"]
+complex = ["known"]
+`)).toThrow(/missing-model/);
+  });
+
+  it('refuses claude- ids in unified models and tier keys', () => {
+    expect(() => parseConfig(TIERED.replace('id = "gpt-5.6-terra"', 'id = "claude-opus-5"')))
+      .toThrow(/claude-/);
+  });
+
+  it('refuses mixing [tiers] with [generate]', () => {
+    expect(() => parseConfig(`${TIERED}\n[generate.roles]\ncode = []\n`))
+      .toThrow(/sonata init/);
+  });
+
+  it('harnessModelFor exposes the harness route for the dispatch CLI', () => {
+    const config = parseConfig(TIERED);
+    expect(harnessModelFor(config, 'deepseek-v4-flash'))
+      .toEqual({ harness: 'opencode', id: 'anexto/deepseek-v4-flash-0731' });
+    expect(harnessModelFor(config, 'gpt-5.6-terra')).toBeUndefined();
   });
 });
