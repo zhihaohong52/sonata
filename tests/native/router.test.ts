@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { routeRequest, flattenSystemBlocks, requestedModel } from '../../src/native/router.js';
+import { describe, expect, it, beforeEach } from 'vitest';
+import { routeRequest, flattenSystemBlocks, requestedModel, withModel, clearCooldowns } from '../../src/native/router.js';
 
 function fakeFetch(record: any[]) {
   return async (url: string, init: any) => {
@@ -50,6 +50,124 @@ describe('routeRequest', () => {
     );
     expect(res.status).toBe(502);
     expect(JSON.parse((res.body as Buffer).toString()).error.type).toBe('router_error');
+  });
+});
+
+describe('tier alias routing', () => {
+  const ROUTES = {
+    role: 'code', tier: 'simple',
+    routes: [
+      { key: 'flash', native: { gateway: 'g', id: 'flash-1' } },
+      { key: 'luna', native: { gateway: 'g', id: 'luna-1' } },
+      { key: 'harness-only', harness: { harness: 'opencode', id: 'x/y' } },
+    ],
+  };
+  const req = (model: string) => ({
+    method: 'POST', url: '/v1/messages',
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model, messages: [] })),
+  });
+
+  beforeEach(() => clearCooldowns());
+
+  it('rewrites the model to the first native candidate and forwards to litellm', async () => {
+    const seen: string[] = [];
+    const res = await routeRequest(req('sonata-code-simple'), {
+      fetch: (async (_url: string, init: RequestInit) => {
+        seen.push((JSON.parse(init.body as string) as { model: string }).model);
+        return new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual(['flash']);
+  });
+
+  it('falls back to the next candidate on 5xx and cools the failure down', async () => {
+    const seen: string[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return new Response('{}', { status: model === 'flash' ? 503 : 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    };
+    expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
+    expect(seen).toEqual(['flash', 'luna']);
+    // second request inside the cooldown skips flash entirely
+    await routeRequest(req('sonata-code-simple'), deps);
+    expect(seen).toEqual(['flash', 'luna', 'luna']);
+  });
+
+  it('falls back when fetch throws (connect error)', async () => {
+    const seen: string[] = [];
+    const res = await routeRequest(req('sonata-code-simple'), {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        if (model === 'flash') throw new Error('ECONNREFUSED');
+        return new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual(['flash', 'luna']);
+  });
+
+  it('returns 529 naming the CLI fallback when every native route fails', async () => {
+    const res = await routeRequest(req('sonata-code-simple'), {
+      fetch: (async () => new Response('{}', { status: 503 })) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    });
+    expect(res.status).toBe(529);
+    expect((res.body as Buffer).toString()).toContain('sonata dispatch --tier code-simple');
+  });
+
+  it('returns 400 for an alias the config does not resolve', async () => {
+    const res = await routeRequest(req('sonata-nope-simple'), {
+      fetch: (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => undefined,
+    });
+    expect(res.status).toBe(400);
+    expect((res.body as Buffer).toString()).toContain('sonata sync');
+  });
+
+  it('4xx from upstream is returned, not retried — our bug, not their outage', async () => {
+    const seen: string[] = [];
+    const res = await routeRequest(req('sonata-code-simple'), {
+      fetch: (async (_url: string, init: RequestInit) => {
+        seen.push((JSON.parse(init.body as string) as { model: string }).model);
+        return new Response('bad request', { status: 400 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    });
+    expect(res.status).toBe(400);
+    expect(seen).toEqual(['flash']);
+  });
+
+  it('logs the resolution step', async () => {
+    const lines: string[] = [];
+    await routeRequest(req('sonata-code-simple'), {
+      fetch: (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+      log: (l) => lines.push(l),
+    });
+    expect(lines.some((l) => l.includes('model=sonata-code-simple -> flash -> litellm'))).toBe(true);
+  });
+});
+
+describe('withModel', () => {
+  it('rewrites only the model field', () => {
+    const out = JSON.parse(withModel(Buffer.from('{"model":"a","x":1}'), 'b').toString());
+    expect(out).toEqual({ model: 'b', x: 1 });
   });
 });
 

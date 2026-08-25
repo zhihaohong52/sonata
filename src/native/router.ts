@@ -1,5 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
+export interface TierRoute {
+  key: string;
+  native?: { gateway: string; id: string };
+  harness?: { harness: string; id: string };
+}
+
 export interface RouterDeps {
   fetch: typeof fetch;
   anthropicBase?: string;
@@ -7,6 +13,9 @@ export interface RouterDeps {
   litellmKey: string;
   log?: (line: string) => void;
   health?: boolean;
+  /** Resolves a `sonata-<role>-<tier>` alias to its ranked routes, or undefined if unknown. */
+  resolveTier?: (alias: string) => { role: string; tier: string; routes: TierRoute[] } | undefined;
+  now?: () => number;
 }
 
 export interface RouterRequest {
@@ -74,6 +83,26 @@ export function requestedModel(body: Buffer): string | undefined {
   }
 }
 
+/** Rewrites only the `model` field of a JSON body; returns it unchanged if it does not parse. */
+export function withModel(body: Buffer, model: string): Buffer {
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(body.toString()) as Record<string, unknown>;
+  } catch {
+    return body;
+  }
+  return Buffer.from(JSON.stringify({ ...payload, model }));
+}
+
+export const TIER_COOLDOWN_MS = 60_000;
+
+/** Module-level so a cooling-down key stays cool across requests. Test seam: `clearCooldowns()`. */
+const cooldowns = new Map<string, number>();
+
+export function clearCooldowns(): void {
+  cooldowns.clear();
+}
+
 function isClaudeRequest(body: Buffer): boolean {
   try {
     return JSON.parse(body.toString()).model?.startsWith('claude-') === true;
@@ -126,40 +155,35 @@ export function flattenSystemBlocks(body: Buffer): Buffer {
   return Buffer.from(JSON.stringify({ ...payload, system: text.join('\n\n') }));
 }
 
-export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promise<RouterResponse> {
-  const anthropic = isClaudeRequest(req.body);
-  const headers = requestHeaders(req.headers);
-  const upstream = anthropic ? 'anthropic' : 'litellm';
-  // Anthropic understands its own block arrays; only the foreign path needs the
-  // string form, so the request Anthropic receives stays byte-identical.
-  const body = anthropic ? req.body : flattenSystemBlocks(req.body);
-
-  if (!anthropic) {
-    for (const name of Object.keys(headers)) {
-      if (name.toLowerCase() === 'authorization' || name.toLowerCase() === 'x-api-key') delete headers[name];
-    }
-    headers.authorization = `Bearer ${deps.litellmKey}`;
-  }
-
-  deps.log?.(`${req.method} ${req.url} model=${requestedModel(req.body) ?? '?'} -> ${upstream}`);
-
+/**
+ * Forwards an already-litellm-shaped request (auth swapped, system flattened,
+ * model rewritten if this is a tier candidate) and applies the 500->529
+ * empty-completion rewrite. Shared by the plain litellm path and the tier
+ * fallback loop so the two forwarding paths cannot drift apart.
+ */
+async function forwardToLitellm(
+  body: Buffer,
+  headers: Record<string, string>,
+  req: RouterRequest,
+  deps: RouterDeps,
+): Promise<RouterResponse> {
   try {
     const response = await deps.fetch(
-      targetUrl(anthropic ? (deps.anthropicBase ?? 'https://api.anthropic.com') : deps.litellmBase, req.url),
+      targetUrl(deps.litellmBase, req.url),
       { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined },
     );
     // LiteLLM returns 500 when ChatGPT's Codex endpoint yields output:[]. That
     // usually means the upstream was overloaded and returned an empty completion
     // rather than a real error. Re-emitting it as 529 (overloaded) lets Claude
     // Code treat it as a retriable backpressure signal rather than a hard fault.
-    if (response.status === 500 && !anthropic) {
+    if (response.status === 500) {
       const responseBodyBuf = response.body === null
         ? Buffer.alloc(0)
         : Buffer.concat(await async function() { const chunks: Buffer[] = []; for await (const c of responseBody(response.body!)) chunks.push(Buffer.from(c)); return chunks; }());
       const text = responseBodyBuf.toString();
       if (text.includes('Unknown items in responses API response')) {
         const msg = 'upstream returned empty completion (overloaded) — retry';
-        deps.log?.(`router: 500 from litellm rewritten to 529 (${requestedModel(req.body) ?? '?'}): empty output`);
+        deps.log?.(`router: 500 from litellm rewritten to 529 (${requestedModel(body) ?? '?'}): empty output`);
         return {
           status: 529,
           headers: { 'content-type': 'application/json' },
@@ -172,6 +196,105 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
         body: responseBodyBuf,
       };
     }
+    return {
+      status: response.status,
+      headers: responseHeaders(response.headers),
+      body: response.body === null ? Buffer.alloc(0) : responseBody(response.body),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      status: 502,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from(JSON.stringify({ error: { type: 'router_error', message } })),
+    };
+  }
+}
+
+function litellmHeaders(headers: Record<string, string>, litellmKey: string): Record<string, string> {
+  const out = { ...headers };
+  for (const name of Object.keys(out)) {
+    if (name.toLowerCase() === 'authorization' || name.toLowerCase() === 'x-api-key') delete out[name];
+  }
+  out.authorization = `Bearer ${litellmKey}`;
+  return out;
+}
+
+/**
+ * Tries each native-routed candidate for a `sonata-<role>-<tier>` alias in
+ * rank order, skipping any inside its post-failure cooldown window. The first
+ * response with status < 500 goes to the client — retry is inherently
+ * pre-first-byte, so this never interferes with an in-progress stream.
+ */
+async function routeTierRequest(req: RouterRequest, deps: RouterDeps, alias: string): Promise<RouterResponse> {
+  const resolved = deps.resolveTier?.(alias);
+  if (resolved === undefined) {
+    return {
+      status: 400,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from(JSON.stringify({ error: {
+        type: 'invalid_request_error',
+        message: `unknown sonata tier alias "${alias}" — run \`sonata sync\` and check [tiers] in sonata.toml`,
+      } })),
+    };
+  }
+
+  const now = deps.now ?? Date.now;
+  const headers = litellmHeaders(requestHeaders(req.headers), deps.litellmKey);
+  const flattened = flattenSystemBlocks(req.body);
+  const candidates = resolved.routes.filter((route) => route.native !== undefined);
+
+  for (const route of candidates) {
+    const until = cooldowns.get(route.key);
+    if (until !== undefined && until > now()) continue;
+
+    const body = withModel(flattened, route.key);
+    const response = await forwardToLitellm(body, headers, { ...req, body }, deps);
+    if (response.status >= 500) {
+      cooldowns.set(route.key, now() + TIER_COOLDOWN_MS);
+      deps.log?.(`router: ${route.key} failed (${response.status}), trying next`);
+      continue;
+    }
+    deps.log?.(`${req.method} ${req.url} model=${alias} -> ${route.key} -> litellm`);
+    return response;
+  }
+
+  const label = `${resolved.role}-${resolved.tier}`;
+  deps.log?.(`router: all native routes for ${label} failed`);
+  return {
+    status: 529,
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({
+      type: 'overloaded_error',
+      message: `all native routes for ${label} failed; fall back with: sonata dispatch --tier ${label}`,
+    })),
+  };
+}
+
+export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promise<RouterResponse> {
+  const alias = requestedModel(req.body);
+  if (alias !== undefined && alias.startsWith('sonata-')) {
+    return routeTierRequest(req, deps, alias);
+  }
+
+  const anthropic = isClaudeRequest(req.body);
+  const headers = requestHeaders(req.headers);
+  const upstream = anthropic ? 'anthropic' : 'litellm';
+  // Anthropic understands its own block arrays; only the foreign path needs the
+  // string form, so the request Anthropic receives stays byte-identical.
+  const body = anthropic ? req.body : flattenSystemBlocks(req.body);
+
+  deps.log?.(`${req.method} ${req.url} model=${requestedModel(req.body) ?? '?'} -> ${upstream}`);
+
+  if (!anthropic) {
+    return forwardToLitellm(body, litellmHeaders(headers, deps.litellmKey), req, deps);
+  }
+
+  try {
+    const response = await deps.fetch(
+      targetUrl(deps.anthropicBase ?? 'https://api.anthropic.com', req.url),
+      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined },
+    );
     return {
       status: response.status,
       headers: responseHeaders(response.headers),
