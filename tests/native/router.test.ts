@@ -198,6 +198,39 @@ describe('tier alias routing', () => {
     expect(seen).toEqual(['flash', 'luna']);
   });
 
+  it('401 (candidate auth failure) falls back to the next candidate and cools the failure down', async () => {
+    const seen: string[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return new Response('unauthorized', { status: model === 'flash' ? 401 : 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    };
+    expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
+    expect(seen).toEqual(['flash', 'luna']);
+    // second request inside the cooldown skips flash entirely, same as a 5xx/429
+    await routeRequest(req('sonata-code-simple'), deps);
+    expect(seen).toEqual(['flash', 'luna', 'luna']);
+  });
+
+  it('403 (candidate auth failure) falls back to the next candidate, not returned as-is', async () => {
+    const seen: string[] = [];
+    const res = await routeRequest(req('sonata-code-simple'), {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return new Response('forbidden', { status: model === 'flash' ? 403 : 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual(['flash', 'luna']);
+  });
+
   it('logs the resolution step', async () => {
     const lines: string[] = [];
     await routeRequest(req('sonata-code-simple'), {

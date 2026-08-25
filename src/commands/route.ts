@@ -567,13 +567,13 @@ export async function cmdRouteSession(
   const config = loadConfig(configCwd, opts.home);
   const port = config.native?.ports.router;
   if (port !== undefined) {
+    const expectedConfigPath = resolveSonataConfigPath(configCwd, opts.home);
     const running = await probe(port);
     if (running && deps.probe === undefined) {
       // Only verify identity against the real network probe — an injected
       // test probe already encodes the scenario under test, and re-checking
       // against the real network here would defeat it.
       const actualConfigPath = await sonataRouterConfigPath(port);
-      const expectedConfigPath = resolveSonataConfigPath(configCwd, opts.home);
       if (actualConfigPath !== null && expectedConfigPath !== null && actualConfigPath !== expectedConfigPath) {
         throw new Error(
           `sonata: router port ${port} is already serving a different sonata configuration ` +
@@ -585,6 +585,23 @@ export async function cmdRouteSession(
     }
     if (!running) {
       await startDaemon(opts.home, opts.serveArgv, {}, configCwd);
+      if (deps.probe === undefined) {
+        // A concurrent SessionStart in another project could have won the
+        // race to bind this same default port with ITS daemon between the
+        // probe above and this daemon spawn's poll completing —
+        // `startServeDaemon` only confirms *a* sonata router answered, not
+        // that it is this project's. Verify identity again now that
+        // something is confirmed to be listening.
+        const startedConfigPath = await sonataRouterConfigPath(port);
+        if (startedConfigPath !== null && expectedConfigPath !== null && startedConfigPath !== expectedConfigPath) {
+          throw new Error(
+            `sonata: router port ${port} is already serving a different sonata configuration ` +
+            `(${startedConfigPath}) than this project resolves to (${expectedConfigPath}). ` +
+            `Two projects cannot share one router port — set a different [native.ports].router ` +
+            `in one of the two configs.`,
+          );
+        }
+      }
     }
   }
 

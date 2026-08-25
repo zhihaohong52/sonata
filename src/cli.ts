@@ -189,6 +189,7 @@ export async function main(argv: string[]): Promise<number> {
         model: { type: 'string' },
         role: { type: 'string' },
         'task-file': { type: 'string' },
+        'task-stdin': { type: 'boolean' },
         'roles-dir': { type: 'string' },
       },
     });
@@ -198,13 +199,18 @@ export async function main(argv: string[]): Promise<number> {
     if (values.role !== undefined && values.tier !== undefined) {
       throw new Error('sonata dispatch: --role only applies to --model; --tier\'s alias already names a role');
     }
-    if (values['task-file'] !== undefined && positionals.length > 0) {
-      throw new Error('sonata dispatch accepts positional task text only without --task-file');
+    if (values['task-file'] !== undefined && values['task-stdin']) {
+      throw new Error('sonata dispatch: --task-file and --task-stdin are mutually exclusive');
     }
-    const task = values['task-file'] !== undefined
-      ? readFileSync(values['task-file'], 'utf8')
-      : positionals.join(' ');
-    if (!task.trim()) throw new Error('sonata dispatch requires task text or --task-file');
+    if ((values['task-file'] !== undefined || values['task-stdin']) && positionals.length > 0) {
+      throw new Error('sonata dispatch accepts positional task text only without --task-file/--task-stdin');
+    }
+    const task = values['task-stdin']
+      ? readFileSync(0, 'utf8')
+      : values['task-file'] !== undefined
+        ? readFileSync(values['task-file'], 'utf8')
+        : positionals.join(' ');
+    if (!task.trim()) throw new Error('sonata dispatch requires task text, --task-file, or --task-stdin');
     const res = await cmdDispatch({
       cwd: process.cwd(),
       home: homedir(),

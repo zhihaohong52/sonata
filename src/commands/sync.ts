@@ -46,10 +46,11 @@ answering.
 
        sonata dispatch --model ${spec.model} --role ${spec.role} --task-file <path>
 
-   The task must reach the model as a **file**, never as inline shell text:
-   a task containing backticks, \`$(...)\`, quotes, or \`$HOME\`-style
-   expansions would corrupt or hijack the command if embedded directly into
-   a shell string, and you have no tool to escape it safely.
+   The task must reach the model as a **file or via stdin**, never spliced
+   into the shell command line as text: a task containing backticks,
+   \`$(...)\`, quotes, or \`$HOME\`-style expansions would corrupt or hijack
+   the command if embedded directly into a shell string, and you have no
+   tool to escape it safely.
 
     - If the caller gave you a **file path** holding the task, pass it with
       \`--task-file <path>\` and do not open the file yourself. A path cannot
@@ -57,10 +58,18 @@ answering.
       summarised, shortened, or rewritten — is the whole job: a 3,000-word
       spec once reached the model as a single sentence, so it never saw the
       instructions it was meant to follow.
-    - If the caller instead gave you the task as inline text, you have no
-      way to turn it into a file yourself. Stop and return
-      \`BLOCKED: task must be given as a file path, not inline text\` as your
-      final message. Do not attempt to embed the text into the command.
+    - If the caller instead gave you the task as inline text, pipe it
+      through stdin using a single-quoted heredoc — the quotes around the
+      delimiter disable all shell expansion inside the heredoc body, so
+      backticks, \`$(...)\`, and \`$HOME\`-style text pass through byte for
+      byte with nothing to escape:
+
+          sonata dispatch --model ${spec.model} --role ${spec.role} --task-stdin <<'SONATA_TASK_EOF'
+          <task text verbatim, byte for byte>
+          SONATA_TASK_EOF
+
+      Never rewrite, summarise, or add anything to the text between the
+      heredoc markers — reproduce the caller's task exactly as given.
 
    The command blocks until the run is worth reporting, so one call is
    usually the whole job. Do not add your own waiting.

@@ -257,9 +257,9 @@ function litellmHeaders(headers: Record<string, string>, litellmKey: string): Re
 /**
  * Tries each native-routed candidate for a `sonata-<role>-<tier>` alias in
  * rank order, skipping any inside its post-failure cooldown window. The first
- * response that is neither ≥500 nor 429 goes to the client — retry is
- * inherently pre-first-byte, so this never interferes with an in-progress
- * stream.
+ * response that is neither ≥500, 429, nor a candidate-specific auth failure
+ * (401/403) goes to the client — retry is inherently pre-first-byte, so this
+ * never interferes with an in-progress stream.
  */
 async function routeTierRequest(req: RouterRequest, deps: RouterDeps, alias: string): Promise<RouterResponse> {
   const resolved = deps.resolveTier?.(alias);
@@ -287,9 +287,14 @@ async function routeTierRequest(req: RouterRequest, deps: RouterDeps, alias: str
     const response = await forwardToLitellm(body, headers, { ...req, body }, deps);
     // 429 is treated as a failure alongside 5xx (not as one of "our" 4xx
     // mistakes to return as-is): it's the upstream saying it's overloaded,
-    // exactly the transient case ranked fallback exists for. Every other 4xx
-    // means the request itself was wrong, which retrying can't fix.
-    if (response.status >= 500 || response.status === 429) {
+    // exactly the transient case ranked fallback exists for. 401/403 are also
+    // retried — they are credential failures specific to THIS candidate's
+    // gateway (an expired or rejected key), so a later candidate on a
+    // different gateway with a working credential is worth trying, and they
+    // must not take down every tier that ranks the affected gateway first.
+    // Every other 4xx (e.g. 400) means the request itself was wrong, which
+    // retrying can't fix.
+    if (response.status >= 500 || response.status === 429 || response.status === 401 || response.status === 403) {
       await drainBody(response.body);
       cooldowns.set(route.key, now() + TIER_COOLDOWN_MS);
       deps.log?.(`router: ${route.key} failed (${response.status}), trying next`);

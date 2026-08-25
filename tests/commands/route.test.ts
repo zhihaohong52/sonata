@@ -534,6 +534,41 @@ describe('cmdRouteSession', () => {
     expect(existsSync(routeSessionsFile(cwd))).toBe(false);
     expect(existsSync(routeSettingsFile(cwd))).toBe(false);
   });
+
+  it('re-checks identity after starting a daemon, catching a racing project that won the port', async () => {
+    // A SessionStart that sees nothing listening yet (probe false) spawns its
+    // own daemon — but between that probe and the daemon's bind, another
+    // project's router can win the shared default port. `startServeDaemon` only
+    // confirms *a* sonata router answered, so the loser must re-verify whose
+    // config now holds the port before trusting what answered. `startDaemon` is
+    // injected to resolve without a real spawn, but `probe` is left undefined
+    // so the post-spawn identity check still runs against the real network
+    // probe — driven here by the stateful fetch stub below.
+    const otherCwd = mkdtempSync(join(tmpdir(), 'sonata-route-other-'));
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    writeFileSync(join(otherCwd, 'sonata.toml'), NATIVE_TOML);
+    const otherConfigPath = join(otherCwd, 'sonata.toml');
+
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        // The initial probe finds nothing listening on the port yet.
+        throw new Error('ECONNREFUSED');
+      }
+      // By the time the daemon's poll completes, the *other* project's router
+      // holds the port.
+      return new Response(JSON.stringify({ status: 'ok', sonata: true, configPath: otherConfigPath }));
+    }) as unknown as typeof fetch);
+
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
+    await expect(
+      cmdRouteSession('start', 's1', o, { startDaemon: async () => ({}) }),
+    ).rejects.toThrow(/different sonata configuration/);
+    // The post-spawn identity collision aborts before any state is written.
+    expect(existsSync(routeSessionsFile(cwd))).toBe(false);
+    expect(existsSync(routeSettingsFile(cwd))).toBe(false);
+  });
 });
 describe('configless route sessions', () => {
   it('throws before writing a registry or settings file', async () => {
