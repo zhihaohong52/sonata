@@ -422,6 +422,32 @@ describe('cmdRouteSession', () => {
     expect(probedPorts).toEqual([4200]);
   });
 
+  it('shares one session count across projects at global scope, so one project ending does not turn off another\'s routing', async () => {
+    // A per-project registry would let project A's own count hit zero and
+    // call `route off` against the single shared global router, even though
+    // project B's global session (tracked in a registry A never sees) is
+    // still live.
+    const cwdA = mkdtempSync(join(tmpdir(), 'sonata-route-projA-'));
+    const cwdB = mkdtempSync(join(tmpdir(), 'sonata-route-projB-'));
+    writeFileSync(join(cwdA, 'sonata.toml'), NATIVE_TOML);
+    writeFileSync(join(cwdB, 'sonata.toml'), NATIVE_TOML);
+    writeMachineConfig(NATIVE_TOML);
+    const deps = { probe: async () => true, startDaemon: async () => ({}) };
+
+    const oA = { cwd: cwdA, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'], scope: 'global' as const };
+    const oB = { cwd: cwdB, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'], scope: 'global' as const };
+
+    await cmdRouteSession('start', 'sessA', oA, deps);
+    await cmdRouteSession('start', 'sessB', oB, deps);
+
+    const endedA = await cmdRouteSession('end', 'sessA', oA, deps);
+    expect(endedA).toEqual({ sessions: 1, routing: 'on' });
+    expect((await cmdRoute('status', { cwd: cwdB, home, packageRoot: PACKAGE_ROOT, scope: 'global' }))?.scopes.global.on).toBe(true);
+
+    const endedB = await cmdRouteSession('end', 'sessB', oB, deps);
+    expect(endedB).toEqual({ sessions: 0, routing: 'off' });
+  });
+
   it('starts a project-scope daemon from the session\'s own cwd', async () => {
     const o = opts(); // scope defaults to undefined -> 'project'
     const seenCwds: (string | undefined)[] = [];

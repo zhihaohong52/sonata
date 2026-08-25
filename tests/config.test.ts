@@ -655,6 +655,27 @@ base_url = "http://openai.example/v1"
     expect(config.tiers?.code.complex).toEqual(['gpt-5.6-terra', 'deepseek-v4-flash']);
   });
 
+  it('defaults a unified codex harness id to the bare id, never a synthesized provider/model ref', () => {
+    // Codex takes a bare model id — unlike opencode/pi/reasonix, it has no
+    // provider dimension. Defaulting harnessId to `${gateway}/${id}` (the
+    // opencode/pi/reasonix shape) for codex would produce an id like
+    // `openai/gpt-5.6-sol` that parses fine here but is invalid the moment
+    // `sonata dispatch` actually launches codex with it.
+    const config = parseConfig(`
+[models."gpt-5.6-sol"]
+gateway = "openai"
+id = "gpt-5.6-sol"
+harness = "codex"
+
+[native.gateways."openai"]
+base_url = "https://openai.example/v1"
+`);
+    expect(config.unifiedModels['gpt-5.6-sol']).toMatchObject({
+      harness: 'codex', harnessId: 'gpt-5.6-sol',
+    });
+    expect(config.models['gpt-5.6-sol']).toEqual({ harness: 'codex', id: 'gpt-5.6-sol' });
+  });
+
   it('resolveTierAlias returns ranked routes for sonata-<role>-<tier>', () => {
     const config = parseConfig(TIERED);
     const resolved = resolveTierAlias(config, 'sonata-code-complex');

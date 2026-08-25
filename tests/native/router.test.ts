@@ -153,6 +153,10 @@ describe('tier alias routing', () => {
     // discards the fallback command this is meant to hand back.
     expect(body).toMatchObject({ type: 'error', error: { type: 'overloaded_error' } });
     expect(body.error.message).toContain('sonata dispatch --tier code-simple');
+    // `sonata dispatch` rejects an invocation with neither positional task
+    // text nor --task-file — the bare command above is not executable as
+    // shown, so the message must not read as a copy-pasteable fix on its own.
+    expect(body.error.message).toContain('--task-file');
   });
 
   it('returns 400 for an alias the config does not resolve', async () => {

@@ -183,8 +183,14 @@ export function parseConfig(text: string): SonataConfig {
       if (d.context_window !== undefined && typeof d.context_window !== 'number') {
         throw new Error(`sonata.toml: model "${name}" has non-number "context_window"`);
       }
+      // Only opencode/pi/reasonix take provider-qualified ids; defaulting
+      // codex the same way synthesized `<gateway>/<id>` (e.g. `openai/gpt-5.6-sol`)
+      // for a harness that takes a bare id, and that invalid ref reached
+      // `sonata dispatch` undetected since the entry otherwise parses fine.
       const harnessId = typeof d.harness === 'string'
-        ? (typeof d.harness_id === 'string' ? d.harness_id : `${d.gateway}/${d.id}`)
+        ? (typeof d.harness_id === 'string'
+          ? d.harness_id
+          : QUALIFIED_ID_HARNESSES.includes(d.harness) ? `${d.gateway}/${d.id}` : d.id)
         : undefined;
       unifiedModels[name] = {
         gateway: d.gateway,

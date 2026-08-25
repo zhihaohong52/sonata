@@ -207,9 +207,22 @@ function omit(obj: Record<string, unknown>, key: string): Record<string, unknown
  * became Claude. `sonata route off` clears the registry outright.
  */
 
-/** Where the ids of currently-routed auto sessions live. `.sonata/` is ignored. */
-export function routeSessionsFile(cwd: string): string {
-  return join(cwd, '.sonata', 'route-sessions.json');
+/**
+ * Where the ids of currently-routed auto sessions live. `.sonata/` is ignored.
+ *
+ * Global scope is one shared router across every project, so its session
+ * count has to be shared too — a per-project registry would let a session
+ * ending in project A (whose own registry hits zero) turn off routing while
+ * project B's sessions, tracked in a registry A never sees, are still live.
+ */
+export function routeSessionsFile(
+  cwd: string,
+  scope: 'project' | 'global' = 'project',
+  home: string = homedir(),
+): string {
+  return scope === 'global'
+    ? join(home, '.config', 'sonata', 'route-sessions.json')
+    : join(cwd, '.sonata', 'route-sessions.json');
 }
 
 export function readSessions(file: string): string[] {
@@ -353,6 +366,7 @@ export function routeStatus(
    * status/port is never read from a project's own sonata.toml.
    */
   globalConfig: SonataConfig = config,
+  home: string = homedir(),
 ): RouteStatus {
   const project = scopedSettings?.project ?? settings;
   const global = scopedSettings?.global ?? {};
@@ -360,7 +374,7 @@ export function routeStatus(
   const current = routeScopeStatus(settings, activeConfig, packageRoot, scope);
   const projectStatus = scopedSettings ? routeScopeStatus(project, config, packageRoot, 'project') : current;
   const globalStatus = routeScopeStatus(global, globalConfig, packageRoot, 'global');
-  const sessions = cwd === undefined ? 0 : readSessions(routeSessionsFile(cwd)).length;
+  const sessions = cwd === undefined ? 0 : readSessions(routeSessionsFile(cwd, scope, home)).length;
   return {
     ...current,
     sessions,
@@ -411,6 +425,7 @@ export async function cmdRoute(
     },
     scope,
     globalConfig,
+    opts.home,
   );
 
   if (action === 'on') {
@@ -424,8 +439,10 @@ export async function cmdRoute(
     if (plan.changed) writeSettings(file, plan.settings);
     // An explicit `off` means stop routing, so the auto registry goes with it —
     // otherwise a stale id from a crashed session would have the next
-    // SessionStart turn routing straight back on.
-    writeSessions(routeSessionsFile(opts.cwd), []);
+    // SessionStart turn routing straight back on. This clears only this
+    // scope's registry: an explicit `route off` (project-scoped) must not
+    // wipe the shared global session count out from under other projects.
+    writeSessions(routeSessionsFile(opts.cwd, scope, opts.home), []);
     return status(plan.settings);
   }
 
@@ -466,11 +483,16 @@ export async function cmdRouteSession(
   opts: { cwd: string; home: string; packageRoot: string; serveArgv: string[]; scope?: 'project' | 'global' },
   deps: SessionDeps = {},
 ): Promise<SessionPhaseResult> {
-  const registry = routeSessionsFile(opts.cwd);
+  // A global session shares one machine-wide registry with every other
+  // routed project — otherwise this project's own registry hitting zero
+  // would turn off the single shared router while another project's global
+  // sessions, tracked in a registry this one never sees, are still live.
+  const registry = routeSessionsFile(opts.cwd, opts.scope ?? 'project', opts.home);
   const ids = readSessions(registry);
 
   // A global hook runs in every directory; validate the project before touching
-  // its registry so unrelated directories remain completely untouched.
+  // its own registry (project scope) or the shared one (global scope) so an
+  // unrelated, configless directory remains completely untouched.
   loadConfig(opts.cwd, opts.home);
 
   if (phase === 'end') {

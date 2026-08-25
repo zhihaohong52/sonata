@@ -125,14 +125,23 @@ export async function cmdDoctor(
   if (config.tiers !== undefined) {
     const projectSettings = readSettings(routeSettingsFile(opts.cwd, 'project', home));
     const globalSettings = readSettings(routeSettingsFile(opts.cwd, 'global', home));
+    // Global routing resolves the *machine* config (bd72ec4/dd9ee9b), not
+    // necessarily `config` above — that's project-first with the machine
+    // config only as a fallback, so a project with its own sonata.toml whose
+    // [native.ports].router differs from the machine's would otherwise be
+    // checked against the wrong port for the global case.
+    let globalConfig = config;
+    try { globalConfig = loadConfig(home, home); } catch { /* no machine config; fall through below finds nothing routed */ }
+
     // Presence alone isn't enough: a base URL left over from a since-changed
     // [native.ports].router points a session at a port nothing is listening
     // on, which reads as routed here and 502s on every native request.
-    const routerUrl = config.native !== undefined ? `http://localhost:${config.native.ports.router}` : undefined;
-    const routed = [projectSettings, globalSettings].some((settings) =>
-      (routerUrl !== undefined && routeEnv(settings).ANTHROPIC_BASE_URL === routerUrl) ||
-      (opts.packageRoot !== undefined && autoInstalled(settings, opts.packageRoot)),
-    );
+    const routedAt = (settings: typeof projectSettings, cfg: typeof config, scope: 'project' | 'global'): boolean => {
+      const routerUrl = cfg.native !== undefined ? `http://localhost:${cfg.native.ports.router}` : undefined;
+      return (routerUrl !== undefined && routeEnv(settings).ANTHROPIC_BASE_URL === routerUrl) ||
+        (opts.packageRoot !== undefined && autoInstalled(settings, opts.packageRoot, scope));
+    };
+    const routed = routedAt(projectSettings, config, 'project') || routedAt(globalSettings, globalConfig, 'global');
     if (!routed) {
       checks.push({
         name: 'tier routing',

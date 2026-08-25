@@ -296,7 +296,9 @@ async function routeTierRequest(req: RouterRequest, deps: RouterDeps, alias: str
     headers: { 'content-type': 'application/json' },
     body: anthropicErrorBody(
       'overloaded_error',
-      `all native routes for ${label} failed; fall back with: sonata dispatch --tier ${label}`,
+      `all native routes for ${label} failed; fall back with: ` +
+      `sonata dispatch --tier ${label} --task-file <path> (or trailing task text) — ` +
+      'dispatch requires one of those; the router has no task text of its own to supply',
     ),
   };
 }

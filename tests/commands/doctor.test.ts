@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { checkVersion, cmdDoctor, staleMcpRegistration } from '../../src/commands/doctor.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
 import { credentialDir } from '../../src/native/oauth-login.js';
+import { cmdRoute } from '../../src/commands/route.js';
 
 vi.mock('../../src/native/litellm.js', () => ({
   findLitellm: () => '/usr/local/bin/litellm',
@@ -580,6 +581,55 @@ router = 4100
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
       const { checks } = await cmdDoctor({ cwd, home });
+      expect(checks.find((x) => x.name === 'tier routing')).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('recognizes global auto routing against the machine config\'s port, not the project\'s own', async () => {
+    // A project's own [native.ports].router can differ from the machine
+    // config's — the check must compare the global settings against the
+    // machine config's port and the global-scope auto hook command, not the
+    // project's port and a project-scope hook command that was never installed.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-tier-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-tier-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+
+[native.ports]
+router = 5100
+`);
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+
+[native.ports]
+router = 4200
+`);
+    await cmdRoute('auto', { cwd, home, packageRoot: '/pkg', scope: 'global' });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home, packageRoot: '/pkg' });
       expect(checks.find((x) => x.name === 'tier routing')).toBeUndefined();
     } finally {
       globalThis.fetch = originalFetch;
