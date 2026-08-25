@@ -209,6 +209,38 @@ The model-selection step becomes tier assignment:
   required, and `doctor` checks routing the way it already checks the
   permission hook.
 
+### TUI changes (`src/tui-ink/`)
+
+The wizard's front half (provider setup, import toggle, BYOK, model
+discovery) is unchanged. The back half is rebuilt around tiers:
+
+- The **roles `MultiSelect`** stays (which roles to generate agents for).
+- The **"same models for every role?" choice and per-role `MultiSelect`
+  screens are replaced** by one tier-assignment screen per selected role,
+  showing `simple` and `complex` side by side, pre-filled with the catalog's
+  auto proposal.
+- **New `RankedSelect` component** (`components/ranked-select.tsx` + a pure
+  `ranked-select-state.ts` reducer, following the `multi-select-state.ts`
+  pattern): a multi-select where selection order is the ranking — selected
+  items render as a numbered list (1 = main model, 2+ = backups) and
+  re-selecting an item moves it, with keys to nudge an entry up/down. Order
+  must survive round-trips: re-init reads `[tiers]` and pre-selects in
+  stored order, not discovery order.
+- A **catalog source line** on the tier screens: `rankings: Artificial
+  Analysis (fetched 2026-08-25) — artificialanalysis.ai` when AA data backs
+  the proposal (the required attribution), or `rankings: built-in defaults —
+  refresh with sonata catalog update` for the curated fallback.
+- A **routing step** after the hook-scope step: offer `sonata route auto`
+  at project scope, `--global`, or skip — using the retained non-Ink
+  `select` prompt, like the existing hook-scope step (and subject to the
+  same stdin `ref()` discipline).
+- The **confirm screen** summarizes tiers per role (`code: simple →
+  deepseek-v4-flash (+1 backup) · complex → deepseek-v4-pro (+1 backup)`)
+  in place of the per-role model list.
+- Left-arrow back-navigation, flag skipping (`--yes` accepts the auto
+  proposal wholesale), and the init log's selection recording all extend to
+  the new steps.
+
 ## 7. `sonata route --global`
 
 `route auto|manual|on|off` accept `--global`:
@@ -263,6 +295,10 @@ runtime is involved; the skill is orchestration knowledge only.
 - **init/sync**: tier proposal from a fixture catalog, identical-list
   collapse, migration produces a config `parseConfig` accepts, agent files
   carry tier aliases.
+- **TUI**: `ranked-select-state.ts` reducer tested pure (selection order =
+  ranking, move up/down, re-select repositions, back-navigation preserves
+  order) — no TTY needed, same approach as `multi-select-state.ts`; re-init
+  round-trip pre-selects tier lists in stored order.
 - **route --global**: scope targeting, silent no-config exit, ownership
   guards on the global file.
 - Suite stays keyless and offline; AA and gateway interactions are fixtures.
