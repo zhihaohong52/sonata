@@ -19,7 +19,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove } from './commands/auth.js';
 import { cmdServe, cmdRestart, startServeDaemon } from './commands/serve.js';
 import { cmdCode } from './commands/code.js';
-import { cmdRoute } from './commands/route.js';
+import { cmdRoute, cmdRouteSession, type RouteAction } from './commands/route.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
 
@@ -36,6 +36,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata restart   kill any router holding the port and start a fresh daemon
   sonata code      launch a claude session routed through sonata serve
   sonata route     on|off|status — route plain claude sessions through sonata serve
+                   auto|manual — route each session for its lifetime, keeping Remote Control
   sonata auth      manage gateway credentials (list/add/remove/login)
   sonata mcp       start the stdio JSON-RPC server (started by Claude Code; not run by hand)
 
@@ -320,18 +321,39 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === 'route') {
     const action = rest[0];
-    if (!action || !['on', 'off', 'status'].includes(action)) {
-      throw new Error('sonata route requires one of: on | off | status');
+    const opts = { cwd: process.cwd(), home: homedir(), packageRoot: packageRoot() };
+
+    // The two session-<phase> actions are the body of the auto-mode hooks, not
+    // a surface for people: they take the session id the hook read from stdin.
+    if (action === 'session-start' || action === 'session-end') {
+      const id = rest[rest.indexOf('--id') + 1];
+      if (!rest.includes('--id') || !id) throw new Error(`sonata route ${action} requires --id <session-id>`);
+      const self = fileURLToPath(import.meta.url);
+      const res = await cmdRouteSession(
+        action === 'session-start' ? 'start' : 'end',
+        id,
+        { ...opts, serveArgv: [process.execPath, self, 'serve'] },
+      );
+      console.log(`routing ${res.routing}; ${res.sessions} session(s) routed`);
+      return 0;
     }
-    const status = await cmdRoute(
-      action as 'on' | 'off' | 'status',
-      { cwd: process.cwd(), home: homedir(), packageRoot: packageRoot() },
-    );
+
+    if (!action || !['on', 'off', 'status', 'auto', 'manual'].includes(action)) {
+      throw new Error('sonata route requires one of: on | off | status | auto | manual');
+    }
+    const status = await cmdRoute(action as RouteAction, opts);
     if (status) {
       console.log(status.on
         ? 'claude sessions in this project route through sonata serve'
         : 'claude sessions in this project use their default API endpoint');
       if (status.on) console.log(`  router: http://localhost:${status.port}`);
+      if (status.auto) {
+        console.log('  auto:   on — each session routes itself at start and un-routes at end');
+        console.log('          (sessions keep Remote Control: they launch before routing is written)');
+        if (status.sessions > 0) console.log(`  live:   ${status.sessions} routed session(s)`);
+      } else if (action === 'manual') {
+        console.log('  auto:   off — routing is whatever `sonata route on|off` last set');
+      }
     }
     return 0;
   }

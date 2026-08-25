@@ -1,6 +1,6 @@
 /**
- * `sonata route <on|off|status>` — route a plain `claude` session in the project
- * through the native router.
+ * `sonata route <on|off|status|auto|manual>` — route a plain `claude` session in
+ * the project through the native router.
  *
  * `sonata code` routes one session by spawning `claude` with env vars on the
  * process. `sonata route on` writes those same env vars into the project's
@@ -14,12 +14,14 @@
  * daemon, and the first thing an unrouted session would do is cache the error
  * from a router that is not there.
  */
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { readSettings, writeSettings, installHook, uninstallHook, hookInstalled } from '../settings.js';
 import type { Settings } from '../settings.js';
 import { loadConfig, type SonataConfig } from '../config.js';
 import { nativeSessionEnv } from './code.js';
+import { isSonataRouter, startServeDaemon } from './serve.js';
 
 /** Where `route` always writes — the project's local, never-shared settings. */
 export function routeSettingsFile(cwd: string): string {
@@ -160,8 +162,110 @@ function omit(obj: Record<string, unknown>, key: string): Record<string, unknown
   return out;
 }
 
+/* --- auto mode: route a session without giving up Remote Control ------------
+ *
+ * `route on` leaves the routing env in the settings file permanently, so the
+ * *next* session reads it at launch — and Claude Code decides there whether the
+ * session keeps Remote Control, by looking at `ANTHROPIC_BASE_URL`. A session
+ * launched under `route on` therefore always loses it.
+ *
+ * The two decisions are made at different times, and that asymmetry is the
+ * whole trick. The Remote Control gate is evaluated once, at launch; the env
+ * block is re-read per request. So a session that launches with a *clean*
+ * settings file keeps Remote Control, and picks up routing anyway if the env
+ * appears afterwards — which is exactly what a SessionStart hook can do.
+ * Probed live on 2026-08-25: a session launched before `route on` kept Remote
+ * Control and still dispatched a native subagent that the router logged as
+ * `-> litellm`.
+ *
+ * Auto mode makes that deliberate: SessionStart turns routing on, SessionEnd
+ * turns it back off so the next session also launches clean.
+ *
+ * Concurrent sessions are why the ids are counted rather than a boolean. Under
+ * `route on` a live session cannot be un-routed (its env was exported at
+ * launch and survives the key's removal), but an auto session has no exported
+ * env — it reads the file every request — so a sibling's SessionEnd would cut
+ * its routing mid-run. `route off` only fires when the last id is gone.
+ *
+ * A session that dies without its SessionEnd hook leaves its id behind, and
+ * routing stays on. That is the safe direction to fail: the cost is one
+ * launch without Remote Control, not a native agent whose model silently
+ * became Claude. `sonata route off` clears the registry outright.
+ */
+
+/** Where the ids of currently-routed auto sessions live. `.sonata/` is ignored. */
+export function routeSessionsFile(cwd: string): string {
+  return join(cwd, '.sonata', 'route-sessions.json');
+}
+
+export function readSessions(file: string): string[] {
+  if (!existsSync(file)) return [];
+  try {
+    const doc: unknown = JSON.parse(readFileSync(file, 'utf8'));
+    if (!Array.isArray(doc)) return [];
+    return doc.filter((id): id is string => typeof id === 'string');
+  } catch {
+    // A corrupt registry must not stop a session from starting; treat it as
+    // empty and let the write below replace it.
+    return [];
+  }
+}
+
+export function writeSessions(file: string, ids: string[]): void {
+  if (ids.length === 0) {
+    rmSync(file, { force: true });
+    return;
+  }
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(ids, null, 2)}\n`);
+}
+
+/** The SessionStart/SessionEnd command auto mode installs. */
+export function sessionHookCommand(packageRoot: string, phase: 'start' | 'end'): string {
+  return `node ${JSON.stringify(join(packageRoot, 'hooks', 'route-session.mjs'))} ${phase}`;
+}
+
+/** Whether both lifecycle hooks for this install are present. */
+export function autoInstalled(settings: Settings, packageRoot: string): boolean {
+  return hookInstalled(settings, sessionHookCommand(packageRoot, 'start'), 'SessionStart')
+    && hookInstalled(settings, sessionHookCommand(packageRoot, 'end'), 'SessionEnd');
+}
+
+export interface RouteAutoPlan {
+  settings: Settings;
+  changed: boolean;
+}
+
+/** What `route auto` would write: the SessionStart/SessionEnd hook pair. */
+export function planRouteAuto(settings: Settings, packageRoot: string): RouteAutoPlan {
+  let next = settings;
+  let changed = false;
+  for (const phase of ['start', 'end'] as const) {
+    const event = phase === 'start' ? 'SessionStart' : 'SessionEnd';
+    const res = installHook(next, sessionHookCommand(packageRoot, phase), '', event);
+    next = res.settings;
+    changed = changed || res.changed;
+  }
+  return { settings: next, changed };
+}
+
+/** What `route manual` would write: the same pair removed. */
+export function planRouteManual(settings: Settings, packageRoot: string): RouteAutoPlan {
+  let next = settings;
+  let changed = false;
+  for (const phase of ['start', 'end'] as const) {
+    const event = phase === 'start' ? 'SessionStart' : 'SessionEnd';
+    const res = uninstallHook(next, sessionHookCommand(packageRoot, phase), event);
+    next = res.settings;
+    changed = changed || res.changed;
+  }
+  return { settings: next, changed };
+}
+
 export interface RouteStatus {
   on: boolean;
+  auto: boolean;
+  sessions: number;
   port: number | undefined;
   env: Record<string, string>;
   hook: { installed: boolean };
@@ -172,6 +276,7 @@ export function routeStatus(
   settings: Settings,
   config: SonataConfig,
   packageRoot: string,
+  cwd?: string,
 ): RouteStatus {
   const env = routeEnv(settings);
   const port = config.native?.ports.router;
@@ -179,14 +284,25 @@ export function routeStatus(
   const command = port !== undefined ? ensureServeCommand(packageRoot, port) : '';
   const hook = command !== '' && hookInstalled(settings, command, 'SessionStart');
   const on = !!port && base === `http://localhost:${port}` && hook;
-  return { on, port, env, hook: { installed: hook } };
+  const sessions = cwd === undefined ? 0 : readSessions(routeSessionsFile(cwd)).length;
+  return {
+    on,
+    auto: autoInstalled(settings, packageRoot),
+    sessions,
+    port,
+    env,
+    hook: { installed: hook },
+  };
 }
 
+export type RouteAction = 'on' | 'off' | 'status' | 'auto' | 'manual';
+
 export async function cmdRoute(
-  action: 'on' | 'off' | 'status',
+  action: RouteAction,
   opts: { cwd: string; home: string; packageRoot: string },
 ): Promise<RouteStatus | undefined> {
-  const settings = readSettings(routeSettingsFile(opts.cwd));
+  const file = routeSettingsFile(opts.cwd);
+  const settings = readSettings(file);
   let config: SonataConfig;
   try {
     config = loadConfig(opts.cwd, opts.home);
@@ -198,15 +314,83 @@ export async function cmdRoute(
 
   if (action === 'on') {
     const plan = planRouteOn(settings, config, opts.packageRoot);
-    if (plan.changed) writeSettings(routeSettingsFile(opts.cwd), plan.settings);
-    return routeStatus(plan.settings, config, opts.packageRoot);
+    if (plan.changed) writeSettings(file, plan.settings);
+    return routeStatus(plan.settings, config, opts.packageRoot, opts.cwd);
   }
 
   if (action === 'off') {
     const plan = planRouteOff(settings, opts.packageRoot);
-    if (plan.changed) writeSettings(routeSettingsFile(opts.cwd), plan.settings);
-    return routeStatus(plan.settings, config, opts.packageRoot);
+    if (plan.changed) writeSettings(file, plan.settings);
+    // An explicit `off` means stop routing, so the auto registry goes with it —
+    // otherwise a stale id from a crashed session would have the next
+    // SessionStart turn routing straight back on.
+    writeSessions(routeSessionsFile(opts.cwd), []);
+    return routeStatus(plan.settings, config, opts.packageRoot, opts.cwd);
   }
 
-  return routeStatus(settings, config, opts.packageRoot);
+  if (action === 'auto' || action === 'manual') {
+    const plan = action === 'auto'
+      ? planRouteAuto(settings, opts.packageRoot)
+      : planRouteManual(settings, opts.packageRoot);
+    if (plan.changed) writeSettings(file, plan.settings);
+    return routeStatus(plan.settings, config, opts.packageRoot, opts.cwd);
+  }
+
+  return routeStatus(settings, config, opts.packageRoot, opts.cwd);
+}
+
+export interface SessionPhaseResult {
+  /** Sessions still routed after this phase. */
+  sessions: number;
+  /** Whether the phase flipped routing on or off. */
+  routing: 'on' | 'off';
+}
+
+/**
+ * The body of the auto-mode hooks: `start` registers this session and routes,
+ * `end` unregisters it and un-routes once it was the last one.
+ *
+ * Lives in the CLI rather than in the hook script so it is ordinary tested
+ * TypeScript, and so the hook can stay a few lines that cannot fail loudly.
+ */
+export interface SessionDeps {
+  /** Resolves true when the router already answers on `port`. */
+  probe?: (port: number) => Promise<boolean>;
+  startDaemon?: (home: string, argv: string[]) => Promise<unknown>;
+}
+
+export async function cmdRouteSession(
+  phase: 'start' | 'end',
+  sessionId: string,
+  opts: { cwd: string; home: string; packageRoot: string; serveArgv: string[] },
+  deps: SessionDeps = {},
+): Promise<SessionPhaseResult> {
+  const registry = routeSessionsFile(opts.cwd);
+  const ids = readSessions(registry);
+
+  if (phase === 'end') {
+    const remaining = ids.filter((id) => id !== sessionId);
+    writeSessions(registry, remaining);
+    if (remaining.length > 0) return { sessions: remaining.length, routing: 'on' };
+    await cmdRoute('off', opts);
+    return { sessions: 0, routing: 'off' };
+  }
+
+  writeSessions(registry, ids.includes(sessionId) ? ids : [...ids, sessionId]);
+  await cmdRoute('on', opts);
+
+  // `route on` installs the ensure-serve hook, but that hook cannot fire in the
+  // session that just started — it was added after launch. So auto mode starts
+  // the router here, the way `sonata code` does, or the session's first native
+  // dispatch caches a connection error from a router that is not there.
+  const probe = deps.probe ?? isSonataRouter;
+  const startDaemon = deps.startDaemon ?? startServeDaemon;
+  const config = loadConfig(opts.cwd, opts.home);
+  const port = config.native?.ports.router;
+  if (port !== undefined && !(await probe(port))) {
+    await startDaemon(opts.home, opts.serveArgv);
+  }
+
+  const after = readSessions(registry);
+  return { sessions: after.length, routing: 'on' };
 }
