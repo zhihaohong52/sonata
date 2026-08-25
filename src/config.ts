@@ -183,15 +183,24 @@ export function parseConfig(text: string): SonataConfig {
       if (d.context_window !== undefined && typeof d.context_window !== 'number') {
         throw new Error(`sonata.toml: model "${name}" has non-number "context_window"`);
       }
+      const harnessId = typeof d.harness === 'string'
+        ? (typeof d.harness_id === 'string' ? d.harness_id : `${d.gateway}/${d.id}`)
+        : undefined;
       unifiedModels[name] = {
         gateway: d.gateway,
         id: d.id,
         contextWindow: d.context_window ?? 128000,
         ...(typeof d.harness === 'string' ? {
           harness: d.harness,
-          harnessId: typeof d.harness_id === 'string' ? d.harness_id : `${d.gateway}/${d.id}`,
+          harnessId,
         } : {}),
       };
+      // A unified entry may also be used by the legacy generator. Keep the
+      // harness projection populated when both routes are declared; otherwise
+      // [generate.roles] would incorrectly report this valid entry as unknown.
+      if (typeof d.harness === 'string') {
+        models[name] = { harness: d.harness, id: harnessId! };
+      }
       continue;
     }
     if (typeof d.harness !== 'string' || typeof d.id !== 'string') {
@@ -475,6 +484,15 @@ export function resolveTierAlias(
   }
   const lists = config.tiers[role];
   if (lists === undefined) return undefined;
+  // An unsuffixed alias is valid only when it cannot hide a tier choice. Use
+  // ordered equality: both ranking and membership are part of the contract.
+  const hasExplicitTier = rest !== role;
+  if (!hasExplicitTier && (
+    lists.simple.length !== lists.complex.length ||
+    !lists.simple.every((key, index) => key === lists.complex[index])
+  )) {
+    return undefined;
+  }
   const keys = tier === 'simple' ? lists.simple : lists.complex;
   const routes = keys.map((key): TierRoute => {
     const model = config.unifiedModels[key];

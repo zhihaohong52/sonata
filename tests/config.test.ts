@@ -642,6 +642,9 @@ base_url = "http://openai.example/v1"
 
   it('parses unified models with native and harness routes', () => {
     const config = parseConfig(TIERED);
+    expect(config.models['deepseek-v4-flash']).toEqual({
+      harness: 'opencode', id: 'anexto/deepseek-v4-flash-0731',
+    });
     expect(config.unifiedModels['deepseek-v4-flash']).toEqual({
       gateway: 'anexto', id: 'deepseek-v4-flash-0731', contextWindow: 128000,
       harness: 'opencode', harnessId: 'anexto/deepseek-v4-flash-0731',
@@ -665,6 +668,28 @@ base_url = "http://openai.example/v1"
     expect(resolveTierAlias(config, 'sonata-explore')?.routes.map((r) => r.key))
       .toEqual(['deepseek-v4-flash']);
     expect(resolveTierAlias(config, 'sonata-nonsense')).toBeUndefined();
+  });
+
+  it('does not collapse a role whose tier rankings differ', () => {
+    const config = parseConfig(TIERED);
+    expect(resolveTierAlias(config, 'sonata-code')).toBeUndefined();
+  });
+
+  it('passes a claude- model id through harness tier resolution', () => {
+    const config = parseConfig(`
+[models."fallback"]
+harness = "codex"
+id = "claude-opus-5"
+[tiers.code]
+simple = ["fallback"]
+complex = ["fallback"]
+`);
+    expect(resolveTierAlias(config, 'sonata-code')?.routes[0]).toMatchObject({
+      key: 'fallback',
+      harness: { harness: 'codex', id: 'claude-opus-5' },
+    });
+    expect(harnessModelFor(config, 'fallback'))
+      .toEqual({ harness: 'codex', id: 'claude-opus-5' });
   });
 
   it('refuses a tier entry that names no [models] key', () => {
