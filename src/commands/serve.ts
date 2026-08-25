@@ -19,8 +19,15 @@ export interface ServeHandle {
   stop(): Promise<void>;
 }
 
+export interface SpawnedLitellm {
+  pid: number;
+  kill(): void;
+  /** Fires when the process exits on its own — omitted by stubs that never crash. */
+  onExit?(cb: (code: number | null, signal: NodeJS.Signals | null) => void): void;
+}
+
 export interface ServeDeps {
-  spawnLitellm?: (configPath: string, env: NodeJS.ProcessEnv, port: number) => { pid: number; kill(): void };
+  spawnLitellm?: (configPath: string, env: NodeJS.ProcessEnv, port: number) => SpawnedLitellm;
   /** Test seam: resolves when litellm answers on its port, rejects on timeout. */
   waitForLitellm?: (port: number) => Promise<void>;
   /**
@@ -33,6 +40,13 @@ export interface ServeDeps {
   tempDir?: string;
   /** Test seam for the "who holds the router port?" probe. */
   probeHealth?: typeof fetch;
+  /** Test seam: delay before respawning a litellm child that exited on its own. */
+  respawnDelayMs?: number;
+  /** Test seam: max respawns tolerated within `respawnWindowMs` before giving up. */
+  maxRespawns?: number;
+  respawnWindowMs?: number;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -171,12 +185,16 @@ export async function occupiedPortMessage(
  * deployments for this model" — with the actual cause (for one real case, a 403
  * from GitHub's Copilot token exchange) written only to a stream nobody read.
  */
-function defaultSpawnLitellm(configPath: string, env: NodeJS.ProcessEnv, port: number): { pid: number; kill(): void } {
+function defaultSpawnLitellm(configPath: string, env: NodeJS.ProcessEnv, port: number): SpawnedLitellm {
   const child = spawn('litellm', ['--config', configPath, '--port', String(port)], {
     env,
     stdio: ['ignore', 'inherit', 'inherit'],
   });
-  return { pid: child.pid ?? 0, kill: () => child.kill() };
+  return {
+    pid: child.pid ?? 0,
+    kill: () => child.kill(),
+    onExit: (cb) => child.on('exit', cb),
+  };
 }
 
 function listen(server: ReturnType<typeof createRouterServer>, port: number): Promise<void> {
@@ -242,8 +260,15 @@ export async function cmdServe(
   // Everything from here to a listening router owns `tempDir`. Cleanup used to
   // be duplicated on two failure branches and absent from every other throw, so
   // a run that died in between left its config behind.
-  let child: { pid: number; kill(): void } | undefined;
+  let child: SpawnedLitellm | undefined;
   let router: ReturnType<typeof createRouterServer> | undefined;
+  let stopping = false;
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const respawnDelayMs = opts.respawnDelayMs ?? 1000;
+  const maxRespawns = opts.maxRespawns ?? 5;
+  const respawnWindowMs = opts.respawnWindowMs ?? 60_000;
+  const respawnTimestamps: number[] = [];
   try {
     const configPath = join(tempDir, 'config.json');
     writeFileSync(configPath, litellmConfigYaml(native, masterKey), { mode: 0o600 });
@@ -335,8 +360,44 @@ export async function cmdServe(
     // wrong master key; kill it (recorded pid only) before spawning our own.
     killRecordedOrphan(opts.home);
 
-    child = (opts.spawnLitellm ?? defaultSpawnLitellm)(configPath, childEnv, native.ports.litellm);
-    recordLitellmPid(opts.home, child.pid);
+    // The litellm child dying on its own (not via `stop()`) used to go
+    // unnoticed until the next request 502'd and someone ran `sonata restart`
+    // by hand — measured directly: the child exits, nothing is watching, the
+    // router stays up and answers requests with a dead upstream. This watches
+    // the exact child this process spawned and respawns it in place, which is
+    // why it's safe where `ensure-serve.mjs`'s external health-probe respawn
+    // (bug D in the ledger) was not: there is only ever one spawn racing here,
+    // never a second `serve` guessing whether an existing one is healthy.
+    const spawnLitellmChild = (): SpawnedLitellm => {
+      const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(configPath, childEnv, native.ports.litellm);
+      recordLitellmPid(opts.home, spawned.pid);
+      spawned.onExit?.((code, signal) => {
+        if (stopping) return;
+        const nowMs = now();
+        respawnTimestamps.push(nowMs);
+        while (respawnTimestamps.length > 0 && nowMs - respawnTimestamps[0] > respawnWindowMs) {
+          respawnTimestamps.shift();
+        }
+        console.error(`sonata serve: litellm exited unexpectedly (code=${code}, signal=${signal})`);
+        if (respawnTimestamps.length > maxRespawns) {
+          console.error(
+            `sonata serve: litellm crashed ${respawnTimestamps.length} times within ` +
+            `${Math.round(respawnWindowMs / 1000)}s — giving up on automatic respawn. ` +
+            'Fix the underlying problem, then run `sonata restart`.',
+          );
+          return;
+        }
+        void (async () => {
+          await sleep(respawnDelayMs);
+          if (stopping) return;
+          console.error('sonata serve: respawning litellm...');
+          child = spawnLitellmChild();
+        })();
+      });
+      return spawned;
+    };
+
+    child = spawnLitellmChild();
 
     await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
 
@@ -368,8 +429,9 @@ export async function cmdServe(
     throw error;
   }
 
-  // Both are assigned by the time the try block completes; the catch rethrows.
-  const startedChild = child as { pid: number; kill(): void };
+  // Router is assigned by the time the try block completes; the catch rethrows.
+  // `child` is read fresh in `stop()` below (not frozen here) because a respawn
+  // can replace it after this point.
   const startedRouter = router as ReturnType<typeof createRouterServer>;
 
   const address = startedRouter.address();
@@ -382,7 +444,8 @@ export async function cmdServe(
     async stop(): Promise<void> {
       if (stopped) return;
       stopped = true;
-      startedChild.kill();
+      stopping = true;
+      child?.kill();
       try { unlinkSync(serveStatePath(opts.home)); } catch { /* already gone */ }
       try {
         await close(startedRouter);

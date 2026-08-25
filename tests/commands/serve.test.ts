@@ -263,6 +263,77 @@ litellm = 4000
   });
 });
 
+describe('cmdServe — litellm respawn', () => {
+  it('respawns litellm when it exits on its own, and updates the recorded pid', async () => {
+    let spawnCount = 0;
+    let exitCb: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      respawnDelayMs: 0,
+      spawnLitellm: () => {
+        spawnCount += 1;
+        const pid = spawnCount;
+        return { pid, kill() {}, onExit: (cb) => { exitCb = cb; } };
+      },
+    });
+    handles.push(handle);
+    expect(spawnCount).toBe(1);
+
+    exitCb?.(1, null);
+    // Respawn is scheduled via a microtask/timer chain (respawnDelayMs: 0 still awaits a tick).
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(spawnCount).toBe(2);
+    const state = JSON.parse(readFileSync(serveStatePath(home), 'utf8'));
+    expect(state.litellmPid).toBe(2);
+  });
+
+  it('gives up after too many respawns within the window, without spawning again', async () => {
+    let spawnCount = 0;
+    let exitCb: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      respawnDelayMs: 0,
+      maxRespawns: 2,
+      spawnLitellm: () => {
+        spawnCount += 1;
+        return { pid: spawnCount, kill() {}, onExit: (cb) => { exitCb = cb; } };
+      },
+    });
+    handles.push(handle);
+
+    for (let i = 0; i < 3; i++) {
+      exitCb?.(1, null);
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
+    // 1 initial + 2 tolerated respawns = 3 spawns; the 3rd crash is not retried.
+    expect(spawnCount).toBe(3);
+  });
+
+  it('does not respawn after stop() has been called', async () => {
+    let spawnCount = 0;
+    let exitCb: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      respawnDelayMs: 0,
+      spawnLitellm: () => {
+        spawnCount += 1;
+        return { pid: spawnCount, kill() {}, onExit: (cb) => { exitCb = cb; } };
+      },
+    });
+    await handle.stop();
+
+    exitCb?.(0, null);
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(spawnCount).toBe(1);
+  });
+});
+
 describe('cmdServe — codex-oauth gateways', () => {
   it('writes the flattened ChatGPT credential and points LiteLLM at it', async () => {
     writeFileSync(join(cwd, 'sonata.toml'), CODEX_CONFIG);
