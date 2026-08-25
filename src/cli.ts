@@ -397,7 +397,9 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === 'route') {
     const action = rest[0];
-    const opts = { cwd: process.cwd(), home: homedir(), packageRoot: packageRoot() };
+    const global = rest.includes('--global');
+    const scope = global ? 'global' as const : 'project' as const;
+    const opts = { cwd: process.cwd(), home: homedir(), packageRoot: packageRoot(), scope };
 
     // The two session-<phase> actions are the body of the auto-mode hooks, not
     // a surface for people: they take the session id the hook read from stdin.
@@ -419,10 +421,15 @@ async function main(argv: string[]): Promise<number> {
     }
     const status = await cmdRoute(action as RouteAction, opts);
     if (status) {
+      const scopeLabel = global ? 'globally' : 'in this project';
       console.log(status.on
-        ? 'claude sessions in this project route through sonata serve'
-        : 'claude sessions in this project use their default API endpoint');
+        ? `claude sessions ${scopeLabel} route through sonata serve`
+        : `claude sessions ${scopeLabel} use their default API endpoint`);
       if (status.on) console.log(`  router: http://localhost:${status.port}`);
+      if (action === 'status') {
+        const active = (['project', 'global'] as const).filter((name) => status.scopes[name].on || status.scopes[name].auto);
+        console.log(`  scopes: ${active.length > 0 ? active.join(', ') : 'none'}`);
+      }
       if (status.auto) {
         console.log('  auto:   on — each session routes itself at start and un-routes at end');
         console.log('          (sessions keep Remote Control: they launch before routing is written)');

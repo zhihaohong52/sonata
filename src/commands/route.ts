@@ -16,6 +16,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
 
 import { readSettings, writeSettings, installHook, uninstallHook, hookInstalled } from '../settings.js';
 import type { Settings } from '../settings.js';
@@ -24,8 +25,14 @@ import { nativeSessionEnv } from './code.js';
 import { isSonataRouter, startServeDaemon } from './serve.js';
 
 /** Where `route` always writes — the project's local, never-shared settings. */
-export function routeSettingsFile(cwd: string): string {
-  return join(cwd, '.claude', 'settings.local.json');
+export function routeSettingsFile(
+  cwd: string,
+  scope: 'project' | 'global' = 'project',
+  home: string = homedir(),
+): string {
+  return scope === 'global'
+    ? join(home, '.claude', 'settings.json')
+    : join(cwd, '.claude', 'settings.local.json');
 }
 
 /**
@@ -262,13 +269,34 @@ export function planRouteManual(settings: Settings, packageRoot: string): RouteA
   return { settings: next, changed };
 }
 
-export interface RouteStatus {
+export interface RouteScopeStatus {
   on: boolean;
   auto: boolean;
-  sessions: number;
-  port: number | undefined;
   env: Record<string, string>;
   hook: { installed: boolean };
+}
+
+export interface RouteStatus extends RouteScopeStatus {
+  sessions: number;
+  port: number | undefined;
+  scopes: {
+    project: RouteScopeStatus;
+    global: RouteScopeStatus;
+  };
+}
+
+function routeScopeStatus(settings: Settings, config: SonataConfig, packageRoot: string): RouteScopeStatus {
+  const env = routeEnv(settings);
+  const port = config.native?.ports.router;
+  const base = env.ANTHROPIC_BASE_URL;
+  const command = port !== undefined ? ensureServeCommand(packageRoot, port) : '';
+  const hook = command !== '' && hookInstalled(settings, command, 'SessionStart');
+  return {
+    on: !!port && base === `http://localhost:${port}` && hook,
+    auto: autoInstalled(settings, packageRoot),
+    env,
+    hook: { installed: hook },
+  };
 }
 
 /** Whether a project's local settings currently route through the router. */
@@ -277,21 +305,19 @@ export function routeStatus(
   config: SonataConfig,
   packageRoot: string,
   cwd?: string,
+  scopedSettings?: { project: Settings; global: Settings },
 ): RouteStatus {
-  const env = routeEnv(settings);
-  const port = config.native?.ports.router;
-  const base = env.ANTHROPIC_BASE_URL;
-  const command = port !== undefined ? ensureServeCommand(packageRoot, port) : '';
-  const hook = command !== '' && hookInstalled(settings, command, 'SessionStart');
-  const on = !!port && base === `http://localhost:${port}` && hook;
+  const project = scopedSettings?.project ?? settings;
+  const global = scopedSettings?.global ?? {};
+  const current = routeScopeStatus(settings, config, packageRoot);
+  const projectStatus = scopedSettings ? routeScopeStatus(project, config, packageRoot) : current;
+  const globalStatus = routeScopeStatus(global, config, packageRoot);
   const sessions = cwd === undefined ? 0 : readSessions(routeSessionsFile(cwd)).length;
   return {
-    on,
-    auto: autoInstalled(settings, packageRoot),
+    ...current,
     sessions,
-    port,
-    env,
-    hook: { installed: hook },
+    port: config.native?.ports.router,
+    scopes: { project: projectStatus, global: globalStatus },
   };
 }
 
@@ -299,9 +325,10 @@ export type RouteAction = 'on' | 'off' | 'status' | 'auto' | 'manual';
 
 export async function cmdRoute(
   action: RouteAction,
-  opts: { cwd: string; home: string; packageRoot: string },
+  opts: { cwd: string; home: string; packageRoot: string; scope?: 'project' | 'global' },
 ): Promise<RouteStatus | undefined> {
-  const file = routeSettingsFile(opts.cwd);
+  const scope = opts.scope ?? 'project';
+  const file = routeSettingsFile(opts.cwd, scope, opts.home);
   const settings = readSettings(file);
   let config: SonataConfig;
   try {
@@ -312,10 +339,21 @@ export async function cmdRoute(
     config = { native: undefined } as SonataConfig;
   }
 
+  const status = (current: Settings): RouteStatus => routeStatus(
+    current,
+    config,
+    opts.packageRoot,
+    opts.cwd,
+    {
+      project: readSettings(routeSettingsFile(opts.cwd, 'project', opts.home)),
+      global: readSettings(routeSettingsFile(opts.cwd, 'global', opts.home)),
+    },
+  );
+
   if (action === 'on') {
     const plan = planRouteOn(settings, config, opts.packageRoot);
     if (plan.changed) writeSettings(file, plan.settings);
-    return routeStatus(plan.settings, config, opts.packageRoot, opts.cwd);
+    return status(plan.settings);
   }
 
   if (action === 'off') {
@@ -325,7 +363,7 @@ export async function cmdRoute(
     // otherwise a stale id from a crashed session would have the next
     // SessionStart turn routing straight back on.
     writeSessions(routeSessionsFile(opts.cwd), []);
-    return routeStatus(plan.settings, config, opts.packageRoot, opts.cwd);
+    return status(plan.settings);
   }
 
   if (action === 'auto' || action === 'manual') {
@@ -333,10 +371,10 @@ export async function cmdRoute(
       ? planRouteAuto(settings, opts.packageRoot)
       : planRouteManual(settings, opts.packageRoot);
     if (plan.changed) writeSettings(file, plan.settings);
-    return routeStatus(plan.settings, config, opts.packageRoot, opts.cwd);
+    return status(plan.settings);
   }
 
-  return routeStatus(settings, config, opts.packageRoot, opts.cwd);
+  return status(settings);
 }
 
 export interface SessionPhaseResult {
@@ -367,6 +405,10 @@ export async function cmdRouteSession(
 ): Promise<SessionPhaseResult> {
   const registry = routeSessionsFile(opts.cwd);
   const ids = readSessions(registry);
+
+  // A global hook runs in every directory; validate the project before touching
+  // its registry so unrelated directories remain completely untouched.
+  loadConfig(opts.cwd, opts.home);
 
   if (phase === 'end') {
     const remaining = ids.filter((id) => id !== sessionId);

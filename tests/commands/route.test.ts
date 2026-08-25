@@ -46,6 +46,44 @@ describe('routeSettingsFile', () => {
   });
 });
 
+
+describe('global route scope', () => {
+  it('targets the shared settings file without changing the project file', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    const opts = { cwd, home, packageRoot: PACKAGE_ROOT, scope: 'global' as const };
+    const result = await cmdRoute('on', opts);
+
+    expect(result?.on).toBe(true);
+    expect(routeSettingsFile(cwd, 'global', home)).toBe(join(home, '.claude', 'settings.json'));
+    expect(existsSync(routeSettingsFile(cwd))).toBe(false);
+    expect(JSON.parse(readFileSync(routeSettingsFile(cwd, 'global', home), 'utf8'))).toMatchObject({
+      env: { ANTHROPIC_BASE_URL: 'http://localhost:4100' },
+    });
+
+    await cmdRoute('off', opts);
+    expect(JSON.parse(readFileSync(routeSettingsFile(cwd, 'global', home), 'utf8')).env).toBeUndefined();
+    expect(existsSync(routeSettingsFile(cwd))).toBe(false);
+  });
+
+  it('installs auto hooks in the shared settings file', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    const result = await cmdRoute('auto', { cwd, home, packageRoot: PACKAGE_ROOT, scope: 'global' });
+    expect(result?.auto).toBe(true);
+    expect(existsSync(routeSettingsFile(cwd))).toBe(false);
+    const settings = JSON.parse(readFileSync(routeSettingsFile(cwd, 'global', home), 'utf8')) as Settings;
+    expect(settings.hooks?.SessionStart).toBeDefined();
+    expect(settings.hooks?.SessionEnd).toBeDefined();
+  });
+
+  it('reports a global-only install in the scope report', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    await cmdRoute('on', { cwd, home, packageRoot: PACKAGE_ROOT, scope: 'global' });
+    const result = await cmdRoute('status', { cwd, home, packageRoot: PACKAGE_ROOT });
+    expect(result?.scopes.global.on).toBe(true);
+    expect(result?.scopes.project.on).toBe(false);
+  });
+});
+
 describe('ensureServeCommand', () => {
   it('resolves its hook path and port into a node session-start command', () => {
     const cmd = ensureServeCommand(PACKAGE_ROOT, 4100);
@@ -307,5 +345,16 @@ describe('cmdRouteSession', () => {
     await cmdRouteSession('start', 'crashed', o, deps);
     await cmdRoute('off', o);
     expect(readSessions(routeSessionsFile(cwd))).toEqual([]);
+  });
+});
+describe('configless route sessions', () => {
+  it('throws before writing a registry or settings file', async () => {
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
+    await expect(cmdRouteSession('start', 'orphan', o, {
+      probe: async () => true,
+      startDaemon: async () => ({}),
+    })).rejects.toThrow();
+    expect(existsSync(routeSessionsFile(cwd))).toBe(false);
+    expect(existsSync(routeSettingsFile(cwd))).toBe(false);
   });
 });
