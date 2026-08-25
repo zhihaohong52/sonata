@@ -184,7 +184,9 @@ litellm = 4000
 
     const response = await fetch(serveHealthUrl(handle.routerPort));
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ status: 'ok', sonata: true });
+    await expect(response.json()).resolves.toEqual({
+      status: 'ok', sonata: true, configPath: join(cwd, 'sonata.toml'),
+    });
   });
 
   it('refuses to start when [native] is absent', async () => {

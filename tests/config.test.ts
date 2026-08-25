@@ -725,6 +725,27 @@ complex = ["known"]
 `)).toThrow(/missing-model/);
   });
 
+  it('refuses an empty tier list — a tier with no candidates can never route', () => {
+    expect(() => parseConfig(`
+[models."known"]
+harness = "opencode"
+id = "anexto/known"
+
+[tiers.code]
+simple = []
+complex = ["known"]
+`)).toThrow(/non-empty/);
+    expect(() => parseConfig(`
+[models."known"]
+harness = "opencode"
+id = "anexto/known"
+
+[tiers.code]
+simple = ["known"]
+complex = []
+`)).toThrow(/non-empty/);
+  });
+
   it('refuses claude- ids in unified models and tier keys', () => {
     expect(() => parseConfig(TIERED.replace('id = "gpt-5.6-terra"', 'id = "claude-opus-5"')))
       .toThrow(/claude-/);

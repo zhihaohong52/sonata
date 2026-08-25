@@ -13,6 +13,8 @@ export interface RouterDeps {
   litellmKey: string;
   log?: (line: string) => void;
   health?: boolean;
+  /** The resolved sonata.toml path this router instance is running with, reported on /__sonata_health so a caller can tell two same-port routers apart by which config actually started them. */
+  configPath?: string;
   /** Resolves a `sonata-<role>-<tier>` alias to its ranked routes, or undefined if unknown. */
   resolveTier?: (alias: string) => { role: string; tier: string; routes: TierRoute[] } | undefined;
   now?: () => number;
@@ -379,7 +381,7 @@ export function createRouterServer(deps: RouterDeps): Server {
     try {
       if (deps.health && new URL(req.url ?? '/', 'http://localhost').pathname === '/__sonata_health') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok', sonata: true }));
+        res.end(JSON.stringify({ status: 'ok', sonata: true, configPath: deps.configPath ?? null }));
         return;
       }
       await respond(res, await routeRequest({

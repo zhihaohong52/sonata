@@ -246,9 +246,9 @@ export function parseConfig(text: string): SonataConfig {
       const d = def as Record<string, unknown>;
       const simple = d.simple;
       const complex = d.complex;
-      if (!Array.isArray(simple) || !simple.every((key) => typeof key === 'string') ||
-          !Array.isArray(complex) || !complex.every((key) => typeof key === 'string')) {
-        throw new Error(`sonata.toml: tiers.${role} needs string lists "simple" and "complex".`);
+      if (!Array.isArray(simple) || simple.length === 0 || !simple.every((key) => typeof key === 'string') ||
+          !Array.isArray(complex) || complex.length === 0 || !complex.every((key) => typeof key === 'string')) {
+        throw new Error(`sonata.toml: tiers.${role} needs non-empty string lists "simple" and "complex".`);
       }
       for (const [tier, keys] of [['simple', simple], ['complex', complex]] as const) {
         for (const key of keys) {

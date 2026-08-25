@@ -9,7 +9,8 @@ Run feature development as a loop over sonata's tier agents. You (the
 orchestrating session) judge difficulty and drive the loop; the agents do the
 work on foreign models. All of them require a routed session (`sonata route
 auto`) — if a tier agent errors with "all native routes … failed", fall back
-to `sonata dispatch --tier <role>-<tier>` in Bash.
+to `sonata dispatch --tier <role>-<tier> --task-file <path>` in Bash (or pass
+the task text directly as the trailing argument).
 
 ## Difficulty heuristic
 

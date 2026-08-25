@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unl
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { loadConfig, resolveTierAlias } from '../config.js';
+import { configPath as resolveSonataConfigPath, loadConfig, resolveTierAlias } from '../config.js';
 import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
 import { codexAuthPath, opencodeAuthPath, readChatGptOAuth } from '../native/codex-auth.js';
 import { credentialDir } from '../native/oauth-login.js';
@@ -147,6 +147,24 @@ export async function isSonataRouter(
     return body?.sonata === true;
   } catch {
     return false;
+  }
+}
+
+/** The resolved sonata.toml path a running sonata router reports, or null if the port isn't a sonata router (or reports no configPath). */
+export async function sonataRouterConfigPath(
+  port: number,
+  doFetch: typeof fetch = fetch,
+): Promise<string | null> {
+  try {
+    const response = await doFetch(serveHealthUrl(port), {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!response.ok) return null;
+    const body = await response.json() as { sonata?: unknown; configPath?: unknown };
+    if (body?.sonata !== true) return null;
+    return typeof body.configPath === 'string' ? body.configPath : null;
+  } catch {
+    return null;
   }
 }
 
@@ -410,6 +428,10 @@ export async function cmdServe(
       litellmBase: `http://localhost:${native.ports.litellm}`,
       litellmKey: masterKey,
       health: true,
+      // Which sonata.toml actually started this router, so a caller sharing the
+      // default port can tell this project's router apart from another
+      // project's on the same port.
+      configPath: resolveSonataConfigPath(opts.cwd, opts.home) ?? undefined,
       // Goes to serve's stdout, which --daemon captures to its log file. This
       // is the only record of which upstream served a request: litellm's access
       // log has the path and status but not the model, so without it "did that

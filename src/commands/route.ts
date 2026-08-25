@@ -20,9 +20,9 @@ import { homedir } from 'node:os';
 
 import { readSettings, writeSettings, installHook, uninstallHook, hookInstalled } from '../settings.js';
 import type { Settings } from '../settings.js';
-import { loadConfig, type SonataConfig } from '../config.js';
+import { configPath as resolveSonataConfigPath, loadConfig, type SonataConfig } from '../config.js';
 import { nativeSessionEnv } from './code.js';
-import { isSonataRouter, startServeDaemon } from './serve.js';
+import { isSonataRouter, sonataRouterConfigPath, startServeDaemon } from './serve.js';
 
 /** Where `route` always writes — the project's local, never-shared settings. */
 export function routeSettingsFile(
@@ -313,8 +313,13 @@ export function planRouteAuto(
   packageRoot: string,
   scope: 'project' | 'global' = 'project',
 ): RouteAutoPlan {
-  let next = settings;
-  let changed = false;
+  // Auto mode's guarantee is that a session launches from a clean settings
+  // file; switching directly from `route on` must not leave the persistent
+  // ANTHROPIC_BASE_URL/ensure-serve hook behind for the next session to
+  // inherit before its own lifecycle hook ever runs.
+  const cleared = planRouteOff(settings, packageRoot);
+  let next = cleared.settings;
+  let changed = cleared.changed;
   for (const phase of ['start', 'end'] as const) {
     const event = phase === 'start' ? 'SessionStart' : 'SessionEnd';
     const res = installHook(next, sessionHookCommand(packageRoot, phase, scope), '', event);
@@ -528,6 +533,14 @@ export async function cmdRouteSession(
       return left;
     });
     if (remaining.length > 0) return { sessions: remaining.length, routing: 'on' };
+    // A concurrent SessionStart could have registered a new session in the
+    // gap between the write above and here — recheck under the lock right
+    // before committing to the `off` transition so that race can't turn
+    // routing off underneath a session that just started.
+    const stillEmpty = await withSessionLock(registry, () => readSessions(registry).length === 0);
+    if (!stillEmpty) {
+      return { sessions: readSessions(registry).length, routing: 'on' };
+    }
     await cmdRoute('off', opts);
     return { sessions: 0, routing: 'off' };
   }
@@ -554,8 +567,26 @@ export async function cmdRouteSession(
   const configCwd = opts.scope === 'global' ? opts.home : opts.cwd;
   const config = loadConfig(configCwd, opts.home);
   const port = config.native?.ports.router;
-  if (port !== undefined && !(await probe(port))) {
-    await startDaemon(opts.home, opts.serveArgv, {}, configCwd);
+  if (port !== undefined) {
+    const running = await probe(port);
+    if (running && deps.probe === undefined) {
+      // Only verify identity against the real network probe — an injected
+      // test probe already encodes the scenario under test, and re-checking
+      // against the real network here would defeat it.
+      const actualConfigPath = await sonataRouterConfigPath(port);
+      const expectedConfigPath = resolveSonataConfigPath(configCwd, opts.home);
+      if (actualConfigPath !== null && expectedConfigPath !== null && actualConfigPath !== expectedConfigPath) {
+        throw new Error(
+          `sonata: router port ${port} is already serving a different sonata configuration ` +
+          `(${actualConfigPath}) than this project resolves to (${expectedConfigPath}). ` +
+          `Two projects cannot share one router port — set a different [native.ports].router ` +
+          `in one of the two configs.`,
+        );
+      }
+    }
+    if (!running) {
+      await startDaemon(opts.home, opts.serveArgv, {}, configCwd);
+    }
   }
 
   const after = readSessions(registry);

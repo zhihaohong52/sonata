@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,6 +38,10 @@ const PACKAGE_ROOT = '/repo/root';
 beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), 'sonata-route-cwd-'));
   home = mkdtempSync(join(tmpdir(), 'sonata-route-home-'));
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 /**
@@ -335,6 +339,24 @@ describe('planRouteAuto / planRouteManual', () => {
     expect(autoInstalled(off.settings, PACKAGE_ROOT)).toBe(true);
     expect(off.settings.env?.ANTHROPIC_BASE_URL).toBeUndefined();
   });
+
+  it('clears persistent route-on state when switching to auto — sessions must launch clean', () => {
+    const config = loadNativeConfig();
+    // Simulate `route on` having left persistent routing + its ensure-serve hook.
+    const on = planRouteOn({}, config, PACKAGE_ROOT);
+    expect(on.settings.env?.ANTHROPIC_BASE_URL).toBeDefined();
+
+    const auto = planRouteAuto(on.settings, PACKAGE_ROOT);
+    // The old persistent env and ensure-serve hook are gone...
+    expect(auto.settings.env?.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(auto.changed).toBe(true);
+    // ...and both auto lifecycle hooks are installed.
+    expect(autoInstalled(auto.settings, PACKAGE_ROOT)).toBe(true);
+    const start = (auto.settings.hooks!.SessionStart as HookEntry[]).flatMap((e) => e.hooks);
+    const end = (auto.settings.hooks!.SessionEnd as HookEntry[]).flatMap((e) => e.hooks);
+    expect(start.map((h) => h.command)).toContain(sessionHookCommand(PACKAGE_ROOT, 'start'));
+    expect(end.map((h) => h.command)).toContain(sessionHookCommand(PACKAGE_ROOT, 'end'));
+  });
 });
 
 describe('cmdRouteSession', () => {
@@ -393,6 +415,33 @@ describe('cmdRouteSession', () => {
     await cmdRouteSession('start', 'crashed', o, deps);
     await cmdRoute('off', o);
     expect(readSessions(routeSessionsFile(cwd))).toEqual([]);
+  });
+
+  it('rechecks the registry before turning routing off after the last session ends', async () => {
+    const o = opts();
+    await cmdRouteSession('start', 's1', o, deps);
+
+    // The race: ending the last session empties the registry, and the old code
+    // then turned routing off unconditionally. A concurrent SessionStart landing
+    // in that gap registered a new id and was then un-routed by the stale `off`.
+    // Reproduced deterministically by exploiting the microtask boundary: the end
+    // call's synchronous body removes s1 and defers the recheck to a queued
+    // microtask, so a start issued before `await`-ing it writes s2 to the
+    // registry first — exactly the interleaving the recheck must see.
+    const endPromise = cmdRouteSession('end', 's1', o, deps);
+    const startPromise = cmdRouteSession('start', 's2', o, deps);
+
+    const ended = await endPromise;
+    // The recheck observed s2 and left routing alone instead of firing `off`.
+    expect(ended).toEqual({ sessions: 1, routing: 'on' });
+    await startPromise;
+    expect((await cmdRoute('status', o))?.on).toBe(true);
+
+    // Now genuinely the last session — the recheck sees an empty registry and
+    // commits to off.
+    const last = await cmdRouteSession('end', 's2', o, deps);
+    expect(last).toEqual({ sessions: 0, routing: 'off' });
+    expect((await cmdRoute('status', o))?.on).toBe(false);
   });
 
   it('starts a global-scope daemon from home, not the triggering project\'s cwd', async () => {
@@ -456,6 +505,27 @@ describe('cmdRouteSession', () => {
       startDaemon: async (_home, _argv, _deps, daemonCwd) => { seenCwds.push(daemonCwd); return {}; },
     });
     expect(seenCwds).toEqual([cwd]);
+  });
+
+  it('refuses to share a router port already serving a different project\'s config', async () => {
+    // Two projects, each with a sonata.toml resolving to the same default port.
+    // With no injected probe/startDaemon, the real network path is exercised:
+    // `probe` is `isSonataRouter` (fetch), then the identity check calls
+    // `sonataRouterConfigPath` (also fetch). Stub global.fetch to answer like a
+    // router started by a *different* config dir is already running.
+    const otherCwd = mkdtempSync(join(tmpdir(), 'sonata-route-other-'));
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    writeFileSync(join(otherCwd, 'sonata.toml'), NATIVE_TOML);
+    const otherConfigPath = join(otherCwd, 'sonata.toml');
+
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      // A real running sonata router's health payload, reporting the config
+      // that started it — a different project's sonata.toml.
+      new Response(JSON.stringify({ status: 'ok', sonata: true, configPath: otherConfigPath })),
+    ) as unknown as typeof fetch);
+
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
+    await expect(cmdRouteSession('start', 's1', o)).rejects.toThrow(/different sonata configuration/);
   });
 });
 describe('configless route sessions', () => {
