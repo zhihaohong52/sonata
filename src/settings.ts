@@ -28,7 +28,9 @@ export type Settings = Record<string, unknown> & {
 };
 
 /**
- * The three MCP tools a sonata wrapper is given.
+ * The three Bash commands a sonata wrapper is given.
+ *
+ * The tool surface moved from MCP to the blocking dispatch/wait/approve CLI.
  *
  * These must be on the allow list, not left to Claude Code's `auto` mode
  * classifier. The classifier judges each call separately and its decisions are
@@ -44,9 +46,9 @@ export type Settings = Record<string, unknown> & {
  * unobserved, which is the same hazard with a smaller blast radius.
  */
 export const SONATA_TOOLS = [
-  'mcp__sonata__dispatch',
-  'mcp__sonata__wait',
-  'mcp__sonata__approve',
+  'Bash(sonata dispatch:*)',
+  'Bash(sonata wait:*)',
+  'Bash(sonata approve:*)',
 ];
 
 /** Which of the sonata tools are missing from `permissions.allow`. */

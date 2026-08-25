@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig } from '../config.js';
+import { loadConfig, harnessModelFor } from '../config.js';
 import { getAdapter } from '../adapters/index.js';
 import { createRun, runDir, writeMeta } from '../store.js';
 import { loadRole, composeInstructions } from '../roles.js';
@@ -120,6 +120,11 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
   // A native model key dispatches through the claude harness automatically —
   // no separate [models] entry needed. The claude adapter runs `claude -p`
   // with the proxy env, so the native model reaches its gateway.
+  if (!modelCfg) {
+    const harness = harnessModelFor(config, opts.model);
+    if (harness) modelCfg = harness;
+  }
+
   if (!modelCfg && config.native?.models[opts.model]) {
     modelCfg = { harness: 'claude', id: opts.model };
   }

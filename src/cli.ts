@@ -2,6 +2,7 @@
 import { parseArgs } from 'node:util';
 import { join } from 'node:path';
 import { cmdRun } from './commands/run.js';
+import { cmdDispatch } from './commands/dispatch.js';
 import { cmdTail } from './commands/tail.js';
 import { loadConfig } from './config.js';
 import { cmdApprove } from './commands/approve.js';
@@ -27,6 +28,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata doctor    check tmux, harnesses, auth and versions
   sonata sync      regenerate agent files from sonata.toml
   sonata run       launch a harness run, print its id
+  sonata dispatch  run a ranked tier with harness fallback
   sonata tail      poll a run for progress
   sonata approve   answer a pending approval
   sonata gc        kill finished tmux sessions
@@ -164,6 +166,53 @@ async function main(argv: string[]): Promise<number> {
     console.log(values.json
       ? JSON.stringify(res)
       : `run ${res.id} (tmux ${res.session})\n  watch: tmux attach -r -t ${res.session}`);
+    return 0;
+  }
+
+  if (command === 'dispatch') {
+    const { values, positionals } = parseArgs({
+      args: rest,
+      allowPositionals: true,
+      options: {
+        tier: { type: 'string' },
+        model: { type: 'string' },
+        'task-file': { type: 'string' },
+        'roles-dir': { type: 'string' },
+      },
+    });
+    if ((values.tier === undefined) === (values.model === undefined)) {
+      throw new Error('sonata dispatch requires exactly one of --tier or --model');
+    }
+    if (values['task-file'] !== undefined && positionals.length > 0) {
+      throw new Error('sonata dispatch accepts positional task text only without --task-file');
+    }
+    const task = values['task-file'] !== undefined
+      ? readFileSync(values['task-file'], 'utf8')
+      : positionals.join(' ');
+    if (!task.trim()) throw new Error('sonata dispatch requires task text or --task-file');
+    const res = await cmdDispatch({
+      cwd: process.cwd(),
+      home: homedir(),
+      tier: values.tier,
+      model: values.model,
+      task,
+      rolesDir: values['roles-dir'] ?? join(packageRoot(), 'roles'),
+      sessionId: process.env.CLAUDE_CODE_SESSION_ID,
+    });
+    console.log(`${res.state} model=${res.modelKey} id=${res.id}`);
+    if (res.report) console.log(`\n${res.report}`);
+    if (res.prompt) {
+      console.log(`\nPROMPT: ${res.prompt}`);
+      console.log(`sonata approve ${res.id}`);
+    } else if (res.state === 'RUNNING') {
+      console.log(`sonata wait ${res.id}`);
+    }
+    if (res.state === 'FAILED') {
+      for (const attempt of res.attempts) {
+        console.log(`  ${attempt.modelKey}: ${attempt.state}${attempt.degraded ? ' (degraded)' : ''}`);
+      }
+      return 1;
+    }
     return 0;
   }
 
