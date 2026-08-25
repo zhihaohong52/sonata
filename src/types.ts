@@ -32,6 +32,13 @@ export interface RunMeta {
    * output is the report. Absent means true, for runs recorded before this.
    */
   canWriteReport?: boolean;
+  /**
+   * True when the harness writes nothing to the terminal until it exits
+   * (headless `claude -p`). Pane silence is then expected, so tail must not
+   * report such a run STALLED. Absent means false, for runs recorded before
+   * this field existed.
+   */
+  silentUntilExit?: boolean;
   session: string;
   cwd: string;
   startedAt: string;

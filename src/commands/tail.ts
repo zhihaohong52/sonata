@@ -40,6 +40,13 @@ export interface DecideInput {
    */
   canWriteReport?: boolean;
   /**
+   * True when the harness writes nothing to the terminal until it exits
+   * (headless `claude -p` sends stdout to last-message.txt). Silence is then
+   * the expected shape of a healthy run, so the stall verdict is suppressed
+   * and the run_timeout watchdog is the only backstop.
+   */
+  silentUntilExit?: boolean;
+  /**
    * The launch line sonata itself put in the pane (the `cmd.sh` path). Used to
    * tell the harness's own output apart from the echo of the command that
    * started it — an exact string sonata wrote, not a guessed prompt pattern.
@@ -127,7 +134,7 @@ export function decide(input: DecideInput): TailResult {
     return { state: 'PROGRESS', lines: input.newLines };
   }
 
-  if (input.msSinceLastChange >= input.stallTimeoutMs) {
+  if (input.silentUntilExit !== true && input.msSinceLastChange >= input.stallTimeoutMs) {
     return { state: 'STALLED', lines: input.paneTail };
   }
 
@@ -266,6 +273,7 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       paneTail: pane.slice(-20),
       timedOut: existsSync(join(runDir(opts.cwd, opts.id), 'timeout')),
       canWriteReport: meta.canWriteReport,
+      silentUntilExit: meta.silentUntilExit,
       launchMarker: scriptPath,
     });
 

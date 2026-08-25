@@ -164,6 +164,18 @@ describe('tail decide', () => {
     expect(r.lines).toEqual(['last', 'lines']);
   });
 
+  it('never reports STALLED for a silent-until-exit harness', () => {
+    const r = decide({ ...base, silentUntilExit: true, msSinceLastChange: 130_000 });
+    expect(r.state).toBe('PROGRESS');
+    expect(r.lines).toEqual([]);
+  });
+
+  it('a silent-until-exit run still finishes DONE on the exit sentinel', () => {
+    const r = decide({ ...base, silentUntilExit: true, exitCode: 0, report: 'all good' });
+    expect(r.state).toBe('DONE');
+    expect(r.degraded).toBe(false);
+  });
+
   it('stays PROGRESS while quiet but under the stall timeout', () => {
     const r = decide({ ...base, msSinceLastChange: 5_000 });
     expect(r.state).toBe('PROGRESS');

@@ -192,6 +192,7 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     ...meta,
     interactive: plan.interactive,
     canWriteReport: plan.canWriteReport ?? true,
+    silentUntilExit: plan.silentUntilExit ?? false,
   });
 
   await newSession({ session: meta.session, cwd: opts.cwd });

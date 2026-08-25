@@ -70,12 +70,18 @@ describe('claudeAdapter.plan', () => {
     const plan = claudeAdapter.plan({ ...base, role: 'explore', mode: 'acceptEdits' });
 
     expect(plan.script).toContain('--permission-mode plan');
-    expect(plan.script).toContain('--allowedTools Read,Grep,Glob,Bash');
+    // The = form is load-bearing: the space form is variadic in claude's CLI
+    // parser and swallows the prompt argument that follows.
+    expect(plan.script).toContain('--allowedTools=Read,Grep,Glob,Bash');
     expect(plan.canWriteReport).toBe(false);
   });
 
   it('can write a report for a write-capable role', () => {
     expect(claudeAdapter.plan({ ...base, mode: 'acceptEdits' }).canWriteReport).not.toBe(false);
+  });
+
+  it('declares itself silent until exit, so pane silence is not a stall', () => {
+    expect(claudeAdapter.plan({ ...base, mode: 'acceptEdits' }).silentUntilExit).toBe(true);
   });
 });
 

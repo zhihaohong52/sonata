@@ -22,6 +22,14 @@ export interface LaunchPlan {
    * Omitted means the run is expected to write a report.
    */
   canWriteReport?: boolean;
+  /**
+   * True when the harness produces no terminal output until it exits —
+   * headless `claude -p` redirects its stdout to last-message.txt, so the
+   * pane never changes while the run works. Pane silence is then the
+   * expected shape of a healthy run, not evidence of a hang, and the stall
+   * detector must not fire; the run_timeout watchdog remains the backstop.
+   */
+  silentUntilExit?: boolean;
 }
 
 export interface HarnessAdapter {

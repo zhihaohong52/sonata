@@ -16,7 +16,13 @@ function buildScript(input: PlanInput): LaunchPlan {
     `--model ${shellQuote(input.modelId)}`,
     `--permission-mode ${permissionMode}`,
   ];
-  if (readOnly) flags.push('--allowedTools Read,Grep,Glob,Bash');
+  // `--allowedTools <value>` (space form) is variadic in claude's own CLI
+  // parser: it keeps consuming every subsequent bare argument — including
+  // the prompt itself — until the next `--flag`. Probed directly: the
+  // prompt text ended up split on commas/whitespace into garbage
+  // "allowedTools" rules, and `-p` then had no prompt argument left at all.
+  // The `=` form binds exactly one value and does not swallow what follows.
+  if (readOnly) flags.push('--allowedTools=Read,Grep,Glob,Bash');
 
   // Resolve the actual router URL from config rather than inheriting from
   // the parent env — the parent is typically an unproxied session where
@@ -60,7 +66,10 @@ function buildScript(input: PlanInput): LaunchPlan {
     '',
   ].join('\n');
 
-  return { script, interactive: false, canWriteReport: !readOnly };
+  // silentUntilExit: stdout goes to last-message.txt (see the no-tee comment
+  // above), so the pane stays unchanged for the whole run and pane-silence
+  // stall detection would mark every long run STALLED.
+  return { script, interactive: false, canWriteReport: !readOnly, silentUntilExit: true };
 }
 
 export const claudeAdapter: HarnessAdapter = {
