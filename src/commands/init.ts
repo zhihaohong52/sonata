@@ -1057,6 +1057,7 @@ async function runInit(
   out(mcp.changed
     ? '  Done. Run /reload-plugins to pick up the new agents, then /mcp to reconnect the sonata MCP server.'
     : '  Done. Run /reload-plugins to pick up the new agents.');
+  out('  Native sessions: run `sonata code`, or `sonata route on` to route plain claude sessions.');
   out('');
 
   return {

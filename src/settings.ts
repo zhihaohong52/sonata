@@ -128,7 +128,12 @@ export function installHook(
   const hooks: Record<string, HookEntry[]> = { ...(settings.hooks ?? {}) };
   const entries: HookEntry[] = [...(hooks[event] ?? [])];
 
-  entries.push({ matcher, hooks: [{ type: 'command', command }] });
+  // A PreToolUse hook needs its `matcher` ("Bash"), but a SessionStart hook has
+  // no matcher at all — writing `matcher: ""` would be noise in the file, so
+  // omit the key entirely when none was supplied.
+  const entry: HookEntry = matcher ? { matcher, hooks: [{ type: 'command', command }] }
+    : { hooks: [{ type: 'command', command }] };
+  entries.push(entry);
   hooks[event] = entries;
   next.hooks = hooks;
 

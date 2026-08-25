@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 
-import { loadConfig } from '../config.js';
+import { loadConfig, type SonataConfig } from '../config.js';
 import { serveHealthUrl } from './serve.js';
 
 export interface CodePlan {
@@ -15,10 +15,15 @@ export interface CodeOptions {
   passthrough: string[];
 }
 
-export function planCode(opts: CodeOptions): CodePlan {
-  const config = loadConfig(opts.cwd, opts.home);
-  if (!config.native) throw new Error('sonata code: no [native] table');
-
+/**
+ * The env vars that route a Claude Code session through the sonata router.
+ *
+ * Shared by `planCode` (which spawns `claude` with them) and `sonata route`
+ * (which writes them into `.claude/settings.local.json`) so the two session
+ * paths cannot drift.
+ */
+export function nativeSessionEnv(config: SonataConfig): Record<string, string> {
+  if (!config.native) return {};
   const env: Record<string, string> = {
     ANTHROPIC_BASE_URL: `http://localhost:${config.native.ports.router}`,
   };
@@ -26,9 +31,15 @@ export function planCode(opts: CodeOptions): CodePlan {
   if (windows.length > 0) {
     env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(Math.min(...windows));
   }
+  return env;
+}
+
+export function planCode(opts: CodeOptions): CodePlan {
+  const config = loadConfig(opts.cwd, opts.home);
+  if (!config.native) throw new Error('sonata code: no [native] table');
 
   return {
-    env,
+    env: nativeSessionEnv(config),
     argv: ['claude', ...opts.passthrough],
     banner: 'Native Claude session started. Remote Control unavailable in sonata code.',
   };

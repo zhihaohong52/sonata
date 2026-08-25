@@ -320,9 +320,17 @@ Pi, or Reasonix. The native path instead runs foreign models inside Claude
 Code's own loop, tools, and permission modes, through a local routing proxy:
 
 - `sonata serve` — runs the router and a managed LiteLLM child
-- `sonata code` — launches a Claude Code session routed through the proxy
+- `sonata code` — launches a single Claude Code session routed through the proxy
   (`ANTHROPIC_BASE_URL` points at the local router); auto-starts
   `sonata serve --daemon` if the router is down
+- `sonata route on` — routes *every* plain `claude` session launched in the
+  project, not just ones started by `sonata code`: it writes the same
+  `ANTHROPIC_BASE_URL` env into `.claude/settings.local.json` and installs a
+  SessionStart hook that keeps the router up, so editor integrations, `.mcp.json`
+  entries and shell aliases all go through the proxy too. `sonata route off`
+  undoes it; `sonata route status` reports whether routing is on. The same
+  Remote Control trade-off as `sonata code` applies, project-wide: every routed
+  session loses Remote Control until you `sonata route off`.
 - `sonata auth` — manages per-gateway keys that the router forwards to LiteLLM;
   keys live in the store and are never logged or put in a conversation
 - `sonata auth login <gateway>` — starts LiteLLM's device login for an OAuth gateway
@@ -484,6 +492,7 @@ install will not litter unrelated repositories.
 | `sonata serve` | Run the native router and its managed LiteLLM child (`--daemon` detaches) |
 | `sonata restart` | Kill whatever sonata router currently holds the port (a stale daemon, or one MCP-hosted inside `sonata mcp`) and start a fresh daemon |
 | `sonata code` | Launch a Claude Code session routed through the local proxy (passes `claude` args through) |
+| `sonata route on\|off\|status` | Route every plain `claude` session in the project through the proxy via `.claude/settings.local.json` |
 | `sonata gc` | Kill finished tmux sessions |
 
 ## Configuration

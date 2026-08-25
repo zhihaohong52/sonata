@@ -104,11 +104,11 @@ export function nativeAgentMarkdown(spec: { role: string; model: string }): stri
 
   return `---
 name: native-${spec.role}-${spec.model}
-description: Runs ${blurb} natively on ${spec.model} inside Claude Code's own loop. Requires a sonata code session.
+description: Runs ${blurb} natively on ${spec.model} inside Claude Code's own loop. Requires a routed session (sonata code, or sonata route on).
 model: ${spec.model}
 ${tools}---
 
-This agent only works in a sonata code session.
+This agent only works in a routed session (sonata code, or sonata route on).
 
 Focus on ${blurb}.
 `;
