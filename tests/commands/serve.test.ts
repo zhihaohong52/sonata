@@ -644,6 +644,25 @@ context_window = 128000
     unref: () => {},
   })) as unknown as typeof spawnType;
 
+  it('spawns the daemon with the provided cwd, not the caller cwd', async () => {
+    // Global routing is one shared router for every project; the daemon must
+    // resolve the machine config regardless of which project's session
+    // triggered the start, which requires spawning from an explicit cwd
+    // rather than inheriting process.cwd().
+    const opts: Parameters<typeof spawnType>[2][] = [];
+    const spy = ((_cmd: string, _args: string[], o: never) => {
+      opts.push(o);
+      return { pid: 4242, unref: () => {} };
+    }) as unknown as typeof spawnType;
+
+    await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: spy,
+      probe: async () => true,
+    }, '/some/other/cwd');
+
+    expect(opts[0]).toMatchObject({ cwd: '/some/other/cwd' });
+  });
+
   it('detaches and returns once the router answers', async () => {
     // The flag used to be parsed, handed to cmdServe and ignored, so
     // `sonata serve --daemon` blocked exactly like the foreground command.

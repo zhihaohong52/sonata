@@ -38,9 +38,15 @@ export function routeSettingsFile(
 /**
  * The SessionStart command that keeps the router up for a routed session,
  * pointing at this installation's `ensure-serve.mjs` with the routing port.
+ *
+ * The `--global` marker matters: a daemon this hook starts for global-scope
+ * routing is shared by every project, so it must resolve the machine config
+ * regardless of which project's session happens to trigger it — `--global`
+ * tells `ensure-serve.mjs` to start it from `home`, not its own inherited cwd.
  */
-export function ensureServeCommand(packageRoot: string, port: number): string {
-  return `node ${JSON.stringify(join(packageRoot, 'hooks', 'ensure-serve.mjs'))} ${port}`;
+export function ensureServeCommand(packageRoot: string, port: number, scope: 'project' | 'global' = 'project'): string {
+  const base = `node ${JSON.stringify(join(packageRoot, 'hooks', 'ensure-serve.mjs'))} ${port}`;
+  return scope === 'global' ? `${base} --global` : base;
 }
 
 /** The two env keys a routed session needs. */
@@ -70,6 +76,7 @@ export function planRouteOn(
   settings: Settings,
   config: SonataConfig,
   packageRoot: string,
+  scope: 'project' | 'global' = 'project',
 ): RouteOnPlan {
   if (!config.native) throw new Error('sonata route on: no [native] table in sonata.toml');
   const port = config.native.ports.router;
@@ -93,7 +100,7 @@ export function planRouteOn(
   let next: Settings = envChanged(settings, target) ? { ...settings, env } : settings;
 
   // Simplest to always attempt the hook install; it is a no-op when present.
-  const command = ensureServeCommand(packageRoot, port);
+  const command = ensureServeCommand(packageRoot, port, scope);
   const hook = installHook(next, command, '', 'SessionStart');
   if (hook.changed) next = hook.settings;
 
@@ -285,11 +292,16 @@ export interface RouteStatus extends RouteScopeStatus {
   };
 }
 
-function routeScopeStatus(settings: Settings, config: SonataConfig, packageRoot: string): RouteScopeStatus {
+function routeScopeStatus(
+  settings: Settings,
+  config: SonataConfig,
+  packageRoot: string,
+  scope: 'project' | 'global' = 'project',
+): RouteScopeStatus {
   const env = routeEnv(settings);
   const port = config.native?.ports.router;
   const base = env.ANTHROPIC_BASE_URL;
-  const command = port !== undefined ? ensureServeCommand(packageRoot, port) : '';
+  const command = port !== undefined ? ensureServeCommand(packageRoot, port, scope) : '';
   const hook = command !== '' && hookInstalled(settings, command, 'SessionStart');
   return {
     on: !!port && base === `http://localhost:${port}` && hook,
@@ -306,12 +318,13 @@ export function routeStatus(
   packageRoot: string,
   cwd?: string,
   scopedSettings?: { project: Settings; global: Settings },
+  scope: 'project' | 'global' = 'project',
 ): RouteStatus {
   const project = scopedSettings?.project ?? settings;
   const global = scopedSettings?.global ?? {};
-  const current = routeScopeStatus(settings, config, packageRoot);
-  const projectStatus = scopedSettings ? routeScopeStatus(project, config, packageRoot) : current;
-  const globalStatus = routeScopeStatus(global, config, packageRoot);
+  const current = routeScopeStatus(settings, config, packageRoot, scope);
+  const projectStatus = scopedSettings ? routeScopeStatus(project, config, packageRoot, 'project') : current;
+  const globalStatus = routeScopeStatus(global, config, packageRoot, 'global');
   const sessions = cwd === undefined ? 0 : readSessions(routeSessionsFile(cwd)).length;
   return {
     ...current,
@@ -348,10 +361,11 @@ export async function cmdRoute(
       project: readSettings(routeSettingsFile(opts.cwd, 'project', opts.home)),
       global: readSettings(routeSettingsFile(opts.cwd, 'global', opts.home)),
     },
+    scope,
   );
 
   if (action === 'on') {
-    const plan = planRouteOn(settings, config, opts.packageRoot);
+    const plan = planRouteOn(settings, config, opts.packageRoot, scope);
     if (plan.changed) writeSettings(file, plan.settings);
     return status(plan.settings);
   }
@@ -394,13 +408,13 @@ export interface SessionPhaseResult {
 export interface SessionDeps {
   /** Resolves true when the router already answers on `port`. */
   probe?: (port: number) => Promise<boolean>;
-  startDaemon?: (home: string, argv: string[]) => Promise<unknown>;
+  startDaemon?: (home: string, argv: string[], deps?: unknown, cwd?: string) => Promise<unknown>;
 }
 
 export async function cmdRouteSession(
   phase: 'start' | 'end',
   sessionId: string,
-  opts: { cwd: string; home: string; packageRoot: string; serveArgv: string[] },
+  opts: { cwd: string; home: string; packageRoot: string; serveArgv: string[]; scope?: 'project' | 'global' },
   deps: SessionDeps = {},
 ): Promise<SessionPhaseResult> {
   const registry = routeSessionsFile(opts.cwd);
@@ -430,7 +444,11 @@ export async function cmdRouteSession(
   const config = loadConfig(opts.cwd, opts.home);
   const port = config.native?.ports.router;
   if (port !== undefined && !(await probe(port))) {
-    await startDaemon(opts.home, opts.serveArgv);
+    // Global routing is one shared router for every project — its config has
+    // to be the machine one regardless of which project's session happens to
+    // start it, or every other routed project silently inherits this one's
+    // tiers, models and gateways for as long as the daemon lives.
+    await startDaemon(opts.home, opts.serveArgv, {}, opts.scope === 'global' ? opts.home : opts.cwd);
   }
 
   const after = readSessions(registry);

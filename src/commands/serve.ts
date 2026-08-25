@@ -487,6 +487,7 @@ export async function startServeDaemon(
   home: string,
   argv: string[],
   deps: DaemonDeps = {},
+  cwd: string = process.cwd(),
 ): Promise<DaemonResult> {
   const spawnFn = deps.spawn ?? spawn;
   const probe = deps.probe ?? ((port: number) => isSonataRouter(port));
@@ -494,7 +495,7 @@ export async function startServeDaemon(
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const timeoutMs = deps.timeoutMs ?? 60_000;
 
-  const config = loadConfig(process.cwd(), home);
+  const config = loadConfig(cwd, home);
   if (!config.native) throw new Error('sonata serve: no [native] table');
   const port = config.native.ports.router;
 
@@ -502,9 +503,16 @@ export async function startServeDaemon(
   mkdirSync(dirname(logPath), { recursive: true });
   const log = openSync(logPath, 'a');
 
+  // Explicit, not inherited: a daemon started to serve *every* project
+  // (`route on/auto --global`) must not bind itself to whichever project's
+  // session happened to trigger it first — the router is a single process,
+  // so its config has to be the one every routed project actually shares.
+  // The caller passes `home` here for that case (see route.ts); a plain
+  // `sonata serve --daemon` keeps inheriting the shell's own cwd.
   const child = spawnFn(argv[0], argv.slice(1), {
     detached: true,
     stdio: ['ignore', log, log],
+    cwd,
   });
   child.unref();
 

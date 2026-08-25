@@ -89,6 +89,12 @@ describe('ensureServeCommand', () => {
     const cmd = ensureServeCommand(PACKAGE_ROOT, 4100);
     expect(cmd).toContain(`node ${JSON.stringify(join(PACKAGE_ROOT, 'hooks', 'ensure-serve.mjs'))} 4100`);
   });
+
+  it('marks a global-scope command so the daemon it starts is not bound to whichever project triggers it first', () => {
+    const cmd = ensureServeCommand(PACKAGE_ROOT, 4100, 'global');
+    expect(cmd).toBe(`node ${JSON.stringify(join(PACKAGE_ROOT, 'hooks', 'ensure-serve.mjs'))} 4100 --global`);
+    expect(ensureServeCommand(PACKAGE_ROOT, 4100, 'project')).not.toContain('--global');
+  });
 });
 
 describe('routeEnv', () => {
@@ -127,6 +133,13 @@ describe('planRouteOn', () => {
     const settings: Settings = { env: { ANTHROPIC_BASE_URL: 'https://gateway.corp.example/v1' } };
     expect(() => planRouteOn(settings, config, PACKAGE_ROOT))
       .toThrow(/already set to https:\/\/gateway\.corp\.example\/v1/);
+  });
+
+  it('installs the --global marker in the hook command at global scope', () => {
+    const config = loadNativeConfig();
+    const plan = planRouteOn({}, config, PACKAGE_ROOT, 'global');
+    const hook = (plan.settings.hooks!.SessionStart as HookEntry[]).flatMap((e) => e.hooks);
+    expect(hook.map((h) => h.command)).toContain(ensureServeCommand(PACKAGE_ROOT, 4100, 'global'));
   });
 
   it('rewrites a stale localhost router port — the drift doctor sends people here for', () => {
@@ -345,6 +358,26 @@ describe('cmdRouteSession', () => {
     await cmdRouteSession('start', 'crashed', o, deps);
     await cmdRoute('off', o);
     expect(readSessions(routeSessionsFile(cwd))).toEqual([]);
+  });
+
+  it('starts a global-scope daemon from home, not the triggering project\'s cwd', async () => {
+    const o = { ...opts(), scope: 'global' as const };
+    const seenCwds: (string | undefined)[] = [];
+    await cmdRouteSession('start', 's1', o, {
+      probe: async () => false,
+      startDaemon: async (_home, _argv, _deps, daemonCwd) => { seenCwds.push(daemonCwd); return {}; },
+    });
+    expect(seenCwds).toEqual([home]);
+  });
+
+  it('starts a project-scope daemon from the session\'s own cwd', async () => {
+    const o = opts(); // scope defaults to undefined -> 'project'
+    const seenCwds: (string | undefined)[] = [];
+    await cmdRouteSession('start', 's1', o, {
+      probe: async () => false,
+      startDaemon: async (_home, _argv, _deps, daemonCwd) => { seenCwds.push(daemonCwd); return {}; },
+    });
+    expect(seenCwds).toEqual([cwd]);
   });
 });
 describe('configless route sessions', () => {
