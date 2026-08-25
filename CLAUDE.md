@@ -4,11 +4,13 @@ This file provides guidance to AI assistants when working with this repository. 
 
 ## Project Overview
 
-**Sonata** — foreign-model subagents for Claude Code. It lets you dispatch a subagent backed by a different model (OpenCode, Codex, Pi, or Reasonix), running in that model's own harness, through the ordinary Agent tool. Same interface, same working directory, same report contract — different brain. Motivations: cost (cheap high-cache models for mechanical work) and diversity of judgement (a different model family reviews Claude's work).
+**Sonata** — foreign-model subagents for Claude Code. It lets you dispatch a subagent backed by a different model, through the ordinary Agent tool. Same interface, same working directory, same report contract — different brain. Motivations: cost (cheap high-cache models for mechanical work) and diversity of judgement (a different model family reviews Claude's work).
 
-The wrapper agent (MCP-only, relays rather than reasons) calls the `dispatch` tool, which launches a run and blocks until it is worth reporting; it uses `wait` to resume a `RUNNING` or approved run. Sonata composes the role prompt + CLAUDE.md + task, launches the harness in a detached tmux session, and reads completion from an exit sentinel + report file (never scraped from the terminal). Runs that die without writing a report are marked `degraded` so results are never falsely trusted.
+**Tier agents are the default path.** `sonata init` generates one agent per role × difficulty tier (`code-simple`, `code-complex`, `review-simple`, …), each running *natively inside Claude Code's own loop* — its tools, its permission modes, no separate TUI. An agent's frontmatter names a router alias (`model: sonata-code-simple`), not a specific model; a local routing proxy (`sonata serve`) resolves the alias against `[tiers.<role>]`'s ranked model list and tries each candidate in order, skipping one that's cooling down after a recent failure (`src/native/router.ts`). This is the same native path described below — tiers just add ranking and fallback on top of it.
 
-**Status:** Working, early. Engine and the OpenCode/Codex/Pi/Reasonix adapters are complete and tested end-to-end against real models. Not yet published to npm — install from source (`npm link`).
+**`sonata dispatch` is the fallback lane**, for when every native route in a tier has failed (or when a model has no native route at all, only a harness one): it launches the foreign model in *its own* CLI (OpenCode, Codex, Pi, or Reasonix) in a detached tmux session, blocking until the run finishes, needs approval, or stalls, trying the next ranked harness candidate on a thrown launch, a degraded finish, or an empty report. Sonata composes the role prompt + CLAUDE.md + task and reads completion from an exit sentinel + report file (never scraped from the terminal); a run that dies without writing a report is marked `degraded` so results are never falsely trusted. There is no MCP server — `dispatch`/`wait`/`approve` are Bash commands, allow-listed the same way the old MCP tools were.
+
+**Status:** Working, early. Engine and the OpenCode/Codex/Pi/Reasonix adapters are complete and tested end-to-end against real models; so is the native path, including tier resolution and ranked fallback. Not yet published to npm — install from source (`npm link`).
 
 ## Requirements
 
@@ -24,75 +26,85 @@ The wrapper agent (MCP-only, relays rather than reasons) calls the `dispatch` to
 npm install        # install dependencies
 npm run build      # tsc → dist/
 npm run typecheck  # tsc --noEmit
-npm test           # vitest run (596 tests; needs tmux — runs against a fake harness)
+npm test           # vitest run (909 tests; needs tmux — runs against a fake harness)
 npm run dev        # tsx src/cli.ts
 
 npm link           # puts `sonata` on your PATH (until published to npm)
 ```
 
 The CLI (after `npm link`):
-- `sonata init` — set up sonata (interactive wizard; asks the config scope, then providers, models, roles and per-role models. Left goes back a screen, skipping any answered by a flag; writes the config, generates one agent per role × model, offers the permission hook). Unattended flags: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope project|global`, `--scope project|global|skip`, `--prune`
-- `sonata doctor` — check tmux, harnesses, auth, versions, permission hook
-- `sonata sync` — regenerate agent files from `sonata.toml`; Claude Code picks them up automatically. Supports `--prune`
+- `sonata init` — set up sonata (interactive wizard; asks the config scope, then providers, models, roles, per-role models, then ranks each role's selected models into `simple`/`complex` tiers — pre-sorted from a cached Artificial Analysis catalog when one exists, else built-in defaults. Left goes back a screen, skipping any answered by a flag; writes `[models]`+`[tiers]`, generates one agent per role × tier, offers the permission hook, installs the `sonata-loop` skill, offers `sonata route auto`). A config still in the older `[generate.roles]`/`[generate.native]` shape is migrated automatically (`migrateLegacyConfig`, `src/normalize.ts`). Unattended flags: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope project|global`, `--scope project|global|skip`, `--routing project|global|skip`, `--prune`
+- `sonata doctor` — check tmux, harnesses, auth, versions, permission hook, tier routing (a tiered config with no routed session), stale MCP registrations, legacy (pre-`[tiers]`) configs
+- `sonata sync` — regenerate agent files from `sonata.toml`; Claude Code picks them up automatically. When `[tiers]` is set, generates only tier agents (one per role × tier, or one collapsed agent when a role's `simple`/`complex` lists are element-wise identical) — legacy per-model generation is skipped entirely. Supports `--prune`
 - `sonata run` — launch a run, print its id
-- `sonata tail` — human/debugging view of a run (PROGRESS | PAUSED | DONE | STALLED); the MCP dispatch path uses `dispatch`/`wait`
+- `sonata dispatch (--tier <role>-<tier> | --model <key>) [--task-file <path>] "<task>"` — blocking CLI dispatch with ranked harness fallback: tries each harness-routed candidate in order, moving to the next on a thrown launch, a degraded finish, or an empty report; prints the state, the model that ran, and the report. This is the fallback lane a tier agent reaches for when the router's native candidates are all exhausted (529 names the exact command). `PAUSED` prints `sonata approve <id>`; `RUNNING` prints `sonata wait <id>`; a `FAILED` outcome (every candidate failed) exits 1 with the ranked attempt history
+- `sonata tail` — human/debugging view of a run (PROGRESS | PAUSED | DONE | STALLED)
 - `sonata approve` — answer a pending approval
-- `sonata mcp` — run the Sonata MCP server
 - `sonata log <id>` — print a run's whole transcript; the after-the-fact companion to `tmux attach`
 - `sonata verify <id> [--model <key>]` — verify a completed run
-- `sonata auth` — manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`, `login <gateway>`; keys live in the store, never logged)
-- `sonata serve` — run the native router and its managed LiteLLM child. `--daemon` re-execs the CLI detached, **waits until the router answers**, then prints the pid, port and log path; a detached child that failed would otherwise report success and leave no server. Its output goes to `~/.config/sonata/logs/serve-<timestamp>.log`, since a detached process has nowhere else to say why it stopped
-- `sonata restart` — kills whatever sonata router currently holds the configured port (a stale daemon, or one MCP-hosted inside a `sonata mcp` process) using only a pid `cmdServe` itself recorded, then starts a fresh daemon. Plain `sonata serve --daemon` cannot recover from this case: it just times out against `EADDRINUSE` with "the daemon did not answer", which reads as a startup failure rather than "something else already has it". See `stopServe`/`cmdRestart` in Configuration below.
+- `sonata auth` — manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`, `login <gateway>`; keys live in the store, never logged). Also how an Artificial Analysis key reaches `sonata catalog update`: `sonata auth add artificialanalysis`
+- `sonata catalog [update]` — bare `catalog` reports the cached model-ranking catalog's age and count, or points at `update`; `update` fetches `artificialanalysis.ai`'s models endpoint with the stored key (sent via `x-api-key`, never argv/logged) and caches `normalizeModelName` → coding index + blended price for `proposeTiers` to rank against. AA's free-tier license forbids redistributing its data, so the response is never committed — only a hand-invented fixture is
+- `sonata serve` — run the native router and its managed LiteLLM child. `--daemon` re-execs the CLI detached, **waits until the router answers**, then prints the pid, port and log path; a detached child that failed would otherwise report success and leave no server. Its output goes to `~/.config/sonata/logs/serve-<timestamp>.log`, since a detached process has nowhere else to say why it stopped. Watches its LiteLLM child and respawns it in place if it exits on its own (a crash-loop guard gives up after 5 respawns/60s)
+- `sonata restart` — kills whatever sonata router currently holds the configured port (a stale daemon, or another native router) using only a pid `cmdServe` itself recorded, then starts a fresh daemon. Plain `sonata serve --daemon` cannot recover from this case: it just times out against `EADDRINUSE` with "the daemon did not answer", which reads as a startup failure rather than "something else already has it". See `stopServe`/`cmdRestart` in Configuration below.
 - `sonata code` — launch a Claude Code session routed through the local proxy (passes `claude` args through); auto-starts `sonata serve --daemon` when the router is down
-- `sonata route on|off|status` — route every plain `claude` session launched in the project through the proxy, not just ones `sonata code` starts: it writes the routing `ANTHROPIC_BASE_URL` env into `.claude/settings.local.json` and installs a SessionStart hook (`hooks/ensure-serve.mjs`) that keeps the router up, so editor integrations and `.mcp.json` entries route too. `off` removes both; `status` reports whether routing is on
-- `sonata route auto|manual` — routing that keeps Remote Control. `auto` installs a SessionStart hook that turns routing on and a SessionEnd hook that turns it back off (`hooks/route-session.mjs`, whose body is `sonata route session-start|session-end --id <id>` so the logic is tested TypeScript rather than hook script). Each session therefore *launches* from a file with no `ANTHROPIC_BASE_URL` in it — which is the only moment Claude Code consults it for the Remote Control gate — and is routed from its first request, because the settings `env` is re-read per request. Session ids are counted in `.sonata/route-sessions.json`: `route off` fires only when the last one ends, since an auto session (unlike a `route on` one) has no exported env and *would* lose routing mid-run if a sibling cleaned the file. A session killed before its SessionEnd hook leaves its id behind and routing on — the safe failure direction, costing one launch's Remote Control rather than silently demoting a native agent to Claude; `sonata route off` clears the registry. `manual` removes the hook pair
+- `sonata route on|off|status [--global]` — route every plain `claude` session launched in the project through the proxy, not just ones `sonata code` starts: it writes the routing `ANTHROPIC_BASE_URL` env into `.claude/settings.local.json` (or, with `--global`, `~/.claude/settings.json`) and installs a SessionStart hook (`hooks/ensure-serve.mjs`) that keeps the router up, so editor integrations and `.mcp.json` entries route too. `off` removes both; `status` reports which scope(s) — project, global, or both — currently route. The session registry stays per-project regardless of scope: a global hook fires in every directory, but routing state still follows each session's own project
+- `sonata route auto|manual [--global]` — routing that keeps Remote Control. `auto` installs a SessionStart hook that turns routing on and a SessionEnd hook that turns it back off (`hooks/route-session.mjs`, whose body is `sonata route session-start|session-end --id <id>` so the logic is tested TypeScript rather than hook script). Each session therefore *launches* from a file with no `ANTHROPIC_BASE_URL` in it — which is the only moment Claude Code consults it for the Remote Control gate — and is routed from its first request, because the settings `env` is re-read per request. Session ids are counted in `.sonata/route-sessions.json`: `route off` fires only when the last one ends, since an auto session (unlike a `route on` one) has no exported env and *would* lose routing mid-run if a sibling cleaned the file. A session killed before its SessionEnd hook leaves its id behind and routing on — the safe failure direction, costing one launch's Remote Control rather than silently demoting a native agent to Claude; `sonata route off` clears the registry. `manual` removes the hook pair. `cmdRouteSession` validates the project has a config before touching the registry, so a global hook firing in a configless directory throws before writing anything
 - `sonata gc` — kill finished tmux sessions
 
 ## Architecture
 
 ```
 Claude Code
-    │  Agent(subagent_type: "code-deepseek-v4-flash")
+    │  Agent(subagent_type: "code-simple")
     ▼
-wrapper agent  (MCP-only; relays, never reasons)
-    │  mcp__sonata__dispatch / wait / approve
+sonata-code-simple   (native — Claude Code's own loop, model: sonata-code-simple)
+    │
     ▼
-sonata CLI
-    │  composes role prompt + CLAUDE.md + task
-    │  launches harness in a detached tmux session
+router  (sonata serve)
+    │  resolveTierAlias against [tiers.code].simple, ranked candidates,
+    │  cooldown on failure, first response < 500 wins
+    ▼
+litellm → flash-1   (or the next-ranked model)
+
+     ── every native candidate exhausted (529) ──
+                        ▼
+sonata dispatch --tier code-simple "<task>"
+    │  harness-routed candidates, ranked, launched by cmdRun/cmdWait
     ▼
 opencode → deepseek-v4-flash   (or codex, pi, or reasonix)
 ```
 
 Key design points:
-- **The three wrapper tools must be allow-listed**, which `sonata init` now does and `sonata doctor` checks. In Claude Code's `auto` mode an un-allow-listed tool is judged per call and the decisions are not stable: on 2026-08-12 a wrapper had `run` allowed and `tail` allowed twice then denied twice mid-run ("Blocked by classifier"), so a foreign model kept writing to the repository with nothing able to observe it. `run` executes code and is the one the classifier tends to permit, which makes the failure silent by construction. Today those wrapper tools are `dispatch`, `wait`, and `approve`.
-- **The wrapper holds `mcp__sonata__dispatch`, `mcp__sonata__wait` and `mcp__sonata__approve`, and no Bash.** The polling tools were removed from the MCP surface so the wrapper cannot spend one model turn per progress poll; `dispatch` blocks until a reportable state and `wait` resumes when needed. This is deliberate: an agent with Bash performed 102 file reads and zero dispatches on 2026-08-12. `tools: Bash(sonata:*)` was tested and is silently ignored, so it is not a cheaper alternative and should not be re-proposed.
-- **The wrapper never parses harness output.** It calls the MCP tools and relays. All harness-specific knowledge lives in one adapter file.
+- **The three dispatch tools must be allow-listed**, which `sonata init` now does and `sonata doctor` checks. In Claude Code's `auto` mode an un-allow-listed tool is judged per call and the decisions are not stable: on 2026-08-12 a wrapper had `run` allowed and `tail` allowed twice then denied twice mid-run ("Blocked by classifier"), so a foreign model kept writing to the repository with nothing able to observe it. `run` executes code and is the one the classifier tends to permit, which makes the failure silent by construction. Those tools are `Bash(sonata dispatch:*)`, `Bash(sonata wait:*)`, and `Bash(sonata approve:*)` — the tool surface moved from MCP to Bash, but the allow-listing story is unchanged: the classifier is still not to be trusted with these calls.
+- **There is no MCP server.** `sonata dispatch` blocks until a reportable state the same way the old MCP `dispatch` tool did, and `sonata wait`/`sonata approve` resume or unblock a specific run by id — but as ordinary Bash commands a model runs itself, not RPC calls a wrapper relays. `Bash(sonata:*)` was tested against the old MCP-only setup and found to be silently ignored by Claude Code; the current `Bash(sonata dispatch:*)`-style entries are the real, working allow-list form.
+- **`sonata dispatch` never parses harness output**; it only reads run state (state, degraded, report) from `cmdRun`/`cmdWait`. All harness-specific knowledge lives in one adapter file.
 - **Completion is read from an exit sentinel and a report file**, never scraped from the terminal. If a harness dies without a report, sonata returns the captured pane and marks the result `degraded`.
 - **Progress comes from diffing the tmux pane.** You can attach to any live run: `tmux attach -t sonata-<id>` (`-r` read-only) — so you can correct a cheap model mid-run.
-- **`run_timeout_seconds` is a hard cap** enforced by a watchdog inside the launched shell (not by the MCP wait loop); on expiry the whole process group is killed and the run is reported `DONE`, `degraded`, report beginning `[timed out: …]`.
-- **`sonata init`'s interactive TUI is an Ink app** (`src/tui-ink/`), not the hand-rolled prompt functions. The pure list primitives in `src/tui.ts` (`parseKey`/`reduce`/`renderList`) and the `select`/`confirm`/`runList` prompts are retained for the non-Ink interactive prompts that remain — init's hook-scope and confirm steps, and `cli.ts`'s `confirm` — and are intentionally not deleted.
+- **`run_timeout_seconds` is a hard cap** enforced by a watchdog inside the launched shell; on expiry the whole process group is killed and the run is reported `DONE`, `degraded`, report beginning `[timed out: …]`.
+- **`sonata init`'s interactive TUI is an Ink app** (`src/tui-ink/`), not the hand-rolled prompt functions. The pure list primitives in `src/tui.ts` (`parseKey`/`reduce`/`renderList`) and the `select`/`confirm`/`runList` prompts are retained for the non-Ink interactive prompts that remain — init's hook-scope, tier-routing offer, and confirm steps, and `cli.ts`'s `confirm` — and are intentionally not deleted.
 - **The provider-setup step is a menu**: `Import from other harnesses` bulk-imports providers with detected Codex or OpenCode credentials, while `Add provider` lets the user pick any known provider or enter a fully custom provider (name, base URL, and wire format). Custom providers always use API-key authentication; Sonata has no generic OAuth flow beyond the Codex and GitHub Copilot LiteLLM-backed device flows.
+- **A tier is a rank, not a fixed model.** `RankedSelect` (`src/tui-ink/components/ranked-select*`) lets `sonata init` capture a *ranking* rather than a set: selection order **is** the ranking, so no separate up/down step is needed to express "try this one first, that one if it fails". `proposeTiers` (`src/catalog.ts`) seeds the initial order from a cached Artificial Analysis catalog (coding index for capability, blended price for cost) when one exists, falling back to a curated table otherwise.
 
 ### Source layout
 
 ```
 src/
-├── cli.ts                CLI entry point; arg parsing, then delegates to src/commands/* and src/mcp/*
-├── commands/             command implementations (approve, auth, code, doctor, gc, init, log, run, serve, sync, tail, verify, wait)
-├── mcp/                  stdio JSON-RPC MCP server — protocol.ts (handshake + captured fixtures), server.ts (`runMcpStdio`), tools.ts (dispatch/wait/approve tools)
-├── config.ts             config resolution (project → machine), sonata.toml parsing, KNOWN_HARNESSES, isReadOnlyRole
+├── cli.ts                CLI entry point; arg parsing, then delegates to src/commands/*
+├── commands/             command implementations (approve, auth, catalog, code, dispatch, doctor, gc, init, log, route, run, serve, sync, tail, verify, wait)
+├── config.ts             config resolution (project → machine), sonata.toml parsing (unified [models], [tiers]), KNOWN_HARNESSES, isReadOnlyRole, resolveTierAlias, harnessModelFor
+├── catalog.ts            model normalization (normalizeModelName), curated capability/cost table, proposeTiers, AA catalog cache (loadAaCatalog, aaCatalogPath, AA_ATTRIBUTION)
 ├── detect.ts             harness catalogues (`opencode models`, `pi --list-models`, reasonix doctor) → ModelRef, provider grouping; WELL_KNOWN_PROVIDER_URLS
-├── normalize.ts          config/model normalization
+├── normalize.ts          config/model normalization; migrateLegacyConfig ([generate.roles]/[generate.native] → [models]+[tiers])
 ├── roles.ts              role prompt composition
-├── settings.ts           permission-hook scope settings
+├── settings.ts           permission-hook scope settings, SONATA_TOOLS allow-list
 ├── store.ts              run state storage
 ├── tmux.ts               tmux session lifecycle (detached sessions, pane diffing)
-├── tui.ts                Minimal zero-dependency TUI primitives — pure parseKey/reduce/renderList so list behaviour is testable without a TTY; retained for the non-Ink prompts (init's hook scope, prune confirm)
+├── tui.ts                Minimal zero-dependency TUI primitives — pure parseKey/reduce/renderList so list behaviour is testable without a TTY; retained for the non-Ink prompts (init's hook scope, tier-routing offer, prune confirm)
 ├── watchdog.ts           run timeout enforcement
 ├── mode.ts               permission-mode mapping (plan/default/acceptEdits/bypassPermissions/auto)
-├── native/               native path — credentials.ts (gateway keys), litellm.ts (managed LiteLLM child config), router.ts (local routing proxy), models.ts (BYOK /models discovery)
+├── native/               native path — credentials.ts (gateway keys), litellm.ts (managed LiteLLM child config, now fed by unified [models] too), router.ts (local routing proxy; tier alias resolution, ranked fallback, cooldowns), models.ts (BYOK /models discovery)
 ├── types.ts              shared types
+├── tui-ink/              Ink app for `sonata init`; components/ranked-select-state.ts + ranked-select.tsx (RankedSelect — selection order is the ranking)
 └── adapters/
     ├── types.ts          HarnessAdapter interface (plan, canPromptForApproval, promptPatterns, describePrompt, health)
     ├── index.ts          adapter registration
@@ -102,8 +114,9 @@ src/
     ├── reasonix.ts       reasonix adapter — the only harness whose TUI sonata seeds itself
     └── claude.ts         claude harness adapter — headless `claude -p`, no TUI; native runs assume `sonata serve` is up
 
-tests/                   vitest suite against a fake harness + captured fixtures in tests/fixtures/panes/
+tests/                   vitest suite against a fake harness + captured fixtures in tests/fixtures/panes/ and tests/fixtures/aa/ (synthetic Artificial Analysis catalog fixture)
 roles/                   role definitions (code, review, explore, plan) — owned by sonata, not the harness
+skills/loop/SKILL.md     sonata-loop — the tier-routed feature loop skill sonata init installs
 hooks/                   capture-mode.mjs + hooks.json — the PreToolUse permission hook
 docs/                    dispatching-work-through-sonata.md + reviews/ (architecture review) + superpowers/ (plans + specs)
 ```
@@ -130,7 +143,7 @@ Sonata mirrors the Claude Code permission mode onto the harness; a sonata agent 
 - **Reasonix** (real approval cards, so `default` is honoured): `plan` and every read-only role → `run --permission-mode dontAsk`; `default` → interactive TUI with `--permission-mode ask`; `acceptEdits` and `bypassPermissions` → `run` with the same-named mode.
   - `--permission-mode plan` is **refused by `reasonix run`** ("requires an interactive session", exit 2), so read-only work uses `dontAsk` instead. That is real enforcement, probed: a run asked to read one file and write another read it fine and was refused both the write tool and the shell fallback. It cannot write `report.md` either, so `canWriteReport` is false.
   - **Never use `-y`/`--auto`.** It aliases reasonix's own `auto`, which is wider than Claude Code's — it skips risk prompts for things like `git push`. Claude's `auto` maps to `acceptEdits`, so always pass `--permission-mode` explicitly.
-  - Reasonix loads the working directory's `.mcp.json` on top of its own config. In this repository that hands a dispatched model sonata's own dispatch/wait/approve tools, so it can dispatch further runs. `sonata doctor` warns when a `.mcp.json` is present.
+  - Reasonix loads the working directory's `.mcp.json` on top of its own config, so a dispatched model inherits whatever MCP servers the project defines — sonata itself is not one of them (there is no MCP server anymore), but a project's own servers still apply. `sonata doctor` warns on a `.mcp.json` that still registers a stale `sonata` entry (`staleMcpRegistration`), naming `claude mcp remove sonata`.
 - **Claude Code** (`claude -p` is headless and has no TUI): `plan`, `default`, `acceptEdits`, and `bypassPermissions` map directly to Claude Code's corresponding permission modes. Read-only roles use Claude's restricted tool set; native runs assume `sonata serve` is already up so the session is routed to the foreign model.
 
 The permission mode is not exposed as an env var, so this needs a **PreToolUse hook** (`hooks/capture-mode.mjs`), which `sonata init` offers to install at project or global scope. Without it sonata assumes `default` — for opencode/pi that means dispatches refuse, so `sonata doctor` reports a missing hook as a blocker.
@@ -150,27 +163,41 @@ A project config **replaces** the machine one; they are never merged, so it is a
 
 ```toml
 # sonata.toml
-[models."opencode-openrouter-deepseek-v4-flash"]
-harness = "opencode"                # opencode | codex | pi | reasonix | claude
-id = "openrouter/deepseek-v4-flash"     # provider/model for opencode, pi and reasonix; a bare id for codex
+[models."flash"]
+gateway = "acme"                    # native route: resolves through the router
+id = "deepseek-v4-flash-0731"
+context_window = 128000
 
-[generate.roles]
-code    = ["opencode-openrouter-kimi-k3"]
-review  = ["opencode-openrouter-grok-4.5", "opencode-openai-gpt-5.6-sol"]
-explore = ["opencode-opencode-go-deepseek-v4-flash"]
-plan    = ["opencode-openai-gpt-5.6-terra"]
+[models."kimi-k3"]
+harness = "opencode"                # harness route: sonata dispatch falls back to this
+id = "openrouter/kimi-k3"
+
+[native.gateways."acme"]
+base_url = "https://gateway.acme.example/v1"
+
+[tiers.code]
+simple  = ["flash", "kimi-k3"]       # ranked — first is tried first
+complex = ["kimi-k3", "flash"]
+
+[tiers.review]
+simple  = ["kimi-k3"]
+complex = ["kimi-k3"]
 
 [run]
 tail_window_seconds   = 20     # how long `sonata tail` blocks per call
 stall_timeout_seconds = 120    # silence before a run is reported STALLED
 run_timeout_seconds   = 1800   # hard cap; the run is killed at this point
-dispatch_window_seconds = 1500 # blocking window; must stay under MCP's 30-minute stdio idle limit
+dispatch_window_seconds = 1500 # blocking window for sonata wait/dispatch
 ```
 
+- **`[models."<key>"]` is unified: a native route (`gateway`/`id`/`context_window`), a harness route (`harness`/`harness_id`), or both** (`UnifiedModelConfig`, `src/config.ts`) — one model can be reachable two ways: natively through the router, and as a `sonata dispatch` fallback candidate through its harness. `harnessModelFor(config, key)` maps a unified entry's harness half onto the shape `cmdRun` already consumes, so a unified-only key dispatches with no legacy `[models]` entry needed.
+- **`[tiers.<role>]` is `{ simple: string[], complex: string[] }`**, keys into `[models]`, ranked — position is priority, not a separate field. `resolveTierAlias(config, "sonata-<role>-<tier>")` resolves an alias to its ranked routes (`TierRoute[]`, each `{ key, native?, harness? }`); it collapses to the unsuffixed `sonata-<role>` alias only when a role's `simple` and `complex` lists are *element-wise* identical (same models, same order) — a role whose tiers differ even slightly keeps both aliases live.
+- **`parseConfig` refuses *mixing* `[tiers]` with legacy `[generate.roles]`/`[generate.native]`** in the same file — not refusing a legacy-only config outright, since that would brick every existing install the moment this shipped. A legacy config still parses (with a `sonata doctor` warning pointing at `sonata init`) until it's migrated; a migrated config cannot re-grow the old tables.
+- **A legacy config migrates automatically** (`migrateLegacyConfig`, `src/normalize.ts`, run by `cmdInit` whenever it loads a config with `generate` data and no `[tiers]`): every `[native.models]` entry becomes a unified native-routed entry; every legacy harness entry becomes a harness-routed entry keyed by `normalizeModelName(key)` — merged onto a native entry when its `id` normalizes to the same upstream (one model, two routes), or kept under its original un-normalized key when two *different* models would otherwise collide on the same normalized name (verified: never silently merges two different models). `[tiers.<role>]` is seeded native-first from `generate.native` + `generate.roles`, deduplicated. A harness-only model with no native counterpart — invisible to the current native-candidate picker — is still carried through into the rewritten config rather than silently dropped.
 - **Keys are always quoted.** An unquoted `[models.grok-4.5]` nests as `models → "grok-4" → "5"` and silently stops describing the model it names. Every key and value is written through `tomlKey`, which also escapes control characters. This includes `credential_source` on `[native.gateways]`: its values are `sonata`, `codex`, and `opencode`; when absent, today's credential resolution is unchanged. `parseConfig` refuses `credential_source = "codex"` with `auth = "api-key"` because a Codex subscription is not a bearer API key and the metered endpoint authenticates before failing on quota — see `docs/codex-subscription.md`. Native API-key gateways may also set `wire_format` to `openai` (the default) or `anthropic`; it is refused on OAuth-auth gateways and supports fully custom providers entered through `sonata init`'s Add provider flow.
 - **The key is `<harness>-<provider>-<model>`, slashes flattened to dashes**, and doubles as the agent filename (`code-<key>.md`). The harness segment is load-bearing: pi and opencode can serve the identical ref. Flattening is *not* injective (`opencode/go-x` and `opencode-go/x` collide), so `init` checks the keys it is about to write.
 - **Ids are provider-qualified for opencode, pi and reasonix**, bare for codex; `parseConfig` enforces this per harness. Picker rows are labelled `<harness>/<provider>/<model>` (`refLabel`), because opencode and pi can serve the identical `provider/model` — labelling by ref alone printed two identical rows that also shared a selection value.
-- **Each role chooses its own models** through `[generate.roles]`; the old flat `roles`/`models` pair is no longer accepted. `sonata init` rewrites an old config to the per-role format.
+- **Each role chooses its own ranked model list, per tier,** through `[tiers.<role>]`; `sonata sync` generates only tier agents when `[tiers]` is set (skipping legacy per-model generation entirely) — one agent per role × tier, or one collapsed agent when a role's `simple`/`complex` lists are element-wise identical.
 - Four roles ship: `code`, `review`, `explore`, `plan`. The last three are read-only, enforced by the harness (read-only sandbox on codex, tool allowlist on pi, read-only agent on opencode, `dontAsk` on reasonix).
 - `sonata init` discovers OpenCode, Pi and Reasonix models (reasonix's catalogue and its per-provider auth state both come from `reasonix doctor --json`). Codex has no provider dimension and is added by hand; hand-written entries survive `sonata init`, which carries through any model whose harness it does not manage.
 - **BYOK: a provider can be named directly, with no harness installed.** `init`
@@ -221,7 +248,7 @@ dispatch_window_seconds = 1500 # blocking window; must stay under MCP's 30-minut
   belong to, never as their value. `cli.ts` prints the directory when a run
   fails or cancels. Logging never throws: an unwritable home degrades to
   `nullInitLog` rather than failing the command it was meant to explain.
-- Run `sonata sync` after editing the config; Claude Code picks up the generated agents automatically. Reconnect the sonata MCP server with `/mcp` only when sonata's MCP tool surface changes.
+- Run `sonata sync` after editing the config; Claude Code picks up the generated agents automatically. There is no MCP server to reconnect.
 
 ## Security
 
@@ -256,30 +283,14 @@ The native router transits the session credential locally and unmodified; native
   directory-trust prompt as `PAUSED`, took `approve`, did the work and reached `DONE` un-degraded — the first
   time codex `default` has ever run. A reasonix dispatch went from 9 calls with duplicated prompts ending
   `STALLED`, to 5 calls, no duplicates, `DONE` with its report.
-- **MCP progress notifications DO reach the user's terminal, and cost nothing.** Probed 2026-08-18 against Claude
-  Code 2.1.233 (protocol 2025-11-25): a `tools/call` arrives with `params._meta.progressToken`, and a
-  `notifications/progress` referencing that token is rendered while the call blocks. They are protocol messages,
-  not tool results, so they never enter any model's context — which is exactly why they cannot feed the
-  orchestrator, and exactly why they are free. Wired up: `dispatch` and `wait` emit one notification per line.
-- **The progress display keeps the head of one message, not a history.** Measured 2026-08-19 against Claude Code
-  2.1.233, in the subagent view: a notification carrying several lines is **flattened** — the newlines are not
-  rendered — and then **clipped head-first** at roughly two wrapped rows. Sending a rolling window of recent
-  output was tried and is measured *worse* than one line: the newest line sits at the window's end, so it is
-  exactly what the clip removes (a screenshot showed four old commands and the live one cut to `$ nod…`). Hence
-  one line per notification. Live history has no channel here; it belongs in the transcript.
-- **`notifications/message` renders nothing.** Probed 2026-08-19 in the subagent view, with `logging: {}`
-  declared in the initialize response first — a compliant client may discard log notifications from a server that
-  never declared the capability, so emitting without declaring would have made silence unreadable. Declared and
-  emitted per line, still only the latest progress line appeared. **The tool result is the only channel into
-  conversation history**, which is what makes `transcript: true` the whole-run answer and a chunked `wait` the
-  only possible interleaved one.
-- **The harness conversation cannot be *pushed* into Claude Code turn by turn.** A subagent receives text only as tool results, and its parent receives only its final message, so no push channel exists to stream into. Two channels carry the conversation anyway: the progress window above shows it live, and `dispatch`/`wait` accept `transcript: true`, which returns the run's whole recorded transcript — `sonata log`'s content — beside the report, budgeted so the report can never be pushed out of the result. It is opt-in because a transcript is far larger than a report and lands in the wrapper's context. Outside Claude Code, `tmux attach -r -t sonata-<id>` is the live view and `sonata log <id>` the after-the-fact one; `sonata tail` remains a human/debugging CLI command.
+- **The harness conversation cannot be *pushed* into Claude Code turn by turn.** A subagent receives text only as tool results, and its parent receives only its final message, so no push channel exists to stream into. `tmux attach -r -t sonata-<id>` is the live view and `sonata log <id>` the after-the-fact one; `sonata tail` remains a human/debugging CLI command.
+- **Tier fallback retries only before a response starts.** The router (`routeTierRequest`, `src/native/router.ts`) tries each `[tiers.<role>].<tier>` candidate in rank order and returns the first response with status < 500 — retry is inherently pre-first-byte, so it never interferes with an in-progress stream. A candidate that fails (a thrown fetch, or ≥500) cools down for `TIER_COOLDOWN_MS` (60s) so a burst of requests doesn't keep retrying a model that just failed; every native candidate exhausted returns 529 naming the `sonata dispatch --tier <role>-<tier>` fallback rather than a bare error.
 
 ## Native path
 
 The native path runs foreign models inside Claude Code's own loop, tools, and permission modes through a local routing proxy. The harness path instead runs the foreign model's own loop in OpenCode, Codex, Pi, or Reasonix.
 
-Its `[native]` config surface describes foreign `models`, `gateways`, and their `ports`; `[generate.native]` assigns native model keys to roles. `sonata serve` runs the router and managed LiteLLM child, while `sonata code` launches a Claude Code session routed through it. `sonata route on` achieves the same routing for every plain `claude` launched in the project: it writes the routing `ANTHROPIC_BASE_URL` env into `.claude/settings.local.json` and installs a SessionStart hook (`hooks/ensure-serve.mjs`) so the router comes up like `sonata code` does — no wrapper needed. The Remote Control loss below then applies to every session in the project, not just wrapped ones, until `sonata route off`. Nuance, observed live 2026-08-25 on Claude Code 2.1.x: the Remote Control gate reads the base URL at session launch, but the settings `env` is picked up per-request — so a session already running when `route on` was issued keeps Remote Control *and* routes native agents (proven: a native-explore dispatch from such a session logged `-> litellm` on the router). Sessions launched after `route on` lose Remote Control as documented. The pickup is one-way: `route off` (also probed live) cleans the file for future sessions, but an already-routed session keeps sending through the router until restarted — the exported env survives the key's removal, so until then that session depends on the router staying up. `sonata route auto` turns that asymmetry from a curiosity into the supported way to route without losing Remote Control — see the command list above. LiteLLM is an external prerequisite, like tmux: install it with `pip install 'litellm[proxy]'`.
+Its `[native]` config surface describes foreign `models`, `gateways`, and their `ports`; native model keys reach a role either through a unified `[models]` entry's `gateway`, listed in `[tiers.<role>]`, or (for a legacy config not yet migrated) `[generate.native]`. `sonata serve` runs the router and managed LiteLLM child, while `sonata code` launches a Claude Code session routed through it. `sonata route on` achieves the same routing for every plain `claude` launched in the project: it writes the routing `ANTHROPIC_BASE_URL` env into `.claude/settings.local.json` and installs a SessionStart hook (`hooks/ensure-serve.mjs`) so the router comes up like `sonata code` does — no wrapper needed. The Remote Control loss below then applies to every session in the project, not just wrapped ones, until `sonata route off`. Nuance, observed live 2026-08-25 on Claude Code 2.1.x: the Remote Control gate reads the base URL at session launch, but the settings `env` is picked up per-request — so a session already running when `route on` was issued keeps Remote Control *and* routes native agents (proven: a native-explore dispatch from such a session logged `-> litellm` on the router). Sessions launched after `route on` lose Remote Control as documented. The pickup is one-way: `route off` (also probed live) cleans the file for future sessions, but an already-routed session keeps sending through the router until restarted — the exported env survives the key's removal, so until then that session depends on the router staying up. `sonata route auto` turns that asymmetry from a curiosity into the supported way to route without losing Remote Control — see the command list above. LiteLLM is an external prerequisite, like tmux: install it with `pip install 'litellm[proxy]'`.
 
 Sonata implements no OAuth itself; it drives LiteLLM's own authenticator as a subprocess, so no token passes through sonata's process memory. A login needs neither the codex CLI nor a prior `codex login`: LiteLLM's authenticator is a self-contained HTTP client, and the Codex OAuth app id is compiled into it. The login script calls `get_access_token()`, never `_login()` — only the former persists the token, while `_login()` starts a second device flow against an empty directory.
 
@@ -287,7 +298,7 @@ For Copilot, `api-key.json`, written by `get_api_key()`, proves entitlement. A b
 
 The `sonata` credential source points LiteLLM's token directory at `~/.config/sonata/credentials/<gateway>/`, so refreshes persist across runs. The old temp-directory approach silently discarded every refresh; Copilot's `api-key.json` is short-lived and re-exchanged in place, so persistence is load-bearing. Never pass `api_base` for Copilot: `get_api_base()` reads `endpoints.api` from `api-key.json`, and business tenants have different endpoints.
 
-There are two deliverables: (A) `sonata serve`/`sonata code` for a complete local routing path, and (B) the `claude` harness adapter for dispatching foreign-on-Claude-loop through the existing MCP path.
+There are two deliverables: (A) `sonata serve`/`sonata code` for a complete local routing path, and (B) the `claude` harness adapter for dispatching foreign-on-Claude-loop through `sonata dispatch`.
 
 **A gateway declares how it authenticates.** `auth = "api-key"` (the default, so existing configs are unaffected) sends a stored bearer to `base_url`. `auth = "codex-oauth"` uses the ChatGPT subscription credential written by `codex login`, and takes **no** `base_url` — parsing refuses one, because that credential is refused by the metered `api.openai.com` with `insufficient_quota` *after* passing auth and scopes, and reaches only `https://chatgpt.com/backend-api/codex`. A subscription is not API credit; a config naming the metered URL authenticates and then 429s, which reads as a missing key. LiteLLM's `chatgpt` provider handles that endpoint, the Responses wire API, the mandatory streaming, and token refresh, so sonata emits `model: chatgpt/<id>` with `model_info.mode: responses` and **no** `api_base`/`api_key` — passing either overrides the provider and breaks it. Without `mode: responses` LiteLLM POSTs to the bare `backend-api/codex/` URL and gets a Cloudflare HTML page. Non-streaming calls hit an open upstream bug (BerriAI/litellm#25429) that streaming clients — Claude Code included — never reach. Full detail in `docs/codex-subscription.md`.
 
@@ -295,30 +306,39 @@ There are two deliverables: (A) `sonata serve`/`sonata code` for a complete loca
 
 **`init` must never offer a model the router cannot reach.** Copilot, acme and anthropic all serve Claude models, and the router sends `claude-` upstream, so `parseConfig` refuses those ids — 27 such candidates were being offered, and selecting one wrote a config that then failed to load. `isAnthropicRoutedName` is the single definition, used by both the parser and the candidate filter.
 
-**The router port's occupant is usually sonata.** An MCP dispatch to a native
-model starts a router *inside* the `sonata mcp` process, and that router lives
-as long as the MCP server does — until Claude Code restarts, not until the
-dispatch ends. So `serve` after any native dispatch hits `EADDRINUSE`, and its
-old message called that "a non-sonata listener", sending the user to hunt a
-foreign program that did not exist (a day-old `sonata mcp` was found holding
-4100 and answering its own health endpoint). `occupiedPortMessage` asks the
-health endpoint first, which costs one request and makes the message true.
+**The router port's occupant is usually sonata.** `sonata run`/`sonata dispatch`
+auto-start `sonata serve --daemon` when the router is down, so a prior dispatch
+can leave a daemon holding the port long after that dispatch ended. `serve`
+after that hits `EADDRINUSE`, and its old message called that "a non-sonata
+listener", sending the user to hunt a foreign program that did not exist.
+`occupiedPortMessage` asks the health endpoint first, which costs one request
+and makes the message true.
 
 **`sonata restart` clears that occupant instead of just naming it.** `cmdServe`
-now records `process.pid` as `routerPid` in `serve-state.json` once the router
-successfully binds — true whether that process is a foreground/daemon `sonata
-serve` or an in-process router started inside `sonata mcp` (both call `cmdServe`
-the same way; `src/commands/run.ts` is the second call site). `stopServe` reads
-that file, kills only the pids sonata itself recorded (never a pid found by
-scanning the OS — the same discipline as the pre-existing litellm-orphan kill),
-and polls the health endpoint until the port actually frees before returning.
-`cmdRestart` runs that then `startServeDaemon`. If the port answers as a sonata
-router but the state file has no matching pid (a different sonata install, or
-state left by an older version), `stopServe` refuses rather than guessing —
-same principle as `occupiedPortMessage`. Killing an MCP-hosted router's pid
-ends the `sonata mcp` process it lives in, dropping that session's MCP
-connection until Claude Code reconnects; `restart` makes that trade explicitly
-instead of leaving a stale router unreachable forever.
+records `process.pid` as `routerPid` in `serve-state.json` once the router
+successfully binds. `stopServe` reads that file, kills only the pids sonata
+itself recorded (never a pid found by scanning the OS — the same discipline as
+the pre-existing litellm-orphan kill), and polls the health endpoint until the
+port actually frees before returning. `cmdRestart` runs that then
+`startServeDaemon`. If the port answers as a sonata router but the state file
+has no matching pid (a different sonata install, or state left by an older
+version, or the record was lost — e.g. an unrelated `stop()` call deleted the
+state file before this router's own `routerPid` write), `stopServe` refuses
+rather than guessing — same principle as `occupiedPortMessage`; measured live,
+this can leave a stale daemon surviving several `restart` attempts that each
+report false success (`startServeDaemon` sees *a* sonata router answering and
+declares victory, even though its own freshly-spawned instance already lost
+the port race and shut itself down) until someone kills the stale pid by hand.
+
+**`serve` watches its own LiteLLM child and respawns it if it exits on its
+own** (`cmdServe`, `src/commands/serve.ts`) — the child dying used to go
+unnoticed until the next request 502'd and someone ran `sonata restart` by
+hand, with the router staying up and answering every request with a dead
+upstream in the meantime. A crash-loop guard (5 respawns/60s by default) stops
+trying and logs why rather than respawning forever against a genuinely broken
+gateway. This is safe in a way an *external* health-probe respawn is not:
+there is only ever one spawn racing here, never a second `serve` guessing
+whether an existing one is healthy.
 
 **The router logs which upstream served each request** — `POST /v1/messages
 model=gpt-5.6-terra -> litellm`. `serve` never passed a `log` before, so that
@@ -359,7 +379,7 @@ The `claude` harness adapter is the simplest adapter: it runs headless `claude -
 
 ## Conventions
 
-- **Harness-specific knowledge stays inside its adapter** — never in the CLI or the wrapper.
+- **Harness-specific knowledge stays inside its adapter** — never in the CLI or `sonata dispatch`.
 - **Evidence over inference** for harness behaviour: a captured fixture in `tests/fixtures/panes/` beats a plausible regex.
 - **Tests need no API keys** — the suite runs against a fake harness (scripted binary replaying a normal run, a crash, a captured approval prompt, a hang the watchdog kills, a clean exit with no report, and a harness-written report).
 - Run `npm test` and `npm run typecheck` before opening a PR; CI runs both on Linux with tmux installed.
@@ -370,4 +390,4 @@ The `claude` harness adapter is the simplest adapter: it runs headless `claude -
   harness reading the terminal takes SIGTTIN and stops dead — pane frozen, process in state `T`, no exit sentinel,
   killed at the run timeout. `fg %1 >/dev/null 2>&1` runs, reports success, and leaves the job stopped anyway;
   only the unredirected `fg %1` actually hands over. Both verified against the same wrapper.
-- The wrapper agent relays; it must never reason about or parse harness output.
+- **`sonata dispatch` relays; it must never reason about or parse harness output.** It reads run state (`state`, `degraded`, `report`) from `cmdRun`/`cmdWait` and decides only whether to try the next ranked candidate — the same discipline the old MCP wrapper agent followed, now enforced by there being no LLM in that loop at all.
