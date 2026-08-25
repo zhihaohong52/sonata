@@ -34,7 +34,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata dispatch  run a ranked tier with harness fallback
   sonata tail      poll a run for progress
   sonata wait      resume a RUNNING or approved run and block for its next state
-  sonata approve   answer a pending approval
+  sonata approve   answer a pending approval (requires --yes or --no)
   sonata gc        kill finished tmux sessions
   sonata log       print a run's whole transcript (tail returns only new lines)
   sonata verify    confirm a dispatch actually happened
@@ -219,7 +219,7 @@ async function main(argv: string[]): Promise<number> {
     if (res.report) console.log(`\n${res.report}`);
     if (res.prompt) {
       console.log(`\nPROMPT: ${res.prompt}`);
-      console.log(`sonata approve ${res.id}`);
+      console.log(`sonata approve ${res.id} --yes   (or --no)`);
     } else if (res.state === 'RUNNING') {
       console.log(`sonata wait ${res.id}`);
     }
@@ -272,7 +272,7 @@ async function main(argv: string[]): Promise<number> {
       for (const l of res.lines) console.log(`  ${l}`);
       if (res.prompt) {
         console.log(`  PROMPT: ${res.prompt}`);
-        console.log(`sonata approve ${id}`);
+        console.log(`sonata approve ${id} --yes   (or --no)`);
       } else if (res.state === 'RUNNING') {
         console.log(`sonata wait ${id}`);
       }

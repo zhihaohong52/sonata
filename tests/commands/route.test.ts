@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -40,6 +40,18 @@ beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'sonata-route-home-'));
 });
 
+/**
+ * Global routing resolves the *machine* config (`~/.config/sonata/sonata.toml`),
+ * not whichever project's session happens to manage it — writes there, not
+ * into `cwd`, so global-scope tests exercise the config path that actually
+ * governs the shared daemon.
+ */
+function writeMachineConfig(toml: string): void {
+  const dir = join(home, '.config', 'sonata');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'sonata.toml'), toml);
+}
+
 describe('routeSettingsFile', () => {
   it('always points at the project-local settings, never the shared file', () => {
     expect(routeSettingsFile(cwd)).toBe(join(cwd, '.claude', 'settings.local.json'));
@@ -49,7 +61,7 @@ describe('routeSettingsFile', () => {
 
 describe('global route scope', () => {
   it('targets the shared settings file without changing the project file', async () => {
-    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    writeMachineConfig(NATIVE_TOML);
     const opts = { cwd, home, packageRoot: PACKAGE_ROOT, scope: 'global' as const };
     const result = await cmdRoute('on', opts);
 
@@ -66,21 +78,44 @@ describe('global route scope', () => {
   });
 
   it('installs auto hooks in the shared settings file', async () => {
-    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    writeMachineConfig(NATIVE_TOML);
     const result = await cmdRoute('auto', { cwd, home, packageRoot: PACKAGE_ROOT, scope: 'global' });
     expect(result?.auto).toBe(true);
     expect(existsSync(routeSettingsFile(cwd))).toBe(false);
     const settings = JSON.parse(readFileSync(routeSettingsFile(cwd, 'global', home), 'utf8')) as Settings;
     expect(settings.hooks?.SessionStart).toBeDefined();
     expect(settings.hooks?.SessionEnd).toBeDefined();
+    const command = (settings.hooks!.SessionStart as HookEntry[]).flatMap((e) => e.hooks)
+      .map((h) => h.command);
+    // Without --global, route-session.mjs calls `sonata route session-start`
+    // with no scope, the CLI defaults that to project, and a global auto
+    // session silently falls back to project-local routing.
+    expect(command).toContain(sessionHookCommand(PACKAGE_ROOT, 'start', 'global'));
   });
 
   it('reports a global-only install in the scope report', async () => {
-    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    writeMachineConfig(NATIVE_TOML);
     await cmdRoute('on', { cwd, home, packageRoot: PACKAGE_ROOT, scope: 'global' });
     const result = await cmdRoute('status', { cwd, home, packageRoot: PACKAGE_ROOT });
     expect(result?.scopes.global.on).toBe(true);
     expect(result?.scopes.project.on).toBe(false);
+  });
+
+  it('resolves global status and port from the machine config, never the invoking project\'s own', async () => {
+    // A project's own sonata.toml can configure a different router port than
+    // the machine config; global status/on must reflect the machine port the
+    // shared daemon (per bd72ec4) actually resolves, not the project's.
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML.replace(
+      '[native.gateways."g"]', '[native.ports]\nrouter = 5100\n[native.gateways."g"]',
+    ));
+    writeMachineConfig(NATIVE_TOML.replace(
+      '[native.gateways."g"]', '[native.ports]\nrouter = 4200\n[native.gateways."g"]',
+    ));
+    const result = await cmdRoute('on', { cwd, home, packageRoot: PACKAGE_ROOT, scope: 'global' });
+    expect(result?.port).toBe(4200);
+    expect(JSON.parse(readFileSync(routeSettingsFile(cwd, 'global', home), 'utf8'))).toMatchObject({
+      env: { ANTHROPIC_BASE_URL: 'http://localhost:4200' },
+    });
   });
 });
 
@@ -362,12 +397,29 @@ describe('cmdRouteSession', () => {
 
   it('starts a global-scope daemon from home, not the triggering project\'s cwd', async () => {
     const o = { ...opts(), scope: 'global' as const };
+    writeMachineConfig(NATIVE_TOML);
     const seenCwds: (string | undefined)[] = [];
     await cmdRouteSession('start', 's1', o, {
       probe: async () => false,
       startDaemon: async (_home, _argv, _deps, daemonCwd) => { seenCwds.push(daemonCwd); return {}; },
     });
     expect(seenCwds).toEqual([home]);
+  });
+
+  it('probes the machine config\'s port at global scope, not the invoking project\'s own', async () => {
+    const o = { ...opts(), scope: 'global' as const };
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML.replace(
+      '[native.gateways."g"]', '[native.ports]\nrouter = 5100\n[native.gateways."g"]',
+    ));
+    writeMachineConfig(NATIVE_TOML.replace(
+      '[native.gateways."g"]', '[native.ports]\nrouter = 4200\n[native.gateways."g"]',
+    ));
+    const probedPorts: number[] = [];
+    await cmdRouteSession('start', 's1', o, {
+      probe: async (port) => { probedPorts.push(port); return true; },
+      startDaemon: async () => ({}),
+    });
+    expect(probedPorts).toEqual([4200]);
   });
 
   it('starts a project-scope daemon from the session\'s own cwd', async () => {

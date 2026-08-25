@@ -63,4 +63,24 @@ describe('cmdCatalogUpdate', () => {
     await expect(cmdCatalogUpdate(home, { fetch: async () => response({ models: [] }) }))
       .rejects.toThrow(/malformed/i);
   });
+
+  it('rejects an empty data array rather than overwriting the existing cache', async () => {
+    cmdAuthAdd({ home, gateway: 'artificialanalysis', key: 'synthetic-key' });
+    await cmdCatalogUpdate(home, {
+      fetch: async () => response(fixture()),
+      now: () => new Date('2026-08-25T12:00:00.000Z'),
+    });
+    const before = readFileSync(aaCatalogPath(home), 'utf8');
+
+    await expect(cmdCatalogUpdate(home, { fetch: async () => response({ data: [] }) }))
+      .rejects.toThrow(/no usable model/i);
+    expect(readFileSync(aaCatalogPath(home), 'utf8')).toBe(before);
+  });
+
+  it('rejects a data array whose entries all lack a scoring field', async () => {
+    cmdAuthAdd({ home, gateway: 'artificialanalysis', key: 'synthetic-key' });
+    await expect(cmdCatalogUpdate(home, {
+      fetch: async () => response({ data: [{ slug: 'no-score/model' }] }),
+    })).rejects.toThrow(/no usable model/i);
+  });
 });

@@ -76,6 +76,19 @@ export async function cmdCatalogUpdate(
     models[name] = { codingIndex, blendedPriceUsd };
   }
 
+  // A successful response with no usable entries (an empty `data: []`, or
+  // every entry missing a score field) must not overwrite a previously good
+  // cache — loadAaCatalog rejects an empty catalog outright, so a silent
+  // empty write here would look like success now and lose every cached
+  // ranking on the next init that reads it back.
+  if (Object.keys(models).length === 0) {
+    throw new Error(
+      'sonata catalog update: response carried no usable model — expected ' +
+      'evaluations.artificial_analysis_coding_index and pricing.price_1m_blended_3_to_1 ' +
+      'on at least one entry; leaving the existing cache untouched',
+    );
+  }
+
   const fetchedAt = (deps.now ?? (() => new Date()))().toISOString();
   const catalog: AaCatalog = { fetchedAt, models };
   const path = aaCatalogPath(home);

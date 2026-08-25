@@ -234,15 +234,33 @@ export function writeSessions(file: string, ids: string[]): void {
   writeFileSync(file, `${JSON.stringify(ids, null, 2)}\n`);
 }
 
-/** The SessionStart/SessionEnd command auto mode installs. */
-export function sessionHookCommand(packageRoot: string, phase: 'start' | 'end'): string {
-  return `node ${JSON.stringify(join(packageRoot, 'hooks', 'route-session.mjs'))} ${phase}`;
+/**
+ * The SessionStart/SessionEnd command auto mode installs.
+ *
+ * The `--global` marker matters the same way it does for `ensureServeCommand`:
+ * without it, `route-session.mjs` calls `sonata route session-<phase>` with no
+ * scope, the CLI defaults that to project scope, and a global auto session
+ * ends up writing project-local routing settings and probing/starting a
+ * project-configured daemon — silently recreating the cross-project
+ * model/config leakage the machine-config fix (bd72ec4) was meant to prevent.
+ */
+export function sessionHookCommand(
+  packageRoot: string,
+  phase: 'start' | 'end',
+  scope: 'project' | 'global' = 'project',
+): string {
+  const base = `node ${JSON.stringify(join(packageRoot, 'hooks', 'route-session.mjs'))} ${phase}`;
+  return scope === 'global' ? `${base} --global` : base;
 }
 
 /** Whether both lifecycle hooks for this install are present. */
-export function autoInstalled(settings: Settings, packageRoot: string): boolean {
-  return hookInstalled(settings, sessionHookCommand(packageRoot, 'start'), 'SessionStart')
-    && hookInstalled(settings, sessionHookCommand(packageRoot, 'end'), 'SessionEnd');
+export function autoInstalled(
+  settings: Settings,
+  packageRoot: string,
+  scope: 'project' | 'global' = 'project',
+): boolean {
+  return hookInstalled(settings, sessionHookCommand(packageRoot, 'start', scope), 'SessionStart')
+    && hookInstalled(settings, sessionHookCommand(packageRoot, 'end', scope), 'SessionEnd');
 }
 
 export interface RouteAutoPlan {
@@ -251,12 +269,16 @@ export interface RouteAutoPlan {
 }
 
 /** What `route auto` would write: the SessionStart/SessionEnd hook pair. */
-export function planRouteAuto(settings: Settings, packageRoot: string): RouteAutoPlan {
+export function planRouteAuto(
+  settings: Settings,
+  packageRoot: string,
+  scope: 'project' | 'global' = 'project',
+): RouteAutoPlan {
   let next = settings;
   let changed = false;
   for (const phase of ['start', 'end'] as const) {
     const event = phase === 'start' ? 'SessionStart' : 'SessionEnd';
-    const res = installHook(next, sessionHookCommand(packageRoot, phase), '', event);
+    const res = installHook(next, sessionHookCommand(packageRoot, phase, scope), '', event);
     next = res.settings;
     changed = changed || res.changed;
   }
@@ -264,12 +286,16 @@ export function planRouteAuto(settings: Settings, packageRoot: string): RouteAut
 }
 
 /** What `route manual` would write: the same pair removed. */
-export function planRouteManual(settings: Settings, packageRoot: string): RouteAutoPlan {
+export function planRouteManual(
+  settings: Settings,
+  packageRoot: string,
+  scope: 'project' | 'global' = 'project',
+): RouteAutoPlan {
   let next = settings;
   let changed = false;
   for (const phase of ['start', 'end'] as const) {
     const event = phase === 'start' ? 'SessionStart' : 'SessionEnd';
-    const res = uninstallHook(next, sessionHookCommand(packageRoot, phase), event);
+    const res = uninstallHook(next, sessionHookCommand(packageRoot, phase, scope), event);
     next = res.settings;
     changed = changed || res.changed;
   }
@@ -305,7 +331,7 @@ function routeScopeStatus(
   const hook = command !== '' && hookInstalled(settings, command, 'SessionStart');
   return {
     on: !!port && base === `http://localhost:${port}` && hook,
-    auto: autoInstalled(settings, packageRoot),
+    auto: autoInstalled(settings, packageRoot, scope),
     env,
     hook: { installed: hook },
   };
@@ -319,17 +345,26 @@ export function routeStatus(
   cwd?: string,
   scopedSettings?: { project: Settings; global: Settings },
   scope: 'project' | 'global' = 'project',
+  /**
+   * Global routing is one shared router resolving the *machine* config, not
+   * whichever project's session happens to check status — defaults to
+   * `config` so existing single-config callers (and tests) are unaffected,
+   * but `cmdRoute` passes the machine config here explicitly so a global
+   * status/port is never read from a project's own sonata.toml.
+   */
+  globalConfig: SonataConfig = config,
 ): RouteStatus {
   const project = scopedSettings?.project ?? settings;
   const global = scopedSettings?.global ?? {};
-  const current = routeScopeStatus(settings, config, packageRoot, scope);
+  const activeConfig = scope === 'global' ? globalConfig : config;
+  const current = routeScopeStatus(settings, activeConfig, packageRoot, scope);
   const projectStatus = scopedSettings ? routeScopeStatus(project, config, packageRoot, 'project') : current;
-  const globalStatus = routeScopeStatus(global, config, packageRoot, 'global');
+  const globalStatus = routeScopeStatus(global, globalConfig, packageRoot, 'global');
   const sessions = cwd === undefined ? 0 : readSessions(routeSessionsFile(cwd)).length;
   return {
     ...current,
     sessions,
-    port: config.native?.ports.router,
+    port: activeConfig.native?.ports.router,
     scopes: { project: projectStatus, global: globalStatus },
   };
 }
@@ -343,14 +378,27 @@ export async function cmdRoute(
   const scope = opts.scope ?? 'project';
   const file = routeSettingsFile(opts.cwd, scope, opts.home);
   const settings = readSettings(file);
-  let config: SonataConfig;
-  try {
-    config = loadConfig(opts.cwd, opts.home);
-  } catch (err) {
-    // route off/status can still describe a broken config; route on needs it.
-    if (action === 'on') throw err;
-    config = { native: undefined } as SonataConfig;
-  }
+
+  const loadOrEmpty = (dir: string): { config: SonataConfig; error?: unknown } => {
+    try {
+      return { config: loadConfig(dir, opts.home) };
+    } catch (err) {
+      return { config: { native: undefined } as SonataConfig, error: err };
+    }
+  };
+  // Global routing is one shared router that always resolves the *machine*
+  // config, regardless of which project's session manages it — checking the
+  // invoking project's config here would bake that project's router port
+  // into ANTHROPIC_BASE_URL even though the daemon (per bd72ec4) resolves the
+  // machine config, pointing settings at a port the daemon never opens.
+  const projectLoaded = loadOrEmpty(opts.cwd);
+  const globalLoaded = scope === 'global' ? loadOrEmpty(opts.home) : projectLoaded;
+  const active = scope === 'global' ? globalLoaded : projectLoaded;
+  // route off/status can still describe a broken config; route on needs it.
+  if (action === 'on' && active.error !== undefined) throw active.error;
+  const config = projectLoaded.config;
+  const globalConfig = globalLoaded.config;
+  const activeConfig = active.config;
 
   const status = (current: Settings): RouteStatus => routeStatus(
     current,
@@ -362,10 +410,11 @@ export async function cmdRoute(
       global: readSettings(routeSettingsFile(opts.cwd, 'global', opts.home)),
     },
     scope,
+    globalConfig,
   );
 
   if (action === 'on') {
-    const plan = planRouteOn(settings, config, opts.packageRoot, scope);
+    const plan = planRouteOn(settings, activeConfig, opts.packageRoot, scope);
     if (plan.changed) writeSettings(file, plan.settings);
     return status(plan.settings);
   }
@@ -382,8 +431,8 @@ export async function cmdRoute(
 
   if (action === 'auto' || action === 'manual') {
     const plan = action === 'auto'
-      ? planRouteAuto(settings, opts.packageRoot)
-      : planRouteManual(settings, opts.packageRoot);
+      ? planRouteAuto(settings, opts.packageRoot, scope)
+      : planRouteManual(settings, opts.packageRoot, scope);
     if (plan.changed) writeSettings(file, plan.settings);
     return status(plan.settings);
   }
@@ -441,14 +490,18 @@ export async function cmdRouteSession(
   // dispatch caches a connection error from a router that is not there.
   const probe = deps.probe ?? isSonataRouter;
   const startDaemon = deps.startDaemon ?? startServeDaemon;
-  const config = loadConfig(opts.cwd, opts.home);
+  // Global routing is one shared router for every project — its config has
+  // to be the machine one regardless of which project's session happens to
+  // start it, or every other routed project silently inherits this one's
+  // tiers, models and gateways for as long as the daemon lives. The port
+  // probed here must be the same config's port, or a project whose own
+  // [native.ports].router differs from the machine's would probe (and then
+  // start the daemon on) the wrong port entirely.
+  const configCwd = opts.scope === 'global' ? opts.home : opts.cwd;
+  const config = loadConfig(configCwd, opts.home);
   const port = config.native?.ports.router;
   if (port !== undefined && !(await probe(port))) {
-    // Global routing is one shared router for every project — its config has
-    // to be the machine one regardless of which project's session happens to
-    // start it, or every other routed project silently inherits this one's
-    // tiers, models and gateways for as long as the daemon lives.
-    await startDaemon(opts.home, opts.serveArgv, {}, opts.scope === 'global' ? opts.home : opts.cwd);
+    await startDaemon(opts.home, opts.serveArgv, {}, configCwd);
   }
 
   const after = readSessions(registry);
