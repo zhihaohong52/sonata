@@ -28,6 +28,8 @@ import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { serveHealthUrl } from './serve.js';
+import { nativeSessionEnv } from './code.js';
+import { routeEnv, routeSettingsFile } from './route.js';
 
 const run = promisify(execFile);
 
@@ -143,6 +145,32 @@ export async function cmdDoctor(
     } catch {
       // `serve` is user-started, so an unavailable endpoint is advisory.
       checks.push({ name: 'serve health', ok: true, detail: 'not running — start with `sonata serve`' });
+    }
+
+    // A project can route every plain `claude` session through the router via
+    // `.claude/settings.local.json` (`sonata route on`). The env must match
+    // `nativeSessionEnv` exactly or the session silently uses a different
+    // port than the router this config names; the hook keeps the router up the
+    // way `sonata code` does.
+    {
+      const settings = readSettings(routeSettingsFile(opts.cwd));
+      const target = nativeSessionEnv(config);
+      const expectedBase = target.ANTHROPIC_BASE_URL;
+      const actualBase = routeEnv(settings).ANTHROPIC_BASE_URL;
+      if (actualBase !== undefined && actualBase !== expectedBase) {
+        checks.push({
+          name: 'routed sessions',
+          ok: false,
+          detail: `.claude/settings.local.json routes claude to ${actualBase} but ` +
+            `this config's router is ${expectedBase} — run \`sonata route on\``,
+        });
+      } else if (actualBase !== undefined) {
+        checks.push({
+          name: 'routed sessions',
+          ok: true,
+          detail: `claude sessions route through ${actualBase} (sonata route on)`,
+        });
+      }
     }
 
     // An OAuth gateway holds no key at all — its credential is a harness login

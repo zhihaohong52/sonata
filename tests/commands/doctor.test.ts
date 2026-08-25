@@ -468,6 +468,42 @@ credential_source = "opencode"
     }
   });
 
+  it('flags a routed-settings env that points claude at a different router port', async () => {
+    const { cwd, home } = setup();
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    writeFileSync(join(cwd, '.claude', 'settings.local.json'),
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'http://localhost:9999' } }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      const c = checks.find((x) => x.name === 'routed sessions');
+      expect(c).toBeDefined();
+      expect(c?.ok).toBe(false);
+      expect(c?.detail).toContain('http://localhost:9999');
+      expect(c?.detail).toContain('sonata route on');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('reports that routed sessions match the configured router', async () => {
+    const { cwd, home } = setup();
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    writeFileSync(join(cwd, '.claude', 'settings.local.json'),
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'http://localhost:4100' } }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      const c = checks.find((x) => x.name === 'routed sessions');
+      expect(c?.ok).toBe(true);
+      expect(c?.detail).toContain('http://localhost:4100');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('reports native serve health and key source without exposing key values', async () => {
     const { cwd, home } = setup();
     writeSonataKey(home, 'acme', 'super-secret-key');
