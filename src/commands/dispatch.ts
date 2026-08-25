@@ -8,9 +8,21 @@ import type { WaitResult } from './wait.js';
 
 export const MAX_REPORT_CHARS = 40_000;
 
+const PROVENANCE_MARKER = '\n\n— sonata ';
+
+/**
+ * Truncates a report to `max` characters, but never at the cost of the
+ * closing `— sonata ...` provenance line `cmdTail` appends to every finished
+ * report: generated wrappers reject a result with no such line as evidence
+ * no dispatch happened, so losing it on a long-but-successful run would
+ * report a real run as invalid.
+ */
 export function truncateReport(report: string, id: string, max = MAX_REPORT_CHARS): string {
   if (report.length <= max) return report;
-  return `${report.slice(0, max)}\n\n[truncated: full transcript at \`sonata log ${id}\`]`;
+  const markerIndex = report.lastIndexOf(PROVENANCE_MARKER);
+  const provenance = markerIndex !== -1 ? report.slice(markerIndex) : '';
+  const bodyMax = Math.max(0, max - provenance.length);
+  return `${report.slice(0, bodyMax)}\n\n[truncated: full transcript at \`sonata log ${id}\`]${provenance}`;
 }
 
 export interface DispatchOptions {

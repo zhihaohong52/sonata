@@ -42,50 +42,57 @@ answering.
 
 ## Procedure
 
-1. Call the \`dispatch\` tool exactly once with role: ${spec.role} and
-    model: ${spec.model}. Include the caller's current working directory as
-    \`cwd\`. For the task itself:
+1. Run this Bash command exactly once, from the caller's own working directory:
 
-    - If the caller gave you a **file path** holding the task, pass it as
-      \`task_file\` and do not open the file. A path cannot be paraphrased.
-    - Otherwise pass it as \`task\`, **verbatim, byte for byte**: never
-      summarise, shorten, or rewrite it. A 3,000-word spec once reached the
-      model as a single sentence, so it never saw the instructions it was
+       sonata dispatch --model ${spec.model} --role ${spec.role} "<task text>"
+
+   For the task itself:
+
+    - If the caller gave you a **file path** holding the task, pass it with
+      \`--task-file <path>\` instead of positional text, and do not open the
+      file yourself. A path cannot be paraphrased.
+    - Otherwise pass it as the positional task text, **verbatim, byte for byte**:
+      never summarise, shorten, or rewrite it. A 3,000-word spec once reached
+      the model as a single sentence, so it never saw the instructions it was
       meant to follow.
-    - If the caller asked to *see* the run — its conversation, its transcript,
-      what the model did turn by turn — also pass \`transcript: true\`. The
-      transcript comes back in the tool result, where the caller can read it;
-      your final message stays the report, so do not paste it in.
-   It blocks until the run is worth reporting, so one call is usually the
-   whole job. Do not add your own waiting.
 
-2. Act on the state it returns:
+   The command blocks until the run is worth reporting, so one call is
+   usually the whole job. Do not add your own waiting.
 
-   - **DONE** — return the report as your final message and stop. Include its
-     closing \`— sonata <id>: …\` provenance line exactly as given: it is the
-     evidence the run really happened. If the report is marked degraded, say
-     so in your first line; the harness exited without writing a report and
-     the content is scraped terminal output.
-   - **PAUSED** — stop and return immediately. Your final message must
-     be exactly: \`PAUSED <id>\` on the first line, then the pending action. You
-      cannot approve it yourself; the main thread will ask the user and call
-      the \`approve\` tool. The tmux session stays alive, so nothing is lost.
-    - **RUNNING** — the call spent its window and the run is still going.
-      Call the \`wait\` tool with the same id and the exact \`cwd\` returned
-      by \`dispatch\`, then act on what it returns.
-     This is the only case where you make a second call.
-   - **STALLED** — stop and return. First line: \`STALLED <id>\`, then
-     the terminal tail you were given. Do not try to diagnose it.
+2. Its first line of output is \`<STATE> model=<key> id=<id>\`. Act on \`<STATE>\`:
 
-3. Never call the \`approve\` tool yourself. Never start a second run. The
-   main thread must pass the same \`cwd\` to \`approve\` if it answers a paused run.
+   - **DONE** — the report follows on subsequent lines. Return it as your
+     final message and stop. Include its closing \`— sonata <id>: …\`
+     provenance line exactly as given: it is the evidence the run really
+     happened. If the report is marked degraded, say so in your first line;
+     the harness exited without writing a report and the content is scraped
+     terminal output.
+   - **PAUSED** — the output includes \`PROMPT: <text>\` and a
+     \`sonata approve <id>\` line. Stop and return immediately. Your final
+     message must be exactly: \`PAUSED <id>\` on the first line, then the
+     pending action. You cannot approve it yourself; the main thread will ask
+     the user and run \`sonata approve <id> --yes\`/\`--no\` itself. The tmux
+     session stays alive, so nothing is lost.
+   - **RUNNING** — the output includes a \`sonata wait <id>\` line. Run that
+     exact command, then act on what it returns (its own first line is a bare
+     \`<STATE>\`, not \`<STATE> model=... id=...\`). This is the only case
+     where you make a second call.
+   - **FAILED** — the output lists every candidate tried, one per line, with
+     its state and reason. Stop and return: first line \`FAILED <id>\`, then
+     that list. Do not retry it yourself.
+   - **STALLED** — no report and no further output. Stop and return: first
+     line \`STALLED <id>\`. Do not try to diagnose it.
 
-4. If a tool call is refused — a permission denial rather than a result —
-   stop and say so as your first line: \`BLOCKED <id> <tool> denied\`. Do not
-   retry it, work around it, or summarise the task from the run id alone. The
-   run is still executing in tmux and is now unobserved, which is the one
-   outcome worse than a failed dispatch: the human needs to know a model is
-   writing to their repository with nothing watching it.
+3. Never run \`sonata approve\` yourself. Never start a second run. The main
+   thread runs \`sonata approve <id>\` itself if it answers a paused run.
+
+4. If the command itself is refused — a permission denial rather than any of
+   the states above — stop and say so as your first line:
+   \`BLOCKED <tool> denied\`. Do not retry it, work around it, or summarise the
+   task from nothing. The run may still be executing in tmux and is now
+   unobserved, which is the one outcome worse than a failed dispatch: the
+   human needs to know a model is writing to their repository with nothing
+   watching it.
 
 To watch the run live, a human can attach with \`tmux attach -r -t sonata-<id>\`
 (\`-r\` is read-only; drop it to steer a cheap model mid-run). Sonata cannot

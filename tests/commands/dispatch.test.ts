@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { cmdDispatch } from '../../src/commands/dispatch.js';
+import { cmdDispatch, truncateReport } from '../../src/commands/dispatch.js';
 
 const TIERED = `
 [models."flash"]
@@ -138,5 +138,27 @@ describe('cmdDispatch', () => {
     await cmdDispatch({ ...opts(), tier: undefined, model: 'terra', role: 'review' }, { run, wait });
 
     expect(seenRoles).toEqual(['code', 'review']);
+  });
+});
+
+describe('truncateReport', () => {
+  it('leaves a short report untouched', () => {
+    expect(truncateReport('short', 'r1', 100)).toBe('short');
+  });
+
+  it('preserves the trailing provenance line when truncating', () => {
+    const body = 'x'.repeat(200);
+    const provenance = '\n\n— sonata verified: opencode, deepseek-v4-flash, DONE';
+    const report = body + provenance;
+    const truncated = truncateReport(report, 'r1', 100);
+    expect(truncated.length).toBeLessThanOrEqual(report.length);
+    expect(truncated).toContain('[truncated: full transcript at `sonata log r1`]');
+    expect(truncated.endsWith(provenance)).toBe(true);
+  });
+
+  it('falls back to plain truncation when there is no provenance line', () => {
+    const report = 'x'.repeat(200);
+    const truncated = truncateReport(report, 'r1', 100);
+    expect(truncated).toBe(`${'x'.repeat(100)}\n\n[truncated: full transcript at \`sonata log r1\`]`);
   });
 });

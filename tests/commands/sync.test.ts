@@ -41,9 +41,9 @@ describe('agentMarkdown', () => {
     expect(md).toMatch(/do not (read|inspect|edit)/i);
   });
 
-  it('requires verbatim task forwarding and preserving the dispatch cwd', () => {
+  it('requires verbatim task forwarding and runs the CLI in the caller\'s own cwd', () => {
     expect(md).toMatch(/verbatim, byte for byte/i);
-    expect(md).toMatch(/same id and the exact `cwd` returned/i);
+    expect(md).toContain('sonata dispatch --model deepseek-v4-flash --role code');
   });
 
   it('documents the PAUSED and STALLED handling', () => {
@@ -82,9 +82,9 @@ describe('agentMarkdown — one-call dispatch', () => {
     expect(md).not.toContain('`tail`');
   });
 
-  it('tells it to resume with wait after a RUNNING result', () => {
+  it('tells it to resume with sonata wait after a RUNNING result', () => {
     expect(md).toContain('RUNNING');
-    expect(md).toContain('`wait`');
+    expect(md).toContain('sonata wait <id>');
   });
 
   it('still forbids doing the work itself', () => {
@@ -122,8 +122,8 @@ describe('cmdSync', () => {
     // The wrapper must name its own role and model; the exact sentence around
     // them is prose and changes, so assert the facts rather than the wording.
     const body = readFileSync(join(agentsDir, 'code-kimi-k3.md'), 'utf8');
-    expect(body).toContain('role: code');
-    expect(body).toContain('model: kimi-k3');
+    expect(body).toContain('--model kimi-k3');
+    expect(body).toContain('--role code');
   });
 
   it('writes explore and plan agent files', () => {

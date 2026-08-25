@@ -125,7 +125,12 @@ describe('tier alias routing', () => {
       resolveTier: () => ROUTES,
     });
     expect(res.status).toBe(529);
-    expect((res.body as Buffer).toString()).toContain('sonata dispatch --tier code-simple');
+    const body = JSON.parse((res.body as Buffer).toString());
+    // Anthropic-compatible clients (Claude Code included) only surface the
+    // error.error.message inside this exact envelope — a flat body silently
+    // discards the fallback command this is meant to hand back.
+    expect(body).toMatchObject({ type: 'error', error: { type: 'overloaded_error' } });
+    expect(body.error.message).toContain('sonata dispatch --tier code-simple');
   });
 
   it('returns 400 for an alias the config does not resolve', async () => {
@@ -359,7 +364,9 @@ describe('routeRequest — 529 rewrite for empty Codex completions', () => {
     const body = Buffer.isBuffer(result.body) ? result.body : Buffer.concat(
       await (async () => { const chunks: Buffer[] = []; for await (const c of result.body as AsyncIterable<Buffer>) chunks.push(c); return chunks; })()
     );
-    expect(JSON.parse(body.toString()).type).toBe('overloaded_error');
+    const parsed = JSON.parse(body.toString());
+    expect(parsed.type).toBe('error');
+    expect(parsed.error.type).toBe('overloaded_error');
   });
 
   it('does not rewrite 500 for claude models (goes to anthropic, not litellm)', async () => {

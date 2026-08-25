@@ -179,8 +179,19 @@ code = ["m"]
     const { checks } = await cmdDoctor({ cwd, home });
     const check = checks.find((c) => c.name === 'agent tools')!;
     expect(check.ok).toBe(false);
-    expect(check.detail).toBe('1 wrapper(s) still call the removed run/tail tools and will fail mid-dispatch — run `sonata sync`');
+    expect(check.detail).toBe('1 wrapper(s) still call removed MCP tools and will fail mid-dispatch — run `sonata sync`');
     expect(check.detail).not.toContain('restart Claude Code');
+  });
+
+  it('blocks when a generated agent still names the removed dispatch/wait/approve MCP tools', async () => {
+    // The generation immediately before this one — MCP-hosted, but already
+    // using dispatch/wait/approve rather than the older run/tail names.
+    writeAgent('code-old.md', 'mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve');
+
+    const { checks } = await cmdDoctor({ cwd, home });
+    const check = checks.find((c) => c.name === 'agent tools')!;
+    expect(check.ok).toBe(false);
+    expect(check.detail).toContain('removed MCP tools');
   });
 
   it('passes when every agent names the current tools', async () => {

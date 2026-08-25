@@ -346,8 +346,12 @@ export async function cmdDoctor(
     : [];
   const withBash = wrappers.filter((f) =>
     /^tools:\s*Bash\s*$/m.test(readFileSync(join(agentsDir, f), 'utf8')));
+  // Catches both generations of removed MCP tool names: run/tail (pre-dispatch
+  // rename) and dispatch/wait/approve (the MCP server itself, removed when the
+  // Bash CLI replaced it) — an upgrade from either still has wrappers naming
+  // tools that no longer exist.
   const stalePolling = wrappers.filter((f) =>
-    /mcp__[^_\s]+__(run|tail)\b/.test(readFileSync(join(agentsDir, f), 'utf8')));
+    /mcp__[^_\s]+__(run|tail|dispatch|wait|approve)\b/.test(readFileSync(join(agentsDir, f), 'utf8')));
   checks.push(stalePolling.length === 0
     ? { name: 'agent tools', ok: withBash.length === 0, detail: withBash.length === 0
         ? 'no wrapper grants Bash'
@@ -356,7 +360,7 @@ export async function cmdDoctor(
     : {
         name: 'agent tools',
         ok: false,
-        detail: `${stalePolling.length} wrapper(s) still call the removed run/tail ` +
+        detail: `${stalePolling.length} wrapper(s) still call removed MCP ` +
           'tools and will fail mid-dispatch — run `sonata sync`',
       });
 

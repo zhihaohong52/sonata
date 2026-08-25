@@ -103,6 +103,19 @@ export function clearCooldowns(): void {
   cooldowns.clear();
 }
 
+/**
+ * An Anthropic-shaped error body: `{"type":"error","error":{"type":...,
+ * "message":...}}`. An Anthropic-compatible client (Claude Code included)
+ * expects this exact envelope on every path — a flat `{type, message}` or a
+ * bare `{error: {...}}` with no top-level `type: "error"` is silently
+ * discarded, surfacing a generic error instead of the actual message (in
+ * particular, the fallback command a tier's 529 names to activate harness
+ * dispatch).
+ */
+function anthropicErrorBody(type: string, message: string): Buffer {
+  return Buffer.from(JSON.stringify({ type: 'error', error: { type, message } }));
+}
+
 function isClaudeRequest(body: Buffer): boolean {
   try {
     return JSON.parse(body.toString()).model?.startsWith('claude-') === true;
@@ -187,7 +200,7 @@ async function forwardToLitellm(
         return {
           status: 529,
           headers: { 'content-type': 'application/json' },
-          body: Buffer.from(JSON.stringify({ type: 'overloaded_error', message: msg })),
+          body: anthropicErrorBody('overloaded_error', msg),
         };
       }
       return {
@@ -206,7 +219,7 @@ async function forwardToLitellm(
     return {
       status: 502,
       headers: { 'content-type': 'application/json' },
-      body: Buffer.from(JSON.stringify({ error: { type: 'router_error', message } })),
+      body: anthropicErrorBody('router_error', message),
     };
   }
 }
@@ -233,10 +246,10 @@ async function routeTierRequest(req: RouterRequest, deps: RouterDeps, alias: str
     return {
       status: 400,
       headers: { 'content-type': 'application/json' },
-      body: Buffer.from(JSON.stringify({ error: {
-        type: 'invalid_request_error',
-        message: `unknown sonata tier alias "${alias}" — run \`sonata sync\` and check [tiers] in sonata.toml`,
-      } })),
+      body: anthropicErrorBody(
+        'invalid_request_error',
+        `unknown sonata tier alias "${alias}" — run \`sonata sync\` and check [tiers] in sonata.toml`,
+      ),
     };
   }
 
@@ -269,10 +282,10 @@ async function routeTierRequest(req: RouterRequest, deps: RouterDeps, alias: str
   return {
     status: 529,
     headers: { 'content-type': 'application/json' },
-    body: Buffer.from(JSON.stringify({
-      type: 'overloaded_error',
-      message: `all native routes for ${label} failed; fall back with: sonata dispatch --tier ${label}`,
-    })),
+    body: anthropicErrorBody(
+      'overloaded_error',
+      `all native routes for ${label} failed; fall back with: sonata dispatch --tier ${label}`,
+    ),
   };
 }
 
@@ -310,7 +323,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     return {
       status: 502,
       headers: { 'content-type': 'application/json' },
-      body: Buffer.from(JSON.stringify({ error: { type: 'router_error', message } })),
+      body: anthropicErrorBody('router_error', message),
     };
   }
 }
@@ -355,7 +368,7 @@ export function createRouterServer(deps: RouterDeps): Server {
       }, deps));
     } catch {
       if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { type: 'router_error', message: 'failed to route request' } }));
+      res.end(anthropicErrorBody('router_error', 'failed to route request'));
     }
   });
 }
