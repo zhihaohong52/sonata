@@ -107,6 +107,34 @@ describe('cmdCatalogUpdate', () => {
     expect(readFileSync(aaCatalogPath(home), 'utf8')).toBe(before);
   });
 
+  it('keeps existing prices when no response rows are usable while AA succeeds', async () => {
+    cmdAuthAdd({ home, gateway: 'artificialanalysis', key: 'synthetic-key' });
+    await cmdCatalogUpdate(home, { fetch: async (input, init) => bothFixtures(input, init) });
+    const before = readFileSync(aiPricingPath(home), 'utf8');
+
+    const result = await cmdCatalogUpdate(home, {
+      fetch: async (input, init) => String(input) === AI_PRICING_URL
+        ? response({ data: [{
+          canonical_slug: 'deepseek-v4-flash',
+          provider_slug: 'deepseek',
+          metric: 'input_token',
+          unit: 'per_1m_tokens',
+          currency: 'USD',
+          price_numeric: 0.44,
+          tier_key: 'batch',
+          batch_flag: 1,
+        }] })
+        : bothFixtures(input, init),
+    });
+
+    expect(result.aiPricing).toMatchObject({
+      error: expect.objectContaining({ message: expect.stringMatching(/no usable price rows/i) }),
+    });
+    expect(readFileSync(aiPricingPath(home), 'utf8')).toBe(before);
+    expect(result.aa).not.toHaveProperty('error');
+    expect(readFileSync(aaCatalogPath(home), 'utf8')).toContain('gpt-5.6-luna');
+  });
+
   it('reports malformed AA responses without blocking ai-pricing', async () => {
     cmdAuthAdd({ home, gateway: 'artificialanalysis', key: 'synthetic-key' });
     const result = await cmdCatalogUpdate(home, {

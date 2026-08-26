@@ -143,6 +143,14 @@ async function updateAiPricing(
   }
 
   const models = normalizeAiPricingRows(body.data);
+  // A schema change that rejects every row must preserve the last known prices
+  // rather than silently turn every later ledger entry into an unpriced one.
+  if (Object.keys(models).length === 0) {
+    throw new Error(
+      'sonata catalog update: ai-pricing response contained no usable price rows; ' +
+      'leaving the existing cache untouched',
+    );
+  }
   const fetchedAt = nowIso(deps);
   const catalog: AiPricingCache = { fetchedAt, models };
   const path = aiPricingPath(home);
