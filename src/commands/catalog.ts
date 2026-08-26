@@ -5,6 +5,12 @@ import {
   normalizeModelName,
   type AaCatalog,
 } from '../catalog.js';
+import {
+  AI_PRICING_URL,
+  aiPricingPath,
+  normalizeAiPricingRows,
+  type AiPricingCache,
+} from '../aipricing.js';
 import { resolveKeyFromSource } from '../native/credentials.js';
 
 const AA_MODELS_URL = 'https://artificialanalysis.ai/api/v2/data/llms/models';
@@ -12,6 +18,25 @@ const AA_GATEWAY = 'artificialanalysis';
 
 interface AaModelResponse {
   data?: unknown;
+}
+
+interface AiPricingResponse {
+  data?: unknown;
+}
+
+export interface CatalogUpdateSuccess {
+  models: number;
+  path: string;
+  fetchedAt: string;
+}
+
+export interface CatalogUpdateFailure {
+  error: Error;
+}
+
+export interface CatalogUpdateResult {
+  aa: CatalogUpdateSuccess | CatalogUpdateFailure;
+  aiPricing: CatalogUpdateSuccess | CatalogUpdateFailure;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -37,10 +62,15 @@ function modelName(entry: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
-export async function cmdCatalogUpdate(
+function nowIso(deps: { now?: () => Date }): string {
+  return (deps.now ?? (() => new Date()))().toISOString();
+}
+
+async function updateAaCatalog(
   home: string,
-  deps: { fetch?: typeof fetch; now?: () => Date } = {},
-): Promise<{ models: number; path: string; fetchedAt: string }> {
+  fetchFn: typeof fetch,
+  deps: { now?: () => Date },
+): Promise<CatalogUpdateSuccess> {
   const key = resolveKeyFromSource(AA_GATEWAY, home, 'sonata');
   if (key === undefined) {
     throw new Error(
@@ -49,7 +79,6 @@ export async function cmdCatalogUpdate(
     );
   }
 
-  const fetchFn = deps.fetch ?? fetch;
   const response = await fetchFn(AA_MODELS_URL, { headers: { 'x-api-key': key } });
   if (!response.ok) {
     const reason = response.status === 401 || response.status === 403 ? 'key rejected' : 'request failed';
@@ -76,11 +105,7 @@ export async function cmdCatalogUpdate(
     models[name] = { codingIndex, blendedPriceUsd };
   }
 
-  // A successful response with no usable entries (an empty `data: []`, or
-  // every entry missing a score field) must not overwrite a previously good
-  // cache — loadAaCatalog rejects an empty catalog outright, so a silent
-  // empty write here would look like success now and lose every cached
-  // ranking on the next init that reads it back.
+  // Do not silently replace a usable ranking cache with an unusable response.
   if (Object.keys(models).length === 0) {
     throw new Error(
       'sonata catalog update: response carried no usable model — expected ' +
@@ -89,10 +114,58 @@ export async function cmdCatalogUpdate(
     );
   }
 
-  const fetchedAt = (deps.now ?? (() => new Date()))().toISOString();
+  const fetchedAt = nowIso(deps);
   const catalog: AaCatalog = { fetchedAt, models };
   const path = aaCatalogPath(home);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(catalog, null, 2)}\n`, { mode: 0o600 });
   return { models: Object.keys(models).length, path, fetchedAt };
+}
+
+async function updateAiPricing(
+  home: string,
+  fetchFn: typeof fetch,
+  deps: { now?: () => Date },
+): Promise<CatalogUpdateSuccess> {
+  const response = await fetchFn(AI_PRICING_URL);
+  if (!response.ok) {
+    throw new Error(`sonata catalog update: ai-pricing request failed (HTTP ${response.status})`);
+  }
+
+  let body: unknown;
+  try {
+    body = await response.json() as AiPricingResponse;
+  } catch {
+    throw new Error('sonata catalog update: malformed ai-pricing response body');
+  }
+  if (!isRecord(body) || !Array.isArray(body.data)) {
+    throw new Error('sonata catalog update: malformed ai-pricing response body (expected data array)');
+  }
+
+  const models = normalizeAiPricingRows(body.data);
+  const fetchedAt = nowIso(deps);
+  const catalog: AiPricingCache = { fetchedAt, models };
+  const path = aiPricingPath(home);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(catalog, null, 2)}\n`, { mode: 0o600 });
+  return { models: Object.keys(models).length, path, fetchedAt };
+}
+
+function outcome<T>(promise: Promise<T>): Promise<T | CatalogUpdateFailure> {
+  return promise.catch((error: unknown) => ({
+    error: error instanceof Error ? error : new Error(String(error)),
+  }));
+}
+
+/** Fetch independent catalogs so an optional source never blocks the other cache. */
+export async function cmdCatalogUpdate(
+  home: string,
+  deps: { fetch?: typeof fetch; now?: () => Date } = {},
+): Promise<CatalogUpdateResult> {
+  const fetchFn = deps.fetch ?? fetch;
+  const [aa, aiPricing] = await Promise.all([
+    outcome(updateAaCatalog(home, fetchFn, deps)),
+    outcome(updateAiPricing(home, fetchFn, deps)),
+  ]);
+  return { aa, aiPricing };
 }

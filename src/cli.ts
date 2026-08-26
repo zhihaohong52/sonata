@@ -24,6 +24,7 @@ import { cmdCode } from './commands/code.js';
 import { cmdRoute, cmdRouteSession, cmdRouteSubagent, type RouteAction } from './commands/route.js';
 import { cmdCatalogUpdate } from './commands/catalog.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
+import { AI_PRICING_ATTRIBUTION } from './aipricing.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
 
@@ -352,11 +353,23 @@ export async function main(argv: string[]): Promise<number> {
     }
     if (action === 'update') {
       const result = await cmdCatalogUpdate(homedir());
-      console.log(`catalog updated: ${result.models} models`);
-      console.log(`  path: ${result.path}`);
-      console.log(`  fetched: ${result.fetchedAt}`);
-      console.log(AA_ATTRIBUTION);
-      return 0;
+      if ('error' in result.aa) {
+        console.error(`Artificial Analysis catalog not updated: ${result.aa.error.message}`);
+      } else {
+        console.log(`catalog updated: ${result.aa.models} models`);
+        console.log(`  path: ${result.aa.path}`);
+        console.log(`  fetched: ${result.aa.fetchedAt}`);
+        console.log(AA_ATTRIBUTION);
+      }
+      if ('error' in result.aiPricing) {
+        console.error(`ai-pricing catalog not updated: ${result.aiPricing.error.message}`);
+      } else {
+        console.log(`ai-pricing catalog updated: ${result.aiPricing.models} models`);
+        console.log(`  path: ${result.aiPricing.path}`);
+        console.log(`  fetched: ${result.aiPricing.fetchedAt}`);
+        console.log(AI_PRICING_ATTRIBUTION);
+      }
+      return 'error' in result.aa || 'error' in result.aiPricing ? 1 : 0;
     }
     const path = aaCatalogPath(homedir());
     const catalog = loadAaCatalog(homedir());
