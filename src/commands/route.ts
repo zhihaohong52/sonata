@@ -536,17 +536,33 @@ export async function cmdRouteSession(
   // sessions, tracked in a registry this one never sees, are still live.
   const registry = routeSessionsFile(opts.cwd, opts.scope ?? 'project', opts.home);
 
+  // Using the machine config's own DIRECTORY as `configCwd` for global scope
+  // — not `opts.home` itself — matters: configPath()'s first check is
+  // `join(cwd, 'sonata.toml')`, and if `cwd` were `opts.home`, that check
+  // would land on a stray `~/sonata.toml` (a known leftover some upgrades
+  // still have) before ever reaching the real machine config. This same
+  // resolution is reused below for both this phase's config validation and
+  // the router startup logic further down, so both agree on which config
+  // global scope actually means.
+  const configCwd = opts.scope === 'global'
+    ? dirname(join(opts.home, GLOBAL_CONFIG_RELATIVE))
+    : opts.cwd;
+
   if (phase === 'start') {
-    // A global hook runs in every directory; validate the project before
-    // touching its own registry (project scope) or the shared one (global
-    // scope) so an unrelated, configless directory remains completely
-    // untouched. SessionEnd's cleanup must not depend on this: if the config
-    // was deleted or became malformed while the session was running, the
-    // session still needs to be removed from the registry and routing turned
-    // off — and since the SessionEnd hook that calls this command swallows a
-    // thrown failure by design, validating unconditionally here would leave
-    // that cleanup silently stuck forever.
-    loadConfig(opts.cwd, opts.home);
+    // A global hook runs in every directory; validate the project (or, for
+    // global scope, the machine config via `configCwd`) before touching its
+    // own registry (project scope) or the shared one (global scope) so an
+    // unrelated, configless directory remains completely untouched. Using
+    // `configCwd` here — not `opts.cwd` unconditionally — matters for global
+    // scope: an unrelated broken local sonata.toml in the invoking directory
+    // must not block the global hook, which only ever depends on the machine
+    // config. SessionEnd's cleanup must not depend on this at all: if the
+    // config was deleted or became malformed while the session was running,
+    // the session still needs to be removed from the registry and routing
+    // turned off — and since the SessionEnd hook that calls this command
+    // swallows a thrown failure by design, validating unconditionally here
+    // would leave that cleanup silently stuck forever.
+    loadConfig(configCwd, opts.home);
   }
 
   if (phase === 'end') {
@@ -588,19 +604,6 @@ export async function cmdRouteSession(
   // [native.ports].router differs from the machine's would probe (and then
   // start the daemon on) the wrong port entirely.
   //
-  // Using the machine config's own DIRECTORY as `configCwd` — not `opts.home`
-  // itself — matters: configPath()'s first check is `join(cwd, 'sonata.toml')`,
-  // and if `cwd` were `opts.home`, that check would land on a stray
-  // `~/sonata.toml` (a known leftover some upgrades still have) before ever
-  // reaching the real machine config. Pointing `cwd` at the machine config's
-  // own directory makes that first check land exactly on
-  // `~/.config/sonata/sonata.toml` instead, with no stray file in the way —
-  // and since `startDaemon` below spawns the daemon with this same `cwd`,
-  // the daemon's own internal config resolution is fixed by the same change,
-  // with no separate fix needed in cmdServe.
-  const configCwd = opts.scope === 'global'
-    ? dirname(join(opts.home, GLOBAL_CONFIG_RELATIVE))
-    : opts.cwd;
   const config = loadConfig(configCwd, opts.home);
   const port = config.native?.ports.router;
   if (port !== undefined) {

@@ -499,6 +499,20 @@ describe('cmdRouteSession', () => {
     expect(seenCwds).toEqual([join(home, '.config', 'sonata')]);
   });
 
+  it('validates the machine config for global sessions but the local config for project sessions', async () => {
+    // The malformed local config is irrelevant to the shared global router,
+    // whose daemon and lifecycle hook resolve only the machine config.
+    writeFileSync(join(cwd, 'sonata.toml'), '[native\n');
+    writeMachineConfig(NATIVE_TOML);
+    const base = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
+
+    await expect(cmdRouteSession('start', 'global', { ...base, scope: 'global' }, deps)).resolves.toEqual({
+      sessions: 1,
+      routing: 'on',
+    });
+    await expect(cmdRouteSession('start', 'project', { ...base, scope: 'project' }, deps)).rejects.toThrow();
+  });
+
   it('probes the machine config\'s port at global scope, not the invoking project\'s own', async () => {
     const o = { ...opts(), scope: 'global' as const };
     writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML.replace(

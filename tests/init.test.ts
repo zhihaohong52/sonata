@@ -199,6 +199,13 @@ describe('cmdInit (non-interactive)', () => {
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'skip', configScope: 'global', routing: 'project', write,
     })).rejects.toThrow(/shadow the global config/);
+
+    // The guard must reject before config, credentials, settings, or skills
+    // can be written. The local config above is the only intentional file.
+    expect(existsSync(join(home, '.config', 'sonata', 'sonata.toml'))).toBe(false);
+    expect(existsSync(join(home, '.config', 'sonata', 'credentials'))).toBe(false);
+    expect(existsSync(join(home, '.claude', 'settings.json'))).toBe(false);
+    expect(existsSync(join(home, '.claude', 'skills', 'sonata-loop', 'SKILL.md'))).toBe(false);
   });
 
   it('allows project-scoped routing for a global config when no local config shadows it', async () => {
