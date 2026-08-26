@@ -32,40 +32,50 @@ function zero(): UsageTokens {
 }
 
 /** Reads the Anthropic `usage` shape, treating any absent or non-numeric field as unseen. */
-function mergeUsage(into: UsageTokens, usage: unknown): void {
-  if (usage === null || typeof usage !== 'object') return;
+function mergeUsage(into: UsageTokens, usage: unknown): boolean {
+  if (usage === null || typeof usage !== 'object') return false;
   const u = usage as Record<string, unknown>;
+  let seen = false;
   const take = (field: string, key: keyof UsageTokens): void => {
     const value = u[field];
     // Only a positive count overwrites: message_delta repeats input_tokens, and
     // some upstreams report 0 there, which must not erase the real count seen
     // in message_start.
-    if (typeof value === 'number' && Number.isFinite(value) && value > 0) into[key] = value;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      seen = true;
+      if (value > 0) into[key] = value;
+    }
   };
   take('input_tokens', 'input');
   take('output_tokens', 'output');
   take('cache_read_input_tokens', 'cacheRead');
   take('cache_creation_input_tokens', 'cacheCreation');
+  return seen;
 }
 
 export function createUsageCollector(): { push(chunk: Uint8Array): void; finish(): UsageResult } {
   const tokens = zero();
   let complete = false;
-  let buffer = '';
+  let buffer = new Uint8Array(0);
   let bufferBytes = 0;
   let overflowed = false;
-  const encoder = new TextEncoder();
-  // Streaming decoder: a chunk boundary can fall inside a multi-byte character,
-  // and decoding each chunk independently would turn that into a replacement
-  // character mid-JSON.
-  const decoder = new TextDecoder('utf-8');
 
-  const line = (raw: string): void => {
-    const text = raw.startsWith('data:') ? raw.slice(5).trim() : '';
-    if (text === '' || text === '[DONE]') return;
+  const append = (bytes: Uint8Array): void => {
+    if (bytes.length === 0) return;
+    const next = new Uint8Array(buffer.length + bytes.length);
+    next.set(buffer);
+    next.set(bytes, buffer.length);
+    buffer = next;
+    bufferBytes += bytes.byteLength;
+  };
+
+  const line = (raw: Uint8Array): void => {
+    const text = new TextDecoder().decode(raw);
+    const data = text.startsWith('data:') ? text.slice(5).trim() : '';
+    if (data === '' || data === '[DONE]') return;
     let frame: { type?: unknown; usage?: unknown; message?: unknown };
     try {
-      frame = JSON.parse(text) as typeof frame;
+      frame = JSON.parse(data) as typeof frame;
     } catch {
       return; // a partial or non-JSON data line is not ours to fail on
     }
@@ -74,53 +84,39 @@ export function createUsageCollector(): { push(chunk: Uint8Array): void; finish(
       mergeUsage(tokens, message?.usage);
       return;
     }
-    if (frame.type === 'message_delta' && frame.usage !== undefined) {
-      mergeUsage(tokens, frame.usage);
+    if (frame.type === 'message_delta' && mergeUsage(tokens, frame.usage)) {
       complete = true;
     }
   };
 
   return {
     push(chunk) {
-      const decoded = decoder.decode(chunk, { stream: true });
       let start = 0;
-      let nl = decoded.indexOf('\n');
-      while (nl !== -1) {
-        const segment = decoded.slice(start, nl);
-        const segmentBytes = encoder.encode(segment).byteLength;
-        if (!overflowed) {
-          if (bufferBytes + segmentBytes > MAX_SSE_BUFFER_BYTES) {
-            // Drop the runaway line and mark it, so its tail is not mistaken for
-            // the start of the next one.
-            buffer = '';
-            bufferBytes = 0;
-            overflowed = true;
-          } else {
-            buffer += segment;
-            bufferBytes += segmentBytes;
-            line(buffer);
-          }
+      for (let i = 0; i < chunk.length; i += 1) {
+        if (chunk[i] !== 0x0a) continue;
+        const segment = chunk.subarray(start, i);
+        if (!overflowed && bufferBytes + segment.byteLength <= MAX_SSE_BUFFER_BYTES) {
+          append(segment);
+          line(buffer);
         }
-        buffer = '';
+        // Consume the completed line, including its newline, from the raw-byte
+        // accounting before looking for the next line in this chunk.
+        buffer = new Uint8Array(0);
         bufferBytes = 0;
         overflowed = false;
-        start = nl + 1;
-        nl = decoded.indexOf('\n', start);
+        start = i + 1;
       }
 
-      if (!overflowed) {
-        const tail = decoded.slice(start);
-        const tailBytes = encoder.encode(tail).byteLength;
-        if (bufferBytes + tailBytes > MAX_SSE_BUFFER_BYTES) {
-          // Drop the runaway line and mark it, so its tail is not mistaken for
-          // the start of the next one.
-          buffer = '';
-          bufferBytes = 0;
-          overflowed = true;
-        } else {
-          buffer += tail;
-          bufferBytes += tailBytes;
-        }
+      const tail = chunk.subarray(start);
+      if (overflowed) return;
+      if (bufferBytes + tail.byteLength > MAX_SSE_BUFFER_BYTES) {
+        // Drop the runaway line and mark it, so its tail is not mistaken for
+        // the start of the next one.
+        buffer = new Uint8Array(0);
+        bufferBytes = 0;
+        overflowed = true;
+      } else {
+        append(tail);
       }
     },
     finish() {
@@ -135,8 +131,7 @@ export function usageFromJsonBody(body: Buffer): UsageResult {
   try {
     const doc = JSON.parse(body.toString()) as { usage?: unknown };
     if (doc.usage === undefined) return { tokens, complete: false };
-    mergeUsage(tokens, doc.usage);
-    return { tokens, complete: true };
+    return { tokens, complete: mergeUsage(tokens, doc.usage) };
   } catch {
     return { tokens, complete: false };
   }

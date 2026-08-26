@@ -83,3 +83,50 @@ Outputs:
 ```
 
 No additional concerns beyond the original brief's incorrect test-count claim.
+
+## Round 2 Fix Report
+
+Addressed the scoped re-review findings.
+
+- The collector now tracks raw bytes appended to the pending line and enforces the cap before parsing completed lines, including BOM-containing input; it resets accounting after completed or discarded lines.
+- `mergeUsage` reports whether it observed at least one finite numeric usage field. Streaming and JSON completion now require that result.
+- Tightened the later-newline overflow test to assert the oversized frame is the sole output source, and changed the UTF-8 test to be under the cap in UTF-16 code units while exceeding it in raw bytes.
+- Added streaming and JSON tests for `usage: null`, `{}`, and non-numeric output tokens.
+
+Exact commands and outputs:
+
+```text
+npx vitest run tests/native/usage.test.ts
+```
+
+```text
+ RUN  v2.1.9 /Users/zhihao.hong.52/Documents/workspace/sonata
+
+ ✓ tests/native/usage.test.ts (20 tests) 9ms
+
+ Test Files  1 passed (1)
+      Tests  20 passed (20)
+   Start at 01:53:31
+   Duration 426ms (transform 51ms, setup 0ms, collect 40ms, tests 9ms, environment 0ms, prepare 77ms)
+```
+
+```text
+npm run typecheck
+```
+
+```text
+> @zhihaohong52/sonata@0.2.1 typecheck
+> tsc --noEmit
+```
+
+```text
+npm test
+```
+
+```text
+Test Files  54 passed (54)
+Tests  1052 passed (1052)
+Duration 23.91s
+```
+
+Concerns: none.

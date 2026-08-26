@@ -62,9 +62,9 @@ describe('createUsageCollector', () => {
     const c = createUsageCollector();
     const oversized = `data: ${JSON.stringify({ type: 'message_delta', usage: { output_tokens: 99 }, padding: 'x'.repeat(MAX_SSE_BUFFER_BYTES) })}`;
     c.push(enc(oversized));
-    c.push(enc(`\n\n${DELTA}`));
+    c.push(enc('\n\n'));
     // The oversized line is valid JSON, so this proves the cap—not JSON parsing—drops it.
-    expect(c.finish().tokens.output).toBe(11);
+    expect(c.finish().tokens.output).toBe(0);
   });
 
   it('drops an oversized line whose newline arrives in the same chunk', () => {
@@ -76,7 +76,7 @@ describe('createUsageCollector', () => {
 
   it('measures the line cap in UTF-8 bytes', () => {
     const c = createUsageCollector();
-    const oversized = `data: ${JSON.stringify({ type: 'message_delta', usage: { output_tokens: 99 }, padding: 'é'.repeat(MAX_SSE_BUFFER_BYTES) })}\n\n`;
+    const oversized = `data: ${JSON.stringify({ type: 'message_delta', usage: { output_tokens: 99 }, padding: 'é'.repeat(MAX_SSE_BUFFER_BYTES / 2) })}\n\n`;
     c.push(enc(DELTA + oversized));
     expect(c.finish().tokens.output).toBe(11);
   });
@@ -84,6 +84,16 @@ describe('createUsageCollector', () => {
   it('does not complete on a message_delta without usage', () => {
     const c = createUsageCollector();
     c.push(enc('event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n'));
+    expect(c.finish().complete).toBe(false);
+  });
+
+  it.each([
+    ['null', 'null'],
+    ['an empty object', '{}'],
+    ['a non-numeric field', '{"output_tokens":"twelve"}'],
+  ])('does not complete on a message_delta with usage %s', (_label, usage) => {
+    const c = createUsageCollector();
+    c.push(enc(`event: message_delta\ndata: {"type":"message_delta","usage":${usage}}\n\n`));
     expect(c.finish().complete).toBe(false);
   });
 
@@ -109,6 +119,10 @@ describe('usageFromJsonBody', () => {
 
   it('reports incomplete for a body with no usage', () => {
     expect(usageFromJsonBody(Buffer.from('{}')).complete).toBe(false);
+  });
+
+  it.each(['null', '{}', '{"output_tokens":"twelve"'])('reports incomplete for a body with unusable usage %s', (usage) => {
+    expect(usageFromJsonBody(Buffer.from(`{"usage":${usage}}`)).complete).toBe(false);
   });
 
   it('reports incomplete for a non-JSON body', () => {
