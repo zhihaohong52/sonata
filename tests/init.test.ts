@@ -640,6 +640,29 @@ describe('cmdInit — config scope', () => {
     expect(existsSync(join(cwd, '.claude', 'agents'))).toBe(false);
   });
 
+  it('syncs global agents from the just-written global config, not the invoking repo', async () => {
+    // The repo has its OWN sonata.toml naming a different model. A global-scope
+    // init must still generate its agents from the machine config it just
+    // wrote, not from whatever the invoking directory happens to contain —
+    // otherwise the global config and its generated agents silently disagree.
+    writeFileSync(join(cwd, 'sonata.toml'), `[models."other-model"]
+harness = "opencode"
+id = "openrouter/other"
+`);
+
+    const res = await cmdInit({ ...args, cwd, home, configScope: 'global', write });
+
+    const globalAgents = join(home, '.claude', 'agents');
+    // The global config has one model, so its [tiers.code] collapses to the
+    // single unsuffixed tier agent.
+    expect(existsSync(join(globalAgents, 'code.md'))).toBe(true);
+    // The repo's model must not leak into the global agent set.
+    expect(existsSync(join(globalAgents, 'code-other-model.md'))).toBe(false);
+    expect(res.agentsWritten.every((p) => p.startsWith(globalAgents + join('/')))).toBe(true);
+    // Nothing is ever generated into the invoking repo.
+    expect(existsSync(join(cwd, '.claude', 'agents'))).toBe(false);
+  });
+
   it('installs the loop skill under home at global scope, not in the invoking repo', async () => {
     await cmdInit({ ...args, cwd, home, configScope: 'global', write });
 

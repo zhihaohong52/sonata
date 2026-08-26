@@ -638,9 +638,21 @@ router = 4200
   it('global-auto routing satisfies tier routing when the project falls back to the machine config', async () => {
     // No project-scoped sonata.toml: the project's config resolution IS the
     // machine config, so global routing genuinely serves this project and the
-    // check may count it.
+    // check may count it. A stray ~/sonata.toml is present — a leftover some
+    // upgrades still have — which the old `configPath(home, home)` comparison
+    // mistook for the project's resolved config, falsely refusing global
+    // routing. The check compares against the machine config's fixed path
+    // instead, so the stray file only trips the separate "stray config" check.
     const cwd = mkdtempSync(join(tmpdir(), 'doc-tier-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-tier-home-'));
+    writeFileSync(join(home, 'sonata.toml'), `
+[models."legacy-flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[native.ports]
+router = 9999
+`);
     mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
     writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), `
 [models."flash"]

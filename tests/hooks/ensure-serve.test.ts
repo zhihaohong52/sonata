@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:http';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, delimiter } from 'node:path';
 
@@ -120,5 +120,72 @@ describe('ensure-serve SessionStart hook', () => {
     const { code, signal } = await invoke(['nonsense']);
     expect(code).toBe(0);
     expect(signal).toBe(null);
+  });
+
+  it('spawns a global-route daemon from the machine config directory, not $HOME', async () => {
+    // For a --global install the spawned `sonata serve --daemon` must resolve
+    // the machine config even when a stray ~/sonata.toml exists: configPath()'s
+    // first check is `join(cwd, 'sonata.toml')`, so starting the daemon from
+    // $HOME would land on the stray file first and shadow the real machine
+    // config. The hook fixes that by launching the daemon with `cwd` set to
+    // ~/.config/sonata, so we assert on that cwd: a stub `sonata` on PATH
+    // records its cwd, and both a real machine config and a stray ~/sonata.toml
+    // (the trap this test exists to catch) are in place.
+    const home = mkdtempSync(join(tmpdir(), 'ensure-serve-home-'));
+    const cfgDir = join(home, '.config', 'sonata');
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(join(cfgDir, 'sonata.toml'), '');
+    writeFileSync(join(home, 'sonata.toml'), ''); // the stray that must no longer be the daemon's cwd
+
+    const binDir = mkdtempSync(join(tmpdir(), 'ensure-serve-bin-'));
+    writeFileSync(join(binDir, 'sonata'),
+      '#!/usr/bin/env node\n' +
+      'require("node:fs").writeFileSync(process.env.SONATA_CWD_SENTINEL, process.cwd());\n' +
+      'process.exit(0);\n',
+      { mode: 0o755 });
+
+    // First probe finds nothing (so the hook spawns its own daemon); the wait
+    // loop's probe then reports a healthy router whose configPath matches what a
+    // --global session resolves, so the hook exits 0 without spinning the full
+    // 10s wait. The sentinel captures the cwd the daemon was spawned with.
+    let probes = 0;
+    const expectedConfig = join(cfgDir, 'sonata.toml');
+    const server = createServer((_req, res) => {
+      probes += 1;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (probes === 1) {
+        res.end(JSON.stringify({}));
+      } else {
+        res.end(JSON.stringify({ status: 'ok', sonata: true, configPath: expectedConfig }));
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+
+    const sentinel = join(home, 'daemon-cwd.txt');
+    try {
+      const { code, signal } = await invoke(
+        [String(port), '--global'],
+        process.cwd(),
+        {
+          ...process.env,
+          HOME: home,
+          SONATA_CWD_SENTINEL: sentinel,
+          PATH: `${binDir}${delimiter}${process.env.PATH}`,
+        },
+      );
+      expect(code).toBe(0);
+      expect(signal).toBe(null);
+      // The daemon is detached and unref'd, so its write races the hook's exit.
+      // Poll briefly rather than asserting immediately.
+      const deadline = Date.now() + 3000;
+      while (!existsSync(sentinel) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(realpathSync(readFileSync(sentinel, 'utf8'))).toBe(realpathSync(cfgDir));
+    } finally {
+      server.close();
+    }
   });
 });

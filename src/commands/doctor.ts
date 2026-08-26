@@ -156,7 +156,7 @@ export async function cmdDoctor(
     // sonata.toml exists) — otherwise a project with its own config needs
     // project-scoped routing specifically; global routing there silently
     // resolves a different, unrelated configuration.
-    const projectResolvesToMachineConfig = configPath(opts.cwd, home) === configPath(home, home);
+    const projectResolvesToMachineConfig = configPath(opts.cwd, home) === join(home, GLOBAL_CONFIG_RELATIVE);
     const routed = routedAt(projectSettings, config, 'project') ||
       (projectResolvesToMachineConfig && routedAt(globalSettings, globalConfig, 'global'));
     if (!routed) {

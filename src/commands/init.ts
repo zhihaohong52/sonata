@@ -1227,7 +1227,14 @@ async function runInit(
   }
 
   const agentsDir = agentsDirFor(configScope, opts.cwd, opts.home);
-  const sync = cmdSync({ cwd: opts.cwd, home: opts.home, agentsDir });
+  // cmdSync loads its own config via `loadConfig(cwd, home)` — passing the
+  // invoking repo's cwd unconditionally would sync from THAT project's
+  // sonata.toml even when writing --config-scope global, if the repo
+  // happens to have its own config file too. Pointing cwd at the machine
+  // config's own directory for the global case makes loadConfig resolve
+  // the config just written above, not whatever the invoking directory has.
+  const syncCwd = configScope === 'global' ? dirname(join(opts.home, GLOBAL_CONFIG_RELATIVE)) : opts.cwd;
+  const sync = cmdSync({ cwd: syncCwd, home: opts.home, agentsDir });
   const agentsWritten = sync.written;
   out(`  ✓ generated ${agentsWritten.length} agents in ${agentsDir}`);
 

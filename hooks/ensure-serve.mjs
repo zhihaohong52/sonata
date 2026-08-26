@@ -71,13 +71,18 @@ if (Number.isInteger(port) && port > 0) {
   try {
     // Global routing is one shared router for every project — it has to
     // resolve the *machine* config, not whichever project's session happens
-    // to trigger this hook first. Starting it from `home` (which has no
-    // project sonata.toml of its own) forces that fallback deterministically;
-    // a plain (project-scoped) install keeps inheriting this hook's own cwd.
+    // to trigger this hook first. Starting it from the machine config's own
+    // directory (~/.config/sonata) — not `home` itself — forces that
+    // resolution deterministically even when a stray `~/sonata.toml` (a
+    // known leftover some upgrades still have) exists: configPath()'s first
+    // check is `join(cwd, 'sonata.toml')`, so pointing `cwd` at
+    // `~/.config/sonata` makes that check land exactly on the real machine
+    // config, with the stray file never in the search path at all. A plain
+    // (project-scoped) install keeps inheriting this hook's own cwd.
     const daemon = spawn('sonata', ['serve', '--daemon'], {
       detached: true,
       stdio: 'ignore',
-      ...(global ? { cwd: homedir() } : {}),
+      ...(global ? { cwd: join(homedir(), '.config', 'sonata') } : {}),
     });
     daemon.unref();
 
