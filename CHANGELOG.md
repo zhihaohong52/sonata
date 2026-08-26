@@ -6,6 +6,56 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/) informally
 (pre-1.0, so minor bumps can carry breaking changes).
 
+## [0.2.1] - 2026-08-26
+
+### Fixed
+- `sonata init`'s "Import from other harnesses" screen pre-ticked a
+  candidate by bare provider name, not by its exact `<harness>/<provider>`
+  key — so if the same provider name was configured through one harness
+  (e.g. opencode), a different harness's row for that same name (e.g. Pi)
+  showed as pre-selected too, every run, with no way to make it stick
+  unticked. Fixed by matching on exact key (`alreadyImportedKeys`,
+  `src/tui-ink/app-state.ts`).
+- The model-registry restart snapshot in `sonata serve` only hashed
+  `unifiedModels`, so a gateway-only edit (`base_url`/`wire_format`/`auth`/
+  `credential_source`) or an edit to a legacy `[native.models]` entry's
+  `id`/`gateway` never triggered a LiteLLM restart. Now hashes
+  `native.models` and `native.gateways` too.
+- `deriveInitState`'s `roles` returned `[]` (not `undefined`) for a
+  native-only unified config with neither `[tiers]` nor a legacy
+  `generate.native` table, which `sonata init --yes` read as "zero roles
+  selected" and refused with "no roles selected". A related gap in the
+  same code path — the `configuredGateways` scan only read legacy
+  `[native.models]`, never `unifiedModels` — meant such a config's gateway
+  was rejected as unknown before role selection was ever reached.
+- `configNativeCandidates` returned only unified or only legacy model
+  candidates depending on which was non-empty, silently dropping a
+  legacy-only key from a transitional config that has both. Now merges
+  the two, scoped to untiered configs only — `parseConfig` mirrors every
+  unified model into `native.models` whenever `[tiers]` is present, so
+  treating that projection as independent legacy data on a *tiered*
+  config would have shadowed each model's own harness routing.
+- `RankedSelect`'s caller-supplied footer (e.g. the Artificial Analysis
+  attribution line) replaced the `space`/`[ ]`/`enter`/`back`/`esc`
+  control legend outright instead of appearing alongside it, making the
+  tier-ranking screen's own controls undiscoverable whenever a footer was
+  set.
+- The bounded exit wait added for the model-registry restart escalates to
+  `forceKill` (SIGKILL) once and gives up rather than hanging
+  `litellmReady` forever against a LiteLLM child that ignores SIGTERM.
+- `activeModelsJson` (now `activeNativeSnapshot`) is committed only after
+  the replacement LiteLLM config and credentials are prepared
+  successfully — a gateway added before its credential was available used
+  to mark the change "handled" regardless, so fixing the credential
+  afterward never retried the restart.
+
+### Docs
+- Added release dates to every CHANGELOG entry; linked it from the
+  README, with a version badge.
+- Tagged and released `v0.1.0` and `v0.2.0` — both had bumped
+  `package.json` but were never tagged, so GitHub's Releases page had
+  been stuck reporting `v0.0.3` as latest.
+
 ## [0.2.0] - 2026-08-25
 
 Tier routing: agents are now generated per role × difficulty tier, backed by
