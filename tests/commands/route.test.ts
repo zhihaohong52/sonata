@@ -19,6 +19,10 @@ import {
   routeEnv,
   cmdRoute,
   cmdRouteSession,
+  cmdRouteSubagent,
+  routeSubagentsFile,
+  subagentHookCommand,
+  SONATA_AGENT_MATCHER,
 } from '../../src/commands/route.js';
 import type { Settings, HookEntry } from '../../src/settings.js';
 
@@ -425,28 +429,30 @@ describe('cmdRouteSession', () => {
     return { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
   }
 
-  it('routes on the first session start and off when the last one ends', async () => {
+  it('counts a session without routing it — routing follows subagents, not sessions', async () => {
+    // Routing on at SessionStart is what made `route auto` degrade into
+    // `route on`: it stayed on while any session lived, so every session
+    // after the first launched into a dirty file and lost Remote Control.
     const o = opts();
     const started = await cmdRouteSession('start', 's1', o, deps);
-    expect(started).toEqual({ sessions: 1, routing: 'on' });
-    expect((await cmdRoute('status', o))?.on).toBe(true);
+    expect(started).toEqual({ sessions: 1, routing: 'off' });
+    expect((await cmdRoute('status', o))?.on).toBe(false);
 
     const ended = await cmdRouteSession('end', 's1', o, deps);
     expect(ended).toEqual({ sessions: 0, routing: 'off' });
     expect((await cmdRoute('status', o))?.on).toBe(false);
   });
 
-  it('keeps routing while a sibling session is still live', async () => {
+  it('keeps counting a sibling session after one ends', async () => {
     const o = opts();
     await cmdRouteSession('start', 's1', o, deps);
     await cmdRouteSession('start', 's2', o, deps);
 
     const first = await cmdRouteSession('end', 's1', o, deps);
-    expect(first).toEqual({ sessions: 1, routing: 'on' });
-    expect((await cmdRoute('status', o))?.on).toBe(true);
+    expect(first.sessions).toBe(1);
 
     const last = await cmdRouteSession('end', 's2', o, deps);
-    expect(last.routing).toBe('off');
+    expect(last.sessions).toBe(0);
     expect((await cmdRoute('status', o))?.on).toBe(false);
   });
 
@@ -504,16 +510,14 @@ describe('cmdRouteSession', () => {
     const startPromise = cmdRouteSession('start', 's2', o, deps);
 
     const ended = await endPromise;
-    // The end ran first and committed to off against the empty registry.
+    // The end ran first and committed against the empty registry.
     expect(ended).toEqual({ sessions: 0, routing: 'off' });
     const started = await startPromise;
     // The start then re-registered on top of the completed write, not mid-write.
-    expect(started).toEqual({ sessions: 1, routing: 'on' });
-    // Registry and routing agree: s2 is counted and routing is on.
+    expect(started).toEqual({ sessions: 1, routing: 'off' });
+    // The registry is consistent: s2 is counted, exactly once.
     expect(readSessions(routeSessionsFile(cwd))).toEqual(['s2']);
-    expect((await cmdRoute('status', o))?.on).toBe(true);
 
-    // Now genuinely the last session — routing turns off.
     const last = await cmdRouteSession('end', 's2', o, deps);
     expect(last).toEqual({ sessions: 0, routing: 'off' });
     expect((await cmdRoute('status', o))?.on).toBe(false);
@@ -539,7 +543,7 @@ describe('cmdRouteSession', () => {
 
     await expect(cmdRouteSession('start', 'global', { ...base, scope: 'global' }, deps)).resolves.toEqual({
       sessions: 1,
-      routing: 'on',
+      routing: 'off',
     });
     await expect(cmdRouteSession('start', 'project', { ...base, scope: 'project' }, deps)).rejects.toThrow();
   });
@@ -583,7 +587,7 @@ describe('cmdRouteSession', () => {
     expect(probedPorts).toEqual([4200]);
   });
 
-  it('shares one session count across projects at global scope, so one project ending does not turn off another\'s routing', async () => {
+  it('shares one session count across projects at global scope, so one project ending does not clear another\'s', async () => {
     // A per-project registry would let project A's own count hit zero and
     // call `route off` against the single shared global router, even though
     // project B's global session (tracked in a registry A never sees) is
@@ -602,8 +606,9 @@ describe('cmdRouteSession', () => {
     await cmdRouteSession('start', 'sessB', oB, deps);
 
     const endedA = await cmdRouteSession('end', 'sessA', oA, deps);
-    expect(endedA).toEqual({ sessions: 1, routing: 'on' });
-    expect((await cmdRoute('status', { cwd: cwdB, home, packageRoot: PACKAGE_ROOT, scope: 'global' }))?.scopes.global.on).toBe(true);
+    // A per-project registry would have hit zero here and cleared the shared
+    // global state out from under project B's still-live session.
+    expect(endedA).toEqual({ sessions: 1, routing: 'off' });
 
     const endedB = await cmdRouteSession('end', 'sessB', oB, deps);
     expect(endedB).toEqual({ sessions: 0, routing: 'off' });
@@ -725,5 +730,107 @@ describe('configless route sessions', () => {
     })).rejects.toThrow();
     expect(existsSync(routeSessionsFile(cwd))).toBe(false);
     expect(existsSync(routeSettingsFile(cwd))).toBe(false);
+  });
+});
+
+
+describe('cmdRouteSubagent', () => {
+  const deps = { probe: async () => true, startDaemon: async () => ({}) };
+
+  function opts() {
+    writeMachineConfig(NATIVE_TOML);
+    return { cwd, home, packageRoot: PACKAGE_ROOT, scope: 'global' as const };
+  }
+
+  it('routes on for the first subagent and off when the last one stops', async () => {
+    const o = opts();
+    const started = await cmdRouteSubagent('start', 'a1', o);
+    expect(started).toEqual({ subagents: 1, routing: 'on' });
+    expect((await cmdRoute('status', o))?.scopes.global.on).toBe(true);
+
+    const stopped = await cmdRouteSubagent('stop', 'a1', o);
+    expect(stopped).toEqual({ subagents: 0, routing: 'off' });
+    expect((await cmdRoute('status', o))?.scopes.global.on).toBe(false);
+  });
+
+  it('keeps routing while a sibling subagent is still running', async () => {
+    const o = opts();
+    await cmdRouteSubagent('start', 'a1', o);
+    await cmdRouteSubagent('start', 'a2', o);
+
+    const first = await cmdRouteSubagent('stop', 'a1', o);
+    expect(first).toEqual({ subagents: 1, routing: 'on' });
+    // Un-routing here would cut a2 off mid-task, and its sonata-* alias would
+    // reach api.anthropic.com as an unknown model.
+    expect((await cmdRoute('status', o))?.scopes.global.on).toBe(true);
+
+    const last = await cmdRouteSubagent('stop', 'a2', o);
+    expect(last).toEqual({ subagents: 0, routing: 'off' });
+  });
+
+  it('does not double-count a repeated agent id', async () => {
+    const o = opts();
+    await cmdRouteSubagent('start', 'a1', o);
+    expect((await cmdRouteSubagent('start', 'a1', o)).subagents).toBe(1);
+  });
+
+  it('tolerates a stop for an id it never saw', async () => {
+    const o = opts();
+    await expect(cmdRouteSubagent('stop', 'ghost', o)).resolves.toEqual({ subagents: 0, routing: 'off' });
+  });
+
+  it('leaves the session registry alone when the last subagent stops', async () => {
+    const o = opts();
+    const sessionOpts = { ...o, serveArgv: ['node', 'cli.js', 'serve'] };
+    await cmdRouteSession('start', 's1', sessionOpts, deps);
+    await cmdRouteSubagent('start', 'a1', o);
+    await cmdRouteSubagent('stop', 'a1', o);
+
+    // A finishing subagent must not erase session liveness, or the next
+    // SessionEnd believes it was the last one.
+    expect(readSessions(routeSessionsFile(cwd, 'global', home))).toEqual(['s1']);
+  });
+
+  it('clears leaked subagent references when the last session ends', async () => {
+    const o = opts();
+    const sessionOpts = { ...o, serveArgv: ['node', 'cli.js', 'serve'] };
+    await cmdRouteSession('start', 's1', sessionOpts, deps);
+    await cmdRouteSubagent('start', 'a1', o);
+    // a1 never stops — a killed subagent leaks its reference. Bounding that by
+    // the session's lifetime is what stops it becoming permanent.
+    await cmdRouteSession('end', 's1', sessionOpts, deps);
+
+    expect(readSessions(routeSubagentsFile(cwd, 'global', home))).toEqual([]);
+    expect((await cmdRoute('status', o))?.scopes.global.on).toBe(false);
+  });
+});
+
+describe('subagent hook installation', () => {
+  it('installs the subagent pair under the sonata agent matcher', () => {
+    const auto = planRouteAuto({}, PACKAGE_ROOT);
+    const start = (auto.settings.hooks!.SubagentStart as HookEntry[]);
+    const stop = (auto.settings.hooks!.SubagentStop as HookEntry[]);
+    expect(start[0].matcher).toBe(SONATA_AGENT_MATCHER);
+    expect(start.flatMap((e) => e.hooks).map((h) => h.command))
+      .toContain(subagentHookCommand(PACKAGE_ROOT, 'start'));
+    expect(stop.flatMap((e) => e.hooks).map((h) => h.command))
+      .toContain(subagentHookCommand(PACKAGE_ROOT, 'stop'));
+  });
+
+  it('matches sonata agents but not Claude Code built-ins', () => {
+    const re = new RegExp(SONATA_AGENT_MATCHER);
+    for (const name of ['code-simple', 'review-complex', 'explore-simple', 'plan-simple', 'native-code-gpt-5.6-luna']) {
+      expect(re.test(name)).toBe(true);
+    }
+    for (const name of ['general-purpose', 'Explore', 'Plan', 'statusline-setup']) {
+      expect(re.test(name)).toBe(false);
+    }
+  });
+
+  it('route manual removes the subagent pair too', () => {
+    const auto = planRouteAuto({}, PACKAGE_ROOT);
+    const manual = planRouteManual(auto.settings, PACKAGE_ROOT);
+    expect(manual.settings.hooks?.SubagentStart ?? []).toHaveLength(0);
+    expect(manual.settings.hooks?.SubagentStop ?? []).toHaveLength(0);
   });
 });
