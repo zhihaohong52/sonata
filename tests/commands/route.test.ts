@@ -317,6 +317,27 @@ describe('cmdRoute', () => {
     // the only loud failure is refusing up front.
     await expect(cmdRoute('auto', { cwd, home, packageRoot: PACKAGE_ROOT })).rejects.toThrow();
   });
+
+  it('preserves route-on state when live auto sessions are registered, but clears it otherwise', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    const opts = { cwd, home, packageRoot: PACKAGE_ROOT };
+    const file = routeSettingsFile(cwd);
+
+    await cmdRoute('on', opts);
+    writeSessions(routeSessionsFile(cwd), ['live-session']);
+    await cmdRoute('auto', opts);
+
+    const withLiveSession = JSON.parse(readFileSync(file, 'utf8')) as Settings;
+    expect(withLiveSession.env?.ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
+    expect(autoInstalled(withLiveSession, PACKAGE_ROOT)).toBe(true);
+
+    writeSessions(routeSessionsFile(cwd), []);
+    await cmdRoute('auto', opts);
+
+    const withoutLiveSession = JSON.parse(readFileSync(file, 'utf8')) as Settings;
+    expect(withoutLiveSession.env?.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(autoInstalled(withoutLiveSession, PACKAGE_ROOT)).toBe(true);
+  });
 });
 
 describe('the session registry', () => {
@@ -382,6 +403,16 @@ describe('planRouteAuto / planRouteManual', () => {
     const end = (auto.settings.hooks!.SessionEnd as HookEntry[]).flatMap((e) => e.hooks);
     expect(start.map((h) => h.command)).toContain(sessionHookCommand(PACKAGE_ROOT, 'start'));
     expect(end.map((h) => h.command)).toContain(sessionHookCommand(PACKAGE_ROOT, 'end'));
+  });
+
+  it('preserves persistent route-on state while registered auto sessions are live', () => {
+    const config = loadNativeConfig();
+    const on = planRouteOn({}, config, PACKAGE_ROOT);
+
+    const auto = planRouteAuto(on.settings, PACKAGE_ROOT, 'project', true);
+
+    expect(auto.settings.env?.ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
+    expect(autoInstalled(auto.settings, PACKAGE_ROOT)).toBe(true);
   });
 });
 

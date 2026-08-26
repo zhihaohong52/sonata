@@ -312,14 +312,27 @@ export function planRouteAuto(
   settings: Settings,
   packageRoot: string,
   scope: 'project' | 'global' = 'project',
+  hasLiveSessions = false,
 ): RouteAutoPlan {
   // Auto mode's guarantee is that a session launches from a clean settings
   // file; switching directly from `route on` must not leave the persistent
   // ANTHROPIC_BASE_URL/ensure-serve hook behind for the next session to
-  // inherit before its own lifecycle hook ever runs.
-  const cleared = planRouteOff(settings, packageRoot);
-  let next = cleared.settings;
-  let changed = cleared.changed;
+  // inherit before its own lifecycle hook ever runs. But if auto sessions
+  // from an earlier `route auto` are already live and registered — e.g.
+  // `sonata init` rerunning `route auto` from inside a session that is
+  // already auto-routed — stripping that persistent env right now would cut
+  // native routing out from under them immediately: Claude Code reads a
+  // session's settings `env` per request, not just at launch, and a session
+  // already past its own SessionStart has no lifecycle event left to restore
+  // it. Skip the cleanup in that case; only a session launched afterward
+  // needs (and gets, via its own SessionStart hook) a clean start.
+  let next = settings;
+  let changed = false;
+  if (!hasLiveSessions) {
+    const cleared = planRouteOff(settings, packageRoot);
+    next = cleared.settings;
+    changed = cleared.changed;
+  }
   for (const phase of ['start', 'end'] as const) {
     const event = phase === 'start' ? 'SessionStart' : 'SessionEnd';
     const res = installHook(next, sessionHookCommand(packageRoot, phase, scope), '', event);
@@ -494,8 +507,10 @@ export async function cmdRoute(
   }
 
   if (action === 'auto' || action === 'manual') {
+    const hasLiveSessions = action === 'auto'
+      && readSessions(routeSessionsFile(opts.cwd, scope, opts.home)).length > 0;
     const plan = action === 'auto'
-      ? planRouteAuto(settings, opts.packageRoot, scope)
+      ? planRouteAuto(settings, opts.packageRoot, scope, hasLiveSessions)
       : planRouteManual(settings, opts.packageRoot, scope);
     if (plan.changed) writeSettings(file, plan.settings);
     return status(plan.settings);
