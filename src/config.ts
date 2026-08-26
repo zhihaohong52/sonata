@@ -26,12 +26,31 @@ export const TIER_NAMES = ['simple', 'complex'] as const;
  * dispatch CLI uses when every native route is down. At least one must be
  * present — parseConfig enforces it.
  */
+/** USD per 1,000,000 tokens. A rate of 0 is a real price (a free tier). */
+export interface Rates {
+  input?: number;
+  cachedInput?: number;
+  output?: number;
+}
+
+/** `from`/`to` are UTC `HH:MM`. A window whose `to` is less than its `from` wraps midnight. */
+export interface PriceWindow extends Rates {
+  from: string;
+  to: string;
+}
+
+export interface PriceConfig extends Rates {
+  /** Evaluated in declaration order; the first match wins. */
+  windows?: PriceWindow[];
+}
+
 export interface UnifiedModelConfig {
   gateway?: string;
   id?: string;
   contextWindow?: number;
   harness?: string;
   harnessId?: string;
+  price?: PriceConfig;
 }
 
 export interface TierLists { simple: string[]; complex: string[] }
@@ -113,6 +132,8 @@ export interface NativeGatewayConfig {
   auth: NativeGatewayAuth;
   credentialSource?: CredentialSource;
   wireFormat?: NativeGatewayWireFormat;
+  price?: PriceConfig;
+  pricingProvider?: string;
 }
 export interface NativeConfig {
   models: Record<string, NativeModelConfig>;
@@ -150,6 +171,49 @@ export interface SonataConfig {
 
 function num(v: unknown, fallback: number): number {
   return typeof v === 'number' ? v : fallback;
+}
+
+const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+function parseRates(raw: Record<string, unknown>, where: string): Rates {
+  const out: Rates = {};
+  const take = (key: string, field: keyof Rates): void => {
+    const value = raw[key];
+    if (value === undefined) return;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      throw new Error(`${where}: ${key} price must be a non-negative number`);
+    }
+    out[field] = value;
+  };
+  take('input', 'input');
+  take('cached_input', 'cachedInput');
+  take('output', 'output');
+  return out;
+}
+
+function parsePrice(raw: unknown, where: string): PriceConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(`${where}: price must be a table`);
+  }
+  const table = raw as Record<string, unknown>;
+  const price: PriceConfig = parseRates(table, where);
+  const windows = table.windows;
+  if (windows !== undefined) {
+    if (!Array.isArray(windows)) throw new Error(`${where}: price.windows must be an array of tables`);
+    price.windows = windows.map((entry, i) => {
+      const w = (entry ?? {}) as Record<string, unknown>;
+      const { from, to } = w;
+      if (typeof from !== 'string' || typeof to !== 'string') {
+        throw new Error(`${where}: price.windows[${i}] needs both from and to`);
+      }
+      for (const [name, value] of [['from', from], ['to', to]] as const) {
+        if (!HHMM.test(value)) throw new Error(`${where}: price.windows[${i}].${name} must be UTC HH:MM`);
+      }
+      return { from, to, ...parseRates(w, `${where}: price.windows[${i}]`) };
+    });
+  }
+  return price;
 }
 
 export function parseConfig(text: string): SonataConfig {
@@ -197,6 +261,7 @@ export function parseConfig(text: string): SonataConfig {
         gateway: d.gateway,
         id: d.id,
         contextWindow: d.context_window ?? 128000,
+        price: parsePrice(d.price, `[models."${name}"]`),
         ...(typeof d.harness === 'string' ? {
           harness: d.harness,
           harnessId,
@@ -231,7 +296,11 @@ export function parseConfig(text: string): SonataConfig {
       );
     }
     models[name] = { harness: d.harness, id: d.id };
-    unifiedModels[name] = { harness: d.harness, harnessId: d.id };
+    unifiedModels[name] = {
+      harness: d.harness,
+      harnessId: d.id,
+      price: parsePrice(d.price, `[models."${name}"]`),
+    };
   }
 
   let tiers: Record<string, TierLists> | undefined;
@@ -375,6 +444,14 @@ export function parseConfig(text: string): SonataConfig {
         }
         wireFormat = rawFormat as NativeGatewayWireFormat;
       }
+      const price = parsePrice(d.price, `[native.gateways."${name}"]`);
+      let pricingProvider: string | undefined;
+      if (d.pricing_provider !== undefined) {
+        if (typeof d.pricing_provider !== 'string') {
+          throw new Error(`sonata.toml: native gateway "${name}" has non-string "pricing_provider"`);
+        }
+        pricingProvider = d.pricing_provider;
+      }
       // An OAuth gateway is addressed by LiteLLM's own provider, which knows the
       // URL; accepting one here would only let a config claim a base URL that is
       // never used — or worse, name the metered endpoint the credential cannot
@@ -388,13 +465,13 @@ export function parseConfig(text: string): SonataConfig {
             'Remove base_url.',
           );
         }
-        gateways[name] = { baseUrl: implied, auth, credentialSource };
+        gateways[name] = { baseUrl: implied, auth, credentialSource, price, pricingProvider };
         continue;
       }
       if (typeof d.base_url !== 'string') {
         throw new Error(`sonata.toml: native gateway "${name}" needs string "base_url"`);
       }
-      gateways[name] = { baseUrl: d.base_url, auth, credentialSource, wireFormat };
+      gateways[name] = { baseUrl: d.base_url, auth, credentialSource, wireFormat, price, pricingProvider };
     }
 
     const nativeModels: Record<string, NativeModelConfig> = {};
