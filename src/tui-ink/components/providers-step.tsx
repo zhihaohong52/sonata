@@ -7,6 +7,7 @@ import { LoginScreen } from './login-screen.js';
 import { ByokStep } from './byok-step.js';
 import {
   addProviderCatalog,
+  alreadyImportedKeys,
   applyStep,
   byokProviderKey,
   byokProviderName,
@@ -173,7 +174,7 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
             : `key from ${have.key!.source}`;
           return { value: provider.key, label: provider.provider, hint };
         })}
-        initialSelected={new Set(importable.filter((p) => configured.includes(p.provider)).map((p) => p.key))}
+        initialSelected={alreadyImportedKeys(state.providerKeys ?? [], importable)}
         onSubmit={(keys: string[]) => {
           onChange((current) => {
             const checked = new Set(keys);
