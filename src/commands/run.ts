@@ -152,6 +152,18 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     modelCfg = { harness: 'claude', id: opts.model };
   }
 
+  // A native-only unified [models."x"] entry (gateway + id, no harness)
+  // populates config.unifiedModels but NOT the legacy config.native?.models
+  // table checked above — a config with no [tiers] table at all can still
+  // declare one, and it is fully reachable via sonata serve's LiteLLM
+  // config, just not by this lookup until now.
+  if (!modelCfg) {
+    const unified = config.unifiedModels[opts.model];
+    if (unified?.gateway !== undefined && unified.id !== undefined) {
+      modelCfg = { harness: 'claude', id: opts.model };
+    }
+  }
+
   if (!modelCfg) {
     const all = [
       ...Object.keys(config.models),

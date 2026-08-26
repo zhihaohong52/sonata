@@ -129,6 +129,25 @@ describe('cmdDispatch', () => {
       .rejects.toThrow(/missing/);
   });
 
+  it('--model reaches run for a native-only unified model with no [tiers] table', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."solo-native"]
+gateway = "g"
+id = "solo-native-upstream"
+context_window = 128000
+
+[native.gateways."g"]
+base_url = "http://gateway.example/v1"
+`);
+    const ran: string[] = [];
+    const outcome = await cmdDispatch({ ...opts(), tier: undefined, model: 'solo-native' }, {
+      run: async (o) => { ran.push(o.model); return { id: 'r1', session: 's', interactive: false }; },
+      wait: async () => ({ id: 'r1', state: 'DONE', report: 'ok', degraded: false, lines: [] }) as never,
+    });
+    expect(ran).toEqual(['solo-native']);
+    expect(outcome.modelKey).toBe('solo-native');
+  });
+
   it('--model defaults to the code role, but --role overrides it', async () => {
     const seenRoles: string[] = [];
     const run = async (o: { role: string }) => { seenRoles.push(o.role); return { id: 'r1', session: 's', interactive: false }; };

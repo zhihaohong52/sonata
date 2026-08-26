@@ -450,12 +450,29 @@ export async function cmdServe(
       try {
         writeFileSync(configPath, litellmConfigYaml(freshConfig.native, masterKey, freshConfig.unifiedModels), { mode: 0o600 });
         console.error('sonata serve: model registry changed — restarting litellm to pick it up...');
+        const oldChild = child;
         expectingConfigRestart = true;
-        child?.kill();
-        child = spawnLitellmChild();
-        litellmReady = (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm).catch((error) => {
+        litellmReady = (async () => {
+          // Wait for the old child's actual exit before spawning its
+          // replacement: kill() only requests termination, and racing a new
+          // spawn/probe against a still-alive old process can either fail to
+          // bind the port or let the health probe see the stale
+          // (old-model-list) process and declare the restart done before it
+          // actually happened. `onExit` supports multiple independent
+          // listeners (it's backed by `child.on('exit', cb)`), so this does
+          // not disturb the crash-respawn handler's own listener on the
+          // same child.
+          await new Promise<void>((resolve) => {
+            if (oldChild?.onExit) oldChild.onExit(() => resolve());
+            else resolve();
+          });
+          if (stopping) return;
+          child = spawnLitellmChild();
+          await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
+        })().catch((error) => {
           console.error(`sonata serve: restarted litellm never came up: ${String(error)}`);
         });
+        oldChild?.kill();
         await litellmReady;
       } catch (error) {
         console.error(`sonata serve: failed to restart litellm for a model registry change: ${String(error)}`);

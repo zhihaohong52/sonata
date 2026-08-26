@@ -117,6 +117,34 @@ describe('cmdRun', () => {
     })).rejects.toThrow(/unknown model "ghost"/);
   });
 
+  it('resolves a native-only unified model without a [tiers] table', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."solo-native"]
+gateway = "g"
+id = "solo-native-upstream"
+context_window = 128000
+
+[native.gateways."g"]
+base_url = "http://gateway.example/v1"
+`);
+    writeFileSync(join(cwd, 'task.txt'), 'Use the native model.');
+    const configPath = join(cwd, 'sonata.toml');
+    let fetchCalls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) throw new Error('ECONNREFUSED');
+      return new Response(JSON.stringify({ status: 'ok', sonata: true, configPath }));
+    }) as unknown as typeof fetch);
+
+    const res = await cmdRun({
+      cwd, role: 'code', model: 'solo-native', taskFile: join(cwd, 'task.txt'),
+      rolesDir: join(cwd, 'roles'), sessionId: sessionInMode('acceptEdits'),
+    });
+    created.push(res.session);
+    expect(res.interactive).toBe(false);
+    expect(vi.mocked(startServeDaemon)).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses an opencode dispatch when the mode is unknown', async () => {
     // No session file means no permission hook, and sonata assumes `default`.
     // opencode cannot honour that, so the dispatch must fail loudly rather
