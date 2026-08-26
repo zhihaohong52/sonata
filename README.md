@@ -674,7 +674,7 @@ Worth knowing before you depend on this:
 
 ```bash
 npm install
-npm test          # 909 tests; needs tmux
+npm test          # 1023 tests; needs tmux
 npm run typecheck
 npm run build
 ```
