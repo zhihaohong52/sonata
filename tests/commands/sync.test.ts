@@ -44,9 +44,19 @@ describe('agentMarkdown', () => {
   it('requires verbatim task forwarding via --task-file or --task-stdin, never inline shell text', () => {
     expect(md).toMatch(/verbatim, byte for byte/i);
     expect(md).toContain('sonata dispatch --model deepseek-v4-flash --role code --task-file <path>');
-    expect(md).toContain("--task-stdin <<'SONATA_TASK_");
+    expect(md).toContain("printf '%s'");
+    expect(md).toContain('--task-stdin');
+    expect(md).not.toContain("<<'SONATA_TASK");
     expect(md).not.toContain('<<"$DELIM"');
     expect(md).not.toContain('DELIM="SONATA_TASK_$(');
+  });
+
+  it('documents the single-quote escaping transformation with the worked example', () => {
+    // The worked example must appear with the shell single-quote sequence
+    // (backslash-escaped) intact, not mangled by JS template-literal quoting
+    // in a future edit.
+    expect(md).toContain("it'\\''s done");
+    expect(md).toContain("`'\\''`");
   });
 
   it('documents the PAUSED and STALLED handling', () => {

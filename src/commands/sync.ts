@@ -58,29 +58,32 @@ answering.
       summarised, shortened, or rewritten — is the whole job: a 3,000-word
       spec once reached the model as a single sentence, so it never saw the
       instructions it was meant to follow.
-    - If the caller instead gave you the task as inline text, pipe it
-      through stdin using a single-quoted heredoc whose delimiter you
-      invent fresh, directly as a literal word in the command you write —
-      never reuse the same delimiter across dispatches, and never try to
-      generate it through a shell variable: Bash never parameter-expands
-      a heredoc's terminator word, so \`<<"$SOME_VAR"\` uses the literal
-      text \`$SOME_VAR\` as the delimiter, not the variable's value — a
-      task line that happened to read \`$SOME_VAR\` would still terminate
-      the heredoc early, and that literal text is no safer than a fixed
-      string. Instead, type out a long, unusual-looking literal token
-      yourself, directly in the command, choosing different characters
-      every time:
+    - If the caller instead gave you the task as inline text, pass it via
+      stdin using Bash single-quoting — the ONE mechanically complete way to
+      make arbitrary text (backticks, \`$(...)\`, \`$HOME\`, quotes, anything)
+      safe in a shell command, with no judgment call and no possibility of
+      collision (unlike picking a delimiter string, which depends on hoping
+      the text doesn't contain it):
 
-          sonata dispatch --model ${spec.model} --role ${spec.role} --task-stdin <<'SONATA_TASK_9f3c7a1e2b6d48'
-          <task text verbatim, byte for byte>
-          SONATA_TASK_9f3c7a1e2b6d48
+      1. In the task text, replace every single-quote character (\`'\`) with
+         the four characters \`'\\''\` (a closing quote, a backslash-escaped
+         quote, and a reopening quote). Leave every other character
+         untouched — nothing else needs escaping inside single quotes.
+      2. Wrap the ENTIRE result (start to finish) in a pair of single quotes.
+      3. Pipe it into \`sonata dispatch\` via \`printf '%s'\` and \`--task-stdin\`:
 
-      Invent a different long, unpredictable-looking suffix for every
-      dispatch — never the same one twice, and never something a task
-      might plausibly contain as an actual line of text. Single-quoting
-      the delimiter still disables all shell expansion in the body.
-      Never rewrite, summarise, or add anything to the text between the
-      heredoc markers — reproduce the caller's task exactly as given.
+             printf '%s' '<escaped task text>' | sonata dispatch --model ${spec.model} --role ${spec.role} --task-stdin
+
+      Worked example: if the task text is \`it's done\`, step 1 turns the
+      single quote into \`it'\\''s done\`, and step 2 wraps it as
+      \`'it'\\''s done'\` — giving:
+
+             printf '%s' 'it'\\''s done' | sonata dispatch --model ${spec.model} --role ${spec.role} --task-stdin
+
+      Apply this to the WHOLE task text exactly once, including any
+      backticks, dollar signs, or newlines it contains — do not additionally
+      escape those; single-quoting already neutralizes them. Never rewrite,
+      summarise, or add anything to the task text itself before escaping it.
 
    The command blocks until the run is worth reporting, so one call is
    usually the whole job. Do not add your own waiting.
