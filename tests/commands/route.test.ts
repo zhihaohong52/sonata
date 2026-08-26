@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -424,6 +424,22 @@ describe('cmdRouteSession', () => {
     await cmdRouteSession('start', 's1', o, deps);
     const again = await cmdRouteSession('start', 's1', o, deps);
     expect(again.sessions).toBe(1);
+  });
+
+  it('cleans up an ended session even after its config disappears, while start still validates', async () => {
+    const o = opts();
+    await cmdRouteSession('start', 's1', o, deps);
+    rmSync(join(cwd, 'sonata.toml'));
+
+    await expect(cmdRouteSession('end', 's1', o, deps)).resolves.toEqual({
+      sessions: 0,
+      routing: 'off',
+    });
+    expect(readSessions(routeSessionsFile(cwd))).toEqual([]);
+    expect((await cmdRoute('status', o))?.on).toBe(false);
+
+    await expect(cmdRouteSession('start', 's2', o, deps)).rejects.toThrow();
+    expect(readSessions(routeSessionsFile(cwd))).toEqual([]);
   });
 
   it('starts the router only when it is not already answering', async () => {

@@ -536,10 +536,18 @@ export async function cmdRouteSession(
   // sessions, tracked in a registry this one never sees, are still live.
   const registry = routeSessionsFile(opts.cwd, opts.scope ?? 'project', opts.home);
 
-  // A global hook runs in every directory; validate the project before touching
-  // its own registry (project scope) or the shared one (global scope) so an
-  // unrelated, configless directory remains completely untouched.
-  loadConfig(opts.cwd, opts.home);
+  if (phase === 'start') {
+    // A global hook runs in every directory; validate the project before
+    // touching its own registry (project scope) or the shared one (global
+    // scope) so an unrelated, configless directory remains completely
+    // untouched. SessionEnd's cleanup must not depend on this: if the config
+    // was deleted or became malformed while the session was running, the
+    // session still needs to be removed from the registry and routing turned
+    // off — and since the SessionEnd hook that calls this command swallows a
+    // thrown failure by design, validating unconditionally here would leave
+    // that cleanup silently stuck forever.
+    loadConfig(opts.cwd, opts.home);
+  }
 
   if (phase === 'end') {
     // The zero-session decision and the `off` transition must be one atomic

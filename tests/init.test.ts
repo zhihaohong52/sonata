@@ -192,6 +192,23 @@ describe('cmdInit (non-interactive)', () => {
     })).rejects.toThrow(/routes every project through the machine config/);
   });
 
+  it('refuses project-scoped routing when a local config would shadow a global init config', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), '[run]\n');
+    await expect(cmdInit({
+      cwd, home, packageRoot: process.cwd(), yes: true, detect,
+      providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
+      roles: ['code'], scope: 'skip', configScope: 'global', routing: 'project', write,
+    })).rejects.toThrow(/shadow the global config/);
+  });
+
+  it('allows project-scoped routing for a global config when no local config shadows it', async () => {
+    await expect(cmdInit({
+      cwd, home, packageRoot: process.cwd(), yes: true, detect,
+      providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
+      roles: ['code'], scope: 'skip', configScope: 'global', routing: 'project', write,
+    })).resolves.toMatchObject({ configPath: join(home, '.config', 'sonata', 'sonata.toml') });
+  });
+
   it('writes native config, installs the hook and generates agents', async () => {
     const res = await cmdInit({
       cwd, home, packageRoot: '/pkg', yes: true, detect,
@@ -650,7 +667,7 @@ harness = "opencode"
 id = "openrouter/other"
 `);
 
-    const res = await cmdInit({ ...args, cwd, home, configScope: 'global', write });
+    const res = await cmdInit({ ...args, cwd, home, configScope: 'global', routing: 'global', write });
 
     const globalAgents = join(home, '.claude', 'agents');
     // The global config has one model, so its [tiers.code] collapses to the

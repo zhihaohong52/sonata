@@ -1216,6 +1216,20 @@ async function runInit(
   writeFileSync(skillPath, readFileSync(skillSource));
   out(`  ✓ installed loop skill in ${skillPath}`);
 
+  if (
+    configScope === 'global'
+    && routing !== 'global'
+    && routing !== 'skip'
+    && existsSync(join(opts.cwd, 'sonata.toml'))
+  ) {
+    throw new Error(
+      'sonata init: this repository has its own sonata.toml, which would shadow the ' +
+      'global config just written when routing is project-scoped — the generated global ' +
+      "agents would resolve against this project's local config instead. Use --routing " +
+      "global, or remove/rename this project's own sonata.toml.",
+    );
+  }
+
   if (routing !== 'skip') {
     await cmdRoute('auto', {
       cwd: opts.cwd,
