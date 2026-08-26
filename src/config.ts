@@ -166,7 +166,7 @@ export function parseConfig(text: string): SonataConfig {
       if (typeof d.id !== 'string') {
         throw new Error(`sonata.toml: model "${name}" with gateway "${d.gateway}" needs string "id"`);
       }
-      if (isAnthropicRoutedName(name) || isAnthropicRoutedName(d.id)) {
+      if (isAnthropicRoutedName(name)) {
         throw new Error(
           `sonata.toml: model "${name}" cannot use the "${ANTHROPIC_ROUTED_PREFIX}" prefix because the router routes it to Anthropic.`,
         );
@@ -405,7 +405,7 @@ export function parseConfig(text: string): SonataConfig {
           `sonata.toml: native model "${name}" needs string "gateway", string "id" and number "context_window"`,
         );
       }
-      if (isAnthropicRoutedName(name) || isAnthropicRoutedName(d.id)) {
+      if (isAnthropicRoutedName(name)) {
         throw new Error(
           `sonata.toml: native model "${name}" cannot use the "${ANTHROPIC_ROUTED_PREFIX}" prefix because the router routes it to Anthropic.`,
         );

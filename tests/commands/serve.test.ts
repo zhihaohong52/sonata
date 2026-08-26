@@ -423,6 +423,65 @@ litellm = 39217
 });
 
 describe('cmdServe — tier resolution', () => {
+  it('restarts litellm when the unified model registry changes, but not for an unchanged config', async () => {
+    const config = (model: string) => `
+[models."${model}"]
+gateway = "acme"
+id = "${model}-upstream"
+context_window = 128000
+
+[tiers.code]
+simple = ["${model}"]
+complex = ["${model}"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43120
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), config('first'));
+
+    let spawnCount = 0;
+    const configs: string[] = [];
+    const exits: Array<(code: number | null, signal: NodeJS.Signals | null) => void> = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: (configPath) => {
+        spawnCount += 1;
+        configs.push(readFileSync(configPath, 'utf8'));
+        return {
+          pid: spawnCount,
+          kill: () => exits[spawnCount - 1]?.(null, 'SIGTERM'),
+          onExit: (cb) => { exits[spawnCount - 1] = cb; },
+        };
+      },
+    });
+    handles.push(handle);
+    expect(spawnCount).toBe(1);
+
+    writeFileSync(join(cwd, 'sonata.toml'), config('second'));
+    const changed = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    expect(changed.status).toBe(529);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(spawnCount).toBe(2);
+    expect(configs[1]).toContain('second-upstream');
+
+    const unchanged = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    expect(unchanged.status).toBe(529);
+    expect(spawnCount).toBe(2);
+  });
+
   it('wires resolveTier so a sonata-<role>-<tier> alias resolves against the config', async () => {
     writeFileSync(join(cwd, 'sonata.toml'), `
 [models."flash"]

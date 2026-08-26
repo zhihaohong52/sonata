@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unl
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { configPath as resolveSonataConfigPath, loadConfig, resolveTierAlias } from '../config.js';
+import { configPath as resolveSonataConfigPath, loadConfig, resolveTierAlias, type SonataConfig } from '../config.js';
 import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
 import { codexAuthPath, opencodeAuthPath, readChatGptOAuth } from '../native/codex-auth.js';
 import { credentialDir } from '../native/oauth-login.js';
@@ -385,6 +385,16 @@ export async function cmdServe(
     // candidate down for a crash it already recovered from. The `.catch` means
     // a hard failure resolves this too: the router's own fetch then fails for
     // real, and a genuine outage cools down exactly as before.
+    // Tracks the model registry LiteLLM's own config file currently reflects,
+    // so a config change (a new model added to sonata.toml while the daemon
+    // is already running) can be told apart from "nothing changed" without
+    // restarting litellm on every single tier-resolution call.
+    let activeModelsJson = JSON.stringify(config.unifiedModels);
+    // Set right before a deliberate kill-for-config-change so the crash-exit
+    // handler below (which fires for ANY exit, deliberate or not) does not
+    // also schedule its own duplicate respawn on top of the one already in
+    // flight from that deliberate restart.
+    let expectingConfigRestart = false;
     let litellmReady: Promise<void> = Promise.resolve();
 
     const spawnLitellmChild = (): SpawnedLitellm => {
@@ -392,6 +402,10 @@ export async function cmdServe(
       recordLitellmPid(opts.home, spawned.pid);
       spawned.onExit?.((code, signal) => {
         if (stopping) return;
+        if (expectingConfigRestart) {
+          expectingConfigRestart = false;
+          return;
+        }
         const nowMs = now();
         respawnTimestamps.push(nowMs);
         while (respawnTimestamps.length > 0 && nowMs - respawnTimestamps[0] > respawnWindowMs) {
@@ -419,6 +433,35 @@ export async function cmdServe(
       return spawned;
     };
 
+    // Detects a model-registry change (e.g. `sonata init` adding a new
+    // model while this daemon is already running) and restarts litellm with
+    // a freshly generated config so it actually knows about the new model —
+    // hot-reloading only the tier half (as `resolveTier` below already does)
+    // is not enough, since litellm's own model list is otherwise frozen at
+    // whatever it was given at startup. Reuses the same respawn machinery
+    // already proven for crash recovery, including the `litellmReady` gate
+    // every request already awaits before reaching litellm.
+    const maybeRestartForModelChange = async (freshConfig: SonataConfig): Promise<void> => {
+      if (stopping) return;
+      const freshModelsJson = JSON.stringify(freshConfig.unifiedModels);
+      if (freshModelsJson === activeModelsJson) return;
+      activeModelsJson = freshModelsJson;
+      if (!freshConfig.native) return;
+      try {
+        writeFileSync(configPath, litellmConfigYaml(freshConfig.native, masterKey, freshConfig.unifiedModels), { mode: 0o600 });
+        console.error('sonata serve: model registry changed — restarting litellm to pick it up...');
+        expectingConfigRestart = true;
+        child?.kill();
+        child = spawnLitellmChild();
+        litellmReady = (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm).catch((error) => {
+          console.error(`sonata serve: restarted litellm never came up: ${String(error)}`);
+        });
+        await litellmReady;
+      } catch (error) {
+        console.error(`sonata serve: failed to restart litellm for a model registry change: ${String(error)}`);
+      }
+    };
+
     child = spawnLitellmChild();
 
     await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
@@ -440,7 +483,16 @@ export async function cmdServe(
       log: (line) => console.log(line),
       // Config is re-read per call (not the `config`/`native` closed over
       // above) so a tier edit in sonata.toml takes effect without a restart.
-      resolveTier: (alias) => resolveTierAlias(loadConfig(opts.cwd, opts.home), alias),
+      resolveTier: (alias) => {
+        const freshConfig = loadConfig(opts.cwd, opts.home);
+        // Fire-and-forget: the request below awaits the current readiness gate
+        // before reaching litellm, so a config-triggered restart is still
+        // awaited without making tier resolution itself asynchronous.
+        void maybeRestartForModelChange(freshConfig).catch((error) => {
+          console.error(`sonata serve: model-registry restart check failed: ${String(error)}`);
+        });
+        return resolveTierAlias(freshConfig, alias);
+      },
       litellmReady: () => litellmReady,
     });
 

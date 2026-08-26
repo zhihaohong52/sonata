@@ -358,15 +358,15 @@ code = ["deepseek-v4-flash"]
     expect(parseConfig(`[models."x"]\nharness="codex"\nid="gpt"`).native).toBeUndefined();
   });
 
-  it('refuses a native model id beginning claude-', () => {
+  it('accepts a native model id beginning claude- when its key is unreserved', () => {
     expect(() => parseConfig(`
-[native.models."sneaky"]
+[native.models."copilot-sonnet"]
 gateway = "g"
-id = "claude-opus-5"
+id = "claude-sonnet-4-5"
 context_window = 1000
 [native.gateways."g"]
 base_url = "http://x"
-`)).toThrow(/claude-/);
+`)).not.toThrow();
   });
 
   it('refuses a native model key beginning claude-', () => {
@@ -526,17 +526,23 @@ context_window=1000
 });
 
 describe('parseConfig — the claude- prefix and Copilot', () => {
-  it('still refuses a claude- id on a copilot gateway, which Copilot does serve', () => {
-    // Copilot offers claude-sonnet-4 and friends, but the router sends any
-    // `claude-` model to Anthropic, so such an id cannot be reached through the
-    // native path. Documented so the collision is not rediscovered as a bug.
+  it('accepts a claude- upstream id under an unreserved unified key', () => {
     expect(() => parseConfig(`
+[models."copilot-sonnet"]
+gateway = "copilot"
+id = "claude-sonnet-4-5"
+context_window = 1000
 [native.gateways."copilot"]
-auth="copilot-oauth"
-[native.models."sonnet"]
-gateway="copilot"
-id="claude-sonnet-4"
-context_window=1000
+auth = "copilot-oauth"
+`)).not.toThrow();
+  });
+
+  it('still refuses a unified model key beginning claude-', () => {
+    expect(() => parseConfig(`
+[models."claude-sonnet"]
+gateway = "copilot"
+id = "claude-sonnet-4-5"
+context_window = 1000
 `)).toThrow(/cannot use the "claude-" prefix/);
   });
 });
@@ -770,8 +776,13 @@ complex = []
 `)).toThrow(/non-empty/);
   });
 
-  it('refuses claude- ids in unified models and tier keys', () => {
+  it('allows a claude- upstream id in unified models when the key is unreserved', () => {
     expect(() => parseConfig(TIERED.replace('id = "gpt-5.6-terra"', 'id = "claude-opus-5"')))
+      .not.toThrow();
+  });
+
+  it('refuses claude- keys in unified models and tier keys', () => {
+    expect(() => parseConfig(TIERED.replace('[models."gpt-5.6-terra"]', '[models."claude-terra"]')))
       .toThrow(/claude-/);
   });
 
