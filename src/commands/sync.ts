@@ -60,23 +60,27 @@ answering.
       instructions it was meant to follow.
     - If the caller instead gave you the task as inline text, pipe it
       through stdin using a single-quoted heredoc whose delimiter you
-      generate randomly first — never the same literal delimiter every
-      time, since a task that happens to contain that exact line as text
-      would terminate the heredoc early and leak the remainder of the task
-      into the shell as commands:
+      invent fresh, directly as a literal word in the command you write —
+      never reuse the same delimiter across dispatches, and never try to
+      generate it through a shell variable: Bash never parameter-expands
+      a heredoc's terminator word, so \`<<"$SOME_VAR"\` uses the literal
+      text \`$SOME_VAR\` as the delimiter, not the variable's value — a
+      task line that happened to read \`$SOME_VAR\` would still terminate
+      the heredoc early, and that literal text is no safer than a fixed
+      string. Instead, type out a long, unusual-looking literal token
+      yourself, directly in the command, choosing different characters
+      every time:
 
-          DELIM="SONATA_TASK_$(head -c 16 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
-          sonata dispatch --model ${spec.model} --role ${spec.role} --task-stdin <<"$DELIM"
+          sonata dispatch --model ${spec.model} --role ${spec.role} --task-stdin <<'SONATA_TASK_9f3c7a1e2b6d48'
           <task text verbatim, byte for byte>
-          $DELIM
+          SONATA_TASK_9f3c7a1e2b6d48
 
-      The \`<<"$DELIM"\` form still disables all shell expansion in the body
-      (quoting any part of the delimiter word does that, not just quoting
-      a literal string) while using a freshly random value each time —
-      generated independently of the task, so nothing in the task content
-      can predict or reproduce it. Never rewrite, summarise, or add
-      anything to the text between the heredoc markers — reproduce the
-      caller's task exactly as given.
+      Invent a different long, unpredictable-looking suffix for every
+      dispatch — never the same one twice, and never something a task
+      might plausibly contain as an actual line of text. Single-quoting
+      the delimiter still disables all shell expansion in the body.
+      Never rewrite, summarise, or add anything to the text between the
+      heredoc markers — reproduce the caller's task exactly as given.
 
    The command blocks until the run is worth reporting, so one call is
    usually the whole job. Do not add your own waiting.

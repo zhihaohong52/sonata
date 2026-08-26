@@ -1,13 +1,13 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, harnessModelFor } from '../config.js';
+import { configPath as resolveSonataConfigPath, loadConfig, harnessModelFor } from '../config.js';
 import { getAdapter } from '../adapters/index.js';
 import { createRun, runDir, writeMeta } from '../store.js';
 import { loadRole, composeInstructions } from '../roles.js';
 import { readPermissionMode } from '../mode.js';
 import { newSession, runScript } from '../tmux.js';
 import { wrapWithTimeout } from '../watchdog.js';
-import { isSonataRouter, startServeDaemon } from './serve.js';
+import { isSonataRouter, sonataRouterConfigPath, startServeDaemon } from './serve.js';
 import { homedir } from 'node:os';
 
 export interface RunOptions {
@@ -80,7 +80,7 @@ export function exposesSonataTools(cwd: string): boolean {
 }
 
 /** Ensure the native proxy is up when dispatching to the claude harness. */
-async function ensureNativeServe(cwd: string): Promise<void> {
+export async function ensureNativeServe(cwd: string): Promise<void> {
   const config = loadConfig(cwd);
   if (!config.native) {
     throw new Error(
@@ -89,8 +89,38 @@ async function ensureNativeServe(cwd: string): Promise<void> {
     );
   }
   const port = config.native.ports.router;
-  if (await isSonataRouter(port)) return;
+  const expectedConfigPath = resolveSonataConfigPath(cwd, homedir());
+  const running = await isSonataRouter(port);
+  if (running) {
+    // Two projects can share the same default router port; a router
+    // already answering here is not proof it is THIS project's — verify
+    // which sonata.toml actually started it before trusting it, the same
+    // check cmdRouteSession's auto-mode path already makes.
+    const actualConfigPath = await sonataRouterConfigPath(port);
+    if (actualConfigPath !== null && expectedConfigPath !== null && actualConfigPath !== expectedConfigPath) {
+      throw new Error(
+        `sonata: router port ${port} is already serving a different sonata configuration ` +
+        `(${actualConfigPath}) than this project resolves to (${expectedConfigPath}). ` +
+        `Two projects cannot share one router port — set a different [native.ports].router ` +
+        `in one of the two configs.`,
+      );
+    }
+    return;
+  }
   await startServeDaemon(homedir(), ['sonata', 'serve', '--daemon'], {}, cwd);
+  // A concurrent dispatch in another project could have won the race to
+  // bind this same default port with ITS daemon between the probe above
+  // and this daemon spawn's poll completing — verify identity again now
+  // that something is confirmed to be listening.
+  const startedConfigPath = await sonataRouterConfigPath(port);
+  if (startedConfigPath !== null && expectedConfigPath !== null && startedConfigPath !== expectedConfigPath) {
+    throw new Error(
+      `sonata: router port ${port} is already serving a different sonata configuration ` +
+      `(${startedConfigPath}) than this project resolves to (${expectedConfigPath}). ` +
+      `Two projects cannot share one router port — set a different [native.ports].router ` +
+      `in one of the two configs.`,
+    );
+  }
 }
 
 export async function cmdRun(opts: RunOptions): Promise<RunResult> {

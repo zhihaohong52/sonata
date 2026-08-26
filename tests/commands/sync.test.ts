@@ -44,8 +44,9 @@ describe('agentMarkdown', () => {
   it('requires verbatim task forwarding via --task-file or --task-stdin, never inline shell text', () => {
     expect(md).toMatch(/verbatim, byte for byte/i);
     expect(md).toContain('sonata dispatch --model deepseek-v4-flash --role code --task-file <path>');
-    expect(md).toContain('DELIM="SONATA_TASK_$(');
-    expect(md).toContain('<<"$DELIM"');
+    expect(md).toContain("--task-stdin <<'SONATA_TASK_");
+    expect(md).not.toContain('<<"$DELIM"');
+    expect(md).not.toContain('DELIM="SONATA_TASK_$(');
   });
 
   it('documents the PAUSED and STALLED handling', () => {

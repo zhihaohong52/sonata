@@ -1,11 +1,25 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { cmdRun, MAX_REPO_CONTEXT_CHARS, repoContext, exposesSonataTools } from '../../src/commands/run.js';
+import { cmdRun, ensureNativeServe, MAX_REPO_CONTEXT_CHARS, repoContext, exposesSonataTools } from '../../src/commands/run.js';
 import { readMeta, runDir } from '../../src/store.js';
 import { killSession, hasSession, capturePane } from '../../src/tmux.js';
 import { readPermissionMode } from '../../src/mode.js';
+import { startServeDaemon } from '../../src/commands/serve.js';
+
+// Only `startServeDaemon` is stubbed — a real detached process would race the
+// live :4100 router this session routes through. `isSonataRouter` and
+// `sonataRouterConfigPath` are left real (spread from the module) so
+// `vi.stubGlobal('fetch', …)` drives their identity checks, the same pattern
+// route.test.ts uses.
+vi.mock('../../src/commands/serve.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/commands/serve.js')>();
+  return {
+    ...actual,
+    startServeDaemon: vi.fn(async () => ({ pid: 4242, port: 4100, logPath: '/tmp/sonata-test-daemon.log' })),
+  };
+});
 
 let cwd: string;
 let created: string[] = [];
@@ -113,6 +127,99 @@ describe('cmdRun', () => {
       cwd, role: 'code', model: 'fake', taskFile,
       rolesDir: join(cwd, 'roles'), sessionId: undefined,
     })).rejects.toThrow(/cannot ask for approval/i);
+  });
+});
+
+describe('ensureNativeServe', () => {
+  const NATIVE_TOML = `
+[native.models."deepseek"]
+gateway = "g"
+id = "deepseek-v4-flash"
+context_window = 64000
+[native.gateways."g"]
+base_url = "http://gateway.example/v1"
+`;
+
+  beforeEach(() => {
+    vi.mocked(startServeDaemon).mockClear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Writes a project config and returns the path `ensureNativeServe` should resolve to. */
+  function writeNativeConfig(dir: string): string {
+    const path = join(dir, 'sonata.toml');
+    writeFileSync(path, NATIVE_TOML);
+    return path;
+  }
+
+  function sonataHealthPayload(configPath: string): Response {
+    return new Response(JSON.stringify({ status: 'ok', sonata: true, configPath }));
+  }
+
+  it('starts the daemon when no router is running, then passes the matching post-start check', async () => {
+    const expectedConfigPath = writeNativeConfig(cwd);
+
+    // Nothing listening at first (the initial probe throws like a refused
+    // connect), but by the time the daemon's poll completes the freshly
+    // started router reports THIS project's config — the post-start identity
+    // check passes.
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('ECONNREFUSED');
+      return sonataHealthPayload(expectedConfigPath);
+    }) as unknown as typeof fetch);
+
+    await expect(ensureNativeServe(cwd)).resolves.toBeUndefined();
+    expect(vi.mocked(startServeDaemon)).toHaveBeenCalledTimes(1);
+  });
+
+  it('proceeds without starting a second daemon when the running router reports a matching config', async () => {
+    const expectedConfigPath = writeNativeConfig(cwd);
+
+    vi.stubGlobal('fetch', vi.fn(async () => sonataHealthPayload(expectedConfigPath)) as unknown as typeof fetch);
+
+    await expect(ensureNativeServe(cwd)).resolves.toBeUndefined();
+    expect(vi.mocked(startServeDaemon)).not.toHaveBeenCalled();
+  });
+
+  it('refuses a running router already serving a different config', async () => {
+    writeNativeConfig(cwd);
+    const otherCwd = mkdtempSync(join(tmpdir(), 'sonata-run-other-'));
+    const otherConfigPath = writeNativeConfig(otherCwd);
+
+    vi.stubGlobal('fetch', vi.fn(async () => sonataHealthPayload(otherConfigPath)) as unknown as typeof fetch);
+
+    await expect(ensureNativeServe(cwd)).rejects.toThrow(/different sonata configuration/);
+    expect(vi.mocked(startServeDaemon)).not.toHaveBeenCalled();
+  });
+
+  it('re-checks identity after the daemon starts, catching a racing project that won the port', async () => {
+    writeNativeConfig(cwd);
+    const otherCwd = mkdtempSync(join(tmpdir(), 'sonata-run-other-'));
+    const otherConfigPath = writeNativeConfig(otherCwd);
+
+    // The initial probe finds nothing listening (throws), the mocked daemon
+    // spawn "succeeds", but the router that now answers reports the other
+    // project's config — the post-start check must throw.
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('ECONNREFUSED');
+      return sonataHealthPayload(otherConfigPath);
+    }) as unknown as typeof fetch);
+
+    await expect(ensureNativeServe(cwd)).rejects.toThrow(/different sonata configuration/);
+    expect(vi.mocked(startServeDaemon)).toHaveBeenCalledTimes(1);
+  });
+
+  it('requires a [native] table, even though a [models] config exists', async () => {
+    // The global beforeEach already wrote a `[models]`-only config to `cwd`;
+    // without a [native] table the claude harness has no router port.
+    await expect(ensureNativeServe(cwd)).rejects.toThrow(/\[native\] table/);
   });
 });
 
