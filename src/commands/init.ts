@@ -355,7 +355,7 @@ export function deriveInitState(
 ): InitState {
   const nativeModels = config.native?.models ?? {};
   const unifiedModels = config.unifiedModels;
-  const modelKeys = Object.keys(config.tiers ? unifiedModels : nativeModels)
+  const modelKeys = [...new Set([...Object.keys(nativeModels), ...Object.keys(unifiedModels)])]
     .filter((key) => (unifiedModels[key]?.gateway ?? nativeModels[key]?.gateway) !== undefined);
   if (modelKeys.length === 0) return { configScope };
 

@@ -1372,6 +1372,20 @@ describe('deriveInitState', () => {
     expect(state.perRoleModels).toEqual({ review: ['m'] });
   });
 
+  it('keeps an untiered unified native-only model selected', () => {
+    const config = parseConfig(`
+[native.gateways."solo-gateway"]
+base_url = "https://solo.example/v1"
+
+[models."solo-native"]
+gateway = "solo-gateway"
+id = "solo-model"
+context_window = 128000
+`);
+    const state = deriveInitState(config, 'project', []);
+    expect(state.nativeKeys).toEqual(['solo-native']);
+  });
+
   it('returns only the scope when native config is absent', () => {
     const plain = parseConfig('[generate.native]\n');
     expect(deriveInitState(plain, 'global', [])).toEqual({ configScope: 'global' });
