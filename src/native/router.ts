@@ -17,6 +17,18 @@ export interface RouterDeps {
   configPath?: string;
   /** Resolves a `sonata-<role>-<tier>` alias to its ranked routes, or undefined if unknown. */
   resolveTier?: (alias: string) => { role: string; tier: string; routes: TierRoute[] } | undefined;
+  /**
+   * Fire-and-forget: checks whether sonata.toml's model registry has changed
+   * since litellm was last (re)started, restarting it if so. Called once per
+   * litellm-bound router request — both a tier request and a direct
+   * `--model <key>` request — not only on tier resolution, because a direct
+   * request for a newly added native-only model never goes through
+   * `resolveTier` at all and would otherwise reach litellm's startup-era
+   * model list until a manual `sonata restart`. Called once per request
+   * rather than once per tier candidate, so a candidate skipped for being in
+   * its post-failure cooldown doesn't also skip this check.
+   */
+  checkModelChange?: () => void;
   now?: () => number;
   /**
    * Resolves once the current litellm child is confirmed healthy (or once
@@ -262,6 +274,11 @@ function litellmHeaders(headers: Record<string, string>, litellmKey: string): Re
  * never interferes with an in-progress stream.
  */
 async function routeTierRequest(req: RouterRequest, deps: RouterDeps, alias: string): Promise<RouterResponse> {
+  // Once per request, not once per candidate: a candidate skipped for being
+  // in its post-failure cooldown window would otherwise mean this never
+  // fires at all, silently masking a real config change behind an unrelated
+  // stale cooldown until it expires on its own.
+  deps.checkModelChange?.();
   const resolved = deps.resolveTier?.(alias);
   if (resolved === undefined) {
     return {
@@ -334,6 +351,10 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   deps.log?.(`${req.method} ${req.url} model=${requestedModel(req.body) ?? '?'} -> ${upstream}`);
 
   if (!anthropic) {
+    // A direct `--model <key>` request never goes through `resolveTier` (the
+    // key isn't a `sonata-*` alias), so this is the only place such a
+    // request's config-change check can fire.
+    deps.checkModelChange?.();
     return forwardToLitellm(body, litellmHeaders(headers, deps.litellmKey), req, deps);
   }
 

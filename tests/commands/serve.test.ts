@@ -9,6 +9,7 @@ import {
   serveStatePath, stopServe, cmdRestart,
 } from '../../src/commands/serve.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
+import { clearCooldowns } from '../../src/native/router.js';
 
 let cwd: string;
 let home: string;
@@ -18,6 +19,11 @@ let handles: ServeHandle[];
 const tempDirFor = () => join(cwd, 'litellm');
 
 beforeEach(() => {
+  // Cooldowns are module-level state (see router.ts), so a candidate key
+  // reused across tests in this file (e.g. "first"/"second") would otherwise
+  // carry a cooldown set by an earlier test's failed forward — silently
+  // skipping that candidate here instead of exercising it.
+  clearCooldowns();
   cwd = mkdtempSync(join(tmpdir(), 'sonata-serve-cwd-'));
   home = mkdtempSync(join(tmpdir(), 'sonata-serve-home-'));
   handles = [];
@@ -589,8 +595,14 @@ litellm = 43121
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     // Let the request enter the router and register the restart's exit
-    // listener, but do not fire that event yet.
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // listener, but do not fire that event yet. Polled rather than a fixed
+    // sleep: the request reaches the router only after a real loopback HTTP
+    // round trip, whose timing is not bounded tightly enough by a flat delay
+    // to avoid flaking under load.
+    const deadline = Date.now() + 2000;
+    while ((exits[0]?.length ?? 0) < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
     expect(spawnCount).toBe(1);
     expect(exits[0]?.length).toBeGreaterThanOrEqual(2);
 
@@ -636,6 +648,117 @@ litellm = 43119
     const body = await res.json();
     expect(JSON.stringify(body)).not.toContain('unknown sonata tier alias');
     expect(JSON.stringify(body)).toContain('sonata dispatch --tier code-simple');
+  });
+
+  it('restarts litellm for a direct --model request too, not just a sonata-<tier> alias', async () => {
+    // A direct request naming a native-only unified model key never goes
+    // through resolveTier at all (the key is not a `sonata-*` alias), so this
+    // is the one path that would still see litellm's startup-era model list
+    // if the config-change check only fired from tier resolution.
+    const config = (model: string) => `
+[models."${model}"]
+gateway = "acme"
+id = "${model}-upstream"
+context_window = 128000
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43118
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), config('direct-model'));
+
+    let spawnCount = 0;
+    const configs: string[] = [];
+    const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: (configPath) => {
+        spawnCount += 1;
+        configs.push(readFileSync(configPath, 'utf8'));
+        // kill() fires the registered exit callback, so the restart's
+        // bounded wait for the old child resolves without needing the real
+        // 5s default timeout — this test isn't exercising that wait.
+        return {
+          pid: spawnCount,
+          kill: () => exits[spawnCount - 1]?.forEach((cb) => cb(null, 'SIGTERM')),
+          onExit: (cb) => { (exits[spawnCount - 1] ??= []).push(cb); },
+        };
+      },
+    });
+    handles.push(handle);
+    expect(spawnCount).toBe(1);
+
+    writeFileSync(join(cwd, 'sonata.toml'), config('direct-model-renamed'));
+    const response = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      // Not a sonata-* alias — a plain native model key, exactly what
+      // `sonata dispatch --model <key>` sends.
+      body: JSON.stringify({ model: 'direct-model-renamed', messages: [] }),
+    });
+    expect(response.status).toBe(502);
+    expect(spawnCount).toBe(2);
+    expect(configs[1]).toContain('direct-model-renamed-upstream');
+  });
+
+  it('escalates to forceKill and proceeds once the old litellm child never exits on its own', async () => {
+    const config = (model: string) => `
+[models."${model}"]
+gateway = "acme"
+id = "${model}-upstream"
+context_window = 128000
+
+[tiers.code]
+simple = ["${model}"]
+complex = ["${model}"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43117
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), config('first'));
+
+    let spawnCount = 0;
+    let forceKillCalls = 0;
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      litellmExitTimeoutMs: 20,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      spawnLitellm: () => {
+        spawnCount += 1;
+        return {
+          pid: spawnCount,
+          kill: () => {},
+          // Never fires its exit callback — simulates a child that ignores
+          // SIGTERM entirely, the case the bounded wait exists for.
+          onExit: () => {},
+          forceKill: () => { forceKillCalls += 1; },
+        };
+      },
+    });
+    handles.push(handle);
+    expect(spawnCount).toBe(1);
+
+    writeFileSync(join(cwd, 'sonata.toml'), config('second'));
+    const response = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    // Never resolves the request forever: it proceeds past both bounded
+    // waits (escalating to forceKill once), spawns the replacement anyway,
+    // and the request completes with the usual upstream-failure response.
+    expect(response.status).toBe(529);
+    expect(forceKillCalls).toBe(1);
+    expect(spawnCount).toBe(2);
   });
 });
 

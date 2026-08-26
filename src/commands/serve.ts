@@ -22,6 +22,12 @@ export interface ServeHandle {
 export interface SpawnedLitellm {
   pid: number;
   kill(): void;
+  /**
+   * Escalates past a plain `kill()` (SIGTERM) when the child ignores it —
+   * used only after a bounded wait for exit expires. Omitted by stubs that
+   * always exit promptly on `kill()`.
+   */
+  forceKill?(): void;
   /** Fires when the process exits on its own — omitted by stubs that never crash. */
   onExit?(cb: (code: number | null, signal: NodeJS.Signals | null) => void): void;
 }
@@ -45,6 +51,8 @@ export interface ServeDeps {
   /** Test seam: max respawns tolerated within `respawnWindowMs` before giving up. */
   maxRespawns?: number;
   respawnWindowMs?: number;
+  /** Test seam: how long a model-registry restart waits for the old litellm child to exit before escalating to `forceKill`, and again after that before giving up and proceeding anyway. */
+  litellmExitTimeoutMs?: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -203,6 +211,7 @@ function defaultSpawnLitellm(configPath: string, env: NodeJS.ProcessEnv, port: n
   return {
     pid: child.pid ?? 0,
     kill: () => child.kill(),
+    forceKill: () => child.kill('SIGKILL'),
     onExit: (cb) => child.on('exit', cb),
   };
 }
@@ -292,6 +301,19 @@ function buildChildEnv(native: NativeConfig, home: string, tempDir: string): Nod
   }
 
   return childEnv;
+}
+
+/** Default bound on how long a model-registry restart waits for the old litellm child to exit (see `litellmExitTimeoutMs`). */
+const LITELLM_EXIT_TIMEOUT_MS = 5000;
+
+/** Resolves `true` if `promise` had not settled after `timeoutMs`, `false` if it settled first. Never rejects. */
+async function raceTimeout(promise: Promise<void>, timeoutMs: number, sleepFn: (ms: number) => Promise<void>): Promise<boolean> {
+  let timedOut = false;
+  await Promise.race([
+    promise,
+    sleepFn(timeoutMs).then(() => { timedOut = true; }),
+  ]);
+  return timedOut;
 }
 
 function listen(server: ReturnType<typeof createRouterServer>, port: number): Promise<void> {
@@ -469,10 +491,32 @@ export async function cmdServe(
           // listeners (it's backed by `child.on('exit', cb)`), so this does
           // not disturb the crash-respawn handler's own listener on the
           // same child.
-          await new Promise<void>((resolve) => {
+          //
+          // The wait is bounded: a litellm that ignores SIGTERM (hung, or
+          // wedged on a slow shutdown) would otherwise leave this promise
+          // unresolved forever, and since it's installed as `litellmReady`,
+          // every subsequent foreign-model request would then wait forever
+          // too. Escalate to `forceKill` (SIGKILL) once, wait once more
+          // bounded by the same timeout, then proceed regardless — a stray
+          // process holding the port fails the following bind/probe loudly,
+          // which is recoverable; a hung `litellmReady` is not.
+          const exited = new Promise<void>((resolve) => {
             if (oldChild?.onExit) oldChild.onExit(() => resolve());
             else resolve();
           });
+          const exitTimeoutMs = opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS;
+          if (await raceTimeout(exited, exitTimeoutMs, sleep)) {
+            console.error(
+              `sonata serve: old litellm child did not exit within ${exitTimeoutMs}ms — sending SIGKILL`,
+            );
+            (oldChild?.forceKill ?? oldChild?.kill)?.call(oldChild);
+            if (await raceTimeout(exited, exitTimeoutMs, sleep)) {
+              console.error(
+                'sonata serve: old litellm child still has not exited after SIGKILL — proceeding anyway; ' +
+                'a stray process may be holding the litellm port',
+              );
+            }
+          }
           if (stopping) return;
           child = spawnLitellmChild();
           await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
@@ -507,15 +551,19 @@ export async function cmdServe(
       log: (line) => console.log(line),
       // Config is re-read per call (not the `config`/`native` closed over
       // above) so a tier edit in sonata.toml takes effect without a restart.
-      resolveTier: (alias) => {
+      resolveTier: (alias) => resolveTierAlias(loadConfig(opts.cwd, opts.home), alias),
+      // Fire-and-forget, called on every litellm-bound request (direct model
+      // calls and each tier candidate alike) — not just tier resolution,
+      // since a direct `--model <key>` request for a newly added native-only
+      // model never calls `resolveTier` at all. The request that triggers
+      // this still awaits the current readiness gate below before reaching
+      // litellm, so a config-triggered restart is awaited without making
+      // this check itself asynchronous.
+      checkModelChange: () => {
         const freshConfig = loadConfig(opts.cwd, opts.home);
-        // Fire-and-forget: the request below awaits the current readiness gate
-        // before reaching litellm, so a config-triggered restart is still
-        // awaited without making tier resolution itself asynchronous.
         void maybeRestartForModelChange(freshConfig).catch((error) => {
           console.error(`sonata serve: model-registry restart check failed: ${String(error)}`);
         });
-        return resolveTierAlias(freshConfig, alias);
       },
       litellmReady: () => litellmReady,
     });
