@@ -1253,6 +1253,13 @@ async function runInit(
   out(`  ✓ generated ${agentsWritten.length} agents in ${agentsDir}`);
 
 
+  if (sync.skipped.length > 0) {
+    out('');
+    out(`  ! ${sync.skipped.length} existing agent file(s) were NOT overwritten (not sonata-generated):`);
+    for (const f of sync.skipped.slice(0, 5)) out(`      ${f}`);
+    if (sync.skipped.length > 5) out(`      … and ${sync.skipped.length - 5} more`);
+  }
+
   const stale = sync.stale;
   let pruned: string[] = [];
   if (stale.length > 0) {

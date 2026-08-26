@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { checkVersion } from './commands/doctor.js';
+import { TIER_AGENT_MARKER } from './agent-markers.js';
 import { parsePiRefs } from './adapters/pi.js';
 import { parseCodexModels, codexModelList } from './adapters/codex.js';
 import { parseReasonixRefs, reasonixDoctorJson } from './adapters/reasonix.js';
@@ -229,10 +230,11 @@ export function staleAgents(agentsDir: string, expected: string[]): string[] {
     .sort();
 }
 
-function isSonataAgent(path: string): boolean {
+export function isSonataAgent(path: string): boolean {
   try {
     const text = readFileSync(path, 'utf8');
     return text.includes('forwarding wrapper around the sonata runtime')
+      || text.includes(TIER_AGENT_MARKER)
       || /^name:\s+native-[^\s]+/m.test(text);
   } catch {
     return false;

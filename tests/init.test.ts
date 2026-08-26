@@ -32,7 +32,8 @@ vi.mock('../src/native/codex-auth.js', () => ({
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseOpenCodeModels, parseAuthedProviders, staleAgents, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
+import { parseOpenCodeModels, parseAuthedProviders, staleAgents, isSonataAgent, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
+import { tierAgentMarkdown } from '../src/commands/sync.js';
 import { parsePiRefs } from '../src/adapters/pi.js';
 import {
   cmdInit, credentialAvailabilityFor, duplicateKeys, parseCredentialSourceFlags, previousAskedStep, nativeCandidatesFrom,
@@ -111,6 +112,13 @@ describe('staleAgents', () => {
 
   it('never touches agents sonata did not write', () => {
     expect(staleAgents(dir, [])).not.toContain('someone-elses-agent.md');
+  });
+
+  it('recognizes generated tier agents as owned and stale', () => {
+    const path = join(dir, 'code-simple.md');
+    writeFileSync(path, tierAgentMarkdown({ role: 'code', tier: 'simple' }));
+    expect(isSonataAgent(path)).toBe(true);
+    expect(staleAgents(dir, [])).toContain('code-simple.md');
   });
 
   it('handles a missing directory', () => {

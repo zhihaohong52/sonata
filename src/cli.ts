@@ -314,6 +314,10 @@ export async function main(argv: string[]): Promise<number> {
       agentsDir,
     });
     for (const p of sync.written) console.log(`wrote ${p}`);
+    if (sync.skipped.length > 0) {
+      for (const f of sync.skipped.slice(0, 5)) console.log(`skipped ${f} (exists, not sonata-owned)`);
+      if (sync.skipped.length > 5) console.log(`skipped ... and ${sync.skipped.length - 5} more`);
+    }
     if (sync.stale.length > 0) {
       for (const f of sync.stale.slice(0, 5)) console.log(`stale ${f}`);
       if (sync.stale.length > 5) console.log(`stale ... and ${sync.stale.length - 5} more`);

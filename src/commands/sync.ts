@@ -1,7 +1,10 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generatedAgents, generatedNativeAgents, expectedAgentNames, isReadOnlyRole, loadConfig, TIER_NAMES } from '../config.js';
-import { staleAgents } from '../detect.js';
+import { isSonataAgent, staleAgents } from '../detect.js';
+import { TIER_AGENT_MARKER } from '../agent-markers.js';
+
+export { TIER_AGENT_MARKER } from '../agent-markers.js';
 
 export interface AgentSpec { role: string; model: string; harness: string }
 
@@ -70,15 +73,20 @@ answering.
          quote, and a reopening quote). Leave every other character
          untouched — nothing else needs escaping inside single quotes.
       2. Wrap the ENTIRE result (start to finish) in a pair of single quotes.
-      3. Pipe it into \`sonata dispatch\` via \`printf '%s'\` and \`--task-stdin\`:
+      3. Feed it to \`sonata dispatch\` via a Bash here-string and
+         \`--task-stdin\` — NOT a pipe: your only allowed command is
+         \`sonata dispatch\`, and a pipe would start the line with a
+         different command (\`printf\`) that isn't covered by that
+         permission. A here-string keeps the whole line starting with
+         \`sonata dispatch\`:
 
-             printf '%s' '<escaped task text>' | sonata dispatch --model ${spec.model} --role ${spec.role} --task-stdin
+             sonata dispatch --model ${spec.model} --role ${spec.role} --task-stdin <<< '<escaped task text>'
 
       Worked example: if the task text is \`it's done\`, step 1 turns the
       single quote into \`it'\\''s done\`, and step 2 wraps it as
       \`'it'\\''s done'\` — giving:
 
-             printf '%s' 'it'\\''s done' | sonata dispatch --model ${spec.model} --role ${spec.role} --task-stdin
+             sonata dispatch --model ${spec.model} --role ${spec.role} --task-stdin <<< 'it'\\''s done'
 
       Apply this to the WHOLE task text exactly once, including any
       backticks, dollar signs, or newlines it contains — do not additionally
@@ -168,6 +176,8 @@ ${tools}---
 
 This agent only works in a routed session (sonata code, or sonata route on/auto).
 
+${TIER_AGENT_MARKER} — edits here are overwritten on the next sync.
+
 Focus on ${blurb}.
 `;
 }
@@ -179,6 +189,8 @@ export interface SyncResult {
   written: string[];
   /** Filenames sonata wrote that the config no longer covers. Not deleted. */
   stale: string[];
+  /** Paths sonata declined to overwrite because they already exist and are not sonata-owned. */
+  skipped: string[];
 }
 
 export function cmdSync(opts: SyncOptions): SyncResult {
@@ -187,12 +199,17 @@ export function cmdSync(opts: SyncOptions): SyncResult {
 
   if (config.tiers !== undefined) {
     const written: string[] = [];
+    const skipped: string[] = [];
     for (const [role, lists] of Object.entries(config.tiers)) {
       const collapsed = lists.simple.length === lists.complex.length &&
         lists.simple.every((model, index) => model === lists.complex[index]);
       const tiers: ('simple' | 'complex' | undefined)[] = collapsed ? [undefined] : [...TIER_NAMES];
       for (const tier of tiers) {
         const path = join(opts.agentsDir, `${role}${tier === undefined ? '' : `-${tier}`}.md`);
+        if (existsSync(path) && !isSonataAgent(path)) {
+          skipped.push(path);
+          continue;
+        }
         writeFileSync(path, tierAgentMarkdown({ role, tier }));
         written.push(path);
       }
@@ -200,6 +217,7 @@ export function cmdSync(opts: SyncOptions): SyncResult {
     return {
       written,
       stale: staleAgents(opts.agentsDir, expectedAgentNames(config)),
+      skipped,
     };
   }
 
@@ -232,5 +250,6 @@ export function cmdSync(opts: SyncOptions): SyncResult {
   return {
     written,
     stale: staleAgents(opts.agentsDir, expectedAgentNames(config)),
+    skipped: [],
   };
 }

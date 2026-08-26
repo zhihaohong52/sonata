@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { agentMarkdown, cmdSync, nativeAgentMarkdown } from '../../src/commands/sync.js';
+import { agentMarkdown, cmdSync, nativeAgentMarkdown, tierAgentMarkdown, TIER_AGENT_MARKER } from '../../src/commands/sync.js';
 
 let cwd: string;
 
@@ -44,8 +44,9 @@ describe('agentMarkdown', () => {
   it('requires verbatim task forwarding via --task-file or --task-stdin, never inline shell text', () => {
     expect(md).toMatch(/verbatim, byte for byte/i);
     expect(md).toContain('sonata dispatch --model deepseek-v4-flash --role code --task-file <path>');
-    expect(md).toContain("printf '%s'");
-    expect(md).toContain('--task-stdin');
+    expect(md).toContain("--task-stdin <<< '");
+    expect(md).not.toContain("printf '%s'");
+    expect(md).not.toContain(' | sonata dispatch');
     expect(md).not.toContain("<<'SONATA_TASK");
     expect(md).not.toContain('<<"$DELIM"');
     expect(md).not.toContain('DELIM="SONATA_TASK_$(');
@@ -302,12 +303,44 @@ complex = ["simple-model"]
       'explore.md',
     ]);
     expect(readFileSync(join(agentsDir, 'code-simple.md'), 'utf8')).toContain('model: sonata-code-simple');
+    expect(readFileSync(join(agentsDir, 'code-simple.md'), 'utf8')).toContain(TIER_AGENT_MARKER);
     expect(readFileSync(join(agentsDir, 'code-complex.md'), 'utf8')).toContain('model: sonata-code-complex');
     const explore = readFileSync(join(agentsDir, 'explore.md'), 'utf8');
     expect(explore).toContain('model: sonata-explore');
     expect(explore).toMatch(/^tools: Read, Grep, Glob$/m);
     expect(existsSync(join(agentsDir, 'code-simple-model.md'))).toBe(false);
     expect(existsSync(join(agentsDir, 'native-code-simple-model.md'))).toBe(false);
+  });
+
+  it('does not overwrite a custom tier agent, but overwrites a sonata tier agent', () => {
+    const agentsDir = join(cwd, '.claude', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."simple-model"]
+gateway = "gateway"
+id = "simple"
+
+[native.gateways."gateway"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["simple-model"]
+complex = ["simple-model"]
+`);
+    const path = join(agentsDir, 'code.md');
+    const custom = '---\\nname: code\\ndescription: custom\\n---\\ncustom body\\n';
+    writeFileSync(path, custom);
+
+    const skipped = cmdSync({ cwd, agentsDir });
+    expect(readFileSync(path, 'utf8')).toBe(custom);
+    expect(skipped.skipped).toEqual([path]);
+    expect(skipped.written).not.toContain(path);
+
+    writeFileSync(path, tierAgentMarkdown({ role: 'code' }));
+    const overwritten = cmdSync({ cwd, agentsDir });
+    expect(overwritten.written).toContain(path);
+    expect(overwritten.skipped).not.toContain(path);
+    expect(readFileSync(path, 'utf8')).toContain('model: sonata-code');
   });
 
   it('reports superseded legacy agents as stale', () => {
