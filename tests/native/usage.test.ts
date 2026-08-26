@@ -58,12 +58,33 @@ describe('createUsageCollector', () => {
     expect(c.finish().tokens.output).toBe(11);
   });
 
-  it('drops a pathological unterminated line instead of growing without bound', () => {
+  it('drops an oversized line even when its newline arrives later', () => {
     const c = createUsageCollector();
-    c.push(enc(`data: ${'x'.repeat(MAX_SSE_BUFFER_BYTES + 10)}`));
+    const oversized = `data: ${JSON.stringify({ type: 'message_delta', usage: { output_tokens: 99 }, padding: 'x'.repeat(MAX_SSE_BUFFER_BYTES) })}`;
+    c.push(enc(oversized));
     c.push(enc(`\n\n${DELTA}`));
-    // The oversized line is discarded, but the collector keeps working after it.
+    // The oversized line is valid JSON, so this proves the cap—not JSON parsing—drops it.
     expect(c.finish().tokens.output).toBe(11);
+  });
+
+  it('drops an oversized line whose newline arrives in the same chunk', () => {
+    const c = createUsageCollector();
+    const oversized = `data: ${JSON.stringify({ type: 'message_delta', usage: { output_tokens: 99 }, padding: 'x'.repeat(MAX_SSE_BUFFER_BYTES) })}\n\n`;
+    c.push(enc(DELTA + oversized));
+    expect(c.finish().tokens.output).toBe(11);
+  });
+
+  it('measures the line cap in UTF-8 bytes', () => {
+    const c = createUsageCollector();
+    const oversized = `data: ${JSON.stringify({ type: 'message_delta', usage: { output_tokens: 99 }, padding: 'é'.repeat(MAX_SSE_BUFFER_BYTES) })}\n\n`;
+    c.push(enc(DELTA + oversized));
+    expect(c.finish().tokens.output).toBe(11);
+  });
+
+  it('does not complete on a message_delta without usage', () => {
+    const c = createUsageCollector();
+    c.push(enc('event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n'));
+    expect(c.finish().complete).toBe(false);
   });
 
   it('takes the last message_delta when several arrive', () => {

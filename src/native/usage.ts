@@ -52,7 +52,9 @@ export function createUsageCollector(): { push(chunk: Uint8Array): void; finish(
   const tokens = zero();
   let complete = false;
   let buffer = '';
+  let bufferBytes = 0;
   let overflowed = false;
+  const encoder = new TextEncoder();
   // Streaming decoder: a chunk boundary can fall inside a multi-byte character,
   // and decoding each chunk independently would turn that into a replacement
   // character mid-JSON.
@@ -72,7 +74,7 @@ export function createUsageCollector(): { push(chunk: Uint8Array): void; finish(
       mergeUsage(tokens, message?.usage);
       return;
     }
-    if (frame.type === 'message_delta') {
+    if (frame.type === 'message_delta' && frame.usage !== undefined) {
       mergeUsage(tokens, frame.usage);
       complete = true;
     }
@@ -80,20 +82,45 @@ export function createUsageCollector(): { push(chunk: Uint8Array): void; finish(
 
   return {
     push(chunk) {
-      buffer += decoder.decode(chunk, { stream: true });
-      let nl = buffer.indexOf('\n');
+      const decoded = decoder.decode(chunk, { stream: true });
+      let start = 0;
+      let nl = decoded.indexOf('\n');
       while (nl !== -1) {
-        const raw = buffer.slice(0, nl);
-        buffer = buffer.slice(nl + 1);
-        if (!overflowed) line(raw);
-        overflowed = false;
-        nl = buffer.indexOf('\n');
-      }
-      if (buffer.length > MAX_SSE_BUFFER_BYTES) {
-        // Drop the runaway line and mark it, so its tail is not mistaken for
-        // the start of the next one.
+        const segment = decoded.slice(start, nl);
+        const segmentBytes = encoder.encode(segment).byteLength;
+        if (!overflowed) {
+          if (bufferBytes + segmentBytes > MAX_SSE_BUFFER_BYTES) {
+            // Drop the runaway line and mark it, so its tail is not mistaken for
+            // the start of the next one.
+            buffer = '';
+            bufferBytes = 0;
+            overflowed = true;
+          } else {
+            buffer += segment;
+            bufferBytes += segmentBytes;
+            line(buffer);
+          }
+        }
         buffer = '';
-        overflowed = true;
+        bufferBytes = 0;
+        overflowed = false;
+        start = nl + 1;
+        nl = decoded.indexOf('\n', start);
+      }
+
+      if (!overflowed) {
+        const tail = decoded.slice(start);
+        const tailBytes = encoder.encode(tail).byteLength;
+        if (bufferBytes + tailBytes > MAX_SSE_BUFFER_BYTES) {
+          // Drop the runaway line and mark it, so its tail is not mistaken for
+          // the start of the next one.
+          buffer = '';
+          bufferBytes = 0;
+          overflowed = true;
+        } else {
+          buffer += tail;
+          bufferBytes += tailBytes;
+        }
       }
     },
     finish() {
