@@ -66,14 +66,43 @@ describe('router usage recording', () => {
     expect(rows[0].complete).toBe(false);
   });
 
-  it('records a row when the client abandons the stream midway', async () => {
+  it('records partial usage as incomplete when the client abandons the stream', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];
-    const res = await routeRequest(req('sonata-code-simple'), deps(rows, () => sse(DELTA)));
+    const res = await routeRequest(req('sonata-code-simple'), deps(rows, () => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(DELTA));
+          controller.enqueue(new TextEncoder().encode('event: ping\ndata: {}\n\n'));
+        },
+      });
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }));
     const iterator = (res.body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
     await iterator.next();
+    await iterator.next(); // Advances past the first yield, so its usage is observed.
     await iterator.return?.(undefined);
     expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ complete: false, tokens: { input: 100, output: 7 } });
+  });
+
+  it('records partial usage when the upstream stream throws without swallowing it', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const upstreamError = new Error('upstream stream failed');
+    const res = await routeRequest(req('sonata-code-simple'), deps(rows, () => {
+      let pulls = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (pulls++ === 0) controller.enqueue(new TextEncoder().encode(DELTA));
+          else controller.error(upstreamError);
+        },
+      });
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }));
+    await expect(drain(res.body)).rejects.toThrow('upstream stream failed');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ complete: false, tokens: { input: 100, output: 7 } });
   });
 
   it('never lets a recorder throw reach the caller', async () => {

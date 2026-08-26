@@ -114,8 +114,9 @@ async function drainBody(body: AsyncIterable<Uint8Array> | Buffer): Promise<void
 async function* observe(
   body: AsyncIterable<Uint8Array>,
   onChunk: (chunk: Uint8Array) => void,
-  onEnd: () => void,
+  onEnd: (complete: boolean) => void,
 ): AsyncIterable<Uint8Array> {
+  let complete = false;
   try {
     for await (const chunk of body) {
       yield chunk;
@@ -123,9 +124,10 @@ async function* observe(
         onChunk(chunk);
       } catch { /* A malformed frame must not interrupt the response. */ }
     }
+    complete = true;
   } finally {
     try {
-      onEnd();
+      onEnd(complete);
     } catch { /* Ledger failures must not escape a disconnected stream either. */ }
   }
 }
@@ -198,9 +200,9 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
       body: observe(
         response.body,
         (chunk) => collector.push(chunk),
-        () => {
+        (streamComplete) => {
           const { tokens, complete } = collector.finish();
-          emit(tokens, complete);
+          emit(tokens, streamComplete && complete);
         },
       ),
     };
