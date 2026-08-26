@@ -4,11 +4,12 @@ dist/
 .superpowers/
 
 # Generated per-user by `sonata init` (contains absolute paths)
-.claude/settings.json
-.claude/agents/
 .mcp.json
 sonata.toml
 
-# Generated per-user by `sonata route` (holds this machine's routing state)
-.claude/settings.local.json
-.claude/settings.local.json.bak
+# Everything under .claude/ is per-machine, not source: agents and skills that
+# `sonata init`/`sonata sync` generate from this machine's sonata.toml, and the
+# routing state `sonata route` writes into settings. Ignored wholesale so a new
+# file Claude Code or sonata starts writing there does not silently become a
+# candidate for commit.
+.claude/
