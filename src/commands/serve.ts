@@ -413,11 +413,24 @@ export async function cmdServe(
     // candidate down for a crash it already recovered from. The `.catch` means
     // a hard failure resolves this too: the router's own fetch then fails for
     // real, and a genuine outage cools down exactly as before.
-    // Tracks the model registry LiteLLM's own config file currently reflects,
-    // so a config change (a new model added to sonata.toml while the daemon
-    // is already running) can be told apart from "nothing changed" without
-    // restarting litellm on every single tier-resolution call.
-    let activeModelsJson = JSON.stringify(config.unifiedModels);
+    // Tracks the native config LiteLLM's own config file currently reflects
+    // — legacy [native.models], unified [models], AND gateways, not just the
+    // unified table — so a config change (a new model added, an existing
+    // model's id/gateway edited under EITHER table, or a gateway's
+    // base_url/wire_format/auth/credential_source edited) while the daemon
+    // is already running can be told apart from "nothing changed" without
+    // restarting litellm on every single tier-resolution call. Gateways
+    // matter here even when the model list itself is unchanged: rerunning
+    // `sonata init` without touching model selection can still rewrite a
+    // gateway's endpoint or credential source, and litellm's own config
+    // would otherwise keep the stale one indefinitely. Legacy
+    // `native.models` matters too — `litellmConfig` (native/litellm.ts)
+    // builds the model list from `native.models` first, unconditionally, so
+    // a transitional config editing a legacy entry's id/gateway needs the
+    // same restart a unified edit gets.
+    const activeNativeSnapshot = (cfg: SonataConfig): string =>
+      JSON.stringify({ legacyModels: cfg.native?.models, models: cfg.unifiedModels, gateways: cfg.native?.gateways });
+    let activeModelsJson = activeNativeSnapshot(config);
     // Set right before a deliberate kill-for-config-change so the crash-exit
     // handler below (which fires for ANY exit, deliberate or not) does not
     // also schedule its own duplicate respawn on top of the one already in
@@ -471,7 +484,7 @@ export async function cmdServe(
     // every request already awaits before reaching litellm.
     const maybeRestartForModelChange = async (freshConfig: SonataConfig): Promise<void> => {
       if (stopping) return;
-      const freshModelsJson = JSON.stringify(freshConfig.unifiedModels);
+      const freshModelsJson = activeNativeSnapshot(freshConfig);
       if (freshModelsJson === activeModelsJson) return;
       if (!freshConfig.native) {
         activeModelsJson = freshModelsJson;

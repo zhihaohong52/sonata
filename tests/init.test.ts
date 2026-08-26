@@ -1226,6 +1226,30 @@ describe('cmdInit — re-init from existing config', () => {
     expect(readFileSync(join(home, '.config', 'sonata', 'sonata.toml'), 'utf8')).toBe(toml1);
   });
 
+  it('rescripts an untiered native-only unified config with --yes and no flags', async () => {
+    // A valid config with a hand-configured gateway, a native-only unified
+    // [models] entry, and no [tiers] or legacy generate table at all. Two
+    // bugs used to compound here: `deriveInitState`'s own providerKeys named
+    // `config/solo-gateway`, but the separate `configuredGateways` scan (only
+    // read `native.models`, never `unifiedModels`) never added that provider
+    // to `offered` — so scripted init rejected it as unknown before role
+    // selection was ever reached, masking the `roles: []` bug this config
+    // shape was also written to catch.
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways."solo-gateway"]
+base_url = "https://solo.example/v1"
+
+[models."solo-native"]
+gateway = "solo-gateway"
+id = "solo-model"
+context_window = 128000
+`);
+    await cmdInit({ cwd, home, packageRoot: '/pkg', yes: true, detect, scope: 'skip', write });
+    const cfg = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
+    expect(Object.keys(cfg.tiers ?? {}).sort()).toEqual(['code', 'explore', 'plan', 'review']);
+    expect(cfg.unifiedModels['solo-native']).toBeDefined();
+  });
+
   it('preserves a harness-only model with no native route across a re-init', async () => {
     writeFileSync(join(cwd, 'sonata.toml'), `
 [models."opencode-deepseek-v4-flash"]
@@ -1386,6 +1410,45 @@ context_window = 128000
     expect(state.nativeKeys).toEqual(['solo-native']);
   });
 
+  it('leaves roles undefined for a native-only unified config with no [tiers] or generate table', () => {
+    // Downstream, `d.roles ?? [...KNOWN_ROLES]` only falls through to the
+    // default role set on nullish — an explicit `[]` here used to be read as
+    // "zero roles selected" and made scripted `sonata init --yes` throw
+    // "no roles selected" for exactly this untiered, generatorless shape.
+    const config = parseConfig(`
+[native.gateways."solo-gateway"]
+base_url = "https://solo.example/v1"
+
+[models."solo-native"]
+gateway = "solo-gateway"
+id = "solo-model"
+context_window = 128000
+`);
+    const state = deriveInitState(config, 'project', []);
+    expect(state.roles).toBeUndefined();
+  });
+
+  it('keeps roles as [] for a syntactically present but empty [tiers] block', () => {
+    // parseConfig accepts `[tiers]` with zero role sub-tables under it
+    // without error — that's explicit configuration (of zero roles), not the
+    // "no role configuration at all" case `roles: undefined` exists for.
+    // A plain non-empty check on `config.tiers` would conflate the two;
+    // `!== undefined` alone tells them apart.
+    const config = parseConfig(`
+[tiers]
+
+[native.gateways."solo-gateway"]
+base_url = "https://solo.example/v1"
+
+[models."solo-native"]
+gateway = "solo-gateway"
+id = "solo-model"
+context_window = 128000
+`);
+    const state = deriveInitState(config, 'project', []);
+    expect(state.roles).toEqual([]);
+  });
+
   it('returns only the scope when native config is absent', () => {
     const plain = parseConfig('[generate.native]\n');
     expect(deriveInitState(plain, 'global', [])).toEqual({ configScope: 'global' });
@@ -1438,6 +1501,55 @@ context_window = 128000
       key: 'luna', gateway: 'codex', id: 'gpt-5.6-luna', contextWindow: 128000,
       baseUrl: CODEX_OAUTH_BASE_URL, auth: 'codex-oauth',
     }]);
+  });
+
+  it('merges a legacy [native.models] entry alongside a unified [models] entry under a different key', () => {
+    // A transitional config can have both tables at once. `unified.length > 0`
+    // used to be treated as proof `[native.models]` was empty, silently
+    // dropping the legacy-only key from the candidate list even though
+    // `deriveInitState` still names it — scripted init then rejected it as
+    // unavailable, and the interactive path couldn't resolve it either.
+    const config = parseConfig(`
+[native.gateways."acme"]
+base_url = "https://acme.example/v1"
+
+[models."unified-model"]
+gateway = "acme"
+id = "unified-upstream"
+context_window = 128000
+
+[native.models."legacy-model"]
+gateway = "acme"
+id = "legacy-upstream"
+context_window = 64000
+`);
+    const keys = configNativeCandidates(config).map((candidate) => candidate.key);
+    expect(keys).toContain('unified-model');
+    expect(keys).toContain('legacy-model');
+  });
+
+  it('lets a legacy entry win over a unified entry sharing the same key, matching litellmConfig', () => {
+    // native/litellm.ts builds its model list from `native.models` first,
+    // unconditionally, and skips a unified entry sharing that key — this
+    // must agree, or `sonata init` could rewrite a key to point at a
+    // different upstream than the one actually being served.
+    const config = parseConfig(`
+[native.gateways."acme"]
+base_url = "https://acme.example/v1"
+
+[models."shared-key"]
+gateway = "acme"
+id = "unified-upstream"
+context_window = 128000
+
+[native.models."shared-key"]
+gateway = "acme"
+id = "legacy-upstream"
+context_window = 64000
+`);
+    const candidates = configNativeCandidates(config);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].id).toBe('legacy-upstream');
   });
 
   it('keeps config providers while filtering ordinary providers', () => {

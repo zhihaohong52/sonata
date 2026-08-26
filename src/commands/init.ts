@@ -383,7 +383,23 @@ export function deriveInitState(
     harnesses,
     providerKeys,
     nativeKeys: modelKeys,
-    roles: Object.keys(config.tiers ?? config.native?.generate ?? {}),
+    // `undefined`, not `[]`, when the config carries no role configuration at
+    // all (a valid native-only unified config with no [tiers] and no legacy
+    // generate table). `config.native.generate` is always an object once
+    // `[native]` exists at all — parsed as `{}` when there's no
+    // `[generate.native]` — so a plain `!== undefined` check would call that
+    // "configured", same bug in a different table. A syntactically present
+    // but empty `[tiers]` block, by contrast, IS explicit configuration
+    // (parseConfig accepts it without error) and must still produce `[]`,
+    // not fall through to the default: `config.tiers !== undefined` alone
+    // (not a non-empty check) preserves that distinction. Downstream,
+    // `d.roles ?? [...KNOWN_ROLES]` only falls through to the default role
+    // set on nullish, so an explicit `[]` here was read as "zero roles
+    // selected" and made scripted `sonata init --yes` throw "no roles
+    // selected" for the genuinely-unconfigured shape.
+    roles: config.tiers !== undefined || Object.keys(config.native?.generate ?? {}).length > 0
+      ? Object.keys(config.tiers ?? config.native?.generate ?? {})
+      : undefined,
     tiers: config.tiers
       ? Object.fromEntries(Object.entries(config.tiers).map(([role, lists]) => [role, { simple: [...lists.simple], complex: [...lists.complex] }]))
       : undefined,
@@ -418,8 +434,27 @@ export function configNativeCandidates(config: SonataConfig): NativeCandidate[] 
         ...(model.harness !== undefined ? { harness: model.harness, harnessId: model.harnessId } : {}),
       }];
     });
-  if (unified.length > 0 || config.native === undefined) return unified;
-  return Object.entries(config.native.models).flatMap(([key, model]) => {
+  if (config.native === undefined) return unified;
+  // `config.native.models` is NOT always genuine legacy data: `parseConfig`
+  // projects every unified model into it whenever `[tiers]` is present ("Tier
+  // configs are the unified format. Keep a native projection so the router
+  // and older consumers can use the same gateway/model data" — config.ts),
+  // so a tiered config's `native.models` is a harness-stripped mirror of
+  // `unifiedModels`, not independent authored data. Treating it as an
+  // independent legacy source there would make every tiered config's own
+  // projection of a model shadow that same model's richer unified entry —
+  // losing its harness/harnessId fields on every re-init. Only an UNTIERED
+  // config (`config.tiers === undefined`) can carry a genuinely distinct,
+  // hand-authored `[native.models]` table.
+  if (config.tiers !== undefined) return unified;
+  // A transitional, untiered config can carry a gateway-backed `[models]`
+  // entry AND a separate `[native.models]` entry under a different key at
+  // the same time — any non-empty `unified` here used to be treated as proof
+  // the legacy table was empty, so the legacy-only key was silently dropped
+  // from the candidate list even though `deriveInitState` still names it
+  // (scripted init then rejects it as unavailable, and the interactive path
+  // can't resolve it through `nativeByKey` either). Merge the two sets.
+  const legacy = Object.entries(config.native.models).flatMap(([key, model]) => {
     const gateway = config.native!.gateways[model.gateway];
     if (gateway === undefined) return [];
     return [{
@@ -429,6 +464,16 @@ export function configNativeCandidates(config: SonataConfig): NativeCandidate[] 
       ...(gateway.wireFormat !== undefined ? { wireFormat: gateway.wireFormat } : {}),
     }];
   });
+  // On a same-key collision, legacy wins — not unified. `litellmConfig`
+  // (native/litellm.ts) builds its model list from `native.models` first,
+  // unconditionally, and skips a unified entry sharing that key; letting
+  // unified win here instead would make `sonata init` silently change which
+  // upstream a key denotes relative to what's actually being served. This is
+  // safe here specifically because `config.tiers === undefined` rules out
+  // the projection case above — every entry in `native.models` at this point
+  // really was authored under `[native.models]`.
+  const legacyKeys = new Set(legacy.map((candidate) => candidate.key));
+  return [...legacy, ...unified.filter((candidate) => !legacyKeys.has(candidate.key))];
 }
 
 /**
@@ -620,6 +665,17 @@ async function runInit(
   const configuredGateways = new Map<string, number>();
   for (const config of Object.values(configsByScope)) {
     for (const model of Object.values(config?.native?.models ?? {})) {
+      configuredGateways.set(model.gateway, (configuredGateways.get(model.gateway) ?? 0) + 1);
+    }
+    // A native-only unified [models] entry names its gateway here too — an
+    // untiered config with no legacy [native.models] table at all otherwise
+    // never gets its gateway a synthetic `config/<gateway>` provider, so
+    // `deriveInitState`'s own providerKeys (computed from both tables)
+    // names a provider `offered` never actually has, and scripted
+    // `sonata init --yes` rejects it as unknown before role selection is
+    // even reached.
+    for (const model of Object.values(config?.unifiedModels ?? {})) {
+      if (model.gateway === undefined) continue;
       configuredGateways.set(model.gateway, (configuredGateways.get(model.gateway) ?? 0) + 1);
     }
   }

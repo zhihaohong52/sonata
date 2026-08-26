@@ -488,6 +488,122 @@ litellm = 43120
     expect(spawnCount).toBe(2);
   });
 
+  it('restarts litellm when only a gateway field changes, even if the model list is untouched', async () => {
+    // Rerunning `sonata init` without touching model selection can still
+    // rewrite a gateway's base_url, wire_format, auth, or credential_source.
+    // Comparing only `unifiedModels` (not gateways too) would leave litellm's
+    // generated config — and its credential environment — stale indefinitely
+    // in that case, since the model list itself never changed.
+    const config = (baseUrl: string) => `
+[models."fixed"]
+gateway = "acme"
+id = "fixed-upstream"
+context_window = 128000
+
+[tiers.code]
+simple = ["fixed"]
+complex = ["fixed"]
+
+[native.gateways."acme"]
+base_url = "${baseUrl}"
+
+[native.ports]
+router = 0
+litellm = 43115
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), config('https://gateway-one.example/v1'));
+
+    let spawnCount = 0;
+    const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: () => {
+        spawnCount += 1;
+        return {
+          pid: spawnCount,
+          kill: () => exits[spawnCount - 1]?.forEach((cb) => cb(null, 'SIGTERM')),
+          onExit: (cb) => { (exits[spawnCount - 1] ??= []).push(cb); },
+        };
+      },
+    });
+    handles.push(handle);
+    expect(spawnCount).toBe(1);
+
+    // Only the gateway's base_url changes — "fixed" stays the only model.
+    writeFileSync(join(cwd, 'sonata.toml'), config('https://gateway-two.example/v1'));
+    const response = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    expect(response.status).toBe(529);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(spawnCount).toBe(2);
+  });
+
+  it('restarts litellm when a legacy [native.models] entry changes, not just unified [models]', async () => {
+    // litellmConfig (native/litellm.ts) builds its model list from
+    // `native.models` first, unconditionally — a transitional config with a
+    // tiered unified model AND a separate untracked legacy model both feed
+    // litellm's config, so editing the legacy entry alone must restart it
+    // too, even though `unifiedModels` and `gateways` are both unchanged.
+    const config = (legacyId: string) => `
+[models."current"]
+gateway = "acme"
+id = "current-upstream"
+context_window = 128000
+
+[tiers.code]
+simple = ["current"]
+complex = ["current"]
+
+[native.models."legacy"]
+gateway = "acme"
+id = "${legacyId}"
+context_window = 128000
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43114
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), config('legacy-upstream-v1'));
+
+    let spawnCount = 0;
+    const configs: string[] = [];
+    const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: (configPath) => {
+        spawnCount += 1;
+        configs.push(readFileSync(configPath, 'utf8'));
+        return {
+          pid: spawnCount,
+          kill: () => exits[spawnCount - 1]?.forEach((cb) => cb(null, 'SIGTERM')),
+          onExit: (cb) => { (exits[spawnCount - 1] ??= []).push(cb); },
+        };
+      },
+    });
+    handles.push(handle);
+    expect(spawnCount).toBe(1);
+
+    // Only the legacy entry's id changes — unifiedModels and gateways don't.
+    writeFileSync(join(cwd, 'sonata.toml'), config('legacy-upstream-v2'));
+    const response = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      // A direct model request, exactly what `sonata dispatch --model legacy` sends.
+      body: JSON.stringify({ model: 'legacy', messages: [] }),
+    });
+    expect(response.status).toBe(502);
+    expect(spawnCount).toBe(2);
+    expect(configs[1]).toContain('legacy-upstream-v2');
+  });
+
   it('rebuilds the LiteLLM child environment when a new gateway is added', async () => {
     const config = (includeOther: boolean) => `
 [models."first"]
