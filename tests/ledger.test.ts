@@ -27,8 +27,15 @@ function row(over: Partial<LedgerRow> = {}): LedgerRow {
 describe('ledger paths', () => {
   it('names a file by UTC date, not local date', () => {
     // 23:30 UTC-  a local timezone east of UTC would roll this to the next day.
-    const at = new Date('2026-08-27T23:30:00.000Z');
-    expect(ledgerPathFor(home, at)).toBe(join(ledgerDir(home), '2026-08-27.jsonl'));
+    const previousTz = process.env.TZ;
+    process.env.TZ = 'Pacific/Kiritimati';
+    try {
+      const at = new Date('2026-08-27T23:30:00.000Z');
+      expect(ledgerPathFor(home, at)).toBe(join(ledgerDir(home), '2026-08-27.jsonl'));
+    } finally {
+      if (previousTz === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTz;
+    }
   });
 });
 
@@ -40,21 +47,30 @@ describe('appendRow / readRows', () => {
     expect(back[0].alias).toBe('sonata-code-simple');
   });
 
-  it('appends whole lines, one per row', () => {
+  it('N appends produce N whole parseable lines and end with a newline', () => {
     appendRow(home, row());
     appendRow(home, row({ alias: 'sonata-review-simple' }));
     const raw = readFileSync(ledgerPathFor(home, new Date('2026-08-27T04:12:07.881Z')), 'utf8');
-    expect(raw.split('\n').filter(Boolean)).toHaveLength(2);
+    const lines = raw.split('\n').filter(Boolean);
+    expect(lines).toHaveLength(2);
+    expect(lines.map((line) => JSON.parse(line))).toHaveLength(2);
     expect(raw.endsWith('\n')).toBe(true);
   });
 
   it('skips a corrupt line rather than failing the whole read', () => {
     appendRow(home, row());
     const path = ledgerPathFor(home, new Date('2026-08-27T04:12:07.881Z'));
-    writeFileSync(path, `${readFileSync(path, 'utf8')}{not json\n`);
+    writeFileSync(path, `${readFileSync(path, 'utf8')}{not json\nnull\n`);
     appendRow(home, row({ alias: 'later' }));
     const back = readRows(home, 0, Date.parse('2026-08-27T05:00:00Z'));
     expect(back.map((r) => r.alias)).toEqual(['sonata-code-simple', 'later']);
+  });
+
+  it('skips a literal null line', () => {
+    appendRow(home, row());
+    const path = ledgerPathFor(home, new Date('2026-08-27T04:12:07.881Z'));
+    writeFileSync(path, `${readFileSync(path, 'utf8')}null\n`);
+    expect(readRows(home, 0, Date.parse('2026-08-27T05:00:00Z'))).toHaveLength(1);
   });
 
   it('filters by since, across day files', () => {
@@ -73,10 +89,12 @@ describe('appendRow / readRows', () => {
 describe('pruneLedger', () => {
   it('deletes files older than the retention window and keeps the rest', () => {
     appendRow(home, row({ ts: '2026-07-01T10:00:00.000Z' }));
+    appendRow(home, row({ ts: '2026-07-28T10:00:00.000Z' }));
     appendRow(home, row({ ts: '2026-08-27T10:00:00.000Z' }));
     const removed = pruneLedger(home, LEDGER_RETENTION_DAYS, new Date('2026-08-27T12:00:00Z'));
     expect(removed).toBe(1);
     expect(existsSync(ledgerPathFor(home, new Date('2026-07-01T10:00:00Z')))).toBe(false);
+    expect(existsSync(ledgerPathFor(home, new Date('2026-07-28T10:00:00Z')))).toBe(true);
     expect(existsSync(ledgerPathFor(home, new Date('2026-08-27T10:00:00Z')))).toBe(true);
   });
 

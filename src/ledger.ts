@@ -15,13 +15,9 @@ import { join } from 'node:path';
 
 import type { UsageTokens } from './native/usage.js';
 
-export interface LedgerPrice {
-  /** Absent when `source` is 'none'. A known-free rate is 0, which is not the same thing. */
-  totalUsd?: number;
-  source: 'model' | 'gateway' | 'ai-pricing' | 'none';
-  /** When the rate was observed; only meaningful for scraped prices. */
-  observedAt?: string;
-}
+export type LedgerPrice =
+  | { source: 'none' }
+  | { source: 'model' | 'gateway' | 'ai-pricing'; totalUsd: number; observedAt?: string };
 
 export interface LedgerRow {
   ts: string;
@@ -59,6 +55,7 @@ export function ledgerPathFor(home: string, at: Date): string {
 export function appendRow(home: string, row: LedgerRow): void {
   const at = new Date(row.ts);
   mkdirSync(ledgerDir(home), { recursive: true });
+  // O_APPEND plus one write keeps concurrent appends as whole lines.
   appendFileSync(ledgerPathFor(home, at), `${JSON.stringify(row)}\n`);
 }
 
@@ -78,7 +75,10 @@ export function readRows(home: string, sinceMs: number, now: number = Date.now()
       if (line === '') continue;
       let row: LedgerRow;
       try {
-        row = JSON.parse(line) as LedgerRow;
+        const parsed: unknown = JSON.parse(line);
+        if (parsed === null || typeof parsed !== 'object' || typeof (parsed as { ts?: unknown }).ts !== 'string') continue;
+        row = parsed as LedgerRow;
+        if (!Number.isFinite(Date.parse(row.ts))) continue;
       } catch {
         // A torn final line (a crash mid-append) must not cost the whole report.
         continue;
@@ -95,7 +95,7 @@ export function readRows(home: string, sinceMs: number, now: number = Date.now()
 export function pruneLedger(home: string, retentionDays: number, now: Date = new Date()): number {
   const dir = ledgerDir(home);
   if (!existsSync(dir)) return 0;
-  const cutoff = now.getTime() - retentionDays * 24 * 3600 * 1000;
+  const cutoff = Math.floor((now.getTime() - retentionDays * 24 * 3600 * 1000) / (24 * 3600 * 1000)) * (24 * 3600 * 1000);
   let removed = 0;
   for (const name of readdirSync(dir)) {
     const match = FILE_PATTERN.exec(name);
