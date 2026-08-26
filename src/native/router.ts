@@ -1,5 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
+import type { LedgerRow } from '../ledger.js';
+import { createUsageCollector, type UsageTokens, usageFromJsonBody } from './usage.js';
+
 export interface TierRoute {
   key: string;
   native?: { gateway: string; id: string };
@@ -41,6 +44,11 @@ export interface RouterDeps {
    * callers (and tests) that have no respawn to gate.
    */
   litellmReady?: () => Promise<void>;
+  /**
+   * Receives one row per request. Each invocation is isolated from routing so
+   * accounting trouble can only lose its own row, never a client response.
+   */
+  recordUsage?: (row: LedgerRow) => void;
 }
 
 export interface RouterRequest {
@@ -97,6 +105,108 @@ async function drainBody(body: AsyncIterable<Uint8Array> | Buffer): Promise<void
   try {
     for await (const _chunk of body) { /* discard */ }
   } catch { /* the body failing to drain is not itself an error */ }
+}
+
+/**
+ * Lets the client advance before inspecting its chunk. This keeps accounting
+ * off the response critical path; `finally` also accounts for disconnects.
+ */
+async function* observe(
+  body: AsyncIterable<Uint8Array>,
+  onChunk: (chunk: Uint8Array) => void,
+  onEnd: () => void,
+): AsyncIterable<Uint8Array> {
+  try {
+    for await (const chunk of body) {
+      yield chunk;
+      try {
+        onChunk(chunk);
+      } catch { /* A malformed frame must not interrupt the response. */ }
+    }
+  } finally {
+    try {
+      onEnd();
+    } catch { /* Ledger failures must not escape a disconnected stream either. */ }
+  }
+}
+
+interface RecordContext {
+  startedAt: number;
+  alias: string;
+  role?: string;
+  tier?: string;
+  key?: string;
+  gateway?: string;
+  upstream: 'litellm' | 'anthropic';
+  attempts: { key: string; status: number }[];
+  session?: string;
+}
+
+function headerNumber(headers: Record<string, string>, name: string): number | undefined {
+  const value = Number(headers[name]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Adds accounting only when requested. The guard intentionally covers parsing,
+ * timestamps, and emission: a ledger defect cannot change router behaviour.
+ */
+function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: RouterDeps): RouterResponse {
+  if (deps.recordUsage === undefined) return response;
+
+  try {
+    const now = deps.now ?? Date.now;
+    const fallbacks = headerNumber(response.headers, 'x-litellm-attempted-fallbacks');
+    const retries = headerNumber(response.headers, 'x-litellm-attempted-retries');
+    const emit = (tokens: UsageTokens, complete: boolean): void => {
+      try {
+        const endedAt = now();
+        deps.recordUsage?.({
+          ts: new Date(endedAt).toISOString(),
+          ms: endedAt - ctx.startedAt,
+          session: ctx.session,
+          alias: ctx.alias,
+          role: ctx.role,
+          tier: ctx.tier,
+          key: ctx.key,
+          gateway: ctx.gateway,
+          upstream: ctx.upstream,
+          litellmModel: response.headers['x-litellm-model-name'],
+          callId: response.headers['x-litellm-call-id'],
+          status: response.status,
+          complete,
+          tokens,
+          // The router knows observations, while serve owns pricing config.
+          price: { source: 'none' },
+          attempts: ctx.attempts,
+          litellm: fallbacks === undefined && retries === undefined
+            ? undefined
+            : { fallbacks: fallbacks ?? 0, retries: retries ?? 0 },
+        });
+      } catch { /* Accounting is strictly best-effort. */ }
+    };
+
+    if (Buffer.isBuffer(response.body)) {
+      const { tokens, complete } = usageFromJsonBody(response.body);
+      emit(tokens, complete);
+      return response;
+    }
+
+    const collector = createUsageCollector();
+    return {
+      ...response,
+      body: observe(
+        response.body,
+        (chunk) => collector.push(chunk),
+        () => {
+          const { tokens, complete } = collector.finish();
+          emit(tokens, complete);
+        },
+      ),
+    };
+  } catch {
+    return response;
+  }
 }
 
 /**
@@ -273,7 +383,13 @@ function litellmHeaders(headers: Record<string, string>, litellmKey: string): Re
  * (401/403) goes to the client — retry is inherently pre-first-byte, so this
  * never interferes with an in-progress stream.
  */
-async function routeTierRequest(req: RouterRequest, deps: RouterDeps, alias: string): Promise<RouterResponse> {
+async function routeTierRequest(
+  req: RouterRequest,
+  deps: RouterDeps,
+  alias: string,
+  startedAt: number,
+  session: string | undefined,
+): Promise<RouterResponse> {
   // Once per request, not once per candidate: a candidate skipped for being
   // in its post-failure cooldown window would otherwise mean this never
   // fires at all, silently masking a real config change behind an unrelated
@@ -295,6 +411,7 @@ async function routeTierRequest(req: RouterRequest, deps: RouterDeps, alias: str
   const headers = litellmHeaders(requestHeaders(req.headers), deps.litellmKey);
   const flattened = flattenSystemBlocks(req.body);
   const candidates = resolved.routes.filter((route) => route.native !== undefined);
+  const attempts: { key: string; status: number }[] = [];
 
   for (const route of candidates) {
     const until = cooldowns.get(route.key);
@@ -313,17 +430,28 @@ async function routeTierRequest(req: RouterRequest, deps: RouterDeps, alias: str
     // retrying can't fix.
     if (response.status >= 500 || response.status === 429 || response.status === 401 || response.status === 403) {
       await drainBody(response.body);
+      attempts.push({ key: route.key, status: response.status });
       cooldowns.set(route.key, now() + TIER_COOLDOWN_MS);
       deps.log?.(`router: ${route.key} failed (${response.status}), trying next`);
       continue;
     }
     deps.log?.(`${req.method} ${req.url} model=${alias} -> ${route.key} -> litellm`);
-    return response;
+    return withUsageRecording(response, {
+      startedAt,
+      session,
+      alias,
+      role: resolved.role,
+      tier: resolved.tier,
+      key: route.key,
+      gateway: route.native!.gateway,
+      upstream: 'litellm',
+      attempts,
+    }, deps);
   }
 
   const label = `${resolved.role}-${resolved.tier}`;
   deps.log?.(`router: all native routes for ${label} failed`);
-  return {
+  return withUsageRecording({
     status: 529,
     headers: { 'content-type': 'application/json' },
     body: anthropicErrorBody(
@@ -332,13 +460,28 @@ async function routeTierRequest(req: RouterRequest, deps: RouterDeps, alias: str
       `sonata dispatch --tier ${label} --task-file <path> (or trailing task text) — ` +
       'dispatch requires one of those; the router has no task text of its own to supply',
     ),
-  };
+  }, {
+    startedAt,
+    session,
+    alias,
+    role: resolved.role,
+    tier: resolved.tier,
+    upstream: 'litellm',
+    attempts,
+  }, deps);
 }
 
 export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promise<RouterResponse> {
   const alias = requestedModel(req.body);
+  const session = req.headers['x-claude-code-session-id'];
+  let startedAt = 0;
+  if (deps.recordUsage !== undefined) {
+    try {
+      startedAt = (deps.now ?? Date.now)();
+    } catch { /* A broken accounting clock must not stop routing. */ }
+  }
   if (alias !== undefined && alias.startsWith('sonata-') && deps.resolveTier?.(alias) !== undefined) {
-    return routeTierRequest(req, deps, alias);
+    return routeTierRequest(req, deps, alias, startedAt, session);
   }
 
   const anthropic = isClaudeRequest(req.body);
@@ -355,7 +498,11 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     // key isn't a `sonata-*` alias), so this is the only place such a
     // request's config-change check can fire.
     deps.checkModelChange?.();
-    return forwardToLitellm(body, litellmHeaders(headers, deps.litellmKey), req, deps);
+    return withUsageRecording(
+      await forwardToLitellm(body, litellmHeaders(headers, deps.litellmKey), req, deps),
+      { startedAt, session, alias: alias ?? '', upstream: 'litellm', attempts: [] },
+      deps,
+    );
   }
 
   try {
@@ -363,18 +510,18 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       targetUrl(deps.anthropicBase ?? 'https://api.anthropic.com', req.url),
       { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined },
     );
-    return {
+    return withUsageRecording({
       status: response.status,
       headers: responseHeaders(response.headers),
       body: response.body === null ? Buffer.alloc(0) : responseBody(response.body),
-    };
+    }, { startedAt, session, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return {
+    return withUsageRecording({
       status: 502,
       headers: { 'content-type': 'application/json' },
       body: anthropicErrorBody('router_error', message),
-    };
+    }, { startedAt, session, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   }
 }
 
