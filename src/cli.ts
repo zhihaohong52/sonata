@@ -21,7 +21,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove } from './commands/auth.js';
 import { cmdServe, cmdRestart, startServeDaemon } from './commands/serve.js';
 import { cmdCode } from './commands/code.js';
-import { cmdRoute, cmdRouteSession, type RouteAction } from './commands/route.js';
+import { cmdRoute, cmdRouteSession, cmdRouteSubagent, type RouteAction } from './commands/route.js';
 import { cmdCatalogUpdate } from './commands/catalog.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
 
@@ -468,6 +468,17 @@ export async function main(argv: string[]): Promise<number> {
       return 0;
     }
 
+    // Also the body of a hook, not a surface for people: routing follows the
+    // foreign-model subagents that need it, turned on at SubagentStart and off
+    // when the last one stops.
+    if (action === 'subagent-start' || action === 'subagent-stop') {
+      const id = rest[rest.indexOf('--id') + 1];
+      if (!rest.includes('--id') || !id) throw new Error(`sonata route ${action} requires --id <agent-id>`);
+      const res = await cmdRouteSubagent(action === 'subagent-start' ? 'start' : 'stop', id, opts);
+      console.log(`routing ${res.routing}; ${res.subagents} subagent(s) running`);
+      return 0;
+    }
+
     if (!action || !['on', 'off', 'status', 'auto', 'manual'].includes(action)) {
       throw new Error('sonata route requires one of: on | off | status | auto | manual');
     }
@@ -483,8 +494,8 @@ export async function main(argv: string[]): Promise<number> {
         console.log(`  scopes: ${active.length > 0 ? active.join(', ') : 'none'}`);
       }
       if (status.auto) {
-        console.log('  auto:   on — each session routes itself at start and un-routes at end');
-        console.log('          (sessions keep Remote Control: they launch before routing is written)');
+        console.log('  auto:   on — routing turns on only while a foreign-model subagent runs');
+        console.log('          (every session keeps Remote Control: none launches into a routed file)');
         if (status.sessions > 0) console.log(`  live:   ${status.sessions} routed session(s)`);
       } else if (action === 'manual') {
         console.log('  auto:   off — routing is whatever `sonata route on|off` last set');

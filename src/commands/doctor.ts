@@ -255,8 +255,8 @@ export async function cmdDoctor(
           name: 'route auto',
           ok: true,
           detail: live === 0
-            ? 'each session routes itself at start and un-routes at end; none live now'
-            : `${live} session(s) routed; routing stays on until the last one ends`,
+            ? 'routing follows foreign-model subagents; no sessions live now'
+            : `${live} session(s) live; routing turns on only while a subagent runs`,
         });
       }
     }

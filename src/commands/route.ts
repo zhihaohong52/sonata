@@ -292,6 +292,42 @@ export function sessionHookCommand(
   return scope === 'global' ? `${base} --global` : base;
 }
 
+/**
+ * Which subagents are worth turning routing on for.
+ *
+ * Every agent `sonata sync` generates is `<role>-…` or `native-<role>-…`, and
+ * the four roles are fixed. Matching those rather than every subagent keeps
+ * the window — the only period in which a launching session loses Remote
+ * Control — as short as the work actually requires. Claude Code's own
+ * built-ins (`general-purpose`, `Explore`, `Plan`) do not match: the regex is
+ * case-sensitive and requires the trailing hyphen.
+ */
+export const SONATA_AGENT_MATCHER = '^(native-)?(code|review|explore|plan)-';
+
+/**
+ * The SubagentStart/SubagentStop command auto mode installs, alongside the
+ * session pair.
+ */
+export function subagentHookCommand(
+  packageRoot: string,
+  phase: 'start' | 'stop',
+  scope: 'project' | 'global' = 'project',
+): string {
+  const base = `node ${JSON.stringify(join(packageRoot, 'hooks', 'route-subagent.mjs'))} ${phase}`;
+  return scope === 'global' ? `${base} --global` : base;
+}
+
+/** Where the ids of currently-running foreign-model subagents are counted. */
+export function routeSubagentsFile(
+  cwd: string,
+  scope: 'project' | 'global' = 'project',
+  home: string = homedir(),
+): string {
+  return scope === 'global'
+    ? join(home, '.config', 'sonata', 'route-subagents.json')
+    : join(cwd, '.sonata', 'route-subagents.json');
+}
+
 /** Whether both lifecycle hooks for this install are present. */
 export function autoInstalled(
   settings: Settings,
@@ -299,7 +335,14 @@ export function autoInstalled(
   scope: 'project' | 'global' = 'project',
 ): boolean {
   return hookInstalled(settings, sessionHookCommand(packageRoot, 'start', scope), 'SessionStart')
-    && hookInstalled(settings, sessionHookCommand(packageRoot, 'end', scope), 'SessionEnd');
+    && hookInstalled(settings, sessionHookCommand(packageRoot, 'end', scope), 'SessionEnd')
+    // The subagent pair is what actually routes, so an install carrying only
+    // the session pair is not auto mode — it is an install from before routing
+    // moved off the session lifetime, and it would never route at all. Failing
+    // this check is what sends `sonata doctor` to tell the user to re-run
+    // `sonata route auto`.
+    && hookInstalled(settings, subagentHookCommand(packageRoot, 'start', scope), 'SubagentStart')
+    && hookInstalled(settings, subagentHookCommand(packageRoot, 'stop', scope), 'SubagentStop');
 }
 
 export interface RouteAutoPlan {
@@ -339,6 +382,16 @@ export function planRouteAuto(
     next = res.settings;
     changed = changed || res.changed;
   }
+  // The subagent pair is what actually routes. The session pair only keeps the
+  // router daemon up and tracks liveness, so that a session which launches
+  // while nothing is dispatched sees a clean settings file and keeps Remote
+  // Control.
+  for (const phase of ['start', 'stop'] as const) {
+    const event = phase === 'start' ? 'SubagentStart' : 'SubagentStop';
+    const res = installHook(next, subagentHookCommand(packageRoot, phase, scope), SONATA_AGENT_MATCHER, event);
+    next = res.settings;
+    changed = changed || res.changed;
+  }
   return { settings: next, changed };
 }
 
@@ -353,6 +406,12 @@ export function planRouteManual(
   for (const phase of ['start', 'end'] as const) {
     const event = phase === 'start' ? 'SessionStart' : 'SessionEnd';
     const res = uninstallHook(next, sessionHookCommand(packageRoot, phase, scope), event);
+    next = res.settings;
+    changed = changed || res.changed;
+  }
+  for (const phase of ['start', 'stop'] as const) {
+    const event = phase === 'start' ? 'SubagentStart' : 'SubagentStop';
+    const res = uninstallHook(next, subagentHookCommand(packageRoot, phase, scope), event);
     next = res.settings;
     changed = changed || res.changed;
   }
@@ -593,7 +652,12 @@ export async function cmdRouteSession(
       const current = readSessions(registry);
       const left = current.filter((id) => id !== sessionId);
       writeSessions(registry, left);
-      if (left.length > 0) return { sessions: left.length, routing: 'on' };
+      if (left.length > 0) return { sessions: left.length, routing: 'off' };
+      // Last session out clears the subagent count and routing with it. A
+      // subagent killed before its SubagentStop hook would otherwise leak a
+      // reference and leave routing on for good; bounding that leak by the
+      // session's own lifetime is what keeps it from becoming permanent.
+      writeSessions(routeSubagentsFile(opts.cwd, opts.scope ?? 'project', opts.home), []);
       await cmdRoute('off', opts);
       return { sessions: 0, routing: 'off' };
     });
@@ -676,8 +740,80 @@ export async function cmdRouteSession(
     const current = readSessions(registry);
     writeSessions(registry, current.includes(sessionId) ? current : [...current, sessionId]);
   });
-  await cmdRoute('on', opts);
 
+  // Deliberately does NOT route. Routing on here is what made `route auto`
+  // degrade into `route on`: it stayed on while any registered session lived,
+  // which with overlapping sessions is forever, so every session after the
+  // first launched into a dirty file and lost Remote Control. Routing is now
+  // turned on per foreign-model subagent instead — see cmdRouteSubagent. This
+  // phase only ensures the router daemon is up and records liveness.
   const after = readSessions(registry);
-  return { sessions: after.length, routing: 'on' };
+  return { sessions: after.length, routing: 'off' };
+}
+
+/**
+ * Removes the routing env, leaving both registries alone.
+ *
+ * `cmdRoute('off')` means "the user said stop routing" and clears the session
+ * registry with it. The subagent path needs only the settings half.
+ */
+function routeOffKeepingRegistries(
+  opts: { cwd: string; home: string; packageRoot: string; scope?: 'project' | 'global' },
+): void {
+  const file = routeSettingsFile(opts.cwd, opts.scope ?? 'project', opts.home);
+  const plan = planRouteOff(readSettings(file), opts.packageRoot);
+  if (plan.changed) writeSettings(file, plan.settings);
+}
+
+export interface SubagentPhaseResult {
+  /** Foreign-model subagents still running after this phase. */
+  subagents: number;
+  routing: 'on' | 'off';
+}
+
+/**
+ * The body of the subagent hooks: routing follows the foreign-model subagents
+ * that actually need it, and nothing else.
+ *
+ * Two measured facts shape this. **Adding** the routing env is picked up by an
+ * already-running session within seconds, which is why turning it on at
+ * SubagentStart is enough for the subagent's very first request to be routed —
+ * verified live 2026-08-27, with routing off at dispatch and the router
+ * logging `model=sonata-explore-simple -> gpt-5.6-luna -> litellm` moments
+ * later. **Removing** it is only observed eventually, on a timescale not
+ * measured, which is why routing is held for the whole run rather than cleaned
+ * up on a timer — a subagent whose routing vanished mid-task would send its
+ * `sonata-*` alias to api.anthropic.com and die on an unknown model.
+ *
+ * Counted rather than a boolean because subagents run concurrently: one
+ * finishing must not un-route its siblings.
+ */
+export async function cmdRouteSubagent(
+  phase: 'start' | 'stop',
+  agentId: string,
+  opts: { cwd: string; home: string; packageRoot: string; scope?: 'project' | 'global' },
+): Promise<SubagentPhaseResult> {
+  const registry = routeSubagentsFile(opts.cwd, opts.scope ?? 'global', opts.home);
+
+  // Read, decide and act inside one lock hold, for the same reason the session
+  // registry does: deciding "none left" and acting on it as two acquisitions
+  // leaves a gap where a concurrent start can register and route, only for
+  // this stale decision to un-route it.
+  return await withSessionLock(registry, async () => {
+    const current = readSessions(registry);
+    if (phase === 'stop') {
+      const left = current.filter((id) => id !== agentId);
+      writeSessions(registry, left);
+      if (left.length > 0) return { subagents: left.length, routing: 'on' };
+      // Not `cmdRoute('off')`: that also clears the *session* registry, which
+      // is a different lifetime entirely. A finishing subagent erasing session
+      // liveness would make the next SessionEnd believe it was the last one.
+      routeOffKeepingRegistries(opts);
+      return { subagents: 0, routing: 'off' };
+    }
+    const next = current.includes(agentId) ? current : [...current, agentId];
+    writeSessions(registry, next);
+    await cmdRoute('on', opts);
+    return { subagents: next.length, routing: 'on' };
+  });
 }

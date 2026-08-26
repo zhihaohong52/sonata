@@ -6,6 +6,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/) informally
 (pre-1.0, so minor bumps can carry breaking changes).
 
+## Unreleased
+
+### Fixed
+- `sonata route auto` degraded into `sonata route on`. Routing turned on at
+  SessionStart and off only when the *last* registered session ended, which
+  with overlapping sessions is never — so the settings file stayed dirty and
+  every session after the first launched into it and lost Remote Control,
+  which is the one thing auto mode exists to prevent. Routing now follows the
+  foreign-model subagents that actually need it: a `SubagentStart` /
+  `SubagentStop` hook pair, matched to sonata's own agents, turns it on for
+  the duration of a run and off again after. Sessions launch — and stay — in
+  a clean file unless a foreign model is working.
+- `autoInstalled` now requires all four hooks, so an install predating the
+  change is reported by `sonata doctor` as stale rather than working. It
+  would otherwise carry only the session pair and never route at all. Fix by
+  re-running `sonata route auto`.
+
 ## [0.2.1] - 2026-08-26
 
 ### Fixed
