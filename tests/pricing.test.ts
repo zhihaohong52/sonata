@@ -102,6 +102,14 @@ id = "deepseek-v4-pro"
 gateway = "acme"
 id = "deepseek-v4-flash"
 
+[models."windowed"]
+gateway = "acme"
+id = "deepseek-v4-windowed"
+
+[models."windowed".price]
+input = 4
+windows = [{ from = "16:30", to = "00:30" }]
+
 [native.gateways."acme"]
 base_url = "https://example.invalid/v1"
 pricing_provider = "deepseek"
@@ -131,6 +139,13 @@ base_url = "https://example.invalid/v1"
 
   it('falls back to the gateway price', () => {
     expect(resolvePrice(config, 'plain', tokens, now, cache)).toEqual({ source: 'gateway', totalUsd: 2 });
+  });
+
+  it('falls through an empty matching window to the flat rate', () => {
+    expect(resolvePrice(config, 'windowed', tokens, at('2026-08-27T18:00:00Z'), cache)).toEqual({
+      source: 'model',
+      totalUsd: 4,
+    });
   });
 
   it('falls back to ai-pricing when the gateway declares a provider', () => {

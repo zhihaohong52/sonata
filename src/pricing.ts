@@ -16,6 +16,10 @@ function minutes(hhmm: string): number {
   return Number(hours) * 60 + Number(minutesPart);
 }
 
+function hasRates(rates: Rates): boolean {
+  return rates.input !== undefined || rates.cachedInput !== undefined || rates.output !== undefined;
+}
+
 /**
  * UTC only. A window ending at or before its start wraps over midnight, so its
  * two matching ranges must be joined rather than treated as an empty interval.
@@ -32,11 +36,13 @@ export function ratesFor(price: PriceConfig | undefined, at: Date): Rates | unde
 
   for (const window of price.windows ?? []) {
     if (inWindow(window, at)) {
-      return {
+      const windowRates: Rates = {
         input: window.input,
         cachedInput: window.cachedInput,
         output: window.output,
       };
+      // An empty override must not turn unknown pricing into a confident zero.
+      if (hasRates(windowRates)) return windowRates;
     }
   }
 
@@ -45,9 +51,7 @@ export function ratesFor(price: PriceConfig | undefined, at: Date): Rates | unde
     cachedInput: price.cachedInput,
     output: price.output,
   };
-  return flat.input === undefined && flat.cachedInput === undefined && flat.output === undefined
-    ? undefined
-    : flat;
+  return hasRates(flat) ? flat : undefined;
 }
 
 const PER_MILLION = 1_000_000;
