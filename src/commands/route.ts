@@ -14,6 +14,7 @@
  * daemon, and the first thing an unrouted session would do is cache the error
  * from a router that is not there.
  */
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -192,19 +193,31 @@ function omit(obj: Record<string, unknown>, key: string): Record<string, unknown
  * Control and still dispatched a native subagent that the router logged as
  * `-> litellm`.
  *
- * Auto mode makes that deliberate: SessionStart turns routing on, SessionEnd
- * turns it back off so the next session also launches clean.
+ * Auto mode makes that deliberate: SessionStart turns routing on, and a
+ * detached settle takes it back out of the file once this session has picked
+ * it up, so the next session also launches clean.
  *
- * Concurrent sessions are why the ids are counted rather than a boolean. Under
- * `route on` a live session cannot be un-routed (its env was exported at
- * launch and survives the key's removal), but an auto session has no exported
- * env — it reads the file every request — so a sibling's SessionEnd would cut
- * its routing mid-run. `route off` only fires when the last id is gone.
+ * The settle replaced un-routing at SessionEnd, which did not work. Routing
+ * stayed on for as long as *any* registered session lived, and with
+ * overlapping sessions that is permanent — so `route auto` degraded into
+ * exactly the `route on` it exists to avoid, every session after the first
+ * losing Remote Control. A session that died without firing its SessionEnd
+ * hook wedged it there for good.
  *
- * A session that dies without its SessionEnd hook leaves its id behind, and
- * routing stays on. That is the safe direction to fail: the cost is one
- * launch without Remote Control, not a native agent whose model silently
- * became Claude. `sonata route off` clears the registry outright.
+ * The counted registry rested on a premise that turned out to be false: that
+ * an auto session, having no env exported at launch, re-reads the file every
+ * request and so would be un-routed mid-run by a sibling's SessionEnd. It
+ * does not. A routed session *latches* — probed live on 2026-08-26, a session
+ * launched with no `ANTHROPIC_BASE_URL` in its environment and routed by its
+ * own SessionStart hook kept routing across two further turns after the key
+ * was removed. Removing the key is therefore safe for every live session,
+ * which is what lets the settle clean up eagerly instead of waiting for the
+ * last one to end.
+ *
+ * The ids are still counted, because SessionEnd still has to find its own to
+ * remove and a leftover id is harmless now: routing is already off, so there
+ * is nothing left on for a stale entry to keep alive. `sonata route off`
+ * clears the registry outright.
  */
 
 /**
@@ -427,7 +440,28 @@ export function routeStatus(
   };
 }
 
-export type RouteAction = 'on' | 'off' | 'status' | 'auto' | 'manual';
+export type RouteAction = 'on' | 'off' | 'status' | 'auto' | 'manual' | 'settle';
+
+/**
+ * How long an auto session is given to pick the routing env up before it is
+ * removed from the settings file again.
+ *
+ * A routed session *latches*: once it has read `ANTHROPIC_BASE_URL`, deleting
+ * the key does not un-route it. Probed live on 2026-08-26 — a session launched
+ * with no `ANTHROPIC_BASE_URL` in its environment, routed by its own
+ * SessionStart hook, kept routing across two further turns after the key was
+ * removed from `~/.claude/settings.json`. So the file only has to be dirty
+ * briefly, not for the whole life of the session.
+ *
+ * The delay is a compromise in one direction only. Too long and a session
+ * launching inside the window loses Remote Control, which is the cost this
+ * whole mechanism exists to avoid. Too short and the session never reads the
+ * key at all, and its native tier agents fail against Anthropic with an
+ * unknown `sonata-*` model — the louder failure, but still a failure. A
+ * session issues its first requests within a second or two of starting, so
+ * this is set well clear of that.
+ */
+export const ROUTE_SETTLE_MS = 15_000;
 
 export async function cmdRoute(
   action: RouteAction,
@@ -494,7 +528,7 @@ export async function cmdRoute(
     return status(plan.settings);
   }
 
-  if (action === 'off') {
+  if (action === 'off' || action === 'settle') {
     const plan = planRouteOff(settings, opts.packageRoot);
     if (plan.changed) writeSettings(file, plan.settings);
     // An explicit `off` means stop routing, so the auto registry goes with it —
@@ -502,7 +536,13 @@ export async function cmdRoute(
     // SessionStart turn routing straight back on. This clears only this
     // scope's registry: an explicit `route off` (project-scoped) must not
     // wipe the shared global session count out from under other projects.
-    writeSessions(routeSessionsFile(opts.cwd, scope, opts.home), []);
+    //
+    // `settle` is the same write with the registry left alone: it is not a
+    // user saying "stop routing", it is auto mode cleaning the settings file
+    // after a session has latched the env. The live sessions it does not
+    // un-route are still live, and their SessionEnd hooks still have to find
+    // their own ids to remove.
+    if (action === 'off') writeSessions(routeSessionsFile(opts.cwd, scope, opts.home), []);
     return status(plan.settings);
   }
 
@@ -537,6 +577,39 @@ export interface SessionDeps {
   /** Resolves true when the router already answers on `port`. */
   probe?: (port: number) => Promise<boolean>;
   startDaemon?: (home: string, argv: string[], deps?: unknown, cwd?: string) => Promise<unknown>;
+  /**
+   * Schedules the post-latch settle. Injected so tests observe the decision
+   * without spawning a real detached process that would outlive the test and
+   * rewrite the settings file underneath the next one.
+   */
+  scheduleSettle?: (argv: string[]) => void;
+}
+
+/**
+ * Spawns the settle as a detached grandchild.
+ *
+ * It has to outlive this process: the SessionStart hook waits for
+ * `sonata route session-start` to exit before letting the session proceed, so
+ * anything that sleeps here would stall the launch it is meant to serve — and
+ * would stall it precisely while the settings file is dirty, which is the one
+ * window that must stay short. `unref()` plus `detached` lets the hook return
+ * immediately and the settle fire on its own clock.
+ */
+function spawnSettle(argv: string[]): void {
+  try {
+    const child = spawn(argv[0], argv.slice(1), { detached: true, stdio: 'ignore' });
+    // A failed spawn reports through an `error` event, not a throw. Nothing is
+    // listening for it, and an unhandled `error` on a ChildProcess takes the
+    // whole process down — which here is the SessionStart hook, so a missing
+    // binary would break the very session start it is meant to serve.
+    child.on('error', () => { /* see below: routing simply stays on */ });
+    child.unref();
+  } catch {
+    // A settle that cannot be scheduled leaves routing on, which is the same
+    // state every release before this one shipped: the next session loses
+    // Remote Control, nothing breaks. Failing the session start over it would
+    // be the worse trade.
+  }
 }
 
 export async function cmdRouteSession(
@@ -677,6 +750,23 @@ export async function cmdRouteSession(
     writeSessions(registry, current.includes(sessionId) ? current : [...current, sessionId]);
   });
   await cmdRoute('on', opts);
+
+  // Routing is on, and the settings file is now dirty. Every session that
+  // launches from here until it is cleaned loses Remote Control, so schedule
+  // the clean-up rather than waiting for the last session to end: this
+  // session latches the env within moments and keeps routing without it.
+  //
+  // Leaving it to SessionEnd — as auto mode did until now — meant the file
+  // stayed dirty for as long as *any* registered session lived. With
+  // overlapping sessions that is permanent, so `route auto` degraded into
+  // exactly the `route on` it exists to avoid, and a session that died
+  // without firing SessionEnd wedged it there for good.
+  (deps.scheduleSettle ?? spawnSettle)([
+    ...opts.serveArgv.slice(0, 2),
+    'route',
+    'session-settle',
+    ...(opts.scope === 'global' ? ['--global'] : []),
+  ]);
 
   const after = readSessions(registry);
   return { sessions: after.length, routing: 'on' };
