@@ -95,14 +95,20 @@ export async function ensureNativeServe(cwd: string): Promise<void> {
     // Two projects can share the same default router port; a router
     // already answering here is not proof it is THIS project's — verify
     // which sonata.toml actually started it before trusting it, the same
-    // check cmdRouteSession's auto-mode path already makes.
+    // check cmdRouteSession's auto-mode path already makes. A router that
+    // cannot or does not report its own configPath is treated the same as
+    // a mismatch, not silently trusted.
     const actualConfigPath = await sonataRouterConfigPath(port);
-    if (actualConfigPath !== null && expectedConfigPath !== null && actualConfigPath !== expectedConfigPath) {
+    if (expectedConfigPath !== null && (actualConfigPath === null || actualConfigPath !== expectedConfigPath)) {
       throw new Error(
-        `sonata: router port ${port} is already serving a different sonata configuration ` +
-        `(${actualConfigPath}) than this project resolves to (${expectedConfigPath}). ` +
-        `Two projects cannot share one router port — set a different [native.ports].router ` +
-        `in one of the two configs.`,
+        actualConfigPath === null
+          ? `sonata: router port ${port} answered but did not report which sonata configuration ` +
+            `it is running (too old, or its own config resolution failed) — refusing to trust it. ` +
+            `Restart it with \`sonata restart\` once confirmed to be this project's own router.`
+          : `sonata: router port ${port} is already serving a different sonata configuration ` +
+            `(${actualConfigPath}) than this project resolves to (${expectedConfigPath}). ` +
+            `Two projects cannot share one router port — set a different [native.ports].router ` +
+            `in one of the two configs.`,
       );
     }
     return;
@@ -111,14 +117,20 @@ export async function ensureNativeServe(cwd: string): Promise<void> {
   // A concurrent dispatch in another project could have won the race to
   // bind this same default port with ITS daemon between the probe above
   // and this daemon spawn's poll completing — verify identity again now
-  // that something is confirmed to be listening.
+  // that something is confirmed to be listening. A router that cannot or
+  // does not report its own configPath is treated the same as a mismatch,
+  // not silently trusted.
   const startedConfigPath = await sonataRouterConfigPath(port);
-  if (startedConfigPath !== null && expectedConfigPath !== null && startedConfigPath !== expectedConfigPath) {
+  if (expectedConfigPath !== null && (startedConfigPath === null || startedConfigPath !== expectedConfigPath)) {
     throw new Error(
-      `sonata: router port ${port} is already serving a different sonata configuration ` +
-      `(${startedConfigPath}) than this project resolves to (${expectedConfigPath}). ` +
-      `Two projects cannot share one router port — set a different [native.ports].router ` +
-      `in one of the two configs.`,
+      startedConfigPath === null
+        ? `sonata: router port ${port} answered but did not report which sonata configuration ` +
+          `it is running (too old, or its own config resolution failed) — refusing to trust it. ` +
+          `Restart it with \`sonata restart\` once confirmed to be this project's own router.`
+        : `sonata: router port ${port} is already serving a different sonata configuration ` +
+          `(${startedConfigPath}) than this project resolves to (${expectedConfigPath}). ` +
+          `Two projects cannot share one router port — set a different [native.ports].router ` +
+          `in one of the two configs.`,
     );
   }
 }

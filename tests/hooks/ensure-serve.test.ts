@@ -29,7 +29,36 @@ async function invoke(
 }
 
 describe('ensure-serve SessionStart hook', () => {
-  it('exits 0 when the router answers the health endpoint', async () => {
+  it('exits 0 when the router answers the health endpoint with a matching config', async () => {
+    // A project-scoped session resolves the config from its own cwd; report
+    // that same path so the identity check passes. The hook compares against
+    // `process.cwd()`, which is the realpath (macOS `getcwd` resolves the
+    // `/var` -> `/private/var` symlink), so the expected path must be the
+    // realpath too.
+    const cwd = mkdtempSync(join(tmpdir(), 'ensure-serve-ok-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '');
+    const expectedConfig = realpathSync(join(cwd, 'sonata.toml'));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', sonata: true, configPath: expectedConfig }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    try {
+      const { code, signal } = await invoke([String(port)], cwd);
+      expect(code).toBe(0);
+      expect(signal).toBe(null);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('exits 1 when the router answers but reports no configPath at all', async () => {
+    // "The router won't tell us who it is" is indistinguishable from a
+    // different project's router and must be rejected, not silently trusted.
+    const cwd = mkdtempSync(join(tmpdir(), 'ensure-serve-nocfg-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '');
     const server = createServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ status: 'ok', sonata: true }));
@@ -38,9 +67,10 @@ describe('ensure-serve SessionStart hook', () => {
     const addr = server.address();
     const port = typeof addr === 'object' && addr ? addr.port : 0;
     try {
-      const { code, signal } = await invoke([String(port)]);
-      expect(code).toBe(0);
+      const { code, signal, stderr } = await invoke([String(port)], cwd);
+      expect(code).toBe(1);
       expect(signal).toBe(null);
+      expect(stderr).toContain('did not report which sonata configuration');
     } finally {
       server.close();
     }
@@ -108,6 +138,43 @@ describe('ensure-serve SessionStart hook', () => {
       expect(code).toBe(1);
       expect(signal).toBe(null);
       expect(stderr).toContain('different sonata configuration');
+    } finally {
+      server.close();
+    }
+  });
+
+  it('exits 1 when its own post-spawn probe reports no configPath', async () => {
+    // The race's losing side then finds a router that answers but reports no
+    // configPath — unverifiable, so it must be rejected rather than silently
+    // adopted.
+    const cwd = mkdtempSync(join(tmpdir(), 'ensure-serve-race-nocfg-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '');
+
+    const binDir = mkdtempSync(join(tmpdir(), 'ensure-serve-bin-'));
+    writeFileSync(join(binDir, 'sonata'), '#!/usr/bin/env node\nprocess.exit(0);\n', { mode: 0o755 });
+
+    let probes = 0;
+    const server = createServer((_req, res) => {
+      probes += 1;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (probes === 1) {
+        res.end('{}');
+      } else {
+        res.end(JSON.stringify({ status: 'ok', sonata: true }));
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    try {
+      const { code, signal, stderr } = await invoke(
+        [String(port)],
+        cwd,
+        { ...process.env, PATH: `${binDir}${delimiter}${process.env.PATH}` },
+      );
+      expect(code).toBe(1);
+      expect(signal).toBe(null);
+      expect(stderr).toContain('did not report which sonata configuration');
     } finally {
       server.close();
     }

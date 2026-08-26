@@ -618,6 +618,42 @@ describe('cmdRouteSession', () => {
     expect(existsSync(routeSessionsFile(cwd))).toBe(false);
     expect(existsSync(routeSettingsFile(cwd))).toBe(false);
   });
+
+  it('refuses a running router that reports no configPath at all', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      // A sonata router that answers but does not name its configPath is
+      // indistinguishable from a different project's router — reject it
+      // rather than silently trust it.
+      new Response(JSON.stringify({ status: 'ok', sonata: true })),
+    ) as unknown as typeof fetch);
+
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
+    await expect(cmdRouteSession('start', 's1', o)).rejects.toThrow(/did not report which sonata configuration/);
+    expect(existsSync(routeSessionsFile(cwd))).toBe(false);
+    expect(existsSync(routeSettingsFile(cwd))).toBe(false);
+  });
+
+  it('re-checks identity after starting a daemon, refusing a router that reports no configPath', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error('ECONNREFUSED');
+      }
+      return new Response(JSON.stringify({ status: 'ok', sonata: true }));
+    }) as unknown as typeof fetch);
+
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
+    await expect(
+      cmdRouteSession('start', 's1', o, { startDaemon: async () => ({}) }),
+    ).rejects.toThrow(/did not report which sonata configuration/);
+    expect(existsSync(routeSessionsFile(cwd))).toBe(false);
+    expect(existsSync(routeSettingsFile(cwd))).toBe(false);
+  });
 });
 describe('configless route sessions', () => {
   it('throws before writing a registry or settings file', async () => {

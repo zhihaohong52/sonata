@@ -52,18 +52,31 @@ if (Number.isInteger(port) && port > 0) {
   const existing = await probeHealth(1000);
   if (existing) {
     const expected = expectedConfigPath();
-    // A router that reports no configPath (an older sonata build) or whose
-    // config this session cannot resolve at all is not something this hook
-    // can safely compare against — proceed as before rather than failing on
-    // a check that has nothing to check against.
-    if (expected !== null && typeof existing.configPath === 'string' && existing.configPath !== expected) {
-      console.error(
-        `sonata: router port ${port} is already serving a different sonata configuration ` +
-        `(${existing.configPath}) than this session resolves to (${expected}). Two ` +
-        'projects cannot share one router port — set a different [native.ports].router ' +
-        'in one of the two configs, then restart the router with `sonata restart`.',
-      );
-      process.exit(1);
+    // When this session can resolve its own expected config, the existing
+    // router must prove it is the same one — a router that cannot or does
+    // not report its own configPath (an older sonata build, or one whose own
+    // resolution failed) is treated the same as a mismatch, not silently
+    // trusted. When this session cannot resolve ANY config of its own
+    // (`expected === null`), there is nothing to enforce and the existing
+    // router is accepted unchanged.
+    if (expected !== null) {
+      if (typeof existing.configPath !== 'string') {
+        console.error(
+          `sonata: router port ${port} answered but did not report which sonata configuration ` +
+          'it is running (too old, or its own config resolution failed) — refusing to trust it. ' +
+          'Restart it with `sonata restart` once confirmed to be this project\'s own router.',
+        );
+        process.exit(1);
+      }
+      if (existing.configPath !== expected) {
+        console.error(
+          `sonata: router port ${port} is already serving a different sonata configuration ` +
+          `(${existing.configPath}) than this session resolves to (${expected}). Two ` +
+          'projects cannot share one router port — set a different [native.ports].router ' +
+          'in one of the two configs, then restart the router with `sonata restart`.',
+        );
+        process.exit(1);
+      }
     }
     process.exit(0);
   }
@@ -100,14 +113,24 @@ if (Number.isInteger(port) && port > 0) {
       // something is confirmed to be listening, the same check the
       // pre-existing branch above already does.
       const expected = expectedConfigPath();
-      if (expected !== null && typeof started.configPath === 'string' && started.configPath !== expected) {
-        console.error(
-          `sonata: router port ${port} is already serving a different sonata configuration ` +
-          `(${started.configPath}) than this session resolves to (${expected}). Two ` +
-          'projects cannot share one router port — set a different [native.ports].router ' +
-          'in one of the two configs, then restart the router with `sonata restart`.',
-        );
-        process.exit(1);
+      if (expected !== null) {
+        if (typeof started.configPath !== 'string') {
+          console.error(
+            `sonata: router port ${port} answered but did not report which sonata configuration ` +
+            'it is running (too old, or its own config resolution failed) — refusing to trust it. ' +
+            'Restart it with `sonata restart` once confirmed to be this project\'s own router.',
+          );
+          process.exit(1);
+        }
+        if (started.configPath !== expected) {
+          console.error(
+            `sonata: router port ${port} is already serving a different sonata configuration ` +
+            `(${started.configPath}) than this session resolves to (${expected}). Two ` +
+            'projects cannot share one router port — set a different [native.ports].router ' +
+            'in one of the two configs, then restart the router with `sonata restart`.',
+          );
+          process.exit(1);
+        }
       }
     }
   } catch {

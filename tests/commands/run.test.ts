@@ -221,6 +221,34 @@ base_url = "http://gateway.example/v1"
     // without a [native] table the claude harness has no router port.
     await expect(ensureNativeServe(cwd)).rejects.toThrow(/\[native\] table/);
   });
+
+  it('refuses a running router that reports no configPath at all', async () => {
+    writeNativeConfig(cwd);
+
+    // A sonata router that answers but does not name its configPath is
+    // indistinguishable from a different project's router — reject it rather
+    // than silently trust it.
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ status: 'ok', sonata: true })),
+    ) as unknown as typeof fetch);
+
+    await expect(ensureNativeServe(cwd)).rejects.toThrow(/did not report which sonata configuration/);
+    expect(vi.mocked(startServeDaemon)).not.toHaveBeenCalled();
+  });
+
+  it('re-checks identity after the daemon starts, refusing a router that reports no configPath', async () => {
+    writeNativeConfig(cwd);
+
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('ECONNREFUSED');
+      return new Response(JSON.stringify({ status: 'ok', sonata: true }));
+    }) as unknown as typeof fetch);
+
+    await expect(ensureNativeServe(cwd)).rejects.toThrow(/did not report which sonata configuration/);
+    expect(vi.mocked(startServeDaemon)).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('repoContext', () => {
