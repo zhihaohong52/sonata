@@ -2,7 +2,9 @@
 import { parseArgs } from 'node:util';
 import { join } from 'node:path';
 import { cmdRun } from './commands/run.js';
+import { cmdDispatch } from './commands/dispatch.js';
 import { cmdTail } from './commands/tail.js';
+import { cmdWait } from './commands/wait.js';
 import { loadConfig } from './config.js';
 import { cmdApprove } from './commands/approve.js';
 import { cmdSync } from './commands/sync.js';
@@ -15,11 +17,13 @@ import { pruneAgents } from './detect.js';
 import type { HookScope } from './settings.js';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove } from './commands/auth.js';
 import { cmdServe, cmdRestart, startServeDaemon } from './commands/serve.js';
 import { cmdCode } from './commands/code.js';
 import { cmdRoute, cmdRouteSession, type RouteAction } from './commands/route.js';
+import { cmdCatalogUpdate } from './commands/catalog.js';
+import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
 
@@ -27,8 +31,10 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata doctor    check tmux, harnesses, auth and versions
   sonata sync      regenerate agent files from sonata.toml
   sonata run       launch a harness run, print its id
+  sonata dispatch  run a ranked tier with harness fallback
   sonata tail      poll a run for progress
-  sonata approve   answer a pending approval
+  sonata wait      resume a RUNNING or approved run and block for its next state
+  sonata approve   answer a pending approval (requires --yes or --no)
   sonata gc        kill finished tmux sessions
   sonata log       print a run's whole transcript (tail returns only new lines)
   sonata verify    confirm a dispatch actually happened
@@ -38,7 +44,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata route     on|off|status — route plain claude sessions through sonata serve
                    auto|manual — route each session for its lifetime, keeping Remote Control
   sonata auth      manage gateway credentials (list/add/remove/login)
-  sonata mcp       start the stdio JSON-RPC server (started by Claude Code; not run by hand)
+  sonata catalog   show or refresh the Artificial Analysis model catalog
 
   init flags (skip the prompts):
     --yes                    accept defaults, no prompts
@@ -63,7 +69,7 @@ function packageRoot(): string {
   return join(fileURLToPath(new URL('.', import.meta.url)), '..');
 }
 
-async function main(argv: string[]): Promise<number> {
+export async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
 
   if (!command || command === 'help' || command === '--help' || command === '-h') {
@@ -82,6 +88,7 @@ async function main(argv: string[]): Promise<number> {
         'credential-source': { type: 'string', multiple: true },
         'config-scope': { type: 'string' },
         scope: { type: 'string' },
+        routing: { type: 'string' },
         // No default: `undefined` means "unanswered", which lets cmdInit fall
         // through to the interactive prompt. `false` would suppress it.
         prune: { type: 'boolean' },
@@ -91,6 +98,11 @@ async function main(argv: string[]): Promise<number> {
     const scope = values.scope as HookScope | 'skip' | undefined;
     if (scope && !['project', 'global', 'skip'].includes(scope)) {
       throw new Error(`sonata init: --scope must be project, global or skip (got "${scope}")`);
+    }
+
+    const routing = values.routing as 'project' | 'global' | 'skip' | undefined;
+    if (routing && !['project', 'global', 'skip'].includes(routing)) {
+      throw new Error(`sonata init: --routing must be project, global or skip (got "${routing}")`);
     }
 
     const configScope = values['config-scope'] as 'project' | 'global' | undefined;
@@ -114,6 +126,7 @@ async function main(argv: string[]): Promise<number> {
         roles: split(values.roles),
         credentialSource: values['credential-source'],
         scope,
+        routing,
         configScope,
         prune: values.prune,
       });
@@ -167,6 +180,65 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
+  if (command === 'dispatch') {
+    const { values, positionals } = parseArgs({
+      args: rest,
+      allowPositionals: true,
+      options: {
+        tier: { type: 'string' },
+        model: { type: 'string' },
+        role: { type: 'string' },
+        'task-file': { type: 'string' },
+        'task-stdin': { type: 'boolean' },
+        'roles-dir': { type: 'string' },
+      },
+    });
+    if ((values.tier === undefined) === (values.model === undefined)) {
+      throw new Error('sonata dispatch requires exactly one of --tier or --model');
+    }
+    if (values.role !== undefined && values.tier !== undefined) {
+      throw new Error('sonata dispatch: --role only applies to --model; --tier\'s alias already names a role');
+    }
+    if (values['task-file'] !== undefined && values['task-stdin']) {
+      throw new Error('sonata dispatch: --task-file and --task-stdin are mutually exclusive');
+    }
+    if ((values['task-file'] !== undefined || values['task-stdin']) && positionals.length > 0) {
+      throw new Error('sonata dispatch accepts positional task text only without --task-file/--task-stdin');
+    }
+    const task = values['task-stdin']
+      ? readFileSync(0, 'utf8')
+      : values['task-file'] !== undefined
+        ? readFileSync(values['task-file'], 'utf8')
+        : positionals.join(' ');
+    if (!task.trim()) throw new Error('sonata dispatch requires task text, --task-file, or --task-stdin');
+    const res = await cmdDispatch({
+      cwd: process.cwd(),
+      home: homedir(),
+      tier: values.tier,
+      model: values.model,
+      role: values.role,
+      task,
+      rolesDir: values['roles-dir'] ?? join(packageRoot(), 'roles'),
+      sessionId: process.env.CLAUDE_CODE_SESSION_ID,
+    });
+    console.log(`${res.state} model=${res.modelKey} id=${res.id}`);
+    if (res.report) console.log(`\n${res.report}`);
+    if (res.prompt) {
+      console.log(`\nPROMPT: ${res.prompt}`);
+      console.log(`sonata approve ${res.id} --yes   (or --no)`);
+    } else if (res.state === 'RUNNING') {
+      console.log(`sonata wait ${res.id}`);
+    }
+    if (res.state === 'FAILED') {
+      for (const attempt of res.attempts) {
+        console.log(`  ${attempt.modelKey}: ${attempt.state}${attempt.degraded ? ' (degraded)' : ''}${attempt.error ? ` — ${attempt.error}` : ''}`);
+      }
+      return 1;
+    }
+    if (res.state === 'STALLED') return 3;
+    return 0;
+  }
+
   if (command === 'tail') {
     const { values, positionals } = parseArgs({
       args: rest,
@@ -186,6 +258,31 @@ async function main(argv: string[]): Promise<number> {
       console.log(res.state);
       for (const l of res.lines) console.log(`  ${l}`);
       if (res.prompt) console.log(`  PROMPT: ${res.prompt}`);
+      if (res.report) console.log(`\n${res.report}`);
+    }
+    return res.state === 'STALLED' ? 3 : 0;
+  }
+
+  if (command === 'wait') {
+    const { values, positionals } = parseArgs({
+      args: rest,
+      allowPositionals: true,
+      options: { json: { type: 'boolean', default: false } },
+    });
+    const id = positionals[0];
+    if (!id) throw new Error('sonata wait requires a run id');
+    const res = await cmdWait({ cwd: process.cwd(), id });
+    if (values.json) {
+      console.log(JSON.stringify(res));
+    } else {
+      console.log(res.state);
+      for (const l of res.lines) console.log(`  ${l}`);
+      if (res.prompt) {
+        console.log(`  PROMPT: ${res.prompt}`);
+        console.log(`sonata approve ${id} --yes   (or --no)`);
+      } else if (res.state === 'RUNNING') {
+        console.log(`sonata wait ${id}`);
+      }
       if (res.report) console.log(`\n${res.report}`);
     }
     return res.state === 'STALLED' ? 3 : 0;
@@ -217,6 +314,10 @@ async function main(argv: string[]): Promise<number> {
       agentsDir,
     });
     for (const p of sync.written) console.log(`wrote ${p}`);
+    if (sync.skipped.length > 0) {
+      for (const f of sync.skipped.slice(0, 5)) console.log(`skipped ${f} (exists, not sonata-owned)`);
+      if (sync.skipped.length > 5) console.log(`skipped ... and ${sync.skipped.length - 5} more`);
+    }
     if (sync.stale.length > 0) {
       for (const f of sync.stale.slice(0, 5)) console.log(`stale ${f}`);
       if (sync.stale.length > 5) console.log(`stale ... and ${sync.stale.length - 5} more`);
@@ -244,11 +345,38 @@ async function main(argv: string[]): Promise<number> {
     return ok ? 0 : 1;
   }
 
+  if (command === 'catalog') {
+    const action = rest[0];
+    if (action !== undefined && action !== 'update') {
+      throw new Error('sonata catalog requires update or no subcommand');
+    }
+    if (action === 'update') {
+      const result = await cmdCatalogUpdate(homedir());
+      console.log(`catalog updated: ${result.models} models`);
+      console.log(`  path: ${result.path}`);
+      console.log(`  fetched: ${result.fetchedAt}`);
+      console.log(AA_ATTRIBUTION);
+      return 0;
+    }
+    const path = aaCatalogPath(homedir());
+    const catalog = loadAaCatalog(homedir());
+    if (!catalog || !existsSync(path)) {
+      console.log('no catalog — run sonata catalog update');
+      return 0;
+    }
+    const age = Math.max(0, Date.now() - Date.parse(catalog.fetchedAt));
+    console.log(`catalog: ${catalog.models ? Object.keys(catalog.models).length : 0} models; age ${Math.floor(age / 1000)}s`);
+    console.log(`  path: ${path}`);
+    return 0;
+  }
+
   if (command === 'auth') {
     const { positionals } = parseArgs({ args: rest, allowPositionals: true, options: {} });
     const [action, gateway] = positionals;
-    const config = loadConfig(process.cwd(), homedir());
-    const gateways = Object.keys(config.native?.gateways ?? {});
+    let gateways: string[] = [];
+    try {
+      gateways = Object.keys(loadConfig(process.cwd(), homedir()).native?.gateways ?? {});
+    } catch { /* no config yet — add/remove/login do not need one */ }
 
     if (action === 'list') {
       console.log(cmdAuthList({ home: homedir(), gateways }).text);
@@ -321,7 +449,9 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === 'route') {
     const action = rest[0];
-    const opts = { cwd: process.cwd(), home: homedir(), packageRoot: packageRoot() };
+    const global = rest.includes('--global');
+    const scope = global ? 'global' as const : 'project' as const;
+    const opts = { cwd: process.cwd(), home: homedir(), packageRoot: packageRoot(), scope };
 
     // The two session-<phase> actions are the body of the auto-mode hooks, not
     // a surface for people: they take the session id the hook read from stdin.
@@ -343,10 +473,15 @@ async function main(argv: string[]): Promise<number> {
     }
     const status = await cmdRoute(action as RouteAction, opts);
     if (status) {
+      const scopeLabel = global ? 'globally' : 'in this project';
       console.log(status.on
-        ? 'claude sessions in this project route through sonata serve'
-        : 'claude sessions in this project use their default API endpoint');
+        ? `claude sessions ${scopeLabel} route through sonata serve`
+        : `claude sessions ${scopeLabel} use their default API endpoint`);
       if (status.on) console.log(`  router: http://localhost:${status.port}`);
+      if (action === 'status') {
+        const active = (['project', 'global'] as const).filter((name) => status.scopes[name].on || status.scopes[name].auto);
+        console.log(`  scopes: ${active.length > 0 ? active.join(', ') : 'none'}`);
+      }
       if (status.auto) {
         console.log('  auto:   on — each session routes itself at start and un-routes at end');
         console.log('          (sessions keep Remote Control: they launch before routing is written)');
@@ -360,7 +495,7 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === 'restart') {
     // Kills whatever sonata router currently holds the configured port (a
-    // stale daemon, or one MCP-hosted inside a `sonata mcp` process) using
+    // stale daemon or an in-process native router) using
     // only the pid `cmdServe` recorded for itself, then starts a fresh
     // daemon. Plain `sonata serve --daemon` cannot do this: it just times
     // out against `EADDRINUSE` with "the daemon did not answer", which reads
@@ -401,16 +536,6 @@ async function main(argv: string[]): Promise<number> {
     return res.ok ? 0 : 1;
   }
 
-  if (command === 'mcp') {
-    const { runMcpStdio } = await import('./mcp/server.js');
-    await runMcpStdio({
-      cwd: process.cwd(),
-      home: homedir(),
-      rolesDir: join(packageRoot(), 'roles'),
-      sessionId: process.env.CLAUDE_CODE_SESSION_ID,
-    });
-    return 0;
-  }
 
   console.error(`sonata: unknown command "${command ?? ''}"`);
   return 2;

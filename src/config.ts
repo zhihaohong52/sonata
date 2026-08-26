@@ -18,6 +18,30 @@ export function isReadOnlyRole(role: string): boolean {
 
 export interface ModelConfig { harness: string; id: string }
 
+export const TIER_NAMES = ['simple', 'complex'] as const;
+
+/**
+ * One model, however it is reached. `gateway` is the native route (default
+ * execution path, through the router); `harness` is the fallback route the
+ * dispatch CLI uses when every native route is down. At least one must be
+ * present — parseConfig enforces it.
+ */
+export interface UnifiedModelConfig {
+  gateway?: string;
+  id?: string;
+  contextWindow?: number;
+  harness?: string;
+  harnessId?: string;
+}
+
+export interface TierLists { simple: string[]; complex: string[] }
+
+export interface TierRoute {
+  key: string;
+  native?: { gateway: string; id: string };
+  harness?: { harness: string; id: string };
+}
+
 export interface NativeModelConfig { gateway: string; id: string; contextWindow: number }
 
 /**
@@ -99,6 +123,12 @@ export interface NativeConfig {
 
 export interface SonataConfig {
   models: Record<string, ModelConfig>;
+  /**
+   * Tier routing's unified registry. Legacy harness entries are mirrored here
+   * so a migration can rank them without changing how old config is parsed.
+   */
+  unifiedModels: Record<string, UnifiedModelConfig>;
+  tiers?: Record<string, TierLists>;
   generate: { roles: Record<string, string[]> };
   native?: NativeConfig;
   run: {
@@ -126,8 +156,60 @@ export function parseConfig(text: string): SonataConfig {
   const raw = parseToml(text) as Record<string, any>;
 
   const models: Record<string, ModelConfig> = {};
+  const unifiedModels: Record<string, UnifiedModelConfig> = {};
   for (const [name, def] of Object.entries(raw.models ?? {})) {
     const d = def as Record<string, unknown>;
+    // A gateway changes this into a unified model entry, whose `id` names the
+    // native model rather than a harness provider/model ref. Branch before the
+    // legacy check so a native id is never rejected as an OpenCode-style ref.
+    if (typeof d.gateway === 'string') {
+      if (typeof d.id !== 'string') {
+        throw new Error(`sonata.toml: model "${name}" with gateway "${d.gateway}" needs string "id"`);
+      }
+      if (isAnthropicRoutedName(name)) {
+        throw new Error(
+          `sonata.toml: model "${name}" cannot use the "${ANTHROPIC_ROUTED_PREFIX}" prefix because the router routes it to Anthropic.`,
+        );
+      }
+      if (d.harness !== undefined && (typeof d.harness !== 'string' || !KNOWN_HARNESSES.includes(d.harness as any))) {
+        throw new Error(
+          `sonata.toml: model "${name}" has unknown harness "${String(d.harness)}". ` +
+          `Known harnesses: ${KNOWN_HARNESSES.join(', ')}`,
+        );
+      }
+      if (d.harness_id !== undefined && typeof d.harness_id !== 'string') {
+        throw new Error(`sonata.toml: model "${name}" has non-string "harness_id"`);
+      }
+      if (d.context_window !== undefined && typeof d.context_window !== 'number') {
+        throw new Error(`sonata.toml: model "${name}" has non-number "context_window"`);
+      }
+      // Only opencode/pi/reasonix take provider-qualified ids; defaulting
+      // codex the same way synthesized `<gateway>/<id>` (e.g. `openai/gpt-5.6-sol`)
+      // for a harness that takes a bare id, and that invalid ref reached
+      // `sonata dispatch` undetected since the entry otherwise parses fine.
+      const harnessId = typeof d.harness === 'string'
+        ? (typeof d.harness_id === 'string'
+          ? d.harness_id
+          : d.harness === 'claude' ? name
+          : QUALIFIED_ID_HARNESSES.includes(d.harness) ? `${d.gateway}/${d.id}` : d.id)
+        : undefined;
+      unifiedModels[name] = {
+        gateway: d.gateway,
+        id: d.id,
+        contextWindow: d.context_window ?? 128000,
+        ...(typeof d.harness === 'string' ? {
+          harness: d.harness,
+          harnessId,
+        } : {}),
+      };
+      // A unified entry may also be used by the legacy generator. Keep the
+      // harness projection populated when both routes are declared; otherwise
+      // [generate.roles] would incorrectly report this valid entry as unknown.
+      if (typeof d.harness === 'string') {
+        models[name] = { harness: d.harness, id: harnessId! };
+      }
+      continue;
+    }
     if (typeof d.harness !== 'string' || typeof d.id !== 'string') {
       throw new Error(`sonata.toml: model "${name}" needs string "harness" and "id"`);
     }
@@ -149,6 +231,49 @@ export function parseConfig(text: string): SonataConfig {
       );
     }
     models[name] = { harness: d.harness, id: d.id };
+    unifiedModels[name] = { harness: d.harness, harnessId: d.id };
+  }
+
+  let tiers: Record<string, TierLists> | undefined;
+  if (raw.tiers !== undefined) {
+    tiers = {};
+    for (const [role, def] of Object.entries(raw.tiers as Record<string, unknown>)) {
+      if (!KNOWN_ROLES.includes(role as any)) {
+        throw new Error(
+          `sonata.toml: tiers contains unknown role "${role}". ` +
+          `Known roles: ${KNOWN_ROLES.join(', ')}`,
+        );
+      }
+      const d = def as Record<string, unknown>;
+      const simple = d.simple;
+      const complex = d.complex;
+      if (!Array.isArray(simple) || simple.length === 0 || !simple.every((key) => typeof key === 'string') ||
+          !Array.isArray(complex) || complex.length === 0 || !complex.every((key) => typeof key === 'string')) {
+        throw new Error(`sonata.toml: tiers.${role} needs non-empty string lists "simple" and "complex".`);
+      }
+      for (const [tier, keys] of [['simple', simple], ['complex', complex]] as const) {
+        for (const key of keys) {
+          if (isAnthropicRoutedName(key)) {
+            throw new Error(
+              `sonata.toml: tiers.${role}.${tier} model "${key}" cannot use the ` +
+              `"${ANTHROPIC_ROUTED_PREFIX}" prefix because the router routes it to Anthropic.`,
+            );
+          }
+          if (!unifiedModels[key]) {
+            throw new Error(
+              `sonata.toml: tiers.${role}.${tier} references unknown model "${key}". ` +
+              `Define [models."${key}"] first.`,
+            );
+          }
+        }
+      }
+      tiers[role] = { simple, complex };
+    }
+    // Tier lists own all routing choices. Keeping either legacy generator next
+    // to them would generate two incompatible sets of agents from one config.
+    if (raw.generate !== undefined || (raw.native as Record<string, unknown> | undefined)?.generate !== undefined) {
+      throw new Error('sonata.toml: [tiers] replaces [generate.roles] and [generate.native] — run `sonata init` to migrate');
+    }
   }
 
   const gen = (raw.generate ?? {}) as Record<string, unknown>;
@@ -280,7 +405,7 @@ export function parseConfig(text: string): SonataConfig {
           `sonata.toml: native model "${name}" needs string "gateway", string "id" and number "context_window"`,
         );
       }
-      if (isAnthropicRoutedName(name) || isAnthropicRoutedName(d.id)) {
+      if (isAnthropicRoutedName(name)) {
         throw new Error(
           `sonata.toml: native model "${name}" cannot use the "${ANTHROPIC_ROUTED_PREFIX}" prefix because the router routes it to Anthropic.`,
         );
@@ -328,8 +453,50 @@ export function parseConfig(text: string): SonataConfig {
     };
   }
 
+  // Unlike [native.models], the unified [models] loop above runs before
+  // [native.gateways] is parsed, so it cannot validate a gateway reference
+  // there — do it now that `native` is built. Left unchecked, an unknown
+  // gateway here reaches litellmModelEntry via the native projection below
+  // and crashes on `gateways[gateway].auth` being undefined.
+  for (const [name, model] of Object.entries(unifiedModels)) {
+    if (model.gateway !== undefined && !native?.gateways[model.gateway]) {
+      throw new Error(
+        `sonata.toml: model "${name}" references unknown gateway "${model.gateway}". ` +
+        `Define [native.gateways."${model.gateway}"] first.`,
+      );
+    }
+  }
+
+  // Tier configs are the unified format. Keep a native projection so the
+  // router and older consumers can use the same gateway/model data while the
+  // unified tier-aware consumers migrate.
+  if (tiers !== undefined) {
+    const projectedModels: Record<string, NativeModelConfig> = { ...(native?.models ?? {}) };
+    for (const [key, model] of Object.entries(unifiedModels)) {
+      if (model.gateway !== undefined && model.id !== undefined) {
+        projectedModels[key] = {
+          gateway: model.gateway,
+          id: model.id,
+          contextWindow: model.contextWindow ?? 128000,
+        };
+      }
+    }
+    const projectedGenerate: Record<string, string[]> = {};
+    for (const [role, lists] of Object.entries(tiers)) {
+      projectedGenerate[role] = [...new Set([...lists.simple, ...lists.complex])];
+    }
+    native = {
+      models: projectedModels,
+      gateways: native?.gateways ?? {},
+      ports: native?.ports ?? { router: 4100, litellm: 4000 },
+      generate: projectedGenerate,
+    };
+  }
+
   return {
     models,
+    unifiedModels,
+    tiers,
     generate: { roles },
     native,
     run: {
@@ -339,6 +506,65 @@ export function parseConfig(text: string): SonataConfig {
       dispatchWindowSeconds: num(raw.run?.dispatch_window_seconds, 1500),
     },
   };
+}
+
+/**
+ * Resolves a `sonata-<role>[-<tier>]` model alias to its ranked routes.
+ * The collapsed form (`sonata-explore`) exists for roles whose two tier lists
+ * are identical — sync generates a single agent for those, and its alias
+ * omits the tier so the picker never shows a fake choice.
+ */
+export function resolveTierAlias(
+  config: SonataConfig,
+  alias: string,
+): { role: string; tier: string; routes: TierRoute[] } | undefined {
+  if (!alias.startsWith('sonata-') || config.tiers === undefined) return undefined;
+  const rest = alias.slice('sonata-'.length);
+  let role = rest;
+  let tier: string = 'complex';
+  for (const candidate of TIER_NAMES) {
+    if (rest.endsWith(`-${candidate}`)) {
+      role = rest.slice(0, -(candidate.length + 1));
+      tier = candidate;
+      break;
+    }
+  }
+  const lists = config.tiers[role];
+  if (lists === undefined) return undefined;
+  // An unsuffixed alias is valid only when it cannot hide a tier choice. Use
+  // ordered equality: both ranking and membership are part of the contract.
+  const hasExplicitTier = rest !== role;
+  if (!hasExplicitTier && (
+    lists.simple.length !== lists.complex.length ||
+    !lists.simple.every((key, index) => key === lists.complex[index])
+  )) {
+    return undefined;
+  }
+  const keys = tier === 'simple' ? lists.simple : lists.complex;
+  const routes = keys.map((key): TierRoute => {
+    const model = config.unifiedModels[key];
+    return {
+      key,
+      native: model?.gateway !== undefined && model.id !== undefined
+        ? { gateway: model.gateway, id: model.id }
+        : undefined,
+      harness: model?.harness !== undefined && model.harnessId !== undefined
+        ? { harness: model.harness, id: model.harnessId }
+        : undefined,
+    };
+  });
+  return { role, tier, routes };
+}
+
+/** The harness route for one model key, for the dispatch CLI. */
+export function harnessModelFor(
+  config: SonataConfig,
+  key: string,
+): { harness: string; id: string } | undefined {
+  const model = config.unifiedModels[key];
+  return model?.harness !== undefined && model.harnessId !== undefined
+    ? { harness: model.harness, id: model.harnessId }
+    : undefined;
 }
 
 /** Where a machine-level config lives, relative to the home directory. */
@@ -405,12 +631,22 @@ export function generatedNativeAgents(config: SonataConfig): { role: string; mod
  * that is not stale.
  *
  * A native model gets two files: `native-<role>-<model>` for a `sonata code`
- * session, and a `<role>-<model>` wrapper for MCP dispatch through the claude
+ * session, and a `<role>-<model>` wrapper for dispatch through the claude
  * harness — unless a harness model already claims that name. `sync` and
  * `doctor` computed this separately and disagreed, so `sync` wrote a file that
  * `doctor` then reported as stale, on every run.
  */
 export function expectedAgentNames(config: SonataConfig): string[] {
+  if (config.tiers !== undefined) {
+    const names: string[] = [];
+    for (const [role, lists] of Object.entries(config.tiers)) {
+      const collapsed = lists.simple.length === lists.complex.length &&
+        lists.simple.every((model, index) => model === lists.complex[index]);
+      if (collapsed) names.push(role);
+      else names.push(...TIER_NAMES.map((tier) => `${role}-${tier}`));
+    }
+    return names;
+  }
   const harness = generatedAgents(config);
   const native = generatedNativeAgents(config);
   const harnessNames = harness.map((a) => `${a.role}-${a.model}`);

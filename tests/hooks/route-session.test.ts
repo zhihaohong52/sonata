@@ -14,8 +14,8 @@ beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'sonata-route-hook-')); });
  * sonata config — the CLI it invokes must never reach this repository's own
  * settings, which a hook running in `process.cwd()` would happily route.
  */
-async function invoke(phase: string, payload: string): Promise<number | null> {
-  const child = spawn('node', [HOOK, phase], {
+async function invoke(phase: string, payload: string, extraArgs: string[] = []): Promise<number | null> {
+  const child = spawn('node', [HOOK, phase, ...extraArgs], {
     cwd: dir,
     stdio: ['pipe', 'ignore', 'ignore'],
     env: { ...process.env, HOME: dir },
@@ -42,5 +42,16 @@ describe('route-session lifecycle hook', () => {
     // `route session-start` in a directory with no sonata config exits
     // non-zero; the hook must still report success to Claude Code.
     expect(await invoke('start', JSON.stringify({ session_id: 'x' }))).toBe(0);
+  });
+
+  it('exits 0 when given --global, the same as without it', async () => {
+    // The hook only forwards --global to the CLI when present; the resulting
+    // scope-aware behavior (writing the shared settings file, resolving the
+    // machine config) is covered directly against TS source in
+    // route.test.ts (sessionHookCommand, planRouteAuto, cmdRouteSession),
+    // since this file's job is only the hook's own argv/stdin handling —
+    // its CLI invocation targets the built dist/cli.js, which does not exist
+    // yet at the point in CI where this test runs (build happens after test).
+    expect(await invoke('start', JSON.stringify({ session_id: 'x' }), ['--global'])).toBe(0);
   });
 });

@@ -46,6 +46,48 @@ describe('LiteLLM config', () => {
   });
 });
 
+describe('LiteLLM config — unified [models] entries', () => {
+  it('includes a unified model with a gateway route, keyed by its model key', () => {
+    const cfg = litellmConfig({
+      models: {},
+      gateways: { acme: { baseUrl: 'https://gateway.acme.example/v1', auth: 'api-key' } },
+      ports: { router: 4100, litellm: 4000 },
+      generate: {},
+    }, 'sk-master', {
+      flash: { gateway: 'acme', id: 'deepseek-v4-flash-0731', contextWindow: 128000 },
+    });
+    expect(cfg.model_list).toHaveLength(1);
+    expect(cfg.model_list[0].model_name).toBe('flash');
+    expect(cfg.model_list[0].litellm_params.model).toBe('openai/deepseek-v4-flash-0731');
+    expect(cfg.model_list[0].litellm_params.api_base).toBe('https://gateway.acme.example/v1');
+  });
+
+  it('skips a unified entry with no gateway route (harness-only)', () => {
+    const cfg = litellmConfig({
+      models: {},
+      gateways: {},
+      ports: { router: 4100, litellm: 4000 },
+      generate: {},
+    }, 'sk-master', {
+      'harness-only': { harness: 'opencode', harnessId: 'anexto/x' },
+    });
+    expect(cfg.model_list).toHaveLength(0);
+  });
+
+  it('lets a legacy native.models entry stay authoritative over a same-keyed unified entry', () => {
+    const cfg = litellmConfig({
+      models: { shared: { gateway: 'acme', id: 'native-id', contextWindow: 128000 } },
+      gateways: { acme: { baseUrl: 'https://a.example/v1', auth: 'api-key' } },
+      ports: { router: 4100, litellm: 4000 },
+      generate: {},
+    }, 'sk-master', {
+      shared: { gateway: 'acme', id: 'unified-id', contextWindow: 128000 },
+    });
+    expect(cfg.model_list).toHaveLength(1);
+    expect(cfg.model_list[0].litellm_params.model).toBe('openai/native-id');
+  });
+});
+
 describe('LiteLLM config — codex-oauth gateways', () => {
   const codexConfig = () => litellmConfig({
     models: { 'gpt-5.6-luna': { gateway: 'codex', id: 'gpt-5.6-luna', contextWindow: 128000 } },

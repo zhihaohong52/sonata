@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents, expectedAgentNames, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL } from '../src/config.js';
+import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents, expectedAgentNames, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL, resolveTierAlias, harnessModelFor } from '../src/config.js';
 
 const VALID = `
 [models.deepseek-v4-flash]
@@ -358,15 +358,15 @@ code = ["deepseek-v4-flash"]
     expect(parseConfig(`[models."x"]\nharness="codex"\nid="gpt"`).native).toBeUndefined();
   });
 
-  it('refuses a native model id beginning claude-', () => {
+  it('accepts a native model id beginning claude- when its key is unreserved', () => {
     expect(() => parseConfig(`
-[native.models."sneaky"]
+[native.models."copilot-sonnet"]
 gateway = "g"
-id = "claude-opus-5"
+id = "claude-sonnet-4-5"
 context_window = 1000
 [native.gateways."g"]
 base_url = "http://x"
-`)).toThrow(/claude-/);
+`)).not.toThrow();
   });
 
   it('refuses a native model key beginning claude-', () => {
@@ -526,17 +526,23 @@ context_window=1000
 });
 
 describe('parseConfig — the claude- prefix and Copilot', () => {
-  it('still refuses a claude- id on a copilot gateway, which Copilot does serve', () => {
-    // Copilot offers claude-sonnet-4 and friends, but the router sends any
-    // `claude-` model to Anthropic, so such an id cannot be reached through the
-    // native path. Documented so the collision is not rediscovered as a bug.
+  it('accepts a claude- upstream id under an unreserved unified key', () => {
     expect(() => parseConfig(`
+[models."copilot-sonnet"]
+gateway = "copilot"
+id = "claude-sonnet-4-5"
+context_window = 1000
 [native.gateways."copilot"]
-auth="copilot-oauth"
-[native.models."sonnet"]
-gateway="copilot"
-id="claude-sonnet-4"
-context_window=1000
+auth = "copilot-oauth"
+`)).not.toThrow();
+  });
+
+  it('still refuses a unified model key beginning claude-', () => {
+    expect(() => parseConfig(`
+[models."claude-sonnet"]
+gateway = "copilot"
+id = "claude-sonnet-4-5"
+context_window = 1000
 `)).toThrow(/cannot use the "claude-" prefix/);
   });
 });
@@ -607,5 +613,196 @@ base_url = "https://openrouter.ai/api/v1"
 credential_source = "opencode"
 `, '/tmp/x');
     expect(config.native!.gateways.openrouter.credentialSource).toBe('opencode');
+  });
+});
+
+
+describe('unified [models] and [tiers]', () => {
+  const TIERED = `
+[models."deepseek-v4-flash"]
+gateway = "anexto"
+id = "deepseek-v4-flash-0731"
+harness = "opencode"
+
+[models."gpt-5.6-terra"]
+gateway = "openai"
+id = "gpt-5.6-terra"
+
+[models."kimi-harness-only"]
+harness = "opencode"
+id = "anexto/kimi-k3"
+
+[tiers.code]
+simple = ["deepseek-v4-flash"]
+complex = ["gpt-5.6-terra", "deepseek-v4-flash"]
+
+[tiers.explore]
+simple = ["deepseek-v4-flash"]
+complex = ["deepseek-v4-flash"]
+
+[native.gateways."anexto"]
+base_url = "http://gateway.example/v1"
+[native.gateways."openai"]
+base_url = "http://openai.example/v1"
+`;
+
+  it('parses unified models with native and harness routes', () => {
+    const config = parseConfig(TIERED);
+    expect(config.models['deepseek-v4-flash']).toEqual({
+      harness: 'opencode', id: 'anexto/deepseek-v4-flash-0731',
+    });
+    expect(config.unifiedModels['deepseek-v4-flash']).toEqual({
+      gateway: 'anexto', id: 'deepseek-v4-flash-0731', contextWindow: 128000,
+      harness: 'opencode', harnessId: 'anexto/deepseek-v4-flash-0731',
+    });
+    expect(config.unifiedModels['kimi-harness-only']).toMatchObject({
+      harness: 'opencode', harnessId: 'anexto/kimi-k3',
+    });
+    expect(config.tiers?.code.complex).toEqual(['gpt-5.6-terra', 'deepseek-v4-flash']);
+  });
+
+  it('defaults a unified codex harness id to the bare id, never a synthesized provider/model ref', () => {
+    // Codex takes a bare model id — unlike opencode/pi/reasonix, it has no
+    // provider dimension. Defaulting harnessId to `${gateway}/${id}` (the
+    // opencode/pi/reasonix shape) for codex would produce an id like
+    // `openai/gpt-5.6-sol` that parses fine here but is invalid the moment
+    // `sonata dispatch` actually launches codex with it.
+    const config = parseConfig(`
+[models."gpt-5.6-sol"]
+gateway = "openai"
+id = "gpt-5.6-sol"
+harness = "codex"
+
+[native.gateways."openai"]
+base_url = "https://openai.example/v1"
+`);
+    expect(config.unifiedModels['gpt-5.6-sol']).toMatchObject({
+      harness: 'codex', harnessId: 'gpt-5.6-sol',
+    });
+    expect(config.models['gpt-5.6-sol']).toEqual({ harness: 'codex', id: 'gpt-5.6-sol' });
+  });
+
+  it('defaults a unified claude harness id to the config key when no harness_id is set', () => {
+    // The claude harness dispatches `claude -p` for the config's own key; the
+    // unified entry's `id` names the native upstream model, which is not the
+    // model the harness launches. Defaulting to that id (or to a synthesized
+    // `<gateway>/<id>`) would send `sonata dispatch` an id that names no
+    // reachable Claude Code model — the key is what `harnessModelFor` must
+    // report.
+    const config = parseConfig(`
+[models."my-model"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+harness = "claude"
+
+[native.gateways."acme"]
+base_url = "https://acme.example/v1"
+`);
+    expect(config.unifiedModels['my-model']).toMatchObject({
+      harness: 'claude', harnessId: 'my-model',
+    });
+    expect(config.models['my-model']).toEqual({ harness: 'claude', id: 'my-model' });
+    expect(harnessModelFor(config, 'my-model'))
+      .toEqual({ harness: 'claude', id: 'my-model' });
+  });
+
+  it('resolveTierAlias returns ranked routes for sonata-<role>-<tier>', () => {
+    const config = parseConfig(TIERED);
+    const resolved = resolveTierAlias(config, 'sonata-code-complex');
+    expect(resolved?.routes.map((r) => r.key)).toEqual(['gpt-5.6-terra', 'deepseek-v4-flash']);
+    expect(resolved?.routes[1].native).toEqual({ gateway: 'anexto', id: 'deepseek-v4-flash-0731' });
+    expect(resolved?.routes[1].harness).toEqual({ harness: 'opencode', id: 'anexto/deepseek-v4-flash-0731' });
+  });
+
+  it('resolveTierAlias accepts a collapsed sonata-<role> alias when the lists are identical', () => {
+    const config = parseConfig(TIERED);
+    expect(resolveTierAlias(config, 'sonata-explore')?.routes.map((r) => r.key))
+      .toEqual(['deepseek-v4-flash']);
+    expect(resolveTierAlias(config, 'sonata-nonsense')).toBeUndefined();
+  });
+
+  it('does not collapse a role whose tier rankings differ', () => {
+    const config = parseConfig(TIERED);
+    expect(resolveTierAlias(config, 'sonata-code')).toBeUndefined();
+  });
+
+  it('passes a claude- model id through harness tier resolution', () => {
+    const config = parseConfig(`
+[models."fallback"]
+harness = "codex"
+id = "claude-opus-5"
+[tiers.code]
+simple = ["fallback"]
+complex = ["fallback"]
+`);
+    expect(resolveTierAlias(config, 'sonata-code')?.routes[0]).toMatchObject({
+      key: 'fallback',
+      harness: { harness: 'codex', id: 'claude-opus-5' },
+    });
+    expect(harnessModelFor(config, 'fallback'))
+      .toEqual({ harness: 'codex', id: 'claude-opus-5' });
+  });
+
+  it('refuses a tier entry that names no [models] key', () => {
+    expect(() => parseConfig(`
+[models."known"]
+harness = "opencode"
+id = "anexto/known"
+
+[tiers.code]
+simple = ["missing-model"]
+complex = ["known"]
+`)).toThrow(/missing-model/);
+  });
+
+  it('refuses an empty tier list — a tier with no candidates can never route', () => {
+    expect(() => parseConfig(`
+[models."known"]
+harness = "opencode"
+id = "anexto/known"
+
+[tiers.code]
+simple = []
+complex = ["known"]
+`)).toThrow(/non-empty/);
+    expect(() => parseConfig(`
+[models."known"]
+harness = "opencode"
+id = "anexto/known"
+
+[tiers.code]
+simple = ["known"]
+complex = []
+`)).toThrow(/non-empty/);
+  });
+
+  it('allows a claude- upstream id in unified models when the key is unreserved', () => {
+    expect(() => parseConfig(TIERED.replace('id = "gpt-5.6-terra"', 'id = "claude-opus-5"')))
+      .not.toThrow();
+  });
+
+  it('refuses claude- keys in unified models and tier keys', () => {
+    expect(() => parseConfig(TIERED.replace('[models."gpt-5.6-terra"]', '[models."claude-terra"]')))
+      .toThrow(/claude-/);
+  });
+
+  it('refuses mixing [tiers] with [generate]', () => {
+    expect(() => parseConfig(`${TIERED}\n[generate.roles]\ncode = []\n`))
+      .toThrow(/sonata init/);
+  });
+
+  it('refuses a unified model whose gateway is not defined', () => {
+    expect(() => parseConfig(`
+[models."flash"]
+gateway = "missing-gateway"
+id = "deepseek-v4-flash-0731"
+`)).toThrow(/unknown gateway "missing-gateway"/);
+  });
+
+  it('harnessModelFor exposes the harness route for the dispatch CLI', () => {
+    const config = parseConfig(TIERED);
+    expect(harnessModelFor(config, 'deepseek-v4-flash'))
+      .toEqual({ harness: 'opencode', id: 'anexto/deepseek-v4-flash-0731' });
+    expect(harnessModelFor(config, 'gpt-5.6-terra')).toBeUndefined();
   });
 });

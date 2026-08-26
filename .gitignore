@@ -11,3 +11,4 @@ sonata.toml
 
 # Generated per-user by `sonata route` (holds this machine's routing state)
 .claude/settings.local.json
+.claude/settings.local.json.bak

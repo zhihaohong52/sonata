@@ -15,11 +15,14 @@ Two ways to run it:
 
 - **Native** — the foreign model runs *inside Claude Code's own loop*: its
   tools, its permission modes, no separate TUI. A local routing proxy
-  (`sonata serve`) makes this possible; see [Native path](#native-path).
+  (`sonata serve`) makes this possible; see [Native path](#native-path). This
+  is the default: `sonata init` generates one tier agent per role, each backed
+  by a ranked list of models the router tries in order.
 - **Harness** — the foreign model runs in *its own* CLI (OpenCode, Codex, Pi,
-  Reasonix), launched in a detached tmux session and driven through MCP. No
-  proxy required — this is the simpler on-ramp if you already have one of
-  those harnesses authenticated.
+  Reasonix), launched in a detached tmux session and driven through
+  `sonata dispatch`. No proxy required — this is the fallback lane: when
+  every native route for a tier has failed, the router says so and names the
+  `sonata dispatch --tier <role>-<tier>` command, which the agent runs itself.
 
 Two reasons you might want that:
 
@@ -175,9 +178,14 @@ harness-catalogued provider then shows its models to select from:
   2 of 13 · space toggle · type to filter · enter confirm · esc cancel
 ```
 
-Finally it asks whether the config applies to this project or the whole
-machine, writes `sonata.toml`, generates one agent per role × model, and offers
-to install the permission hook. Project scope writes `./sonata.toml` and
+Then it asks you to rank your selected models into `simple`/`complex` tiers per
+role — pre-sorted by a cached Artificial Analysis catalog (`sonata catalog
+update`, with a free key from [artificialanalysis.ai](https://artificialanalysis.ai))
+when one exists, or built-in defaults otherwise — asks whether the config
+applies to this project or the whole machine, writes `sonata.toml`, generates
+one agent per role × tier, offers to install the permission hook, installs the
+`sonata-loop` skill, and offers to run `sonata route auto` so the generated
+agents have a router to reach. Project scope writes `./sonata.toml` and
 `./.claude/agents/`; machine scope writes `~/.config/sonata/sonata.toml` and
 `~/.claude/agents/`, where Claude Code offers the agents in every repository.
 
@@ -243,8 +251,8 @@ harness = "codex"
 id = "gpt-5.6-sol"
 ```
 
-Hand-written entries survive `sonata init` - the wizard carries through any
-model whose harness it does not manage, and adds it to `generate.models`.
+Hand-written entries survive `sonata init` — the wizard carries through any
+model whose harness it does not manage.
 
 Then run `sonata sync` to regenerate the agent files; Claude Code picks them up automatically.
 
@@ -254,44 +262,61 @@ The generated agents are ordinary registry entries, so Claude selects them the
 same way it selects any other subagent. Ask for one by name, or describe work
 that suits it:
 
-> "Use code-deepseek-v4-flash to convert these callbacks to async/await."
+> "Use code-simple to convert these callbacks to async/await."
 
-> "Get review-kimi-k3 to look at the auth refactor."
+> "Get review-complex to look at the auth refactor."
+
+Judging `simple` vs `complex` is a call you make per task — mechanical,
+well-specified, single-file work is `simple`; cross-cutting, ambiguous, or
+design-sensitive work is `complex`. When unsure, use `-complex`. The
+`sonata-loop` skill `sonata init` installs (`skills/loop/SKILL.md`) drives
+this across a whole feature: plan, route each task to a tier, gate behind
+review, escalate a task to `complex` after two failed reviews at `simple`.
 
 They compose with everything Claude Code already does — parallel fan-out,
-workflows, and `isolation: "worktree"` (the harness inherits the wrapper's
-working directory, so worktree isolation works with no extra configuration).
+workflows, and `isolation: "worktree"`.
 
 ## How it works
 
-This section covers the harness path — dispatching into a foreign model's own
-CLI. For running natively inside Claude Code's own loop, jump to
-[Native path](#native-path).
+`sonata init` generates one agent per role × difficulty tier — `code-simple`,
+`code-complex`, `review-simple`, and so on. Each agent's frontmatter names a
+router alias (`model: sonata-code-simple`), not a specific model:
 
 ```
 Claude Code
-    │  Agent(subagent_type: "code-deepseek-v4-flash")
+    │  Agent(subagent_type: "code-simple")
     ▼
-wrapper agent  (MCP-only — relays, never reasons)
-    │  mcp__sonata__dispatch / wait / approve
+sonata-code-simple  (native — runs in Claude Code's own loop)
+    │  model: sonata-code-simple
+    ▼
+router  (sonata serve)
+    │  resolves the alias against [tiers.code].simple, tries each
+    │  candidate in rank order, skips one in cooldown after a failure
+    ▼
+litellm → flash-1   (or the next-ranked model, on failure)
+```
+
+The router is the only place ranking lives — the agent just sends its alias
+and gets an answer from whichever model actually worked. If every native
+candidate for a tier fails, the router returns 529 naming the fallback:
+`sonata dispatch --tier code-simple`, which the agent runs itself to reach a
+model through its own harness (OpenCode, Codex, Pi, or Reasonix) instead:
+
+```
+sonata dispatch --tier code-simple "<task>"
+    │  resolves the tier's harness-routed candidates, in rank order
     ▼
 sonata CLI
     │  composes role prompt + CLAUDE.md + task
-    │  launches harness in a detached tmux session
+    │  launches harness in a detached tmux session, waits for it
     ▼
-opencode → deepseek-v4-flash
+opencode → deepseek-v4-flash   (next candidate on a degraded/empty finish)
 ```
 
-The wrapper holds `mcp__sonata__dispatch`, `mcp__sonata__wait` and
-`mcp__sonata__approve`, and no Bash. It never parses harness output; it calls
-the MCP tools and relays. All harness-specific knowledge lives in one adapter
-file. Bash access was tested and silently ignored by Claude Code, so
-`tools: Bash(sonata:*)` is not a supported alternative.
-
-`dispatch` launches a run and blocks until it finishes, needs approval, stalls,
-or reaches its blocking window. `wait` resumes a run after approval or when a
-previous call returned `RUNNING`. The MCP surface deliberately has no polling
-tool; `sonata tail` remains available as a human/debugging CLI command.
+`sonata dispatch` blocks until the run finishes, needs approval, or stalls,
+trying the next ranked candidate on a thrown launch, a degraded finish, or an
+empty report; `sonata wait`/`sonata approve` resume or unblock a specific run
+by id. `sonata tail` remains available as a human/debugging view of any run.
 
 Completion is read from an exit sentinel and a report file, never scraped from
 the terminal. If a harness dies without writing a report, sonata returns the
@@ -345,7 +370,7 @@ Code's own loop, tools, and permission modes, through a local routing proxy:
 - `sonata auth login <gateway>` — starts LiteLLM's device login for an OAuth gateway
 
 The `claude` harness adapter completes the picture: it dispatches a
-foreign-on-Claude-loop session through the existing MCP path, running headless
+foreign-on-Claude-loop session through `sonata dispatch`, running headless
 `claude -p` with no TUI. Native dispatches assume `sonata serve` is already up.
 
 Two consequences worth knowing. First, `ANTHROPIC_BASE_URL` is process-wide and
@@ -492,39 +517,48 @@ install will not litter unrelated repositories.
 | `sonata doctor` | Check tmux, harnesses, auth and versions |
 | `sonata sync` | Regenerate agent files from `sonata.toml`; `--prune` removes stale generated agents |
 | `sonata run` | Launch a run, print its id |
-| `sonata tail` | Human/debugging view of a run; not part of the MCP dispatch path |
+| `sonata dispatch (--tier <role>-<tier> \| --model <key>)` | Blocking harness dispatch with ranked fallback — the fallback lane a tier agent reaches for when every native route fails |
+| `sonata tail` | Human/debugging view of a run |
 | `sonata approve` | Answer a pending approval |
-| `sonata mcp` | Run the Sonata MCP server |
 | `sonata log <id>` | Print a run's whole transcript |
 | `sonata verify <id> [--model <key>]` | Verify a completed run |
 | `sonata auth` | Manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`, `login <gateway>`) |
+| `sonata catalog [update]` | Show the cached Artificial Analysis catalog's age, or refresh it (needs a stored `artificialanalysis` key) |
 | `sonata serve` | Run the native router and its managed LiteLLM child (`--daemon` detaches) |
-| `sonata restart` | Kill whatever sonata router currently holds the port (a stale daemon, or one MCP-hosted inside `sonata mcp`) and start a fresh daemon |
+| `sonata restart` | Kill whatever sonata router currently holds the port and start a fresh daemon |
 | `sonata code` | Launch a Claude Code session routed through the local proxy (passes `claude` args through) |
-| `sonata route on\|off\|status` | Route every plain `claude` session in the project through the proxy via `.claude/settings.local.json` |
-| `sonata route auto\|manual` | Route each session for its lifetime via SessionStart/SessionEnd hooks, keeping Remote Control |
+| `sonata route on\|off\|status [--global]` | Route every plain `claude` session in the project (or, with `--global`, every project) through the proxy via settings.local.json/settings.json |
+| `sonata route auto\|manual [--global]` | Route each session for its lifetime via SessionStart/SessionEnd hooks, keeping Remote Control |
 | `sonata gc` | Kill finished tmux sessions |
 
 ## Configuration
 
 ```toml
 # sonata.toml
-[models."opencode-openrouter-kimi-k3"]
-harness = "opencode"      # opencode | codex | pi | reasonix
-id = "openrouter/kimi-k3"      # provider/model for opencode, pi, reasonix; bare for codex
+[models."flash"]
+gateway = "acme"                    # native route: this key resolves through the router
+id = "deepseek-v4-flash-0731"
 
-[generate.roles]
-code    = ["opencode-openrouter-kimi-k3"]
-review  = ["opencode-openrouter-grok-4.5", "opencode-openai-gpt-5.6-sol"]
-explore = ["opencode-opencode-go-deepseek-v4-flash"]
-plan    = ["opencode-openai-gpt-5.6-terra"]
+[models."kimi-k3"]
+harness = "opencode"                # harness route: sonata dispatch --tier/--model falls back to this
+id = "openrouter/kimi-k3"
+
+[native.gateways."acme"]
+base_url = "https://gateway.acme.example/v1"
+
+[tiers.code]
+simple  = ["flash", "kimi-k3"]       # tried in this order; a cooling-down candidate is skipped
+complex = ["kimi-k3", "flash"]
 
 [run]
 tail_window_seconds   = 20     # how long `sonata tail` blocks per call
 stall_timeout_seconds = 120    # silence before a run is reported STALLED
 run_timeout_seconds   = 1800   # hard cap; the run is killed at this point
-dispatch_window_seconds = 1500 # blocking window; must stay under MCP's 30-minute stdio idle limit
 ```
+
+A `[models."<key>"]` entry can carry `gateway`/`id` (native), `harness`/`harness_id`
+(dispatch fallback), or both — one model, two routes. `sonata init` writes this
+shape for you; see [Using it](#using-it) for how the generated agents use it.
 
 ### Where sonata.toml lives
 
@@ -554,11 +588,14 @@ read-only sandbox on codex, a tool allowlist on pi, a read-only agent on
 opencode. The strength of that guarantee differs per harness; see
 [Permission modes](#permission-modes).
 
-Each role chooses its own models through `[generate.roles]`; the old flat
-`roles`/`models` pair is no longer accepted. `sonata init` rewrites an old
-config to the per-role format.
+Each role chooses its own ranked model list, per difficulty tier, through
+`[tiers.<role>]`; the older flat `[generate.roles]`/`[generate.native]` pair is
+migrated automatically the next time you run `sonata init` (a config still in
+that shape parses fine in the meantime — `sonata doctor` just points at
+`init` to migrate it).
 
-Run `sonata sync` after editing the config; Claude Code picks up the generated agents automatically. Reconnect the sonata MCP server with `/mcp` only when sonata's MCP tool surface changes.
+Run `sonata sync` after editing the config; Claude Code picks up the
+generated agents automatically.
 
 ## Troubleshooting
 
@@ -570,12 +607,14 @@ version and auth, and the permission hook.
 | Agents don't appear in Claude Code | Run `sonata sync`; Claude Code picks up regenerated agents automatically. |
 | `sonata: command not found` | The generated agents call `sonata` on your PATH. Run `npm link` in the clone (or install globally once published). |
 | Dispatch fails: "cannot ask for approval" | You are in `default` mode with opencode or pi, which cannot prompt. Switch to `acceptEdits`, use a codex or reasonix model, or dispatch a read-only role. |
-| Dispatch fails immediately after upgrading | Generated agents still name the removed `run`/`tail` tools. Run `sonata sync`; Claude Code picks up the regenerated agents automatically. |
+| A tier agent errors with "all native routes … failed" | Every candidate for that tier failed. Run the `sonata dispatch --tier <role>-<tier>` command the error names, in Bash. |
 | Every opencode/pi dispatch refuses | The permission hook is not installed, so sonata assumes `default`. Run `sonata init` and choose a hook scope. |
 | A codex run sits in `PAUSED` at startup | Codex has not been trusted in this directory. Run `codex` there once and answer "Yes, continue". |
 | A run reports `degraded` | The harness exited without writing a report; the text you get is scraped pane output. Treat it as untrustworthy. |
 | A run never finishes | It is capped by `run_timeout_seconds`. Attach with `tmux attach -t sonata-<id>` to watch it. |
-| `sonata serve --daemon` times out with "the daemon did not answer" | Something already holds the router port — often a stale daemon, or a router still living inside a `sonata mcp` process from an earlier native dispatch. Run `sonata restart` instead; it kills the recorded occupant first. |
+| `sonata doctor` says "config predates [tiers]" | Run `sonata init` — it migrates the config to `[models]`+`[tiers]`, carrying through every previously selected model. |
+| `sonata doctor` says "tier agents need a routed session" | No session routes native traffic to the router. Run `sonata route auto` (or `--global`). |
+| `sonata serve --daemon` times out with "the daemon did not answer" | Something already holds the router port — often a stale daemon or another native router. Run `sonata restart` instead; it kills the recorded occupant first. |
 
 ## Security
 
@@ -624,12 +663,17 @@ Worth knowing before you depend on this:
   concurrent load** instead of a 429, which LiteLLM surfaces as a 500. The
   router recognizes this specific case and re-emits it as 529 (overloaded) so
   Claude Code retries automatically instead of treating it as a hard failure.
+- **Tier fallback retries only before a response starts.** The router tries
+  each ranked candidate in order and returns the first one that answers with
+  status < 500; once a response starts streaming there is no mid-stream
+  failover to the next candidate. A candidate that fails cools down for 60
+  seconds so a repeated request doesn't retry a model that just failed.
 
 ## Development
 
 ```bash
 npm install
-npm test          # 893 tests; needs tmux
+npm test          # 909 tests; needs tmux
 npm run typecheck
 npm run build
 ```

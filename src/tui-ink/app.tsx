@@ -1,10 +1,13 @@
 import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { MultiSelect } from './components/multi-select.js';
+import { RankedSelect } from './components/ranked-select.js';
 import { ProvidersStep } from './components/providers-step.js';
+import { loadAaCatalog, proposeTiers } from '../catalog.js';
 import {
   applyStep,
   candidatesForProviders,
+  tierPickerKeys,
   type AvailableCredentials,
   type CandidateOption,
   type ProviderOption,
@@ -96,9 +99,17 @@ function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWiza
       <Text>Models: {state.nativeKeys?.join(', ') || 'none'}</Text>
       {!hasModels && <Text color="red">Select at least one model before continuing.</Text>}
       <Text>Roles: {state.roles?.join(', ') || 'none'}</Text>
-      {(state.roles ?? []).map((role) => (
-        <Text key={role}>  {role}: {(state.perRoleModels?.[role]?.join(', ') ?? state.nativeKeys?.join(', ')) || 'none'}</Text>
-      ))}
+      {(state.roles ?? []).map((role) => {
+        const tiers = state.tiers?.[role];
+        const line = tiers
+          ? (['simple', 'complex'] as const).map((tier) => {
+              const ranked = tiers[tier] ?? [];
+              const [main, ...backups] = ranked;
+              return `${tier} → ${main ?? 'none'}${backups.length > 0 ? ` (+${backups.length} backup${backups.length === 1 ? '' : 's'})` : ''}`;
+            }).join(' · ')
+          : 'none';
+        return <Text key={role}>  {role}: {line}</Text>;
+      })}
       <Text dimColor>{hasModels ? 'enter confirm' : '← back to select models'} · ← back · esc cancel</Text>
     </Box>
   );
@@ -107,8 +118,7 @@ function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWiza
 export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElement {
   const [step, setStep] = useState(0);
   const [state, setState] = useState<InitState>(data.initialState ?? {});
-  const [sameModels, setSameModels] = useState<boolean | undefined>(undefined);
-  const [roleIndex, setRoleIndex] = useState(0);
+  const [tierIndex, setTierIndex] = useState(0);
   const cancel = () => onDone({ cancelled: true, state });
   const next = (value: unknown) => {
     setState((current) => applyStep(current, step, value));
@@ -116,8 +126,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
   };
   const chooseScope = (scope: InitState['configScope']) => {
     setState(data.initialStateByScope?.[scope!] ?? { configScope: scope });
-    setSameModels(undefined);
-    setRoleIndex(0);
+    setTierIndex(0);
     setStep(1);
   };
   const back = () => setStep((current) => Math.max(0, current - 1));
@@ -175,32 +184,32 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     }
     case 4: {
       const roles = state.roles ?? [];
-      if (sameModels === undefined) {
-        return <Choice key="same-models" title="Use the same models for every role?" choices={[{ value: true, label: 'Yes' }, { value: false, label: 'No' }]} initial={true} onSubmit={(value) => {
-          if (value) {
-            setState((current) => ({
-              ...current,
-              perRoleModels: Object.fromEntries(roles.map((role) => [role, current.nativeKeys ?? []])),
-            }));
-            setStep(5);
-          } else if (roles.length === 0) {
-            setStep(5);
-          } else {
-            setSameModels(false);
-            setRoleIndex(0);
-          }
-        }} onBack={back} onCancel={cancel} />;
-      }
-      const role = roles[roleIndex];
+      const role = roles[Math.floor(tierIndex / 2)];
+      const tier = tierIndex % 2 === 0 ? 'simple' : 'complex';
       if (!role) return <Summary state={state} onDone={onDone} onBack={back} />;
-      return <MultiSelect key={`role-${role}`} title={`Models for ${role}`} items={(state.nativeKeys ?? []).map((key) => ({ value: key, label: key }))} initialSelected={new Set(state.perRoleModels?.[role] ?? state.nativeKeys ?? [])} onSubmit={(models) => {
-        setState((current) => applyStep(current, 4, { role, models }));
-        if (roleIndex + 1 < roles.length) setRoleIndex((current) => current + 1);
-        else setStep(5);
-      }} onBack={() => {
-        if (roleIndex === 0) setSameModels(undefined);
-        else setRoleIndex((current) => current - 1);
-      }} onCancel={cancel} />;
+      const catalog = loadAaCatalog(data.home);
+      const proposal = proposeTiers(state.nativeKeys ?? [], catalog);
+      const initialRanked = state.tiers?.[role]?.[tier] ?? proposal[tier];
+      const footer = catalog
+        ? `rankings: Artificial Analysis (fetched ${catalog.fetchedAt}) — artificialanalysis.ai`
+        : 'rankings: built-in defaults — refresh with sonata catalog update';
+      return <RankedSelect
+        key={`${role}-${tier}`}
+        title={`${role}: ${tier} models`}
+        items={tierPickerKeys(state.nativeKeys ?? [], initialRanked).map((key) => ({ value: key, label: key }))}
+        initialRanked={initialRanked}
+        footer={footer}
+        onSubmit={(ranked) => {
+          setState((current) => applyStep(current, 4, { role, tier, ranked }));
+          if (tierIndex + 1 < roles.length * 2) setTierIndex((current) => current + 1);
+          else setStep(5);
+        }}
+        onBack={() => {
+          if (tierIndex === 0) back();
+          else setTierIndex((current) => current - 1);
+        }}
+        onCancel={cancel}
+      />;
     }
     default:
       return <Summary state={state} onDone={onDone} onBack={back} />;

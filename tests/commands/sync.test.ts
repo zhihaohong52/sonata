@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { agentMarkdown, cmdSync, nativeAgentMarkdown } from '../../src/commands/sync.js';
+import { agentMarkdown, cmdSync, nativeAgentMarkdown, tierAgentMarkdown, TIER_AGENT_MARKER } from '../../src/commands/sync.js';
 
 let cwd: string;
 
@@ -29,11 +29,11 @@ describe('agentMarkdown', () => {
   it('declares a cheap tool-only wrapper', () => {
     expect(md).toContain('name: code-deepseek-v4-flash');
     expect(md).toContain('model: haiku');
-    expect(md).toContain('tools: mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve');
+    expect(md).toContain('tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
   });
 
-  it('does not grant Bash or shell commands', () => {
-    expect(md).not.toMatch(/^tools:.*\bBash\b/m);
+  it('grants only the three sonata Bash commands', () => {
+    expect(md).toContain('tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
     expect(md).not.toContain('sonata run --role');
   });
 
@@ -41,9 +41,23 @@ describe('agentMarkdown', () => {
     expect(md).toMatch(/do not (read|inspect|edit)/i);
   });
 
-  it('requires verbatim task forwarding and preserving the dispatch cwd', () => {
+  it('requires verbatim task forwarding via --task-file or --task-stdin, never inline shell text', () => {
     expect(md).toMatch(/verbatim, byte for byte/i);
-    expect(md).toMatch(/same id and the exact `cwd` returned/i);
+    expect(md).toContain('sonata dispatch --model deepseek-v4-flash --role code --task-file <path>');
+    expect(md).toContain("--task-stdin <<< '");
+    expect(md).not.toContain("printf '%s'");
+    expect(md).not.toContain(' | sonata dispatch');
+    expect(md).not.toContain("<<'SONATA_TASK");
+    expect(md).not.toContain('<<"$DELIM"');
+    expect(md).not.toContain('DELIM="SONATA_TASK_$(');
+  });
+
+  it('documents the single-quote escaping transformation with the worked example', () => {
+    // The worked example must appear with the shell single-quote sequence
+    // (backslash-escaped) intact, not mangled by JS template-literal quoting
+    // in a future edit.
+    expect(md).toContain("it'\\''s done");
+    expect(md).toContain("`'\\''`");
   });
 
   it('documents the PAUSED and STALLED handling', () => {
@@ -55,16 +69,17 @@ describe('agentMarkdown', () => {
 describe('agentMarkdown — tool grant', () => {
   const md = () => agentMarkdown({ role: 'code', model: 'm', harness: 'opencode' });
 
-  it('grants only the three sonata MCP tools', () => {
+  it('grants only the three sonata commands', () => {
     expect(md()).toContain(
-      'tools: mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve');
+      'tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
   });
 
-  it('never grants Bash', () => {
-    expect(md()).not.toMatch(/^tools:.*\bBash\b/m);
+  it('does not grant unrelated Bash commands', () => {
+    expect(md()).not.toContain('Bash(ls:*)');
+    expect(md()).not.toContain('Bash(sonata run:*)');
   });
 
-  it('tells the wrapper to call tools, not shell commands', () => {
+  it('tells the wrapper to run only the sonata commands', () => {
     expect(md()).not.toContain('sonata run --role');
   });
 });
@@ -72,8 +87,8 @@ describe('agentMarkdown — tool grant', () => {
 describe('agentMarkdown — one-call dispatch', () => {
   const md = agentMarkdown({ role: 'code', model: 'm', harness: 'opencode' });
 
-  it('grants the three tools the wrapper holds', () => {
-    expect(md).toContain('tools: mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve');
+  it('grants the three commands the wrapper runs', () => {
+    expect(md).toContain('tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
   });
 
   it('never tells the wrapper to poll', () => {
@@ -81,9 +96,9 @@ describe('agentMarkdown — one-call dispatch', () => {
     expect(md).not.toContain('`tail`');
   });
 
-  it('tells it to resume with wait after a RUNNING result', () => {
+  it('tells it to resume with sonata wait after a RUNNING result', () => {
     expect(md).toContain('RUNNING');
-    expect(md).toContain('`wait`');
+    expect(md).toContain('sonata wait <id>');
   });
 
   it('still forbids doing the work itself', () => {
@@ -92,11 +107,11 @@ describe('agentMarkdown — one-call dispatch', () => {
 });
 
 describe('nativeAgentMarkdown', () => {
-  it('generates a native agent with the model id in frontmatter and no MCP tools', () => {
+  it('generates a native agent with the model id in frontmatter and no dispatch tools', () => {
     const md = nativeAgentMarkdown({ role: 'code', model: 'deepseek-v4-flash' });
     expect(md).toMatch(/^name: native-code-deepseek-v4-flash$/m);
     expect(md).toMatch(/^model: deepseek-v4-flash$/m);
-    expect(md).not.toMatch(/mcp__sonata__/);
+    expect(md).not.toMatch(/mcp__legacy__/);
     expect(md).not.toMatch(/forwarding wrapper/);
     expect(md).toContain('sonata code');
   });
@@ -121,8 +136,8 @@ describe('cmdSync', () => {
     // The wrapper must name its own role and model; the exact sentence around
     // them is prose and changes, so assert the facts rather than the wording.
     const body = readFileSync(join(agentsDir, 'code-kimi-k3.md'), 'utf8');
-    expect(body).toContain('role: code');
-    expect(body).toContain('model: kimi-k3');
+    expect(body).toContain('--model kimi-k3');
+    expect(body).toContain('--role code');
   });
 
   it('writes explore and plan agent files', () => {
@@ -255,5 +270,108 @@ code = ["a"]
     writeFileSync(join(agentsDir, 'my-own-agent.md'), 'hand written, not sonata');
 
     expect(cmdSync({ cwd, agentsDir }).stale).toEqual([]);
+  });
+});
+
+describe('cmdSync — tier agents', () => {
+  it('writes one agent per distinct tier and collapses identical tier lists', () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."simple-model"]
+gateway = "gateway"
+id = "simple"
+
+[models."complex-model"]
+gateway = "gateway"
+id = "complex"
+
+[native.gateways."gateway"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["simple-model"]
+complex = ["complex-model"]
+
+[tiers.explore]
+simple = ["simple-model"]
+complex = ["simple-model"]
+`);
+    const agentsDir = join(cwd, '.claude', 'agents');
+    const res = cmdSync({ cwd, agentsDir });
+    expect(res.written.map((p) => p.split('/').pop()).sort()).toEqual([
+      'code-complex.md',
+      'code-simple.md',
+      'explore.md',
+    ]);
+    expect(readFileSync(join(agentsDir, 'code-simple.md'), 'utf8')).toContain('model: sonata-code-simple');
+    expect(readFileSync(join(agentsDir, 'code-simple.md'), 'utf8')).toContain(TIER_AGENT_MARKER);
+    expect(readFileSync(join(agentsDir, 'code-complex.md'), 'utf8')).toContain('model: sonata-code-complex');
+    const explore = readFileSync(join(agentsDir, 'explore.md'), 'utf8');
+    expect(explore).toContain('model: sonata-explore');
+    expect(explore).toMatch(/^tools: Read, Grep, Glob$/m);
+    expect(existsSync(join(agentsDir, 'code-simple-model.md'))).toBe(false);
+    expect(existsSync(join(agentsDir, 'native-code-simple-model.md'))).toBe(false);
+  });
+
+  it('does not overwrite a custom tier agent, but overwrites a sonata tier agent', () => {
+    const agentsDir = join(cwd, '.claude', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."simple-model"]
+gateway = "gateway"
+id = "simple"
+
+[native.gateways."gateway"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["simple-model"]
+complex = ["simple-model"]
+`);
+    const path = join(agentsDir, 'code.md');
+    const custom = '---\\nname: code\\ndescription: custom\\n---\\ncustom body\\n';
+    writeFileSync(path, custom);
+
+    const skipped = cmdSync({ cwd, agentsDir });
+    expect(readFileSync(path, 'utf8')).toBe(custom);
+    expect(skipped.skipped).toEqual([path]);
+    expect(skipped.written).not.toContain(path);
+
+    writeFileSync(path, tierAgentMarkdown({ role: 'code' }));
+    const overwritten = cmdSync({ cwd, agentsDir });
+    expect(overwritten.written).toContain(path);
+    expect(overwritten.skipped).not.toContain(path);
+    expect(readFileSync(path, 'utf8')).toContain('model: sonata-code');
+  });
+
+  it('reports superseded legacy agents as stale', () => {
+    const agentsDir = join(cwd, '.claude', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(join(agentsDir, 'code-old.md'), 'forwarding wrapper around the sonata runtime');
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."simple-model"]
+gateway = "gateway"
+id = "simple"
+
+[native.gateways."gateway"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["simple-model"]
+complex = ["simple-model"]
+`);
+    const res = cmdSync({ cwd, agentsDir });
+    expect(res.written.map((p) => p.split('/').pop())).toEqual(['code.md']);
+    expect(res.stale).toEqual(['code-old.md']);
+  });
+
+  it('keeps generating legacy agents when tiers are absent', () => {
+    const agentsDir = join(cwd, '.claude', 'agents');
+    const res = cmdSync({ cwd, agentsDir });
+    expect(res.written.map((p) => p.split('/').pop()).sort()).toEqual([
+      'code-deepseek-v4-flash.md',
+      'code-kimi-k3.md',
+      'review-deepseek-v4-flash.md',
+      'review-kimi-k3.md',
+    ]);
   });
 });
