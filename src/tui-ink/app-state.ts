@@ -47,6 +47,12 @@ export interface PerRoleModelsValue {
   models: string[];
 }
 
+export interface TierSelectionValue {
+  role: string;
+  tier: 'simple' | 'complex';
+  ranked: string[];
+}
+
 export interface AvailableCredentials {
   codex: { expiresInDays: number | null } | null;
   opencode: { expiresInDays: number | null } | null;
@@ -93,6 +99,19 @@ export function applyStep(state: InitState, step: number, value: unknown): InitS
     case 3:
       return { ...state, roles: value as string[] };
     case 4: {
+      if (typeof value === 'object' && value !== null && 'tier' in value) {
+        const { role, tier, ranked } = value as TierSelectionValue;
+        return {
+          ...state,
+          tiers: {
+            ...state.tiers,
+            [role]: {
+              ...(state.tiers?.[role] ?? { simple: [], complex: [] }),
+              [tier]: ranked,
+            },
+          },
+        };
+      }
       const { role, models } = value as PerRoleModelsValue;
       return {
         ...state,
@@ -134,6 +153,21 @@ export function candidatesForProviders(candidates: CandidateOption[], providers:
     providers.filter((provider) => selectedKeys.has(provider.key)).map((provider) => provider.provider),
   );
   return candidates.filter((candidate) => gateways.has(candidate.gateway));
+}
+
+/**
+ * The keys a tier's RankedSelect screen offers, in stable order.
+ *
+ * A saved ranking can name a harness-only key that has no native route and
+ * is therefore absent from `nativeKeys` — RankedSelect's `initialIndices`
+ * silently drops any `initialRanked` value missing from `items`, so building
+ * items from `nativeKeys` alone would make merely confirming this screen
+ * rewrite the tier without that fallback. Appending the missing keys keeps
+ * them selectable and preserved across a no-op confirm.
+ */
+export function tierPickerKeys(nativeKeys: string[], initialRanked: string[]): string[] {
+  const fallbackKeys = initialRanked.filter((key) => !nativeKeys.includes(key));
+  return [...nativeKeys, ...fallbackKeys];
 }
 
 /**

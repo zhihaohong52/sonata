@@ -1,13 +1,13 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig } from '../config.js';
+import { configPath as resolveSonataConfigPath, loadConfig, harnessModelFor } from '../config.js';
 import { getAdapter } from '../adapters/index.js';
 import { createRun, runDir, writeMeta } from '../store.js';
 import { loadRole, composeInstructions } from '../roles.js';
 import { readPermissionMode } from '../mode.js';
 import { newSession, runScript } from '../tmux.js';
 import { wrapWithTimeout } from '../watchdog.js';
-import { serveHealthUrl, cmdServe } from './serve.js';
+import { isSonataRouter, sonataRouterConfigPath, startServeDaemon } from './serve.js';
 import { homedir } from 'node:os';
 
 export interface RunOptions {
@@ -53,13 +53,11 @@ export function repoContext(cwd: string): string {
 }
 
 /**
- * Whether the working directory hands a harness sonata's own MCP tools.
+ * Whether the working directory still has a stale sonata MCP registration.
  *
  * Reasonix — and any harness that reads a project `.mcp.json` — loads those
- * servers on top of its own config, and reasonix's docs call them "trusted
- * configuration [that needs] no separate launch confirmation". In a repo where
- * sonata is registered at project scope, a dispatched model therefore receives
- * `mcp__sonata__dispatch`/`wait`/`approve` and can start further sonata runs.
+ * servers on top of its own config. A stale registration can therefore expose
+ * a removed server to dispatched models and should be cleaned up by the user.
  *
  * There is no per-run way to withhold them: `reasonix run` has no deny flag,
  * and `reasonix mcp disable` writes the user's own config, which is not
@@ -82,7 +80,7 @@ export function exposesSonataTools(cwd: string): boolean {
 }
 
 /** Ensure the native proxy is up when dispatching to the claude harness. */
-async function ensureNativeServe(cwd: string): Promise<void> {
+export async function ensureNativeServe(cwd: string): Promise<void> {
   const config = loadConfig(cwd);
   if (!config.native) {
     throw new Error(
@@ -91,25 +89,50 @@ async function ensureNativeServe(cwd: string): Promise<void> {
     );
   }
   const port = config.native.ports.router;
-  try {
-    const res = await fetch(serveHealthUrl(port));
-    if (res.ok) return;
-  } catch {
-    // Not up — start it.
+  const expectedConfigPath = resolveSonataConfigPath(cwd, homedir());
+  const running = await isSonataRouter(port);
+  if (running) {
+    // Two projects can share the same default router port; a router
+    // already answering here is not proof it is THIS project's — verify
+    // which sonata.toml actually started it before trusting it, the same
+    // check cmdRouteSession's auto-mode path already makes. A router that
+    // cannot or does not report its own configPath is treated the same as
+    // a mismatch, not silently trusted.
+    const actualConfigPath = await sonataRouterConfigPath(port);
+    if (expectedConfigPath !== null && (actualConfigPath === null || actualConfigPath !== expectedConfigPath)) {
+      throw new Error(
+        actualConfigPath === null
+          ? `sonata: router port ${port} answered but did not report which sonata configuration ` +
+            `it is running (too old, or its own config resolution failed) — refusing to trust it. ` +
+            `Restart it with \`sonata restart\` once confirmed to be this project's own router.`
+          : `sonata: router port ${port} is already serving a different sonata configuration ` +
+            `(${actualConfigPath}) than this project resolves to (${expectedConfigPath}). ` +
+            `Two projects cannot share one router port — set a different [native.ports].router ` +
+            `in one of the two configs.`,
+      );
+    }
+    return;
   }
-  // The handle owns a temp directory holding the generated master key, and for
-  // a codex-oauth gateway the ChatGPT credential. Discarding it left both in
-  // the system temp directory for every auto-started serve.
-  const handle = await cmdServe({ cwd, home: homedir(), daemon: true });
-  let stopping = false;
-  const shutdown = () => {
-    if (stopping) return;
-    stopping = true;
-    void handle.stop();
-  };
-  process.once('exit', shutdown);
-  process.once('SIGINT', shutdown);
-  process.once('SIGTERM', shutdown);
+  await startServeDaemon(homedir(), ['sonata', 'serve', '--daemon'], {}, cwd);
+  // A concurrent dispatch in another project could have won the race to
+  // bind this same default port with ITS daemon between the probe above
+  // and this daemon spawn's poll completing — verify identity again now
+  // that something is confirmed to be listening. A router that cannot or
+  // does not report its own configPath is treated the same as a mismatch,
+  // not silently trusted.
+  const startedConfigPath = await sonataRouterConfigPath(port);
+  if (expectedConfigPath !== null && (startedConfigPath === null || startedConfigPath !== expectedConfigPath)) {
+    throw new Error(
+      startedConfigPath === null
+        ? `sonata: router port ${port} answered but did not report which sonata configuration ` +
+          `it is running (too old, or its own config resolution failed) — refusing to trust it. ` +
+          `Restart it with \`sonata restart\` once confirmed to be this project's own router.`
+        : `sonata: router port ${port} is already serving a different sonata configuration ` +
+          `(${startedConfigPath}) than this project resolves to (${expectedConfigPath}). ` +
+          `Two projects cannot share one router port — set a different [native.ports].router ` +
+          `in one of the two configs.`,
+    );
+  }
 }
 
 export async function cmdRun(opts: RunOptions): Promise<RunResult> {
@@ -120,8 +143,25 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
   // A native model key dispatches through the claude harness automatically —
   // no separate [models] entry needed. The claude adapter runs `claude -p`
   // with the proxy env, so the native model reaches its gateway.
+  if (!modelCfg) {
+    const harness = harnessModelFor(config, opts.model);
+    if (harness) modelCfg = harness;
+  }
+
   if (!modelCfg && config.native?.models[opts.model]) {
     modelCfg = { harness: 'claude', id: opts.model };
+  }
+
+  // A native-only unified [models."x"] entry (gateway + id, no harness)
+  // populates config.unifiedModels but NOT the legacy config.native?.models
+  // table checked above — a config with no [tiers] table at all can still
+  // declare one, and it is fully reachable via sonata serve's LiteLLM
+  // config, just not by this lookup until now.
+  if (!modelCfg) {
+    const unified = config.unifiedModels[opts.model];
+    if (unified?.gateway !== undefined && unified.id !== undefined) {
+      modelCfg = { harness: 'claude', id: opts.model };
+    }
   }
 
   if (!modelCfg) {

@@ -9,7 +9,8 @@ export interface InitState {
   providerKeys?: string[];
   nativeKeys?: string[];          // selected native model keys
   roles?: string[];
-  perRoleModels?: Record<string, string[]>; // role -> model keys
+  perRoleModels?: Record<string, string[]>; // legacy role -> model keys
+  tiers?: Record<string, { simple: string[]; complex: string[] }>;
   hookScope?: HookScope;
   /**
    * BYOK provider -> the API key typed in the wizard.

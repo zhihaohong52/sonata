@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const phase = process.argv[2] === 'end' ? 'end' : 'start';
+const global = process.argv[3] === '--global';
 const cli = join(dirname(dirname(fileURLToPath(import.meta.url))), 'dist', 'cli.js');
 
 /** Claude Code sends the hook a JSON payload on stdin; `session_id` is in it. */
@@ -32,7 +33,9 @@ if (sessionId === '') process.exit(0);
 
 await new Promise((resolve) => {
   try {
-    const child = spawn(process.execPath, [cli, 'route', `session-${phase}`, '--id', sessionId], {
+    const args = [cli, 'route', `session-${phase}`, '--id', sessionId];
+    if (global) args.push('--global');
+    const child = spawn(process.execPath, args, {
       stdio: 'ignore',
     });
     child.on('exit', resolve);

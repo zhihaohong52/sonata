@@ -1,0 +1,212 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { cmdDispatch, truncateReport, taskPath } from '../../src/commands/dispatch.js';
+
+const TIERED = `
+[models."flash"]
+gateway = "g"
+id = "flash-1"
+harness = "opencode"
+
+[models."terra"]
+gateway = "g"
+id = "terra-1"
+harness = "opencode"
+
+[tiers.code]
+simple = ["flash", "terra"]
+complex = ["terra"]
+
+[native.gateways."g"]
+base_url = "http://gateway.example/v1"
+`;
+
+let cwd: string; let home: string;
+beforeEach(() => {
+  cwd = mkdtempSync(join(tmpdir(), 'sonata-dispatch-'));
+  home = mkdtempSync(join(tmpdir(), 'sonata-dispatch-home-'));
+  writeFileSync(join(cwd, 'sonata.toml'), TIERED);
+});
+
+const opts = () => ({ cwd, home, tier: 'code-simple', task: 'do the thing', rolesDir: '/roles' });
+
+describe('cmdDispatch', () => {
+  it('returns the first candidate result when it succeeds', async () => {
+    const outcome = await cmdDispatch(opts(), {
+      run: async (o) => { expect(o.model).toBe('flash'); return { id: 'r1', session: 's', interactive: false }; },
+      wait: async () => ({ id: 'r1', state: 'DONE', report: 'did it', lines: [], degraded: false }) as never,
+    });
+    expect(outcome).toMatchObject({ id: 'r1', state: 'DONE', modelKey: 'flash', report: 'did it' });
+    expect(outcome.attempts).toHaveLength(1);
+  });
+
+  it('falls through to the next candidate on a degraded finish', async () => {
+    const ran: string[] = [];
+    const outcome = await cmdDispatch(opts(), {
+      run: async (o) => { ran.push(o.model); return { id: `r${ran.length}`, session: 's', interactive: false }; },
+      wait: async (o) => (o.id === 'r1'
+        ? { id: 'r1', state: 'DONE', report: '', degraded: true, lines: [] }
+        : { id: 'r2', state: 'DONE', report: 'terra did it', degraded: false, lines: [] }) as never,
+    });
+    expect(ran).toEqual(['flash', 'terra']);
+    expect(outcome.modelKey).toBe('terra');
+    expect(outcome.attempts.map((a) => a.state)).toEqual(['DONE', 'DONE']);
+  });
+
+  it('falls through when the launch itself throws', async () => {
+    const ran: string[] = [];
+    const outcome = await cmdDispatch(opts(), {
+      run: async (o) => {
+        ran.push(o.model);
+        if (o.model === 'flash') throw new Error('database is locked');
+        return { id: 'r2', session: 's', interactive: false };
+      },
+      wait: async () => ({ id: 'r2', state: 'DONE', report: 'ok', degraded: false, lines: [] }) as never,
+    });
+    expect(ran).toEqual(['flash', 'terra']);
+    expect(outcome.state).toBe('DONE');
+    expect(outcome.attempts[0]).toMatchObject({ modelKey: 'flash', state: 'FAILED', error: 'database is locked' });
+  });
+
+  it('returns PAUSED immediately — an approval is not a failure', async () => {
+    const outcome = await cmdDispatch(opts(), {
+      run: async () => ({ id: 'r1', session: 's', interactive: true }),
+      wait: async () => ({ id: 'r1', state: 'PAUSED', lines: ['Allow?'], degraded: false }) as never,
+    });
+    expect(outcome.state).toBe('PAUSED');
+    expect(outcome.attempts).toHaveLength(1);
+  });
+
+  it('stops rather than falling through when wait itself throws after a successful launch', async () => {
+    const ran: string[] = [];
+    const outcome = await cmdDispatch(opts(), {
+      run: async (o) => { ran.push(o.model); return { id: 'r1', session: 's', interactive: false }; },
+      wait: async () => { throw new Error('run-state file unreadable'); },
+    });
+    // Only flash was launched — terra must never start, since flash's run
+    // may still be active and a second launch would race it on the same tree.
+    expect(ran).toEqual(['flash']);
+    expect(outcome).toMatchObject({ id: 'r1', state: 'FAILED', modelKey: 'flash' });
+    expect(outcome.attempts[0]).toMatchObject({ error: 'run-state file unreadable' });
+  });
+
+  it('returns RUNNING immediately rather than reopening the wait window', async () => {
+    let waitCalls = 0;
+    const outcome = await cmdDispatch(opts(), {
+      run: async () => ({ id: 'r1', session: 's', interactive: false }),
+      wait: async () => { waitCalls += 1; return { id: 'r1', state: 'RUNNING', lines: [] } as never; },
+    });
+    expect(waitCalls).toBe(1);
+    expect(outcome).toMatchObject({ id: 'r1', state: 'RUNNING', modelKey: 'flash' });
+  });
+
+  it('derives the role from the resolved alias, not by splitting a sonata-prefixed --tier', async () => {
+    const outcome = await cmdDispatch({ ...opts(), tier: 'sonata-code-simple' }, {
+      run: async (o) => { expect(o.role).toBe('code'); return { id: 'r1', session: 's', interactive: false }; },
+      wait: async () => ({ id: 'r1', state: 'DONE', report: 'ok', degraded: false, lines: [] }) as never,
+    });
+    expect(outcome.state).toBe('DONE');
+  });
+
+  it('reports the exhausted list when every candidate fails', async () => {
+    const outcome = await cmdDispatch(opts(), {
+      run: async () => { throw new Error('down'); },
+      wait: async () => { throw new Error('unreachable'); },
+    });
+    expect(outcome.state).toBe('FAILED');
+    expect(outcome.attempts).toHaveLength(2);
+  });
+
+  it('--model dispatches exactly one key and refuses a harness-less one', async () => {
+    const outcome = await cmdDispatch({ ...opts(), tier: undefined, model: 'terra' }, {
+      run: async (o) => { expect(o.model).toBe('terra'); return { id: 'r1', session: 's', interactive: false }; },
+      wait: async () => ({ id: 'r1', state: 'DONE', report: 'ok', degraded: false, lines: [] }) as never,
+    });
+    expect(outcome.modelKey).toBe('terra');
+    await expect(cmdDispatch({ ...opts(), tier: undefined, model: 'missing' }, {}))
+      .rejects.toThrow(/missing/);
+  });
+
+  it('--model reaches run for a native-only unified model with no [tiers] table', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."solo-native"]
+gateway = "g"
+id = "solo-native-upstream"
+context_window = 128000
+
+[native.gateways."g"]
+base_url = "http://gateway.example/v1"
+`);
+    const ran: string[] = [];
+    const outcome = await cmdDispatch({ ...opts(), tier: undefined, model: 'solo-native' }, {
+      run: async (o) => { ran.push(o.model); return { id: 'r1', session: 's', interactive: false }; },
+      wait: async () => ({ id: 'r1', state: 'DONE', report: 'ok', degraded: false, lines: [] }) as never,
+    });
+    expect(ran).toEqual(['solo-native']);
+    expect(outcome.modelKey).toBe('solo-native');
+  });
+
+  it('--model defaults to the code role, but --role overrides it', async () => {
+    const seenRoles: string[] = [];
+    const run = async (o: { role: string }) => { seenRoles.push(o.role); return { id: 'r1', session: 's', interactive: false }; };
+    const wait = async () => ({ id: 'r1', state: 'DONE', report: 'ok', degraded: false, lines: [] }) as never;
+
+    await cmdDispatch({ ...opts(), tier: undefined, model: 'terra' }, { run, wait });
+    await cmdDispatch({ ...opts(), tier: undefined, model: 'terra', role: 'review' }, { run, wait });
+
+    expect(seenRoles).toEqual(['code', 'review']);
+  });
+
+  it('--model reaches run for a legacy native-only model with no [models] entry', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways."g"]
+base_url = "http://gateway.example/v1"
+
+[native.models."x"]
+gateway = "g"
+id = "x"
+context_window = 128000
+`);
+    const ran: string[] = [];
+    const outcome = await cmdDispatch({ ...opts(), tier: undefined, model: 'x' }, {
+      run: async (o) => { ran.push(o.model); return { id: 'r1', session: 's', interactive: false }; },
+      wait: async () => ({ id: 'r1', state: 'DONE', report: 'ok', degraded: false, lines: [] }) as never,
+    });
+    expect(ran).toEqual(['x']);
+    expect(outcome.modelKey).toBe('x');
+  });
+});
+
+describe('truncateReport', () => {
+  it('leaves a short report untouched', () => {
+    expect(truncateReport('short', 'r1', 100)).toBe('short');
+  });
+
+  it('preserves the trailing provenance line when truncating', () => {
+    const body = 'x'.repeat(200);
+    const provenance = '\n\n— sonata verified: opencode, deepseek-v4-flash, DONE';
+    const report = body + provenance;
+    const truncated = truncateReport(report, 'r1', 100);
+    expect(truncated.length).toBeLessThanOrEqual(report.length);
+    expect(truncated).toContain('[truncated: full transcript at `sonata log r1`]');
+    expect(truncated.endsWith(provenance)).toBe(true);
+  });
+
+  it('falls back to plain truncation when there is no provenance line', () => {
+    const report = 'x'.repeat(200);
+    const truncated = truncateReport(report, 'r1', 100);
+    expect(truncated).toBe(`${'x'.repeat(100)}\n\n[truncated: full transcript at \`sonata log r1\`]`);
+  });
+});
+
+describe('taskPath', () => {
+  it('never collides across calls in the same millisecond', () => {
+    // Date.now() alone repeats within a millisecond under concurrent
+    // dispatch, which would let one task file silently overwrite another
+    // before either launch read it back.
+    const paths = new Set(Array.from({ length: 200 }, () => taskPath(cwd)));
+    expect(paths.size).toBe(200);
+  });
+});

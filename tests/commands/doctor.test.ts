@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkVersion, cmdDoctor } from '../../src/commands/doctor.js';
+import { checkVersion, cmdDoctor, staleMcpRegistration } from '../../src/commands/doctor.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
 import { credentialDir } from '../../src/native/oauth-login.js';
+import { cmdRoute } from '../../src/commands/route.js';
 
 vi.mock('../../src/native/litellm.js', () => ({
   findLitellm: () => '/usr/local/bin/litellm',
@@ -79,6 +80,21 @@ code = ["m"]
   });
 });
 
+describe('staleMcpRegistration', () => {
+  it('warns when the project MCP file still registers sonata', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-mcp-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-mcp-home-'));
+    writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { sonata: { command: 'node' } } }));
+    expect(staleMcpRegistration(cwd, home)).toContain('claude mcp remove sonata');
+  });
+
+  it('stays quiet when neither MCP scope registers sonata', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-mcp-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-mcp-home-'));
+    expect(staleMcpRegistration(cwd, home)).toBeUndefined();
+  });
+});
+
 describe('cmdDoctor — completeness', () => {
   const MIN = `
 [models."a"]
@@ -116,21 +132,12 @@ code = ["a"]
     expect(c?.detail).not.toContain('restart Claude Code');
   });
 
-  it('flags an unregistered MCP server', async () => {
-    const { cwd, home } = setup();
-    // The wrapper cannot report its own absence of tools, so doctor must.
-    expect((await check(cwd, home, 'mcp server'))?.ok).toBe(false);
-  });
-
   it('stays quiet on a healthy setup', async () => {
     const { cwd, home } = setup();
     writeFileSync(join(cwd, '.claude', 'agents', 'code-a.md'),
-      `---\nname: code-a\ntools: mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve\n---\n${MARKER}`);
-    writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({
-      mcpServers: { sonata: { command: 'node', args: [join('/pkg', 'dist', 'cli.js'), 'mcp'] } },
-    }));
+      `---\nname: code-a\ntools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)\n---\n${MARKER}`);
     const res = await cmdDoctor({ cwd, home, packageRoot: '/pkg' });
-    for (const name of ['agents', 'agent tools', 'mcp server']) {
+    for (const name of ['agents', 'agent tools']) {
       expect(res.checks.find((c) => c.name === name)?.ok).toBe(true);
     }
   });
@@ -168,17 +175,28 @@ code = ["m"]
   };
 
   it('blocks when a generated agent still names the polling tools', async () => {
-    writeAgent('code-old.md', 'mcp__sonata__run, mcp__sonata__tail, mcp__sonata__approve');
+    writeAgent('code-old.md', 'mcp__legacy__run, mcp__legacy__tail, mcp__legacy__approve');
 
     const { checks } = await cmdDoctor({ cwd, home });
     const check = checks.find((c) => c.name === 'agent tools')!;
     expect(check.ok).toBe(false);
-    expect(check.detail).toBe('1 wrapper(s) still call the removed run/tail tools and will fail mid-dispatch — run `sonata sync`');
+    expect(check.detail).toBe('1 wrapper(s) still call removed MCP tools and will fail mid-dispatch — run `sonata sync`');
     expect(check.detail).not.toContain('restart Claude Code');
   });
 
+  it('blocks when a generated agent still names the removed dispatch/wait/approve MCP tools', async () => {
+    // The generation immediately before this one — MCP-hosted, but already
+    // using dispatch/wait/approve rather than the older run/tail names.
+    writeAgent('code-old.md', 'mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve');
+
+    const { checks } = await cmdDoctor({ cwd, home });
+    const check = checks.find((c) => c.name === 'agent tools')!;
+    expect(check.ok).toBe(false);
+    expect(check.detail).toContain('removed MCP tools');
+  });
+
   it('passes when every agent names the current tools', async () => {
-    writeAgent('code-new.md', 'mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve');
+    writeAgent('code-new.md', 'Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
 
     const { checks } = await cmdDoctor({ cwd, home });
     expect(checks.find((c) => c.name === 'agent tools')!.ok).toBe(true);
@@ -499,6 +517,164 @@ credential_source = "opencode"
       const c = checks.find((x) => x.name === 'routed sessions');
       expect(c?.ok).toBe(true);
       expect(c?.detail).toContain('http://localhost:4100');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('does not count a stale routed port as satisfying tier routing', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-tier-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-tier-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+
+[native.ports]
+router = 4100
+`);
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    // A base URL left behind from a since-changed router port — present, but
+    // not the configured one.
+    writeFileSync(join(cwd, '.claude', 'settings.local.json'),
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'http://localhost:9999' } }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      const c = checks.find((x) => x.name === 'tier routing');
+      expect(c?.ok).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('recognizes a routed port that matches the configured router for tier routing', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-tier-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-tier-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+
+[native.ports]
+router = 4100
+`);
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    writeFileSync(join(cwd, '.claude', 'settings.local.json'),
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'http://localhost:4100' } }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      expect(checks.find((x) => x.name === 'tier routing')).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('global-auto routing does not satisfy tier routing for a project with its own config', async () => {
+    // A project with its own sonata.toml is not the machine config, so global
+    // routing resolves a different, unrelated configuration — the check must
+    // refuse to count it, leaving only project-scoped routing acceptable.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-tier-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-tier-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+
+[native.ports]
+router = 5100
+`);
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+
+[native.ports]
+router = 4200
+`);
+    await cmdRoute('auto', { cwd, home, packageRoot: '/pkg', scope: 'global' });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home, packageRoot: '/pkg' });
+      expect(checks.find((x) => x.name === 'tier routing')?.ok).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('global-auto routing satisfies tier routing when the project falls back to the machine config', async () => {
+    // No project-scoped sonata.toml: the project's config resolution IS the
+    // machine config, so global routing genuinely serves this project and the
+    // check may count it. A stray ~/sonata.toml is present — a leftover some
+    // upgrades still have — which the old `configPath(home, home)` comparison
+    // mistook for the project's resolved config, falsely refusing global
+    // routing. The check compares against the machine config's fixed path
+    // instead, so the stray file only trips the separate "stray config" check.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-tier-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-tier-home-'));
+    writeFileSync(join(home, 'sonata.toml'), `
+[models."legacy-flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[native.ports]
+router = 9999
+`);
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+
+[native.ports]
+router = 4200
+`);
+    await cmdRoute('auto', { cwd, home, packageRoot: '/pkg', scope: 'global' });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home, packageRoot: '/pkg' });
+      expect(checks.find((x) => x.name === 'tier routing')).toBeUndefined();
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -10,13 +10,8 @@ import { allowSonataTools, missingAllowEntries, SONATA_TOOLS } from '../src/sett
 describe('allow-listing the sonata tools', () => {
   it('allow-lists the tools the wrapper actually holds', () => {
     expect(SONATA_TOOLS).toEqual([
-      'mcp__sonata__dispatch', 'mcp__sonata__wait', 'mcp__sonata__approve',
+      'Bash(sonata dispatch:*)', 'Bash(sonata wait:*)', 'Bash(sonata approve:*)',
     ]);
-  });
-
-  it('does not name the removed polling tools', () => {
-    expect(SONATA_TOOLS).not.toContain('mcp__sonata__run');
-    expect(SONATA_TOOLS).not.toContain('mcp__sonata__tail');
   });
 
   it('adds every tool to an empty settings file', () => {
@@ -50,9 +45,9 @@ describe('allow-listing the sonata tools', () => {
   // The dangerous state is partial: `run` permitted while `tail` is not means
   // dispatches launch and cannot be observed.
   it('completes a partial allow list without disturbing what is there', () => {
-    const partial = { permissions: { allow: ['mcp__sonata__dispatch'] } };
+    const partial = { permissions: { allow: ['Bash(sonata dispatch:*)'] } };
     expect(missingAllowEntries(partial)).toEqual([
-      'mcp__sonata__wait', 'mcp__sonata__approve',
+      'Bash(sonata wait:*)', 'Bash(sonata approve:*)',
     ]);
     const { settings, changed } = allowSonataTools(partial);
     expect(changed).toBe(true);

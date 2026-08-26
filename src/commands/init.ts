@@ -4,10 +4,13 @@
  * Interactive by default; every choice also has a flag so the command works in
  * CI and scripts. Nothing is written until the user confirms the summary.
  *
- * The wizard writes native models only — foreign models running inside Claude
- * Code's own loop via a local routing proxy. The harness-based wrapper path
- * (`[models]`/`[generate.roles]`) is still supported by the config parser and
- * by `sonata sync`, but `init` does not generate or carry through those entries.
+ * The wizard writes the unified `[models]` registry plus `[tiers.<role>]`
+ * ranked lists — discovered native candidates keep `gateway`/`id`, and
+ * harness-discovered ones keep `harness`/`harness_id` (both, for a model
+ * reachable either way). A config still written in the older
+ * `[generate.roles]`/`[generate.native]` shape is migrated on load
+ * (`migrateLegacyConfig`, `src/normalize.ts`) rather than left behind or
+ * silently dropped.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -26,13 +29,16 @@ import {
 } from '../detect.js';
 import {
   settingsPath, readSettings, writeSettings, installHook, allowSonataTools,
-  hookInstalled, hookCommand, registerMcp, type HookScope, type Runner,
+  hookInstalled, hookCommand, type HookScope,
 } from '../settings.js';
 import { pruneAgents } from '../detect.js';
 import { cmdSync } from './sync.js';
+import { cmdRoute } from './route.js';
 import { select, confirm, isInteractive, banner, CancelledError } from '../tui.js';
 import { keyReport, resolveKeyFromSource, resolveKeys, writeSonataKey } from '../native/credentials.js';
 import { byokCandidateKey, wellKnownProviders } from '../native/models.js';
+import { loadAaCatalog, proposeTiers } from '../catalog.js';
+import { migrateLegacyConfig } from '../normalize.js';
 import { byokProviderKey, byokProviderName, type AvailableCredentials } from '../tui-ink/app-state.js';
 import { runInitTui } from '../tui-ink/run.js';
 import { openInitLog, type InitLog } from './init-log.js';
@@ -118,12 +124,12 @@ export interface InitOptions {
   models?: string[];
   roles?: string[];
   scope?: HookScope | 'skip';
+  /** Whether to install route-auto hooks for tier agents. */
+  routing?: 'project' | 'global' | 'skip';
   /** Where the config and its agents are written. Defaults to `project`. */
   configScope?: ConfigScope;
   /** Repeatable gateway=source overrides for the scripted path. */
   credentialSource?: string[];
-  /** Injected in tests so registration never shells out to the real binary. */
-  mcpRunner?: Runner;
   prune?: boolean;
   write?: (line: string) => void;
   detect?: Detector;
@@ -155,10 +161,10 @@ export interface InitResult {
   models: string[];
   roles: string[];
   scope: HookScope | 'skip';
+  routing: 'project' | 'global' | 'skip';
   hookChanged: boolean;
   agentsWritten: string[];
   configPath: string;
-  mcpChanged: boolean;
   pruned: string[];
   cancelled?: boolean;
 }
@@ -194,6 +200,8 @@ export interface NativeCandidate {
   contextWindow: number;
   baseUrl: string;
   auth: NativeGatewayAuth;
+  harness?: string;
+  harnessId?: string;
   wireFormat?: NativeGatewayWireFormat;
 }
 
@@ -227,15 +235,19 @@ export function nativeCandidatesFrom(
     })
     .map((r) => {
       const auth: NativeGatewayAuth = oauthProviders.get(r.provider) ?? 'api-key';
+      const key = r.ref.replace(/\//g, '-');
+      const id = r.id ?? r.ref;
       return {
-        key: r.ref.replace(/\//g, '-'),
+        key,
         gateway: r.provider,
-        id: r.id ?? r.ref,
+        id,
         contextWindow: 128000,
         baseUrl: isOauthGatewayAuth(auth)
           ? oauthGatewayBaseUrl(auth)
           : providerBaseUrls[r.provider],
         auth,
+        harness: r.harness,
+        harnessId: r.harness === 'codex' ? id : r.ref,
       };
     });
 }
@@ -317,14 +329,39 @@ export function reconcilePerRoleModels(
   return out;
 }
 
+/**
+ * Filters a saved tier list down to keys still valid this run — currently
+ * selected as native, or preserved as a harness-only fallback — falling back
+ * to a fresh proposal when nothing survives. Reusing a saved list verbatim
+ * after a model was deselected would write a [tiers] entry `cmdSync` then
+ * rejects as referencing a model with no matching [models] entry.
+ */
+export function reconcileTierList(
+  saved: string[] | undefined,
+  validKeys: ReadonlySet<string>,
+  fallback: string[],
+  added: readonly string[] = [],
+): string[] {
+  const kept = (saved ?? []).filter((key) => validKeys.has(key));
+  if (kept.length === 0) return fallback;
+  const extra = added.filter((key) => validKeys.has(key) && !kept.includes(key));
+  return [...kept, ...extra];
+}
+
 export function deriveInitState(
   config: SonataConfig,
   configScope: ConfigScope,
   offered: ProviderSummary[],
 ): InitState {
-  if (!config.native) return { configScope };
+  const nativeModels = config.native?.models ?? {};
+  const unifiedModels = config.unifiedModels;
+  const modelKeys = [...new Set([...Object.keys(nativeModels), ...Object.keys(unifiedModels)])]
+    .filter((key) => (unifiedModels[key]?.gateway ?? nativeModels[key]?.gateway) !== undefined);
+  if (modelKeys.length === 0) return { configScope };
 
-  const gateways = [...new Set(Object.values(config.native.models).map((model) => model.gateway))];
+  const gateways = [...new Set(modelKeys.map((key) =>
+    unifiedModels[key]?.gateway ?? nativeModels[key]?.gateway,
+  ).filter((gateway): gateway is string => gateway !== undefined))];
   const providerKeys: string[] = [];
   const harnesses: string[] = [];
   for (const gateway of gateways) {
@@ -345,13 +382,35 @@ export function deriveInitState(
     configScope,
     harnesses,
     providerKeys,
-    nativeKeys: Object.keys(config.native.models),
-    roles: Object.keys(config.native.generate),
+    nativeKeys: modelKeys,
+    // `undefined`, not `[]`, when the config carries no role configuration at
+    // all (a valid native-only unified config with no [tiers] and no legacy
+    // generate table). `config.native.generate` is always an object once
+    // `[native]` exists at all — parsed as `{}` when there's no
+    // `[generate.native]` — so a plain `!== undefined` check would call that
+    // "configured", same bug in a different table. A syntactically present
+    // but empty `[tiers]` block, by contrast, IS explicit configuration
+    // (parseConfig accepts it without error) and must still produce `[]`,
+    // not fall through to the default: `config.tiers !== undefined` alone
+    // (not a non-empty check) preserves that distinction. Downstream,
+    // `d.roles ?? [...KNOWN_ROLES]` only falls through to the default role
+    // set on nullish, so an explicit `[]` here was read as "zero roles
+    // selected" and made scripted `sonata init --yes` throw "no roles
+    // selected" for the genuinely-unconfigured shape.
+    roles: config.tiers !== undefined || Object.keys(config.native?.generate ?? {}).length > 0
+      ? Object.keys(config.tiers ?? config.native?.generate ?? {})
+      : undefined,
+    tiers: config.tiers
+      ? Object.fromEntries(Object.entries(config.tiers).map(([role, lists]) => [role, { simple: [...lists.simple], complex: [...lists.complex] }]))
+      : undefined,
     perRoleModels: Object.fromEntries(
-      Object.entries(config.native.generate).map(([role, models]) => [role, [...models]]),
+      Object.entries(config.tiers ?? config.native?.generate ?? {}).map(([role, models]) => [
+        role,
+        config.tiers ? [...new Set([...models.simple, ...models.complex])] : [...models],
+      ]),
     ),
     credentialSources: Object.fromEntries(
-      Object.entries(config.native.gateways)
+      Object.entries(config.native?.gateways ?? {})
         .filter(([, gateway]) => gateway.credentialSource !== undefined)
         .map(([gateway, config]) => [gateway, config.credentialSource!]),
     ),
@@ -360,16 +419,61 @@ export function deriveInitState(
 
 /** NativeCandidates for every model in the config, from the config's own data. */
 export function configNativeCandidates(config: SonataConfig): NativeCandidate[] {
-  if (!config.native) return [];
-  return Object.entries(config.native.models).map(([key, model]) => ({
-    key,
-    gateway: model.gateway,
-    id: model.id,
-    contextWindow: model.contextWindow,
-    baseUrl: config.native!.gateways[model.gateway].baseUrl,
-    auth: config.native!.gateways[model.gateway].auth,
-    wireFormat: config.native!.gateways[model.gateway].wireFormat,
-  }));
+  const gateways = config.native?.gateways ?? {};
+  const unified = Object.entries(config.unifiedModels)
+    .filter(([, model]) => model.gateway !== undefined && model.id !== undefined)
+    .flatMap(([key, model]) => {
+      const gateway = model.gateway!;
+      const gatewayConfig = gateways[gateway];
+      if (gatewayConfig === undefined) return [];
+      return [{
+        key, gateway, id: model.id!,
+        contextWindow: model.contextWindow ?? 128000,
+        baseUrl: gatewayConfig.baseUrl, auth: gatewayConfig.auth,
+        ...(gatewayConfig.wireFormat !== undefined ? { wireFormat: gatewayConfig.wireFormat } : {}),
+        ...(model.harness !== undefined ? { harness: model.harness, harnessId: model.harnessId } : {}),
+      }];
+    });
+  if (config.native === undefined) return unified;
+  // `config.native.models` is NOT always genuine legacy data: `parseConfig`
+  // projects every unified model into it whenever `[tiers]` is present ("Tier
+  // configs are the unified format. Keep a native projection so the router
+  // and older consumers can use the same gateway/model data" — config.ts),
+  // so a tiered config's `native.models` is a harness-stripped mirror of
+  // `unifiedModels`, not independent authored data. Treating it as an
+  // independent legacy source there would make every tiered config's own
+  // projection of a model shadow that same model's richer unified entry —
+  // losing its harness/harnessId fields on every re-init. Only an UNTIERED
+  // config (`config.tiers === undefined`) can carry a genuinely distinct,
+  // hand-authored `[native.models]` table.
+  if (config.tiers !== undefined) return unified;
+  // A transitional, untiered config can carry a gateway-backed `[models]`
+  // entry AND a separate `[native.models]` entry under a different key at
+  // the same time — any non-empty `unified` here used to be treated as proof
+  // the legacy table was empty, so the legacy-only key was silently dropped
+  // from the candidate list even though `deriveInitState` still names it
+  // (scripted init then rejects it as unavailable, and the interactive path
+  // can't resolve it through `nativeByKey` either). Merge the two sets.
+  const legacy = Object.entries(config.native.models).flatMap(([key, model]) => {
+    const gateway = config.native!.gateways[model.gateway];
+    if (gateway === undefined) return [];
+    return [{
+      key, gateway: model.gateway, id: model.id,
+      contextWindow: model.contextWindow,
+      baseUrl: gateway.baseUrl, auth: gateway.auth,
+      ...(gateway.wireFormat !== undefined ? { wireFormat: gateway.wireFormat } : {}),
+    }];
+  });
+  // On a same-key collision, legacy wins — not unified. `litellmConfig`
+  // (native/litellm.ts) builds its model list from `native.models` first,
+  // unconditionally, and skips a unified entry sharing that key; letting
+  // unified win here instead would make `sonata init` silently change which
+  // upstream a key denotes relative to what's actually being served. This is
+  // safe here specifically because `config.tiers === undefined` rules out
+  // the projection case above — every entry in `native.models` at this point
+  // really was authored under `[native.models]`.
+  const legacyKeys = new Set(legacy.map((candidate) => candidate.key));
+  return [...legacy, ...unified.filter((candidate) => !legacyKeys.has(candidate.key))];
 }
 
 /**
@@ -378,8 +482,9 @@ export function configNativeCandidates(config: SonataConfig): NativeCandidate[] 
 export function preTickedNative(configText: string, candidates: NativeCandidate[]): Set<string> {
   try {
     const config = parseConfig(configText);
-    if (!config.native) return new Set();
-    const existing = config.native.models;
+    const existing = config.tiers
+      ? config.unifiedModels
+      : config.native?.models ?? {};
     const ticked = new Set<string>();
     for (const c of candidates) {
       if (existing[c.key]) ticked.add(c.key);
@@ -391,17 +496,28 @@ export function preTickedNative(configText: string, candidates: NativeCandidate[
 }
 
 /**
- * Emit a native-only config: `[native.gateways]`, `[native.models]`,
- * `[generate.native]`, and `[run]`. No `[models]` or `[generate.roles]`.
+ * Emit the unified model registry, tier lists, native gateway definitions,
+ * and runtime defaults.
  */
 export function nativeTomlFor(
   roleModels: Record<string, NativeCandidate[]>,
   credentialSources: Record<string, CredentialSource> = {},
+  selectedTiers?: Record<string, { simple: string[]; complex: string[] }>,
+  extraModels: Record<string, { harness?: string; harnessId?: string }> = {},
+  allChosen: readonly NativeCandidate[] = [],
+  existingRun?: SonataConfig['run'],
 ): string {
   const allModels = new Map<string, NativeCandidate>();
   for (const cands of Object.values(roleModels)) {
     for (const c of cands) allModels.set(c.key, c);
   }
+  for (const c of allChosen) allModels.set(c.key, c);
+  const tierLists = selectedTiers ?? Object.fromEntries(
+    Object.entries(roleModels).map(([role, candidates]) => {
+      const proposal = proposeTiers(candidates.map((candidate) => candidate.key));
+      return [role, proposal];
+    }),
+  );
 
   const clashes = duplicateKeys([...allModels.keys()]);
   if (clashes.length > 0) {
@@ -430,26 +546,27 @@ export function nativeTomlFor(
   }
 
   for (const [key, c] of allModels) {
-    lines.push(
-      `[native.models.${tomlKey(key)}]`,
-      `gateway = ${tomlKey(c.gateway)}`,
-      `id = ${tomlKey(c.id)}`,
-      `context_window = ${c.contextWindow}`,
-      '',
-    );
+    lines.push(`[models.${tomlKey(key)}]`, `gateway = ${tomlKey(c.gateway)}`, `id = ${tomlKey(c.id)}`, `context_window = ${c.contextWindow}`);
+    if (c.harness !== undefined) {
+      lines.push(`harness = ${tomlKey(c.harness)}`, `harness_id = ${tomlKey(c.harnessId ?? c.id)}`);
+    }
+    lines.push('');
+  }
+  for (const [key, model] of Object.entries(extraModels)) {
+    if (allModels.has(key) || model.harness === undefined || model.harnessId === undefined) continue;
+    lines.push(`[models.${tomlKey(key)}]`, `harness = ${tomlKey(model.harness)}`, `id = ${tomlKey(model.harnessId)}`, '');
   }
 
-  lines.push('[generate.native]');
-  for (const [role, cands] of Object.entries(roleModels)) {
-    lines.push(`${tomlKey(role)} = [${cands.map((c) => tomlKey(c.key)).join(', ')}]`);
+  for (const [role, lists] of Object.entries(tierLists)) {
+    lines.push(`[tiers.${tomlKey(role)}]`, `simple = [${lists.simple.map(tomlKey).join(', ')}]`, `complex = [${lists.complex.map(tomlKey).join(', ')}]`, '');
   }
-  lines.push('');
 
   lines.push(
     '[run]',
-    'tail_window_seconds = 20',
-    'stall_timeout_seconds = 120',
-    'run_timeout_seconds = 1800',
+    `tail_window_seconds = ${existingRun?.tailWindowSeconds ?? 20}`,
+    `stall_timeout_seconds = ${existingRun?.stallTimeoutSeconds ?? 120}`,
+    `run_timeout_seconds = ${existingRun?.runTimeoutSeconds ?? 1800}`,
+    `dispatch_window_seconds = ${existingRun?.dispatchWindowSeconds ?? 1500}`,
     '',
   );
   return lines.join('\n');
@@ -523,7 +640,23 @@ async function runInit(
     const path = configPathFor(scope, opts.cwd, opts.home);
     if (!existsSync(path)) continue;
     try {
-      configsByScope[scope] = parseConfig(readFileSync(path, 'utf8'));
+      const parsed = parseConfig(readFileSync(path, 'utf8'));
+      if (parsed.tiers === undefined && (Object.keys(parsed.generate.roles).length > 0 || Object.keys(parsed.native?.generate ?? {}).length > 0)) {
+        const migrated = migrateLegacyConfig(parsed);
+        configsByScope[scope] = {
+          ...parsed,
+          unifiedModels: migrated.models,
+          tiers: migrated.tiers,
+          native: parsed.native === undefined ? undefined : {
+            ...parsed.native,
+            generate: Object.fromEntries(Object.entries(migrated.tiers).map(([role, lists]) => [
+              role, [...new Set([...lists.simple, ...lists.complex])],
+            ])),
+          },
+        };
+      } else {
+        configsByScope[scope] = parsed;
+      }
     } catch (err) {
       out(`  ! could not read ${path}; init is starting from defaults: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -532,6 +665,17 @@ async function runInit(
   const configuredGateways = new Map<string, number>();
   for (const config of Object.values(configsByScope)) {
     for (const model of Object.values(config?.native?.models ?? {})) {
+      configuredGateways.set(model.gateway, (configuredGateways.get(model.gateway) ?? 0) + 1);
+    }
+    // A native-only unified [models] entry names its gateway here too — an
+    // untiered config with no legacy [native.models] table at all otherwise
+    // never gets its gateway a synthetic `config/<gateway>` provider, so
+    // `deriveInitState`'s own providerKeys (computed from both tables)
+    // names a provider `offered` never actually has, and scripted
+    // `sonata init --yes` rejects it as unknown before role selection is
+    // even reached.
+    for (const model of Object.values(config?.unifiedModels ?? {})) {
+      if (model.gateway === undefined) continue;
       configuredGateways.set(model.gateway, (configuredGateways.get(model.gateway) ?? 0) + 1);
     }
   }
@@ -618,9 +762,9 @@ async function runInit(
     out('');
     out('  Fix the errors above, then run `sonata init` again.');
     return {
-      problems, models: [], roles: [], scope: 'skip', hookChanged: false,
+      problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
       agentsWritten: [], configPath: join(opts.cwd, 'sonata.toml'),
-      mcpChanged: false, pruned: [],
+      pruned: [],
     };
   }
   for (const p of problems) out(renderProblem(p));
@@ -636,7 +780,9 @@ async function runInit(
   let chosenNative!: NativeCandidate[];
   let roles!: string[];
   let nativeRoleModels: Record<string, NativeCandidate[]> = {};
+  let tiers: Record<string, { simple: string[]; complex: string[] }> = {};
   let credentialSources: Record<string, CredentialSource> = {};
+  let migratedModels: Record<string, { harness?: string; harnessId?: string }> = {};
   /** BYOK keys typed in the wizard, written only after the confirm gate. */
   let byokKeys: Record<string, string> = {};
   const nativeByKey = new Map(allNativeCandidates.map((c) => [c.key, c]));
@@ -721,16 +867,28 @@ async function runInit(
     if (result.cancelled) {
       out('  Nothing written.');
       return {
-        problems, models: [], roles: [], scope: 'skip', hookChanged: false,
+        problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
         agentsWritten: [], configPath: configPathFor(
           result.state.configScope ?? 'project', opts.cwd, opts.home),
-        mcpChanged: false, pruned: [], cancelled: true,
+        pruned: [], cancelled: true,
       };
     }
 
     // Map result.state to the variables the write path needs:
     configScope = result.state.configScope ?? 'project';
     configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
+    // parseConfig always builds unifiedModels from the raw [models] table
+    // (migrated or not), so this is complete regardless of whether the
+    // existing config was legacy and just migrated in place above, or was
+    // already in the unified shape — no need to re-run the migration here.
+    const existingForScope = configsByScope[configScope];
+    if (existingForScope !== undefined) {
+      migratedModels = Object.fromEntries(
+        Object.entries(existingForScope.unifiedModels)
+          .filter(([, model]) => model.harness !== undefined && model.gateway === undefined)
+          .map(([key, model]) => [key, { harness: model.harness, harnessId: model.harnessId }]),
+      );
+    }
     for (const provider of result.state.customProviders ?? []) {
       byokUrls.set(provider.name, provider.url);
     }
@@ -749,12 +907,26 @@ async function runInit(
     credentialSources = result.state.credentialSources ?? {};
     nativeKeys = result.state.nativeKeys ?? [];
     roles = result.state.roles ?? [...KNOWN_ROLES];
-    chosenNative = nativeKeys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined);
     // Reconciled against the roles and models actually selected: the wizard's
     // per-role map starts from the existing config, so iterating *it* rather
     // than `roles` kept a role the user had just deselected.
+    const savedNativeKeys = initialStateByScope[configScope]?.nativeKeys ?? [];
+    {
+      const validTierKeys = new Set([...nativeKeys, ...Object.keys(migratedModels)]);
+      const catalog = loadAaCatalog(opts.home);
+      const addedKeys = nativeKeys.filter((key) => !savedNativeKeys.includes(key));
+      tiers = Object.fromEntries(roles.map((role) => {
+        const proposal = proposeTiers(nativeKeys, catalog);
+        const saved = result.state.tiers?.[role];
+        return [role, {
+          simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple, addedKeys),
+          complex: reconcileTierList(saved?.complex, validTierKeys, proposal.complex, addedKeys),
+        }];
+      }));
+    }
+    chosenNative = nativeKeys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined);
     nativeRoleModels = Object.fromEntries(
-      Object.entries(reconcilePerRoleModels(result.state.perRoleModels, nativeKeys, nativeKeys, roles))
+      Object.entries(reconcilePerRoleModels(result.state.perRoleModels, savedNativeKeys, nativeKeys, roles))
         .map(([role, keys]) => [
           role,
           keys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined),
@@ -765,7 +937,18 @@ async function runInit(
     configScope = opts.configScope ?? 'project';
     configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
     configText = existsSync(configPathResolved) ? readFileSync(configPathResolved, 'utf8') : '';
+    // parseConfig always builds unifiedModels from the raw [models] table
+    // (migrated or not), so this is complete regardless of whether the
+    // existing config was legacy and just migrated in place above, or was
+    // already in the unified shape — no need to re-run the migration here.
     const parsedConfig = configsByScope[configScope];
+    if (parsedConfig !== undefined) {
+      migratedModels = Object.fromEntries(
+        Object.entries(parsedConfig.unifiedModels)
+          .filter(([, model]) => model.harness !== undefined && model.gateway === undefined)
+          .map(([key, model]) => [key, { harness: model.harness, harnessId: model.harnessId }]),
+      );
+    }
     ticked = preTickedNative(configText, allNativeCandidates);
     const d = parsedConfig ? deriveInitState(parsedConfig, configScope, offered) : { configScope };
     credentialSources = {
@@ -862,6 +1045,19 @@ async function runInit(
           keys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined),
         ]),
     );
+    {
+      const validTierKeys = new Set([...nativeKeys, ...Object.keys(migratedModels)]);
+      const catalog = loadAaCatalog(opts.home);
+      const addedKeys = nativeKeys.filter((key) => !(d.nativeKeys ?? []).includes(key));
+      tiers = Object.fromEntries(roles.map((role) => {
+        const proposal = proposeTiers(nativeKeys, catalog);
+        const saved = d.tiers?.[role];
+        return [role, {
+          simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple, addedKeys),
+          complex: reconcileTierList(saved?.complex, validTierKeys, proposal.complex, addedKeys),
+        }];
+      }));
+    }
   }
 
   // A codex-sourced credential applies to neither an api-key gateway (codex
@@ -955,6 +1151,13 @@ async function runInit(
   const alreadyGlobal = hookInstalled(readSettings(settingsPath('global', opts.cwd, opts.home)), command);
   const alreadyProject = hookInstalled(readSettings(settingsPath('project', opts.cwd, opts.home)), command);
 
+  // Where an already-installed hook actually lives — kept separate from
+  // `scope` so an upgrade (hook present, but its settings file still carries
+  // the pre-dispatch-CLI MCP tool names) still gets its allow-list checked
+  // below, even though `scope` itself becomes 'skip' for "no new hook to ask
+  // about".
+  const existingHookScope: HookScope | undefined = alreadyGlobal ? 'global' : alreadyProject ? 'project' : undefined;
+
   let scope: HookScope | 'skip';
   if (opts.scope) {
     scope = opts.scope;
@@ -974,6 +1177,47 @@ async function runInit(
     scope = 'project';
   }
 
+  // ---- loop skill and routing ------------------------------------------
+  let routing: 'project' | 'global' | 'skip';
+  if (opts.routing) {
+    routing = opts.routing;
+  } else if (interactive) {
+    out('');
+    log.line('prompting for tier-agent routing');
+    routing = await select<'project' | 'global' | 'skip'>('Route tier agents through the native router', [
+      { value: 'project', label: 'sonata route auto', hint: 'this project only' },
+      ...(configScope === 'project' ? [] : [
+        { value: 'global' as const, label: 'sonata route auto --global', hint: 'all projects' },
+      ]),
+      { value: 'skip', label: 'Skip', hint: 'doctor will warn for tier agents' },
+    ]);
+  } else {
+    routing = 'project';
+  }
+
+  if (routing === 'global' && configScope === 'project') {
+    throw new Error(
+      'sonata init: --routing global routes every project through the machine config ' +
+      '(~/.config/sonata/sonata.toml), but this config was written to the project ' +
+      '(./sonata.toml) — the two would silently disagree. Use --config-scope global ' +
+      'together with --routing global, or keep --routing project.',
+    );
+  }
+
+  if (
+    configScope === 'global'
+    && routing !== 'global'
+    && routing !== 'skip'
+    && existsSync(join(opts.cwd, 'sonata.toml'))
+  ) {
+    throw new Error(
+      'sonata init: this repository has its own sonata.toml, which would shadow the ' +
+      'global config just written when routing is project-scoped — the generated global ' +
+      "agents would resolve against this project's local config instead. Use --routing " +
+      "global, or remove/rename this project's own sonata.toml.",
+    );
+  }
+
   // ---- confirm ----------------------------------------------------------
   out('');
   out('  Summary');
@@ -982,6 +1226,7 @@ async function runInit(
   const totalAgents = Object.values(nativeRoleModels).reduce((n, m) => n + m.length, 0);
   out(`    agents  ${totalAgents} files in .claude/agents/`);
   out(`    hook    ${scope === 'skip' ? 'not installed' : `${scope} settings.json`}`);
+  out(`    routing ${routing === 'skip' ? 'not configured' : `sonata route auto${routing === 'global' ? ' --global' : ''}`}`);
   out(`    config  ${configPathResolved}`);
   out('');
 
@@ -990,9 +1235,9 @@ async function runInit(
   if (interactive && !(await confirm('Write these changes?', true))) {
     out('  Nothing written.');
     return {
-      problems, models: nativeKeys, roles, scope, hookChanged: false,
+      problems, models: nativeKeys, roles, scope, routing, hookChanged: false,
       agentsWritten: [], configPath: configPathResolved, cancelled: true,
-      mcpChanged: false, pruned: [],
+      pruned: [],
     };
   }
 
@@ -1005,36 +1250,70 @@ async function runInit(
   }
 
   mkdirSync(dirname(configPathResolved), { recursive: true });
-  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources));
+  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources, tiers, migratedModels, chosenNative, configsByScope[configScope]?.run));
   out(`  ✓ wrote ${configPathResolved}`);
 
   let hookChanged = false;
-  if (scope !== 'skip') {
-    const path = settingsPath(scope, opts.cwd, opts.home);
-    const withHook = installHook(readSettings(path), command);
+  // Refresh the allow-list at whichever scope the hook actually lives in —
+  // scope !== 'skip' for a fresh install, or existingHookScope when it was
+  // already there (an upgrade from the MCP-based release otherwise keeps
+  // its old mcp__sonata__* entries forever, since "hook already installed"
+  // used to mean skipping this whole block).
+  const allowListScope = scope !== 'skip' ? scope : existingHookScope;
+  if (allowListScope !== undefined) {
+    const path = settingsPath(allowListScope, opts.cwd, opts.home);
+    const withHook = scope !== 'skip'
+      ? installHook(readSettings(path), command)
+      : { settings: readSettings(path), changed: false };
     const withAllow = allowSonataTools(withHook.settings);
     if (withHook.changed || withAllow.changed) writeSettings(path, withAllow.settings);
     hookChanged = withHook.changed;
-    out(withHook.changed ? `  ✓ installed hook in ${path}` : `  · hook already present in ${path}`);
+    if (scope !== 'skip') {
+      out(withHook.changed ? `  ✓ installed hook in ${path}` : `  · hook already present in ${path}`);
+    }
     out(withAllow.changed
       ? `  ✓ allow-listed the sonata tools in ${path}`
       : `  · sonata tools already allow-listed in ${path}`);
   }
 
+  const skillBaseDir = configScope === 'global' ? opts.home : opts.cwd;
+  const skillPath = join(skillBaseDir, '.claude', 'skills', 'sonata-loop', 'SKILL.md');
+  mkdirSync(dirname(skillPath), { recursive: true });
+  const packageSkill = join(opts.packageRoot, 'skills', 'loop', 'SKILL.md');
+  const skillSource = existsSync(packageSkill)
+    ? packageSkill
+    : join(process.cwd(), 'skills', 'loop', 'SKILL.md');
+  writeFileSync(skillPath, readFileSync(skillSource));
+  out(`  ✓ installed loop skill in ${skillPath}`);
+
+  if (routing !== 'skip') {
+    await cmdRoute('auto', {
+      cwd: opts.cwd,
+      home: opts.home,
+      packageRoot: opts.packageRoot,
+      scope: routing,
+    });
+    out(`  ✓ configured sonata route auto${routing === 'global' ? ' --global' : ''}`);
+  }
+
   const agentsDir = agentsDirFor(configScope, opts.cwd, opts.home);
-  const sync = cmdSync({ cwd: opts.cwd, home: opts.home, agentsDir });
+  // cmdSync loads its own config via `loadConfig(cwd, home)` — passing the
+  // invoking repo's cwd unconditionally would sync from THAT project's
+  // sonata.toml even when writing --config-scope global, if the repo
+  // happens to have its own config file too. Pointing cwd at the machine
+  // config's own directory for the global case makes loadConfig resolve
+  // the config just written above, not whatever the invoking directory has.
+  const syncCwd = configScope === 'global' ? dirname(join(opts.home, GLOBAL_CONFIG_RELATIVE)) : opts.cwd;
+  const sync = cmdSync({ cwd: syncCwd, home: opts.home, agentsDir });
   const agentsWritten = sync.written;
   out(`  ✓ generated ${agentsWritten.length} agents in ${agentsDir}`);
 
-  const mcpScope = configScope === 'global' ? 'user' : 'project';
-  const mcp = registerMcp(mcpScope, opts.cwd, opts.packageRoot, opts.mcpRunner);
-  if (mcp.changed) {
-    out(`  ✓ registered the sonata MCP server (${mcpScope} scope)`);
-  } else if (mcp.ok) {
-    out('  · MCP server already registered');
-  } else {
-    out('  ! could not register the MCP server — run this by hand:');
-    out(`      ${mcp.command}`);
+
+  if (sync.skipped.length > 0) {
+    out('');
+    out(`  ! ${sync.skipped.length} existing agent file(s) were NOT overwritten (not sonata-generated):`);
+    for (const f of sync.skipped.slice(0, 5)) out(`      ${f}`);
+    if (sync.skipped.length > 5) out(`      … and ${sync.skipped.length - 5} more`);
   }
 
   const stale = sync.stale;
@@ -1054,15 +1333,13 @@ async function runInit(
   }
 
   out('');
-  out(mcp.changed
-    ? '  Done. Run /reload-plugins to pick up the new agents, then /mcp to reconnect the sonata MCP server.'
-    : '  Done. Run /reload-plugins to pick up the new agents.');
+  out('  Done. Run /reload-plugins to pick up the new agents.');
   out('  Native sessions: run `sonata code`, or `sonata route on` to route plain claude sessions.');
   out('');
 
   return {
-    problems, models: nativeKeys, roles, scope, hookChanged, agentsWritten,
-    configPath: configPathResolved, mcpChanged: mcp.changed, pruned,
+    problems, models: nativeKeys, roles, scope, routing, hookChanged, agentsWritten,
+    configPath: configPathResolved, pruned,
   };
 }
 

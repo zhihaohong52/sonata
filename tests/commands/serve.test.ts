@@ -9,6 +9,7 @@ import {
   serveStatePath, stopServe, cmdRestart,
 } from '../../src/commands/serve.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
+import { clearCooldowns } from '../../src/native/router.js';
 
 let cwd: string;
 let home: string;
@@ -18,6 +19,11 @@ let handles: ServeHandle[];
 const tempDirFor = () => join(cwd, 'litellm');
 
 beforeEach(() => {
+  // Cooldowns are module-level state (see router.ts), so a candidate key
+  // reused across tests in this file (e.g. "first"/"second") would otherwise
+  // carry a cooldown set by an earlier test's failed forward — silently
+  // skipping that candidate here instead of exercising it.
+  clearCooldowns();
   cwd = mkdtempSync(join(tmpdir(), 'sonata-serve-cwd-'));
   home = mkdtempSync(join(tmpdir(), 'sonata-serve-home-'));
   handles = [];
@@ -184,7 +190,9 @@ litellm = 4000
 
     const response = await fetch(serveHealthUrl(handle.routerPort));
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ status: 'ok', sonata: true });
+    await expect(response.json()).resolves.toEqual({
+      status: 'ok', sonata: true, configPath: join(cwd, 'sonata.toml'),
+    });
   });
 
   it('refuses to start when [native] is absent', async () => {
@@ -260,6 +268,720 @@ litellm = 4000
     expect(Date.now() - started).toBeLessThan(1500);
 
     socket.destroy();
+  });
+});
+
+describe('cmdServe — litellm respawn', () => {
+  it('respawns litellm when it exits on its own, and updates the recorded pid', async () => {
+    let spawnCount = 0;
+    let exitCb: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      respawnDelayMs: 0,
+      spawnLitellm: () => {
+        spawnCount += 1;
+        const pid = spawnCount;
+        return { pid, kill() {}, onExit: (cb) => { exitCb = cb; } };
+      },
+    });
+    handles.push(handle);
+    expect(spawnCount).toBe(1);
+
+    exitCb?.(1, null);
+    // Respawn is scheduled via a microtask/timer chain (respawnDelayMs: 0 still awaits a tick).
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(spawnCount).toBe(2);
+    const state = JSON.parse(readFileSync(serveStatePath(home), 'utf8'));
+    expect(state.litellmPid).toBe(2);
+  });
+
+  it('gives up after too many respawns within the window, without spawning again', async () => {
+    let spawnCount = 0;
+    let exitCb: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      respawnDelayMs: 0,
+      maxRespawns: 2,
+      spawnLitellm: () => {
+        spawnCount += 1;
+        return { pid: spawnCount, kill() {}, onExit: (cb) => { exitCb = cb; } };
+      },
+    });
+    handles.push(handle);
+
+    for (let i = 0; i < 3; i++) {
+      exitCb?.(1, null);
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
+    // 1 initial + 2 tolerated respawns = 3 spawns; the 3rd crash is not retried.
+    expect(spawnCount).toBe(3);
+  });
+
+  it('does not respawn after stop() has been called', async () => {
+    let spawnCount = 0;
+    let exitCb: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      respawnDelayMs: 0,
+      spawnLitellm: () => {
+        spawnCount += 1;
+        return { pid: spawnCount, kill() {}, onExit: (cb) => { exitCb = cb; } };
+      },
+    });
+    await handle.stop();
+
+    exitCb?.(0, null);
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(spawnCount).toBe(1);
+  });
+
+  it('does not schedule a respawn when the child exits while startup itself is failing', async () => {
+    let spawnCount = 0;
+    const handle = cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      respawnDelayMs: 0,
+      // waitForLitellm throwing simulates a startup failure after the child
+      // spawned; kill() firing its own exit synchronously simulates the real
+      // child process actually dying when told to.
+      waitForLitellm: async () => { throw new Error('never came up'); },
+      spawnLitellm: () => {
+        spawnCount += 1;
+        let onExit: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+        return {
+          pid: spawnCount,
+          kill: () => onExit?.(null, 'SIGTERM'),
+          onExit: (cb) => { onExit = cb; },
+        };
+      },
+    });
+    await expect(handle).rejects.toThrow(/never came up/);
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(spawnCount).toBe(1);
+  });
+
+  it('gates litellm-bound requests on the respawned child, not just the crashed one', async () => {
+    // Without gating, a request landing in the gap between the crash and the
+    // respawned child answering gets a connection-refused failure instead of
+    // waiting the brief moment for the recovery already in flight — which
+    // would cool the candidate down for a crash it had nothing to do with.
+    // Uses its own unlikely-to-collide litellm port rather than the shared
+    // beforeEach fixture's 4000, since nothing must actually be listening
+    // there for the post-release request to still fail on its own merits.
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.models."deepseek-v4-flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+context_window = 128000
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 39217
+`);
+
+    let waitCalls = 0;
+    let releaseRespawnWait: () => void = () => {};
+    let exitCb: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      respawnDelayMs: 0,
+      waitForLitellm: async () => {
+        waitCalls += 1;
+        if (waitCalls === 1) return;
+        await new Promise<void>((resolve) => { releaseRespawnWait = resolve; });
+      },
+      spawnLitellm: () => ({ pid: 1, kill() {}, onExit: (cb) => { exitCb = cb; } }),
+    });
+    handles.push(handle);
+    expect(waitCalls).toBe(1);
+
+    exitCb?.(1, null);
+    // Let the respawnDelayMs:0 tick fire and the second waitForLitellm start.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(waitCalls).toBe(2);
+
+    let settled = false;
+    const req = fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ model: 'deepseek-v4-flash' }),
+    }).then((res) => { settled = true; return res; });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(settled).toBe(false);
+
+    releaseRespawnWait();
+    const res = await req;
+    expect(settled).toBe(true);
+    // Nothing is actually listening on the litellm port in this test, so the
+    // request still fails once released — the point is it waited for the gate.
+    expect(res.status).toBe(502);
+  });
+});
+
+describe('cmdServe — tier resolution', () => {
+  it('restarts litellm when the unified model registry changes, but not for an unchanged config', async () => {
+    const config = (model: string) => `
+[models."${model}"]
+gateway = "acme"
+id = "${model}-upstream"
+context_window = 128000
+
+[tiers.code]
+simple = ["${model}"]
+complex = ["${model}"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43120
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), config('first'));
+
+    let spawnCount = 0;
+    const configs: string[] = [];
+    const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: (configPath) => {
+        spawnCount += 1;
+        configs.push(readFileSync(configPath, 'utf8'));
+        return {
+          pid: spawnCount,
+          kill: () => exits[spawnCount - 1]?.forEach((cb) => cb(null, 'SIGTERM')),
+          onExit: (cb) => { (exits[spawnCount - 1] ??= []).push(cb); },
+        };
+      },
+    });
+    handles.push(handle);
+    expect(spawnCount).toBe(1);
+
+    writeFileSync(join(cwd, 'sonata.toml'), config('second'));
+    const changed = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    expect(changed.status).toBe(529);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(spawnCount).toBe(2);
+    expect(configs[1]).toContain('second-upstream');
+
+    const unchanged = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    expect(unchanged.status).toBe(529);
+    expect(spawnCount).toBe(2);
+  });
+
+  it('restarts litellm when only a gateway field changes, even if the model list is untouched', async () => {
+    // Rerunning `sonata init` without touching model selection can still
+    // rewrite a gateway's base_url, wire_format, auth, or credential_source.
+    // Comparing only `unifiedModels` (not gateways too) would leave litellm's
+    // generated config — and its credential environment — stale indefinitely
+    // in that case, since the model list itself never changed.
+    const config = (baseUrl: string) => `
+[models."fixed"]
+gateway = "acme"
+id = "fixed-upstream"
+context_window = 128000
+
+[tiers.code]
+simple = ["fixed"]
+complex = ["fixed"]
+
+[native.gateways."acme"]
+base_url = "${baseUrl}"
+
+[native.ports]
+router = 0
+litellm = 43115
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), config('https://gateway-one.example/v1'));
+
+    let spawnCount = 0;
+    const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: () => {
+        spawnCount += 1;
+        return {
+          pid: spawnCount,
+          kill: () => exits[spawnCount - 1]?.forEach((cb) => cb(null, 'SIGTERM')),
+          onExit: (cb) => { (exits[spawnCount - 1] ??= []).push(cb); },
+        };
+      },
+    });
+    handles.push(handle);
+    expect(spawnCount).toBe(1);
+
+    // Only the gateway's base_url changes — "fixed" stays the only model.
+    writeFileSync(join(cwd, 'sonata.toml'), config('https://gateway-two.example/v1'));
+    const response = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    expect(response.status).toBe(529);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(spawnCount).toBe(2);
+  });
+
+  it('restarts litellm when a legacy [native.models] entry changes, not just unified [models]', async () => {
+    // litellmConfig (native/litellm.ts) builds its model list from
+    // `native.models` first, unconditionally — a transitional config with a
+    // tiered unified model AND a separate untracked legacy model both feed
+    // litellm's config, so editing the legacy entry alone must restart it
+    // too, even though `unifiedModels` and `gateways` are both unchanged.
+    const config = (legacyId: string) => `
+[models."current"]
+gateway = "acme"
+id = "current-upstream"
+context_window = 128000
+
+[tiers.code]
+simple = ["current"]
+complex = ["current"]
+
+[native.models."legacy"]
+gateway = "acme"
+id = "${legacyId}"
+context_window = 128000
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43114
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), config('legacy-upstream-v1'));
+
+    let spawnCount = 0;
+    const configs: string[] = [];
+    const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: (configPath) => {
+        spawnCount += 1;
+        configs.push(readFileSync(configPath, 'utf8'));
+        return {
+          pid: spawnCount,
+          kill: () => exits[spawnCount - 1]?.forEach((cb) => cb(null, 'SIGTERM')),
+          onExit: (cb) => { (exits[spawnCount - 1] ??= []).push(cb); },
+        };
+      },
+    });
+    handles.push(handle);
+    expect(spawnCount).toBe(1);
+
+    // Only the legacy entry's id changes — unifiedModels and gateways don't.
+    writeFileSync(join(cwd, 'sonata.toml'), config('legacy-upstream-v2'));
+    const response = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      // A direct model request, exactly what `sonata dispatch --model legacy` sends.
+      body: JSON.stringify({ model: 'legacy', messages: [] }),
+    });
+    expect(response.status).toBe(502);
+    expect(spawnCount).toBe(2);
+    expect(configs[1]).toContain('legacy-upstream-v2');
+  });
+
+  it('rebuilds the LiteLLM child environment when a new gateway is added', async () => {
+    const config = (includeOther: boolean) => `
+[models."first"]
+gateway = "acme"
+id = "first-upstream"
+context_window = 128000
+
+${includeOther ? `[models."second"]
+gateway = "other"
+id = "second-upstream"
+context_window = 128000
+` : ''}
+[tiers.code]
+simple = ["${includeOther ? 'second' : 'first'}"]
+complex = ["${includeOther ? 'second' : 'first'}"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+${includeOther ? `[native.gateways."other"]
+base_url = "https://other-gateway.example/v1"
+` : ''}
+[native.ports]
+router = 0
+litellm = 43122
+`;
+    writeSonataKey(home, 'acme', 'acme-key');
+    writeSonataKey(home, 'other', 'other-key');
+    writeFileSync(join(cwd, 'sonata.toml'), config(false));
+
+    const envs: NodeJS.ProcessEnv[] = [];
+    const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: (_configPath, env) => {
+        const index = envs.push({ ...env }) - 1;
+        return {
+          pid: index + 1,
+          kill: () => exits[index]?.forEach((cb) => cb(null, 'SIGTERM')),
+          onExit: (cb) => { (exits[index] ??= []).push(cb); },
+        };
+      },
+    });
+    handles.push(handle);
+    expect(envs[0]).toMatchObject({ SONATA_KEY_ACME: 'acme-key' });
+    expect(envs[0]).not.toHaveProperty('SONATA_KEY_OTHER');
+
+    writeFileSync(join(cwd, 'sonata.toml'), config(true));
+    const response = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+
+    expect(response.status).toBe(529);
+    expect(envs).toHaveLength(2);
+    expect(envs[1]).toMatchObject({
+      SONATA_KEY_ACME: 'acme-key',
+      SONATA_KEY_OTHER: 'other-key',
+    });
+  });
+
+  it('waits for the old litellm child to exit before spawning its replacement', async () => {
+    const config = (model: string) => `
+[models."${model}"]
+gateway = "acme"
+id = "${model}-upstream"
+context_window = 128000
+
+[tiers.code]
+simple = ["${model}"]
+complex = ["${model}"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43121
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), config('first'));
+
+    let spawnCount = 0;
+    const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: () => {
+        spawnCount += 1;
+        return {
+          pid: spawnCount,
+          kill: () => {},
+          onExit: (cb) => { (exits[spawnCount - 1] ??= []).push(cb); },
+        };
+      },
+    });
+    handles.push(handle);
+    expect(spawnCount).toBe(1);
+
+    writeFileSync(join(cwd, 'sonata.toml'), config('second'));
+    const request = fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    // Let the request enter the router and register the restart's exit
+    // listener, but do not fire that event yet. Polled rather than a fixed
+    // sleep: the request reaches the router only after a real loopback HTTP
+    // round trip, whose timing is not bounded tightly enough by a flat delay
+    // to avoid flaking under load.
+    const deadline = Date.now() + 2000;
+    while ((exits[0]?.length ?? 0) < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(spawnCount).toBe(1);
+    expect(exits[0]?.length).toBeGreaterThanOrEqual(2);
+
+    exits[0]?.forEach((cb) => cb(null, 'SIGTERM'));
+    const response = await request;
+    expect(response.status).toBe(529);
+    expect(spawnCount).toBe(2);
+  });
+
+  it('wires resolveTier so a sonata-<role>-<tier> alias resolves against the config', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43119
+`);
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+
+    const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    // Nothing is actually listening on the (distinctly unused) litellm port in
+    // this test, so the request cannot succeed — but a resolved alias fails as
+    // an upstream connection error (529, every candidate exhausted), never the
+    // "unknown alias" 400 an unresolved one would produce.
+    expect(res.status).toBe(529);
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain('unknown sonata tier alias');
+    expect(JSON.stringify(body)).toContain('sonata dispatch --tier code-simple');
+  });
+
+  it('restarts litellm for a direct --model request too, not just a sonata-<tier> alias', async () => {
+    // A direct request naming a native-only unified model key never goes
+    // through resolveTier at all (the key is not a `sonata-*` alias), so this
+    // is the one path that would still see litellm's startup-era model list
+    // if the config-change check only fired from tier resolution.
+    const config = (model: string) => `
+[models."${model}"]
+gateway = "acme"
+id = "${model}-upstream"
+context_window = 128000
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43118
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), config('direct-model'));
+
+    let spawnCount = 0;
+    const configs: string[] = [];
+    const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: (configPath) => {
+        spawnCount += 1;
+        configs.push(readFileSync(configPath, 'utf8'));
+        // kill() fires the registered exit callback, so the restart's
+        // bounded wait for the old child resolves without needing the real
+        // 5s default timeout — this test isn't exercising that wait.
+        return {
+          pid: spawnCount,
+          kill: () => exits[spawnCount - 1]?.forEach((cb) => cb(null, 'SIGTERM')),
+          onExit: (cb) => { (exits[spawnCount - 1] ??= []).push(cb); },
+        };
+      },
+    });
+    handles.push(handle);
+    expect(spawnCount).toBe(1);
+
+    writeFileSync(join(cwd, 'sonata.toml'), config('direct-model-renamed'));
+    const response = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      // Not a sonata-* alias — a plain native model key, exactly what
+      // `sonata dispatch --model <key>` sends.
+      body: JSON.stringify({ model: 'direct-model-renamed', messages: [] }),
+    });
+    expect(response.status).toBe(502);
+    expect(spawnCount).toBe(2);
+    expect(configs[1]).toContain('direct-model-renamed-upstream');
+  });
+
+  it('escalates to forceKill and proceeds once the old litellm child never exits on its own', async () => {
+    const config = (model: string) => `
+[models."${model}"]
+gateway = "acme"
+id = "${model}-upstream"
+context_window = 128000
+
+[tiers.code]
+simple = ["${model}"]
+complex = ["${model}"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43117
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), config('first'));
+
+    let spawnCount = 0;
+    let forceKillCalls = 0;
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      litellmExitTimeoutMs: 20,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      spawnLitellm: () => {
+        spawnCount += 1;
+        return {
+          pid: spawnCount,
+          kill: () => {},
+          // Never fires its exit callback — simulates a child that ignores
+          // SIGTERM entirely, the case the bounded wait exists for.
+          onExit: () => {},
+          forceKill: () => { forceKillCalls += 1; },
+        };
+      },
+    });
+    handles.push(handle);
+    expect(spawnCount).toBe(1);
+
+    writeFileSync(join(cwd, 'sonata.toml'), config('second'));
+    const response = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    // Never resolves the request forever: it proceeds past both bounded
+    // waits (escalating to forceKill once), spawns the replacement anyway,
+    // and the request completes with the usual upstream-failure response.
+    expect(response.status).toBe(529);
+    expect(forceKillCalls).toBe(1);
+    expect(spawnCount).toBe(2);
+  });
+
+  it('retries the restart on the next request after a failed one, instead of marking the change handled', async () => {
+    // A gateway added with `credential_source = "sonata"` but no key stored
+    // yet makes buildChildEnv throw. If the model snapshot were committed
+    // before that point, a later request — after the credential is fixed —
+    // would see no difference from the (already-updated) snapshot and skip
+    // the restart forever, leaving the new model unreachable short of a
+    // manual `sonata restart`.
+    writeSonataKey(home, 'acme', 'acme-key');
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."first"]
+gateway = "acme"
+id = "first-upstream"
+context_window = 128000
+
+[tiers.code]
+simple = ["first"]
+complex = ["first"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43116
+`);
+
+    let spawnCount = 0;
+    const configs: string[] = [];
+    const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: (configPath) => {
+        spawnCount += 1;
+        configs.push(readFileSync(configPath, 'utf8'));
+        return {
+          pid: spawnCount,
+          kill: () => exits[spawnCount - 1]?.forEach((cb) => cb(null, 'SIGTERM')),
+          onExit: (cb) => { (exits[spawnCount - 1] ??= []).push(cb); },
+        };
+      },
+    });
+    handles.push(handle);
+    expect(spawnCount).toBe(1);
+
+    const configWithNewGateway = `
+[models."first"]
+gateway = "acme"
+id = "first-upstream"
+context_window = 128000
+
+[models."second"]
+gateway = "newgw"
+id = "second-upstream"
+context_window = 128000
+
+[tiers.code]
+simple = ["second"]
+complex = ["second"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.gateways."newgw"]
+base_url = "https://newgw.example/v1"
+credential_source = "sonata"
+
+[native.ports]
+router = 0
+litellm = 43116
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), configWithNewGateway);
+
+    const firstAttempt = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    // "newgw" has no stored key yet, so the restart's buildChildEnv step
+    // throws internally (logged, not surfaced) and no restart happens —
+    // the request still resolves the "second" tier candidate fine (config
+    // parsing doesn't require the credential to exist) and fails the same
+    // way any candidate with nothing listening does.
+    expect(firstAttempt.status).toBe(529);
+    expect(spawnCount).toBe(1);
+
+    writeSonataKey(home, 'newgw', 'new-key');
+    const secondAttempt = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    expect(secondAttempt.status).toBe(529);
+    // The one candidate ("second") is still cooling down from the first
+    // attempt's real connection failure, so this response returns without
+    // attempting a forward at all — the restart itself runs fire-and-forget
+    // from checkModelChange and is not on the response's critical path, so
+    // poll for it rather than assume it's finished the instant the response
+    // itself resolves.
+    const deadline = Date.now() + 2000;
+    while (spawnCount < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(spawnCount).toBe(2);
+    expect(configs[1]).toContain('second-upstream');
   });
 });
 
@@ -455,13 +1177,10 @@ describe('occupiedPortMessage', () => {
     (async () => new Response(JSON.stringify(body), { status: ok ? 200 : 500 })) as unknown as typeof fetch;
 
   it('names sonata when the port is held by a sonata router', async () => {
-    // The occupant is usually sonata itself: an MCP dispatch to a native model
-    // starts a router inside the `sonata mcp` process, and it lives until
-    // Claude Code restarts. Calling that "a non-sonata listener" sent a user
-    // looking for a foreign program that did not exist.
+    // Health probing distinguishes a Sonata router from an unrelated listener.
     const message = await occupiedPortMessage(4100, health({ status: 'ok', sonata: true }));
     expect(message).toMatch(/another sonata router/);
-    expect(message).toMatch(/sonata mcp/);
+    expect(message).toMatch(/restart it/);
     expect(message).not.toMatch(/non-sonata/);
   });
 
@@ -510,6 +1229,25 @@ context_window = 128000
     pid,
     unref: () => {},
   })) as unknown as typeof spawnType;
+
+  it('spawns the daemon with the provided cwd, not the caller cwd', async () => {
+    // Global routing is one shared router for every project; the daemon must
+    // resolve the machine config regardless of which project's session
+    // triggered the start, which requires spawning from an explicit cwd
+    // rather than inheriting process.cwd().
+    const opts: Parameters<typeof spawnType>[2][] = [];
+    const spy = ((_cmd: string, _args: string[], o: never) => {
+      opts.push(o);
+      return { pid: 4242, unref: () => {} };
+    }) as unknown as typeof spawnType;
+
+    await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: spy,
+      probe: async () => true,
+    }, '/some/other/cwd');
+
+    expect(opts[0]).toMatchObject({ cwd: '/some/other/cwd' });
+  });
 
   it('detaches and returns once the router answers', async () => {
     // The flag used to be parsed, handed to cmdServe and ignored, so
@@ -683,6 +1421,10 @@ context_window = 128000
       cwd: home,
       probeHealth, kill: (pid) => killed.push(pid), sleep: async () => {},
       spawn: spawnSpy, probe: async () => true,
+      // Never assert real OS process liveness on a fake pid — 111 happens to
+      // be a real, running process on at least one CI runner, which turned
+      // this into a 10s timeout there while passing instantly on macOS.
+      isAlive: () => false,
     });
 
     expect(killed).toEqual([111]);

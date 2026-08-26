@@ -18,7 +18,6 @@ import {
   readSettings,
   settingsPath,
   missingAllowEntries,
-  mcpRegistered,
 } from '../settings.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -69,6 +68,25 @@ export function checkVersion(actual: string, range: string): boolean {
 
 export interface Check { name: string; ok: boolean; detail: string }
 
+export function staleMcpRegistration(cwd: string, home: string): string | undefined {
+  for (const path of [join(cwd, '.mcp.json'), join(home, '.claude.json')]) {
+    if (!existsSync(path)) continue;
+    try {
+      const doc = JSON.parse(readFileSync(path, 'utf8')) as {
+        mcpServers?: Record<string, unknown>;
+      };
+      if (doc.mcpServers !== null && typeof doc.mcpServers === 'object'
+        && Object.hasOwn(doc.mcpServers, 'sonata')) {
+        return `${path} still registers the removed sonata server — run \`claude mcp remove sonata\``;
+      }
+    } catch {
+      // A malformed user file is not evidence of a stale registration.
+    }
+  }
+  return undefined;
+}
+
+
 export async function cmdDoctor(
   opts: { cwd: string; home?: string; packageRoot?: string },
 ): Promise<{ ok: boolean; checks: Check[] }> {
@@ -90,9 +108,64 @@ export async function cmdDoctor(
       ok: true,
       detail: `${resolved} · ${Object.keys(config.models).length} harness + ${Object.keys(config.native?.models ?? {}).length} native models`,
     });
+    if (config.tiers === undefined && (Object.keys(config.generate.roles).length > 0 || Object.keys(config.native?.generate ?? {}).length > 0)) {
+      checks.push({
+        name: 'legacy config',
+        ok: true,
+        detail: 'config predates [tiers] — run `sonata init` to migrate',
+      });
+    }
   } catch (err) {
     checks.push({ name: 'sonata.toml', ok: false, detail: (err as Error).message });
     return { ok: false, checks };
+  }
+
+  // Tier agents call the native router first. Report a blocking warning when
+  // neither persistent routing nor route-auto hooks are configured.
+  if (config.tiers !== undefined) {
+    const projectSettings = readSettings(routeSettingsFile(opts.cwd, 'project', home));
+    const globalSettings = readSettings(routeSettingsFile(opts.cwd, 'global', home));
+    // Global routing resolves the *machine* config (bd72ec4/dd9ee9b), not
+    // necessarily `config` above — that's project-first with the machine
+    // config only as a fallback, so a project with its own sonata.toml whose
+    // [native.ports].router differs from the machine's would otherwise be
+    // checked against the wrong port for the global case.
+    let globalConfig = config;
+    try {
+      const globalPath = configPath(home, home);
+      // Load the machine config directly by its own resolved path, not by
+      // treating `home` as a project cwd — `configPath(home, home)` can
+      // still resolve to a stray `~/sonata.toml` rather than
+      // `~/.config/sonata/sonata.toml` if one happens to exist, and that
+      // is not the file the global router actually runs.
+      if (globalPath === join(home, GLOBAL_CONFIG_RELATIVE)) {
+        globalConfig = loadConfig(home, home);
+      }
+    } catch { /* no machine config; fall through below finds nothing routed */ }
+
+    // Presence alone isn't enough: a base URL left over from a since-changed
+    // [native.ports].router points a session at a port nothing is listening
+    // on, which reads as routed here and 502s on every native request.
+    const routedAt = (settings: typeof projectSettings, cfg: typeof config, scope: 'project' | 'global'): boolean => {
+      const routerUrl = cfg.native !== undefined ? `http://localhost:${cfg.native.ports.router}` : undefined;
+      return (routerUrl !== undefined && routeEnv(settings).ANTHROPIC_BASE_URL === routerUrl) ||
+        (opts.packageRoot !== undefined && autoInstalled(settings, opts.packageRoot, scope));
+    };
+    // Global routing only actually serves this project if the project's own
+    // config resolution already IS the machine config (no project-scoped
+    // sonata.toml exists) — otherwise a project with its own config needs
+    // project-scoped routing specifically; global routing there silently
+    // resolves a different, unrelated configuration.
+    const projectResolvesToMachineConfig = configPath(opts.cwd, home) === join(home, GLOBAL_CONFIG_RELATIVE);
+    const routed = routedAt(projectSettings, config, 'project') ||
+      (projectResolvesToMachineConfig && routedAt(globalSettings, globalConfig, 'global'));
+    if (!routed) {
+      checks.push({
+        name: 'tier routing',
+        ok: false,
+        detail: 'tier agents need a routed session — run `sonata route auto`',
+      });
+    }
   }
 
   // `sonata init` run in $HOME used to write here, and nothing reads it. It
@@ -299,8 +372,12 @@ export async function cmdDoctor(
     : [];
   const withBash = wrappers.filter((f) =>
     /^tools:\s*Bash\s*$/m.test(readFileSync(join(agentsDir, f), 'utf8')));
+  // Catches both generations of removed MCP tool names: run/tail (pre-dispatch
+  // rename) and dispatch/wait/approve (the MCP server itself, removed when the
+  // Bash CLI replaced it) — an upgrade from either still has wrappers naming
+  // tools that no longer exist.
   const stalePolling = wrappers.filter((f) =>
-    /mcp__sonata__(run|tail)\b/.test(readFileSync(join(agentsDir, f), 'utf8')));
+    /mcp__[^_\s]+__(run|tail|dispatch|wait|approve)\b/.test(readFileSync(join(agentsDir, f), 'utf8')));
   checks.push(stalePolling.length === 0
     ? { name: 'agent tools', ok: withBash.length === 0, detail: withBash.length === 0
         ? 'no wrapper grants Bash'
@@ -309,7 +386,7 @@ export async function cmdDoctor(
     : {
         name: 'agent tools',
         ok: false,
-        detail: `${stalePolling.length} wrapper(s) still call the removed run/tail ` +
+        detail: `${stalePolling.length} wrapper(s) still call removed MCP ` +
           'tools and will fail mid-dispatch — run `sonata sync`',
       });
 
@@ -334,20 +411,10 @@ export async function cmdDoctor(
     });
   }
 
-  // Where Claude Code would look depends on which config is in effect: a
-  // project config pairs with ./.mcp.json, a machine config with the user
-  // scope in ~/.claude.json.
-  const mcpScope = resolved === join(opts.cwd, 'sonata.toml') ? 'project' : 'user';
-  const registered = opts.packageRoot !== undefined
-    && mcpRegistered(mcpScope, opts.cwd, home, opts.packageRoot);
-  checks.push(registered
-    ? { name: 'mcp server', ok: true, detail: `registered at ${mcpScope} scope` }
-    : {
-        name: 'mcp server',
-        ok: false,
-        detail: `not registered at ${mcpScope} scope — wrappers would have no tools at all; ` +
-          'run `sonata init`',
-      });
+  const staleMcp = staleMcpRegistration(opts.cwd, home);
+  if (staleMcp !== undefined) {
+    checks.push({ name: 'stale MCP registration', ok: false, detail: staleMcp });
+  }
 
   const harnesses = new Set(Object.values(config.models).map((m) => m.harness));
 

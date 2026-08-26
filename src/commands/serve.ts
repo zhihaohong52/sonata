@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unl
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { loadConfig } from '../config.js';
+import { configPath as resolveSonataConfigPath, loadConfig, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
 import { codexAuthPath, opencodeAuthPath, readChatGptOAuth } from '../native/codex-auth.js';
 import { credentialDir } from '../native/oauth-login.js';
@@ -19,8 +19,21 @@ export interface ServeHandle {
   stop(): Promise<void>;
 }
 
+export interface SpawnedLitellm {
+  pid: number;
+  kill(): void;
+  /**
+   * Escalates past a plain `kill()` (SIGTERM) when the child ignores it —
+   * used only after a bounded wait for exit expires. Omitted by stubs that
+   * always exit promptly on `kill()`.
+   */
+  forceKill?(): void;
+  /** Fires when the process exits on its own — omitted by stubs that never crash. */
+  onExit?(cb: (code: number | null, signal: NodeJS.Signals | null) => void): void;
+}
+
 export interface ServeDeps {
-  spawnLitellm?: (configPath: string, env: NodeJS.ProcessEnv, port: number) => { pid: number; kill(): void };
+  spawnLitellm?: (configPath: string, env: NodeJS.ProcessEnv, port: number) => SpawnedLitellm;
   /** Test seam: resolves when litellm answers on its port, rejects on timeout. */
   waitForLitellm?: (port: number) => Promise<void>;
   /**
@@ -33,23 +46,30 @@ export interface ServeDeps {
   tempDir?: string;
   /** Test seam for the "who holds the router port?" probe. */
   probeHealth?: typeof fetch;
+  /** Test seam: delay before respawning a litellm child that exited on its own. */
+  respawnDelayMs?: number;
+  /** Test seam: max respawns tolerated within `respawnWindowMs` before giving up. */
+  maxRespawns?: number;
+  respawnWindowMs?: number;
+  /** Test seam: how long a model-registry restart waits for the old litellm child to exit before escalating to `forceKill`, and again after that before giving up and proceeding anyway. */
+  litellmExitTimeoutMs?: number;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /**
  * Where a serve instance records its own pid and its litellm child's pid.
  *
- * The router dies with the process that started serve (an MCP reconnect kills
- * it), but the spawned litellm child is reparented and survives. The next
+ * The router dies with the process that started serve, but the spawned litellm
+ * child is reparented and survives. The next
  * serve then cannot bind the litellm port: its own child dies silently, and
  * the new router forwards a new master key to the ORPHANED litellm, whose
  * virtual-key lookup fails as "No connected db". Measured 2026-08-20, twice.
  * Recording the pid lets the next serve kill its predecessor's orphan —
  * only a pid sonata itself recorded is ever killed.
  *
- * `routerPid` is `process.pid` at the point the router successfully binds —
- * true whether this process is a foreground/daemon `sonata serve` or an
- * in-process router started inside `sonata mcp` by a native dispatch
- * (`cmdServe` is the one call site for both, per `src/commands/run.ts`).
+ * `routerPid` is `process.pid` at the point the router successfully binds,
+ * allowing `sonata restart` to stop only a process Sonata recorded itself.
  * `sonata restart` reads it to kill a stale router without guessing a pid by
  * scanning the OS.
  */
@@ -138,17 +158,30 @@ export async function isSonataRouter(
   }
 }
 
+/** The resolved sonata.toml path a running sonata router reports, or null if the port isn't a sonata router (or reports no configPath). */
+export async function sonataRouterConfigPath(
+  port: number,
+  doFetch: typeof fetch = fetch,
+): Promise<string | null> {
+  try {
+    const response = await doFetch(serveHealthUrl(port), {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!response.ok) return null;
+    const body = await response.json() as { sonata?: unknown; configPath?: unknown };
+    if (body?.sonata !== true) return null;
+    return typeof body.configPath === 'string' ? body.configPath : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * What to say when the router port is taken.
  *
- * The occupant is usually sonata itself: an MCP dispatch to a native model
- * starts a router inside the `sonata mcp` process, and that router lives as
- * long as the MCP server does — which is until Claude Code is restarted, not
- * until the dispatch ends. A day-old one was found holding this port and
- * answering its health endpoint, while `serve` called it "a non-sonata
- * listener" and sent the user looking for a foreign program. The health
- * endpoint already exists; asking it costs one request and makes the message
- * true.
+ * The occupant may be another Sonata process. Probe the health endpoint
+ * before describing the listener so the error tells the user what actually
+ * holds the port.
  */
 export async function occupiedPortMessage(
   port: number,
@@ -156,8 +189,7 @@ export async function occupiedPortMessage(
 ): Promise<string> {
   if (await isSonataRouter(port, doFetch)) {
     return `sonata serve: router port ${port} is already served by another sonata router — ` +
-      'usually one started inside a `sonata mcp` process by an earlier native dispatch, ' +
-      'which lives until Claude Code restarts. Use that one, restart Claude Code to retire it, ' +
+      'usually an earlier native router. Use that one, restart it to retire it, ' +
       `or give this instance a different [native.ports] router port.`;
   }
   return `sonata serve: router port ${port} is occupied by a non-sonata listener`;
@@ -171,12 +203,117 @@ export async function occupiedPortMessage(
  * deployments for this model" — with the actual cause (for one real case, a 403
  * from GitHub's Copilot token exchange) written only to a stream nobody read.
  */
-function defaultSpawnLitellm(configPath: string, env: NodeJS.ProcessEnv, port: number): { pid: number; kill(): void } {
+function defaultSpawnLitellm(configPath: string, env: NodeJS.ProcessEnv, port: number): SpawnedLitellm {
   const child = spawn('litellm', ['--config', configPath, '--port', String(port)], {
     env,
     stdio: ['ignore', 'inherit', 'inherit'],
   });
-  return { pid: child.pid ?? 0, kill: () => child.kill() };
+  return {
+    pid: child.pid ?? 0,
+    kill: () => child.kill(),
+    forceKill: () => child.kill('SIGKILL'),
+    onExit: (cb) => child.on('exit', cb),
+  };
+}
+
+function buildChildEnv(native: NativeConfig, home: string, tempDir: string): NodeJS.ProcessEnv {
+  // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
+  const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
+  const automaticallyResolved = Object.entries(native.gateways)
+    .filter(([, gateway]) => gateway.auth !== 'api-key' || gateway.credentialSource === undefined)
+    .map(([name]) => name);
+  for (const { gateway, key } of resolveKeys(automaticallyResolved, home)) {
+    childEnv[envVarForGateway(gateway)] = key;
+  }
+  for (const [name, gateway] of Object.entries(native.gateways)) {
+    const source = gateway.credentialSource;
+    if (gateway.auth !== 'api-key' || (source !== 'sonata' && source !== 'opencode')) continue;
+    const key = resolveKeyFromSource(name, home, source);
+    if (key === undefined) {
+      throw new Error(
+        `sonata serve: gateway "${name}" takes its credential from ${source} but none was found — ` +
+        `run \`sonata auth add ${name}\` (for sonata) or check opencode's own credential store.`,
+      );
+    }
+    childEnv[envVarForGateway(name)] = key;
+  }
+
+  // A sonata-owned credential is already in LiteLLM's native format. Point
+  // directly at its persistent directory so LiteLLM's refresh survives serve.
+  const chatgptGateway = Object.entries(native.gateways)
+    .find(([, gateway]) => gateway.auth === 'codex-oauth');
+  if (chatgptGateway) {
+    const [name, gateway] = chatgptGateway;
+    if (gateway.credentialSource === 'sonata') {
+      const dir = credentialDir(home, name);
+      if (!existsSync(join(dir, 'auth.json'))) {
+        throw new Error(
+          `sonata serve: gateway "${name}" takes its credential from sonata but none is stored — ` +
+          `run \`sonata auth login ${name}\`.`,
+        );
+      }
+      childEnv.CHATGPT_TOKEN_DIR = dir;
+    } else {
+      const record = readChatGptOAuth(home, gateway.credentialSource);
+      if (record === null) {
+        throw new Error(
+          'sonata serve: a native gateway uses codex-oauth but no ChatGPT credential was found ' +
+          `in ${codexAuthPath(home)} or ${opencodeAuthPath(home)} — ` +
+          `run \`sonata auth login ${name}\`, or \`codex login\`.`,
+        );
+      }
+      const tokenDir = join(tempDir, 'chatgpt');
+      mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(tokenDir, 'auth.json'), JSON.stringify(record), { mode: 0o600 });
+      childEnv.CHATGPT_TOKEN_DIR = tokenDir;
+    }
+  }
+
+  // Copilot's api-key.json is refreshed and re-exchanged in place too, so a
+  // sonata-owned credential must likewise avoid the temporary directory.
+  const copilotGateway = Object.entries(native.gateways)
+    .find(([, gateway]) => gateway.auth === 'copilot-oauth');
+  if (copilotGateway) {
+    const [name, gateway] = copilotGateway;
+    if (gateway.credentialSource === 'sonata') {
+      const dir = credentialDir(home, name);
+      if (!existsSync(join(dir, 'api-key.json'))) {
+        throw new Error(
+          `sonata serve: gateway "${name}" takes its credential from sonata but none is stored — ` +
+          `run \`sonata auth login ${name}\`.`,
+        );
+      }
+      childEnv.GITHUB_COPILOT_TOKEN_DIR = dir;
+    } else {
+      const token = readCopilotToken(home);
+      if (token === null) {
+        throw new Error(
+          'sonata serve: a native gateway uses copilot-oauth but no Copilot login was found ' +
+          `in ${opencodeAuthPath(home)} — run \`sonata auth login ${name}\`, ` +
+          'or `opencode auth login` and choose github-copilot.',
+        );
+      }
+      const tokenDir = join(tempDir, 'copilot');
+      mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(tokenDir, 'access-token'), token, { mode: 0o600 });
+      childEnv.GITHUB_COPILOT_TOKEN_DIR = tokenDir;
+    }
+  }
+
+  return childEnv;
+}
+
+/** Default bound on how long a model-registry restart waits for the old litellm child to exit (see `litellmExitTimeoutMs`). */
+const LITELLM_EXIT_TIMEOUT_MS = 5000;
+
+/** Resolves `true` if `promise` had not settled after `timeoutMs`, `false` if it settled first. Never rejects. */
+async function raceTimeout(promise: Promise<void>, timeoutMs: number, sleepFn: (ms: number) => Promise<void>): Promise<boolean> {
+  let timedOut = false;
+  await Promise.race([
+    promise,
+    sleepFn(timeoutMs).then(() => { timedOut = true; }),
+  ]);
+  return timedOut;
 }
 
 function listen(server: ReturnType<typeof createRouterServer>, port: number): Promise<void> {
@@ -242,101 +379,182 @@ export async function cmdServe(
   // Everything from here to a listening router owns `tempDir`. Cleanup used to
   // be duplicated on two failure branches and absent from every other throw, so
   // a run that died in between left its config behind.
-  let child: { pid: number; kill(): void } | undefined;
+  let child: SpawnedLitellm | undefined;
   let router: ReturnType<typeof createRouterServer> | undefined;
+  let stopping = false;
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const respawnDelayMs = opts.respawnDelayMs ?? 1000;
+  const maxRespawns = opts.maxRespawns ?? 5;
+  const respawnWindowMs = opts.respawnWindowMs ?? 60_000;
+  const respawnTimestamps: number[] = [];
   try {
     const configPath = join(tempDir, 'config.json');
-    writeFileSync(configPath, litellmConfigYaml(native, masterKey), { mode: 0o600 });
+    writeFileSync(configPath, litellmConfigYaml(native, masterKey, config.unifiedModels), { mode: 0o600 });
 
-    // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
-    const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
-    const automaticallyResolved = Object.entries(native.gateways)
-      .filter(([, gateway]) => gateway.auth !== 'api-key' || gateway.credentialSource === undefined)
-      .map(([name]) => name);
-    for (const { gateway, key } of resolveKeys(automaticallyResolved, opts.home)) {
-      childEnv[envVarForGateway(gateway)] = key;
-    }
-    for (const [name, gateway] of Object.entries(native.gateways)) {
-      const source = gateway.credentialSource;
-      if (gateway.auth !== 'api-key' || (source !== 'sonata' && source !== 'opencode')) continue;
-      const key = resolveKeyFromSource(name, opts.home, source);
-      if (key === undefined) {
-        throw new Error(
-          `sonata serve: gateway "${name}" takes its credential from ${source} but none was found — ` +
-          `run \`sonata auth add ${name}\` (for sonata) or check opencode's own credential store.`,
-        );
-      }
-      childEnv[envVarForGateway(name)] = key;
-    }
-
-    // A sonata-owned credential is already in LiteLLM's native format. Point
-    // directly at its persistent directory so LiteLLM's refresh survives serve.
-    const chatgptGateway = Object.entries(native.gateways)
-      .find(([, gateway]) => gateway.auth === 'codex-oauth');
-    if (chatgptGateway) {
-      const [name, gateway] = chatgptGateway;
-      if (gateway.credentialSource === 'sonata') {
-        const dir = credentialDir(opts.home, name);
-        if (!existsSync(join(dir, 'auth.json'))) {
-          throw new Error(
-            `sonata serve: gateway "${name}" takes its credential from sonata but none is stored — ` +
-            `run \`sonata auth login ${name}\`.`,
-          );
-        }
-        childEnv.CHATGPT_TOKEN_DIR = dir;
-      } else {
-        const record = readChatGptOAuth(opts.home, gateway.credentialSource);
-        if (record === null) {
-          throw new Error(
-            'sonata serve: a native gateway uses codex-oauth but no ChatGPT credential was found ' +
-            `in ${codexAuthPath(opts.home)} or ${opencodeAuthPath(opts.home)} — ` +
-            `run \`sonata auth login ${name}\`, or \`codex login\`.`,
-          );
-        }
-        const tokenDir = join(tempDir, 'chatgpt');
-        mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
-        writeFileSync(join(tokenDir, 'auth.json'), JSON.stringify(record), { mode: 0o600 });
-        childEnv.CHATGPT_TOKEN_DIR = tokenDir;
-      }
-    }
-
-    // Copilot's api-key.json is refreshed and re-exchanged in place too, so a
-    // sonata-owned credential must likewise avoid the temporary directory.
-    const copilotGateway = Object.entries(native.gateways)
-      .find(([, gateway]) => gateway.auth === 'copilot-oauth');
-    if (copilotGateway) {
-      const [name, gateway] = copilotGateway;
-      if (gateway.credentialSource === 'sonata') {
-        const dir = credentialDir(opts.home, name);
-        if (!existsSync(join(dir, 'api-key.json'))) {
-          throw new Error(
-            `sonata serve: gateway "${name}" takes its credential from sonata but none is stored — ` +
-            `run \`sonata auth login ${name}\`.`,
-          );
-        }
-        childEnv.GITHUB_COPILOT_TOKEN_DIR = dir;
-      } else {
-        const token = readCopilotToken(opts.home);
-        if (token === null) {
-          throw new Error(
-            'sonata serve: a native gateway uses copilot-oauth but no Copilot login was found ' +
-            `in ${opencodeAuthPath(opts.home)} — run \`sonata auth login ${name}\`, ` +
-            'or `opencode auth login` and choose github-copilot.',
-          );
-        }
-        const tokenDir = join(tempDir, 'copilot');
-        mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
-        writeFileSync(join(tokenDir, 'access-token'), token, { mode: 0o600 });
-        childEnv.GITHUB_COPILOT_TOKEN_DIR = tokenDir;
-      }
-    }
+    let childEnv = buildChildEnv(native, opts.home, tempDir);
 
     // A predecessor's orphaned litellm would hold the port and answer with the
     // wrong master key; kill it (recorded pid only) before spawning our own.
     killRecordedOrphan(opts.home);
 
-    child = (opts.spawnLitellm ?? defaultSpawnLitellm)(configPath, childEnv, native.ports.litellm);
-    recordLitellmPid(opts.home, child.pid);
+    // The litellm child dying on its own (not via `stop()`) used to go
+    // unnoticed until the next request 502'd and someone ran `sonata restart`
+    // by hand — measured directly: the child exits, nothing is watching, the
+    // router stays up and answers requests with a dead upstream. This watches
+    // the exact child this process spawned and respawns it in place, which is
+    // why it's safe where `ensure-serve.mjs`'s external health-probe respawn
+    // (bug D in the ledger) was not: there is only ever one spawn racing here,
+    // never a second `serve` guessing whether an existing one is healthy.
+    // Resolves once the current child is confirmed healthy, or once serve has
+    // given up waiting on it — awaited by the router before every litellm-bound
+    // request so a request landing in a respawn's brief startup gap waits for
+    // it, rather than getting a connection-refused failure that would cool the
+    // candidate down for a crash it already recovered from. The `.catch` means
+    // a hard failure resolves this too: the router's own fetch then fails for
+    // real, and a genuine outage cools down exactly as before.
+    // Tracks the native config LiteLLM's own config file currently reflects
+    // — legacy [native.models], unified [models], AND gateways, not just the
+    // unified table — so a config change (a new model added, an existing
+    // model's id/gateway edited under EITHER table, or a gateway's
+    // base_url/wire_format/auth/credential_source edited) while the daemon
+    // is already running can be told apart from "nothing changed" without
+    // restarting litellm on every single tier-resolution call. Gateways
+    // matter here even when the model list itself is unchanged: rerunning
+    // `sonata init` without touching model selection can still rewrite a
+    // gateway's endpoint or credential source, and litellm's own config
+    // would otherwise keep the stale one indefinitely. Legacy
+    // `native.models` matters too — `litellmConfig` (native/litellm.ts)
+    // builds the model list from `native.models` first, unconditionally, so
+    // a transitional config editing a legacy entry's id/gateway needs the
+    // same restart a unified edit gets.
+    const activeNativeSnapshot = (cfg: SonataConfig): string =>
+      JSON.stringify({ legacyModels: cfg.native?.models, models: cfg.unifiedModels, gateways: cfg.native?.gateways });
+    let activeModelsJson = activeNativeSnapshot(config);
+    // Set right before a deliberate kill-for-config-change so the crash-exit
+    // handler below (which fires for ANY exit, deliberate or not) does not
+    // also schedule its own duplicate respawn on top of the one already in
+    // flight from that deliberate restart.
+    let expectingConfigRestart = false;
+    let litellmReady: Promise<void> = Promise.resolve();
+
+    const spawnLitellmChild = (): SpawnedLitellm => {
+      const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(configPath, childEnv, native.ports.litellm);
+      recordLitellmPid(opts.home, spawned.pid);
+      spawned.onExit?.((code, signal) => {
+        if (stopping) return;
+        if (expectingConfigRestart) {
+          expectingConfigRestart = false;
+          return;
+        }
+        const nowMs = now();
+        respawnTimestamps.push(nowMs);
+        while (respawnTimestamps.length > 0 && nowMs - respawnTimestamps[0] > respawnWindowMs) {
+          respawnTimestamps.shift();
+        }
+        console.error(`sonata serve: litellm exited unexpectedly (code=${code}, signal=${signal})`);
+        if (respawnTimestamps.length > maxRespawns) {
+          console.error(
+            `sonata serve: litellm crashed ${respawnTimestamps.length} times within ` +
+            `${Math.round(respawnWindowMs / 1000)}s — giving up on automatic respawn. ` +
+            'Fix the underlying problem, then run `sonata restart`.',
+          );
+          return;
+        }
+        litellmReady = (async () => {
+          await sleep(respawnDelayMs);
+          if (stopping) return;
+          console.error('sonata serve: respawning litellm...');
+          child = spawnLitellmChild();
+          await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
+        })().catch((error) => {
+          console.error(`sonata serve: respawned litellm never came up: ${String(error)}`);
+        });
+      });
+      return spawned;
+    };
+
+    // Detects a model-registry change (e.g. `sonata init` adding a new
+    // model while this daemon is already running) and restarts litellm with
+    // a freshly generated config so it actually knows about the new model —
+    // hot-reloading only the tier half (as `resolveTier` below already does)
+    // is not enough, since litellm's own model list is otherwise frozen at
+    // whatever it was given at startup. Reuses the same respawn machinery
+    // already proven for crash recovery, including the `litellmReady` gate
+    // every request already awaits before reaching litellm.
+    const maybeRestartForModelChange = async (freshConfig: SonataConfig): Promise<void> => {
+      if (stopping) return;
+      const freshModelsJson = activeNativeSnapshot(freshConfig);
+      if (freshModelsJson === activeModelsJson) return;
+      if (!freshConfig.native) {
+        activeModelsJson = freshModelsJson;
+        return;
+      }
+      // Only committed once the replacement config and credentials are
+      // successfully prepared below — not up front. A gateway added without
+      // its credential yet available makes `buildChildEnv` throw; if this
+      // were set before that point, a later request (after the credential is
+      // fixed) would see `freshModelsJson === activeModelsJson` and never
+      // retry, leaving the new model unreachable until a manual `sonata
+      // restart` or another edit. Left unset here, the next request's
+      // comparison still differs and tries the restart again.
+      try {
+        writeFileSync(configPath, litellmConfigYaml(freshConfig.native, masterKey, freshConfig.unifiedModels), { mode: 0o600 });
+        childEnv = buildChildEnv(freshConfig.native, opts.home, tempDir);
+        activeModelsJson = freshModelsJson;
+        console.error('sonata serve: model registry changed — restarting litellm to pick it up...');
+        const oldChild = child;
+        expectingConfigRestart = true;
+        litellmReady = (async () => {
+          // Wait for the old child's actual exit before spawning its
+          // replacement: kill() only requests termination, and racing a new
+          // spawn/probe against a still-alive old process can either fail to
+          // bind the port or let the health probe see the stale
+          // (old-model-list) process and declare the restart done before it
+          // actually happened. `onExit` supports multiple independent
+          // listeners (it's backed by `child.on('exit', cb)`), so this does
+          // not disturb the crash-respawn handler's own listener on the
+          // same child.
+          //
+          // The wait is bounded: a litellm that ignores SIGTERM (hung, or
+          // wedged on a slow shutdown) would otherwise leave this promise
+          // unresolved forever, and since it's installed as `litellmReady`,
+          // every subsequent foreign-model request would then wait forever
+          // too. Escalate to `forceKill` (SIGKILL) once, wait once more
+          // bounded by the same timeout, then proceed regardless — a stray
+          // process holding the port fails the following bind/probe loudly,
+          // which is recoverable; a hung `litellmReady` is not.
+          const exited = new Promise<void>((resolve) => {
+            if (oldChild?.onExit) oldChild.onExit(() => resolve());
+            else resolve();
+          });
+          const exitTimeoutMs = opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS;
+          if (await raceTimeout(exited, exitTimeoutMs, sleep)) {
+            console.error(
+              `sonata serve: old litellm child did not exit within ${exitTimeoutMs}ms — sending SIGKILL`,
+            );
+            (oldChild?.forceKill ?? oldChild?.kill)?.call(oldChild);
+            if (await raceTimeout(exited, exitTimeoutMs, sleep)) {
+              console.error(
+                'sonata serve: old litellm child still has not exited after SIGKILL — proceeding anyway; ' +
+                'a stray process may be holding the litellm port',
+              );
+            }
+          }
+          if (stopping) return;
+          child = spawnLitellmChild();
+          await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
+        })().catch((error) => {
+          console.error(`sonata serve: restarted litellm never came up: ${String(error)}`);
+        });
+        oldChild?.kill();
+        await litellmReady;
+      } catch (error) {
+        console.error(`sonata serve: failed to restart litellm for a model registry change: ${String(error)}`);
+      }
+    };
+
+    child = spawnLitellmChild();
 
     await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
 
@@ -345,12 +563,33 @@ export async function cmdServe(
       litellmBase: `http://localhost:${native.ports.litellm}`,
       litellmKey: masterKey,
       health: true,
+      // Which sonata.toml actually started this router, so a caller sharing the
+      // default port can tell this project's router apart from another
+      // project's on the same port.
+      configPath: resolveSonataConfigPath(opts.cwd, opts.home) ?? undefined,
       // Goes to serve's stdout, which --daemon captures to its log file. This
       // is the only record of which upstream served a request: litellm's access
       // log has the path and status but not the model, so without it "did that
       // agent really run on the foreign model?" cannot be answered from
       // evidence.
       log: (line) => console.log(line),
+      // Config is re-read per call (not the `config`/`native` closed over
+      // above) so a tier edit in sonata.toml takes effect without a restart.
+      resolveTier: (alias) => resolveTierAlias(loadConfig(opts.cwd, opts.home), alias),
+      // Fire-and-forget, called on every litellm-bound request (direct model
+      // calls and each tier candidate alike) — not just tier resolution,
+      // since a direct `--model <key>` request for a newly added native-only
+      // model never calls `resolveTier` at all. The request that triggers
+      // this still awaits the current readiness gate below before reaching
+      // litellm, so a config-triggered restart is awaited without making
+      // this check itself asynchronous.
+      checkModelChange: () => {
+        const freshConfig = loadConfig(opts.cwd, opts.home);
+        void maybeRestartForModelChange(freshConfig).catch((error) => {
+          console.error(`sonata serve: model-registry restart check failed: ${String(error)}`);
+        });
+      },
+      litellmReady: () => litellmReady,
     });
 
     try {
@@ -363,13 +602,19 @@ export async function cmdServe(
     }
     recordRouterPid(opts.home, process.pid);
   } catch (error) {
+    // Suppress the respawn watcher before killing the child — otherwise its
+    // `exit` handler schedules a respawn against `configPath`, which the
+    // `rmSync` below is about to delete, producing a doomed child spawned
+    // after this whole call has already thrown.
+    stopping = true;
     child?.kill();
     rmSync(tempDir, { force: true, recursive: true });
     throw error;
   }
 
-  // Both are assigned by the time the try block completes; the catch rethrows.
-  const startedChild = child as { pid: number; kill(): void };
+  // Router is assigned by the time the try block completes; the catch rethrows.
+  // `child` is read fresh in `stop()` below (not frozen here) because a respawn
+  // can replace it after this point.
   const startedRouter = router as ReturnType<typeof createRouterServer>;
 
   const address = startedRouter.address();
@@ -382,7 +627,8 @@ export async function cmdServe(
     async stop(): Promise<void> {
       if (stopped) return;
       stopped = true;
-      startedChild.kill();
+      stopping = true;
+      child?.kill();
       try { unlinkSync(serveStatePath(opts.home)); } catch { /* already gone */ }
       try {
         await close(startedRouter);
@@ -424,6 +670,7 @@ export async function startServeDaemon(
   home: string,
   argv: string[],
   deps: DaemonDeps = {},
+  cwd: string = process.cwd(),
 ): Promise<DaemonResult> {
   const spawnFn = deps.spawn ?? spawn;
   const probe = deps.probe ?? ((port: number) => isSonataRouter(port));
@@ -431,7 +678,7 @@ export async function startServeDaemon(
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const timeoutMs = deps.timeoutMs ?? 60_000;
 
-  const config = loadConfig(process.cwd(), home);
+  const config = loadConfig(cwd, home);
   if (!config.native) throw new Error('sonata serve: no [native] table');
   const port = config.native.ports.router;
 
@@ -439,9 +686,16 @@ export async function startServeDaemon(
   mkdirSync(dirname(logPath), { recursive: true });
   const log = openSync(logPath, 'a');
 
+  // Explicit, not inherited: a daemon started to serve *every* project
+  // (`route on/auto --global`) must not bind itself to whichever project's
+  // session happened to trigger it first — the router is a single process,
+  // so its config has to be the one every routed project actually shares.
+  // The caller passes `home` here for that case (see route.ts); a plain
+  // `sonata serve --daemon` keeps inheriting the shell's own cwd.
   const child = spawnFn(argv[0], argv.slice(1), {
     detached: true,
     stdio: ['ignore', log, log],
+    cwd,
   });
   child.unref();
 
@@ -496,15 +750,10 @@ export interface StopResult {
  * the OS, which could belong to an unrelated process reusing the port after
  * a previous sonata instance already exited.
  *
- * The recorded router pid is `process.pid` of whichever process called
- * `cmdServe` last and won the bind — a foreground/daemon `sonata serve`, or
- * an in-process router started inside `sonata mcp` by an earlier native
- * dispatch (`src/commands/run.ts` calls `cmdServe` the same way). Killing
- * that pid in the second case ends the `sonata mcp` process it lives in,
- * which drops that session's MCP connection until Claude Code reconnects —
- * the same trade `occupiedPortMessage` already describes as "restart Claude
- * Code to retire it". `restart` makes that trade explicitly instead of
- * leaving a stale router unreachable forever.
+ * The recorded router pid is `process.pid` of the process that called
+ * `cmdServe` and won the bind. Killing it is intentional: `sonata restart`
+ * makes the lifecycle trade explicit instead of leaving a stale router
+ * unreachable forever.
  */
 export async function stopServe(
   opts: { cwd: string; home: string } & StopDeps,
@@ -524,8 +773,7 @@ export async function stopServe(
     throw new Error(
       `sonata restart: router port ${port} answers as a sonata router, but no recorded pid for it ` +
       `was found in ${serveStatePath(opts.home)} — it may have been started by a different sonata ` +
-      'install or an older version. Kill it by hand (or restart Claude Code, if it is MCP-hosted), ' +
-      'then run `sonata serve --daemon`.',
+      'install or an older version. Kill it by hand, then run `sonata serve --daemon`.',
     );
   }
 
@@ -561,7 +809,7 @@ export async function stopServe(
 /**
  * Stops whatever router currently holds the configured port, then starts a
  * fresh daemon in its place. The two-step split — rather than one call that
- * always wins the bind — exists so a stale MCP-hosted router or a daemon left
+ * always wins the bind — exists so a stale in-process router or a daemon left
  * over from a previous build gets cleared out first: `startServeDaemon` alone
  * just times out with "the daemon did not answer" against `EADDRINUSE`,
  * which reads as a startup failure rather than the actual cause.
