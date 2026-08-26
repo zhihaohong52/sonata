@@ -340,9 +340,12 @@ export function reconcileTierList(
   saved: string[] | undefined,
   validKeys: ReadonlySet<string>,
   fallback: string[],
+  added: readonly string[] = [],
 ): string[] {
   const kept = (saved ?? []).filter((key) => validKeys.has(key));
-  return kept.length > 0 ? kept : fallback;
+  if (kept.length === 0) return fallback;
+  const extra = added.filter((key) => validKeys.has(key) && !kept.includes(key));
+  return [...kept, ...extra];
 }
 
 export function deriveInitState(
@@ -848,23 +851,24 @@ async function runInit(
     credentialSources = result.state.credentialSources ?? {};
     nativeKeys = result.state.nativeKeys ?? [];
     roles = result.state.roles ?? [...KNOWN_ROLES];
-    {
-      const validTierKeys = new Set([...nativeKeys, ...Object.keys(migratedModels)]);
-      const catalog = loadAaCatalog(opts.home);
-      tiers = Object.fromEntries(roles.map((role) => {
-        const proposal = proposeTiers(nativeKeys, catalog);
-        const saved = result.state.tiers?.[role];
-        return [role, {
-          simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple),
-          complex: reconcileTierList(saved?.complex, validTierKeys, proposal.complex),
-        }];
-      }));
-    }
-    chosenNative = nativeKeys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined);
     // Reconciled against the roles and models actually selected: the wizard's
     // per-role map starts from the existing config, so iterating *it* rather
     // than `roles` kept a role the user had just deselected.
     const savedNativeKeys = initialStateByScope[configScope]?.nativeKeys ?? [];
+    {
+      const validTierKeys = new Set([...nativeKeys, ...Object.keys(migratedModels)]);
+      const catalog = loadAaCatalog(opts.home);
+      const addedKeys = nativeKeys.filter((key) => !savedNativeKeys.includes(key));
+      tiers = Object.fromEntries(roles.map((role) => {
+        const proposal = proposeTiers(nativeKeys, catalog);
+        const saved = result.state.tiers?.[role];
+        return [role, {
+          simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple, addedKeys),
+          complex: reconcileTierList(saved?.complex, validTierKeys, proposal.complex, addedKeys),
+        }];
+      }));
+    }
+    chosenNative = nativeKeys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined);
     nativeRoleModels = Object.fromEntries(
       Object.entries(reconcilePerRoleModels(result.state.perRoleModels, savedNativeKeys, nativeKeys, roles))
         .map(([role, keys]) => [
@@ -988,12 +992,13 @@ async function runInit(
     {
       const validTierKeys = new Set([...nativeKeys, ...Object.keys(migratedModels)]);
       const catalog = loadAaCatalog(opts.home);
+      const addedKeys = nativeKeys.filter((key) => !(d.nativeKeys ?? []).includes(key));
       tiers = Object.fromEntries(roles.map((role) => {
         const proposal = proposeTiers(nativeKeys, catalog);
         const saved = d.tiers?.[role];
         return [role, {
-          simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple),
-          complex: reconcileTierList(saved?.complex, validTierKeys, proposal.complex),
+          simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple, addedKeys),
+          complex: reconcileTierList(saved?.complex, validTierKeys, proposal.complex, addedKeys),
         }];
       }));
     }

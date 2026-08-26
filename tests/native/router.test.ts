@@ -159,14 +159,19 @@ describe('tier alias routing', () => {
     expect(body.error.message).toContain('--task-file');
   });
 
-  it('returns 400 for an alias the config does not resolve', async () => {
+  it('forwards a sonata- model the config does not resolve to the ordinary path', async () => {
+    // A `sonata-` prefix alone is not a tier alias: unless resolveTier returns
+    // a rank for the name, the model must fall through to the ordinary
+    // litellm/anthropic path rather than being answered 400. A native model
+    // key could legitimately begin `sonata-`.
+    const rec: any[] = [];
     const res = await routeRequest(req('sonata-nope-simple'), {
-      fetch: (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch,
+      fetch: fakeFetch(rec),
       litellmBase: 'http://litellm', litellmKey: 'k',
       resolveTier: () => undefined,
     });
-    expect(res.status).toBe(400);
-    expect((res.body as Buffer).toString()).toContain('sonata sync');
+    expect(res.status).toBe(200);
+    expect(rec[0].url).toBe('http://litellm/v1/messages');
   });
 
   it('4xx from upstream is returned, not retried — our bug, not their outage', async () => {

@@ -587,11 +587,10 @@ router = 4100
     }
   });
 
-  it('recognizes global auto routing against the machine config\'s port, not the project\'s own', async () => {
-    // A project's own [native.ports].router can differ from the machine
-    // config's — the check must compare the global settings against the
-    // machine config's port and the global-scope auto hook command, not the
-    // project's port and a project-scope hook command that was never installed.
+  it('global-auto routing does not satisfy tier routing for a project with its own config', async () => {
+    // A project with its own sonata.toml is not the machine config, so global
+    // routing resolves a different, unrelated configuration — the check must
+    // refuse to count it, leaving only project-scoped routing acceptable.
     const cwd = mkdtempSync(join(tmpdir(), 'doc-tier-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-tier-home-'));
     writeFileSync(join(cwd, 'sonata.toml'), `
@@ -609,6 +608,39 @@ complex = ["flash"]
 [native.ports]
 router = 5100
 `);
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+
+[native.ports]
+router = 4200
+`);
+    await cmdRoute('auto', { cwd, home, packageRoot: '/pkg', scope: 'global' });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home, packageRoot: '/pkg' });
+      expect(checks.find((x) => x.name === 'tier routing')?.ok).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('global-auto routing satisfies tier routing when the project falls back to the machine config', async () => {
+    // No project-scoped sonata.toml: the project's config resolution IS the
+    // machine config, so global routing genuinely serves this project and the
+    // check may count it.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-tier-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-tier-home-'));
     mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
     writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), `
 [models."flash"]

@@ -131,7 +131,17 @@ export async function cmdDoctor(
     // [native.ports].router differs from the machine's would otherwise be
     // checked against the wrong port for the global case.
     let globalConfig = config;
-    try { globalConfig = loadConfig(home, home); } catch { /* no machine config; fall through below finds nothing routed */ }
+    try {
+      const globalPath = configPath(home, home);
+      // Load the machine config directly by its own resolved path, not by
+      // treating `home` as a project cwd — `configPath(home, home)` can
+      // still resolve to a stray `~/sonata.toml` rather than
+      // `~/.config/sonata/sonata.toml` if one happens to exist, and that
+      // is not the file the global router actually runs.
+      if (globalPath === join(home, GLOBAL_CONFIG_RELATIVE)) {
+        globalConfig = loadConfig(home, home);
+      }
+    } catch { /* no machine config; fall through below finds nothing routed */ }
 
     // Presence alone isn't enough: a base URL left over from a since-changed
     // [native.ports].router points a session at a port nothing is listening
@@ -141,7 +151,14 @@ export async function cmdDoctor(
       return (routerUrl !== undefined && routeEnv(settings).ANTHROPIC_BASE_URL === routerUrl) ||
         (opts.packageRoot !== undefined && autoInstalled(settings, opts.packageRoot, scope));
     };
-    const routed = routedAt(projectSettings, config, 'project') || routedAt(globalSettings, globalConfig, 'global');
+    // Global routing only actually serves this project if the project's own
+    // config resolution already IS the machine config (no project-scoped
+    // sonata.toml exists) — otherwise a project with its own config needs
+    // project-scoped routing specifically; global routing there silently
+    // resolves a different, unrelated configuration.
+    const projectResolvesToMachineConfig = configPath(opts.cwd, home) === configPath(home, home);
+    const routed = routedAt(projectSettings, config, 'project') ||
+      (projectResolvesToMachineConfig && routedAt(globalSettings, globalConfig, 'global'));
     if (!routed) {
       checks.push({
         name: 'tier routing',
@@ -396,7 +413,7 @@ export async function cmdDoctor(
 
   const staleMcp = staleMcpRegistration(opts.cwd, home);
   if (staleMcp !== undefined) {
-    checks.push({ name: 'stale MCP registration', ok: true, detail: staleMcp });
+    checks.push({ name: 'stale MCP registration', ok: false, detail: staleMcp });
   }
 
   const harnesses = new Set(Object.values(config.models).map((m) => m.harness));

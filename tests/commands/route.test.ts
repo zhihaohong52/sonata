@@ -121,6 +121,25 @@ describe('global route scope', () => {
       env: { ANTHROPIC_BASE_URL: 'http://localhost:4200' },
     });
   });
+
+  it('global routing still reads the machine config when a stray ~/sonata.toml exists', async () => {
+    // A stray `~/sonata.toml` is config-looking but governs nothing; the
+    // global router resolves `~/.config/sonata/sonata.toml`. Loading the
+    // machine config by treating `home` as a project cwd (`configPath(home,
+    // home)`) would prefer the stray file, so global routing must read the
+    // machine path directly instead of baking the stray port into settings.
+    writeFileSync(join(home, 'sonata.toml'), NATIVE_TOML.replace(
+      '[native.gateways."g"]', '[native.ports]\nrouter = 5100\n[native.gateways."g"]',
+    ));
+    writeMachineConfig(NATIVE_TOML.replace(
+      '[native.gateways."g"]', '[native.ports]\nrouter = 4200\n[native.gateways."g"]',
+    ));
+    const result = await cmdRoute('on', { cwd, home, packageRoot: PACKAGE_ROOT, scope: 'global' });
+    expect(result?.port).toBe(4200);
+    expect(JSON.parse(readFileSync(routeSettingsFile(cwd, 'global', home), 'utf8'))).toMatchObject({
+      env: { ANTHROPIC_BASE_URL: 'http://localhost:4200' },
+    });
+  });
 });
 
 describe('ensureServeCommand', () => {
@@ -290,6 +309,13 @@ describe('cmdRoute', () => {
     const opts = { cwd, home, packageRoot: PACKAGE_ROOT };
     await cmdRoute('off', opts);
     expect(existsSync(routeSettingsFile(cwd))).toBe(false);
+  });
+
+  it('auto rejects when the config does not load, instead of installing silently-broken hooks', async () => {
+    // No sonata.toml in cwd or home: `route auto` installs lifecycle hooks
+    // whose SessionEnd/SessionStart commands swallow their own load error, so
+    // the only loud failure is refusing up front.
+    await expect(cmdRoute('auto', { cwd, home, packageRoot: PACKAGE_ROOT })).rejects.toThrow();
   });
 });
 

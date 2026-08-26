@@ -40,7 +40,7 @@ import {
   deriveInitState, configNativeCandidates, oauthProvidersFor,
   type NativeCandidate,
 } from '../src/commands/init.js';
-import { reconcilePerRoleModels } from '../src/commands/init.js';
+import { reconcilePerRoleModels, reconcileTierList } from '../src/commands/init.js';
 import { providersForHarnesses } from '../src/tui-ink/app-state.js';
 import { readSettings, writeSettings, installHook, hookCommand } from '../src/settings.js';
 import { writeSonataKey } from '../src/native/credentials.js';
@@ -1244,6 +1244,27 @@ complex = ["opencode-deepseek-v4-flash"]
     expect(toml).toContain('[models."opencode-deepseek-v4-flash"]');
     expect(toml).toContain('[models."opencode-kimi-k3"]');
   });
+
+  it('appends a newly-added model to an existing [tiers] list on a scripted re-init', async () => {
+    await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
+      roles: ['code'], scope: 'skip', write,
+    });
+    // The first run has only deepseek-v4-flash in [tiers]. Adding kimi-k3 on
+    // the second run must append it to the existing non-empty list, not drop
+    // it — `reconcileTierList` used to keep the saved list verbatim.
+    await cmdInit({
+      cwd, home, packageRoot: '/pkg', yes: true, detect,
+      providers: ['opencode/opencode'],
+      models: ['opencode-deepseek-v4-flash', 'opencode-kimi-k3'],
+      roles: ['code'], scope: 'skip', write,
+    });
+    const cfg = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
+    expect(cfg.tiers!.code.simple).toContain('opencode-kimi-k3');
+    expect(cfg.tiers!.code.complex).toContain('opencode-kimi-k3');
+    expect(cfg.tiers!.code.simple).toContain('opencode-deepseek-v4-flash');
+  });
 });
 
 describe('deriveInitState', () => {
@@ -1890,5 +1911,24 @@ describe('reconcilePerRoleModels', () => {
 
   it('handles no saved state at all', () => {
     expect(reconcilePerRoleModels(undefined, [], ['a'], ['code'])).toEqual({ code: ['a'] });
+  });
+});
+
+describe('reconcileTierList', () => {
+  it('appends a newly-added model to an existing non-empty tier list', () => {
+    // The bug this exists for: re-seeding only from the saved list dropped a
+    // model the user had just added — `[tiers]` silently kept the old list.
+    expect(reconcileTierList(['a'], new Set(['a', 'b']), ['a'], ['b']))
+      .toEqual(['a', 'b']);
+  });
+
+  it('falls back to the proposal when nothing survives', () => {
+    expect(reconcileTierList(undefined, new Set(['a']), ['a'])).toEqual(['a']);
+    expect(reconcileTierList(['gone'], new Set(['a']), ['a'], ['b'])).toEqual(['a']);
+  });
+
+  it('does not duplicate an added model already in the saved list', () => {
+    expect(reconcileTierList(['a', 'b'], new Set(['a', 'b']), ['a'], ['a', 'b']))
+      .toEqual(['a', 'b']);
   });
 });

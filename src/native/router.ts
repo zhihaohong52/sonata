@@ -320,7 +320,7 @@ async function routeTierRequest(req: RouterRequest, deps: RouterDeps, alias: str
 
 export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promise<RouterResponse> {
   const alias = requestedModel(req.body);
-  if (alias !== undefined && alias.startsWith('sonata-')) {
+  if (alias !== undefined && alias.startsWith('sonata-') && deps.resolveTier?.(alias) !== undefined) {
     return routeTierRequest(req, deps, alias);
   }
 

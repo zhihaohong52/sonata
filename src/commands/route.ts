@@ -20,7 +20,7 @@ import { homedir } from 'node:os';
 
 import { readSettings, writeSettings, installHook, uninstallHook, hookInstalled } from '../settings.js';
 import type { Settings } from '../settings.js';
-import { configPath as resolveSonataConfigPath, loadConfig, type SonataConfig } from '../config.js';
+import { configPath as resolveSonataConfigPath, loadConfig, GLOBAL_CONFIG_RELATIVE, parseConfig, type SonataConfig } from '../config.js';
 import { nativeSessionEnv } from './code.js';
 import { isSonataRouter, sonataRouterConfigPath, startServeDaemon } from './serve.js';
 
@@ -431,16 +431,32 @@ export async function cmdRoute(
       return { config: { native: undefined } as SonataConfig, error: err };
     }
   };
+  const loadGlobalOrEmpty = (): { config: SonataConfig; error?: unknown } => {
+    const globalPath = join(opts.home, GLOBAL_CONFIG_RELATIVE);
+    try {
+      if (!existsSync(globalPath)) {
+        throw new Error(
+          `No sonata.toml found at ${globalPath}. Run \`sonata init\` or create one.`,
+        );
+      }
+      return { config: parseConfig(readFileSync(globalPath, 'utf8')) };
+    } catch (err) {
+      return { config: { native: undefined } as SonataConfig, error: err };
+    }
+  };
   // Global routing is one shared router that always resolves the *machine*
   // config, regardless of which project's session manages it — checking the
   // invoking project's config here would bake that project's router port
   // into ANTHROPIC_BASE_URL even though the daemon (per bd72ec4) resolves the
   // machine config, pointing settings at a port the daemon never opens.
   const projectLoaded = loadOrEmpty(opts.cwd);
-  const globalLoaded = loadOrEmpty(opts.home);
+  const globalLoaded = loadGlobalOrEmpty();
   const active = scope === 'global' ? globalLoaded : projectLoaded;
-  // route off/status can still describe a broken config; route on needs it.
-  if (action === 'on' && active.error !== undefined) throw active.error;
+  // route off/status can still describe a broken config; route on and auto
+  // both install something that depends on the config actually loading —
+  // auto's failure mode is silent (its hook swallows cmdRouteSession's own
+  // load error by design), so catching it here, loudly, is the only chance.
+  if ((action === 'on' || action === 'auto') && active.error !== undefined) throw active.error;
   const config = projectLoaded.config;
   const globalConfig = globalLoaded.config;
   const activeConfig = active.config;
