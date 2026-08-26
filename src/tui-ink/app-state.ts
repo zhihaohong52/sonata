@@ -231,6 +231,21 @@ export function configuredProviderNames(providerKeys: readonly string[], provide
     .filter((name): name is string => name !== undefined);
 }
 
+/**
+ * Which of the "Import from other harnesses" candidates are already stored
+ * — by exact key, not by provider name. Two harnesses can list the same
+ * provider name (e.g. both opencode and Pi offering "google"); matching by
+ * name alone (as `configuredProviderNames` does, for other purposes where
+ * that's the right question) would mark every same-named row as
+ * already-imported regardless of which harness's key is actually stored —
+ * pre-ticking a harness the user never selected, every time the wizard
+ * runs, with no way to make it stick unticked.
+ */
+export function alreadyImportedKeys(providerKeys: readonly string[], importable: readonly ProviderOption[]): Set<string> {
+  const stored = new Set(providerKeys);
+  return new Set(importable.filter((provider) => stored.has(provider.key)).map((provider) => provider.key));
+}
+
 export function validateCustomProviderName(name: string, existingNames: readonly string[]): string | undefined {
   const trimmed = name.trim();
   if (trimmed === '') return 'A name is required.';

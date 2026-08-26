@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  alreadyImportedKeys,
   applyStep,
   byokProviderKey,
   byokProviderName,
@@ -244,6 +245,35 @@ describe('configuredProviderNames', () => {
 
   it('drops a key matching neither', () => {
     expect(configuredProviderNames(['config/ghost'], providers)).toEqual([]);
+  });
+});
+
+describe('alreadyImportedKeys', () => {
+  // Two harnesses can list the same provider NAME — a hand-configured or
+  // opencode-imported "google" gateway, and Pi's own catalogue also
+  // offering "google" as a separate importable row with a different key.
+  const importable: ProviderOption[] = [
+    { key: 'opencode/google', harness: 'opencode', provider: 'google', count: 1 },
+    { key: 'pi/google', harness: 'pi', provider: 'google', count: 1 },
+  ];
+
+  it('pre-ticks only the row whose exact key is stored, not every same-named row', () => {
+    // The bug this exists for: matching by provider name alone (as
+    // `configuredProviderNames` does, for other callers where that is the
+    // right question) pre-ticked Pi's row too, even though only opencode's
+    // key was ever stored — reappearing on every wizard run with no way to
+    // make it stick unticked.
+    expect(alreadyImportedKeys(['opencode/google'], importable)).toEqual(new Set(['opencode/google']));
+  });
+
+  it('pre-ticks nothing when the stored key belongs to a harness not shown here', () => {
+    expect(alreadyImportedKeys(['config/google'], importable)).toEqual(new Set());
+  });
+
+  it('pre-ticks both rows when both keys are genuinely stored', () => {
+    expect(alreadyImportedKeys(['opencode/google', 'pi/google'], importable)).toEqual(
+      new Set(['opencode/google', 'pi/google']),
+    );
   });
 });
 
