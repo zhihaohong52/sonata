@@ -418,15 +418,7 @@ describe('planRouteAuto / planRouteManual', () => {
 
 describe('cmdRouteSession', () => {
   /** Never probes or spawns: the router's real state is irrelevant to counting. */
-  const settles: string[][] = [];
-  const deps = {
-    probe: async () => true,
-    startDaemon: async () => ({}),
-    // Captured rather than spawned: a real detached settle would outlive the
-    // test and clean the settings file underneath the next one.
-    scheduleSettle: (argv: string[]) => { settles.push(argv); },
-  };
-  beforeEach(() => { settles.length = 0; });
+  const deps = { probe: async () => true, startDaemon: async () => ({}) };
 
   function opts() {
     writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
@@ -456,49 +448,6 @@ describe('cmdRouteSession', () => {
     const last = await cmdRouteSession('end', 's2', o, deps);
     expect(last.routing).toBe('off');
     expect((await cmdRoute('status', o))?.on).toBe(false);
-  });
-
-  it('schedules a settle on every session start, so the file does not stay dirty', async () => {
-    const o = opts();
-    await cmdRouteSession('start', 's1', o, deps);
-
-    expect(settles).toHaveLength(1);
-    expect(settles[0]).toEqual(['node', 'cli.js', 'route', 'session-settle']);
-  });
-
-  it('marks the settle global when the session is global-scoped', async () => {
-    const o = { ...opts(), scope: 'global' as const };
-    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
-    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), NATIVE_TOML);
-
-    await cmdRouteSession('start', 's1', o, deps);
-
-    expect(settles[0]).toContain('--global');
-  });
-
-  it('settle cleans the settings file but leaves live sessions registered', async () => {
-    const o = opts();
-    await cmdRouteSession('start', 's1', o, deps);
-    await cmdRouteSession('start', 's2', o, deps);
-    expect((await cmdRoute('status', o))?.on).toBe(true);
-
-    await cmdRoute('settle', o);
-
-    // The next session now launches clean and keeps Remote Control...
-    expect((await cmdRoute('status', o))?.on).toBe(false);
-    // ...while the two live sessions are still tracked, so their own
-    // SessionEnd hooks still find their ids. Un-routing them is safe: a
-    // session latches the env and keeps routing without it.
-    expect(readSessions(routeSessionsFile(cwd, 'project', home))).toEqual(['s1', 's2']);
-  });
-
-  it('route off still clears the registry, unlike settle', async () => {
-    const o = opts();
-    await cmdRouteSession('start', 's1', o, deps);
-
-    await cmdRoute('off', o);
-
-    expect(readSessions(routeSessionsFile(cwd, 'project', home))).toEqual([]);
   });
 
   it('does not double-register a repeated session id', async () => {

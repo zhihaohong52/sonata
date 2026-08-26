@@ -21,7 +21,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove } from './commands/auth.js';
 import { cmdServe, cmdRestart, startServeDaemon } from './commands/serve.js';
 import { cmdCode } from './commands/code.js';
-import { cmdRoute, cmdRouteSession, ROUTE_SETTLE_MS, type RouteAction } from './commands/route.js';
+import { cmdRoute, cmdRouteSession, type RouteAction } from './commands/route.js';
 import { cmdCatalogUpdate } from './commands/catalog.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
 
@@ -468,19 +468,6 @@ export async function main(argv: string[]): Promise<number> {
       return 0;
     }
 
-    // Also not a surface for people: `session-start` schedules this as a
-    // detached grandchild, which waits for the session to latch the routing
-    // env and then takes it back out of the settings file so the next session
-    // launches clean and keeps Remote Control.
-    if (action === 'session-settle') {
-      const flag = rest.indexOf('--delay-ms');
-      const delay = flag === -1 ? ROUTE_SETTLE_MS : Number(rest[flag + 1]);
-      if (!Number.isFinite(delay) || delay < 0) throw new Error('sonata route session-settle: --delay-ms must be a non-negative number');
-      await new Promise((resolve) => setTimeout(resolve, delay));
-      await cmdRoute('settle', opts);
-      return 0;
-    }
-
     if (!action || !['on', 'off', 'status', 'auto', 'manual'].includes(action)) {
       throw new Error('sonata route requires one of: on | off | status | auto | manual');
     }
@@ -496,8 +483,8 @@ export async function main(argv: string[]): Promise<number> {
         console.log(`  scopes: ${active.length > 0 ? active.join(', ') : 'none'}`);
       }
       if (status.auto) {
-        console.log('  auto:   on — each session routes itself at start, then cleans the settings file');
-        console.log('          (every session keeps Remote Control: each launches before routing is written)');
+        console.log('  auto:   on — each session routes itself at start and un-routes at end');
+        console.log('          (sessions keep Remote Control: they launch before routing is written)');
         if (status.sessions > 0) console.log(`  live:   ${status.sessions} routed session(s)`);
       } else if (action === 'manual') {
         console.log('  auto:   off — routing is whatever `sonata route on|off` last set');
