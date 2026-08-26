@@ -255,8 +255,8 @@ export async function cmdDoctor(
           name: 'route auto',
           ok: true,
           detail: live === 0
-            ? 'each session routes itself at start and un-routes at end; none live now'
-            : `${live} session(s) routed; routing stays on until the last one ends`,
+            ? 'each session routes itself at start, then cleans the settings file; none live now'
+            : `${live} session(s) routed; the settings file is cleaned after each start`,
         });
       }
     }
