@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/) informally
 (pre-1.0, so minor bumps can carry breaking changes).
 
-## [0.2.0]
+## [0.2.0] - 2026-08-25
 
 Tier routing: agents are now generated per role × difficulty tier, backed by
 a ranked model list the native router tries in order — with a CLI fallback
@@ -112,24 +112,24 @@ same change:
   schedule a doomed LiteLLM respawn against a temp directory the same
   cleanup had just deleted.
 
-## [0.1.0]
+## [0.1.0] - 2026-08-25
 
 `sonata route auto|manual` — no-wrapper native routing that keeps Remote
 Control, the first user-facing feature since 0.0.3.
 
-## [0.0.3]
+## [0.0.3] - 2026-08-24
 
 Documents the "Import from other harnesses" screen doubling as an unimport
 toggle. Native-path work (subagent-model dispatch through a local routing
 proxy) landed in this cycle.
 
-## [0.0.2]
+## [0.0.2] - 2026-08-23
 
 Per-gateway credential sources: `sonata auth login <gateway>` drives
 LiteLLM's own device-login flow as a subprocess; `sonata init`/`sonata doctor`
 ask and report where each gateway's credential comes from.
 
-## [0.0.1]
+## [0.0.1] - 2026-08-11
 
 First tagged release. Foreign-model subagents for Claude Code: dispatch a
 subagent backed by OpenCode, Codex, or Pi through the ordinary Agent tool.
