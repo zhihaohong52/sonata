@@ -760,6 +760,113 @@ litellm = 43117
     expect(forceKillCalls).toBe(1);
     expect(spawnCount).toBe(2);
   });
+
+  it('retries the restart on the next request after a failed one, instead of marking the change handled', async () => {
+    // A gateway added with `credential_source = "sonata"` but no key stored
+    // yet makes buildChildEnv throw. If the model snapshot were committed
+    // before that point, a later request — after the credential is fixed —
+    // would see no difference from the (already-updated) snapshot and skip
+    // the restart forever, leaving the new model unreachable short of a
+    // manual `sonata restart`.
+    writeSonataKey(home, 'acme', 'acme-key');
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."first"]
+gateway = "acme"
+id = "first-upstream"
+context_window = 128000
+
+[tiers.code]
+simple = ["first"]
+complex = ["first"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43116
+`);
+
+    let spawnCount = 0;
+    const configs: string[] = [];
+    const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: (configPath) => {
+        spawnCount += 1;
+        configs.push(readFileSync(configPath, 'utf8'));
+        return {
+          pid: spawnCount,
+          kill: () => exits[spawnCount - 1]?.forEach((cb) => cb(null, 'SIGTERM')),
+          onExit: (cb) => { (exits[spawnCount - 1] ??= []).push(cb); },
+        };
+      },
+    });
+    handles.push(handle);
+    expect(spawnCount).toBe(1);
+
+    const configWithNewGateway = `
+[models."first"]
+gateway = "acme"
+id = "first-upstream"
+context_window = 128000
+
+[models."second"]
+gateway = "newgw"
+id = "second-upstream"
+context_window = 128000
+
+[tiers.code]
+simple = ["second"]
+complex = ["second"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.gateways."newgw"]
+base_url = "https://newgw.example/v1"
+credential_source = "sonata"
+
+[native.ports]
+router = 0
+litellm = 43116
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), configWithNewGateway);
+
+    const firstAttempt = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    // "newgw" has no stored key yet, so the restart's buildChildEnv step
+    // throws internally (logged, not surfaced) and no restart happens —
+    // the request still resolves the "second" tier candidate fine (config
+    // parsing doesn't require the credential to exist) and fails the same
+    // way any candidate with nothing listening does.
+    expect(firstAttempt.status).toBe(529);
+    expect(spawnCount).toBe(1);
+
+    writeSonataKey(home, 'newgw', 'new-key');
+    const secondAttempt = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    expect(secondAttempt.status).toBe(529);
+    // The one candidate ("second") is still cooling down from the first
+    // attempt's real connection failure, so this response returns without
+    // attempting a forward at all — the restart itself runs fire-and-forget
+    // from checkModelChange and is not on the response's critical path, so
+    // poll for it rather than assume it's finished the instant the response
+    // itself resolves.
+    const deadline = Date.now() + 2000;
+    while (spawnCount < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(spawnCount).toBe(2);
+    expect(configs[1]).toContain('second-upstream');
+  });
 });
 
 describe('cmdServe — codex-oauth gateways', () => {

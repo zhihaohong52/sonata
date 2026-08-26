@@ -473,11 +473,22 @@ export async function cmdServe(
       if (stopping) return;
       const freshModelsJson = JSON.stringify(freshConfig.unifiedModels);
       if (freshModelsJson === activeModelsJson) return;
-      activeModelsJson = freshModelsJson;
-      if (!freshConfig.native) return;
+      if (!freshConfig.native) {
+        activeModelsJson = freshModelsJson;
+        return;
+      }
+      // Only committed once the replacement config and credentials are
+      // successfully prepared below — not up front. A gateway added without
+      // its credential yet available makes `buildChildEnv` throw; if this
+      // were set before that point, a later request (after the credential is
+      // fixed) would see `freshModelsJson === activeModelsJson` and never
+      // retry, leaving the new model unreachable until a manual `sonata
+      // restart` or another edit. Left unset here, the next request's
+      // comparison still differs and tries the restart again.
       try {
         writeFileSync(configPath, litellmConfigYaml(freshConfig.native, masterKey, freshConfig.unifiedModels), { mode: 0o600 });
         childEnv = buildChildEnv(freshConfig.native, opts.home, tempDir);
+        activeModelsJson = freshModelsJson;
         console.error('sonata serve: model registry changed — restarting litellm to pick it up...');
         const oldChild = child;
         expectingConfigRestart = true;
