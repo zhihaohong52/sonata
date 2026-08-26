@@ -579,7 +579,20 @@ export async function cmdRouteSession(
   // probed here must be the same config's port, or a project whose own
   // [native.ports].router differs from the machine's would probe (and then
   // start the daemon on) the wrong port entirely.
-  const configCwd = opts.scope === 'global' ? opts.home : opts.cwd;
+  //
+  // Using the machine config's own DIRECTORY as `configCwd` — not `opts.home`
+  // itself — matters: configPath()'s first check is `join(cwd, 'sonata.toml')`,
+  // and if `cwd` were `opts.home`, that check would land on a stray
+  // `~/sonata.toml` (a known leftover some upgrades still have) before ever
+  // reaching the real machine config. Pointing `cwd` at the machine config's
+  // own directory makes that first check land exactly on
+  // `~/.config/sonata/sonata.toml` instead, with no stray file in the way —
+  // and since `startDaemon` below spawns the daemon with this same `cwd`,
+  // the daemon's own internal config resolution is fixed by the same change,
+  // with no separate fix needed in cmdServe.
+  const configCwd = opts.scope === 'global'
+    ? dirname(join(opts.home, GLOBAL_CONFIG_RELATIVE))
+    : opts.cwd;
   const config = loadConfig(configCwd, opts.home);
   const port = config.native?.ports.router;
   if (port !== undefined) {

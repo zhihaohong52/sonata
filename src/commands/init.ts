@@ -1206,7 +1206,8 @@ async function runInit(
       : `  · sonata tools already allow-listed in ${path}`);
   }
 
-  const skillPath = join(opts.cwd, '.claude', 'skills', 'sonata-loop', 'SKILL.md');
+  const skillBaseDir = configScope === 'global' ? opts.home : opts.cwd;
+  const skillPath = join(skillBaseDir, '.claude', 'skills', 'sonata-loop', 'SKILL.md');
   mkdirSync(dirname(skillPath), { recursive: true });
   const packageSkill = join(opts.packageRoot, 'skills', 'loop', 'SKILL.md');
   const skillSource = existsSync(packageSkill)

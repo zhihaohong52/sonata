@@ -472,7 +472,7 @@ describe('cmdRouteSession', () => {
     expect((await cmdRoute('status', o))?.on).toBe(false);
   });
 
-  it('starts a global-scope daemon from home, not the triggering project\'s cwd', async () => {
+  it('starts a global-scope daemon from the machine config directory, not the triggering project\'s cwd', async () => {
     const o = { ...opts(), scope: 'global' as const };
     writeMachineConfig(NATIVE_TOML);
     const seenCwds: (string | undefined)[] = [];
@@ -480,12 +480,35 @@ describe('cmdRouteSession', () => {
       probe: async () => false,
       startDaemon: async (_home, _argv, _deps, daemonCwd) => { seenCwds.push(daemonCwd); return {}; },
     });
-    expect(seenCwds).toEqual([home]);
+    expect(seenCwds).toEqual([join(home, '.config', 'sonata')]);
   });
 
   it('probes the machine config\'s port at global scope, not the invoking project\'s own', async () => {
     const o = { ...opts(), scope: 'global' as const };
     writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML.replace(
+      '[native.gateways."g"]', '[native.ports]\nrouter = 5100\n[native.gateways."g"]',
+    ));
+    writeMachineConfig(NATIVE_TOML.replace(
+      '[native.gateways."g"]', '[native.ports]\nrouter = 4200\n[native.gateways."g"]',
+    ));
+    const probedPorts: number[] = [];
+    await cmdRouteSession('start', 's1', o, {
+      probe: async (port) => { probedPorts.push(port); return true; },
+      startDaemon: async () => ({}),
+    });
+    expect(probedPorts).toEqual([4200]);
+  });
+
+  it('probes the machine config\'s port at global scope even when a stray ~/sonata.toml exists', async () => {
+    // A stray `~/sonata.toml` (a known leftover some upgrades produce) is
+    // config-looking but governs nothing: the global router resolves the real
+    // machine config at `~/.config/sonata/sonata.toml`. Resolving `configCwd`
+    // as `home` itself would make configPath()'s first `join(cwd, 'sonata.toml')`
+    // check land on the stray file and bake its 5100 port into the session
+    // start — so `configCwd` must be the machine config's own directory, whose
+    // first check lands on the real file instead.
+    const o = { ...opts(), scope: 'global' as const };
+    writeFileSync(join(home, 'sonata.toml'), NATIVE_TOML.replace(
       '[native.gateways."g"]', '[native.ports]\nrouter = 5100\n[native.gateways."g"]',
     ));
     writeMachineConfig(NATIVE_TOML.replace(

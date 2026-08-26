@@ -640,6 +640,15 @@ describe('cmdInit — config scope', () => {
     expect(existsSync(join(cwd, '.claude', 'agents'))).toBe(false);
   });
 
+  it('installs the loop skill under home at global scope, not in the invoking repo', async () => {
+    await cmdInit({ ...args, cwd, home, configScope: 'global', write });
+
+    const skillTarget = join(home, '.claude', 'skills', 'sonata-loop', 'SKILL.md');
+    expect(readFileSync(skillTarget, 'utf8'))
+      .toBe(readFileSync(join(process.cwd(), 'skills', 'loop', 'SKILL.md'), 'utf8'));
+    expect(existsSync(join(cwd, '.claude', 'skills', 'sonata-loop', 'SKILL.md'))).toBe(false);
+  });
+
   it('defaults to the project scope', async () => {
     const res = await cmdInit({ ...args, cwd, home, write });
     expect(res.configPath).toBe(join(cwd, 'sonata.toml'));
