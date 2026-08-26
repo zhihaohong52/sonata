@@ -1,0 +1,96 @@
+import { describe, expect, it } from 'vitest';
+import { createUsageCollector, usageFromJsonBody, MAX_SSE_BUFFER_BYTES } from '../../src/native/usage.js';
+
+const enc = (s: string) => new TextEncoder().encode(s);
+
+const START = 'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1632,"output_tokens":0,"cache_read_input_tokens":40,"cache_creation_input_tokens":7}}}\n\n';
+const DELTA = 'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":1632,"output_tokens":11}}\n\n';
+
+describe('createUsageCollector', () => {
+  it('merges input and cache counts from message_start with output from message_delta', () => {
+    const c = createUsageCollector();
+    c.push(enc(START));
+    c.push(enc(DELTA));
+    expect(c.finish()).toEqual({
+      tokens: { input: 1632, output: 11, cacheRead: 40, cacheCreation: 7 },
+      complete: true,
+    });
+  });
+
+  it('parses a frame split across chunk boundaries', () => {
+    const whole = START + DELTA;
+    const cut = whole.indexOf('"output_tokens":11') + 4; // mid-JSON, mid-line
+    const c = createUsageCollector();
+    c.push(enc(whole.slice(0, cut)));
+    c.push(enc(whole.slice(cut)));
+    expect(c.finish().tokens.output).toBe(11);
+  });
+
+  it('parses a frame split mid multi-byte character', () => {
+    const withText = `event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"text":"café"}}\n\n${DELTA}`;
+    const bytes = enc(withText);
+    const cut = withText.indexOf('café') + 4; // lands inside the 2-byte é
+    const c = createUsageCollector();
+    c.push(bytes.slice(0, cut));
+    c.push(bytes.slice(cut));
+    expect(c.finish().tokens.output).toBe(11);
+  });
+
+  it('reports incomplete when no message_delta arrives', () => {
+    const c = createUsageCollector();
+    c.push(enc(START));
+    const res = c.finish();
+    expect(res.complete).toBe(false);
+    expect(res.tokens.input).toBe(1632);
+  });
+
+  it('reports incomplete and zeroed for an empty stream', () => {
+    expect(createUsageCollector().finish()).toEqual({
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+      complete: false,
+    });
+  });
+
+  it('ignores malformed data lines rather than throwing', () => {
+    const c = createUsageCollector();
+    c.push(enc('data: {not json\n\n'));
+    c.push(enc(DELTA));
+    expect(c.finish().tokens.output).toBe(11);
+  });
+
+  it('drops a pathological unterminated line instead of growing without bound', () => {
+    const c = createUsageCollector();
+    c.push(enc(`data: ${'x'.repeat(MAX_SSE_BUFFER_BYTES + 10)}`));
+    c.push(enc(`\n\n${DELTA}`));
+    // The oversized line is discarded, but the collector keeps working after it.
+    expect(c.finish().tokens.output).toBe(11);
+  });
+
+  it('takes the last message_delta when several arrive', () => {
+    const c = createUsageCollector();
+    c.push(enc(DELTA));
+    c.push(enc('event: message_delta\ndata: {"type":"message_delta","usage":{"input_tokens":1632,"output_tokens":99}}\n\n'));
+    expect(c.finish().tokens.output).toBe(99);
+  });
+});
+
+describe('usageFromJsonBody', () => {
+  it('reads usage from a non-streaming response body', () => {
+    const body = Buffer.from(JSON.stringify({
+      type: 'message',
+      usage: { input_tokens: 12, output_tokens: 3, cache_read_input_tokens: 1, cache_creation_input_tokens: 2 },
+    }));
+    expect(usageFromJsonBody(body)).toEqual({
+      tokens: { input: 12, output: 3, cacheRead: 1, cacheCreation: 2 },
+      complete: true,
+    });
+  });
+
+  it('reports incomplete for a body with no usage', () => {
+    expect(usageFromJsonBody(Buffer.from('{}')).complete).toBe(false);
+  });
+
+  it('reports incomplete for a non-JSON body', () => {
+    expect(usageFromJsonBody(Buffer.from('<html>503</html>')).complete).toBe(false);
+  });
+});
