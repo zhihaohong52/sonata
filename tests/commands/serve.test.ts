@@ -482,6 +482,69 @@ litellm = 43120
     expect(spawnCount).toBe(2);
   });
 
+  it('rebuilds the LiteLLM child environment when a new gateway is added', async () => {
+    const config = (includeOther: boolean) => `
+[models."first"]
+gateway = "acme"
+id = "first-upstream"
+context_window = 128000
+
+${includeOther ? `[models."second"]
+gateway = "other"
+id = "second-upstream"
+context_window = 128000
+` : ''}
+[tiers.code]
+simple = ["${includeOther ? 'second' : 'first'}"]
+complex = ["${includeOther ? 'second' : 'first'}"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+${includeOther ? `[native.gateways."other"]
+base_url = "https://other-gateway.example/v1"
+` : ''}
+[native.ports]
+router = 0
+litellm = 43122
+`;
+    writeSonataKey(home, 'acme', 'acme-key');
+    writeSonataKey(home, 'other', 'other-key');
+    writeFileSync(join(cwd, 'sonata.toml'), config(false));
+
+    const envs: NodeJS.ProcessEnv[] = [];
+    const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: (_configPath, env) => {
+        const index = envs.push({ ...env }) - 1;
+        return {
+          pid: index + 1,
+          kill: () => exits[index]?.forEach((cb) => cb(null, 'SIGTERM')),
+          onExit: (cb) => { (exits[index] ??= []).push(cb); },
+        };
+      },
+    });
+    handles.push(handle);
+    expect(envs[0]).toMatchObject({ SONATA_KEY_ACME: 'acme-key' });
+    expect(envs[0]).not.toHaveProperty('SONATA_KEY_OTHER');
+
+    writeFileSync(join(cwd, 'sonata.toml'), config(true));
+    const response = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+
+    expect(response.status).toBe(529);
+    expect(envs).toHaveLength(2);
+    expect(envs[1]).toMatchObject({
+      SONATA_KEY_ACME: 'acme-key',
+      SONATA_KEY_OTHER: 'other-key',
+    });
+  });
+
   it('waits for the old litellm child to exit before spawning its replacement', async () => {
     const config = (model: string) => `
 [models."${model}"]

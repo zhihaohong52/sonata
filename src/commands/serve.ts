@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unl
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { configPath as resolveSonataConfigPath, loadConfig, resolveTierAlias, type SonataConfig } from '../config.js';
+import { configPath as resolveSonataConfigPath, loadConfig, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
 import { codexAuthPath, opencodeAuthPath, readChatGptOAuth } from '../native/codex-auth.js';
 import { credentialDir } from '../native/oauth-login.js';
@@ -207,6 +207,93 @@ function defaultSpawnLitellm(configPath: string, env: NodeJS.ProcessEnv, port: n
   };
 }
 
+function buildChildEnv(native: NativeConfig, home: string, tempDir: string): NodeJS.ProcessEnv {
+  // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
+  const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
+  const automaticallyResolved = Object.entries(native.gateways)
+    .filter(([, gateway]) => gateway.auth !== 'api-key' || gateway.credentialSource === undefined)
+    .map(([name]) => name);
+  for (const { gateway, key } of resolveKeys(automaticallyResolved, home)) {
+    childEnv[envVarForGateway(gateway)] = key;
+  }
+  for (const [name, gateway] of Object.entries(native.gateways)) {
+    const source = gateway.credentialSource;
+    if (gateway.auth !== 'api-key' || (source !== 'sonata' && source !== 'opencode')) continue;
+    const key = resolveKeyFromSource(name, home, source);
+    if (key === undefined) {
+      throw new Error(
+        `sonata serve: gateway "${name}" takes its credential from ${source} but none was found — ` +
+        `run \`sonata auth add ${name}\` (for sonata) or check opencode's own credential store.`,
+      );
+    }
+    childEnv[envVarForGateway(name)] = key;
+  }
+
+  // A sonata-owned credential is already in LiteLLM's native format. Point
+  // directly at its persistent directory so LiteLLM's refresh survives serve.
+  const chatgptGateway = Object.entries(native.gateways)
+    .find(([, gateway]) => gateway.auth === 'codex-oauth');
+  if (chatgptGateway) {
+    const [name, gateway] = chatgptGateway;
+    if (gateway.credentialSource === 'sonata') {
+      const dir = credentialDir(home, name);
+      if (!existsSync(join(dir, 'auth.json'))) {
+        throw new Error(
+          `sonata serve: gateway "${name}" takes its credential from sonata but none is stored — ` +
+          `run \`sonata auth login ${name}\`.`,
+        );
+      }
+      childEnv.CHATGPT_TOKEN_DIR = dir;
+    } else {
+      const record = readChatGptOAuth(home, gateway.credentialSource);
+      if (record === null) {
+        throw new Error(
+          'sonata serve: a native gateway uses codex-oauth but no ChatGPT credential was found ' +
+          `in ${codexAuthPath(home)} or ${opencodeAuthPath(home)} — ` +
+          `run \`sonata auth login ${name}\`, or \`codex login\`.`,
+        );
+      }
+      const tokenDir = join(tempDir, 'chatgpt');
+      mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(tokenDir, 'auth.json'), JSON.stringify(record), { mode: 0o600 });
+      childEnv.CHATGPT_TOKEN_DIR = tokenDir;
+    }
+  }
+
+  // Copilot's api-key.json is refreshed and re-exchanged in place too, so a
+  // sonata-owned credential must likewise avoid the temporary directory.
+  const copilotGateway = Object.entries(native.gateways)
+    .find(([, gateway]) => gateway.auth === 'copilot-oauth');
+  if (copilotGateway) {
+    const [name, gateway] = copilotGateway;
+    if (gateway.credentialSource === 'sonata') {
+      const dir = credentialDir(home, name);
+      if (!existsSync(join(dir, 'api-key.json'))) {
+        throw new Error(
+          `sonata serve: gateway "${name}" takes its credential from sonata but none is stored — ` +
+          `run \`sonata auth login ${name}\`.`,
+        );
+      }
+      childEnv.GITHUB_COPILOT_TOKEN_DIR = dir;
+    } else {
+      const token = readCopilotToken(home);
+      if (token === null) {
+        throw new Error(
+          'sonata serve: a native gateway uses copilot-oauth but no Copilot login was found ' +
+          `in ${opencodeAuthPath(home)} — run \`sonata auth login ${name}\`, ` +
+          'or `opencode auth login` and choose github-copilot.',
+        );
+      }
+      const tokenDir = join(tempDir, 'copilot');
+      mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(tokenDir, 'access-token'), token, { mode: 0o600 });
+      childEnv.GITHUB_COPILOT_TOKEN_DIR = tokenDir;
+    }
+  }
+
+  return childEnv;
+}
+
 function listen(server: ReturnType<typeof createRouterServer>, port: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const onError = (error: Error) => {
@@ -283,88 +370,7 @@ export async function cmdServe(
     const configPath = join(tempDir, 'config.json');
     writeFileSync(configPath, litellmConfigYaml(native, masterKey, config.unifiedModels), { mode: 0o600 });
 
-    // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
-    const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
-    const automaticallyResolved = Object.entries(native.gateways)
-      .filter(([, gateway]) => gateway.auth !== 'api-key' || gateway.credentialSource === undefined)
-      .map(([name]) => name);
-    for (const { gateway, key } of resolveKeys(automaticallyResolved, opts.home)) {
-      childEnv[envVarForGateway(gateway)] = key;
-    }
-    for (const [name, gateway] of Object.entries(native.gateways)) {
-      const source = gateway.credentialSource;
-      if (gateway.auth !== 'api-key' || (source !== 'sonata' && source !== 'opencode')) continue;
-      const key = resolveKeyFromSource(name, opts.home, source);
-      if (key === undefined) {
-        throw new Error(
-          `sonata serve: gateway "${name}" takes its credential from ${source} but none was found — ` +
-          `run \`sonata auth add ${name}\` (for sonata) or check opencode's own credential store.`,
-        );
-      }
-      childEnv[envVarForGateway(name)] = key;
-    }
-
-    // A sonata-owned credential is already in LiteLLM's native format. Point
-    // directly at its persistent directory so LiteLLM's refresh survives serve.
-    const chatgptGateway = Object.entries(native.gateways)
-      .find(([, gateway]) => gateway.auth === 'codex-oauth');
-    if (chatgptGateway) {
-      const [name, gateway] = chatgptGateway;
-      if (gateway.credentialSource === 'sonata') {
-        const dir = credentialDir(opts.home, name);
-        if (!existsSync(join(dir, 'auth.json'))) {
-          throw new Error(
-            `sonata serve: gateway "${name}" takes its credential from sonata but none is stored — ` +
-            `run \`sonata auth login ${name}\`.`,
-          );
-        }
-        childEnv.CHATGPT_TOKEN_DIR = dir;
-      } else {
-        const record = readChatGptOAuth(opts.home, gateway.credentialSource);
-        if (record === null) {
-          throw new Error(
-            'sonata serve: a native gateway uses codex-oauth but no ChatGPT credential was found ' +
-            `in ${codexAuthPath(opts.home)} or ${opencodeAuthPath(opts.home)} — ` +
-            `run \`sonata auth login ${name}\`, or \`codex login\`.`,
-          );
-        }
-        const tokenDir = join(tempDir, 'chatgpt');
-        mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
-        writeFileSync(join(tokenDir, 'auth.json'), JSON.stringify(record), { mode: 0o600 });
-        childEnv.CHATGPT_TOKEN_DIR = tokenDir;
-      }
-    }
-
-    // Copilot's api-key.json is refreshed and re-exchanged in place too, so a
-    // sonata-owned credential must likewise avoid the temporary directory.
-    const copilotGateway = Object.entries(native.gateways)
-      .find(([, gateway]) => gateway.auth === 'copilot-oauth');
-    if (copilotGateway) {
-      const [name, gateway] = copilotGateway;
-      if (gateway.credentialSource === 'sonata') {
-        const dir = credentialDir(opts.home, name);
-        if (!existsSync(join(dir, 'api-key.json'))) {
-          throw new Error(
-            `sonata serve: gateway "${name}" takes its credential from sonata but none is stored — ` +
-            `run \`sonata auth login ${name}\`.`,
-          );
-        }
-        childEnv.GITHUB_COPILOT_TOKEN_DIR = dir;
-      } else {
-        const token = readCopilotToken(opts.home);
-        if (token === null) {
-          throw new Error(
-            'sonata serve: a native gateway uses copilot-oauth but no Copilot login was found ' +
-            `in ${opencodeAuthPath(opts.home)} — run \`sonata auth login ${name}\`, ` +
-            'or `opencode auth login` and choose github-copilot.',
-          );
-        }
-        const tokenDir = join(tempDir, 'copilot');
-        mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
-        writeFileSync(join(tokenDir, 'access-token'), token, { mode: 0o600 });
-        childEnv.GITHUB_COPILOT_TOKEN_DIR = tokenDir;
-      }
-    }
+    let childEnv = buildChildEnv(native, opts.home, tempDir);
 
     // A predecessor's orphaned litellm would hold the port and answer with the
     // wrong master key; kill it (recorded pid only) before spawning our own.
@@ -449,6 +455,7 @@ export async function cmdServe(
       if (!freshConfig.native) return;
       try {
         writeFileSync(configPath, litellmConfigYaml(freshConfig.native, masterKey, freshConfig.unifiedModels), { mode: 0o600 });
+        childEnv = buildChildEnv(freshConfig.native, opts.home, tempDir);
         console.error('sonata serve: model registry changed — restarting litellm to pick it up...');
         const oldChild = child;
         expectingConfigRestart = true;
