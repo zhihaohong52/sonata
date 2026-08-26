@@ -3,6 +3,7 @@
 **Foreign-model subagents for Claude Code.**
 
 [![ci](https://github.com/zhihaohong52/sonata/actions/workflows/ci.yml/badge.svg)](https://github.com/zhihaohong52/sonata/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/tag/zhihaohong52/sonata?label=release&sort=semver)](CHANGELOG.md)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
 
@@ -725,6 +726,10 @@ Issues and pull requests are welcome.
 - Prefer evidence to inference: if a change depends on how a harness behaves,
   say how you verified it. A captured fixture beats a plausible regex.
 - Keep harness-specific knowledge inside its adapter.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## License
 
