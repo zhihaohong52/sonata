@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -89,5 +89,26 @@ describe('sessions map', () => {
 
     // The old 'drop' row was pruned; 'keep' survived.
     expect(Object.keys(loadSessions(home)).sort()).toEqual(['keep']);
+  });
+
+  it('throws rather than returning empty when the lock cannot be acquired before the deadline', async () => {
+    const path = sessionsPath(home);
+    mkdirSync(dirname(path), { recursive: true });
+
+    // Simulate another process holding the lock past the 2s deadline.
+    const lockDir = `${path}.lock`;
+    mkdirSync(lockDir);
+
+    // 2s is the acquire deadline; the poll interval is 25ms.
+    vi.useFakeTimers();
+    try {
+      const recordPromise = recordSession(home, { session: 'b', cwd: '/repo/b', started: '2026-08-27T11:00:00.000Z' });
+      const expectation = expect(recordPromise).rejects.toThrow('timed out waiting for lock');
+      await vi.advanceTimersByTimeAsync(3000);
+      await expectation;
+    } finally {
+      vi.useRealTimers();
+      rmSync(lockDir, { recursive: true, force: true });
+    }
   });
 });

@@ -31,7 +31,9 @@ export async function withSessionLock<T>(file: string, fn: () => T | Promise<T>)
         const age = Date.now() - statSync(lock).mtimeMs;
         if (age > 5000) rmSync(lock, { recursive: true, force: true });
       } catch { /* raced with the holder releasing it */ }
-      if (Date.now() > deadline) break;
+      if (Date.now() > deadline) {
+        throw new Error(`sonata: timed out waiting for lock on ${file}`);
+      }
       await new Promise((r) => setTimeout(r, 25));
     }
   }
