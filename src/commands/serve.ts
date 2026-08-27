@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -66,6 +66,14 @@ export interface ServeDeps {
    * router. Tests inject this to capture rows without touching disk.
    */
   recordUsage?: (row: LedgerRow) => void;
+  /**
+   * Test seam for the id `cmdServe` reports on `/__sonata_health`. Production
+   * default reads `SONATA_SERVE_INSTANCE_ID` (set by `startServeDaemon` on the
+   * child it spawns) and falls back to a freshly generated id when neither is
+   * present — a foreground `sonata serve` with no daemon wrapper still needs
+   * one.
+   */
+  instanceId?: string;
 }
 
 /**
@@ -182,6 +190,24 @@ export async function sonataRouterConfigPath(
     const body = await response.json() as { sonata?: unknown; configPath?: unknown };
     if (body?.sonata !== true) return null;
     return typeof body.configPath === 'string' ? body.configPath : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The instance id a running sonata router reports on /__sonata_health, or null if the port isn't a sonata router (or reports none). */
+export async function sonataRouterInstanceId(
+  port: number,
+  doFetch: typeof fetch = fetch,
+): Promise<string | null> {
+  try {
+    const response = await doFetch(serveHealthUrl(port), {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!response.ok) return null;
+    const body = await response.json() as { sonata?: unknown; instanceId?: unknown };
+    if (body?.sonata !== true) return null;
+    return typeof body.instanceId === 'string' ? body.instanceId : null;
   } catch {
     return null;
   }
@@ -404,6 +430,7 @@ export async function cmdServe(
 
   const native = config.native;
   const masterKey = `sk-sonata-${randomBytes(32).toString('hex')}`;
+  const instanceId = opts.instanceId ?? process.env.SONATA_SERVE_INSTANCE_ID ?? randomUUID();
   const tempDir = opts.tempDir ?? mkdtempSync(join(tmpdir(), 'sonata-litellm-'));
   mkdirSync(tempDir, { recursive: true });
 
@@ -615,6 +642,7 @@ export async function cmdServe(
       // default port can tell this project's router apart from another
       // project's on the same port.
       configPath: resolveSonataConfigPath(opts.cwd, opts.home) ?? undefined,
+      instanceId,
       // Goes to serve's stdout, which --daemon captures to its log file. This
       // is the only record of which upstream served a request: litellm's access
       // log has the path and status but not the model, so without it "did that

@@ -18,6 +18,13 @@ export interface RouterDeps {
   health?: boolean;
   /** The resolved sonata.toml path this router instance is running with, reported on /__sonata_health so a caller can tell two same-port routers apart by which config actually started them. */
   configPath?: string;
+  /**
+   * A random id generated once per `cmdServe` invocation, reported on
+   * `/__sonata_health` so a caller that just spawned a daemon can tell its
+   * own freshly-bound instance apart from an older, stale router that
+   * happens to still be answering the same port.
+   */
+  instanceId?: string;
   /** Resolves a `sonata-<role>-<tier>` alias to its ranked routes, or undefined if unknown. */
   resolveTier?: (alias: string) => { role: string; tier: string; routes: TierRoute[] } | undefined;
   /**
@@ -581,7 +588,9 @@ export function createRouterServer(deps: RouterDeps): Server {
     try {
       if (deps.health && new URL(req.url ?? '/', 'http://localhost').pathname === '/__sonata_health') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok', sonata: true, configPath: deps.configPath ?? null }));
+        res.end(JSON.stringify({
+          status: 'ok', sonata: true, configPath: deps.configPath ?? null, instanceId: deps.instanceId ?? null,
+        }));
         return;
       }
       await respond(res, await routeRequest({

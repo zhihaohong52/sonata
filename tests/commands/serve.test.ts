@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 
 import {
   cmdServe, serveHealthUrl, type ServeHandle, isSonataRouter, occupiedPortMessage, startServeDaemon,
-  serveStatePath, stopServe, cmdRestart,
+  serveStatePath, stopServe, cmdRestart, sonataRouterInstanceId,
 } from '../../src/commands/serve.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
 import { clearCooldowns } from '../../src/native/router.js';
@@ -190,9 +190,51 @@ litellm = 4000
 
     const response = await fetch(serveHealthUrl(handle.routerPort));
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
+    const body = await response.json();
+    expect(body).toMatchObject({
       status: 'ok', sonata: true, configPath: join(cwd, 'sonata.toml'),
     });
+    expect(typeof body.instanceId).toBe('string');
+    expect(body.instanceId.length).toBeGreaterThan(0);
+  });
+
+  it('reads its instance id from the environment when set, for a daemon-spawned process', async () => {
+    const previous = process.env.SONATA_SERVE_INSTANCE_ID;
+    process.env.SONATA_SERVE_INSTANCE_ID = 'fixed-test-id';
+    try {
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(),
+        waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+      });
+      handles.push(handle);
+
+      const response = await fetch(serveHealthUrl(handle.routerPort));
+      const body = await response.json();
+      expect(body.instanceId).toBe('fixed-test-id');
+    } finally {
+      if (previous === undefined) delete process.env.SONATA_SERVE_INSTANCE_ID;
+      else process.env.SONATA_SERVE_INSTANCE_ID = previous;
+    }
+  });
+
+  it('generates its own instance id when neither the env var nor an injected one is present', async () => {
+    const previous = process.env.SONATA_SERVE_INSTANCE_ID;
+    delete process.env.SONATA_SERVE_INSTANCE_ID;
+    try {
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(),
+        waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+      });
+      handles.push(handle);
+
+      const response = await fetch(serveHealthUrl(handle.routerPort));
+      const body = await response.json();
+      expect(typeof body.instanceId).toBe('string');
+      expect(body.instanceId.length).toBeGreaterThan(0);
+    } finally {
+      if (previous === undefined) delete process.env.SONATA_SERVE_INSTANCE_ID;
+      else process.env.SONATA_SERVE_INSTANCE_ID = previous;
+    }
   });
 
   it('refuses to start when [native] is absent', async () => {
@@ -1206,6 +1248,23 @@ describe('isSonataRouter', () => {
     const notJson = (async () => new Response('<html>')) as unknown as typeof fetch;
     expect(await isSonataRouter(4100, ok)).toBe(true);
     expect(await isSonataRouter(4100, notJson)).toBe(false);
+  });
+});
+
+describe('sonataRouterInstanceId', () => {
+  it('resolves the instance id from the sonata health payload', async () => {
+    const ok = (async () =>
+      new Response(JSON.stringify({ status: 'ok', sonata: true, instanceId: 'abc-123' }))) as unknown as typeof fetch;
+    expect(await sonataRouterInstanceId(4100, ok)).toBe('abc-123');
+  });
+
+  it('returns null for a non-sonata or malformed response', async () => {
+    const notSonata = (async () => new Response(JSON.stringify({ status: 'ok' }))) as unknown as typeof fetch;
+    const notJson = (async () => new Response('<html>')) as unknown as typeof fetch;
+    const noId = (async () => new Response(JSON.stringify({ status: 'ok', sonata: true }))) as unknown as typeof fetch;
+    expect(await sonataRouterInstanceId(4100, notSonata)).toBeNull();
+    expect(await sonataRouterInstanceId(4100, notJson)).toBeNull();
+    expect(await sonataRouterInstanceId(4100, noId)).toBeNull();
   });
 });
 
