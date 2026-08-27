@@ -103,8 +103,8 @@ describe('appendRow / readRows', () => {
     const path = ledgerPathFor(home, new Date('2026-08-27T04:12:07.881Z'));
     // aggregate() dereferences price.source, so a null/malformed price must be
     // rejected here rather than throw downstream.
-    writeFileSync(path, `${readFileSync(path, 'utf8')}${JSON.stringify({ ts: '2026-08-27T05:55:00.000Z', alias: 'null-price', price: null })}\n`);
-    writeFileSync(path, `${readFileSync(path, 'utf8')}${JSON.stringify({ ts: '2026-08-27T05:56:00.000Z', alias: 'bad-price', price: { source: 'model' } })}\n`);
+    writeFileSync(path, `${readFileSync(path, 'utf8')}${JSON.stringify(row({ ts: '2026-08-27T05:55:00.000Z', alias: 'null-price', price: null }))}\n`);
+    writeFileSync(path, `${readFileSync(path, 'utf8')}${JSON.stringify(row({ ts: '2026-08-27T05:56:00.000Z', alias: 'bad-price', price: { source: 'model' } }))}\n`);
     const back = readRows(home, 0, Date.parse('2026-08-27T06:00:00Z'));
     expect(back).toHaveLength(1);
     expect(back[0].alias).toBe('sonata-code-simple');
