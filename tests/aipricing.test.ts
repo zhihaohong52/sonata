@@ -62,4 +62,22 @@ describe('loadAiPricing', () => {
     writeFileSync(aiPricingPath(home), JSON.stringify({ models: 'nope' }));
     expect(loadAiPricing(home)).toBeUndefined();
   });
+
+  it('returns undefined when a provider record is empty', () => {
+    mkdirSync(dirname(aiPricingPath(home)), { recursive: true });
+    writeFileSync(aiPricingPath(home), JSON.stringify({
+      fetchedAt: '2026-08-26T15:31:30.637Z',
+      models: { 'deepseek-v4-flash': { deepseek: {} } },
+    }));
+    expect(loadAiPricing(home)).toBeUndefined();
+  });
+
+  it('returns undefined when a rate value is not a number', () => {
+    mkdirSync(dirname(aiPricingPath(home)), { recursive: true });
+    writeFileSync(aiPricingPath(home), JSON.stringify({
+      fetchedAt: '2026-08-26T15:31:30.637Z',
+      models: { 'deepseek-v4-flash': { deepseek: { input: '0.44' } } },
+    }));
+    expect(loadAiPricing(home)).toBeUndefined();
+  });
 });

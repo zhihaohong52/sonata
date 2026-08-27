@@ -66,8 +66,31 @@ export function loadAiPricing(home: string): AiPricingCache | undefined {
     const doc = JSON.parse(readFileSync(path, 'utf8')) as AiPricingCache;
     if (typeof doc.fetchedAt !== 'string') return undefined;
     if (doc.models === null || typeof doc.models !== 'object' || Array.isArray(doc.models)) return undefined;
+    if (!modelsAreValid(doc.models)) return undefined;
     return doc;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * A provider record must be non-empty and every present rate a finite,
+ * non-negative number — otherwise `costOf` would silently price volume at 0
+ * (empty record) or produce a wrong `totalUsd` from a string/non-finite value.
+ */
+function modelsAreValid(models: Record<string, Record<string, Rates>>): boolean {
+  for (const providers of Object.values(models)) {
+    if (providers === null || typeof providers !== 'object' || Array.isArray(providers)) return false;
+    const entries = Object.entries(providers);
+    if (entries.length === 0) return false;
+    for (const [provider, rates] of entries) {
+      if (rates === null || typeof rates !== 'object' || Array.isArray(rates)) return false;
+      const values = Object.values(rates);
+      if (values.length === 0) return false; // an empty record prices nothing, so `costOf` would say 0
+      for (const value of values) {
+        if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return false;
+      }
+    }
+  }
+  return true;
 }
