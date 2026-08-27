@@ -43,8 +43,19 @@ describe('sonata status CLI wiring', () => {
     vi.unstubAllGlobals();
   });
 
-  it('rejects an unrecognized flag', async () => {
-    await expect(main(['status', '--sessionx', 'foo'])).rejects.toThrow();
+  it('rejects an unrecognized flag with the parseArgs unknown-option error', async () => {
+    // Give every downstream dependency a valid value so nothing would throw if
+    // strict parsing were disabled — a `status --sessionx <id>` would then just
+    // fall through to the default-session path and exit 0. Any throw at all is
+    // therefore the flag rejection itself, and asserting on the message proves
+    // it returned the unknown-option error rather than a later crash.
+    loadConfigMock.mockReturnValue({ native: { ports: { router: 4100 } } } as never);
+    isSonataRouterMock.mockResolvedValue(false);
+    readRowsMock.mockReturnValue([] as never);
+
+    const err = await main(['status', '--sessionx', 'foo']).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe(`Unknown option '--sessionx'`);
   });
 
   it('defaults to the most recent session', async () => {
@@ -112,8 +123,15 @@ describe('sonata runs CLI wiring', () => {
     expect(parsed[0]).toMatchObject({ id: 'abc123', state: 'DONE', report: true });
   });
 
-  it('rejects an unrecognized flag', async () => {
-    await expect(main(['runs', '--bogus'])).rejects.toThrow();
+  it('rejects an unrecognized flag with the parseArgs unknown-option error', async () => {
+    // Same discrimination as `status`: with `summarizeRuns` returning a valid
+    // empty array, a non-strict parser would print "no runs" and exit 0 — every
+    // throw here is the unknown-option rejection and nothing else.
+    summarizeRunsMock.mockReturnValue([]);
+
+    const err = await main(['runs', '--bogus']).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe(`Unknown option '--bogus'`);
   });
 });
 
