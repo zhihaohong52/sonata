@@ -1,6 +1,6 @@
 // tests/commands/serve-ledger.test.ts
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdServe, priceRow, serveHealthUrl } from '../../src/commands/serve.js';
@@ -148,6 +148,21 @@ litellm = ${litellmPort}
 
     await start();
     expect(existsSync(oldFile)).toBe(false);
+  });
+
+  it('prunes old session records on startup alongside the ledger', async () => {
+    writeConfig();
+    const sessionsFile = join(home, '.config', 'sonata', 'sessions.json');
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(sessionsFile, JSON.stringify({
+      old: { session: 'old', cwd: '/repo/a', started: '2020-01-01T10:00:00.000Z' },
+      fresh: { session: 'fresh', cwd: '/repo/b', started: new Date().toISOString() },
+    }, null, 2));
+
+    await start();
+    const remaining = JSON.parse(readFileSync(sessionsFile, 'utf8'));
+    expect(remaining).not.toHaveProperty('old');
+    expect(remaining).toHaveProperty('fresh');
   });
 
   it('serves even when pruning throws', async () => {

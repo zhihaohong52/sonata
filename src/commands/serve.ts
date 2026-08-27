@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { loadAiPricing } from '../aipricing.js';
 import { configPath as resolveSonataConfigPath, loadConfig, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
+import { pruneSessions } from '../sessions.js';
 import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
 import { codexAuthPath, opencodeAuthPath, readChatGptOAuth } from '../native/codex-auth.js';
 import { credentialDir } from '../native/oauth-login.js';
@@ -594,6 +595,15 @@ export async function cmdServe(
     try {
       const removed = pruneLedger(opts.home, LEDGER_RETENTION_DAYS);
       if (removed > 0) console.log(`ledger: pruned ${removed} day file(s) older than ${LEDGER_RETENTION_DAYS}d`);
+    } catch { /* pruning is housekeeping; it never blocks serving */ }
+
+    // Same retention window, same defensive posture: a long-lived daemon must
+    // also expire the session->project map, not just the ledger it relies on.
+    // Awaited so `serve` does not race its own lock against a concurrent hook;
+    // its own failure is swallowed identically to the ledger prune above.
+    try {
+      const removedSessions = await pruneSessions(opts.home, LEDGER_RETENTION_DAYS);
+      if (removedSessions > 0) console.log(`sessions: pruned ${removedSessions} record(s) older than ${LEDGER_RETENTION_DAYS}d`);
     } catch { /* pruning is housekeeping; it never blocks serving */ }
 
     router = createRouterServer({

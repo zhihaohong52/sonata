@@ -40,6 +40,17 @@ describe('sessions map', () => {
     expect(Object.keys(loadSessions(home))).toEqual(['new']);
   });
 
+  it('floors the retention window to a UTC day, matching the ledger prune', async () => {
+    // `now` is 12:00Z on the 27th; 30 days back is 2026-07-28T12:00Z exactly,
+    // which the day-floor rounds down to 2026-07-28T00:00Z. A session started
+    // at 10:00Z on the 28th is therefore *inside* the window (kept), while one
+    // started a millisecond before midnight on the 27th is outside (pruned).
+    await recordSession(home, { session: 'kept', cwd: '/a', started: '2026-07-28T10:00:00.000Z' });
+    await recordSession(home, { session: 'dropped', cwd: '/b', started: '2026-07-27T23:59:59.999Z' });
+    expect(await pruneSessions(home, 30, new Date('2026-08-27T12:00:00Z'))).toBe(1);
+    expect(Object.keys(loadSessions(home))).toEqual(['kept']);
+  });
+
   it('waits for the lock instead of clobbering a concurrent writer', async () => {
     // Manual contention test for `withSessionLock`: `recordSession`'s critical
     // section is fully synchronous, so two `Promise.all`ed calls could never

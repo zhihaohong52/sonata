@@ -49,7 +49,10 @@ export async function recordSession(home: string, record: SessionRecord): Promis
 export async function pruneSessions(home: string, retentionDays: number, now: Date = new Date()): Promise<number> {
   return withSessionLock(sessionsPath(home), () => {
     const all = loadSessions(home);
-    const cutoff = now.getTime() - retentionDays * 24 * 3600 * 1000;
+    // Same day-floor as `pruneLedger`: the window is measured in whole UTC days,
+    // not in exact milliseconds, so a session started at the boundary keeps
+    // both prunes agreeing on which entries are "older than N days".
+    const cutoff = Math.floor((now.getTime() - retentionDays * 24 * 3600 * 1000) / (24 * 3600 * 1000)) * (24 * 3600 * 1000);
     let removed = 0;
     for (const [id, record] of Object.entries(all)) {
       const started = Date.parse(record?.started ?? '');
