@@ -633,6 +633,7 @@ export async function main(argv: string[]): Promise<number> {
       if (action === 'status') {
         const active = (['project', 'global'] as const).filter((name) => status.scopes[name].on || status.scopes[name].auto);
         console.log(`  scopes: ${active.length > 0 ? active.join(', ') : 'none'}`);
+        console.log('  see `sonata status` for what the router has actually served recently');
       }
       if (status.auto) {
         console.log('  auto:   on — routing turns on only while a foreign-model subagent runs');
