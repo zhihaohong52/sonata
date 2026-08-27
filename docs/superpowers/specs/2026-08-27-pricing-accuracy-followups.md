@@ -34,7 +34,16 @@ service tiers, never time-of-day).
   normalization function paralleling `normalizeAiPricingRows`, and its own
   cache file/gateway declaration (`pricingProvider` may need a second field,
   or a value distinguishing which scraped source to use, if both sources are
-  kept).
+  kept). If both sources have a rate for the same model+provider, recommend
+  genai-prices take precedence over `ai-pricing.fyi`, since genai-prices is the
+  source that models the time-of-day pricing this document is intended to
+  support; revisit that precedence when the follow-up plan is written rather
+  than treating it as a final decision. Both caches should follow the existing
+  `ai-pricing.fyi` policy: no auto-fetch and refresh only on an explicit
+  `sonata catalog update`. `LedgerPrice.source` (`src/ledger.ts`) will also
+  need a `'genai-prices'` union variant so `sonata usage` can record which
+  scraped source supplied each price, rather than only that a scraped source
+  did.
 - Before implementing: check whether genai-prices' data schema actually
   encodes DeepSeek's *current* (post Aug-16-2026) peak-surcharge scheme or
   still reflects the older off-peak-discount shape — the pricing landscape
@@ -76,8 +85,13 @@ missing entirely, so a cache-write-heavy workload is under-reported.
 Proposed fix: add a `cacheCreation` field to `Rates` (`src/config.ts`,
 parallel to `cachedInput`), defaulting to the `input` rate when absent (so
 existing configs with no explicit cache-creation rate keep today's
-behavior — no silent regression), and wire it into `costOf`. Smaller,
-self-contained fix — doesn't depend on §1/§2 and could ship alone.
+behavior — no silent regression), and wire it into `costOf`. This also needs
+to update the already-shipped `RATE_KEYS` allowlist in
+`src/aipricing.ts`'s `modelsAreValid`: it currently accepts only `input`,
+`cachedInput`, and `output`, so a scraped record containing `cacheCreation`
+would otherwise be rejected as invalid immediately. Preserve the fallback to
+`input` when `cacheCreation` is absent. Smaller, self-contained fix — doesn't
+depend on §1/§2 and could ship alone.
 
 ## DeepSeek's real current scheme, for reference
 

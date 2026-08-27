@@ -80,7 +80,7 @@ matches the project's existing "macOS or Linux only" support scope) purely
 to *print* whatever pid it finds, giving the user a copy-pasteable next
 step:
 
-```
+```text
 sonata restart: router port 4100 answers as a sonata router, but no recorded
 pid for it was found in ~/.config/sonata/serve-state.json — it may have been
 started by a different sonata install or an older version.
