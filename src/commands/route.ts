@@ -14,7 +14,7 @@
  * daemon, and the first thing an unrouted session would do is cache the error
  * from a router that is not there.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -23,6 +23,8 @@ import type { Settings } from '../settings.js';
 import { configPath as resolveSonataConfigPath, loadConfig, GLOBAL_CONFIG_RELATIVE, parseConfig, type SonataConfig } from '../config.js';
 import { nativeSessionEnv } from './code.js';
 import { isSonataRouter, sonataRouterConfigPath, startServeDaemon } from './serve.js';
+import { recordSession } from '../sessions.js';
+import { withSessionLock } from '../filelock.js';
 
 /** Where `route` always writes — the project's local, never-shared settings. */
 export function routeSettingsFile(
@@ -245,32 +247,6 @@ export function writeSessions(file: string, ids: string[]): void {
   }
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, `${JSON.stringify(ids, null, 2)}\n`);
-}
-
-async function withSessionLock<T>(file: string, fn: () => T | Promise<T>): Promise<T> {
-  const lock = `${file}.lock`;
-  mkdirSync(dirname(file), { recursive: true });
-  const deadline = Date.now() + 2000;
-  let held = false;
-  for (;;) {
-    try {
-      mkdirSync(lock);
-      held = true;
-      break;
-    } catch {
-      try {
-        const age = Date.now() - statSync(lock).mtimeMs;
-        if (age > 5000) rmSync(lock, { recursive: true, force: true });
-      } catch { /* raced with the holder releasing it */ }
-      if (Date.now() > deadline) break;
-      await new Promise((r) => setTimeout(r, 25));
-    }
-  }
-  try {
-    return await fn();
-  } finally {
-    if (held) { try { rmSync(lock, { recursive: true, force: true }); } catch { /* already gone */ } }
-  }
 }
 
 /**
@@ -740,6 +716,13 @@ export async function cmdRouteSession(
     const current = readSessions(registry);
     writeSessions(registry, current.includes(sessionId) ? current : [...current, sessionId]);
   });
+
+  // Records which project this session belongs to, so `sonata usage --by
+  // project` can attribute the router's rows. Guarded: a session must start
+  // even if this bookkeeping cannot be written.
+  try {
+    await recordSession(opts.home, { session: sessionId, cwd: opts.cwd, started: new Date().toISOString() });
+  } catch { /* attribution is a nicety; starting the session is not */ }
 
   // Deliberately does NOT route. Routing on here is what made `route auto`
   // degrade into `route on`: it stayed on while any registered session lived,

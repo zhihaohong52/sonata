@@ -806,3 +806,122 @@ id = "deepseek-v4-flash-0731"
     expect(harnessModelFor(config, 'gpt-5.6-terra')).toBeUndefined();
   });
 });
+
+
+describe('price config', () => {
+  it('parses per-model rates and windows', () => {
+    const config = parseConfig(`
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash"
+
+[models."flash".price]
+input = 0.44
+cached_input = 0.014
+output = 1.32
+
+[native.gateways."acme"]
+base_url = "https://example.invalid/v1"
+
+[[models."flash".price.windows]]
+from = "16:30"
+to = "00:30"
+input = 0.11
+output = 0.33
+`);
+    const price = config.unifiedModels.flash.price!;
+    expect(price).toMatchObject({ input: 0.44, cachedInput: 0.014, output: 1.32 });
+    expect(price.windows).toEqual([{ from: '16:30', to: '00:30', input: 0.11, output: 0.33 }]);
+  });
+
+  it('parses gateway rates and pricing_provider', () => {
+    const config = parseConfig(`
+[native.gateways."google"]
+base_url = "https://example.invalid/v1"
+pricing_provider = "google"
+
+[native.gateways."google".price]
+input = 0.1
+`);
+    const gw = config.native!.gateways.google;
+    expect(gw.pricingProvider).toBe('google');
+    expect(gw.price).toMatchObject({ input: 0.1 });
+  });
+
+  it('parses a price on a harness-only model', () => {
+    const config = parseConfig(`
+[models."fallback"]
+harness = "codex"
+id = "gpt-5.6-terra"
+
+[models."fallback".price]
+output = 2
+`);
+    expect(config.unifiedModels.fallback.price).toEqual({ output: 2 });
+  });
+
+  it('refuses a non-string pricing_provider', () => {
+    expect(() => parseConfig(`
+[native.gateways."google"]
+base_url = "https://example.invalid/v1"
+pricing_provider = 42
+`)).toThrow(/pricing_provider/);
+  });
+
+  it('leaves price undefined when no table is present', () => {
+    const config = parseConfig(`
+[models."flash"]
+gateway = "acme"
+id = "x"
+
+[native.gateways."acme"]
+base_url = "https://example.invalid/v1"
+`);
+    expect(config.unifiedModels.flash.price).toBeUndefined();
+    expect(config.native!.gateways.acme.price).toBeUndefined();
+    expect(config.native!.gateways.acme.pricingProvider).toBeUndefined();
+  });
+
+  it('refuses a negative rate', () => {
+    expect(() => parseConfig(`
+[models."flash"]
+gateway = "acme"
+id = "x"
+
+[models."flash".price]
+input = -1
+
+[native.gateways."acme"]
+base_url = "https://example.invalid/v1"
+`)).toThrow(/price.*must be a non-negative number/i);
+  });
+
+  it('refuses a malformed window time', () => {
+    expect(() => parseConfig(`
+[models."flash"]
+gateway = "acme"
+id = "x"
+
+[[models."flash".price.windows]]
+from = "16:70"
+to = "00:30"
+
+[native.gateways."acme"]
+base_url = "https://example.invalid/v1"
+`)).toThrow(/HH:MM/);
+  });
+
+  it('refuses a window missing from or to', () => {
+    expect(() => parseConfig(`
+[models."flash"]
+gateway = "acme"
+id = "x"
+
+[[models."flash".price.windows]]
+from = "16:30"
+
+[native.gateways."acme"]
+base_url = "https://example.invalid/v1"
+`)).toThrow(/from.*to/i);
+  });
+});

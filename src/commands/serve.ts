@@ -4,13 +4,17 @@ import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unl
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import { loadAiPricing } from '../aipricing.js';
 import { configPath as resolveSonataConfigPath, loadConfig, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
+import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
+import { pruneSessions } from '../sessions.js';
 import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
 import { codexAuthPath, opencodeAuthPath, readChatGptOAuth } from '../native/codex-auth.js';
 import { credentialDir } from '../native/oauth-login.js';
 import { readCopilotToken } from '../native/copilot-auth.js';
 import { envVarForGateway, litellmConfigYaml } from '../native/litellm.js';
 import { createRouterServer } from '../native/router.js';
+import { resolvePrice } from '../pricing.js';
 import { timestampedLogPath } from './init-log.js';
 
 export interface ServeHandle {
@@ -55,6 +59,13 @@ export interface ServeDeps {
   litellmExitTimeoutMs?: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Test seam, and the router's observation channel: receives one *unpriced*
+   * row per request exactly as the router emits it (`price.source === 'none'`).
+   * Pricing is applied only by `cmdServe`'s default closure below, never by the
+   * router. Tests inject this to capture rows without touching disk.
+   */
+  recordUsage?: (row: LedgerRow) => void;
 }
 
 /**
@@ -365,6 +376,26 @@ function close(server: ReturnType<typeof createRouterServer>): Promise<void> {
   });
 }
 
+/**
+ * Attaches a price to a row the router produced unpriced.
+ *
+ * Pricing lives here rather than in the router because it needs the config and
+ * the price cache, and because a token count must never be lost to a pricing
+ * failure — the row is written either way, with `source: 'none'` when no rate
+ * applies.
+ *
+ * Priced at the row's own timestamp, not at now: a row is priced by when the
+ * request ran, which is what makes a time-windowed rate mean anything.
+ */
+export function priceRow(config: SonataConfig, home: string, row: LedgerRow): LedgerRow {
+  try {
+    const price = resolvePrice(config, row.key, row.tokens, new Date(row.ts), loadAiPricing(home));
+    return { ...row, price };
+  } catch {
+    return row; // an unpriceable row is still a row
+  }
+}
+
 export async function cmdServe(
   opts: { cwd: string; home: string; daemon?: boolean } & ServeDeps,
 ): Promise<ServeHandle> {
@@ -558,6 +589,23 @@ export async function cmdServe(
 
     await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
 
+    // Retention is enforced where the writer starts, so a long-lived daemon
+    // cannot accumulate day-files indefinitely the way opencode's event table
+    // did (6.5 GB, and not something sonata gets to repeat in its own store).
+    try {
+      const removed = pruneLedger(opts.home, LEDGER_RETENTION_DAYS);
+      if (removed > 0) console.log(`ledger: pruned ${removed} day file(s) older than ${LEDGER_RETENTION_DAYS}d`);
+    } catch { /* pruning is housekeeping; it never blocks serving */ }
+
+    // Same retention window, same defensive posture: a long-lived daemon must
+    // also expire the session->project map, not just the ledger it relies on.
+    // Awaited so `serve` does not race its own lock against a concurrent hook;
+    // its own failure is swallowed identically to the ledger prune above.
+    try {
+      const removedSessions = await pruneSessions(opts.home, LEDGER_RETENTION_DAYS);
+      if (removedSessions > 0) console.log(`sessions: pruned ${removedSessions} record(s) older than ${LEDGER_RETENTION_DAYS}d`);
+    } catch { /* pruning is housekeeping; it never blocks serving */ }
+
     router = createRouterServer({
       fetch,
       litellmBase: `http://localhost:${native.ports.litellm}`,
@@ -576,6 +624,11 @@ export async function cmdServe(
       // Config is re-read per call (not the `config`/`native` closed over
       // above) so a tier edit in sonata.toml takes effect without a restart.
       resolveTier: (alias) => resolveTierAlias(loadConfig(opts.cwd, opts.home), alias),
+      // A direct `--model <key>` request's key maps to its gateway through the
+      // same unified-model table tier resolution uses, so such a row carries
+      // `gateway` and can reach pricing's gateway step. Config is re-read here
+      // too, for the same reason as `resolveTier` above.
+      resolveGateway: (key) => loadConfig(opts.cwd, opts.home).unifiedModels[key]?.gateway,
       // Fire-and-forget, called on every litellm-bound request (direct model
       // calls and each tier candidate alike) — not just tier resolution,
       // since a direct `--model <key>` request for a newly added native-only
@@ -590,6 +643,28 @@ export async function cmdServe(
         });
       },
       litellmReady: () => litellmReady,
+      // The injected seam (when present) receives the router's raw, unpriced
+      // row unchanged. The default below prices it against the config and
+      // writes it. Either way a ledger write is fire-and-forget.
+      recordUsage: opts.recordUsage ?? ((row) => {
+        // Deferred past the current I/O cycle so the synchronous loadConfig,
+        // pricing, and appendFileSync below never sit on the request-response
+        // path: the response is handed back to the client first. `appendRow`
+        // stays synchronous by design (Task 2); this only moves WHEN it runs.
+        setImmediate(() => {
+          let priced = row;
+          try {
+            priced = priceRow(loadConfig(opts.cwd, opts.home), opts.home, row);
+          } catch {
+            // A config that will not load is still no reason to drop the row —
+            // priceRow's guarantee ("written either way, with source 'none'")
+            // must hold here too. `priced` stays the raw router row.
+          }
+          try {
+            appendRow(opts.home, priced);
+          } catch { /* a ledger write never breaks a request */ }
+        });
+      }),
     });
 
     try {
