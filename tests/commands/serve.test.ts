@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { spawn as spawnType } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 
 import {
   cmdServe, serveHealthUrl, type ServeHandle, isSonataRouter, occupiedPortMessage, startServeDaemon,
-  serveStatePath, stopServe, cmdRestart,
+  serveStatePath, stopServe, cmdRestart, sonataRouterInstanceId,
 } from '../../src/commands/serve.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
 import { clearCooldowns } from '../../src/native/router.js';
@@ -43,6 +43,7 @@ litellm = 4000
 });
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await Promise.all(handles.map((handle) => handle.stop()));
   rmSync(cwd, { force: true, recursive: true });
   rmSync(home, { force: true, recursive: true });
@@ -190,9 +191,71 @@ litellm = 4000
 
     const response = await fetch(serveHealthUrl(handle.routerPort));
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
+    const body = await response.json();
+    expect(body).toMatchObject({
       status: 'ok', sonata: true, configPath: join(cwd, 'sonata.toml'),
     });
+    expect(typeof body.instanceId).toBe('string');
+    expect(body.instanceId.length).toBeGreaterThan(0);
+  });
+
+  it('reads its instance id from the environment when set, for a daemon-spawned process', async () => {
+    const previous = process.env.SONATA_SERVE_INSTANCE_ID;
+    process.env.SONATA_SERVE_INSTANCE_ID = 'fixed-test-id';
+    try {
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(),
+        waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+      });
+      handles.push(handle);
+
+      const response = await fetch(serveHealthUrl(handle.routerPort));
+      const body = await response.json();
+      expect(body.instanceId).toBe('fixed-test-id');
+    } finally {
+      if (previous === undefined) delete process.env.SONATA_SERVE_INSTANCE_ID;
+      else process.env.SONATA_SERVE_INSTANCE_ID = previous;
+    }
+  });
+
+  it('prefers an injected instance id over the environment variable', async () => {
+    const previous = process.env.SONATA_SERVE_INSTANCE_ID;
+    process.env.SONATA_SERVE_INSTANCE_ID = 'env-value';
+    try {
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(),
+        waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+        instanceId: 'injected-value',
+      });
+      handles.push(handle);
+
+      const response = await fetch(serveHealthUrl(handle.routerPort));
+      const body = await response.json();
+      expect(body.instanceId).toBe('injected-value');
+    } finally {
+      if (previous === undefined) delete process.env.SONATA_SERVE_INSTANCE_ID;
+      else process.env.SONATA_SERVE_INSTANCE_ID = previous;
+    }
+  });
+
+  it('generates its own instance id when neither the env var nor an injected one is present', async () => {
+    const previous = process.env.SONATA_SERVE_INSTANCE_ID;
+    delete process.env.SONATA_SERVE_INSTANCE_ID;
+    try {
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(),
+        waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+      });
+      handles.push(handle);
+
+      const response = await fetch(serveHealthUrl(handle.routerPort));
+      const body = await response.json();
+      expect(typeof body.instanceId).toBe('string');
+      expect(body.instanceId.length).toBeGreaterThan(0);
+    } finally {
+      if (previous === undefined) delete process.env.SONATA_SERVE_INSTANCE_ID;
+      else process.env.SONATA_SERVE_INSTANCE_ID = previous;
+    }
   });
 
   it('refuses to start when [native] is absent', async () => {
@@ -1209,6 +1272,23 @@ describe('isSonataRouter', () => {
   });
 });
 
+describe('sonataRouterInstanceId', () => {
+  it('resolves the instance id from the sonata health payload', async () => {
+    const ok = (async () =>
+      new Response(JSON.stringify({ status: 'ok', sonata: true, instanceId: 'abc-123' }))) as unknown as typeof fetch;
+    expect(await sonataRouterInstanceId(4100, ok)).toBe('abc-123');
+  });
+
+  it('returns null for a non-sonata or malformed response', async () => {
+    const notSonata = (async () => new Response(JSON.stringify({ status: 'ok' }))) as unknown as typeof fetch;
+    const notJson = (async () => new Response('<html>')) as unknown as typeof fetch;
+    const noId = (async () => new Response(JSON.stringify({ status: 'ok', sonata: true }))) as unknown as typeof fetch;
+    expect(await sonataRouterInstanceId(4100, notSonata)).toBeNull();
+    expect(await sonataRouterInstanceId(4100, notJson)).toBeNull();
+    expect(await sonataRouterInstanceId(4100, noId)).toBeNull();
+  });
+});
+
 describe('startServeDaemon', () => {
   let home: string;
   beforeEach(() => {
@@ -1279,6 +1359,71 @@ context_window = 128000
       sleep: async () => {},
     });
     expect(attempts).toBe(3);
+    expect(result.port).toBe(4100);
+  });
+
+  it('does not accept a stale router with a different instance id as its own', async () => {
+    // The exact bug this fixes: a stale daemon from a previous run is still
+    // answering `sonata:true` on the port when a fresh spawn's poll begins.
+    // The old check (`sonata === true`) would have accepted it immediately;
+    // the fix must keep waiting until the id it generated itself is the one
+    // reported back.
+    let calls = 0;
+    const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: fakeSpawn(),
+      // First two probes see the stale router (wrong id); the third sees the
+      // freshly-spawned one (matching id, since the real default probe reads
+      // the id this call generated and passed to the child's env).
+      probe: async (_port, id) => {
+        calls += 1;
+        return calls >= 3 ? true : false;
+      },
+      sleep: async () => {},
+    });
+    expect(calls).toBe(3);
+    expect(result.port).toBe(4100);
+  });
+
+  it('sets SONATA_SERVE_INSTANCE_ID on the spawned child so it can report back the matching id', async () => {
+    const envs: (NodeJS.ProcessEnv | undefined)[] = [];
+    const spy = ((_cmd: string, _args: string[], o: { env?: NodeJS.ProcessEnv }) => {
+      envs.push(o.env);
+      return { pid: 4242, unref: () => {} };
+    }) as unknown as typeof spawnType;
+
+    await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: spy,
+      probe: async () => true,
+    });
+
+    expect(typeof envs[0]?.SONATA_SERVE_INSTANCE_ID).toBe('string');
+    expect(envs[0]?.SONATA_SERVE_INSTANCE_ID?.length).toBeGreaterThan(0);
+    expect(envs[0]?.PATH).toBe(process.env.PATH);
+  });
+
+  it('waits for the real default probe to see its own instance id, not just any healthy router', async () => {
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+    const spy = ((_cmd: string, _args: string[], o: { env?: NodeJS.ProcessEnv }) => {
+      capturedEnv = o.env;
+      return { pid: 4242, unref: () => {} };
+    }) as unknown as typeof spawnType;
+
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1;
+      if (calls < 3) {
+        return new Response(JSON.stringify({ status: 'ok', sonata: true, instanceId: 'stale-id' }));
+      }
+      return new Response(JSON.stringify({
+        status: 'ok', sonata: true, instanceId: capturedEnv?.SONATA_SERVE_INSTANCE_ID,
+      }));
+    }) as unknown as typeof fetch);
+
+    const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: spy,
+      sleep: async () => {},
+    });
+    expect(calls).toBe(3);
     expect(result.port).toBe(4100);
   });
 
@@ -1353,11 +1498,43 @@ litellm = 4000
     expect(existsSync(serveStatePath(home))).toBe(false);
   });
 
+  it('refuses to kill when only litellm has a recorded pid', async () => {
+    mkdirSync(dirname(serveStatePath(home)), { recursive: true });
+    writeFileSync(serveStatePath(home), JSON.stringify({ litellmPid: 222 }));
+
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, findPortPid: () => '48213',
+    }).catch((e) => e as Error);
+
+    expect((result as Error).message).toMatch(/no recorded pid/);
+    expect((result as Error).message).toMatch(/kill 48213/);
+    expect(existsSync(serveStatePath(home))).toBe(true);
+  });
+
   it('refuses to kill when the port answers sonata but no pid was ever recorded', async () => {
     // Never guess a pid by scanning the OS — only a pid sonata itself
-    // recorded is ever killed.
-    await expect(stopServe({ cwd, home, probeHealth: sonataHealth }))
+    // recorded is ever killed. `findPortPid` here simulates the lookup
+    // itself failing (or finding nothing), so the message falls back to the
+    // generic wording rather than naming a pid.
+    await expect(stopServe({ cwd, home, probeHealth: sonataHealth, findPortPid: () => undefined }))
       .rejects.toThrow(/no recorded pid/);
+  });
+
+  it('names a killable pid when the port lookup finds exactly one', async () => {
+    // Sonata still never kills this pid itself — the message only prints it,
+    // as a copy-pasteable next step for the user.
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, findPortPid: () => '48213',
+    }).catch((e) => e as Error);
+    expect((result as Error).message).toMatch(/kill 48213/);
+  });
+
+  it('falls back to the generic message when the port lookup is unavailable or ambiguous', async () => {
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, findPortPid: () => undefined,
+    }).catch((e) => e as Error);
+    expect((result as Error).message).toMatch(/no recorded pid/);
+    expect((result as Error).message).not.toMatch(/kill \d/);
   });
 
   it('throws if the killed pid is still alive, rather than reporting success', async () => {
@@ -1429,6 +1606,17 @@ context_window = 128000
 
     expect(killed).toEqual([111]);
     expect(result.pid).toBe(999);
+  });
+
+  it('forwards findPortPid when the router pid is unrecorded', async () => {
+    writeFileSync(join(home, '.config', 'sonata', 'serve-state.json'), JSON.stringify({ litellmPid: 222 }));
+    const result = await cmdRestart(home, ['node', 'cli.js', 'serve'], {
+      cwd: home,
+      probeHealth: (async () => new Response(JSON.stringify({ sonata: true }))) as unknown as typeof fetch,
+      findPortPid: () => '48213',
+    }).catch((e) => e as Error);
+
+    expect((result as Error).message).toMatch(/kill 48213/);
   });
 
   it('starts fresh with nothing to stop when the port was already clear', async () => {

@@ -1,5 +1,5 @@
-import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { spawn, execFileSync } from 'node:child_process';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -66,6 +66,14 @@ export interface ServeDeps {
    * router. Tests inject this to capture rows without touching disk.
    */
   recordUsage?: (row: LedgerRow) => void;
+  /**
+   * Test seam for the id `cmdServe` reports on `/__sonata_health`. Production
+   * default reads `SONATA_SERVE_INSTANCE_ID` (set by `startServeDaemon` on the
+   * child it spawns) and falls back to a freshly generated id when neither is
+   * present — a foreground `sonata serve` with no daemon wrapper still needs
+   * one.
+   */
+  instanceId?: string;
 }
 
 /**
@@ -182,6 +190,24 @@ export async function sonataRouterConfigPath(
     const body = await response.json() as { sonata?: unknown; configPath?: unknown };
     if (body?.sonata !== true) return null;
     return typeof body.configPath === 'string' ? body.configPath : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The instance id a running sonata router reports on /__sonata_health, or null if the port isn't a sonata router (or reports none). */
+export async function sonataRouterInstanceId(
+  port: number,
+  doFetch: typeof fetch = fetch,
+): Promise<string | null> {
+  try {
+    const response = await doFetch(serveHealthUrl(port), {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!response.ok) return null;
+    const body = await response.json() as { sonata?: unknown; instanceId?: unknown };
+    if (body?.sonata !== true) return null;
+    return typeof body.instanceId === 'string' ? body.instanceId : null;
   } catch {
     return null;
   }
@@ -404,6 +430,7 @@ export async function cmdServe(
 
   const native = config.native;
   const masterKey = `sk-sonata-${randomBytes(32).toString('hex')}`;
+  const instanceId = opts.instanceId ?? process.env.SONATA_SERVE_INSTANCE_ID ?? randomUUID();
   const tempDir = opts.tempDir ?? mkdtempSync(join(tmpdir(), 'sonata-litellm-'));
   mkdirSync(tempDir, { recursive: true });
 
@@ -615,6 +642,7 @@ export async function cmdServe(
       // default port can tell this project's router apart from another
       // project's on the same port.
       configPath: resolveSonataConfigPath(opts.cwd, opts.home) ?? undefined,
+      instanceId,
       // Goes to serve's stdout, which --daemon captures to its log file. This
       // is the only record of which upstream served a request: litellm's access
       // log has the path and status but not the model, so without it "did that
@@ -716,8 +744,8 @@ export async function cmdServe(
 
 export interface DaemonDeps {
   spawn?: typeof spawn;
-  /** Resolves true once the router answers on `port`. */
-  probe?: (port: number) => Promise<boolean>;
+  /** Resolves true once the router answers on `port` with the given instance id. */
+  probe?: (port: number, instanceId: string) => Promise<boolean>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   timeoutMs?: number;
@@ -748,7 +776,7 @@ export async function startServeDaemon(
   cwd: string = process.cwd(),
 ): Promise<DaemonResult> {
   const spawnFn = deps.spawn ?? spawn;
-  const probe = deps.probe ?? ((port: number) => isSonataRouter(port));
+  const probe = deps.probe ?? (async (port: number, id: string) => (await sonataRouterInstanceId(port)) === id);
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const timeoutMs = deps.timeoutMs ?? 60_000;
@@ -761,6 +789,13 @@ export async function startServeDaemon(
   mkdirSync(dirname(logPath), { recursive: true });
   const log = openSync(logPath, 'a');
 
+  // Generated here, before spawning, and handed to the child via its own
+  // environment — so the polling loop below can tell its own freshly-spawned
+  // process apart from a stale router that happens to still be answering the
+  // same port, which is what let `sonata restart` false-report success
+  // against a leftover daemon (see the design doc for the reproduction).
+  const instanceId = randomUUID();
+
   // Explicit, not inherited: a daemon started to serve *every* project
   // (`route on/auto --global`) must not bind itself to whichever project's
   // session happened to trigger it first — the router is a single process,
@@ -771,12 +806,13 @@ export async function startServeDaemon(
     detached: true,
     stdio: ['ignore', log, log],
     cwd,
+    env: { ...process.env, SONATA_SERVE_INSTANCE_ID: instanceId },
   });
   child.unref();
 
   const deadline = now() + timeoutMs;
   for (;;) {
-    if (await probe(port)) return { pid: child.pid ?? 0, port, logPath };
+    if (await probe(port, instanceId)) return { pid: child.pid ?? 0, port, logPath };
     if (now() > deadline) {
       throw new Error(
         `sonata serve: the daemon did not answer on port ${port} within ${Math.round(timeoutMs / 1000)}s. ` +
@@ -784,6 +820,23 @@ export async function startServeDaemon(
       );
     }
     await sleep(500);
+  }
+}
+
+/**
+ * Finds the OS pid bound to a TCP port, purely so `stopServe` can print it —
+ * sonata never acts on what this returns. `lsof -ti` prints one pid per line;
+ * an empty or ambiguous (more than one) result means "don't know", which the
+ * caller treats the same as a lookup failure.
+ */
+function defaultFindPortPid(port: number): string | undefined {
+  try {
+    const out = execFileSync('lsof', ['-ti', `:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8' }).trim();
+    if (out === '') return undefined;
+    const pids = out.split('\n').filter((line) => line !== '');
+    return pids.length === 1 ? pids[0] : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -796,6 +849,13 @@ export interface StopDeps {
   kill?: (pid: number) => void;
   /** Test seam — production default checks the OS for the pid. */
   isAlive?: (pid: number) => boolean;
+  /**
+   * Test seam — production default shells out to `lsof -ti:<port>` purely to
+   * *print* the result in the takeover message below; sonata never kills a
+   * pid this way itself. Returns `undefined` on any failure or ambiguity
+   * (0 or more than 1 pid found).
+   */
+  findPortPid?: (port: number) => string | undefined;
 }
 
 /**
@@ -844,11 +904,16 @@ export async function stopServe(
   if (!(await isSonataRouter(port, probeHealth))) return { killed: false };
 
   const state = readServeState(opts.home);
-  if (state?.routerPid === undefined && state?.litellmPid === undefined) {
+  if (state?.routerPid === undefined) {
+    const findPortPid = opts.findPortPid ?? defaultFindPortPid;
+    const foundPid = findPortPid(port);
+    const nextStep = foundPid !== undefined
+      ? ` Kill it yourself, then run \`sonata serve --daemon\`:\n  kill ${foundPid}`
+      : ' Kill it by hand, then run `sonata serve --daemon`.';
     throw new Error(
       `sonata restart: router port ${port} answers as a sonata router, but no recorded pid for it ` +
       `was found in ${serveStatePath(opts.home)} — it may have been started by a different sonata ` +
-      'install or an older version. Kill it by hand, then run `sonata serve --daemon`.',
+      `install or an older version.${nextStep}`,
     );
   }
 
@@ -897,6 +962,7 @@ export async function cmdRestart(
   await stopServe({
     cwd: opts.cwd, home,
     probeHealth: opts.probeHealth, now: opts.now, sleep: opts.sleep, timeoutMs: opts.timeoutMs, kill: opts.kill,
+    findPortPid: opts.findPortPid,
   });
   return startServeDaemon(home, argv, opts);
 }
