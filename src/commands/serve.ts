@@ -58,7 +58,12 @@ export interface ServeDeps {
   litellmExitTimeoutMs?: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
-  /** Test seam: receives one priced row per request, so tests capture rows without touching disk. */
+  /**
+   * Test seam, and the router's observation channel: receives one *unpriced*
+   * row per request exactly as the router emits it (`price.source === 'none'`).
+   * Pricing is applied only by `cmdServe`'s default closure below, never by the
+   * router. Tests inject this to capture rows without touching disk.
+   */
   recordUsage?: (row: LedgerRow) => void;
 }
 
@@ -623,10 +628,27 @@ export async function cmdServe(
         });
       },
       litellmReady: () => litellmReady,
+      // The injected seam (when present) receives the router's raw, unpriced
+      // row unchanged. The default below prices it against the config and
+      // writes it. Either way a ledger write is fire-and-forget.
       recordUsage: opts.recordUsage ?? ((row) => {
-        try {
-          appendRow(opts.home, priceRow(loadConfig(opts.cwd, opts.home), opts.home, row));
-        } catch { /* a ledger write never breaks a request */ }
+        // Deferred past the current I/O cycle so the synchronous loadConfig,
+        // pricing, and appendFileSync below never sit on the request-response
+        // path: the response is handed back to the client first. `appendRow`
+        // stays synchronous by design (Task 2); this only moves WHEN it runs.
+        setImmediate(() => {
+          let priced = row;
+          try {
+            priced = priceRow(loadConfig(opts.cwd, opts.home), opts.home, row);
+          } catch {
+            // A config that will not load is still no reason to drop the row —
+            // priceRow's guarantee ("written either way, with source 'none'")
+            // must hold here too. `priced` stays the raw router row.
+          }
+          try {
+            appendRow(opts.home, priced);
+          } catch { /* a ledger write never breaks a request */ }
+        });
       }),
     });
 

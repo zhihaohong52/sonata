@@ -1,9 +1,9 @@
 // tests/commands/serve-ledger.test.ts
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { priceRow } from '../../src/commands/serve.js';
+import { cmdServe, priceRow, serveHealthUrl } from '../../src/commands/serve.js';
 import { parseConfig } from '../../src/config.js';
 import type { LedgerRow } from '../../src/ledger.js';
 
@@ -44,7 +44,13 @@ describe('priceRow', () => {
   });
 
   it('prices by the row timestamp, not by now', () => {
-    const windowed = parseConfig(`
+    // Clock pinned to a moment clearly outside the 16:30–00:30 window so the
+    // assertion cannot pass coincidentally: a priceRow that wrongly priced by
+    // `new Date()` would see no matching rate and return { source: 'none' }.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-27T12:00:00.000Z'));
+    try {
+      const windowed = parseConfig(`
 [models."flash"]
 gateway = "acme"
 id = "x"
@@ -58,7 +64,101 @@ output = 0
 [native.gateways."acme"]
 base_url = "https://example.invalid/v1"
 `);
-    const inWindowRow = row({ ts: '2026-08-27T18:00:00.000Z' });
-    expect(priceRow(windowed, home, inWindowRow).price).toMatchObject({ source: 'model', totalUsd: 0 });
+      const inWindowRow = row({ ts: '2026-08-27T18:00:00.000Z' });
+      expect(priceRow(windowed, home, inWindowRow).price).toMatchObject({ source: 'model', totalUsd: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('cmdServe — ledger wiring', () => {
+  let cwd: string;
+  let handles: { stop(): Promise<void> }[];
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-serve-ledger-cwd-'));
+    handles = [];
+  });
+  afterEach(async () => {
+    await Promise.all(handles.map((handle) => handle.stop()));
+    rmSync(cwd, { force: true, recursive: true });
+  });
+
+  const tempDir = () => join(cwd, 'litellm');
+
+  async function start(recordUsage?: (row: LedgerRow) => void) {
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDir(),
+      waitForLitellm: async () => {},
+      spawnLitellm: () => ({ pid: 1, kill() {} }),
+      recordUsage,
+    });
+    handles.push(handle);
+    return handle;
+  }
+
+  const writeConfig = (litellmPort = 43123) => writeFileSync(join(cwd, 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash"
+
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+
+  it('the router calls the injected recordUsage seam, with an unpriced row', async () => {
+    writeConfig();
+    const rows: LedgerRow[] = [];
+    const handle = await start((rec) => rows.push(rec));
+
+    // Nothing listens on the litellm port, so the one candidate fails (502)
+    // and the tier is exhausted (529) — plenty to force a usage observation.
+    const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    expect(res.status).toBe(529);
+    expect(rows).toHaveLength(1);
+    // The seam receives the raw router row: priced only ever by the default
+    // closure, never here — so price must be the router's `{ source: 'none' }`.
+    expect(rows[0]).toMatchObject({
+      alias: 'sonata-code-simple', role: 'code', tier: 'simple',
+      upstream: 'litellm', status: 529, complete: false,
+      price: { source: 'none' },
+      attempts: [{ key: 'flash', status: 502 }],
+    });
+  });
+
+  it('prunes old ledger day-files on startup', async () => {
+    writeConfig();
+    const usageDir = join(home, '.config', 'sonata', 'usage');
+    mkdirSync(usageDir, { recursive: true });
+    const oldFile = join(usageDir, '2020-01-01.jsonl');
+    writeFileSync(oldFile, `${JSON.stringify(row())}\n`);
+
+    await start();
+    expect(existsSync(oldFile)).toBe(false);
+  });
+
+  it('serves even when pruning throws', async () => {
+    writeConfig();
+    // A regular file where the day-file directory belongs makes pruneLedger's
+    // readdirSync throw (ENOTDIR). Startup must still succeed and answer.
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'usage'), 'not a directory');
+
+    const handle = await start();
+    const health = await fetch(serveHealthUrl(handle.routerPort));
+    expect(health.status).toBe(200);
   });
 });
