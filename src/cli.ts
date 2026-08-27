@@ -25,6 +25,7 @@ import { cmdRoute, cmdRouteSession, cmdRouteSubagent, type RouteAction } from '.
 import { cmdCatalogUpdate } from './commands/catalog.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
 import { AI_PRICING_ATTRIBUTION } from './aipricing.js';
+import { cmdUsage, type UsageDimension } from './commands/usage.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
 
@@ -46,6 +47,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
                    auto|manual — route each session for its lifetime, keeping Remote Control
   sonata auth      manage gateway credentials (list/add/remove/login)
   sonata catalog   show or refresh the Artificial Analysis model catalog
+  sonata usage     report native-path token and cost usage from the ledger
 
   init flags (skip the prompts):
     --yes                    accept defaults, no prompts
@@ -380,6 +382,40 @@ export async function main(argv: string[]): Promise<number> {
     const age = Math.max(0, Date.now() - Date.parse(catalog.fetchedAt));
     console.log(`catalog: ${catalog.models ? Object.keys(catalog.models).length : 0} models; age ${Math.floor(age / 1000)}s`);
     console.log(`  path: ${path}`);
+    return 0;
+  }
+
+  if (command === 'usage') {
+    const flag = (name: string): string | undefined => {
+      const i = rest.indexOf(`--${name}`);
+      return i === -1 ? undefined : rest[i + 1];
+    };
+    const by = (flag('by') ?? 'model') as UsageDimension;
+    if (!['model', 'role', 'tier', 'gateway', 'session', 'project'].includes(by)) {
+      throw new Error('sonata usage --by must be one of: model | role | tier | gateway | session | project');
+    }
+    const report = await cmdUsage({
+      home: homedir(),
+      since: flag('since') ?? '7d',
+      by,
+      session: flag('session'),
+      json: rest.includes('--json'),
+    });
+    if (rest.includes('--json')) {
+      console.log(JSON.stringify(report, null, 2));
+      return 0;
+    }
+    for (const bucket of report.buckets) {
+      console.log(`${bucket.label.padEnd(30)} ${String(bucket.requests).padStart(8)} ${String(bucket.input).padStart(12)} ${String(bucket.output).padStart(10)}  ${bucket.costUsd === 0 && bucket.unpricedRequests === bucket.requests ? '—' : `$${bucket.costUsd.toFixed(4)}`}`);
+    }
+    console.log(`\npriced total   $${report.pricedTotalUsd.toFixed(4)}`);
+    if (report.unpriced.requests > 0) {
+      console.log(`unpriced       ${report.unpriced.requests} requests · ${report.unpriced.input} in · ${report.unpriced.output} out`);
+    }
+    console.log('native path only — `sonata dispatch` runs bypass the router and cannot be measured');
+    if (report.priceCacheAgeMs !== undefined) {
+      console.log(`prices: ai-pricing.fyi cache ${Math.floor(report.priceCacheAgeMs / 86_400_000)}d old`);
+    }
     return 0;
   }
 
