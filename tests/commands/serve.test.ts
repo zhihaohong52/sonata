@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { spawn as spawnType } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -43,6 +43,7 @@ litellm = 4000
 });
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await Promise.all(handles.map((handle) => handle.stop()));
   rmSync(cwd, { force: true, recursive: true });
   rmSync(home, { force: true, recursive: true });
@@ -1397,6 +1398,33 @@ context_window = 128000
 
     expect(typeof envs[0]?.SONATA_SERVE_INSTANCE_ID).toBe('string');
     expect(envs[0]?.SONATA_SERVE_INSTANCE_ID?.length).toBeGreaterThan(0);
+    expect(envs[0]?.PATH).toBe(process.env.PATH);
+  });
+
+  it('waits for the real default probe to see its own instance id, not just any healthy router', async () => {
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+    const spy = ((_cmd: string, _args: string[], o: { env?: NodeJS.ProcessEnv }) => {
+      capturedEnv = o.env;
+      return { pid: 4242, unref: () => {} };
+    }) as unknown as typeof spawnType;
+
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1;
+      if (calls < 3) {
+        return new Response(JSON.stringify({ status: 'ok', sonata: true, instanceId: 'stale-id' }));
+      }
+      return new Response(JSON.stringify({
+        status: 'ok', sonata: true, instanceId: capturedEnv?.SONATA_SERVE_INSTANCE_ID,
+      }));
+    }) as unknown as typeof fetch);
+
+    const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: spy,
+      sleep: async () => {},
+    });
+    expect(calls).toBe(3);
+    expect(result.port).toBe(4100);
   });
 
   it('gives up with the log path when the daemon never answers', async () => {
