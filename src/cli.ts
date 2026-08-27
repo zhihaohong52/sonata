@@ -19,11 +19,16 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove } from './commands/auth.js';
-import { cmdServe, cmdRestart, startServeDaemon } from './commands/serve.js';
+import { cmdServe, cmdRestart, startServeDaemon, isSonataRouter } from './commands/serve.js';
 import { cmdCode } from './commands/code.js';
+import { recentRoutes } from './commands/status.js';
+import { summarizeRuns } from './commands/runs.js';
 import { cmdRoute, cmdRouteSession, cmdRouteSubagent, type RouteAction } from './commands/route.js';
 import { cmdCatalogUpdate } from './commands/catalog.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
+import { AI_PRICING_ATTRIBUTION } from './aipricing.js';
+import { cmdUsage, type UsageDimension } from './commands/usage.js';
+import { readRows } from './ledger.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
 
@@ -45,6 +50,9 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
                    auto|manual — route each session for its lifetime, keeping Remote Control
   sonata auth      manage gateway credentials (list/add/remove/login)
   sonata catalog   show or refresh the Artificial Analysis model catalog
+  sonata usage     report native-path token and cost usage from the ledger
+  sonata status    router health and the last hour of routes
+  sonata runs      list every run, with state and whether it wrote a report
 
   init flags (skip the prompts):
     --yes                    accept defaults, no prompts
@@ -352,11 +360,23 @@ export async function main(argv: string[]): Promise<number> {
     }
     if (action === 'update') {
       const result = await cmdCatalogUpdate(homedir());
-      console.log(`catalog updated: ${result.models} models`);
-      console.log(`  path: ${result.path}`);
-      console.log(`  fetched: ${result.fetchedAt}`);
-      console.log(AA_ATTRIBUTION);
-      return 0;
+      if ('error' in result.aa) {
+        console.error(`Artificial Analysis catalog not updated: ${result.aa.error.message}`);
+      } else {
+        console.log(`catalog updated: ${result.aa.models} models`);
+        console.log(`  path: ${result.aa.path}`);
+        console.log(`  fetched: ${result.aa.fetchedAt}`);
+        console.log(AA_ATTRIBUTION);
+      }
+      if ('error' in result.aiPricing) {
+        console.error(`ai-pricing catalog not updated: ${result.aiPricing.error.message}`);
+      } else {
+        console.log(`ai-pricing catalog updated: ${result.aiPricing.models} models`);
+        console.log(`  path: ${result.aiPricing.path}`);
+        console.log(`  fetched: ${result.aiPricing.fetchedAt}`);
+        console.log(AI_PRICING_ATTRIBUTION);
+      }
+      return 'error' in result.aa || 'error' in result.aiPricing ? 1 : 0;
     }
     const path = aaCatalogPath(homedir());
     const catalog = loadAaCatalog(homedir());
@@ -367,6 +387,130 @@ export async function main(argv: string[]): Promise<number> {
     const age = Math.max(0, Date.now() - Date.parse(catalog.fetchedAt));
     console.log(`catalog: ${catalog.models ? Object.keys(catalog.models).length : 0} models; age ${Math.floor(age / 1000)}s`);
     console.log(`  path: ${path}`);
+    return 0;
+  }
+
+  if (command === 'usage') {
+    // parseArgs is strict by default: an unrecognized flag throws rather than
+    // being silently ignored — for a cost report, quietly falling back to the
+    // default window on a misspelled `--since` would be materially misleading.
+    const { values } = parseArgs({
+      args: rest,
+      options: {
+        by: { type: 'string' },
+        since: { type: 'string' },
+        session: { type: 'string' },
+        json: { type: 'boolean', default: false },
+      },
+    });
+    const by = (values.by ?? 'model') as UsageDimension;
+    if (!['model', 'role', 'tier', 'gateway', 'session', 'project'].includes(by)) {
+      throw new Error('sonata usage --by must be one of: model | role | tier | gateway | session | project');
+    }
+    const report = await cmdUsage({
+      home: homedir(),
+      since: values.since ?? '7d',
+      by,
+      session: values.session,
+      json: values.json,
+    });
+    if (values.json) {
+      console.log(JSON.stringify(report, null, 2));
+      return 0;
+    }
+    for (const bucket of report.buckets) {
+      console.log(`${bucket.label.padEnd(30)} ${String(bucket.requests).padStart(8)} ${String(bucket.input).padStart(12)} ${String(bucket.output).padStart(10)}  ${bucket.costUsd === 0 && bucket.unpricedRequests === bucket.requests ? '—' : `$${bucket.costUsd.toFixed(4)}`}`);
+    }
+    console.log(`\npriced total   $${report.pricedTotalUsd.toFixed(4)}`);
+    if (report.unpriced.requests > 0) {
+      console.log(`unpriced       ${report.unpriced.requests} requests · ${report.unpriced.input} in · ${report.unpriced.output} out`);
+    }
+    console.log('native path only — `sonata dispatch` runs bypass the router and cannot be measured');
+    if (report.priceCacheAgeMs !== undefined) {
+      console.log(`prices: ai-pricing.fyi cache ${Math.floor(report.priceCacheAgeMs / 86_400_000)}d old`);
+    }
+    return 0;
+  }
+
+  if (command === 'status') {
+    // parseArgs is strict by default: an unknown flag throws rather than being
+    // silently ignored — a misspelled `--session` must not silently fall back
+    // to the most recent session's rows.
+    const { values } = parseArgs({
+      args: rest,
+      options: {
+        session: { type: 'string' },
+        all: { type: 'boolean', default: false },
+      },
+    });
+    if (values.session !== undefined && values.all) {
+      throw new Error('sonata status: --session and --all are mutually exclusive');
+    }
+    const home = homedir();
+    let port: number | undefined;
+    try {
+      port = loadConfig(process.cwd(), home).native?.ports.router;
+    } catch { /* no config here — ledger rows below still report */ }
+    const up = port === undefined ? false : await isSonataRouter(port);
+    console.log(up ? `router: up on localhost:${port}` : port === undefined ? 'router: unknown (no sonata.toml here)' : 'router: down');
+
+    // The last hour of routes by default, narrowed to the most recent session
+    // — unless --all asks for every session or --session names one specifically.
+    let rows = readRows(home, Date.now() - 3_600_000);
+    if (values.all) {
+      // keep every session's rows
+    } else if (values.session !== undefined) {
+      rows = rows.filter((row) => row.session === values.session);
+    } else {
+      // The most recent session is the one whose newest row is newest.
+      const sessions = new Map<string, number>();
+      for (const row of rows) {
+        if (row.session === undefined) continue;
+        const ts = Date.parse(row.ts);
+        const prev = sessions.get(row.session);
+        if (prev === undefined || ts > prev) sessions.set(row.session, ts);
+      }
+      let newest: { id: string; ts: number } | undefined;
+      for (const [id, ts] of sessions) {
+        if (newest === undefined || ts > newest.ts) newest = { id, ts };
+      }
+      rows = newest === undefined ? [] : rows.filter((row) => row.session === newest.id);
+    }
+
+    const recent = recentRoutes(rows, 10);
+    if (recent.length === 0) {
+      console.log('no routes in the last hour');
+    } else {
+      for (const line of recent) {
+        const served = line.served ?? '(none — all candidates failed)';
+        console.log(`${line.status}  ${line.alias.padEnd(24)} -> ${served.padEnd(20)} ${line.input} in / ${line.output} out`);
+        if (line.attempts.length > 0) {
+          for (const a of line.attempts) console.log(`    attempt ${a.key}: ${a.status}`);
+        }
+      }
+    }
+    console.log('reach and routing state live in `sonata route status`');
+    return 0;
+  }
+
+  if (command === 'runs') {
+    const { values } = parseArgs({
+      args: rest,
+      options: { json: { type: 'boolean', default: false } },
+    });
+    const runs = summarizeRuns(process.cwd());
+    if (values.json) {
+      console.log(JSON.stringify(runs, null, 2));
+      return 0;
+    }
+    if (runs.length === 0) {
+      console.log('no runs — `sonata run` or `sonata dispatch` to launch one');
+      return 0;
+    }
+    for (const r of runs) {
+      const flags = `${r.state}${r.degraded ? ' degraded' : ''}${r.report ? ' report' : ''}`;
+      console.log(`${r.id.padEnd(8)} ${flags.padEnd(24)} ${(r.role ?? '—').padEnd(8)} ${r.model ?? '—'} ${r.started ?? ''}`);
+    }
     return 0;
   }
 
@@ -492,6 +636,7 @@ export async function main(argv: string[]): Promise<number> {
       if (action === 'status') {
         const active = (['project', 'global'] as const).filter((name) => status.scopes[name].on || status.scopes[name].auto);
         console.log(`  scopes: ${active.length > 0 ? active.join(', ') : 'none'}`);
+        console.log('  see `sonata status` for what the router has actually served recently');
       }
       if (status.auto) {
         console.log('  auto:   on — routing turns on only while a foreign-model subagent runs');

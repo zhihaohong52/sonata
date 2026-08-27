@@ -53,6 +53,9 @@ The CLI (after `npm link`):
   - **Two measured facts justify that shape.** **Adding** the routing env is picked up by an already-running session within seconds — verified live 2026-08-27 with routing off at dispatch, the `SubagentStart` hook turning it on, and the router logging `model=sonata-explore-simple -> gpt-5.6-luna -> litellm` moments later, which is why a subagent's very first request is already routed. **Removing** it is observed only eventually, on a timescale not yet measured.
   - **Do not "fix" Remote Control by cleaning the file on a timer after SessionStart.** That was tried (`bdf8e27`, reverted in `f5ca015`) on the theory that a routed session *latches* — that once it has read `ANTHROPIC_BASE_URL`, removing the key cannot un-route it. Two fresh sessions appeared to confirm it, each still routing across several turns after removal. **The latch is a cache with a lifetime, not a permanent state.** The session that developed the change kept working for tens of minutes and then began sending `sonata-*` aliases to `api.anthropic.com`, which answers "issue with the selected model … it may not exist". That is worse than the bug it replaced: losing Remote Control is visible at launch, whereas a foreign-model agent dying mid-task reads as a defect in the agent's own work.
   - **An install predating this carries only the session pair, and would never route.** `autoInstalled` therefore requires all four hooks, so `sonata doctor` reports a stale install rather than a working one; the fix is re-running `sonata route auto`
+- `sonata usage [--since 7d] [--by model|role|tier|gateway|session|project] [--session <id>] [--json]` — tokens and cost from the router's ledger. **Native path only**: a `sonata dispatch` run executes in the foreign CLI's own process and never transits the router, so its tokens are unobservable. Unpriced volume is reported beside the priced total, never folded into it — a total that treats unknown as zero under-reports silently
+- `sonata status [--session <id>|--all]` — whether the router is up and on which port, then the recent alias → candidate served → tokens → failed attempts decisions from the ledger (the last hour by default; `--session` narrows to one session, `--all` skips the narrowing). Reachability and routing-state live in `sonata route status`, which reports whether *settings* route this project's sessions
+- `sonata runs [--json]` — list this project's dispatch runs. `sonata log <id>` previously required an id with no way to find one
 - `sonata gc` — kill finished tmux sessions
 
 ## Architecture
@@ -88,13 +91,15 @@ Key design points:
 - **`sonata init`'s interactive TUI is an Ink app** (`src/tui-ink/`), not the hand-rolled prompt functions. The pure list primitives in `src/tui.ts` (`parseKey`/`reduce`/`renderList`) and the `select`/`confirm`/`runList` prompts are retained for the non-Ink interactive prompts that remain — init's hook-scope, tier-routing offer, and confirm steps, and `cli.ts`'s `confirm` — and are intentionally not deleted.
 - **The provider-setup step is a menu**: `Import from other harnesses` bulk-imports providers with detected Codex or OpenCode credentials, while `Add provider` lets the user pick any known provider or enter a fully custom provider (name, base URL, and wire format). Custom providers always use API-key authentication; Sonata has no generic OAuth flow beyond the Codex and GitHub Copilot LiteLLM-backed device flows.
 - **A tier is a rank, not a fixed model.** `RankedSelect` (`src/tui-ink/components/ranked-select*`) lets `sonata init` capture a *ranking* rather than a set: selection order **is** the ranking, so no separate up/down step is needed to express "try this one first, that one if it fails". `proposeTiers` (`src/catalog.ts`) seeds the initial order from a cached Artificial Analysis catalog (coding index for capability, blended price for cost) when one exists, falling back to a curated table otherwise.
+- **Usage is read from the SSE stream, not from LiteLLM's cost headers.** LiteLLM does emit `x-litellm-response-cost-*` with no database configured, but headers flush before the body, so on a streaming request no output token exists yet and the cost is structurally `0` — and every Claude Code request streams. Tokens come from `message_start` merged with the final `message_delta`; sonata computes cost itself. The headers still carry `x-litellm-model-name` (which ranked candidate served) and `x-litellm-call-id`, which the ledger records as `litellmModel` and `callId`.
+- **A scraped price is only applied where the gateway says which public provider it is.** ai-pricing.fyi prices public serving providers, and one model spans an 8× range across five of them, so inferring which one a gateway resells would produce a number wrong by most of its own magnitude. Absent `pricing_provider`, the row is `unpriced`. ai-pricing.fyi also does not model peak/off-peak pricing, hence the UTC `price.windows` overrides.
 
 ### Source layout
 
-```
+```text
 src/
 ├── cli.ts                CLI entry point; arg parsing, then delegates to src/commands/*
-├── commands/             command implementations (approve, auth, catalog, code, dispatch, doctor, gc, init, log, route, run, serve, sync, tail, verify, wait)
+├── commands/             command implementations (approve, auth, catalog, code, dispatch, doctor, gc, init, log, route, run, runs, serve, status, sync, tail, usage, verify, wait)
 ├── config.ts             config resolution (project → machine), sonata.toml parsing (unified [models], [tiers]), KNOWN_HARNESSES, isReadOnlyRole, resolveTierAlias, harnessModelFor
 ├── catalog.ts            model normalization (normalizeModelName), curated capability/cost table, proposeTiers, AA catalog cache (loadAaCatalog, aaCatalogPath, AA_ATTRIBUTION)
 ├── detect.ts             harness catalogues (`opencode models`, `pi --list-models`, reasonix doctor) → ModelRef, provider grouping; WELL_KNOWN_PROVIDER_URLS
@@ -106,7 +111,11 @@ src/
 ├── tui.ts                Minimal zero-dependency TUI primitives — pure parseKey/reduce/renderList so list behaviour is testable without a TTY; retained for the non-Ink prompts (init's hook scope, tier-routing offer, prune confirm)
 ├── watchdog.ts           run timeout enforcement
 ├── mode.ts               permission-mode mapping (plan/default/acceptEdits/bypassPermissions/auto)
-├── native/               native path — credentials.ts (gateway keys), litellm.ts (managed LiteLLM child config, now fed by unified [models] too), router.ts (local routing proxy; tier alias resolution, ranked fallback, cooldowns), models.ts (BYOK /models discovery)
+├── ledger.ts             the router's append-only usage ledger (one JSON line per request, daily files under ~/.config/sonata/usage/, 30-day retention)
+├── pricing.ts            per-model/per-gateway price tables, optional UTC price windows, 0-vs-unpriced resolution
+├── aipricing.ts          ai-pricing.fyi per-token rate cache (per-token rates for public serving providers)
+├── sessions.ts           session → project map for attributing native requests to a project
+├── native/               native path — credentials.ts (gateway keys), litellm.ts (managed LiteLLM child config, now fed by unified [models] too), router.ts (local routing proxy; tier alias resolution, ranked fallback, cooldowns), models.ts (BYOK /models discovery), usage.ts (token accounting from the SSE stream)
 ├── types.ts              shared types
 ├── tui-ink/              Ink app for `sonata init`; components/ranked-select-state.ts + ranked-select.tsx (RankedSelect — selection order is the ranking)
 └── adapters/

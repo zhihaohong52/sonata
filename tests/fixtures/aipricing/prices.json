@@ -1,0 +1,12 @@
+{
+  "data": [
+    { "canonical_slug": "deepseek-v4-flash", "provider_slug": "deepseek", "metric": "input_token", "unit": "per_1m_tokens", "currency": "USD", "price_numeric": 0.44, "tier_key": null, "batch_flag": 0 },
+    { "canonical_slug": "deepseek-v4-flash", "provider_slug": "deepseek", "metric": "output_token", "unit": "per_1m_tokens", "currency": "USD", "price_numeric": 1.32, "tier_key": null, "batch_flag": 0 },
+    { "canonical_slug": "deepseek-v4-flash", "provider_slug": "deepseek", "metric": "cached_input_token", "unit": "per_1m_tokens", "currency": "USD", "price_numeric": 0.014, "tier_key": null, "batch_flag": 0 },
+    { "canonical_slug": "deepseek-v4-flash", "provider_slug": "fireworks", "metric": "input_token", "unit": "per_1m_tokens", "currency": "USD", "price_numeric": 0.9, "tier_key": null, "batch_flag": 0 },
+    { "canonical_slug": "deepseek-v4-flash-0731", "provider_slug": "deepseek", "metric": "input_token", "unit": "per_1m_tokens", "currency": "USD", "price_numeric": 0.44, "tier_key": null, "batch_flag": 0 },
+    { "canonical_slug": "gpt-5.6-luna", "provider_slug": "openai", "metric": "input_token", "unit": "per_1m_tokens", "currency": "USD", "price_numeric": 5, "tier_key": "batch", "batch_flag": 1 },
+    { "canonical_slug": "gpt-5.6-luna", "provider_slug": "openai", "metric": "input_token", "unit": "per_1m_tokens", "currency": "EUR", "price_numeric": 4, "tier_key": null, "batch_flag": 0 },
+    { "canonical_slug": "gpt-5.6-luna", "provider_slug": "openai", "metric": "input_token", "unit": "per_1k_tokens", "currency": "USD", "price_numeric": 0.005, "tier_key": null, "batch_flag": 0 }
+  ]
+}
