@@ -35,7 +35,11 @@ const UNITS: Record<string, number> = { m: 60_000, h: 3_600_000, d: 86_400_000 }
 export function parseDuration(text: string): number {
   const match = /^(\d+)([mhd])$/.exec(text.trim());
   if (match === null) throw new Error(`sonata usage: invalid duration "${text}" — use 30m, 12h or 7d`);
-  return Number(match[1]) * UNITS[match[2]];
+  const duration = Number(match[1]) * UNITS[match[2]];
+  // A long enough digit run parses as a Number but overflows the multiplication
+  // to Infinity, which would silently select the entire ledger as the cutoff.
+  if (!Number.isFinite(duration)) throw new Error(`sonata usage: invalid duration "${text}" — use 30m, 12h or 7d`);
+  return duration;
 }
 
 function labelOf(row: LedgerRow, by: UsageDimension, sessions: Record<string, SessionRecord>): string {

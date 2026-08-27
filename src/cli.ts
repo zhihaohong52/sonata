@@ -386,22 +386,30 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   if (command === 'usage') {
-    const flag = (name: string): string | undefined => {
-      const i = rest.indexOf(`--${name}`);
-      return i === -1 ? undefined : rest[i + 1];
-    };
-    const by = (flag('by') ?? 'model') as UsageDimension;
+    // parseArgs is strict by default: an unrecognized flag throws rather than
+    // being silently ignored — for a cost report, quietly falling back to the
+    // default window on a misspelled `--since` would be materially misleading.
+    const { values } = parseArgs({
+      args: rest,
+      options: {
+        by: { type: 'string' },
+        since: { type: 'string' },
+        session: { type: 'string' },
+        json: { type: 'boolean', default: false },
+      },
+    });
+    const by = (values.by ?? 'model') as UsageDimension;
     if (!['model', 'role', 'tier', 'gateway', 'session', 'project'].includes(by)) {
       throw new Error('sonata usage --by must be one of: model | role | tier | gateway | session | project');
     }
     const report = await cmdUsage({
       home: homedir(),
-      since: flag('since') ?? '7d',
+      since: values.since ?? '7d',
       by,
-      session: flag('session'),
-      json: rest.includes('--json'),
+      session: values.session,
+      json: values.json,
     });
-    if (rest.includes('--json')) {
+    if (values.json) {
       console.log(JSON.stringify(report, null, 2));
       return 0;
     }

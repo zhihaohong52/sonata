@@ -23,6 +23,10 @@ describe('parseDuration', () => {
   it('rejects nonsense', () => {
     expect(() => parseDuration('soon')).toThrow(/duration/i);
   });
+  it('rejects a duration that overflows to Infinity', () => {
+    // 306 nines parses as a finite Number (1e306) but multiplies past Number.MAX_VALUE.
+    expect(() => parseDuration('9'.repeat(306) + 'd')).toThrow(/duration/i);
+  });
 });
 
 describe('aggregate', () => {
@@ -42,6 +46,9 @@ describe('aggregate', () => {
 
   it('counts a known-zero rate as priced, not unpriced', () => {
     const report = aggregate([row({ price: { source: 'gateway', totalUsd: 0 } })], 'model', {});
+    // The row must be counted at all (a $0 charge that went missing read the
+    // same as a free tier until these two assertions discriminate it).
+    expect(report.buckets[0]).toMatchObject({ requests: 1, unpricedRequests: 0, costUsd: 0 });
     expect(report.unpriced.requests).toBe(0);
     expect(report.pricedTotalUsd).toBe(0);
   });
