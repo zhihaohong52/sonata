@@ -530,6 +530,9 @@ install will not litter unrelated repositories.
 | `sonata code` | Launch a Claude Code session routed through the local proxy (passes `claude` args through) |
 | `sonata route on\|off\|status [--global]` | Route every plain `claude` session in the project (or, with `--global`, every project) through the proxy via settings.local.json/settings.json |
 | `sonata route auto\|manual [--global]` | Route each session for its lifetime via SessionStart/SessionEnd hooks, keeping Remote Control |
+| `sonata usage [--since 7d] [--by model\|role\|tier\|gateway\|session\|project]` | Tokens and cost from the router's ledger (**native path only** — `sonata dispatch` runs never transit the router and are unobservable); unpriced volume is reported separately, never folded into the total |
+| `sonata status [--session <id>\|--all]` | What the router is doing now (port, uptime, litellm health, cooling candidates) and recent alias → candidates → server decisions; distinct from `sonata route status` |
+| `sonata runs [--json]` | List this project's dispatch runs |
 | `sonata gc` | Kill finished tmux sessions |
 
 ## Configuration

@@ -23,6 +23,19 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   would otherwise carry only the session pair and never route at all. Fix by
   re-running `sonata route auto`.
 
+### Added
+- `sonata usage`, `sonata status` and `sonata runs`, over a new append-only
+  ledger the router writes (one JSON line per request, daily files under
+  `~/.config/sonata/usage/`, 30-day retention).
+- Per-model and per-gateway price tables in `sonata.toml`, with optional UTC
+  time windows for providers that charge different rates off-peak.
+- `sonata catalog update` also caches per-token rates from ai-pricing.fyi.
+
+### Notes
+- `sonata usage` measures the native path only; `sonata dispatch` runs never
+  transit the router and cannot be measured.
+- Unpriced volume is reported separately and never summed into the total.
+
 ## [0.2.1] - 2026-08-26
 
 ### Fixed
