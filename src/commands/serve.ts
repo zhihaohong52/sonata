@@ -4,13 +4,16 @@ import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unl
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import { loadAiPricing } from '../aipricing.js';
 import { configPath as resolveSonataConfigPath, loadConfig, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
+import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
 import { codexAuthPath, opencodeAuthPath, readChatGptOAuth } from '../native/codex-auth.js';
 import { credentialDir } from '../native/oauth-login.js';
 import { readCopilotToken } from '../native/copilot-auth.js';
 import { envVarForGateway, litellmConfigYaml } from '../native/litellm.js';
 import { createRouterServer } from '../native/router.js';
+import { resolvePrice } from '../pricing.js';
 import { timestampedLogPath } from './init-log.js';
 
 export interface ServeHandle {
@@ -55,6 +58,8 @@ export interface ServeDeps {
   litellmExitTimeoutMs?: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Test seam: receives one priced row per request, so tests capture rows without touching disk. */
+  recordUsage?: (row: LedgerRow) => void;
 }
 
 /**
@@ -365,6 +370,26 @@ function close(server: ReturnType<typeof createRouterServer>): Promise<void> {
   });
 }
 
+/**
+ * Attaches a price to a row the router produced unpriced.
+ *
+ * Pricing lives here rather than in the router because it needs the config and
+ * the price cache, and because a token count must never be lost to a pricing
+ * failure — the row is written either way, with `source: 'none'` when no rate
+ * applies.
+ *
+ * Priced at the row's own timestamp, not at now: a row is priced by when the
+ * request ran, which is what makes a time-windowed rate mean anything.
+ */
+export function priceRow(config: SonataConfig, home: string, row: LedgerRow): LedgerRow {
+  try {
+    const price = resolvePrice(config, row.key, row.tokens, new Date(row.ts), loadAiPricing(home));
+    return { ...row, price };
+  } catch {
+    return row; // an unpriceable row is still a row
+  }
+}
+
 export async function cmdServe(
   opts: { cwd: string; home: string; daemon?: boolean } & ServeDeps,
 ): Promise<ServeHandle> {
@@ -558,6 +583,14 @@ export async function cmdServe(
 
     await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
 
+    // Retention is enforced where the writer starts, so a long-lived daemon
+    // cannot accumulate day-files indefinitely the way opencode's event table
+    // did (6.5 GB, and not something sonata gets to repeat in its own store).
+    try {
+      const removed = pruneLedger(opts.home, LEDGER_RETENTION_DAYS);
+      if (removed > 0) console.log(`ledger: pruned ${removed} day file(s) older than ${LEDGER_RETENTION_DAYS}d`);
+    } catch { /* pruning is housekeeping; it never blocks serving */ }
+
     router = createRouterServer({
       fetch,
       litellmBase: `http://localhost:${native.ports.litellm}`,
@@ -590,6 +623,11 @@ export async function cmdServe(
         });
       },
       litellmReady: () => litellmReady,
+      recordUsage: opts.recordUsage ?? ((row) => {
+        try {
+          appendRow(opts.home, priceRow(loadConfig(opts.cwd, opts.home), opts.home, row));
+        } catch { /* a ledger write never breaks a request */ }
+      }),
     });
 
     try {
