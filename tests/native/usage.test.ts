@@ -121,7 +121,7 @@ describe('usageFromJsonBody', () => {
     expect(usageFromJsonBody(Buffer.from('{}')).complete).toBe(false);
   });
 
-  it.each(['null', '{}', '{"output_tokens":"twelve"'])('reports incomplete for a body with unusable usage %s', (usage) => {
+  it.each(['null', '{}', '{"output_tokens":"twelve"}'])('reports incomplete for a body with unusable usage %s', (usage) => {
     expect(usageFromJsonBody(Buffer.from(`{"usage":${usage}}`)).complete).toBe(false);
   });
 
