@@ -79,13 +79,17 @@ export function resolvePrice(
 
   const modelRates = ratesFor(model.price, at);
   if (modelRates !== undefined) {
-    return { source: 'model', totalUsd: costOf(tokens, modelRates) };
+    const totalUsd = costOf(tokens, modelRates);
+    if (!Number.isFinite(totalUsd)) return { source: 'none' };
+    return { source: 'model', totalUsd };
   }
 
   const gateway = model.gateway === undefined ? undefined : config.native?.gateways[model.gateway];
   const gatewayRates = ratesFor(gateway?.price, at);
   if (gatewayRates !== undefined) {
-    return { source: 'gateway', totalUsd: costOf(tokens, gatewayRates) };
+    const totalUsd = costOf(tokens, gatewayRates);
+    if (!Number.isFinite(totalUsd)) return { source: 'none' };
+    return { source: 'gateway', totalUsd };
   }
 
   const provider = gateway?.pricingProvider;
@@ -95,9 +99,11 @@ export function resolvePrice(
   const scraped = aiPricing.models[normalizeModelName(model.id)]?.[provider];
   if (scraped === undefined) return { source: 'none' };
 
+  const totalUsd = costOf(tokens, scraped);
+  if (!Number.isFinite(totalUsd)) return { source: 'none' };
   return {
     source: 'ai-pricing',
-    totalUsd: costOf(tokens, scraped),
+    totalUsd,
     observedAt: aiPricing.fetchedAt,
   };
 }

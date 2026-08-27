@@ -172,4 +172,15 @@ base_url = "https://example.invalid/v1"
       observedAt: '2026-08-26T15:31:30.637Z',
     });
   });
+
+  it('treats a non-finite computed price as unpriced, not a fabricated zero', () => {
+    // A malformed ai-pricing cache (e.g. a non-numeric scraped rate that JSON
+    // loaded as Infinity) used to multiply out to Infinity silently, then
+    // round-trip as a confident zero. It must instead decline to price.
+    const badCache: AiPricingCache = {
+      fetchedAt: '2026-08-26T15:31:30.637Z',
+      models: { 'deepseek-v4-flash': { deepseek: { input: Infinity, output: 9 } } },
+    };
+    expect(resolvePrice(noGatewayPrice, 'scraped', tokens, now, badCache)).toEqual({ source: 'none' });
+  });
 });
