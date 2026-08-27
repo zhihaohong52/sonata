@@ -19,13 +19,16 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove } from './commands/auth.js';
-import { cmdServe, cmdRestart, startServeDaemon } from './commands/serve.js';
+import { cmdServe, cmdRestart, startServeDaemon, isSonataRouter } from './commands/serve.js';
 import { cmdCode } from './commands/code.js';
+import { recentRoutes } from './commands/status.js';
+import { summarizeRuns } from './commands/runs.js';
 import { cmdRoute, cmdRouteSession, cmdRouteSubagent, type RouteAction } from './commands/route.js';
 import { cmdCatalogUpdate } from './commands/catalog.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
 import { AI_PRICING_ATTRIBUTION } from './aipricing.js';
 import { cmdUsage, type UsageDimension } from './commands/usage.js';
+import { readRows } from './ledger.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
 
@@ -48,6 +51,8 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata auth      manage gateway credentials (list/add/remove/login)
   sonata catalog   show or refresh the Artificial Analysis model catalog
   sonata usage     report native-path token and cost usage from the ledger
+  sonata status    router health and the last hour of routes
+  sonata runs      list every run, with state and whether it wrote a report
 
   init flags (skip the prompts):
     --yes                    accept defaults, no prompts
@@ -423,6 +428,85 @@ export async function main(argv: string[]): Promise<number> {
     console.log('native path only — `sonata dispatch` runs bypass the router and cannot be measured');
     if (report.priceCacheAgeMs !== undefined) {
       console.log(`prices: ai-pricing.fyi cache ${Math.floor(report.priceCacheAgeMs / 86_400_000)}d old`);
+    }
+    return 0;
+  }
+
+  if (command === 'status') {
+    // parseArgs is strict by default: an unknown flag throws rather than being
+    // silently ignored — a misspelled `--session` must not silently fall back
+    // to the most recent session's rows.
+    const { values } = parseArgs({
+      args: rest,
+      options: {
+        session: { type: 'string' },
+        all: { type: 'boolean', default: false },
+      },
+    });
+    if (values.session !== undefined && values.all) {
+      throw new Error('sonata status: --session and --all are mutually exclusive');
+    }
+    const home = homedir();
+    const port = loadConfig(process.cwd(), home).native?.ports.router;
+    const up = port === undefined ? false : await isSonataRouter(port);
+    console.log(up ? `router: up on localhost:${port}` : 'router: down');
+
+    // The last hour of routes by default, narrowed to the most recent session
+    // — unless --all asks for every session or --session names one specifically.
+    let rows = readRows(home, Date.now() - 3_600_000);
+    if (values.all) {
+      // keep every session's rows
+    } else if (values.session !== undefined) {
+      rows = rows.filter((row) => row.session === values.session);
+    } else {
+      // The most recent session is the one whose newest row is newest.
+      const sessions = new Map<string, number>();
+      for (const row of rows) {
+        if (row.session === undefined) continue;
+        const ts = Date.parse(row.ts);
+        const prev = sessions.get(row.session);
+        if (prev === undefined || ts > prev) sessions.set(row.session, ts);
+      }
+      let newest: { id: string; ts: number } | undefined;
+      for (const [id, ts] of sessions) {
+        if (newest === undefined || ts > newest.ts) newest = { id, ts };
+      }
+      rows = newest === undefined ? [] : rows.filter((row) => row.session === newest.id);
+    }
+
+    const recent = recentRoutes(rows, 10);
+    if (recent.length === 0) {
+      console.log('no routes in the last hour');
+    } else {
+      for (const line of recent) {
+        const served = line.served ?? '(none — all candidates failed)';
+        console.log(`${line.status}  ${line.alias.padEnd(24)} -> ${served.padEnd(20)} ${line.input} in / ${line.output} out`);
+        if (line.attempts.length > 0) {
+          for (const a of line.attempts) console.log(`    attempt ${a.key}: ${a.status}`);
+        }
+      }
+    }
+    console.log('reach and routing state live in `sonata route status`');
+    return 0;
+  }
+
+  if (command === 'runs') {
+    const { values } = parseArgs({
+      args: rest,
+      options: { json: { type: 'boolean', default: false } },
+    });
+    const runs = summarizeRuns(process.cwd());
+    if (values.json) {
+      console.log(JSON.stringify(runs, null, 2));
+      return 0;
+    }
+    if (runs.length === 0) {
+      console.log('no runs — `sonata run` or `sonata dispatch` to launch one');
+      return 0;
+    }
+    for (const r of runs) {
+      const flags = `${r.state}${r.degraded ? ' degraded' : ''}${r.report ? ' report' : ''}`;
+      console.log(`${r.id.padEnd(8)} ${flags.padEnd(24)} ${(r.role ?? '—').padEnd(8)} ${r.model ?? '—'} ${r.started ?? ''}`);
     }
     return 0;
   }
