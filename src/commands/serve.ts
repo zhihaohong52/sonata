@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -823,6 +823,23 @@ export async function startServeDaemon(
   }
 }
 
+/**
+ * Finds the OS pid bound to a TCP port, purely so `stopServe` can print it —
+ * sonata never acts on what this returns. `lsof -ti` prints one pid per line;
+ * an empty or ambiguous (more than one) result means "don't know", which the
+ * caller treats the same as a lookup failure.
+ */
+function defaultFindPortPid(port: number): string | undefined {
+  try {
+    const out = execFileSync('lsof', ['-ti', `:${port}`], { encoding: 'utf8' }).trim();
+    if (out === '') return undefined;
+    const pids = out.split('\n').filter((line) => line !== '');
+    return pids.length === 1 ? pids[0] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface StopDeps {
   probeHealth?: typeof fetch;
   now?: () => number;
@@ -832,6 +849,13 @@ export interface StopDeps {
   kill?: (pid: number) => void;
   /** Test seam — production default checks the OS for the pid. */
   isAlive?: (pid: number) => boolean;
+  /**
+   * Test seam — production default shells out to `lsof -ti:<port>` purely to
+   * *print* the result in the takeover message below; sonata never kills a
+   * pid this way itself. Returns `undefined` on any failure or ambiguity
+   * (0 or more than 1 pid found).
+   */
+  findPortPid?: (port: number) => string | undefined;
 }
 
 /**
@@ -881,10 +905,15 @@ export async function stopServe(
 
   const state = readServeState(opts.home);
   if (state?.routerPid === undefined && state?.litellmPid === undefined) {
+    const findPortPid = opts.findPortPid ?? defaultFindPortPid;
+    const foundPid = findPortPid(port);
+    const nextStep = foundPid !== undefined
+      ? ` Kill it yourself, then run \`sonata serve --daemon\`:\n  kill ${foundPid}`
+      : ' Kill it by hand, then run `sonata serve --daemon`.';
     throw new Error(
       `sonata restart: router port ${port} answers as a sonata router, but no recorded pid for it ` +
       `was found in ${serveStatePath(opts.home)} — it may have been started by a different sonata ` +
-      'install or an older version. Kill it by hand, then run `sonata serve --daemon`.',
+      `install or an older version.${nextStep}`,
     );
   }
 

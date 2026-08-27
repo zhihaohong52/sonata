@@ -1500,9 +1500,28 @@ litellm = 4000
 
   it('refuses to kill when the port answers sonata but no pid was ever recorded', async () => {
     // Never guess a pid by scanning the OS — only a pid sonata itself
-    // recorded is ever killed.
-    await expect(stopServe({ cwd, home, probeHealth: sonataHealth }))
+    // recorded is ever killed. `findPortPid` here simulates the lookup
+    // itself failing (or finding nothing), so the message falls back to the
+    // generic wording rather than naming a pid.
+    await expect(stopServe({ cwd, home, probeHealth: sonataHealth, findPortPid: () => undefined }))
       .rejects.toThrow(/no recorded pid/);
+  });
+
+  it('names a killable pid when the port lookup finds exactly one', async () => {
+    // Sonata still never kills this pid itself — the message only prints it,
+    // as a copy-pasteable next step for the user.
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, findPortPid: () => '48213',
+    }).catch((e) => e as Error);
+    expect((result as Error).message).toMatch(/kill 48213/);
+  });
+
+  it('falls back to the generic message when the port lookup is unavailable or ambiguous', async () => {
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, findPortPid: () => undefined,
+    }).catch((e) => e as Error);
+    expect((result as Error).message).toMatch(/no recorded pid/);
+    expect((result as Error).message).not.toMatch(/kill \d/);
   });
 
   it('throws if the killed pid is still alive, rather than reporting success', async () => {
