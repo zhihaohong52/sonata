@@ -98,6 +98,25 @@ describe('appendRow / readRows', () => {
     expect(back[0].alias).toBe('sonata-code-simple');
   });
 
+  it('skips a persisted row with a null or malformed price', () => {
+    appendRow(home, row());
+    const path = ledgerPathFor(home, new Date('2026-08-27T04:12:07.881Z'));
+    // aggregate() dereferences price.source, so a null/malformed price must be
+    // rejected here rather than throw downstream.
+    writeFileSync(path, `${readFileSync(path, 'utf8')}${JSON.stringify({ ts: '2026-08-27T05:55:00.000Z', alias: 'null-price', price: null })}\n`);
+    writeFileSync(path, `${readFileSync(path, 'utf8')}${JSON.stringify({ ts: '2026-08-27T05:56:00.000Z', alias: 'bad-price', price: { source: 'model' } })}\n`);
+    const back = readRows(home, 0, Date.parse('2026-08-27T06:00:00Z'));
+    expect(back).toHaveLength(1);
+    expect(back[0].alias).toBe('sonata-code-simple');
+  });
+
+  it('keeps rows whose price is a valid billed source', () => {
+    appendRow(home, row({ alias: 'ai', price: { source: 'ai-pricing', totalUsd: 0.0012 } }));
+    appendRow(home, row({ alias: 'none', price: { source: 'none' } }));
+    const back = readRows(home, 0, Date.parse('2026-08-27T06:00:00Z'));
+    expect(back.map((r) => r.alias)).toEqual(['ai', 'none']);
+  });
+
   it('readers survive a ledger containing an incomplete persisted row', () => {
     appendRow(home, row());
     appendRow(home, row({ alias: 'incomplete', tokens: undefined as never, attempts: undefined as never }));

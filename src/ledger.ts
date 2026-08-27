@@ -92,17 +92,29 @@ export function readRows(home: string, sinceMs: number, now: number = Date.now()
   return out;
 }
 
+function priceIsValid(price: LedgerRow['price']): boolean {
+  if (price === null || typeof price !== 'object' || Array.isArray(price)) return false;
+  if (price.source === 'none') return true;
+  if (price.source === 'model' || price.source === 'gateway' || price.source === 'ai-pricing') {
+    return typeof price.totalUsd === 'number' && Number.isFinite(price.totalUsd);
+  }
+  return false;
+}
+
 /**
  * A persisted row is untrusted input. Every downstream reader (`aggregate`,
- * `recentRoutes`) reaches into `tokens.input`/`tokens.output` and
- * `attempts.length`, so a parseable-but-incomplete row must be dropped here
- * rather than crash those readers later.
+ * `recentRoutes`) reaches into `tokens.input`/`tokens.output`, `attempts.length`
+ * and `price.source`/`price.totalUsd`, so a parseable-but-incomplete row must be
+ * dropped here rather than crash those readers later. `aggregate` dereferences
+ * `price.source` directly, so a `null` or otherwise malformed price must be
+ * rejected too, not just an absent `tokens`/`attempts`.
  */
 function hasRequiredFields(row: LedgerRow): boolean {
   const tokens = row.tokens;
   if (tokens === null || typeof tokens !== 'object' || Array.isArray(tokens)) return false;
   if (typeof tokens.input !== 'number' || !Number.isFinite(tokens.input)) return false;
   if (typeof tokens.output !== 'number' || !Number.isFinite(tokens.output)) return false;
+  if (!priceIsValid(row.price)) return false;
   return Array.isArray(row.attempts);
 }
 

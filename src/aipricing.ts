@@ -74,10 +74,14 @@ export function loadAiPricing(home: string): AiPricingCache | undefined {
 }
 
 /**
- * A provider record must be non-empty and every present rate a finite,
+ * A provider record must be non-empty and contain no unrecognized rate keys
+ * and at least one recognized one, with every present rate a finite,
  * non-negative number — otherwise `costOf` would silently price volume at 0
- * (empty record) or produce a wrong `totalUsd` from a string/non-finite value.
+ * (empty record, or one with no recognized key) or produce a wrong `totalUsd`
+ * from a string/non-finite value.
  */
+const RATE_KEYS: ReadonlySet<string> = new Set(['input', 'cachedInput', 'output']);
+
 function modelsAreValid(models: Record<string, Record<string, Rates>>): boolean {
   for (const providers of Object.values(models)) {
     if (providers === null || typeof providers !== 'object' || Array.isArray(providers)) return false;
@@ -85,11 +89,17 @@ function modelsAreValid(models: Record<string, Record<string, Rates>>): boolean 
     if (entries.length === 0) return false;
     for (const [provider, rates] of entries) {
       if (rates === null || typeof rates !== 'object' || Array.isArray(rates)) return false;
-      const values = Object.values(rates);
-      if (values.length === 0) return false; // an empty record prices nothing, so `costOf` would say 0
-      for (const value of values) {
+      const entries2 = Object.entries(rates);
+      let recognized = 0;
+      for (const [key, value] of entries2) {
+        // A key outside `Rates` (e.g. `{ unexpected: 1 }`) reads as an empty
+        // record to `costOf` — every recognized field defaults to 0 — so it
+        // must be rejected rather than silently billing $0.
+        if (!RATE_KEYS.has(key)) return false;
+        recognized += 1;
         if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return false;
       }
+      if (recognized === 0) return false; // an empty record prices nothing, so `costOf` would say 0
     }
   }
   return true;

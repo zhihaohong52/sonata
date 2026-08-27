@@ -80,4 +80,13 @@ describe('loadAiPricing', () => {
     }));
     expect(loadAiPricing(home)).toBeUndefined();
   });
+
+  it('returns undefined when a provider record has no recognized rate keys', () => {
+    mkdirSync(dirname(aiPricingPath(home)), { recursive: true });
+    writeFileSync(aiPricingPath(home), JSON.stringify({
+      fetchedAt: '2026-08-26T15:31:30.637Z',
+      models: { 'deepseek-v4-flash': { deepseek: { unexpected: 1 } } },
+    }));
+    expect(loadAiPricing(home)).toBeUndefined();
+  });
 });
