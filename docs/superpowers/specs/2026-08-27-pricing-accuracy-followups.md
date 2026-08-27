@@ -34,11 +34,16 @@ service tiers, never time-of-day).
   normalization function paralleling `normalizeAiPricingRows`, and its own
   cache file/gateway declaration (`pricingProvider` may need a second field,
   or a value distinguishing which scraped source to use, if both sources are
-  kept). If both sources have a rate for the same model+provider, recommend
-  genai-prices take precedence over `ai-pricing.fyi`, since genai-prices is the
-  source that models the time-of-day pricing this document is intended to
-  support; revisit that precedence when the follow-up plan is written rather
-  than treating it as a final decision. Both caches should follow the existing
+  kept). If both sources have a rate for the same model+provider, genai-prices may be
+  preferred over `ai-pricing.fyi` because it is the source intended to model
+  time-of-day pricing, but this cannot be an unconditional precedence rule.
+  Before trusting its output as authoritative, the follow-up plan must verify
+  and, if necessary, normalize genai-prices' constraint evaluation for the
+  specific date/time/weekday combinations sonata cares about. At minimum, add
+  boundary tests proving that DeepSeek peak rates do **not** apply before the
+  2026-08-16 change and do **not** apply on Saturday/Sunday. This is a
+  prerequisite check for the implementation plan, not a blocker on writing
+  this queued design sketch. Both caches should follow the existing
   `ai-pricing.fyi` policy: no auto-fetch and refresh only on an explicit
   `sonata catalog update`. `LedgerPrice.source` (`src/ledger.ts`) will also
   need a `'genai-prices'` union variant so `sonata usage` can record which
@@ -85,13 +90,21 @@ missing entirely, so a cache-write-heavy workload is under-reported.
 Proposed fix: add a `cacheCreation` field to `Rates` (`src/config.ts`,
 parallel to `cachedInput`), defaulting to the `input` rate when absent (so
 existing configs with no explicit cache-creation rate keep today's
-behavior — no silent regression), and wire it into `costOf`. This also needs
-to update the already-shipped `RATE_KEYS` allowlist in
-`src/aipricing.ts`'s `modelsAreValid`: it currently accepts only `input`,
-`cachedInput`, and `output`, so a scraped record containing `cacheCreation`
-would otherwise be rejected as invalid immediately. Preserve the fallback to
-`input` when `cacheCreation` is absent. Smaller, self-contained fix — doesn't
-depend on §1/§2 and could ship alone.
+behavior — no silent regression). The new field must be carried through all of
+the relevant paths: the `Rates` interface itself; `parseRates` in
+`src/config.ts`, which must parse the TOML `cache_creation` field;
+`hasRates` in `src/pricing.ts` must count it when checking whether any rate is
+configured; and both the flat/default branch and the window-override branch
+of `ratesFor` in `src/pricing.ts` must copy it into the `Rates` they construct.
+Then wire the effective rate into `costOf`, preserving the fallback to `input`
+when `cacheCreation` is absent. This also needs to update the already-shipped
+`RATE_KEYS` allowlist in `src/aipricing.ts`'s `modelsAreValid`: it currently
+accepts only `input`, `cachedInput`, and `output`, so a scraped record
+containing `cacheCreation` would otherwise be rejected as invalid immediately.
+Tests should cover flat rates, window overrides, cache-creation-only rates (so
+`hasRates` does not wrongly treat them as empty), and fallback to `input` when
+`cacheCreation` is absent. Smaller, self-contained fix — doesn't depend on
+§1/§2 and could ship alone.
 
 ## DeepSeek's real current scheme, for reference
 
