@@ -23,6 +23,7 @@ import type { Settings } from '../settings.js';
 import { configPath as resolveSonataConfigPath, loadConfig, GLOBAL_CONFIG_RELATIVE, parseConfig, type SonataConfig } from '../config.js';
 import { nativeSessionEnv } from './code.js';
 import { isSonataRouter, sonataRouterConfigPath, startServeDaemon } from './serve.js';
+import { recordSession } from '../sessions.js';
 
 /** Where `route` always writes — the project's local, never-shared settings. */
 export function routeSettingsFile(
@@ -740,6 +741,13 @@ export async function cmdRouteSession(
     const current = readSessions(registry);
     writeSessions(registry, current.includes(sessionId) ? current : [...current, sessionId]);
   });
+
+  // Records which project this session belongs to, so `sonata usage --by
+  // project` can attribute the router's rows. Guarded: a session must start
+  // even if this bookkeeping cannot be written.
+  try {
+    recordSession(opts.home, { session: sessionId, cwd: opts.cwd, started: new Date().toISOString() });
+  } catch { /* attribution is a nicety; starting the session is not */ }
 
   // Deliberately does NOT route. Routing on here is what made `route auto`
   // degrade into `route on`: it stayed on while any registered session lived,
