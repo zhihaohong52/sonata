@@ -21,6 +21,14 @@ export interface RouterDeps {
   /** Resolves a `sonata-<role>-<tier>` alias to its ranked routes, or undefined if unknown. */
   resolveTier?: (alias: string) => { role: string; tier: string; routes: TierRoute[] } | undefined;
   /**
+   * Resolves a direct `--model <key>` request's key to its gateway name, so a
+   * direct-model row carries `gateway` and can be priced (pricing's step 2
+   * reads the gateway's own rates). Direct requests never pass through
+   * `resolveTier`, so their key/gateway are the model string and whatever this
+   * returns.
+   */
+  resolveGateway?: (key: string) => string | undefined;
+  /**
    * Fire-and-forget: checks whether sonata.toml's model registry has changed
    * since litellm was last (re)started, restarting it if so. Called once per
    * litellm-bound router request — both a tier request and a direct
@@ -505,7 +513,19 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     deps.checkModelChange?.();
     return withUsageRecording(
       await forwardToLitellm(body, litellmHeaders(headers, deps.litellmKey), req, deps),
-      { startedAt, session, alias: alias ?? '', upstream: 'litellm', attempts: [] },
+      {
+        startedAt,
+        session,
+        alias: alias ?? '',
+        // For a direct `--model <key>` request, `alias` IS the config key.
+        // Recording it (and its gateway) is what lets `resolvePrice` price this
+        // request class at all; without it a direct-model row is `source:
+        // 'none'` even when full price config exists for that exact model.
+        key: alias,
+        gateway: alias === undefined ? undefined : deps.resolveGateway?.(alias),
+        upstream: 'litellm',
+        attempts: [],
+      },
       deps,
     );
   }

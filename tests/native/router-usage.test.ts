@@ -135,6 +135,19 @@ describe('router usage recording', () => {
     expect(rows[0].attempts).toEqual([{ key: 'first', status: 500 }]);
   });
 
+  it('records key and gateway for a direct --model request so it can be priced', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const d = { ...deps(rows, () => sse(DELTA)), resolveGateway: (key: string) => key === 'flash' ? 'acme' : undefined };
+    // A direct model request (not a tier alias) never passes through
+    // `resolveTier`; its key is the model string itself and its gateway comes
+    // from `resolveGateway`.
+    const res = await routeRequest(req('flash'), d);
+    await drain(res.body);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ alias: 'flash', key: 'flash', gateway: 'acme', role: undefined, tier: undefined });
+  });
+
   it('records the anthropic path too', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];

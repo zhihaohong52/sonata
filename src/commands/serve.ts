@@ -614,6 +614,11 @@ export async function cmdServe(
       // Config is re-read per call (not the `config`/`native` closed over
       // above) so a tier edit in sonata.toml takes effect without a restart.
       resolveTier: (alias) => resolveTierAlias(loadConfig(opts.cwd, opts.home), alias),
+      // A direct `--model <key>` request's key maps to its gateway through the
+      // same unified-model table tier resolution uses, so such a row carries
+      // `gateway` and can reach pricing's gateway step. Config is re-read here
+      // too, for the same reason as `resolveTier` above.
+      resolveGateway: (key) => loadConfig(opts.cwd, opts.home).unifiedModels[key]?.gateway,
       // Fire-and-forget, called on every litellm-bound request (direct model
       // calls and each tier candidate alike) — not just tier resolution,
       // since a direct `--model <key>` request for a newly added native-only
