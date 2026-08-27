@@ -46,14 +46,14 @@ describe('router usage recording', () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];
     const res = await routeRequest(req('sonata-code-simple'), deps(rows, () => sse(DELTA, {
-      'x-litellm-model-group': 'flash', 'x-litellm-call-id': 'call-1',
+      'x-litellm-model-name': 'flash', 'x-litellm-call-id': 'call-1',
     })));
     expect(await drain(res.body)).toBe(DELTA);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       session: 'sess-1', alias: 'sonata-code-simple', role: 'code', tier: 'simple',
       key: 'flash', upstream: 'litellm', status: 200, complete: true,
-      callId: 'call-1',
+      litellmModel: 'flash', callId: 'call-1',
     });
     expect(rows[0].tokens).toMatchObject({ input: 100, output: 7 });
   });
