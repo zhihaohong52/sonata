@@ -79,6 +79,7 @@ export function readRows(home: string, sinceMs: number, now: number = Date.now()
         if (parsed === null || typeof parsed !== 'object' || typeof (parsed as { ts?: unknown }).ts !== 'string') continue;
         row = parsed as LedgerRow;
         if (!Number.isFinite(Date.parse(row.ts))) continue;
+        if (!hasRequiredFields(row)) continue;
       } catch {
         // A torn final line (a crash mid-append) must not cost the whole report.
         continue;
@@ -89,6 +90,20 @@ export function readRows(home: string, sinceMs: number, now: number = Date.now()
     }
   }
   return out;
+}
+
+/**
+ * A persisted row is untrusted input. Every downstream reader (`aggregate`,
+ * `recentRoutes`) reaches into `tokens.input`/`tokens.output` and
+ * `attempts.length`, so a parseable-but-incomplete row must be dropped here
+ * rather than crash those readers later.
+ */
+function hasRequiredFields(row: LedgerRow): boolean {
+  const tokens = row.tokens;
+  if (tokens === null || typeof tokens !== 'object' || Array.isArray(tokens)) return false;
+  if (typeof tokens.input !== 'number' || !Number.isFinite(tokens.input)) return false;
+  if (typeof tokens.output !== 'number' || !Number.isFinite(tokens.output)) return false;
+  return Array.isArray(row.attempts);
 }
 
 /** Deletes whole day-files older than the window. Returns how many were removed. */

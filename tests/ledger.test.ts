@@ -6,6 +6,8 @@ import {
   ledgerDir, ledgerPathFor, appendRow, readRows, pruneLedger,
   LEDGER_RETENTION_DAYS, type LedgerRow,
 } from '../src/ledger.js';
+import { aggregate } from '../src/commands/usage.js';
+import { recentRoutes } from '../src/commands/status.js';
 
 let home: string;
 beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'sonata-ledger-')); });
@@ -83,6 +85,27 @@ describe('appendRow / readRows', () => {
 
   it('returns nothing when the ledger has never been written', () => {
     expect(readRows(home, 0, Date.now())).toEqual([]);
+  });
+
+  it('skips a persisted row missing required fields', () => {
+    appendRow(home, row());
+    const path = ledgerPathFor(home, new Date('2026-08-27T04:12:07.881Z'));
+    // A parseable line whose `tokens` and `attempts` are missing must not make
+    // it through as a LedgerRow — aggregate/recentRoutes would crash on it.
+    writeFileSync(path, `${readFileSync(path, 'utf8')}${JSON.stringify({ ts: '2026-08-27T05:50:00.000Z', alias: 'broken' })}\n`);
+    const back = readRows(home, 0, Date.parse('2026-08-27T06:00:00Z'));
+    expect(back).toHaveLength(1);
+    expect(back[0].alias).toBe('sonata-code-simple');
+  });
+
+  it('readers survive a ledger containing an incomplete persisted row', () => {
+    appendRow(home, row());
+    appendRow(home, row({ alias: 'incomplete', tokens: undefined as never, attempts: undefined as never }));
+    const back = readRows(home, 0, Date.parse('2026-08-27T06:00:00Z'));
+    expect(back).toHaveLength(1);
+    // Both readers reach into tokens/attempts; neither may throw.
+    expect(() => aggregate(back, 'model', {})).not.toThrow();
+    expect(() => recentRoutes(back, 10)).not.toThrow();
   });
 });
 
