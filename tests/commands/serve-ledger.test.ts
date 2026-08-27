@@ -39,6 +39,15 @@ describe('priceRow', () => {
     expect(priceRow(CONFIG, home, row()).price).toMatchObject({ source: 'model', totalUsd: 3 });
   });
 
+  it('prices a row shaped like a direct --model request that carries key/gateway', () => {
+    // A direct `--model <key>` request never passes through tier resolution, so
+    // its row carries no role/tier — only the key and gateway that commit 41a9227
+    // made the router record. This is the end-to-end proof: the router's raw row
+    // (key/gateway set) resolves via priceRow against real price config.
+    const directRow = { ...row(), alias: 'flash', role: undefined, tier: undefined };
+    expect(priceRow(CONFIG, home, directRow).price).toMatchObject({ source: 'model', totalUsd: 3 });
+  });
+
   it('leaves a row with an unknown key unpriced rather than zero', () => {
     expect(priceRow(CONFIG, home, row({ key: 'nope' })).price).toEqual({ source: 'none' });
   });

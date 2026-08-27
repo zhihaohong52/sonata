@@ -521,8 +521,10 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
         // Recording it (and its gateway) is what lets `resolvePrice` price this
         // request class at all; without it a direct-model row is `source:
         // 'none'` even when full price config exists for that exact model.
-        key: alias,
-        gateway: alias === undefined ? undefined : deps.resolveGateway?.(alias),
+        // `key` is only set when `alias` is defined, matching how optional
+        // `RecordContext` fields are handled elsewhere — never an own property
+        // with value `undefined`.
+        ...(alias !== undefined ? { key: alias, gateway: deps.resolveGateway?.(alias) } : {}),
         upstream: 'litellm',
         attempts: [],
       },
