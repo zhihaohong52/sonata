@@ -31,6 +31,14 @@ describe('recentRoutes', () => {
     expect(line.status).toBe(529);
   });
 
+  it('surfaces a successful keyless request under its alias, not as a total failure', () => {
+    // An anthropic-path row has no `key` (no tier resolution happened) and no
+    // failed candidates — it succeeded. Rendering `served` as undefined would
+    // present that success as "every candidate failed".
+    const [line] = recentRoutes([row({ key: undefined, attempts: [], upstream: 'anthropic' })], 10);
+    expect(line.served).toBe('sonata-code-simple');
+  });
+
   it('returns nothing for an empty ledger', () => {
     expect(recentRoutes([], 10)).toEqual([]);
   });

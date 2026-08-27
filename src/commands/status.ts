@@ -11,7 +11,8 @@ import type { LedgerRow } from '../ledger.js';
 export interface RouteLine {
   alias: string;
   attempts: { key: string; status: number }[];
-  /** Absent when every candidate failed. */
+  /** Absent when every candidate failed. A successful direct (keyless) model
+   * request — no key, no failed candidates — surfaces its alias instead. */
   served?: string;
   status: number;
   input: number;
@@ -25,7 +26,7 @@ export function recentRoutes(rows: LedgerRow[], limit: number): RouteLine[] {
     .map((row) => ({
       alias: row.alias,
       attempts: row.attempts,
-      served: row.key,
+      served: row.key ?? (row.attempts.length === 0 ? row.alias : undefined),
       status: row.status,
       input: row.tokens.input,
       output: row.tokens.output,
