@@ -26,7 +26,7 @@ This file provides guidance to AI assistants when working with this repository. 
 npm install        # install dependencies
 npm run build      # tsc → dist/
 npm run typecheck  # tsc --noEmit
-npm test           # vitest run (1023 tests; needs tmux — runs against a fake harness)
+npm test           # vitest run (1177 tests; needs tmux — runs against a fake harness)
 npm run dev        # tsx src/cli.ts
 
 npm link           # puts `sonata` on your PATH (until published to npm)

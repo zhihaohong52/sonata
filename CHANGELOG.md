@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/) informally
 (pre-1.0, so minor bumps can carry breaking changes).
 
-## Unreleased
+## [0.3.0] - 2026-08-28
 
 ### Fixed
 - `sonata route auto` degraded into `sonata route on`. Routing turned on at
@@ -22,6 +22,14 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   change is reported by `sonata doctor` as stale rather than working. It
   would otherwise carry only the session pair and never route at all. Fix by
   re-running `sonata route auto`.
+- `sonata restart` could report false success against a stale daemon still
+  holding the router port: `startServeDaemon` accepted any healthy sonata
+  router as proof its own spawn had bound. It now generates a random instance
+  id, hands it to the child it spawns, and waits for a router reporting that
+  exact id — never a stale survivor. `stopServe`'s dead-end refusal (a router
+  with no recorded pid) now prints an actionable `kill <pid>` suggestion via
+  a print-only `lsof -ti:<port> -sTCP:LISTEN` lookup; sonata still never
+  kills a pid it did not itself record.
 
 ### Added
 - `sonata usage`, `sonata status` and `sonata runs`, over a new append-only

@@ -1,6 +1,6 @@
 {
   "name": "@zhihaohong52/sonata",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Foreign-model subagents for Claude Code — dispatch cheaper or different models through their own harnesses, as ordinary subagents",
   "keywords": [
     "claude-code",
