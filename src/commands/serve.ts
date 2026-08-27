@@ -744,8 +744,8 @@ export async function cmdServe(
 
 export interface DaemonDeps {
   spawn?: typeof spawn;
-  /** Resolves true once the router answers on `port`. */
-  probe?: (port: number) => Promise<boolean>;
+  /** Resolves true once the router answers on `port` with the given instance id. */
+  probe?: (port: number, instanceId: string) => Promise<boolean>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   timeoutMs?: number;
@@ -776,7 +776,7 @@ export async function startServeDaemon(
   cwd: string = process.cwd(),
 ): Promise<DaemonResult> {
   const spawnFn = deps.spawn ?? spawn;
-  const probe = deps.probe ?? ((port: number) => isSonataRouter(port));
+  const probe = deps.probe ?? (async (port: number, id: string) => (await sonataRouterInstanceId(port)) === id);
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const timeoutMs = deps.timeoutMs ?? 60_000;
@@ -789,6 +789,13 @@ export async function startServeDaemon(
   mkdirSync(dirname(logPath), { recursive: true });
   const log = openSync(logPath, 'a');
 
+  // Generated here, before spawning, and handed to the child via its own
+  // environment — so the polling loop below can tell its own freshly-spawned
+  // process apart from a stale router that happens to still be answering the
+  // same port, which is what let `sonata restart` false-report success
+  // against a leftover daemon (see the design doc for the reproduction).
+  const instanceId = randomUUID();
+
   // Explicit, not inherited: a daemon started to serve *every* project
   // (`route on/auto --global`) must not bind itself to whichever project's
   // session happened to trigger it first — the router is a single process,
@@ -799,12 +806,13 @@ export async function startServeDaemon(
     detached: true,
     stdio: ['ignore', log, log],
     cwd,
+    env: { ...process.env, SONATA_SERVE_INSTANCE_ID: instanceId },
   });
   child.unref();
 
   const deadline = now() + timeoutMs;
   for (;;) {
-    if (await probe(port)) return { pid: child.pid ?? 0, port, logPath };
+    if (await probe(port, instanceId)) return { pid: child.pid ?? 0, port, logPath };
     if (now() > deadline) {
       throw new Error(
         `sonata serve: the daemon did not answer on port ${port} within ${Math.round(timeoutMs / 1000)}s. ` +

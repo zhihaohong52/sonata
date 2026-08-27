@@ -1361,6 +1361,44 @@ context_window = 128000
     expect(result.port).toBe(4100);
   });
 
+  it('does not accept a stale router with a different instance id as its own', async () => {
+    // The exact bug this fixes: a stale daemon from a previous run is still
+    // answering `sonata:true` on the port when a fresh spawn's poll begins.
+    // The old check (`sonata === true`) would have accepted it immediately;
+    // the fix must keep waiting until the id it generated itself is the one
+    // reported back.
+    let calls = 0;
+    const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: fakeSpawn(),
+      // First two probes see the stale router (wrong id); the third sees the
+      // freshly-spawned one (matching id, since the real default probe reads
+      // the id this call generated and passed to the child's env).
+      probe: async (_port, id) => {
+        calls += 1;
+        return calls >= 3 ? true : false;
+      },
+      sleep: async () => {},
+    });
+    expect(calls).toBe(3);
+    expect(result.port).toBe(4100);
+  });
+
+  it('sets SONATA_SERVE_INSTANCE_ID on the spawned child so it can report back the matching id', async () => {
+    const envs: (NodeJS.ProcessEnv | undefined)[] = [];
+    const spy = ((_cmd: string, _args: string[], o: { env?: NodeJS.ProcessEnv }) => {
+      envs.push(o.env);
+      return { pid: 4242, unref: () => {} };
+    }) as unknown as typeof spawnType;
+
+    await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: spy,
+      probe: async () => true,
+    });
+
+    expect(typeof envs[0]?.SONATA_SERVE_INSTANCE_ID).toBe('string');
+    expect(envs[0]?.SONATA_SERVE_INSTANCE_ID?.length).toBeGreaterThan(0);
+  });
+
   it('gives up with the log path when the daemon never answers', async () => {
     let clock = 0;
     await expect(startServeDaemon(home, ['node', 'cli.js', 'serve'], {
