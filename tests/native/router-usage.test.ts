@@ -144,6 +144,23 @@ describe('router usage recording', () => {
     expect(rows[0]).toMatchObject({ upstream: 'anthropic', alias: 'claude-sonnet-5' });
   });
 
+  it('records `ts` at request start, not at stream completion', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    // `now` is called twice: once for `startedAt` at request start, once for
+    // `endedAt` at emit. A request starting before midnight and completing
+    // after it must keep the start timestamp, so its price window (and its
+    // ledger day file) are the ones it started under.
+    let clock = Date.parse('2026-08-27T23:59:00.000Z');
+    const d = { ...deps(rows, () => sse(DELTA)), now: () => (clock += 1000) };
+    const res = await routeRequest(req('sonata-code-simple'), d);
+    await drain(res.body);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].ts).toBe('2026-08-27T23:59:01.000Z');
+    // Duration stays tied to completion: startedAt was 23:59:01, endedAt 23:59:02.
+    expect(rows[0].ms).toBe(1000);
+  });
+
   it('records a 529 when every candidate failed', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];

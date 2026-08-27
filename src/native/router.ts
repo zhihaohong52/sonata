@@ -164,7 +164,10 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
       try {
         const endedAt = now();
         deps.recordUsage?.({
-          ts: new Date(endedAt).toISOString(),
+          // Priced at request start, not completion (spec §3): a stream that
+          // crosses a price-window boundary must keep the rate it started
+          // under. `ms` is the genuine duration and stays tied to `endedAt`.
+          ts: new Date(ctx.startedAt).toISOString(),
           ms: endedAt - ctx.startedAt,
           session: ctx.session,
           alias: ctx.alias,
