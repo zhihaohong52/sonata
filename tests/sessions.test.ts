@@ -40,24 +40,54 @@ describe('sessions map', () => {
     expect(Object.keys(loadSessions(home))).toEqual(['new']);
   });
 
-  it('keeps both writes when two sessions are recorded concurrently', async () => {
-    // Regression for the unlocked read-modify-write: two near-simultaneous
-    // SessionStart hooks previously could silently clobber each other's
-    // session. `withSessionLock` serialises them so neither write is lost.
-    await Promise.all([
-      recordSession(home, { session: 'a', cwd: '/repo/a', started: '2026-08-27T10:00:00.000Z' }),
-      recordSession(home, { session: 'b', cwd: '/repo/b', started: '2026-08-27T11:00:00.000Z' }),
-    ]);
+  it('waits for the lock instead of clobbering a concurrent writer', async () => {
+    // Manual contention test for `withSessionLock`: `recordSession`'s critical
+    // section is fully synchronous, so two `Promise.all`ed calls could never
+    // interleave on JS's single thread — this would pass with the lock deleted.
+    // Holding the `<file>.lock` directory ourselves simulates a real other
+    // process mid-write, and asserts recordSession actually waits for it.
+    const path = sessionsPath(home);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ a: { session: 'a', cwd: '/repo/a', started: '2026-08-27T10:00:00.000Z' } }));
+
+    // Simulate another process already holding the lock.
+    const lockDir = `${path}.lock`;
+    mkdirSync(lockDir);
+
+    const recordPromise = recordSession(home, { session: 'b', cwd: '/repo/b', started: '2026-08-27T11:00:00.000Z' });
+
+    // While the lock is held, recordSession must not have written yet.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(Object.keys(loadSessions(home)).sort()).toEqual(['a']); // 'b' not written yet — still blocked
+
+    rmSync(lockDir, { recursive: true, force: true }); // release the "other process"'s lock
+    await recordPromise;
+
+    // Now it should have gone through, and 'a' must still be present (not clobbered).
     expect(Object.keys(loadSessions(home)).sort()).toEqual(['a', 'b']);
   });
 
-  it('keeps both prunes-concurrent-with-record when run concurrently', async () => {
-    await recordSession(home, { session: 'keep', cwd: '/a', started: '2026-08-25T10:00:00.000Z' });
-    await recordSession(home, { session: 'drop', cwd: '/b', started: '2026-07-01T10:00:00.000Z' });
-    await Promise.all([
-      pruneSessions(home, 30, new Date('2026-08-27T12:00:00Z')),
-      recordSession(home, { session: 'new', cwd: '/c', started: '2026-08-27T11:00:00.000Z' }),
-    ]);
-    expect(Object.keys(loadSessions(home)).sort()).toEqual(['keep', 'new']);
+  it('prune waits for the lock too, so a blocked record is not dropped', async () => {
+    const path = sessionsPath(home);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      keep: { session: 'keep', cwd: '/a', started: '2026-08-25T10:00:00.000Z' },
+      drop: { session: 'drop', cwd: '/b', started: '2026-07-01T10:00:00.000Z' },
+    }));
+
+    const lockDir = `${path}.lock`;
+    mkdirSync(lockDir);
+
+    const prunePromise = pruneSessions(home, 30, new Date('2026-08-27T12:00:00Z'));
+
+    await new Promise((r) => setTimeout(r, 10));
+    // Still blocked — the old rows are untouched while the lock is held.
+    expect(Object.keys(loadSessions(home)).sort()).toEqual(['drop', 'keep']);
+
+    rmSync(lockDir, { recursive: true, force: true });
+    expect(await prunePromise).toBe(1);
+
+    // The old 'drop' row was pruned; 'keep' survived.
+    expect(Object.keys(loadSessions(home)).sort()).toEqual(['keep']);
   });
 });
