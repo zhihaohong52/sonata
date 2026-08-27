@@ -74,7 +74,7 @@ export interface NativeModelConfig { gateway: string; id: string; contextWindow:
  * subscription is not API credit. It works only against the Codex backend, over
  * the Responses wire API, with streaming mandatory. LiteLLM's `chatgpt`
  * provider speaks all of that and refreshes the token itself, so sonata
- * supplies neither a base URL nor a key. See docs/codex-subscription.md.
+ * supplies neither a base URL nor a key. See docs/guide/codex-subscription.md.
  */
 export type NativeGatewayAuth = 'api-key' | 'codex-oauth' | 'copilot-oauth';
 
@@ -408,7 +408,7 @@ export function parseConfig(text: string): SonataConfig {
         credentialSource = raw as CredentialSource;
         // codex holds a ChatGPT subscription, never a bearer key. Sending it to
         // a metered endpoint passes auth and then fails for quota, which reads
-        // as a missing key — see docs/codex-subscription.md. Die here instead.
+        // as a missing key — see docs/guide/codex-subscription.md. Die here instead.
         if (credentialSource === 'codex' && auth === 'api-key') {
           throw new Error(
             `sonata.toml: native gateway "${name}" is auth = "api-key", so it ` +

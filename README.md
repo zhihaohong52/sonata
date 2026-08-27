@@ -16,9 +16,9 @@ Two ways to run it:
 
 - **Native** — the foreign model runs *inside Claude Code's own loop*: its
   tools, its permission modes, no separate TUI. A local routing proxy
-  (`sonata serve`) makes this possible; see [Native path](#native-path). This
-  is the default: `sonata init` generates one tier agent per role, each backed
-  by a ranked list of models the router tries in order.
+  (`sonata serve`) makes this possible; see the [Native path guide](docs/guide/native-path.md).
+  This is the default: `sonata init` generates one tier agent per role, each
+  backed by a ranked list of models the router tries in order.
 - **Harness** — the foreign model runs in *its own* CLI (OpenCode, Codex, Pi,
   Reasonix), launched in a detached tmux session and driven through
   `sonata dispatch`. No proxy required — this is the fallback lane: when
@@ -53,7 +53,8 @@ routing, permission modes, and the router's Codex-overload handling have all
 been confirmed against real dispatches.
 
 Not yet published to npm — install from source (below). Read
-[Limitations](#limitations) and [Security](#security) before depending on it.
+[Limitations](docs/guide/limitations.md) and [Security](docs/guide/security.md)
+before depending on it.
 
 ## Requirements
 
@@ -74,8 +75,8 @@ Not yet published to npm — install from source (below). Read
   - **[Reasonix](https://github.com/esengine/DeepSeek-Reasonix)** — `reasonix setup`;
     any OpenAI-compatible endpoint is a config entry, and model ids take the
     `provider/id` form
-  - **Claude Code** — the `claude` harness adapter (native path; see
-    [Native path](#native-path))
+  - **Claude Code** — the `claude` harness adapter (native path; see the
+    [Native path guide](docs/guide/native-path.md))
 
 ## Install
 
@@ -165,8 +166,8 @@ sonata has never seen:
 
 Picking a known provider offers **Run OAuth login** (for `codex` and
 `github-copilot`, the two providers sonata can authenticate on its own — see
-[Native path](#native-path)) or **Enter an API key**. Picking a
-harness-catalogued provider then shows its models to select from:
+the [Native path guide](docs/guide/native-path.md)) or **Enter an API key**.
+Picking a harness-catalogued provider then shows its models to select from:
 
 ```
   Models to enable
@@ -219,8 +220,8 @@ sonata auth add deepseek
 sonata init --yes --providers byok/deepseek --models deepseek-deepseek-v4-flash --roles code
 ```
 
-BYOK models use the [native path](#native-path), so they run inside Claude
-Code's own loop, tools and permission modes.
+BYOK models use the [native path](docs/guide/native-path.md), so they run
+inside Claude Code's own loop, tools and permission modes.
 
 Two things worth knowing before you pick a provider:
 
@@ -339,177 +340,6 @@ exactly the case that needs bounding. On expiry the whole process group is
 killed and the run is reported `DONE`, `degraded`, with a report beginning
 `[timed out: …]`.
 
-## Native path
-
-The harness path above runs the foreign model's *own* loop in OpenCode, Codex,
-Pi, or Reasonix. The native path instead runs foreign models inside Claude
-Code's own loop, tools, and permission modes, through a local routing proxy:
-
-- `sonata serve` — runs the router and a managed LiteLLM child
-- `sonata code` — launches a single Claude Code session routed through the proxy
-  (`ANTHROPIC_BASE_URL` points at the local router); auto-starts
-  `sonata serve --daemon` if the router is down
-- `sonata route on` — routes *every* plain `claude` session launched in the
-  project, not just ones started by `sonata code`: it writes the same
-  `ANTHROPIC_BASE_URL` env into `.claude/settings.local.json` and installs a
-  SessionStart hook that keeps the router up, so editor integrations, `.mcp.json`
-  entries and shell aliases all go through the proxy too. `sonata route off`
-  undoes it; `sonata route status` reports whether routing is on. The same
-  Remote Control trade-off as `sonata code` applies, project-wide: every routed
-  session loses Remote Control until you `sonata route off`.
-- `sonata route auto` — routes every session *and* keeps Remote Control. Instead
-  of leaving the routing env in the file, a SessionStart hook writes it just
-  after the session launches and a SessionEnd hook removes it again, so each
-  session launches from a clean file. Claude Code decides Remote Control once,
-  at launch, from `ANTHROPIC_BASE_URL`; it re-reads the settings `env` on every
-  request. Auto mode lives in that gap. Concurrent sessions are counted, so one
-  ending never cuts another's routing. `sonata route manual` removes the pair.
-  A session that dies without running its SessionEnd hook leaves routing on —
-  the next launch loses Remote Control once; `sonata route off` resets it.
-- `sonata auth` — manages per-gateway keys that the router forwards to LiteLLM;
-  keys live in the store and are never logged or put in a conversation
-- `sonata auth login <gateway>` — starts LiteLLM's device login for an OAuth gateway
-
-The `claude` harness adapter completes the picture: it dispatches a
-foreign-on-Claude-loop session through `sonata dispatch`, running headless
-`claude -p` with no TUI. Native dispatches assume `sonata serve` is already up.
-
-Two consequences worth knowing. First, `ANTHROPIC_BASE_URL` is process-wide and
-`isFirstPartyAnthropicBaseUrl` gates Remote Control, so sessions launched by
-`sonata code` lose Remote Control while routed through the local proxy. Second,
-model keys and ids beginning with `claude-` are refused at parse time, because
-the router sends that prefix to Anthropic.
-
-## Permission modes
-
-Sonata mirrors your Claude Code permission mode onto the harness. A sonata
-agent is never more permissive than the session that spawned it — where a
-harness cannot honour a mode, sonata refuses the run rather than downgrading it
-quietly.
-
-**OpenCode:**
-
-| Claude Code mode | agent | auto-approve |
-|---|---|---|
-| `plan` | `plan` (read-only) | no |
-| `default` | refused for write-capable roles — see below | — |
-| `acceptEdits` | `build` | yes |
-| `bypassPermissions` | `build` | yes |
-
-`opencode run` has no approval UI at all. Probed against opencode 1.18: with
-permissions unset it runs commands unasked, and with `permission = { bash =
-"ask" }` it does not ask either — it auto-rejects:
-
-```
-! permission requested: bash (rm file.txt); auto-rejecting
-```
-
-So `default` — "ask me first" — cannot be honoured. Rather than run an opencode
-agent ungated while claiming otherwise, sonata refuses to launch a
-write-capable role in `default` mode and says so. Read-only roles still run,
-having nothing to ask about. To use opencode for edits, dispatch in
-`acceptEdits` or `bypassPermissions`, or use a codex model, whose TUI does
-prompt.
-
-**Pi** has the strictest enforcement of the three, and the least negotiable
-limits. Its docs say it "intentionally does not include built-in MCP,
-sub-agents, permission popups, plan mode, to-dos, or background bash", and it
-has no sandbox — so like opencode it cannot honour `default`, and refuses:
-
-| Claude Code mode | tools |
-|---|---|
-| `plan` | `--tools read,grep,find,ls` |
-| `default` | refused for write-capable roles |
-| `acceptEdits` | all built-in tools |
-| `bypassPermissions` | all built-in tools |
-
-Unlike opencode's agent selection, pi's `--tools` allowlist is real: asked to
-create a file with the write tool withheld, the model reports having no write
-tool and no file appears. Note the consequence — a read-only pi run cannot
-write `report.md` either, so sonata takes its terminal output as the report and
-does **not** mark it degraded. A read-only run that crashes or times out is
-still flagged.
-
-Pi has no sandbox, so it draws no distinction between `acceptEdits` and
-`bypassPermissions`. If you need isolation, run it in a container.
-
-**Codex** maps onto its sandbox policy directly, and can be approved:
-
-| Claude Code mode | invocation | sandbox |
-|---|---|---|
-| `plan` | `codex exec` | `read-only` |
-| `default` | interactive TUI, `approval_policy=on-request` | `workspace-write` |
-| `acceptEdits` | `codex exec` | `workspace-write` |
-| `bypassPermissions` | `codex exec` | `danger-full-access` |
-
-`codex exec` cannot raise an approval prompt, so `default` mode uses the
-interactive TUI — otherwise a sonata agent could write without ever asking,
-which would be more permissive than the session that spawned it. Sonata never
-passes `--dangerously-bypass-approvals-and-sandbox`. Its stdout stays attached
-to tmux: piping it through `tee` makes codex print `Error: stdout is not a
-terminal` and exit 0. After `report.md` lands, sonata clears the TUI composer
-and sends Ctrl-D so the run writes its exit sentinel rather than stalling.
-
-On first entry to a directory, the codex TUI blocks on a directory-trust
-question before any work starts. Sonata surfaces it as a `PAUSED` prompt, and
-`sonata doctor` warns when the project has not been trusted yet, so a
-`default`-mode run does not stall on it unexpectedly.
-
-Codex also writes its final message to a file (`-o`), so sonata has a
-harness-guaranteed report and degrades to pane text far less often.
-
-**Reasonix** has real approval cards, so like codex it can honour `default`:
-
-| Claude Code mode | invocation | asks |
-|---|---|---|
-| `plan` | `reasonix run --permission-mode dontAsk` | no — denies instead |
-| `default` | interactive TUI, `--permission-mode ask` | yes |
-| `acceptEdits` | `reasonix run --permission-mode acceptEdits` | no |
-| `bypassPermissions` | `reasonix run --permission-mode bypassPermissions` | no |
-
-Reasonix has a `plan` mode of its own, but `reasonix run` refuses it outright —
-"--permission-mode plan requires an interactive session", exit 2 — so read-only
-work uses `dontAsk`, which denies without prompting. That enforcement is real
-and covers the shell too: asked to read one file and write another, the model
-read it fine and was refused both the write tool and a `printf … > file`
-fallback. As with pi, a read-only run therefore cannot write `report.md`, so
-sonata takes its terminal output as the report and does **not** mark it
-degraded.
-
-Sonata never passes `-y`/`--auto`. That flag aliases reasonix's *own* `auto`
-mode, which is wider than Claude Code's — it skips risk prompts for operations
-like `git push`. Since Claude's `auto` maps to `acceptEdits`, reaching for the
-similarly named flag would silently widen permissions.
-
-Two quirks worth knowing. Reasonix loads the working directory's `.mcp.json` on
-top of its own config, so a dispatched model inherits whatever MCP servers your
-project defines — including sonata itself, if you have it configured there;
-`sonata doctor` warns when it sees one. And on a machine that has never
-answered it, the very first `reasonix` invocation blocks on a telemetry consent
-question before the agent starts at all, which looks exactly like a model that
-never said anything — `sonata doctor` reports that as a blocker, and
-`reasonix config telemetry off` clears it.
-
-### The permission hook
-
-The mode is not exposed as an environment variable, so this needs a
-`PreToolUse` hook — which `sonata init` offers to install, at project or global
-scope. Without it, sonata assumes `default`. For codex that is simply the
-cautious choice; for opencode and pi it means dispatches refuse, so
-`sonata doctor` reports a missing hook as a blocker rather than letting it
-surface on first use.
-
-**`auto` mode.** Claude Code's current default mode is `auto`: it runs tool
-calls its classifier judges lower-risk without prompting, and blocks the rest.
-Sonata maps it to `acceptEdits`, which is the closest thing it can actually
-enforce on another harness — work proceeds without prompting, as it does in the
-parent session. The residual gap is worth stating plainly: the foreign harness
-has no such classifier, so it will run things auto mode would have blocked.
-Dispatch in `plan` mode, or to a read-only role, when that matters.
-
-The hook does nothing in projects that have no `sonata.toml`, so a global
-install will not litter unrelated repositories.
-
 ## Commands
 
 | Command | Purpose |
@@ -535,143 +365,27 @@ install will not litter unrelated repositories.
 | `sonata runs [--json]` | List this project's dispatch runs |
 | `sonata gc` | Kill finished tmux sessions |
 
-## Configuration
+## Documentation
 
-```toml
-# sonata.toml
-[models."flash"]
-gateway = "acme"                    # native route: this key resolves through the router
-id = "deepseek-v4-flash-0731"
+The essentials are above. Deep-dive reference lives in
+[`docs/guide/`](docs/guide/):
 
-[models."kimi-k3"]
-harness = "opencode"                # harness route: sonata dispatch --tier/--model falls back to this
-id = "openrouter/kimi-k3"
-
-[native.gateways."acme"]
-base_url = "https://gateway.acme.example/v1"
-
-[tiers.code]
-simple  = ["flash", "kimi-k3"]       # tried in this order; a cooling-down candidate is skipped
-complex = ["kimi-k3", "flash"]
-
-[run]
-tail_window_seconds   = 20     # how long `sonata tail` blocks per call
-stall_timeout_seconds = 120    # silence before a run is reported STALLED
-run_timeout_seconds   = 1800   # hard cap; the run is killed at this point
-```
-
-A `[models."<key>"]` entry can carry `gateway`/`id` (native), `harness`/`harness_id`
-(dispatch fallback), or both — one model, two routes. `sonata init` writes this
-shape for you; see [Using it](#using-it) for how the generated agents use it.
-
-### Where sonata.toml lives
-
-Sonata looks for a config in two places, in order:
-
-1. `./sonata.toml` — the current repository
-2. `~/.config/sonata/sonata.toml` — the machine
-
-A project config wins outright; it is not merged with the machine one. So a
-repository with its own `sonata.toml` sees only that file, and adding one
-repo-specific model means copying the machine entries alongside it.
-
-`sonata init` asks which you want, and writes the agents to match — project
-agents into `./.claude/agents/`, machine agents into `~/.claude/agents/`, where
-Claude Code offers them in every repository. Use `--config-scope project|global`
-to skip the prompt.
-
-`sonata doctor` prints the config path it actually used.
-
-Roles live in `roles/*.md` and are owned by sonata rather than the harness, so
-"review" means the same thing whichever model performs it — which is what makes
-comparing two models' reviews meaningful.
-
-Four roles ship: `code`, `review`, `explore` and `plan`. The last three are
-**read-only**, enforced by the harness rather than by the prompt alone — a
-read-only sandbox on codex, a tool allowlist on pi, a read-only agent on
-opencode. The strength of that guarantee differs per harness; see
-[Permission modes](#permission-modes).
-
-Each role chooses its own ranked model list, per difficulty tier, through
-`[tiers.<role>]`; the older flat `[generate.roles]`/`[generate.native]` pair is
-migrated automatically the next time you run `sonata init` (a config still in
-that shape parses fine in the meantime — `sonata doctor` just points at
-`init` to migrate it).
-
-Run `sonata sync` after editing the config; Claude Code picks up the
-generated agents automatically.
-
-## Troubleshooting
-
-Start with `sonata doctor` — it checks tmux, each configured harness, its
-version and auth, and the permission hook.
-
-| Symptom | Cause |
+| Guide | Covers |
 |---|---|
-| Agents don't appear in Claude Code | Run `sonata sync`; Claude Code picks up regenerated agents automatically. |
-| `sonata: command not found` | The generated agents call `sonata` on your PATH. Run `npm link` in the clone (or install globally once published). |
-| Dispatch fails: "cannot ask for approval" | You are in `default` mode with opencode or pi, which cannot prompt. Switch to `acceptEdits`, use a codex or reasonix model, or dispatch a read-only role. |
-| A tier agent errors with "all native routes … failed" | Every candidate for that tier failed. Run the `sonata dispatch --tier <role>-<tier>` command the error names, in Bash. |
-| Every opencode/pi dispatch refuses | The permission hook is not installed, so sonata assumes `default`. Run `sonata init` and choose a hook scope. |
-| A codex run sits in `PAUSED` at startup | Codex has not been trusted in this directory. Run `codex` there once and answer "Yes, continue". |
-| A run reports `degraded` | The harness exited without writing a report; the text you get is scraped pane output. Treat it as untrustworthy. |
-| A run never finishes | It is capped by `run_timeout_seconds`. Attach with `tmux attach -t sonata-<id>` to watch it. |
-| `sonata doctor` says "config predates [tiers]" | Run `sonata init` — it migrates the config to `[models]`+`[tiers]`, carrying through every previously selected model. |
-| `sonata doctor` says "tier agents need a routed session" | No session routes native traffic to the router. Run `sonata route auto` (or `--global`). |
-| `sonata serve --daemon` times out with "the daemon did not answer" | Something already holds the router port — often a stale daemon or another native router. Run `sonata restart` instead; it kills the recorded occupant first. |
+| [Native path](docs/guide/native-path.md) | Running foreign models inside Claude Code's own loop through the local routing proxy |
+| [Codex subscription auth](docs/guide/codex-subscription.md) | Authenticating the `codex-oauth` gateway against a ChatGPT subscription |
+| [Permission modes](docs/guide/permission-modes.md) | How each harness honours Claude Code's permission modes |
+| [Configuration](docs/guide/configuration.md) | The `sonata.toml` schema, resolution order, and roles/tiers |
+| [Troubleshooting](docs/guide/troubleshooting.md) | Symptom → cause table |
+| [Security](docs/guide/security.md) | What sonata does and doesn't protect against |
+| [Limitations](docs/guide/limitations.md) | Known gaps worth knowing before depending on this |
+| [Adding a harness](docs/guide/adding-a-harness.md) | The adapter extension point |
 
-## Security
-
-Sonata launches other coding agents on your machine. They run **as you**, with
-your files and your credentials.
-
-- **Read the permission tables above before dispatching write-capable roles.**
-  Only codex offers a real sandbox. Pi has none, and opencode's is advisory.
-- **Sonata never bypasses a harness's own safety flags.** It does not pass
-  `--dangerously-bypass-approvals-and-sandbox` to codex.
-- **Credentials stay with the harness.** Sonata reads harness config to report
-  health; it does not copy, forward or log API keys. Keys live wherever the
-  harness put them (e.g. `~/.config/opencode/opencode.json`).
-- **Prompt injection is a real risk.** A foreign model reading a hostile
-  repository can be steered, and it has no classifier between it and your
-  files. For untrusted code, dispatch read-only roles or run in a container.
-
-Please report security issues privately, through the repository's
-[Security tab](https://github.com/zhihaohong52/sonata/security), rather than in
-a public issue.
-
-## Limitations
-
-Worth knowing before you depend on this:
-
-- **`sonata init` discovers models for all three harnesses.** Codex has no
-  `models` subcommand, so its catalogue comes from `codex app-server`'s
-  `model/list` (JSON-RPC over stdio), with a real response captured in
-  `tests/fixtures/codex/model-list.json`.
-- **Not published to npm yet**, so installation is from source.
-- **Prompt detection is regex against TUIs sonata does not control.** Codex's
-  patterns are written from captured real output in `tests/fixtures/panes/`,
-  but they will still break when codex changes its interface. The `STALLED`
-  timeout is the backstop. OpenCode and Pi cannot prompt at all, so there is
-  nothing to detect.
-- **Codex through a proxy needs that proxy up.** If `~/.codex/config.toml` sets
-  `openai_base_url`, `sonata doctor` checks the endpoint is listening — a dead
-  proxy otherwise wastes minutes in retries before failing.
-- **`opencode run --format json` is broken upstream** (v1.18.15 produces no
-  output and never exits), so progress comes from pane text rather than a
-  structured event stream. Pi's `--mode json` does work; the adapter keeps a
-  seam for adopting it.
-- **No streaming granularity guarantees.** Progress is whatever the harness
-  prints.
-- **ChatGPT's Codex endpoint occasionally returns an empty completion under
-  concurrent load** instead of a 429, which LiteLLM surfaces as a 500. The
-  router recognizes this specific case and re-emits it as 529 (overloaded) so
-  Claude Code retries automatically instead of treating it as a hard failure.
-- **Tier fallback retries only before a response starts.** The router tries
-  each ranked candidate in order and returns the first one that answers with
-  status < 500; once a response starts streaming there is no mid-stream
-  failover to the next candidate. A candidate that fails cools down for 60
-  seconds so a repeated request doesn't retry a model that just failed.
+Design history — every feature's spec and implementation plan, kept as a
+permanent record — is indexed in [`docs/superpowers/`](docs/superpowers/).
+Architecture reviews are in [`docs/reviews/`](docs/reviews/). What using
+sonata to implement sonata taught about sizing and verifying dispatched work
+is in [`docs/dispatching-work-through-sonata.md`](docs/dispatching-work-through-sonata.md).
 
 ## Development
 
@@ -687,37 +401,8 @@ normal run, a crash, a real captured approval prompt, a hang that the watchdog
 must kill, a clean exit with no report, and a harness-written report — so the
 whole engine is covered with no API spend and no harness installed.
 
-Design notes and the implementation plan, including the defects found by
-running it, are in [`docs/superpowers/`](docs/superpowers/). What using sonata
-to implement sonata taught about sizing and verifying dispatched work is in
-[`docs/dispatching-work-through-sonata.md`](docs/dispatching-work-through-sonata.md).
-
-## Adding a harness
-
-The adapter boundary is the extension point. A new harness means one new file
-plus two lines of registration:
-
-1. **`src/adapters/<name>.ts`** — export a `HarnessAdapter`. The interface is
-   in `src/adapters/types.ts`; `opencode.ts` is the smallest example, `codex.ts`
-   the most complete. You implement:
-   - `plan(input)` → the bash script to run, and whether it can be approved
-   - `canPromptForApproval` — whether the harness can stop and ask a human
-   - `promptPatterns` / `describePrompt` — how a pending approval looks
-   - `health(env)` — optional runtime checks beyond "is it installed"
-2. **`src/adapters/index.ts`** — register it.
-3. **`src/config.ts`** — add the name to `KNOWN_HARNESSES`.
-4. **`tests/adapters/<name>.test.ts`** — follow an existing adapter's tests.
-
-Optionally, `src/detect.ts` for `sonata init` discovery — currently OpenCode,
-Pi and Reasonix; codex has no provider dimension, so its entries are added by
-hand (and survive the wizard).
-
-**Probe the real binary before you write the adapter.** Every adapter bug found
-so far was invisible in the documentation and obvious on the first real run:
-OpenCode silently eating a positional argument, codex rejecting a flag that its
-own `exec` accepts, both harnesses printing approval prompts that matched none
-of the patterns written for them. If you claim a harness prints something,
-capture it into `tests/fixtures/panes/` and test against that.
+See [Adding a harness](docs/guide/adding-a-harness.md) for the extension
+point, and [Documentation](#documentation) above for the design-history index.
 
 ## Contributing
 
