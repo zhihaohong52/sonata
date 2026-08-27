@@ -1498,6 +1498,19 @@ litellm = 4000
     expect(existsSync(serveStatePath(home))).toBe(false);
   });
 
+  it('refuses to kill when only litellm has a recorded pid', async () => {
+    mkdirSync(dirname(serveStatePath(home)), { recursive: true });
+    writeFileSync(serveStatePath(home), JSON.stringify({ litellmPid: 222 }));
+
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, findPortPid: () => '48213',
+    }).catch((e) => e as Error);
+
+    expect((result as Error).message).toMatch(/no recorded pid/);
+    expect((result as Error).message).toMatch(/kill 48213/);
+    expect(existsSync(serveStatePath(home))).toBe(true);
+  });
+
   it('refuses to kill when the port answers sonata but no pid was ever recorded', async () => {
     // Never guess a pid by scanning the OS — only a pid sonata itself
     // recorded is ever killed. `findPortPid` here simulates the lookup
@@ -1593,6 +1606,17 @@ context_window = 128000
 
     expect(killed).toEqual([111]);
     expect(result.pid).toBe(999);
+  });
+
+  it('forwards findPortPid when the router pid is unrecorded', async () => {
+    writeFileSync(join(home, '.config', 'sonata', 'serve-state.json'), JSON.stringify({ litellmPid: 222 }));
+    const result = await cmdRestart(home, ['node', 'cli.js', 'serve'], {
+      cwd: home,
+      probeHealth: (async () => new Response(JSON.stringify({ sonata: true }))) as unknown as typeof fetch,
+      findPortPid: () => '48213',
+    }).catch((e) => e as Error);
+
+    expect((result as Error).message).toMatch(/kill 48213/);
   });
 
   it('starts fresh with nothing to stop when the port was already clear', async () => {

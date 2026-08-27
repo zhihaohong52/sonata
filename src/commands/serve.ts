@@ -831,7 +831,7 @@ export async function startServeDaemon(
  */
 function defaultFindPortPid(port: number): string | undefined {
   try {
-    const out = execFileSync('lsof', ['-ti', `:${port}`], { encoding: 'utf8' }).trim();
+    const out = execFileSync('lsof', ['-ti', `:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8' }).trim();
     if (out === '') return undefined;
     const pids = out.split('\n').filter((line) => line !== '');
     return pids.length === 1 ? pids[0] : undefined;
@@ -904,7 +904,7 @@ export async function stopServe(
   if (!(await isSonataRouter(port, probeHealth))) return { killed: false };
 
   const state = readServeState(opts.home);
-  if (state?.routerPid === undefined && state?.litellmPid === undefined) {
+  if (state?.routerPid === undefined) {
     const findPortPid = opts.findPortPid ?? defaultFindPortPid;
     const foundPid = findPortPid(port);
     const nextStep = foundPid !== undefined
@@ -962,6 +962,7 @@ export async function cmdRestart(
   await stopServe({
     cwd: opts.cwd, home,
     probeHealth: opts.probeHealth, now: opts.now, sleep: opts.sleep, timeoutMs: opts.timeoutMs, kill: opts.kill,
+    findPortPid: opts.findPortPid,
   });
   return startServeDaemon(home, argv, opts);
 }
