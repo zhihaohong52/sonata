@@ -96,7 +96,7 @@ Key design points:
 
 ### Source layout
 
-```
+```text
 src/
 ├── cli.ts                CLI entry point; arg parsing, then delegates to src/commands/*
 ├── commands/             command implementations (approve, auth, catalog, code, dispatch, doctor, gc, init, log, route, run, runs, serve, status, sync, tail, usage, verify, wait)
