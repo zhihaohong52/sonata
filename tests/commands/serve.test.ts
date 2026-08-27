@@ -217,6 +217,26 @@ litellm = 4000
     }
   });
 
+  it('prefers an injected instance id over the environment variable', async () => {
+    const previous = process.env.SONATA_SERVE_INSTANCE_ID;
+    process.env.SONATA_SERVE_INSTANCE_ID = 'env-value';
+    try {
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(),
+        waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+        instanceId: 'injected-value',
+      });
+      handles.push(handle);
+
+      const response = await fetch(serveHealthUrl(handle.routerPort));
+      const body = await response.json();
+      expect(body.instanceId).toBe('injected-value');
+    } finally {
+      if (previous === undefined) delete process.env.SONATA_SERVE_INSTANCE_ID;
+      else process.env.SONATA_SERVE_INSTANCE_ID = previous;
+    }
+  });
+
   it('generates its own instance id when neither the env var nor an injected one is present', async () => {
     const previous = process.env.SONATA_SERVE_INSTANCE_ID;
     delete process.env.SONATA_SERVE_INSTANCE_ID;
