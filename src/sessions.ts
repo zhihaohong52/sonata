@@ -13,6 +13,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { withSessionLock } from './filelock.js';
 
 export interface SessionRecord {
   session: string;
@@ -36,23 +37,27 @@ export function loadSessions(home: string): Record<string, SessionRecord> {
   }
 }
 
-export function recordSession(home: string, record: SessionRecord): void {
-  const all = loadSessions(home);
-  all[record.session] = record;
-  mkdirSync(dirname(sessionsPath(home)), { recursive: true });
-  writeFileSync(sessionsPath(home), `${JSON.stringify(all, null, 2)}\n`);
+export async function recordSession(home: string, record: SessionRecord): Promise<void> {
+  await withSessionLock(sessionsPath(home), () => {
+    const all = loadSessions(home);
+    all[record.session] = record;
+    mkdirSync(dirname(sessionsPath(home)), { recursive: true });
+    writeFileSync(sessionsPath(home), `${JSON.stringify(all, null, 2)}\n`);
+  });
 }
 
-export function pruneSessions(home: string, retentionDays: number, now: Date = new Date()): number {
-  const all = loadSessions(home);
-  const cutoff = now.getTime() - retentionDays * 24 * 3600 * 1000;
-  let removed = 0;
-  for (const [id, record] of Object.entries(all)) {
-    const started = Date.parse(record?.started ?? '');
-    if (Number.isFinite(started) && started >= cutoff) continue;
-    delete all[id];
-    removed += 1;
-  }
-  if (removed > 0) writeFileSync(sessionsPath(home), `${JSON.stringify(all, null, 2)}\n`);
-  return removed;
+export async function pruneSessions(home: string, retentionDays: number, now: Date = new Date()): Promise<number> {
+  return withSessionLock(sessionsPath(home), () => {
+    const all = loadSessions(home);
+    const cutoff = now.getTime() - retentionDays * 24 * 3600 * 1000;
+    let removed = 0;
+    for (const [id, record] of Object.entries(all)) {
+      const started = Date.parse(record?.started ?? '');
+      if (Number.isFinite(started) && started >= cutoff) continue;
+      delete all[id];
+      removed += 1;
+    }
+    if (removed > 0) writeFileSync(sessionsPath(home), `${JSON.stringify(all, null, 2)}\n`);
+    return removed;
+  });
 }
