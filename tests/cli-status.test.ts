@@ -105,6 +105,25 @@ describe('sonata status CLI wiring', () => {
     expect(all).toContain('flash');
     expect(all).not.toContain('grok');
   });
+
+  it('reports the ledger even when no config resolves', async () => {
+    // No sonata.toml anywhere: loadConfig throws. Status still has ledger rows
+    // to show, so it must not crash — the router line degrades to "unknown".
+    loadConfigMock.mockImplementation(() => {
+      throw new Error('no config');
+    });
+    isSonataRouterMock.mockResolvedValue(false);
+    readRowsMock.mockReturnValue([
+      cell({ session: 'sess-a', key: 'flash' }),
+    ] as never);
+
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await main(['status']);
+    const all = spy.mock.calls.map(([l]) => String(l)).join('\n');
+    expect(all).toContain('router: unknown (no sonata.toml here)');
+    expect(all).toContain('flash');
+    expect(isSonataRouterMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('sonata runs CLI wiring', () => {

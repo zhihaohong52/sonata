@@ -447,9 +447,12 @@ export async function main(argv: string[]): Promise<number> {
       throw new Error('sonata status: --session and --all are mutually exclusive');
     }
     const home = homedir();
-    const port = loadConfig(process.cwd(), home).native?.ports.router;
+    let port: number | undefined;
+    try {
+      port = loadConfig(process.cwd(), home).native?.ports.router;
+    } catch { /* no config here — ledger rows below still report */ }
     const up = port === undefined ? false : await isSonataRouter(port);
-    console.log(up ? `router: up on localhost:${port}` : 'router: down');
+    console.log(up ? `router: up on localhost:${port}` : port === undefined ? 'router: unknown (no sonata.toml here)' : 'router: down');
 
     // The last hour of routes by default, narrowed to the most recent session
     // — unless --all asks for every session or --session names one specifically.
