@@ -6,6 +6,51 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/) informally
 (pre-1.0, so minor bumps can carry breaking changes).
 
+## [0.3.1] - 2026-08-28
+
+Almost entirely `sonata init`: the wizard now asks providers what they serve
+rather than trusting a cached harness catalogue, and stops offering the same
+credential twice.
+
+### Added
+- The models step asks each gateway what it actually serves
+  (`GET <base_url>/models`) instead of trusting the harness catalogue, which
+  keeps listing models a gateway has dropped and misses ones it has added.
+  A gateway that does not answer — unreachable, no key, OAuth, timed out —
+  keeps its harness list, so a failed refresh degrades to the previous
+  behaviour rather than emptying the picker. Models already listed keep their
+  existing key, so a refresh never silently deselects what you had chosen.
+- The import screen names the harness each provider came from
+  (`acme · via opencode · key from sonata`). It matters because providers
+  are deduped by name: several harnesses can serve one, only the first is
+  shown, and it is that one's credential the import uses.
+
+### Fixed
+- `init` offered one provider per harness rather than one per credential, so
+  the same ChatGPT subscription appeared twice — once as `codex`, once as
+  opencode's `openai`, whose entry is the identical OAuth credential. Picking
+  both wrote one subscription as two gateways serving overlapping models under
+  different keys, doubling the generated agents. The canonical provider is now
+  kept per OAuth kind, and only when it is actually offered, so a machine with
+  opencode and no codex still reaches ChatGPT.
+- Re-entering an already-configured provider's name under "Add a custom
+  provider" dead-ended on `"<name>" is already a provider`, with no route back
+  to that provider. It now redirects into re-entering its credential.
+- A gateway no harness discovers any more (unlinked from opencode, say) could
+  not be re-authenticated through the wizard at all; its base URL now falls
+  back to the one already recorded in `sonata.toml`.
+- A tier-ranked model whose provider had been deselected was resurrected by
+  merely confirming the tier screen.
+- A gateway named in `sonata.toml` was credited to a harness whose provider
+  name only coincidentally matched, pre-selecting a harness that was never
+  chosen and could not be unticked.
+
+### Notes
+- Codex and Copilot are deliberately excluded from the live refresh: their
+  credentials are OAuth, not bearer keys, and neither serves an
+  OpenAI-shaped `/models`. Codex's catalogue already comes from
+  `codex app-server`'s `model/list`, so it is live by another route.
+
 ## [0.3.0] - 2026-08-28
 
 ### Fixed
