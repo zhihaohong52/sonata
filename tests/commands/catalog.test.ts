@@ -30,7 +30,9 @@ function bothFixtures(input: string | URL | Request, init?: RequestInit): Respon
     expect(init).toBeUndefined();
     return response(pricingFixture());
   }
-  expect(input).toBe('https://artificialanalysis.ai/api/v2/data/llms/models');
+  // Paginated: the page number is part of the request, and the fixture
+  // declares has_more:false so one page ends the loop.
+  expect(String(input)).toBe('https://artificialanalysis.ai/api/v2/language/models/free?page=1');
   expect(new Headers(init?.headers).get('x-api-key')).toBe('synthetic-key');
   return response(aaFixture());
 }
@@ -48,8 +50,16 @@ describe('cmdCatalogUpdate', () => {
     expect(JSON.parse(readFileSync(aaCatalogPath(home), 'utf8'))).toEqual({
       fetchedAt: '2026-08-25T12:00:00.000Z',
       models: {
-        'gpt-5.6-luna': { codingIndex: 72.5, blendedPriceUsd: 0.42 },
-        'deepseek-v4-flash': { codingIndex: 48, blendedPriceUsd: 0.18 },
+        'gpt-5.6-luna': {
+          codingIndex: 72.5, blendedPriceUsd: 0.42,
+          intelligenceIndex: 52.3, agenticIndex: 46.9, costPerTask: 0.0487,
+        },
+        'deepseek-v4-flash': {
+          codingIndex: 48, blendedPriceUsd: 0.18,
+          intelligenceIndex: 51.8, agenticIndex: 48.4, costPerTask: 0.1122,
+        },
+        // No agentic score and no cost per task: still rankable on the coding
+        // index and the blend computed from its per-token rates.
         'example-model': { codingIndex: 31, blendedPriceUsd: 2.75 },
       },
     });

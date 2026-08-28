@@ -69,11 +69,61 @@ describe('proposeTiers', () => {
     const tiers = proposeTiers(
       ['deepseek-v4-flash', 'gpt-5.6-luna', 'deepseek-v4-pro', 'gpt-5.6-terra'], aa,
     );
-    // simple = cheap AND capable, ranked by coding index desc
-    expect(tiers.simple).toEqual(['deepseek-v4-flash', 'gpt-5.6-luna']);
-    // complex = capable, ranked by index desc, price asc tie-break
+    // complex = most capable first, cost only breaking ties
     expect(tiers.complex[0]).toBe('gpt-5.6-terra');
     expect(tiers.complex).toContain('deepseek-v4-pro');
+    // simple = most capability per unit cost. Here the cheap models (45, 42)
+    // sit below the 0.85 floor relative to the best model (70), so nothing
+    // clears it and the fallback value-ranks the whole set — which still puts
+    // the cheap-and-effective models first, and keeps the expensive ones only
+    // as later fallback candidates.
+    expect(tiers.simple).toEqual([
+      'deepseek-v4-flash', 'gpt-5.6-luna', 'deepseek-v4-pro', 'gpt-5.6-terra',
+    ]);
+  });
+
+  it('ranks the simple tier by capability per cost, not by capability', () => {
+    // The whole point of the simple tier: a model 40% as capable for 4% of the
+    // cost beats the strongest model, which is what grunt work should run on.
+    const aa: AaCatalog = {
+      fetchedAt: '2026-08-25T00:00:00Z',
+      models: {
+        'cheap-and-good': { codingIndex: 58, blendedPriceUsd: 1, agenticIndex: 58, costPerTask: 0.09 },
+        'top-and-dear': { codingIndex: 60, blendedPriceUsd: 1, agenticIndex: 60, costPerTask: 0.95 },
+      },
+    };
+    const tiers = proposeTiers(['top-and-dear', 'cheap-and-good'], aa);
+    expect(tiers.complex[0]).toBe('top-and-dear');
+    expect(tiers.simple[0]).toBe('cheap-and-good');
+  });
+
+  it('prefers the agentic index over the coding index', () => {
+    // Every sonata role runs as an agentic subagent, so where AA scored that
+    // directly it is the closer measure — even when the coding index disagrees.
+    const aa: AaCatalog = {
+      fetchedAt: '2026-08-25T00:00:00Z',
+      models: {
+        'better-agent': { codingIndex: 40, blendedPriceUsd: 1, agenticIndex: 59, costPerTask: 0.5 },
+        'better-coder': { codingIndex: 80, blendedPriceUsd: 1, agenticIndex: 45, costPerTask: 0.5 },
+      },
+    };
+    expect(proposeTiers(['better-coder', 'better-agent'], aa).complex[0]).toBe('better-agent');
+  });
+
+  it('excludes a cheap but weak model from the simple tier', () => {
+    // Without the floor, a model that is very cheap and very weak wins on
+    // ratio alone and grunt work silently degrades.
+    const aa: AaCatalog = {
+      fetchedAt: '2026-08-25T00:00:00Z',
+      models: {
+        'strong': { codingIndex: 60, blendedPriceUsd: 1, agenticIndex: 60, costPerTask: 0.5 },
+        'near-strong': { codingIndex: 55, blendedPriceUsd: 1, agenticIndex: 55, costPerTask: 0.1 },
+        'junk': { codingIndex: 20, blendedPriceUsd: 1, agenticIndex: 20, costPerTask: 0.001 },
+      },
+    };
+    const tiers = proposeTiers(['strong', 'near-strong', 'junk'], aa);
+    expect(tiers.simple[0]).toBe('near-strong');
+    expect(tiers.simple).not.toContain('junk');
   });
 
   it('never returns an empty complex list when any model exists', () => {
