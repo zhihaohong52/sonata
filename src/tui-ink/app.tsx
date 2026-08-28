@@ -152,7 +152,6 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         byokProviders={data.byokProviders}
         credentialAvailability={data.credentialAvailability ?? {}}
         gatewayAuth={data.gatewayAuth ?? {}}
-        gatewayBaseUrls={data.gatewayBaseUrls ?? {}}
         storedKeys={data.storedKeys}
         fetchModels={data.fetchModels ?? defaultFetchModels}
         state={state}

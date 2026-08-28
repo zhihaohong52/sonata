@@ -68,7 +68,6 @@ export interface ProvidersStepProps {
   byokProviders: Array<{ name: string; url: string }>;
   credentialAvailability: Record<string, AvailableCredentials>;
   gatewayAuth: Record<string, NativeGatewayAuth>;
-  gatewayBaseUrls: Record<string, string>;
   storedKeys: Record<string, string>;
   fetchModels?: typeof defaultFetchModels;
   state: InitState;
@@ -99,14 +98,13 @@ type Screen =
  */
 export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
   const {
-    home, harnesses, providers, byokProviders, credentialAvailability, gatewayAuth, gatewayBaseUrls, storedKeys,
+    home, harnesses, providers, byokProviders, credentialAvailability, gatewayAuth, storedKeys,
     fetchModels = defaultFetchModels, state, onChange, onContinue, onBack, onCancel,
   } = props;
   const [screen, setScreen] = useState<Screen>({ kind: 'menu' });
   const [problem, setProblem] = useState<string | undefined>(undefined);
   const [pendingCustomFormat, setPendingCustomFormat] = useState<'anthropic' | undefined>(undefined);
   const [pendingCustomKey, setPendingCustomKey] = useState<string | undefined>(undefined);
-  const [pendingKeyEntryKey, setPendingKeyEntryKey] = useState<string | undefined>(undefined);
 
   const configured = configuredProviderNames(state.providerKeys ?? [], providers);
   // Catalogued (harness or BYOK) providers are excluded here on purpose: typing
@@ -376,44 +374,6 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
     const { provider } = screen;
     const auth = gatewayAuth[provider.provider];
     const canGoBackToChoice = auth !== undefined && isOauthGatewayAuth(auth);
-    const baseUrl = gatewayBaseUrls[provider.provider];
-    // A gateway with a known base URL can be asked what it serves — reuse
-    // ByokStep so entering a key here (whether for the first time or to
-    // replace one) also refreshes the model list, instead of leaving
-    // whatever was last persisted to sonata.toml (e.g. from an earlier
-    // import through a harness that no longer discovers this gateway).
-    if (baseUrl !== undefined) {
-      const apiKey = pendingKeyEntryKey ?? state.byokKeys?.[provider.provider] ?? storedKeys[provider.provider];
-      return (
-        <ByokStep
-          key={`providers-key-entry-${provider.provider}`}
-          provider={{ name: provider.provider, url: baseUrl }}
-          apiKey={apiKey}
-          initialIds={state.byokModels?.[provider.provider]}
-          fetchModels={fetchModels}
-          onKey={(key) => setPendingKeyEntryKey(key)}
-          onSubmit={(ids) => {
-            onChange((current) => {
-              const withModels = applyStep(current, 5, { provider: provider.provider, ids });
-              return {
-                ...withModels,
-                byokKeys: pendingKeyEntryKey === undefined
-                  ? withModels.byokKeys
-                  : { ...withModels.byokKeys, [provider.provider]: pendingKeyEntryKey },
-                providerKeys: [...new Set([...(withModels.providerKeys ?? []), provider.key])],
-              };
-            });
-            setPendingKeyEntryKey(undefined);
-            setScreen({ kind: 'menu' });
-          }}
-          onBack={() => {
-            setPendingKeyEntryKey(undefined);
-            setScreen(canGoBackToChoice ? { kind: 'credential-choice', provider } : { kind: 'pick' });
-          }}
-          onCancel={onCancel}
-        />
-      );
-    }
     return (
       <TextInput
         key={`providers-key-entry-${provider.provider}`}
