@@ -105,7 +105,28 @@ describe('LiteLLM config — codex-oauth gateways', () => {
     // Without it LiteLLM takes its chat-completions path and POSTs to the bare
     // backend-api/codex/ URL, which serves the ChatGPT web app — the reply is a
     // Cloudflare HTML challenge surfaced as an opaque ChatgptException.
-    expect(codexConfig().model_list[0].model_info).toEqual({ mode: 'responses' });
+    expect(codexConfig().model_list[0].model_info).toMatchObject({ mode: 'responses' });
+  });
+
+  it('declares the model as not supporting system messages', () => {
+    // The Codex backend rejects any `role: system` with
+    // `{"detail":"System messages are not allowed"}`, and LiteLLM's chatgpt
+    // provider does not normalize it (BerriAI/litellm#22968; its fix, PR
+    // #22967, was closed unmerged). Declaring this routes the prompt through
+    // map_system_message_pt instead of emitting the rejected role.
+    expect(codexConfig().model_list[0].model_info).toMatchObject({ supports_system_message: false });
+  });
+
+  it('declares it only for codex-oauth, which is the backend that refuses the role', () => {
+    // An api-key gateway takes a system message perfectly well; folding it
+    // into the user turn there would degrade the prompt for no reason.
+    const plain = litellmConfig({
+      models: { m: { gateway: 'acme', id: 'm', contextWindow: 128000 } },
+      gateways: { acme: { baseUrl: 'https://acme.example/v1', auth: 'api-key' } },
+      ports: { router: 4100, litellm: 4000 },
+      generate: {},
+    }, 'sk-master');
+    expect(plain.model_list[0].model_info?.supports_system_message).toBeUndefined();
   });
 
   it('passes neither api_base nor api_key, which would override the provider', () => {

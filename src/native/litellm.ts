@@ -10,8 +10,11 @@ export interface LiteLLMModelConfig {
    * chat-completions path and POSTs to the bare `backend-api/codex/` URL, which
    * serves the ChatGPT *web app* — the reply is a Cloudflare HTML challenge
    * surfaced as an opaque ChatgptException.
+   *
+   * `supports_system_message: false` is the second half of that pairing — see
+   * the entry builder for why the Codex backend needs it.
    */
-  model_info?: { mode: string };
+  model_info?: { mode: string; supports_system_message?: boolean };
 }
 
 export interface LiteLLMConfig {
@@ -38,9 +41,27 @@ function litellmModelEntry(
     return {
       model_name: modelName,
       litellm_params: { model: `chatgpt/${id}` },
-      // Without this LiteLLM uses chat-completions and POSTs to the bare
-      // backend-api/codex/ URL, which serves the ChatGPT web app.
-      model_info: { mode: 'responses' },
+      model_info: {
+        // Without this LiteLLM uses chat-completions and POSTs to the bare
+        // backend-api/codex/ URL, which serves the ChatGPT web app.
+        mode: 'responses',
+        // The Codex backend answers any `role: system` message with
+        // `{"detail":"System messages are not allowed"}` — a 400 naming
+        // neither the field nor the shape. LiteLLM's chatgpt provider does not
+        // normalize that itself: BerriAI/litellm#22968 reports it and its fix,
+        // PR #22967, was closed without merging, so 1.98.0 still emits the
+        // rejected role. Declaring the model as not supporting system messages
+        // routes the prompt through `map_system_message_pt`, which folds it in
+        // at LiteLLM's own layer rather than sonata rewriting the body.
+        //
+        // `flattenSystemBlocks` (src/native/router.ts) remains load-bearing:
+        // that helper concatenates onto message content and raises
+        // `can only concatenate list (not "str") to list` on Claude Code's
+        // block arrays (BerriAI/litellm#32904). Flattening to a string first
+        // is what keeps this off that crash path — the two fixes are a pair,
+        // and neither is sufficient alone.
+        supports_system_message: false,
+      },
     };
   }
   if (auth === 'copilot-oauth') {

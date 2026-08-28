@@ -379,6 +379,23 @@ cannot be sent. A non-text block (an image) has no string form, so the body is
 passed through unchanged rather than silently losing content. Verified live: the
 model obeys the flattened prompt, not just accepts it.
 
+**Flattening alone is not enough: the codex model is also declared
+`supports_system_message: false`.** The Codex backend refuses *any* `role:
+system` message — not merely the block-array shape — with
+`{"detail":"System messages are not allowed"}`, and LiteLLM's chatgpt provider
+does not normalize it: BerriAI/litellm#22968 reports exactly this, and its fix
+(PR #22967) was **closed without merging**, so 1.98.0 still emits the rejected
+role. Observed live 2026-08-28: a tier request the router had already flattened
+(`model=sonata-code-complex -> gpt-5.6-terra -> litellm`) still 400'd. The
+declaration (`src/native/litellm.ts`) routes the prompt through LiteLLM's own
+`map_system_message_pt` instead. The two fixes are a **pair**: that helper
+concatenates onto message content and raises `can only concatenate list (not
+"str") to list` on Claude Code's block arrays (BerriAI/litellm#32904), so
+flattening to a string first is what keeps this off its crash path. Neither is
+sufficient alone, and it is declared only for codex-oauth — an api-key gateway
+takes a system message fine, and folding it there would degrade the prompt for
+nothing.
+
 **ChatGPT's Codex endpoint returns `output: []` under concurrent load, which LiteLLM surfaces as a 500.** When 8+ native agents dispatched simultaneously hit the same `codex-oauth` gateway, the upstream accepts the requests (no 429) but returns empty completions. LiteLLM's Responses API transformation (`transformation.py`) raises `ValueError: Unknown items in responses API response: []` and the proxy emits 500. The router (`src/native/router.ts`) catches 500 responses from LiteLLM whose body contains that string and re-emits them as 529 (overloaded) — Claude Code treats 529 as a retriable backpressure signal rather than a hard fault, so the turn is retried automatically. The match is string-level because the body is LiteLLM's rendered exception, not a structured field. LiteLLM 1.97.0 added an SSE recovery attempt for this case but still raises when recovery fails, so the router catch is still needed.
 
 **`serve` inherits LiteLLM's stdio.** A per-model startup failure appears only in LiteLLM's own output; discarding it is what turned a plain 403 into an unrelated-looking "no healthy deployments for this model".
