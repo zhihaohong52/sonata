@@ -196,7 +196,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       return <RankedSelect
         key={`${role}-${tier}`}
         title={`${role}: ${tier} models`}
-        items={tierPickerKeys(state.nativeKeys ?? [], initialRanked).map((key) => ({ value: key, label: key }))}
+        items={tierPickerKeys(state.nativeKeys ?? [], initialRanked, data.candidates.map((c) => c.key)).map((key) => ({ value: key, label: key }))}
         initialRanked={initialRanked}
         footer={footer}
         onSubmit={(ranked) => {

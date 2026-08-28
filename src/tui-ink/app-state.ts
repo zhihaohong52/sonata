@@ -164,9 +164,15 @@ export function candidatesForProviders(candidates: CandidateOption[], providers:
  * items from `nativeKeys` alone would make merely confirming this screen
  * rewrite the tier without that fallback. Appending the missing keys keeps
  * them selectable and preserved across a no-op confirm.
+ *
+ * `allNativeKeys` is the full universe of natively-routable keys independent
+ * of what's currently selected: a key absent from `nativeKeys` is only
+ * preserved if it never had a native route at all, never when it has one but
+ * its provider was temporarily deselected this session.
  */
-export function tierPickerKeys(nativeKeys: string[], initialRanked: string[]): string[] {
-  const fallbackKeys = initialRanked.filter((key) => !nativeKeys.includes(key));
+export function tierPickerKeys(nativeKeys: string[], initialRanked: string[], allNativeKeys: string[] = nativeKeys): string[] {
+  const nativeUniverse = new Set(allNativeKeys);
+  const fallbackKeys = initialRanked.filter((key) => !nativeKeys.includes(key) && !nativeUniverse.has(key));
   return [...nativeKeys, ...fallbackKeys];
 }
 

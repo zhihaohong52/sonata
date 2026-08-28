@@ -325,4 +325,13 @@ describe('tierPickerKeys', () => {
   it('is empty when there are no native keys and nothing saved', () => {
     expect(tierPickerKeys([], [])).toEqual([]);
   });
+
+  it('does not resurrect a natively-routable key the user deselected this session', () => {
+    // The harness-only preservation above must not overcorrect: a key that
+    // DOES have a native route (present in the full candidate universe) but
+    // isn't in the freshly-selected nativeKeys was deliberately dropped by
+    // the user this run (e.g. its provider was deselected) and must not come
+    // back just because an old saved tier list still names it.
+    expect(tierPickerKeys(['a'], ['a', 'removed-model'], ['a', 'removed-model'])).toEqual(['a']);
+  });
 });
