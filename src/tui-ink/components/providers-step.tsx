@@ -107,11 +107,28 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
   const [pendingCustomKey, setPendingCustomKey] = useState<string | undefined>(undefined);
 
   const configured = configuredProviderNames(state.providerKeys ?? [], providers);
-  const existingNames = [
-    ...providers.map((p) => p.provider),
-    ...byokProviders.map((p) => p.name),
-    ...(state.customProviders ?? []).map((p) => p.name),
-  ];
+  // Catalogued (harness or BYOK) providers are excluded here on purpose: typing
+  // one of those names below redirects into re-entering its credential rather
+  // than being rejected as a duplicate — see the custom-name onSubmit handler.
+  // Only a name that collides with a custom provider already added this run has
+  // no such redirect, so that's the only case left for validation to reject.
+  const existingNames = (state.customProviders ?? []).map((p) => p.name);
+
+  const routeToProvider = (provider: ProviderOption) => {
+    if (provider.harness === 'byok') {
+      const known = byokProviders.find((p) => p.name === provider.provider);
+      if (known !== undefined) setScreen({ kind: 'byok', name: known.name, url: known.url });
+      return;
+    }
+    const auth = gatewayAuth[provider.provider];
+    if (auth !== undefined && isOauthGatewayAuth(auth)) {
+      setScreen(credentialAvailability[provider.provider]?.keyEntryAvailable
+        ? { kind: 'credential-choice', provider }
+        : { kind: 'login', provider });
+    } else {
+      setScreen({ kind: 'key-entry', provider });
+    }
+  };
 
   if (screen.kind === 'menu') {
     const importable = importableProviders(providers, credentialAvailability);
@@ -235,19 +252,7 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
           if (value === '__custom__') { setScreen({ kind: 'custom-name' }); return; }
           const provider = catalog.find((p) => p.key === value);
           if (provider === undefined) return;
-          if (provider.harness === 'byok') {
-            const known = byokProviders.find((p) => p.name === provider.provider);
-            if (known !== undefined) setScreen({ kind: 'byok', name: known.name, url: known.url });
-            return;
-          }
-          const auth = gatewayAuth[provider.provider];
-          if (auth !== undefined && isOauthGatewayAuth(auth)) {
-            setScreen(credentialAvailability[provider.provider]?.keyEntryAvailable
-              ? { kind: 'credential-choice', provider }
-              : { kind: 'login', provider });
-          } else {
-            setScreen({ kind: 'key-entry', provider });
-          }
+          routeToProvider(provider);
         }}
         onBack={() => setScreen({ kind: 'menu' })}
         onCancel={onCancel}
@@ -262,7 +267,14 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
         title="Custom provider name"
         hint="a short identifier, e.g. my-proxy"
         validate={(value) => validateCustomProviderName(value, existingNames)}
-        onSubmit={(value) => setScreen({ kind: 'custom-url', name: value.trim() })}
+        onSubmit={(value) => {
+          const trimmed = value.trim();
+          const catalogued = providers.find((p) => p.provider.toLowerCase() === trimmed.toLowerCase());
+          if (catalogued !== undefined) { routeToProvider(catalogued); return; }
+          const byok = byokProviders.find((p) => p.name.toLowerCase() === trimmed.toLowerCase());
+          if (byok !== undefined) { setScreen({ kind: 'byok', name: byok.name, url: byok.url }); return; }
+          setScreen({ kind: 'custom-url', name: trimmed });
+        }}
         onBack={() => setScreen({ kind: 'pick' })}
         onCancel={onCancel}
       />
