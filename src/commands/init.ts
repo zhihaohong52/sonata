@@ -618,6 +618,14 @@ export function nativeTomlFor(
   });
 
   const lines: string[] = [];
+  // Top-level keys must precede every table header: a bare key written after
+  // one belongs to *that table*, so emitting this beside [tiers] silently made
+  // it a field of the last [models."…"] entry and parseConfig never saw it.
+  // Dropping it would also be the bug the setting exists to prevent — init
+  // would re-propose the ordering the user avoided.
+  if (avoidGateways.length > 0) {
+    lines.push(`avoid_gateways = [${avoidGateways.map(tomlKey).join(', ')}]`, '');
+  }
 
   for (const [gateway, { baseUrl, auth, wireFormat }] of gateways) {
     lines.push(`[native.gateways.${tomlKey(gateway)}]`);
@@ -641,13 +649,6 @@ export function nativeTomlFor(
   for (const [key, model] of Object.entries(extraModels)) {
     if (allModels.has(key) || model.harness === undefined || model.harnessId === undefined) continue;
     lines.push(`[models.${tomlKey(key)}]`, `harness = ${tomlKey(model.harness)}`, `id = ${tomlKey(model.harnessId)}`, '');
-  }
-
-  if (avoidGateways.length > 0) {
-    // Written before [tiers] so it reads as the policy the lists were ranked
-    // under. Dropping it here would be the whole bug this setting exists to
-    // prevent: init would re-propose the ordering the user avoided.
-    lines.push(`avoid_gateways = [${avoidGateways.map(tomlKey).join(', ')}]`, '');
   }
 
   for (const [role, lists] of Object.entries(tierLists)) {

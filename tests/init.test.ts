@@ -2269,3 +2269,37 @@ describe('dedupeOauthProviders', () => {
     expect(dedupeOauthProviders(copilot, auth)).toHaveLength(1);
   });
 });
+
+describe('nativeTomlFor — avoid_gateways', () => {
+  const candidate = {
+    key: 'acme-m', gateway: 'acme', id: 'm', contextWindow: 128000,
+    baseUrl: 'https://acme.example/v1', auth: 'api-key' as const,
+  };
+
+  it('round-trips through parseConfig', () => {
+    // The bug this catches: a bare key emitted after a [models."…"] header
+    // belongs to that table, so the setting was written, silently ignored, and
+    // `sonata init` re-proposed the ordering it existed to prevent. Asserting
+    // on the text alone would have passed.
+    const toml = nativeTomlFor(
+      { code: [candidate] }, {}, undefined, {}, [candidate], undefined, ['acme'],
+    );
+    expect(parseConfig(toml).avoidGateways).toEqual(['acme']);
+  });
+
+  it('emits the key before any table header', () => {
+    const toml = nativeTomlFor(
+      { code: [candidate] }, {}, undefined, {}, [candidate], undefined, ['acme'],
+    );
+    const keyAt = toml.indexOf('avoid_gateways');
+    const firstTableAt = toml.indexOf('[');
+    expect(keyAt).toBeGreaterThanOrEqual(0);
+    expect(keyAt).toBeLessThan(firstTableAt);
+  });
+
+  it('omits the key entirely when nothing is avoided', () => {
+    const toml = nativeTomlFor({ code: [candidate] }, {}, undefined, {}, [candidate]);
+    expect(toml).not.toContain('avoid_gateways');
+    expect(parseConfig(toml).avoidGateways).toBeUndefined();
+  });
+});
