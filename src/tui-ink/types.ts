@@ -23,6 +23,16 @@ export interface InitState {
   byokKeys?: Record<string, string>;
   /** BYOK provider -> the model ids chosen or typed for it. */
   byokModels?: Record<string, string[]>;
+  /**
+   * Gateway -> the model ids its own `/models` endpoint reported.
+   *
+   * A live refresh can surface a model the harness catalogue never listed, and
+   * such a model has no `NativeCandidate` behind it — so without this, it is
+   * selectable and lands in `nativeKeys` and the tiers, but is silently
+   * dropped when `[models]` is written, leaving a tier referencing a model the
+   * config never defines. `cmdInit` mints the missing candidates from this.
+   */
+  liveModels?: Record<string, string[]>;
   /** Providers typed in directly through the wizard's "Add a custom provider" flow. */
   customProviders?: Array<{ name: string; url: string }>;
   /** Custom-provider name -> wire format, only recorded for the non-default choice. */

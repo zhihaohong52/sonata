@@ -13,7 +13,8 @@ export interface ModelsStepProps {
   keys: Record<string, string>;
   initialSelected: Set<string>;
   fetchModels?: typeof defaultFetchModels;
-  onSubmit: (keys: string[]) => void;
+  /** Selected keys, plus what each gateway's own /models endpoint reported. */
+  onSubmit: (keys: string[], live: Record<string, string[]>) => void;
   onBack: () => void;
   onCancel: () => void;
 }
@@ -121,7 +122,7 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
         title="Models"
         items={merged.map((candidate) => ({ value: candidate.key, label: candidate.label, hint: candidate.id }))}
         initialSelected={initialSelected}
-        onSubmit={(selected) => onSubmit(selected as string[])}
+        onSubmit={(selected) => onSubmit(selected as string[], live)}
         onBack={onBack}
         onCancel={onCancel}
       />

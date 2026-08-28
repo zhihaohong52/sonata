@@ -176,14 +176,23 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         keys={{ ...data.storedKeys, ...state.byokKeys }}
         fetchModels={data.fetchModels ?? defaultFetchModels}
         initialSelected={new Set(state.nativeKeys)}
-        onSubmit={(keys) => {
+        onSubmit={(keys, live) => {
           // Keep any BYOK/custom-provider keys already chosen: this step owns
           // the harness candidates only, and a plain overwrite would drop the
           // rest — they were already selected inside ProvidersStep.
           const byokKeys = new Set(Object.entries(state.byokModels ?? {}).flatMap(([provider, ids]) =>
             ids.map((id) => byokCandidateKey(provider, id))));
+          // Deduped: a BYOK model can now also appear in this picker (its
+          // gateway's live /models answer lists it), so `keys` and `kept`
+          // overlap — and a doubled key is written to the config twice.
           const kept = (state.nativeKeys ?? []).filter((key) => byokKeys.has(key));
-          setState((current) => applyStep(current, 2, [...(keys as string[]), ...kept]));
+          setState((current) => ({
+            ...applyStep(current, 2, [...new Set([...(keys as string[]), ...kept])]),
+            // Carried so cmdInit can mint a candidate for a model only the
+            // gateway knew about — otherwise it reaches the tiers but never
+            // [models], and the config it writes will not parse.
+            liveModels: { ...current.liveModels, ...live },
+          }));
           setStep(3);
         }}
         onBack={back}

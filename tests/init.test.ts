@@ -1875,6 +1875,51 @@ context_window = 128000
 
     expect(tuiMocks.data!.gatewayBaseUrls?.acme).toBe('https://live.example/v1');
   });
+
+  it('defines [models] for a model only the gateway reported, so the config parses', async () => {
+    // Regression: the models step refreshes each gateway from its own /models
+    // endpoint, which can surface a model no harness lists. Such a model had
+    // no NativeCandidate, so it reached the tiers but was silently dropped
+    // from [models] — writing a config that names a model it never defines,
+    // which then failed to load with "references unknown model".
+    const cwd = mkdtempSync(join(tmpdir(), 'init-live-models-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'init-live-models-home-'));
+    writeSonataKey(home, 'acme', 'sk-test');
+    tuiMocks.interactive = true;
+    tuiMocks.result = {
+      cancelled: false,
+      state: {
+        configScope: 'project',
+        providerKeys: ['opencode/acme'],
+        // `acme-brand-new` exists only in the gateway's own answer.
+        nativeKeys: ['acme-deepseek-v4-flash-0731', 'acme-brand-new'],
+        liveModels: { acme: ['deepseek-v4-flash-0731', 'brand-new'] },
+        roles: ['code'],
+        tiers: { code: { simple: ['acme-brand-new'], complex: ['acme-brand-new'] } },
+        byokKeys: {},
+      },
+    };
+    const detect = async () => ({
+      tmux: { installed: true, version: '3.7b', problems: [] },
+      harnesses: [{
+        name: 'opencode', installed: true, version: '1.18.16', supported: true,
+        refs: parseOpenCodeRefs('acme/deepseek-v4-flash-0731\n'),
+        authedProviders: ['acme'],
+        providerBaseUrls: { acme: 'https://gateway.acme.example/v1' },
+        problems: [],
+      }],
+    });
+
+    await cmdInit({ cwd, home, packageRoot: '/pkg', detect, scope: 'skip', routing: 'skip', write: () => {} });
+
+    const written = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
+    // The real failure was at load time, so assert the whole file parses.
+    const parsed = parseConfig(written);
+    expect(parsed.unifiedModels?.['acme-brand-new']).toMatchObject({
+      gateway: 'acme', id: 'brand-new',
+    });
+    expect(parsed.tiers?.code.simple).toContain('acme-brand-new');
+  });
 });
 
 describe('oauthProvidersFor', () => {

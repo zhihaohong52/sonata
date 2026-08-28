@@ -816,6 +816,34 @@ async function runInit(
    * or every BYOK key looks up `undefined` and is filtered out silently — a
    * wizard that appears to work and writes an empty config.
    */
+  /**
+   * Candidates for models only a gateway's own `/models` endpoint reported.
+   *
+   * The models step refreshes each gateway's list from the gateway itself, so
+   * it can surface a model no harness catalogue lists. Such a model has no
+   * `NativeCandidate`, and `nativeKeys` is resolved through `nativeByKey` — so
+   * without this it is selected, kept in the tiers, and then silently dropped
+   * from `[models]`, producing a config that names a model it never defines.
+   * An existing candidate always wins: the harness one carries a `harness`
+   * route this cannot know about.
+   */
+  const addLiveCandidates = (liveModels: Record<string, string[]>): void => {
+    for (const [gateway, ids] of Object.entries(liveModels)) {
+      const baseUrl = providerBaseUrls[gateway];
+      if (baseUrl === undefined) continue;
+      const auth = gatewayAuth.get(gateway) ?? 'api-key';
+      // Only a key-authenticated gateway is ever refreshed, so this is a
+      // guard rather than a case: an OAuth gateway's URL is LiteLLM's, and
+      // writing it as an api-key entry would produce a route that 401s.
+      if (isOauthGatewayAuth(auth)) continue;
+      for (const id of ids) {
+        const key = byokCandidateKey(gateway, id);
+        if (nativeByKey.has(key)) continue;
+        nativeByKey.set(key, { key, gateway, id, contextWindow: 128000, baseUrl, auth: 'api-key' });
+      }
+    }
+  };
+
   const addByokCandidates = (
     byokModels: Record<string, string[]>,
     wireFormats: Record<string, 'anthropic'> = {},
@@ -921,6 +949,7 @@ async function runInit(
       byokUrls.set(provider.name, provider.url);
     }
     addByokCandidates(result.state.byokModels ?? {}, result.state.customWireFormats);
+    addLiveCandidates(result.state.liveModels ?? {});
     byokKeys = result.state.byokKeys ?? {};
     for (const gateway of Object.keys(byokKeys)) {
       for (const [key, candidate] of nativeByKey) {
