@@ -700,6 +700,18 @@ async function runInit(
       if (!providerBaseUrls[k]) providerBaseUrls[k] = v;
     }
   }
+  // A gateway a harness no longer discovers (removed from opencode, say) but
+  // that is still configured in sonata.toml has no live-detected base URL, so
+  // re-authenticating it through the wizard could never fetch a fresh model
+  // list — only the models already persisted from whenever it was first
+  // imported. Fall back to the config's own base_url so it can.
+  for (const config of Object.values(configsByScope)) {
+    for (const [gateway, gatewayConfig] of Object.entries(config?.native?.gateways ?? {})) {
+      if (!providerBaseUrls[gateway] && gatewayConfig.baseUrl !== undefined) {
+        providerBaseUrls[gateway] = gatewayConfig.baseUrl;
+      }
+    }
+  }
   // A harness logged in with a subscription holds an OAuth credential, not an
   // API key. Writing such a provider with a metered base URL produces a gateway
   // that authenticates and is then refused for quota, which reads to the user as
@@ -864,6 +876,7 @@ async function runInit(
         (gateway) => resolveKeys([gateway], opts.home)[0] !== undefined,
       ),
       gatewayAuth: Object.fromEntries(gatewayAuth),
+      gatewayBaseUrls: providerBaseUrls,
       initialState,
       initialStateByScope,
     };

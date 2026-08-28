@@ -1815,6 +1815,66 @@ context_window = 128000
     expect(tuiMocks.data!.credentialAvailability.codex.codex).not.toBeNull();
     expect(tuiMocks.data!.credentialAvailability.codex.opencode).not.toBeNull();
   });
+
+  it('falls back to the config-persisted base URL for a gateway no harness discovers anymore', async () => {
+    // A gateway can be removed from a harness (e.g. unlinked from opencode)
+    // while staying configured in sonata.toml. Re-authenticating it through
+    // the wizard needs a base URL to fetch a fresh model list from — with no
+    // live harness detection, sonata.toml's own base_url is the only source.
+    const cwd = mkdtempSync(join(tmpdir(), 'init-gateway-base-url-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'init-gateway-base-url-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways."removed-gw"]
+base_url = "https://gateway.example/v1"
+[native.models."removed-model"]
+gateway = "removed-gw"
+id = "some-model"
+context_window = 128000
+[generate.native]
+"code" = ["removed-model"]
+`);
+    tuiMocks.interactive = true;
+    tuiMocks.result = { cancelled: true, state: { configScope: 'project' } };
+    const detect = async () => ({
+      tmux: { installed: true, version: '3.7b', problems: [] },
+      harnesses: [],
+    });
+
+    await cmdInit({ cwd, home, packageRoot: '/pkg', detect, write: () => {} });
+
+    expect(tuiMocks.data!.gatewayBaseUrls?.['removed-gw']).toBe('https://gateway.example/v1');
+  });
+
+  it('prefers a harness-live base URL over a config-persisted one for the same gateway', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'init-gateway-base-url-live-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'init-gateway-base-url-live-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways."acme"]
+base_url = "https://stale.example/v1"
+[native.models."acme-model"]
+gateway = "acme"
+id = "some-model"
+context_window = 128000
+[generate.native]
+"code" = ["acme-model"]
+`);
+    tuiMocks.interactive = true;
+    tuiMocks.result = { cancelled: true, state: { configScope: 'project' } };
+    const detect = async () => ({
+      tmux: { installed: true, version: '3.7b', problems: [] },
+      harnesses: [{
+        name: 'opencode', installed: true, version: '1.18.16', supported: true,
+        refs: parseOpenCodeRefs('acme/deepseek-v4-flash-0731\n'),
+        authedProviders: ['acme'],
+        providerBaseUrls: { acme: 'https://live.example/v1' },
+        problems: [],
+      }],
+    });
+
+    await cmdInit({ cwd, home, packageRoot: '/pkg', detect, write: () => {} });
+
+    expect(tuiMocks.data!.gatewayBaseUrls?.acme).toBe('https://live.example/v1');
+  });
 });
 
 describe('oauthProvidersFor', () => {

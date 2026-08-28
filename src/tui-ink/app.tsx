@@ -36,6 +36,13 @@ export interface WizardData {
   credentialAvailability?: Record<string, AvailableCredentials>;
   /** Resolved native gateway authentication, used by the device-login screen. */
   gatewayAuth?: Record<string, NativeGatewayAuth>;
+  /**
+   * A gateway's base URL, by provider — live-detected where a harness still
+   * discovers it, falling back to what's already in sonata.toml otherwise.
+   * Lets the wizard fetch a fresh model list when re-authenticating a
+   * gateway no harness discovers anymore.
+   */
+  gatewayBaseUrls?: Record<string, string>;
   /** Injected so tests never reach the network. */
   fetchModels?: typeof defaultFetchModels;
   initialState?: InitState;
@@ -144,6 +151,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         byokProviders={data.byokProviders}
         credentialAvailability={data.credentialAvailability ?? {}}
         gatewayAuth={data.gatewayAuth ?? {}}
+        gatewayBaseUrls={data.gatewayBaseUrls ?? {}}
         storedKeys={data.storedKeys}
         fetchModels={data.fetchModels ?? defaultFetchModels}
         state={state}
