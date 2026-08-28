@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import {
   normalizeModelName, lookupModel, proposeTiers, loadAaCatalog, aaCatalogPath,
+  aaCatalogAgeDays,
   type AaCatalog,
 } from '../src/catalog.js';
 
@@ -246,5 +247,22 @@ describe('normalizeModelName — configured providers', () => {
     // discriminating at all, which is the damage this fixes.
     expect(proposeTiers(keys).simple).toEqual(proposeTiers(keys).complex);
     expect(proposeTiers(keys, undefined, ['acme']).simple).toEqual(['acme-kimi-k3']);
+  });
+});
+
+describe('aaCatalogAgeDays', () => {
+  it('counts whole days since the fetch', () => {
+    expect(aaCatalogAgeDays('2026-08-01T00:00:00Z', new Date('2026-08-31T00:00:00Z'))).toBe(30);
+  });
+
+  it('returns undefined for an unreadable stamp', () => {
+    // A corrupt stamp must not read as "age 0" and silently pass the freshness
+    // check — the caller needs to tell "fresh" from "cannot tell".
+    expect(aaCatalogAgeDays('not-a-date', new Date('2026-08-31T00:00:00Z'))).toBeUndefined();
+  });
+
+  it('treats a future stamp as current rather than negative', () => {
+    // Clock disagreement, not freshness worth reporting as a negative age.
+    expect(aaCatalogAgeDays('2027-01-01T00:00:00Z', new Date('2026-08-31T00:00:00Z'))).toBe(0);
   });
 });

@@ -22,6 +22,7 @@ import {
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { findLitellm } from '../native/litellm.js';
+import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, loadAaCatalog } from '../catalog.js';
 import { keyReport, resolveKeyFromSource } from '../native/credentials.js';
 import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
@@ -88,9 +89,10 @@ export function staleMcpRegistration(cwd: string, home: string): string | undefi
 
 
 export async function cmdDoctor(
-  opts: { cwd: string; home?: string; packageRoot?: string },
+  opts: { cwd: string; home?: string; packageRoot?: string; now?: () => Date },
 ): Promise<{ ok: boolean; checks: Check[] }> {
   const home = opts.home ?? homedir();
+  const now = opts.now ?? (() => new Date());
   const checks: Check[] = [];
 
   try {
@@ -123,6 +125,33 @@ export async function cmdDoctor(
   // Tier agents call the native router first. Report a blocking warning when
   // neither persistent routing nor route-auto hooks are configured.
   if (config.tiers !== undefined) {
+    // Rankings only matter where tiers do. Advisory, not blocking: a stale or
+    // missing catalog still produces tiers, just from superseded scores or the
+    // built-in table — the failure is silently-wrong ordering, which is
+    // exactly the kind that goes unnoticed without being named here.
+    const catalog = loadAaCatalog(home);
+    if (catalog === undefined) {
+      checks.push({
+        name: 'model rankings',
+        ok: true,
+        detail: 'no catalog — tiers ranked from built-in defaults; run `sonata catalog update`',
+      });
+    } else {
+      const age = aaCatalogAgeDays(catalog.fetchedAt, now());
+      const count = Object.keys(catalog.models).length;
+      checks.push(age !== undefined && age > AA_CATALOG_MAX_AGE_DAYS
+        ? {
+            name: 'model rankings',
+            ok: true,
+            detail: `catalog is ${age}d old (${catalog.fetchedAt}) — run \`sonata catalog update\``,
+          }
+        : {
+            name: 'model rankings',
+            ok: true,
+            detail: `${count} models · fetched ${catalog.fetchedAt}`,
+          });
+    }
+
     const projectSettings = readSettings(routeSettingsFile(opts.cwd, 'project', home));
     const globalSettings = readSettings(routeSettingsFile(opts.cwd, 'global', home));
     // Global routing resolves the *machine* config (bd72ec4/dd9ee9b), not

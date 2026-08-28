@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { checkVersion, cmdDoctor, staleMcpRegistration } from '../../src/commands/doctor.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
 import { credentialDir } from '../../src/native/oauth-login.js';
@@ -520,6 +520,72 @@ credential_source = "opencode"
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  const TIERED = `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+`;
+
+  const tieredSetup = () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-cat-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-cat-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), TIERED);
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    return { cwd, home };
+  };
+
+  const writeCatalog = (home: string, fetchedAt: string) => {
+    const path = join(home, '.config', 'sonata', 'catalog.json');
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      fetchedAt,
+      models: { 'deepseek-v4-flash': { codingIndex: 45, blendedPriceUsd: 0.3 } },
+    }));
+  };
+
+  const rankingCheck = async (cwd: string, home: string, now: Date) => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ cwd, home, now: () => now });
+      return checks.find((c) => c.name === 'model rankings');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  };
+
+  it('flags a ranking catalog older than the freshness window', async () => {
+    // Advisory, not blocking: a stale catalog still ranks, but on superseded
+    // scores — a silently-wrong ordering nobody would otherwise notice.
+    const { cwd, home } = tieredSetup();
+    writeCatalog(home, '2026-06-01T00:00:00.000Z');
+    const c = await rankingCheck(cwd, home, new Date('2026-08-28T00:00:00.000Z'));
+    expect(c?.ok).toBe(true);
+    expect(c?.detail).toMatch(/88d old/);
+    expect(c?.detail).toMatch(/sonata catalog update/);
+  });
+
+  it('stays quiet about a catalog inside the freshness window', async () => {
+    const { cwd, home } = tieredSetup();
+    writeCatalog(home, '2026-08-20T00:00:00.000Z');
+    const c = await rankingCheck(cwd, home, new Date('2026-08-28T00:00:00.000Z'));
+    expect(c?.detail).toMatch(/1 models/);
+    expect(c?.detail).not.toMatch(/catalog update/);
+  });
+
+  it('says tiers fall back to built-in defaults when no catalog exists', async () => {
+    const { cwd, home } = tieredSetup();
+    const c = await rankingCheck(cwd, home, new Date('2026-08-28T00:00:00.000Z'));
+    expect(c?.detail).toMatch(/built-in defaults/);
   });
 
   it('does not count a stale routed port as satisfying tier routing', async () => {

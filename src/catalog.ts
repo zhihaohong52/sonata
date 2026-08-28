@@ -270,6 +270,25 @@ export function proposeTiers(
   return { simple: simpleFinal, complex: complexFinal };
 }
 
+/**
+ * How long a ranking cache stays trustworthy.
+ *
+ * Not a correctness bound — a stale catalog still ranks — but model releases
+ * and price cuts land continuously, so an old one silently proposes tiers
+ * built on superseded scores. Thirty days is long enough not to nag and short
+ * enough that a whole model generation cannot pass unnoticed.
+ */
+export const AA_CATALOG_MAX_AGE_DAYS = 30;
+
+/** Whole days since a catalog was fetched, or undefined if the stamp is unreadable. */
+export function aaCatalogAgeDays(fetchedAt: string, now: Date): number | undefined {
+  const at = Date.parse(fetchedAt);
+  if (!Number.isFinite(at)) return undefined;
+  // A stamp from the future is a clock disagreement, not freshness to report
+  // as negative age; treat it as current.
+  return Math.max(0, Math.floor((now.getTime() - at) / 86_400_000));
+}
+
 export function aaCatalogPath(home: string): string {
   return join(home, '.config', 'sonata', 'catalog.json');
 }
