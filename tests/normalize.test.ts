@@ -94,7 +94,7 @@ review = ["native-only"]
   });
 
   it('never merges a legacy entry into either native model when their upstream ids collide', () => {
-    // "openai-latest" and "vendorx-latest" both normalize to "latest" — two
+    // "openai-latest" and "google-latest" both normalize to "latest" — two
     // different gateways, no shared identity beyond the coincidence. A
     // legacy harness entry whose id also normalizes to "latest" must not be
     // silently merged into whichever of the two happened to be inserted
@@ -113,7 +113,7 @@ context_window = 128000
 
 [native.models."model-b"]
 gateway = "gw-b"
-id = "vendorx-latest"
+id = "google-latest"
 context_window = 128000
 
 [models."harness-latest"]
@@ -128,7 +128,7 @@ code = ["model-a", "model-b"]
 `);
     const migrated = migrateLegacyConfig(config);
     expect(migrated.models['model-a']).toEqual({ gateway: 'gw-a', id: 'openai-latest', contextWindow: 128000 });
-    expect(migrated.models['model-b']).toEqual({ gateway: 'gw-b', id: 'vendorx-latest', contextWindow: 128000 });
+    expect(migrated.models['model-b']).toEqual({ gateway: 'gw-b', id: 'google-latest', contextWindow: 128000 });
     // Kept under its own legacy key, harness-only — never merged into
     // model-a or model-b.
     expect(migrated.models['harness-latest']).toEqual({ harness: 'opencode', harnessId: 'openrouter/latest' });

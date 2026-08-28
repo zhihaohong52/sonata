@@ -336,6 +336,18 @@ export function oauthProvidersFor(
   return out;
 }
 
+/**
+ * The gateway names behind a set of candidates, for `normalizeModelName`.
+ *
+ * A model key is `<gateway>-<id>`, so without the gateway names the id cannot
+ * be recovered from the key, and the model misses the catalog it should have
+ * matched — landing on `default` (capable, not cheap) and dropping out of the
+ * simple tier.
+ */
+export function gatewayNamesOf(models: ReadonlyMap<string, NativeCandidate>): string[] {
+  return [...new Set([...models.values()].map((candidate) => candidate.gateway))];
+}
+
 export function nativeLabel(c: NativeCandidate): string {
   return `${c.gateway}/${c.id}`;
 }
@@ -565,7 +577,11 @@ export function nativeTomlFor(
   for (const c of allChosen) allModels.set(c.key, c);
   const tierLists = selectedTiers ?? Object.fromEntries(
     Object.entries(roleModels).map(([role, candidates]) => {
-      const proposal = proposeTiers(candidates.map((candidate) => candidate.key));
+      const proposal = proposeTiers(
+        candidates.map((candidate) => candidate.key),
+        undefined,
+        gatewayNamesOf(allModels),
+      );
       return [role, proposal];
     }),
   );
@@ -1020,7 +1036,7 @@ async function runInit(
       const catalog = loadAaCatalog(opts.home);
       const addedKeys = nativeKeys.filter((key) => !savedNativeKeys.includes(key));
       tiers = Object.fromEntries(roles.map((role) => {
-        const proposal = proposeTiers(nativeKeys, catalog);
+        const proposal = proposeTiers(nativeKeys, catalog, gatewayNamesOf(nativeByKey));
         const saved = result.state.tiers?.[role];
         return [role, {
           simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple, addedKeys),
@@ -1154,7 +1170,7 @@ async function runInit(
       const catalog = loadAaCatalog(opts.home);
       const addedKeys = nativeKeys.filter((key) => !(d.nativeKeys ?? []).includes(key));
       tiers = Object.fromEntries(roles.map((role) => {
-        const proposal = proposeTiers(nativeKeys, catalog);
+        const proposal = proposeTiers(nativeKeys, catalog, gatewayNamesOf(nativeByKey));
         const saved = d.tiers?.[role];
         return [role, {
           simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple, addedKeys),

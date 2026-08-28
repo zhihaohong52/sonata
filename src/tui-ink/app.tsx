@@ -208,7 +208,11 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const tier = tierIndex % 2 === 0 ? 'simple' : 'complex';
       if (!role) return <Summary state={state} onDone={onDone} onBack={back} />;
       const catalog = loadAaCatalog(data.home);
-      const proposal = proposeTiers(state.nativeKeys ?? [], catalog);
+      // Gateway names come from the candidate set: a model key is
+      // `<gateway>-<id>`, and without them the id cannot be recovered, so the
+      // model misses its catalog entry and drops out of the simple tier.
+      const gateways = [...new Set(data.candidates.map((candidate) => candidate.gateway))];
+      const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways);
       const initialRanked = state.tiers?.[role]?.[tier] ?? proposal[tier];
       const footer = catalog
         ? `rankings: Artificial Analysis (fetched ${catalog.fetchedAt}) — artificialanalysis.ai`

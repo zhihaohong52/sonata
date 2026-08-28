@@ -9,19 +9,19 @@ import {
 
 describe('normalizeModelName', () => {
   it('strips harness/provider prefixes and date suffixes', () => {
-    expect(normalizeModelName('vendorx-deepseek-v4-flash-0731')).toBe('deepseek-v4-flash');
-    expect(normalizeModelName('opencode-vendorx-deepseek-v4-pro-0813')).toBe('deepseek-v4-pro');
+    expect(normalizeModelName('acme-deepseek-v4-flash-0731', ['acme'])).toBe('deepseek-v4-flash');
+    expect(normalizeModelName('opencode-acme-deepseek-v4-pro-0813', ['acme'])).toBe('deepseek-v4-pro');
     expect(normalizeModelName('openai/gpt-5.6-terra')).toBe('gpt-5.6-terra');
     expect(normalizeModelName('gpt-5.6-luna')).toBe('gpt-5.6-luna');
   });
 
   it('is idempotent', () => {
-    expect(normalizeModelName(normalizeModelName('vendorx-deepseek-v4-flash-0731')))
+    expect(normalizeModelName(normalizeModelName('acme-deepseek-v4-flash-0731', ['acme'])))
       .toBe('deepseek-v4-flash');
   });
 
   it('remains idempotent on a full harness-provider-model key', () => {
-    const once = normalizeModelName('opencode-vendorx-deepseek-v4-pro-0813');
+    const once = normalizeModelName('opencode-acme-deepseek-v4-pro-0813', ['acme']);
     expect(once).toBe('deepseek-v4-pro');
     expect(normalizeModelName(once)).toBe('deepseek-v4-pro');
   });
@@ -155,5 +155,46 @@ describe('loadAaCatalog', () => {
       },
     }));
     expect(loadAaCatalog(home)).toBeUndefined();
+  });
+});
+
+describe('normalizeModelName — configured providers', () => {
+  it('strips a provider prefix the built-in list has never heard of', () => {
+    // Regression: the built-in list can only cover providers someone thought
+    // to hardcode. Every other user's gateway fell through to the `default`
+    // catalog entry (capable, not cheap) and dropped out of the simple tier.
+    expect(normalizeModelName('acme-deepseek-v4-flash-0731')).toBe('acme-deepseek-v4-flash');
+    expect(normalizeModelName('acme-deepseek-v4-flash-0731', ['acme'])).toBe('deepseek-v4-flash');
+  });
+
+  it('prefers the longest matching provider, not the first', () => {
+    // `openai-` also matches `openai-codex-…`; stripping it would leave a
+    // `codex-` fragment glued to the model name.
+    expect(normalizeModelName('openai-codex-gpt-5.5', ['openai-codex', 'openai'])).toBe('gpt-5.5');
+  });
+
+  it('stays idempotent with providers supplied', () => {
+    const once = normalizeModelName('acme-glm-5.3', ['acme']);
+    expect(normalizeModelName(once, ['acme'])).toBe(once);
+  });
+
+  it('still strips a harness prefix before the provider one', () => {
+    expect(normalizeModelName('opencode-acme-kimi-k3', ['acme'])).toBe('kimi-k3');
+  });
+
+  it('lets a configured provider reach its curated entry', () => {
+    expect(lookupModel('acme-kimi-k3').source).toBe('default');
+    expect(lookupModel('acme-kimi-k3', undefined, ['acme'])).toMatchObject({
+      capable: true, cheap: true, source: 'curated',
+    });
+  });
+
+  it('puts a configured provider\'s cheap models back in the simple tier', () => {
+    const keys = ['acme-kimi-k3', 'acme-grok-4.6'];
+    // Unstripped, neither model is cheap, so no model clears the simple bar
+    // and the documented fallback makes simple mirror complex — the tier stops
+    // discriminating at all, which is the damage this fixes.
+    expect(proposeTiers(keys).simple).toEqual(proposeTiers(keys).complex);
+    expect(proposeTiers(keys, undefined, ['acme']).simple).toEqual(['acme-kimi-k3']);
   });
 });

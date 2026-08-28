@@ -34,11 +34,18 @@ export interface AaCatalog {
 
 /**
  * Collapses the many spellings of one model to a single name: harness and
- * provider prefixes go (`opencode-vendorx-…`, `openai/…`), and a trailing
- * MMDD date suffix goes (`-0731`). Idempotent, so a normalized name can be
+ * provider prefixes go (`opencode-acme-…`, `openai/…`), and a trailing MMDD
+ * date suffix goes (`-0731`). Idempotent, so a normalized name can be
  * normalized again safely.
+ *
+ * `providers` names the gateways actually configured, and is how a provider
+ * sonata has never heard of gets stripped. The built-in list below can only
+ * cover providers someone thought to hardcode; every other user's gateway fell
+ * through to the `default` catalog entry (capable, not cheap), quietly keeping
+ * its models out of the simple tier. Pass the config's gateway names and that
+ * stops being a guess.
  */
-export function normalizeModelName(raw: string): string {
+export function normalizeModelName(raw: string, providers: readonly string[] = []): string {
   let name = raw.includes('/') ? raw.slice(raw.lastIndexOf('/') + 1) : raw;
   // Sonata keys are exactly `<harness>-<provider>-<model>`, so only the first
   // two segments are ours to remove. A `while` loop re-matches its own output
@@ -47,7 +54,12 @@ export function normalizeModelName(raw: string): string {
   // is two ordered passes — at most one harness prefix, then at most one
   // provider prefix — never a loop that can run again.
   const HARNESS_PREFIXES = ['opencode-', 'codex-', 'pi-', 'reasonix-', 'claude-harness-'];
-  const PROVIDER_PREFIXES = ['vendorx-', 'openrouter-', 'openai-', 'google-', 'anthropic-'];
+  // Configured gateways first and longest-first, so `openai-codex-x` loses the
+  // whole gateway name rather than the shorter `openai-` that also matches.
+  const PROVIDER_PREFIXES = [
+    ...providers.map((provider) => `${provider}-`),
+    'openrouter-', 'openai-', 'google-', 'anthropic-',
+  ].sort((a, b) => b.length - a.length);
   for (const prefix of HARNESS_PREFIXES) {
     if (name.startsWith(prefix) && name.length > prefix.length) {
       name = name.slice(prefix.length);
@@ -81,8 +93,8 @@ const CURATED: Record<string, { capable: boolean; cheap: boolean }> = {
   'ox-alpha-free': { capable: false, cheap: true },
 };
 
-export function lookupModel(name: string, aa?: AaCatalog): CatalogEntry {
-  const normalized = normalizeModelName(name);
+export function lookupModel(name: string, aa?: AaCatalog, providers: readonly string[] = []): CatalogEntry {
+  const normalized = normalizeModelName(name, providers);
   const scored = aa?.models[normalized];
   if (scored !== undefined) {
     return {
@@ -100,21 +112,21 @@ export interface TierProposal { simple: string[]; complex: string[] }
 
 /** Rank for ordering within a tier: AA coding index when known, else a fixed
  * mid score so curated/default models interleave stably. */
-function rank(key: string, aa?: AaCatalog): { index: number; price: number } {
-  const scored = aa?.models[normalizeModelName(key)];
+function rank(key: string, aa?: AaCatalog, providers: readonly string[] = []): { index: number; price: number } {
+  const scored = aa?.models[normalizeModelName(key, providers)];
   return scored !== undefined
     ? { index: scored.codingIndex, price: scored.blendedPriceUsd }
     : { index: AA_CAPABLE_CODING_INDEX, price: AA_CHEAP_BLENDED_PRICE_USD };
 }
 
-export function proposeTiers(modelKeys: string[], aa?: AaCatalog): TierProposal {
+export function proposeTiers(modelKeys: string[], aa?: AaCatalog, providers: readonly string[] = []): TierProposal {
   const byRank = (a: string, b: string) => {
-    const ra = rank(a, aa); const rb = rank(b, aa);
+    const ra = rank(a, aa, providers); const rb = rank(b, aa, providers);
     return rb.index - ra.index || ra.price - rb.price;
   };
-  const complex = modelKeys.filter((k) => lookupModel(k, aa).capable).sort(byRank);
+  const complex = modelKeys.filter((k) => lookupModel(k, aa, providers).capable).sort(byRank);
   const simple = modelKeys
-    .filter((k) => { const e = lookupModel(k, aa); return e.capable && e.cheap; })
+    .filter((k) => { const e = lookupModel(k, aa, providers); return e.capable && e.cheap; })
     .sort(byRank);
   // A tier must always resolve to something: with no capable model, everything
   // is complex-eligible; with no cheap-capable model, simple mirrors complex.
