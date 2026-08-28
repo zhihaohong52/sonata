@@ -131,7 +131,7 @@ tests/                   vitest suite against a fake harness + captured fixtures
 roles/                   role definitions (code, review, explore, plan) — owned by sonata, not the harness
 skills/loop/SKILL.md     sonata-loop — the tier-routed feature loop skill sonata init installs
 hooks/                   capture-mode.mjs + hooks.json — the PreToolUse permission hook
-docs/                    dispatching-work-through-sonata.md + guide/ (user-facing reference, split out of README.md — README stays the front door and links here) + reviews/ (architecture review) + superpowers/ (plans + specs, permanent design-history record, indexed in docs/superpowers/README.md)
+docs/                    dispatching-work-through-sonata.md + roadmap.md (1.0 roadmap, mirrors a claude.ai Artifact — update both when an item ships) + guide/ (user-facing reference, split out of README.md — README stays the front door and links here) + reviews/ (architecture review) + superpowers/ (plans + specs, permanent design-history record, indexed in docs/superpowers/README.md)
 ```
 
 ### Adding a harness

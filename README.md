@@ -381,6 +381,8 @@ The essentials are above. Deep-dive reference lives in
 | [Limitations](docs/guide/limitations.md) | Known gaps worth knowing before depending on this |
 | [Adding a harness](docs/guide/adding-a-harness.md) | The adapter extension point |
 
+Where this is headed: [Roadmap to 1.0](docs/roadmap.md).
+
 Design history — every feature's spec and implementation plan, kept as a
 permanent record — is indexed in [`docs/superpowers/`](docs/superpowers/).
 Architecture reviews are in [`docs/reviews/`](docs/reviews/). What using
