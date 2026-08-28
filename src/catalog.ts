@@ -86,8 +86,21 @@ export function costOfEntry(entry: AaEntry): number {
  * junk when their selection is strong. The simple tier optimises
  * capability-per-dollar, and without a floor a very cheap, very weak model
  * wins on ratio alone.
+ *
+ * Set where it is to keep the tier *deep* as well as good. A tier is a ranked
+ * fallback list, so a floor strict enough to admit one model leaves the router
+ * nothing to fall through to and sends the first failure straight to 529 and
+ * the dispatch lane. Measured on a real 17-model config, 0.85 admitted exactly
+ * one model where 0.75 admits four.
+ *
+ * The floor is not only a depth control: it also decides the *leader*, because
+ * a model it admits can outrank the others on value. On that same config,
+ * raising it to 0.85 excludes the cheapest model and promotes a stronger,
+ * dearer one. So it trades capability against both cost and resilience, and
+ * moving it changes what grunt work actually runs on — not merely what stands
+ * behind that choice.
  */
-export const SIMPLE_CAPABILITY_FLOOR = 0.85;
+export const SIMPLE_CAPABILITY_FLOOR = 0.75;
 
 
 
