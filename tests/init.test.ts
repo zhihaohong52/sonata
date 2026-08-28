@@ -1381,13 +1381,18 @@ describe('deriveInitState', () => {
     expect(state.harnesses).toEqual([]);
   });
 
-  it('keeps every harness serving a gateway', () => {
+  it('falls back to a synthetic provider when the same name is offered by more than one harness', () => {
+    // A bare gateway name in sonata.toml carries no record of which harness's
+    // discovery produced it. Two harnesses can coincidentally catalog an
+    // identically named provider (verified live: both opencode and pi list
+    // one called "opencode-go") — crediting both would pre-select a harness
+    // the user never actually chose, with no way to make it stick unticked.
     const state = deriveInitState(config({ m: { gateway: 'shared', id: 'm' } }), 'project', [
       { harness: 'opencode', provider: 'shared', count: 1, key: 'opencode/shared' },
       { harness: 'pi', provider: 'shared', count: 1, key: 'pi/shared' },
     ]);
-    expect(state.providerKeys).toEqual(['opencode/shared', 'pi/shared']);
-    expect(state.harnesses).toEqual(['opencode', 'pi']);
+    expect(state.providerKeys).toEqual(['config/shared']);
+    expect(state.harnesses).toEqual([]);
   });
 
   it('copies roles and per-role models from generate.native', () => {

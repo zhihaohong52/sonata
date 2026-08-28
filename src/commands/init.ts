@@ -366,7 +366,16 @@ export function deriveInitState(
   const harnesses: string[] = [];
   for (const gateway of gateways) {
     const matches = offered.filter((provider) => provider.provider === gateway);
-    if (matches.length === 0) {
+    // A bare gateway name in sonata.toml doesn't record which harness's
+    // discovery produced it. Exactly one matching harness is unambiguous and
+    // gets credited below. More than one *distinct* harness sharing the same
+    // provider name (e.g. opencode and pi both separately cataloging
+    // opencode.ai's public "opencode-go" gateway — verified live) is just as
+    // unattributable as no match at all: crediting every one of them
+    // pre-selects a harness the user never actually chose, with no way to
+    // make it stick unticked. Treat both cases the same way.
+    const distinctHarnesses = new Set(matches.map((provider) => provider.harness));
+    if (matches.length === 0 || distinctHarnesses.size > 1) {
       providerKeys.push(`config/${gateway}`);
       continue;
     }
