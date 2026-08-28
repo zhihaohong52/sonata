@@ -38,7 +38,7 @@ import { parsePiRefs } from '../src/adapters/pi.js';
 import {
   cmdInit, credentialAvailabilityFor, duplicateKeys, parseCredentialSourceFlags, previousAskedStep, nativeCandidatesFrom,
   nativeTomlFor, preTickedNative, configPathFor, agentsDirFor,
-  deriveInitState, configNativeCandidates, oauthProvidersFor,
+  deriveInitState, configNativeCandidates, oauthProvidersFor, dedupeOauthProviders,
   type NativeCandidate,
 } from '../src/commands/init.js';
 import { reconcilePerRoleModels, reconcileTierList } from '../src/commands/init.js';
@@ -2230,5 +2230,42 @@ describe('reconcileTierList', () => {
   it('does not duplicate an added model already in the saved list', () => {
     expect(reconcileTierList(['a', 'b'], new Set(['a', 'b']), ['a'], ['a', 'b']))
       .toEqual(['a', 'b']);
+  });
+});
+
+describe('dedupeOauthProviders', () => {
+  const offered = [
+    { harness: 'codex', provider: 'codex', key: 'codex/codex', count: 6 },
+    { harness: 'opencode', provider: 'openai', key: 'opencode/openai', count: 13 },
+    { harness: 'opencode', provider: 'acme', key: 'opencode/acme', count: 23 },
+  ];
+  const chatgpt = new Map([
+    ['codex', 'codex-oauth' as const],
+    ['openai', 'codex-oauth' as const],
+  ]);
+
+  it('hides a second provider backed by the same OAuth credential', () => {
+    // opencode's `openai` entry is the ChatGPT credential codex already holds,
+    // so offering both writes one subscription as two codex-oauth gateways.
+    expect(dedupeOauthProviders(offered, chatgpt).map((p) => p.key))
+      .toEqual(['codex/codex', 'opencode/acme']);
+  });
+
+  it('keeps the non-canonical one when the canonical is not offered', () => {
+    // opencode but no codex: `openai` is the only way to reach ChatGPT, which
+    // is the whole reason that credential is read.
+    const withoutCodex = offered.filter((p) => p.provider !== 'codex');
+    expect(dedupeOauthProviders(withoutCodex, chatgpt).map((p) => p.key))
+      .toEqual(['opencode/openai', 'opencode/acme']);
+  });
+
+  it('leaves key-authenticated providers alone', () => {
+    expect(dedupeOauthProviders(offered, new Map()).map((p) => p.key)).toEqual(offered.map((p) => p.key));
+  });
+
+  it('does not hide a provider that is itself the canonical name', () => {
+    const copilot = [{ harness: 'opencode', provider: 'github-copilot', key: 'opencode/github-copilot', count: 8 }];
+    const auth = new Map([['github-copilot', 'copilot-oauth' as const]]);
+    expect(dedupeOauthProviders(copilot, auth)).toHaveLength(1);
   });
 });

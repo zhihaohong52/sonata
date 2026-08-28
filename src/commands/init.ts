@@ -62,6 +62,48 @@ export const defaultDetector: Detector = async (env) => ({
 
 export type ConfigScope = 'project' | 'global';
 
+/**
+ * The provider name an OAuth credential is offered under, when more than one
+ * harness reports it.
+ *
+ * Each of these auth kinds names a single account, not a class of gateway:
+ * `codex-oauth` *is* the ChatGPT subscription, `copilot-oauth` *is* the GitHub
+ * Copilot entitlement. So two providers resolving to the same kind are the
+ * same upstream, reached twice.
+ */
+const OAUTH_CANONICAL_PROVIDER: Record<string, string> = {
+  'codex-oauth': 'codex',
+  'copilot-oauth': 'github-copilot',
+};
+
+/**
+ * One OAuth credential, one provider row.
+ *
+ * opencode's `openai` entry is the same ChatGPT credential codex holds —
+ * identical `client_id`, which is exactly how `oauthProvidersFor` recognises
+ * it. Offering both let the user configure one subscription as two
+ * `codex-oauth` gateways serving overlapping models under different keys
+ * (`gpt-5.6-luna` and `openai-gpt-5.6-luna`), doubling the generated agents
+ * for no added capability.
+ *
+ * The canonical name only wins when it is actually offered: a machine with
+ * opencode but no codex still reaches ChatGPT through `openai`, which is the
+ * whole reason that entry is read in the first place.
+ */
+export function dedupeOauthProviders(
+  offered: ProviderSummary[],
+  oauthProviders: ReadonlyMap<string, NativeGatewayAuth>,
+): ProviderSummary[] {
+  const names = new Set(offered.map((provider) => provider.provider));
+  return offered.filter((provider) => {
+    const auth = oauthProviders.get(provider.provider);
+    if (auth === undefined || !isOauthGatewayAuth(auth)) return true;
+    const canonical = OAUTH_CANONICAL_PROVIDER[auth];
+    if (canonical === undefined || provider.provider === canonical) return true;
+    return !names.has(canonical);
+  });
+}
+
 /** Build wizard credential rows only for the gateway auth type they can serve. */
 export function credentialAvailabilityFor(
   providers: Array<{ provider: string }>,
@@ -642,7 +684,7 @@ async function runInit(
 
   const allRefs = harnesses.flatMap((h) => h.refs);
   const authed = harnesses.flatMap((h) => h.authedProviders);
-  const offered: ProviderSummary[] = offerableProviders(allRefs, authed);
+  let offered: ProviderSummary[] = offerableProviders(allRefs, authed);
 
   const configsByScope: Partial<Record<ConfigScope, SonataConfig>> = {};
   for (const scope of ['project', 'global'] as const) {
@@ -765,6 +807,11 @@ async function runInit(
       count: 0,
     });
   }
+
+  // Applied after the BYOK block so a hidden provider is not re-offered as a
+  // BYOK row: that filter skips any name already in `offered`, which it still
+  // is at this point.
+  offered = dedupeOauthProviders(offered, oauthProviders);
 
   // Having no harness is no longer fatal: BYOK is exactly that case, and the
   // wizard can reach a working config from it. It is still worth saying, so it
