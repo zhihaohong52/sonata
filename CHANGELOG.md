@@ -6,6 +6,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/) informally
 (pre-1.0, so minor bumps can carry breaking changes).
 
+## [0.3.3] - 2026-08-29
+
+### Added
+- `avoid_gateways` — a top-level list of gateway names whose models rank
+  *last* within every tier. Ranking optimises capability per task-dollar and
+  knows nothing about whether a gateway is reliable, rate-limited, or simply
+  one you would rather not send work to; the only remedy was reordering
+  `[tiers]` by hand, which the next `sonata init` re-proposed away.
+
+  It demotes rather than excludes, so those models stay as fallback
+  candidates and avoiding a gateway costs preference rather than the depth a
+  ranked tier exists to provide. A name matching no gateway is refused at
+  parse time — the setting's failure mode is that its absence is invisible, so
+  a typo would otherwise read as "not avoided".
+
+  ```toml
+  avoid_gateways = ["flaky-gw"]
+  ```
+
 ## [0.3.2] - 2026-08-29
 
 Tier ranking, mostly. Tiers were ordered on a coding index and a per-1M price

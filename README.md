@@ -186,7 +186,9 @@ update`, with a free key from [artificialanalysis.ai](https://artificialanalysis
 when one exists, or built-in defaults otherwise. `complex` is ordered by raw
 capability and `simple` by capability **per task-dollar**, so demanding work
 goes to the strongest model you picked and grunt work to the one that returns
-the most per dollar rather than merely the cheapest. It then asks whether the config
+the most per dollar rather than merely the cheapest. Set `avoid_gateways` in
+`sonata.toml` to rank a particular gateway's models last without dropping them
+as fallbacks. It then asks whether the config
 applies to this project or the whole machine, writes `sonata.toml`, generates
 one agent per role × tier, offers to install the permission hook, installs the
 `sonata-loop` skill, and offers to run `sonata route auto` so the generated
