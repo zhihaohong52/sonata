@@ -156,6 +156,61 @@ export function candidatesForProviders(candidates: CandidateOption[], providers:
 }
 
 /**
+ * A lookup key for one (gateway, id) pair.
+ *
+ * Both halves are free-form — an id routinely carries `/`, `-` and `.` — so
+ * they are JSON-encoded rather than joined by a separator, which would make
+ * `a` + `b/c` collide with `a/b` + `c`.
+ */
+function gatewayIdKey(gateway: string, id: string): string {
+  return JSON.stringify([gateway, id]);
+}
+
+/**
+ * Harness-derived candidates with a gateway's live `/models` answer swapped in.
+ *
+ * A harness catalogue is a snapshot: it keeps listing a model the gateway has
+ * since dropped, and misses one it has since added. Where the gateway itself
+ * answered, its list is authoritative — so a gateway present in
+ * `liveByGateway` has its candidates **replaced**, which is what actually
+ * retires a stale entry. A gateway absent from it (unreachable, no key, OAuth,
+ * timed out) keeps the harness list untouched, so a failed refresh degrades to
+ * today's behaviour rather than emptying the picker.
+ *
+ * An id the harness already listed keeps that candidate's existing key: the
+ * key is what `nativeKeys` and the written config are addressed by, so
+ * reconstructing it would silently deselect models the user had already
+ * chosen. Only a genuinely new id mints a key.
+ */
+export function mergeLiveCandidates(
+  candidates: CandidateOption[],
+  liveByGateway: Record<string, string[]>,
+): CandidateOption[] {
+  const refreshed = new Set(Object.keys(liveByGateway));
+  const existing = new Map(candidates.map((candidate) => [gatewayIdKey(candidate.gateway, candidate.id), candidate]));
+  const candidateFor = (gateway: string, id: string): CandidateOption =>
+    existing.get(gatewayIdKey(gateway, id))
+      ?? { key: byokCandidateKey(gateway, id), gateway, id, label: `${gateway}/${id}` };
+
+  const out: CandidateOption[] = [];
+  const done = new Set<string>();
+  // A refreshed gateway's live list is emitted where that gateway first
+  // appeared, so refreshing does not reshuffle the picker.
+  for (const candidate of candidates) {
+    if (!refreshed.has(candidate.gateway)) { out.push(candidate); continue; }
+    if (done.has(candidate.gateway)) continue;
+    done.add(candidate.gateway);
+    for (const id of liveByGateway[candidate.gateway]!) out.push(candidateFor(candidate.gateway, id));
+  }
+  // A gateway the harness listed nothing for still contributes what it serves.
+  for (const [gateway, ids] of Object.entries(liveByGateway)) {
+    if (done.has(gateway)) continue;
+    for (const id of ids) out.push(candidateFor(gateway, id));
+  }
+  return out;
+}
+
+/**
  * The keys a tier's RankedSelect screen offers, in stable order.
  *
  * A saved ranking can name a harness-only key that has no native route and

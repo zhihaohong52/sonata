@@ -5,6 +5,7 @@ import {
   byokProviderKey,
   byokProviderName,
   candidatesForProviders,
+  mergeLiveCandidates,
   addProviderCatalog,
   configuredProviderNames,
   importableProviders,
@@ -333,5 +334,51 @@ describe('tierPickerKeys', () => {
     // the user this run (e.g. its provider was deselected) and must not come
     // back just because an old saved tier list still names it.
     expect(tierPickerKeys(['a'], ['a', 'removed-model'], ['a', 'removed-model'])).toEqual(['a']);
+  });
+});
+
+describe('mergeLiveCandidates', () => {
+  const candidates: CandidateOption[] = [
+    { key: 'acme-old-model', gateway: 'acme', id: 'old-model', label: 'acme/old-model' },
+    { key: 'acme-kept', gateway: 'acme', id: 'kept', label: 'acme/kept' },
+    { key: 'other-x', gateway: 'other', id: 'x', label: 'other/x' },
+  ];
+
+  it('retires a model the gateway no longer serves', () => {
+    const merged = mergeLiveCandidates(candidates, { acme: ['kept'] });
+    expect(merged.map((c) => c.key)).toEqual(['acme-kept', 'other-x']);
+  });
+
+  it('keeps the existing key for a model the harness already listed', () => {
+    // The key addresses nativeKeys and the written config: minting a new one
+    // would silently deselect a model the user had already chosen.
+    const merged = mergeLiveCandidates(candidates, { acme: ['kept'] });
+    expect(merged.find((c) => c.id === 'kept')!.key).toBe('acme-kept');
+  });
+
+  it('adds a model the harness catalogue had not caught up to', () => {
+    const merged = mergeLiveCandidates(candidates, { acme: ['kept', 'brand-new'] });
+    expect(merged.find((c) => c.id === 'brand-new')).toEqual({
+      key: 'acme-brand-new', gateway: 'acme', id: 'brand-new', label: 'acme/brand-new',
+    });
+  });
+
+  it('leaves a gateway that did not answer entirely untouched', () => {
+    const merged = mergeLiveCandidates(candidates, { acme: ['kept'] });
+    expect(merged.filter((c) => c.gateway === 'other')).toEqual([candidates[2]]);
+  });
+
+  it('is a no-op when nothing was refreshed', () => {
+    expect(mergeLiveCandidates(candidates, {})).toEqual(candidates);
+  });
+
+  it('emits a refreshed gateway where it first appeared, not at the end', () => {
+    const merged = mergeLiveCandidates(candidates, { acme: ['kept'] });
+    expect(merged[0]!.gateway).toBe('acme');
+  });
+
+  it('contributes models for a gateway the harness listed nothing for', () => {
+    const merged = mergeLiveCandidates(candidates, { fresh: ['a'] });
+    expect(merged.map((c) => c.key)).toContain('fresh-a');
   });
 });

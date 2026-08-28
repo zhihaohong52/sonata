@@ -3,6 +3,7 @@ import { Box, Text, useInput } from 'ink';
 import { MultiSelect } from './components/multi-select.js';
 import { RankedSelect } from './components/ranked-select.js';
 import { ProvidersStep } from './components/providers-step.js';
+import { ModelsStep } from './components/models-step.js';
 import { loadAaCatalog, proposeTiers } from '../catalog.js';
 import {
   applyStep,
@@ -167,10 +168,13 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     case 2: {
       const candidates = candidatesForProviders(data.candidates, data.providers, state.providerKeys);
       if (candidates.length === 0) return <Summary state={state} onDone={onDone} onBack={back} />;
-      return <MultiSelect
+      return <ModelsStep
         key="models"
-        title="Models"
-        items={candidates.map((candidate) => ({ value: candidate.key, label: candidate.label, hint: candidate.id }))}
+        candidates={candidates}
+        gatewayBaseUrls={data.gatewayBaseUrls ?? {}}
+        gatewayAuth={data.gatewayAuth ?? {}}
+        keys={{ ...data.storedKeys, ...state.byokKeys }}
+        fetchModels={data.fetchModels ?? defaultFetchModels}
         initialSelected={new Set(state.nativeKeys)}
         onSubmit={(keys) => {
           // Keep any BYOK/custom-provider keys already chosen: this step owns

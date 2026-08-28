@@ -858,9 +858,15 @@ async function runInit(
       candidates: allNativeCandidates.map((c) => ({ key: c.key, gateway: c.gateway, id: c.id, label: nativeLabel(c) })),
       roles: [...KNOWN_ROLES],
       byokProviders,
+      // Every offered gateway, not just the BYOK ones: the models step asks a
+      // gateway what it serves rather than trusting a harness snapshot, and
+      // that call has to authenticate. A gateway with no resolvable key simply
+      // keeps its harness list.
       storedKeys: Object.fromEntries(
-        resolveKeys(byokProviders.map((provider) => provider.name), opts.home)
-          .map((source) => [source.gateway, source.key]),
+        resolveKeys(
+          [...new Set([...byokProviders.map((provider) => provider.name), ...offered.map((p) => p.provider)])],
+          opts.home,
+        ).map((source) => [source.gateway, source.key]),
       ),
       credentialAvailability: credentialAvailabilityFor(
         offered,
