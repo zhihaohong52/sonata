@@ -266,3 +266,40 @@ describe('aaCatalogAgeDays', () => {
     expect(aaCatalogAgeDays('2027-01-01T00:00:00Z', new Date('2026-08-31T00:00:00Z'))).toBe(0);
   });
 });
+
+describe('proposeTiers — avoided gateways', () => {
+  const aa: AaCatalog = {
+    fetchedAt: '2026-08-25T00:00:00Z',
+    models: {
+      'best': { codingIndex: 60, blendedPriceUsd: 1, agenticIndex: 60, costPerTask: 0.1 },
+      'good': { codingIndex: 55, blendedPriceUsd: 1, agenticIndex: 55, costPerTask: 0.5 },
+    },
+  };
+
+  it('demotes an avoided model rather than dropping it', () => {
+    // Demotion, not exclusion: the tier keeps it as a fallback, so avoiding a
+    // gateway costs preference rather than the depth a ranked list provides.
+    const t = proposeTiers(['best', 'good'], aa, [], new Set(['best']));
+    expect(t.complex).toEqual(['good', 'best']);
+    expect(t.simple).toContain('best');
+  });
+
+  it('leaves ordering untouched when nothing is avoided', () => {
+    expect(proposeTiers(['good', 'best'], aa).complex).toEqual(['best', 'good']);
+  });
+
+  it('measures the simple floor over models that can actually lead', () => {
+    // With the strongest model avoided, keeping it in the floor calculation
+    // could raise the bar until nothing preferred qualifies — inverting the
+    // setting's intent.
+    const wide: AaCatalog = {
+      fetchedAt: '2026-08-25T00:00:00Z',
+      models: {
+        'avoided-top': { codingIndex: 90, blendedPriceUsd: 1, agenticIndex: 90, costPerTask: 0.9 },
+        'preferred': { codingIndex: 50, blendedPriceUsd: 1, agenticIndex: 50, costPerTask: 0.05 },
+      },
+    };
+    const t = proposeTiers(['avoided-top', 'preferred'], wide, [], new Set(['avoided-top']));
+    expect(t.simple[0]).toBe('preferred');
+  });
+});

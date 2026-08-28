@@ -45,6 +45,8 @@ export interface WizardData {
    * gateway no harness discovers anymore.
    */
   gatewayBaseUrls?: Record<string, string>;
+  /** Gateways the config asks to rank last; see SonataConfig.avoidGateways. */
+  avoidGateways?: string[];
   /** Injected so tests never reach the network. */
   fetchModels?: typeof defaultFetchModels;
   initialState?: InitState;
@@ -213,7 +215,13 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       // `<gateway>-<id>`, and without them the id cannot be recovered, so the
       // model misses its catalog entry and drops out of the simple tier.
       const gateways = [...new Set(data.candidates.map((candidate) => candidate.gateway))];
-      const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways);
+      // Resolved from the candidate set, not by matching key prefixes: a key
+      // only looks like `<gateway>-<id>`.
+      const avoid = new Set(data.avoidGateways ?? []);
+      const avoided = new Set(
+        data.candidates.filter((c) => avoid.has(c.gateway)).map((c) => c.key),
+      );
+      const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways, avoided);
       const initialRanked = initialRankedFor(state.tiers?.[role]?.[tier], proposal[tier]);
       const footer = catalog
         ? `rankings: Artificial Analysis (fetched ${catalog.fetchedAt}) — artificialanalysis.ai`

@@ -233,24 +233,34 @@ export function proposeTiers(
   modelKeys: string[],
   aa?: AaCatalog,
   providers: readonly string[] = [],
+  avoided: ReadonlySet<string> = new Set(),
 ): TierProposal {
   const rankOf = (k: string) => rank(k, aa, providers);
+  // An avoided model sorts after every non-avoided one, whatever it scores.
+  // Demotion, not exclusion: the tier keeps it as a fallback candidate, so
+  // avoiding a gateway costs preference rather than the depth a ranked list
+  // exists to provide.
+  const avoidance = (a: string, b: string) => Number(avoided.has(a)) - Number(avoided.has(b));
   // Complex work wants the most capable model, cost only breaking ties.
   const byCapability = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
-    return rb.index - ra.index || ra.price - rb.price;
+    return avoidance(a, b) || rb.index - ra.index || ra.price - rb.price;
   };
   // Simple work wants the most capability per dollar, capability breaking ties.
   const byValue = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
-    return valueOf(rb) - valueOf(ra) || rb.index - ra.index;
+    return avoidance(a, b) || valueOf(rb) - valueOf(ra) || rb.index - ra.index;
   };
 
   const complex = modelKeys.filter((k) => lookupModel(k, aa, providers).capable).sort(byCapability);
   // The floor is relative to the best model actually selected, so it adapts to
   // the user's own set rather than to an absolute score that is wrong whenever
   // their selection is uniformly strong or uniformly modest.
-  const best = Math.max(0, ...modelKeys.map((k) => rankOf(k).index));
+  // Measured over the models that can actually lead the tier: including an
+  // avoided model here could raise the bar high enough to exclude everything
+  // preferred, inverting the setting's intent.
+  const preferred = modelKeys.filter((k) => !avoided.has(k));
+  const best = Math.max(0, ...(preferred.length > 0 ? preferred : modelKeys).map((k) => rankOf(k).index));
   const simple = modelKeys
     .filter((k) => {
       const e = lookupModel(k, aa, providers);

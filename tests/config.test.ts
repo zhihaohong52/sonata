@@ -925,3 +925,41 @@ base_url = "https://example.invalid/v1"
 `)).toThrow(/from.*to/i);
   });
 });
+
+describe('avoid_gateways', () => {
+  const base = `
+avoid_gateways = ["acme"]
+
+[models."m"]
+gateway = "acme"
+id = "m"
+context_window = 128000
+
+[native.gateways."acme"]
+base_url = "https://acme.example/v1"
+
+[tiers.code]
+simple = ["m"]
+complex = ["m"]
+`;
+
+  it('parses a list of gateway names', () => {
+    expect(parseConfig(base).avoidGateways).toEqual(['acme']);
+  });
+
+  it('is absent when unset, so existing configs are unaffected', () => {
+    expect(parseConfig(base.replace('avoid_gateways = ["acme"]\n', '')).avoidGateways).toBeUndefined();
+  });
+
+  it('refuses a gateway that does not exist', () => {
+    // A typo would otherwise read as "not avoided", and the setting's whole
+    // failure mode is that its absence is invisible.
+    expect(() => parseConfig(base.replace('"acme"]', '"acmee"]')))
+      .toThrow(/unknown gateway "acmee"/);
+  });
+
+  it('refuses a non-list value', () => {
+    expect(() => parseConfig(base.replace('avoid_gateways = ["acme"]', 'avoid_gateways = "acme"')))
+      .toThrow(/must be a list/);
+  });
+});

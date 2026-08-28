@@ -150,6 +150,16 @@ export interface SonataConfig {
    */
   unifiedModels: Record<string, UnifiedModelConfig>;
   tiers?: Record<string, TierLists>;
+  /**
+   * Gateways to rank *last* within a tier — not to exclude.
+   *
+   * Ranking optimises capability per task-dollar and knows nothing about
+   * whether a gateway is reliable, rate-limited, or simply one you would
+   * rather not send work to. Demoting rather than dropping keeps those models
+   * as fallback candidates, so avoiding a gateway costs preference rather than
+   * the depth a ranked tier exists to provide.
+   */
+  avoidGateways?: string[];
   generate: { roles: Record<string, string[]> };
   native?: NativeConfig;
   run: {
@@ -343,6 +353,30 @@ export function parseConfig(text: string): SonataConfig {
     if (raw.generate !== undefined || (raw.native as Record<string, unknown> | undefined)?.generate !== undefined) {
       throw new Error('sonata.toml: [tiers] replaces [generate.roles] and [generate.native] — run `sonata init` to migrate');
     }
+  }
+
+  let avoidGateways: string[] | undefined;
+  if (raw.avoid_gateways !== undefined) {
+    const listed = raw.avoid_gateways;
+    if (!Array.isArray(listed) || !listed.every((name) => typeof name === 'string')) {
+      throw new Error('sonata.toml: avoid_gateways must be a list of gateway names');
+    }
+    // A name that matches no gateway would silently do nothing, and the whole
+    // point of the setting is that its absence is invisible — a typo would
+    // read as "the gateway is not being avoided" with no way to tell.
+    const known = new Set([
+      ...Object.keys((raw.native as { gateways?: Record<string, unknown> } | undefined)?.gateways ?? {}),
+      ...Object.values(unifiedModels).map((model) => model.gateway).filter((g): g is string => g !== undefined),
+    ]);
+    for (const name of listed as string[]) {
+      if (!known.has(name)) {
+        throw new Error(
+          `sonata.toml: avoid_gateways names unknown gateway "${name}". ` +
+          `Known gateways: ${[...known].sort().join(', ') || '(none)'}`,
+        );
+      }
+    }
+    avoidGateways = listed as string[];
   }
 
   const gen = (raw.generate ?? {}) as Record<string, unknown>;
@@ -574,6 +608,7 @@ export function parseConfig(text: string): SonataConfig {
     models,
     unifiedModels,
     tiers,
+    avoidGateways,
     generate: { roles },
     native,
     run: {

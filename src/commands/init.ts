@@ -344,6 +344,23 @@ export function oauthProvidersFor(
  * matched — landing on `default` (capable, not cheap) and dropping out of the
  * simple tier.
  */
+/**
+ * The model keys served by an avoided gateway.
+ *
+ * `avoid_gateways` names gateways, but ranking sorts model keys, so the two
+ * are resolved through the candidate set rather than by matching key prefixes
+ * — a key only looks like `<gateway>-<id>`, and inferring the gateway back out
+ * of it is exactly the guess `normalizeModelName` needs configured providers
+ * to avoid.
+ */
+export function avoidedKeysOf(
+  models: ReadonlyMap<string, NativeCandidate>,
+  avoidGateways: readonly string[],
+): Set<string> {
+  const avoid = new Set(avoidGateways);
+  return new Set([...models.values()].filter((c) => avoid.has(c.gateway)).map((c) => c.key));
+}
+
 export function gatewayNamesOf(models: ReadonlyMap<string, NativeCandidate>): string[] {
   return [...new Set([...models.values()].map((candidate) => candidate.gateway))];
 }
@@ -569,6 +586,7 @@ export function nativeTomlFor(
   extraModels: Record<string, { harness?: string; harnessId?: string }> = {},
   allChosen: readonly NativeCandidate[] = [],
   existingRun?: SonataConfig['run'],
+  avoidGateways: readonly string[] = [],
 ): string {
   const allModels = new Map<string, NativeCandidate>();
   for (const cands of Object.values(roleModels)) {
@@ -581,6 +599,7 @@ export function nativeTomlFor(
         candidates.map((candidate) => candidate.key),
         undefined,
         gatewayNamesOf(allModels),
+        avoidedKeysOf(allModels, avoidGateways),
       );
       return [role, proposal];
     }),
@@ -622,6 +641,13 @@ export function nativeTomlFor(
   for (const [key, model] of Object.entries(extraModels)) {
     if (allModels.has(key) || model.harness === undefined || model.harnessId === undefined) continue;
     lines.push(`[models.${tomlKey(key)}]`, `harness = ${tomlKey(model.harness)}`, `id = ${tomlKey(model.harnessId)}`, '');
+  }
+
+  if (avoidGateways.length > 0) {
+    // Written before [tiers] so it reads as the policy the lists were ranked
+    // under. Dropping it here would be the whole bug this setting exists to
+    // prevent: init would re-propose the ordering the user avoided.
+    lines.push(`avoid_gateways = [${avoidGateways.map(tomlKey).join(', ')}]`, '');
   }
 
   for (const [role, lists] of Object.entries(tierLists)) {
@@ -861,6 +887,12 @@ async function runInit(
   let providerKeys!: string[];
   let inScopeNative!: NativeCandidate[];
   let nativeKeys!: string[];
+  // Carried from whichever config this run is rewriting: the setting is the
+  // user's, not something the wizard asks about, so it must survive untouched.
+  // Read by scope rather than captured once, since the scope is only settled
+  // after the wizard (or the flags) answer it.
+  const avoidGatewaysFor = (scope: ConfigScope): string[] =>
+    configsByScope[scope]?.avoidGateways ?? [];
   let chosenNative!: NativeCandidate[];
   let roles!: string[];
   let nativeRoleModels: Record<string, NativeCandidate[]> = {};
@@ -974,6 +1006,7 @@ async function runInit(
       ),
       gatewayAuth: Object.fromEntries(gatewayAuth),
       gatewayBaseUrls: providerBaseUrls,
+      avoidGateways: avoidGatewaysFor(resolvedScope),
       initialState,
       initialStateByScope,
     };
@@ -1036,7 +1069,7 @@ async function runInit(
       const catalog = loadAaCatalog(opts.home);
       const addedKeys = nativeKeys.filter((key) => !savedNativeKeys.includes(key));
       tiers = Object.fromEntries(roles.map((role) => {
-        const proposal = proposeTiers(nativeKeys, catalog, gatewayNamesOf(nativeByKey));
+        const proposal = proposeTiers(nativeKeys, catalog, gatewayNamesOf(nativeByKey), avoidedKeysOf(nativeByKey, avoidGatewaysFor(configScope)));
         const saved = result.state.tiers?.[role];
         return [role, {
           simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple, addedKeys),
@@ -1170,7 +1203,7 @@ async function runInit(
       const catalog = loadAaCatalog(opts.home);
       const addedKeys = nativeKeys.filter((key) => !(d.nativeKeys ?? []).includes(key));
       tiers = Object.fromEntries(roles.map((role) => {
-        const proposal = proposeTiers(nativeKeys, catalog, gatewayNamesOf(nativeByKey));
+        const proposal = proposeTiers(nativeKeys, catalog, gatewayNamesOf(nativeByKey), avoidedKeysOf(nativeByKey, avoidGatewaysFor(configScope)));
         const saved = d.tiers?.[role];
         return [role, {
           simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple, addedKeys),
@@ -1370,7 +1403,7 @@ async function runInit(
   }
 
   mkdirSync(dirname(configPathResolved), { recursive: true });
-  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources, tiers, migratedModels, chosenNative, configsByScope[configScope]?.run));
+  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources, tiers, migratedModels, chosenNative, configsByScope[configScope]?.run, avoidGatewaysFor(configScope)));
   out(`  ✓ wrote ${configPathResolved}`);
 
   let hookChanged = false;
