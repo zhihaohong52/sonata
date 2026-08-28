@@ -156,6 +156,25 @@ export function candidatesForProviders(candidates: CandidateOption[], providers:
 }
 
 /**
+ * The hint beside a provider on the import screen.
+ *
+ * Two different "where from"s meet on this row and were easy to confuse, so
+ * they are labelled apart: **via** names the harness whose catalogue produced
+ * the provider, **from** names where its credential lives. Naming the harness
+ * matters because `importableProviders` dedupes by provider name — several
+ * harnesses can serve one provider, only the first is shown, and it is that
+ * one's credential the import will use.
+ */
+export function importHint(harness: string, have: AvailableCredentials): string {
+  const oauth = have.codex !== null ? have.codex : have.opencode !== null ? have.opencode : null;
+  const credential = oauth !== null
+    ? (oauth.expiresInDays === null ? 'expiry unknown'
+      : oauth.expiresInDays < 0 ? 'expired — re-login in that tool' : `expires in ${oauth.expiresInDays}d`)
+    : `key from ${have.key!.source}`;
+  return `via ${harness} · ${credential}`;
+}
+
+/**
  * A lookup key for one (gateway, id) pair.
  *
  * Both halves are free-form — an id routinely carries `/`, `-` and `.` — so

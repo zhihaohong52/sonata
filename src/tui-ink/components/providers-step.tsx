@@ -13,6 +13,7 @@ import {
   byokProviderName,
   configuredProviderNames,
   importableProviders,
+  importHint,
   providersForHarnesses,
   validateCustomProviderName,
   validateProviderUrl,
@@ -182,15 +183,11 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
       <MultiSelect
         key="providers-import"
         title="Import from other harnesses"
-        items={importable.map((provider) => {
-          const have = credentialAvailability[provider.provider]!;
-          const oauth = have.codex !== null ? have.codex : have.opencode !== null ? have.opencode : null;
-          const hint = oauth !== null
-            ? (oauth.expiresInDays === null ? 'expiry unknown'
-              : oauth.expiresInDays < 0 ? 'expired — re-login in that tool' : `expires in ${oauth.expiresInDays}d`)
-            : `key from ${have.key!.source}`;
-          return { value: provider.key, label: provider.provider, hint };
-        })}
+        items={importable.map((provider) => ({
+          value: provider.key,
+          label: provider.provider,
+          hint: importHint(provider.harness, credentialAvailability[provider.provider]!),
+        }))}
         initialSelected={alreadyImportedKeys(state.providerKeys ?? [], importable)}
         onSubmit={(keys: string[]) => {
           onChange((current) => {

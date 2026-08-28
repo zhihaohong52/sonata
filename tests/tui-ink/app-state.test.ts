@@ -9,6 +9,7 @@ import {
   addProviderCatalog,
   configuredProviderNames,
   importableProviders,
+  importHint,
   validateCustomProviderName,
   validateProviderUrl,
   providersForHarnesses,
@@ -380,5 +381,31 @@ describe('mergeLiveCandidates', () => {
   it('contributes models for a gateway the harness listed nothing for', () => {
     const merged = mergeLiveCandidates(candidates, { fresh: ['a'] });
     expect(merged.map((c) => c.key)).toContain('fresh-a');
+  });
+});
+
+describe('importHint', () => {
+  const noCred = { codex: null, opencode: null, key: null, keyEntryAvailable: true };
+
+  it('names the harness that catalogued the provider, not just the credential', () => {
+    // Two different "where from"s meet on this row: the harness whose
+    // catalogue produced the provider, and where its credential lives.
+    expect(importHint('opencode', { ...noCred, key: { source: 'sonata' } }))
+      .toBe('via opencode · key from sonata');
+  });
+
+  it('reports OAuth expiry alongside the harness', () => {
+    expect(importHint('codex', { ...noCred, codex: { expiresInDays: 7 } }))
+      .toBe('via codex · expires in 7d');
+  });
+
+  it('calls out an expired credential and where to fix it', () => {
+    expect(importHint('codex', { ...noCred, codex: { expiresInDays: -1 } }))
+      .toBe('via codex · expired — re-login in that tool');
+  });
+
+  it('says so when an expiry is unknown', () => {
+    expect(importHint('opencode', { ...noCred, opencode: { expiresInDays: null } }))
+      .toBe('via opencode · expiry unknown');
   });
 });
