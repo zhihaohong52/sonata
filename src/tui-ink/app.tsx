@@ -8,6 +8,7 @@ import { loadAaCatalog, proposeTiers } from '../catalog.js';
 import {
   applyStep,
   candidatesForProviders,
+  initialRankedFor,
   tierPickerKeys,
   type AvailableCredentials,
   type CandidateOption,
@@ -213,7 +214,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       // model misses its catalog entry and drops out of the simple tier.
       const gateways = [...new Set(data.candidates.map((candidate) => candidate.gateway))];
       const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways);
-      const initialRanked = state.tiers?.[role]?.[tier] ?? proposal[tier];
+      const initialRanked = initialRankedFor(state.tiers?.[role]?.[tier], proposal[tier]);
       const footer = catalog
         ? `rankings: Artificial Analysis (fetched ${catalog.fetchedAt}) — artificialanalysis.ai`
         : 'rankings: built-in defaults — refresh with sonata catalog update';

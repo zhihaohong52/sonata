@@ -9,6 +9,7 @@ import {
   addProviderCatalog,
   configuredProviderNames,
   importableProviders,
+  initialRankedFor,
   importHint,
   validateCustomProviderName,
   validateProviderUrl,
@@ -407,5 +408,24 @@ describe('importHint', () => {
   it('says so when an expiry is unknown', () => {
     expect(importHint('opencode', { ...noCred, opencode: { expiresInDays: null } }))
       .toBe('via opencode · expiry unknown');
+  });
+});
+
+describe('initialRankedFor', () => {
+  it('falls back to the proposal for a tier saved as an empty list', () => {
+    // Regression: applyStep seeds a role's other tier as [] the moment either
+    // is confirmed, so `saved ?? proposal` kept [] and the second tier screen
+    // of every role rendered unranked — and RankedSelect refuses to submit an
+    // empty ranking, so the wizard could not be advanced at all.
+    expect(initialRankedFor([], ['a', 'b'])).toEqual(['a', 'b']);
+  });
+
+  it('falls back to the proposal when nothing is saved', () => {
+    expect(initialRankedFor(undefined, ['a', 'b'])).toEqual(['a', 'b']);
+  });
+
+  it('keeps a real saved ranking over the proposal', () => {
+    // A ranking the user actually chose must never be silently re-proposed.
+    expect(initialRankedFor(['b'], ['a', 'b'])).toEqual(['b']);
   });
 });

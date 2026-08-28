@@ -175,6 +175,22 @@ export function importHint(harness: string, have: AvailableCredentials): string 
 }
 
 /**
+ * The ranking a tier screen opens with.
+ *
+ * An empty saved list means "not chosen yet", not "chosen to be empty":
+ * `applyStep` seeds a role's *other* tier as `[]` the moment either one is
+ * confirmed, so after ranking `simple` the saved `complex` is `[]` rather than
+ * absent. A plain `saved ?? proposal` therefore discards the proposal for the
+ * second tier of every role — and since RankedSelect refuses to submit an
+ * empty ranking, that screen renders with nothing ranked and cannot be
+ * confirmed at all. Only a config with both tiers already saved hid it, which
+ * is why it surfaces on a first run.
+ */
+export function initialRankedFor(saved: string[] | undefined, proposal: string[]): string[] {
+  return saved !== undefined && saved.length > 0 ? saved : proposal;
+}
+
+/**
  * A lookup key for one (gateway, id) pair.
  *
  * Both halves are free-form — an id routinely carries `/`, `-` and `.` — so
