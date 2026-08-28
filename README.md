@@ -183,7 +183,10 @@ Picking a harness-catalogued provider then shows its models to select from:
 Then it asks you to rank your selected models into `simple`/`complex` tiers per
 role — pre-sorted by a cached Artificial Analysis catalog (`sonata catalog
 update`, with a free key from [artificialanalysis.ai](https://artificialanalysis.ai))
-when one exists, or built-in defaults otherwise — asks whether the config
+when one exists, or built-in defaults otherwise. `complex` is ordered by raw
+capability and `simple` by capability **per task-dollar**, so demanding work
+goes to the strongest model you picked and grunt work to the one that returns
+the most per dollar rather than merely the cheapest. It then asks whether the config
 applies to this project or the whole machine, writes `sonata.toml`, generates
 one agent per role × tier, offers to install the permission hook, installs the
 `sonata-loop` skill, and offers to run `sonata route auto` so the generated
@@ -354,7 +357,7 @@ killed and the run is reported `DONE`, `degraded`, with a report beginning
 | `sonata log <id>` | Print a run's whole transcript |
 | `sonata verify <id> [--model <key>]` | Verify a completed run |
 | `sonata auth` | Manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`, `login <gateway>`) |
-| `sonata catalog [update]` | Show the cached Artificial Analysis catalog's age, or refresh it (needs a stored `artificialanalysis` key) |
+| `sonata catalog [update]` | Show the cached Artificial Analysis catalog's age, or refresh it (needs a stored `artificialanalysis` key). `sonata doctor` warns when it goes stale |
 | `sonata serve` | Run the native router and its managed LiteLLM child (`--daemon` detaches) |
 | `sonata restart` | Kill whatever sonata router currently holds the port and start a fresh daemon |
 | `sonata code` | Launch a Claude Code session routed through the local proxy (passes `claude` args through) |

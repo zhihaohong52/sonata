@@ -6,6 +6,60 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/) informally
 (pre-1.0, so minor bumps can carry breaking changes).
 
+## [0.3.2] - 2026-08-29
+
+Tier ranking, mostly. Tiers were ordered on a coding index and a per-1M price
+that almost never matched a model; they are now ordered on how well a model
+does *agentic* work and what one task actually costs.
+
+### Added
+- `sonata doctor` reports the ranking catalog's freshness, and says when there
+  is none. Advisory rather than blocking — a stale catalog still produces
+  tiers, just from superseded scores, so the failure is a silently wrong
+  ordering rather than an error.
+
+### Changed
+- Tiers rank on Artificial Analysis's **agentic index** and **cost per task**,
+  read from their free `language/models` endpoint. Every sonata role runs as an
+  agentic subagent driving tools in a loop, which the agentic index measures
+  more closely than a coding score; and cost per task prices the *work* rather
+  than the tokens, where a per-1M rate says nothing about how many tokens a
+  model spends reaching an answer.
+- **`simple` now ranks by capability per task-dollar**, where it used to take
+  the most capable model that happened to be cheap — backwards for a tier whose
+  purpose is cost. `complex` still ranks by raw capability. A relative floor
+  (0.75 of the best model you selected) keeps a very cheap, very weak model from
+  winning on ratio alone.
+- `sonata catalog update` fetches every page of the paginated endpoint and
+  refuses a response whose intelligence-index version changes mid-fetch, since
+  two versions are not comparable scales.
+
+### Fixed
+- Codex models are declared as not supporting system messages. The Codex
+  backend refuses any `role: system` with
+  `{"detail":"System messages are not allowed"}`, and LiteLLM's chatgpt
+  provider does not normalise it — [BerriAI/litellm#22968](https://github.com/BerriAI/litellm/issues/22968)
+  reports exactly this and its fix, PR #22967, was closed without merging.
+  Flattening the system block array was necessary but not sufficient; the two
+  now work as a pair.
+- Model names are matched against the catalog by stripping the provider
+  prefixes actually in your config, not a hardcoded list. Any gateway nobody
+  had thought to hardcode fell through to "capable, not cheap" and dropped out
+  of the simple tier — and when no model clears the cheap bar, simple mirrors
+  complex and the tier stops discriminating at all. On a real 17-model config
+  the simple tier went from 2 models to 7.
+- The tier ranking screen for a role's *second* tier opened with nothing
+  ranked and could not be confirmed, trapping the wizard. It only happened when
+  no tiers were saved yet — that is, on a first run.
+
+### Notes
+- Ranking is no longer per-role: one agentic measure serves all four roles, so
+  `sonata init` proposes the same tiers for each. Per-role `[tiers]` lists are
+  still honoured, and can still be ranked differently by hand.
+- An existing `[tiers]` is never overwritten by a changed proposal — saved
+  rankings win. To adopt this one, remove `[tiers]` from `sonata.toml` and
+  re-run `sonata init`.
+
 ## [0.3.1] - 2026-08-28
 
 Almost entirely `sonata init`: the wizard now asks providers what they serve
