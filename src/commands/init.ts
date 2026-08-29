@@ -42,7 +42,7 @@ import { migrateLegacyConfig } from '../normalize.js';
 import { byokProviderKey, byokProviderName, type AvailableCredentials } from '../tui-ink/app-state.js';
 import { runInitTui } from '../tui-ink/run.js';
 import { openInitLog, type InitLog } from './init-log.js';
-import { nativeTomlFor, tomlKey } from '../init/toml.js';
+import { nativeTomlFor } from '../init/toml.js';
 
 export { nativeTomlFor } from '../init/toml.js';
 import type { WizardData } from '../tui-ink/app.js';
