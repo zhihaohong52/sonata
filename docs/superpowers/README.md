@@ -35,3 +35,4 @@ that didn't lead to a standalone implementation plan.
 | 2026-08-27 | Daemon identity: a lifecycle you can trust | [spec](specs/2026-08-27-daemon-identity-design.md) | [plan](plans/2026-08-27-daemon-identity.md) |
 | 2026-08-27 | Dynamic context-window resolution | [spec](specs/2026-08-27-dynamic-context-window.md) | — **queued**, not yet implemented |
 | 2026-08-27 | Pricing accuracy follow-ups (genai-prices, day-of-week windows, cache-creation rate) | [spec](specs/2026-08-27-pricing-accuracy-followups.md) | — **queued**, not yet implemented |
+| 2026-08-30 | `sonata init` hardening: decompose the front door, and test it | [spec](specs/2026-08-30-init-hardening-design.md) | — **queued**, plan not yet written |
