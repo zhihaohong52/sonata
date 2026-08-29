@@ -43,12 +43,13 @@ import { byokProviderKey, byokProviderName, type AvailableCredentials } from '..
 import { runInitTui } from '../tui-ink/run.js';
 import { openInitLog, type InitLog } from './init-log.js';
 import { nativeTomlFor } from '../init/toml.js';
+import { discover, type InitEnvironment } from '../init/discover.js';
 
 export { nativeTomlFor } from '../init/toml.js';
 import type { WizardData } from '../tui-ink/app.js';
 import type { InitState } from '../tui-ink/types.js';
 
-const OPENCODE_RANGE = '>=1.18.0 <2.0.0';
+export const OPENCODE_RANGE = '>=1.18.0 <2.0.0';
 
 export interface Detection {
   tmux: { installed: boolean; version?: string; problems: Problem[] };
@@ -610,173 +611,26 @@ async function runInit(
   out(interactive ? banner() : '  sonata init');
   out('');
 
-  // ---- detect -----------------------------------------------------------
-  const detect = opts.detect ?? defaultDetector;
-  const { tmux, harnesses } = await detect({ home: opts.home, supportedVersions: OPENCODE_RANGE });
-  const problems: Problem[] = [...tmux.problems, ...harnesses.flatMap((h) => h.problems)];
+  // ---- discover ---------------------------------------------------------
+  const env: InitEnvironment = await discover({
+    cwd: opts.cwd,
+    home: opts.home,
+    packageRoot: opts.packageRoot,
+    detect: opts.detect,
+  }, out);
 
-  out(tmux.installed ? `  ✓ tmux ${tmux.version}` : '  ✗ tmux not found');
-  for (const h of harnesses) {
-    out(h.installed
-      ? `  ✓ ${h.name} ${h.version} · ${h.refs.length} models`
-      : `  · ${h.name} not installed`);
-  }
-  out('');
-
-  const allRefs = harnesses.flatMap((h) => h.refs);
-  const authed = harnesses.flatMap((h) => h.authedProviders);
-  let offered: ProviderSummary[] = offerableProviders(allRefs, authed);
-
-  const configsByScope: Partial<Record<ConfigScope, SonataConfig>> = {};
-  for (const scope of ['project', 'global'] as const) {
-    const path = configPathFor(scope, opts.cwd, opts.home);
-    if (!existsSync(path)) continue;
-    try {
-      const parsed = parseConfig(readFileSync(path, 'utf8'));
-      if (parsed.tiers === undefined && (Object.keys(parsed.generate.roles).length > 0 || Object.keys(parsed.native?.generate ?? {}).length > 0)) {
-        const migrated = migrateLegacyConfig(parsed);
-        configsByScope[scope] = {
-          ...parsed,
-          unifiedModels: migrated.models,
-          tiers: migrated.tiers,
-          native: parsed.native === undefined ? undefined : {
-            ...parsed.native,
-            generate: Object.fromEntries(Object.entries(migrated.tiers).map(([role, lists]) => [
-              role, [...new Set([...lists.simple, ...lists.complex])],
-            ])),
-          },
-        };
-      } else {
-        configsByScope[scope] = parsed;
-      }
-    } catch (err) {
-      out(`  ! could not read ${path}; init is starting from defaults: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  const configuredGateways = new Map<string, number>();
-  for (const config of Object.values(configsByScope)) {
-    for (const model of Object.values(config?.native?.models ?? {})) {
-      configuredGateways.set(model.gateway, (configuredGateways.get(model.gateway) ?? 0) + 1);
-    }
-    // A native-only unified [models] entry names its gateway here too — an
-    // untiered config with no legacy [native.models] table at all otherwise
-    // never gets its gateway a synthetic `config/<gateway>` provider, so
-    // `deriveInitState`'s own providerKeys (computed from both tables)
-    // names a provider `offered` never actually has, and scripted
-    // `sonata init --yes` rejects it as unknown before role selection is
-    // even reached.
-    for (const model of Object.values(config?.unifiedModels ?? {})) {
-      if (model.gateway === undefined) continue;
-      configuredGateways.set(model.gateway, (configuredGateways.get(model.gateway) ?? 0) + 1);
-    }
-  }
-  for (const [gateway, count] of configuredGateways) {
-    if (!offered.some((provider) => provider.provider === gateway)) {
-      offered.push({ harness: 'config', provider: gateway, key: `config/${gateway}`, count });
-    }
-  }
-
-  const providerBaseUrls: Record<string, string> = {};
-  for (const h of harnesses) {
-    for (const [k, v] of Object.entries(h.providerBaseUrls ?? {})) {
-      if (!providerBaseUrls[k]) providerBaseUrls[k] = v;
-    }
-  }
-  // A gateway a harness no longer discovers (removed from opencode, say) but
-  // that is still configured in sonata.toml has no live-detected base URL, so
-  // re-authenticating it through the wizard could never fetch a fresh model
-  // list — only the models already persisted from whenever it was first
-  // imported. Fall back to the config's own base_url so it can.
-  for (const config of Object.values(configsByScope)) {
-    for (const [gateway, gatewayConfig] of Object.entries(config?.native?.gateways ?? {})) {
-      if (!providerBaseUrls[gateway] && gatewayConfig.baseUrl !== undefined) {
-        providerBaseUrls[gateway] = gatewayConfig.baseUrl;
-      }
-    }
-  }
-  // A harness logged in with a subscription holds an OAuth credential, not an
-  // API key. Writing such a provider with a metered base URL produces a gateway
-  // that authenticates and is then refused for quota, which reads to the user as
-  // a missing key. Record how each provider actually authenticates instead.
-  // opencode's stored GitHub token usually cannot mint a Copilot key: opencode
-  // requests only `read:user`, so the exchange 403s and LiteLLM drops the
-  // model. That is a property of *opencode's specific credential*, not of the
-  // github-copilot gateway itself — the gateway is always OAuth-authenticated,
-  // and "Add provider" can still run its own device-flow login (which asks
-  // for the `copilot` scope directly) independent of opencode's token. So
-  // `copilotUsable` gates only whether opencode's token is offered for
-  // *import* — it must not stop the gateway from being recognized as OAuth,
-  // or the models opencode already lists for it would be filtered out of the
-  // candidate set entirely (nativeCandidatesFrom drops any provider absent
-  // from both providerBaseUrls and oauthProviders), leaving "Add provider"'s
-  // fresh login with nothing to select afterward.
-  const copilotToken = readCopilotToken(opts.home);
-  const copilotUsable = copilotToken !== null
-    && await copilotTokenCanExchange(copilotToken);
-  if (copilotToken !== null && !copilotUsable) {
-    out('  ! github-copilot: the stored opencode token cannot mint a Copilot key ' +
-        '(needs the `copilot` scope) — not importable from opencode; use Add provider to log in directly');
-  }
-
-  const oauthProviders = oauthProvidersFor(allRefs, opts.home, {
-    copilot: () => copilotToken,
-  });
-  const gatewayAuth = new Map<string, NativeGatewayAuth>();
-  for (const config of Object.values(configsByScope)) {
-    for (const [gateway, gatewayConfig] of Object.entries(config?.native?.gateways ?? {})) {
-      gatewayAuth.set(gateway, gatewayConfig.auth);
-    }
-  }
-  for (const [gateway, auth] of oauthProviders) gatewayAuth.set(gateway, auth);
-  const detectedNativeCandidates = nativeCandidatesFrom(allRefs, providerBaseUrls, oauthProviders);
-  const allNativeCandidates = [...new Map([
-    ...detectedNativeCandidates.map((candidate) => [candidate.key, candidate] as const),
-    ...Object.values(configsByScope).flatMap((config) => configNativeCandidates(config!)).map((candidate) => [candidate.key, candidate] as const),
-  ]).values()];
-
-  // Providers a user can name without any harness installed. Offered alongside
-  // the discovered ones, minus any whose name a real provider already covers —
-  // otherwise deepseek appears twice, once with a catalogue and once without.
-  const byokProviders = wellKnownProviders()
-    .filter((provider) => !offered.some((existing) => existing.provider === provider.name));
-  for (const provider of byokProviders) {
-    offered.push({
-      harness: 'byok',
-      provider: provider.name,
-      key: byokProviderKey(provider.name),
-      count: 0,
-    });
-  }
-
-  // Applied after the BYOK block so a hidden provider is not re-offered as a
-  // BYOK row: that filter skips any name already in `offered`, which it still
-  // is at this point.
-  offered = dedupeOauthProviders(offered, oauthProviders);
-
-  // Having no harness is no longer fatal: BYOK is exactly that case, and the
-  // wizard can reach a working config from it. It is still worth saying, so it
-  // stays a problem — a warning, which does not stop the run.
-  if (offered.every((provider) => provider.harness === 'byok')) {
-    problems.push({
-      severity: 'warn',
-      message: 'no harness reported a usable model provider',
-      fix: 'pick a provider below and enter its API key, or run `opencode auth login`',
-    });
-  }
-
-  const blocking = problems.filter((p) => p.severity === 'error');
+  const blocking = env.problems.filter((p) => p.severity === 'error');
   if (blocking.length > 0) {
-    for (const p of problems) out(renderProblem(p));
+    for (const p of env.problems) out(renderProblem(p));
     out('');
     out('  Fix the errors above, then run `sonata init` again.');
     return {
-      problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
+      problems: env.problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
       agentsWritten: [], configPath: join(opts.cwd, 'sonata.toml'),
       pruned: [],
     };
   }
-  for (const p of problems) out(renderProblem(p));
+  for (const p of env.problems) out(renderProblem(p));
 
   // ---- the question sequence -------------------------------------------
   let configScope!: ConfigScope;
@@ -791,7 +645,7 @@ async function runInit(
   // Read by scope rather than captured once, since the scope is only settled
   // after the wizard (or the flags) answer it.
   const avoidGatewaysFor = (scope: ConfigScope): string[] =>
-    configsByScope[scope]?.avoidGateways ?? [];
+    env.configsByScope[scope]?.avoidGateways ?? [];
   let chosenNative!: NativeCandidate[];
   let roles!: string[];
   let nativeRoleModels: Record<string, NativeCandidate[]> = {};
@@ -800,8 +654,8 @@ async function runInit(
   let migratedModels: Record<string, { harness?: string; harnessId?: string }> = {};
   /** BYOK keys typed in the wizard, written only after the confirm gate. */
   let byokKeys: Record<string, string> = {};
-  const nativeByKey = new Map(allNativeCandidates.map((c) => [c.key, c]));
-  const byokUrls = new Map(byokProviders.map((provider) => [provider.name, provider.url]));
+  const nativeByKey = new Map(env.allNativeCandidates.map((c) => [c.key, c]));
+  const byokUrls = new Map(env.byokProviders.map((provider) => [provider.name, provider.url]));
 
   /**
    * Candidates for models a user named directly.
@@ -823,9 +677,9 @@ async function runInit(
    */
   const addLiveCandidates = (liveModels: Record<string, string[]>): void => {
     for (const [gateway, ids] of Object.entries(liveModels)) {
-      const baseUrl = providerBaseUrls[gateway];
+      const baseUrl = env.providerBaseUrls[gateway];
       if (baseUrl === undefined) continue;
-      const auth = gatewayAuth.get(gateway) ?? 'api-key';
+      const auth = env.gatewayAuth.get(gateway) ?? 'api-key';
       // Only a key-authenticated gateway is ever refreshed, so this is a
       // guard rather than a case: an OAuth gateway's URL is LiteLLM's, and
       // writing it as an api-key entry would produce a route that 401s.
@@ -860,12 +714,12 @@ async function runInit(
     const existingConfigPath = configPath(opts.cwd, opts.home);
     const resolvedScope: ConfigScope = existingConfigPath === configPathFor('global', opts.cwd, opts.home)
       ? 'global' : 'project';
-    const initialState = configsByScope[resolvedScope]
-      ? deriveInitState(configsByScope[resolvedScope]!, resolvedScope, offered)
+    const initialState = env.configsByScope[resolvedScope]
+      ? deriveInitState(env.configsByScope[resolvedScope]!, resolvedScope, env.offered)
       : { configScope: resolvedScope };
     const initialStateByScope: Partial<Record<ConfigScope, InitState>> = {};
     for (const scope of ['project', 'global'] as const) {
-      if (configsByScope[scope]) initialStateByScope[scope] = deriveInitState(configsByScope[scope]!, scope, offered);
+      if (env.configsByScope[scope]) initialStateByScope[scope] = deriveInitState(env.configsByScope[scope]!, scope, env.offered);
     }
 
     const codexCredential = readChatGptOAuth(opts.home, 'codex');
@@ -875,36 +729,36 @@ async function runInit(
       : Math.floor((expiresAt * 1000 - Date.now()) / (24 * 60 * 60 * 1000));
     const data: WizardData = {
       home: opts.home,
-      harnesses: harnesses.map((h) => ({ name: h.name, installed: h.installed })),
-      providers: offered.map((p) => ({ key: p.key, harness: p.harness, provider: p.provider, count: p.count })),
-      candidates: allNativeCandidates.map((c) => ({ key: c.key, gateway: c.gateway, id: c.id, label: nativeLabel(c) })),
+      harnesses: env.harnesses.map((h) => ({ name: h.name, installed: h.installed })),
+      providers: env.offered.map((p) => ({ key: p.key, harness: p.harness, provider: p.provider, count: p.count })),
+      candidates: env.allNativeCandidates.map((c) => ({ key: c.key, gateway: c.gateway, id: c.id, label: nativeLabel(c) })),
       roles: [...KNOWN_ROLES],
-      byokProviders,
+      byokProviders: env.byokProviders,
       // Every offered gateway, not just the BYOK ones: the models step asks a
       // gateway what it serves rather than trusting a harness snapshot, and
       // that call has to authenticate. A gateway with no resolvable key simply
       // keeps its harness list.
       storedKeys: Object.fromEntries(
         resolveKeys(
-          [...new Set([...byokProviders.map((provider) => provider.name), ...offered.map((p) => p.provider)])],
+          [...new Set([...env.byokProviders.map((provider) => provider.name), ...env.offered.map((p) => p.provider)])],
           opts.home,
         ).map((source) => [source.gateway, source.key]),
       ),
       credentialAvailability: credentialAvailabilityFor(
-        offered,
-        gatewayAuth,
+        env.offered,
+        env.gatewayAuth,
         {
           codex: codexCredential === null ? null : { expiresInDays: daysUntil(codexCredential.expires_at) },
           opencode: opencodeCredential === null ? null : { expiresInDays: daysUntil(opencodeCredential.expires_at) },
           // Unlike the `oauthProviders` call above, this specifically reports
           // whether *opencode's* token is importable — so it stays gated on
           // exchangeability, not mere presence.
-          copilot: copilotUsable ? { expiresInDays: null } : null,
+          copilot: env.copilotUsable ? { expiresInDays: null } : null,
         },
         (gateway) => resolveKeys([gateway], opts.home)[0] !== undefined,
       ),
-      gatewayAuth: Object.fromEntries(gatewayAuth),
-      gatewayBaseUrls: providerBaseUrls,
+      gatewayAuth: Object.fromEntries(env.gatewayAuth),
+      gatewayBaseUrls: env.providerBaseUrls,
       avoidGateways: avoidGatewaysFor(resolvedScope),
       initialState,
       initialStateByScope,
@@ -918,7 +772,7 @@ async function runInit(
     if (result.cancelled) {
       out('  Nothing written.');
       return {
-        problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
+        problems: env.problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
         agentsWritten: [], configPath: configPathFor(
           result.state.configScope ?? 'project', opts.cwd, opts.home),
         pruned: [], cancelled: true,
@@ -932,7 +786,7 @@ async function runInit(
     // (migrated or not), so this is complete regardless of whether the
     // existing config was legacy and just migrated in place above, or was
     // already in the unified shape — no need to re-run the migration here.
-    const existingForScope = configsByScope[configScope];
+    const existingForScope = env.configsByScope[configScope];
     if (existingForScope !== undefined) {
       migratedModels = Object.fromEntries(
         Object.entries(existingForScope.unifiedModels)
@@ -993,7 +847,7 @@ async function runInit(
     // (migrated or not), so this is complete regardless of whether the
     // existing config was legacy and just migrated in place above, or was
     // already in the unified shape — no need to re-run the migration here.
-    const parsedConfig = configsByScope[configScope];
+    const parsedConfig = env.configsByScope[configScope];
     if (parsedConfig !== undefined) {
       migratedModels = Object.fromEntries(
         Object.entries(parsedConfig.unifiedModels)
@@ -1001,8 +855,8 @@ async function runInit(
           .map(([key, model]) => [key, { harness: model.harness, harnessId: model.harnessId }]),
       );
     }
-    ticked = preTickedNative(configText, allNativeCandidates);
-    const d = parsedConfig ? deriveInitState(parsedConfig, configScope, offered) : { configScope };
+    ticked = preTickedNative(configText, env.allNativeCandidates);
+    const d = parsedConfig ? deriveInitState(parsedConfig, configScope, env.offered) : { configScope };
     credentialSources = {
       ...d.credentialSources,
       ...parseCredentialSourceFlags(opts.credentialSource ?? []),
@@ -1014,18 +868,18 @@ async function runInit(
     // explicit `--providers byok/x`, or a config that already names one,
     // engages BYOK here.
     providerKeys = opts.providers ?? d.providerKeys
-      ?? offered.filter((p) => p.harness !== 'byok').map((p) => p.key);
-    const unknownProviders = providerKeys.filter((k) => !offered.some((p) => p.key === k));
+      ?? env.offered.filter((p) => p.harness !== 'byok').map((p) => p.key);
+    const unknownProviders = providerKeys.filter((k) => !env.offered.some((p) => p.key === k));
     if (unknownProviders.length > 0) {
       throw new Error(
         `sonata init: no harness offers ${unknownProviders.join(', ')}. ` +
-        `Available: ${offered.map((p) => p.key).join(', ')}`,
+        `Available: ${env.offered.map((p) => p.key).join(', ')}`,
       );
     }
 
     // Scope native candidates to the selected providers.
     const selectedProviders = new Set(providerKeys.map((k) => k.split('/')[1] ?? k));
-    inScopeNative = allNativeCandidates.filter((c) => selectedProviders.has(c.gateway));
+    inScopeNative = env.allNativeCandidates.filter((c) => selectedProviders.has(c.gateway));
 
     // A BYOK provider has no local catalogue, so each --models entry is taken
     // as a raw model id. Validating it would mean a network call, and a scripted
@@ -1178,7 +1032,7 @@ async function runInit(
       const found = source === 'sonata'
         ? existsSync(join(credentialDir(opts.home, gateway), credentialFileFor(auth)))
         : auth === 'copilot-oauth'
-          ? copilotUsable
+          ? env.copilotUsable
           : readChatGptOAuth(opts.home, source) !== null;
       const repair = source === 'sonata'
         ? `run \`sonata auth login ${gateway}\``
@@ -1208,7 +1062,7 @@ async function runInit(
   // the pre-dispatch-CLI MCP tool names) still gets its allow-list checked
   // below, even though `scope` itself becomes 'skip' for "no new hook to ask
   // about".
-  const existingHookScope: HookScope | undefined = alreadyGlobal ? 'global' : alreadyProject ? 'project' : undefined;
+  const existingHookScope: HookScope | undefined = env.existingHookScope;
 
   let scope: HookScope | 'skip';
   if (opts.scope) {
@@ -1287,7 +1141,7 @@ async function runInit(
   if (interactive && !(await confirm('Write these changes?', true))) {
     out('  Nothing written.');
     return {
-      problems, models: nativeKeys, roles, scope, routing, hookChanged: false,
+      problems: env.problems, models: nativeKeys, roles, scope, routing, hookChanged: false,
       agentsWritten: [], configPath: configPathResolved, cancelled: true,
       pruned: [],
     };
@@ -1302,7 +1156,7 @@ async function runInit(
   }
 
   mkdirSync(dirname(configPathResolved), { recursive: true });
-  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources, tiers, migratedModels, chosenNative, configsByScope[configScope]?.run, avoidGatewaysFor(configScope)));
+  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources, tiers, migratedModels, chosenNative, env.configsByScope[configScope]?.run, avoidGatewaysFor(configScope)));
   out(`  ✓ wrote ${configPathResolved}`);
 
   let hookChanged = false;
@@ -1390,7 +1244,7 @@ async function runInit(
   out('');
 
   return {
-    problems, models: nativeKeys, roles, scope, routing, hookChanged, agentsWritten,
+    problems: env.problems, models: nativeKeys, roles, scope, routing, hookChanged, agentsWritten,
     configPath: configPathResolved, pruned,
   };
 }
