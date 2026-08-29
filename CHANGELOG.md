@@ -6,6 +6,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/) informally
 (pre-1.0, so minor bumps can carry breaking changes).
 
+## [0.3.4] - 2026-08-29
+
+### Fixed
+- `sonata init` wrote `avoid_gateways` *after* the `[models."…"]` tables, and a
+  bare TOML key belongs to the table above it — so the key became a field of
+  the last model entry and `parseConfig` never saw it. The setting was written,
+  silently ignored, and the next `sonata init` re-proposed the very ordering it
+  exists to prevent. `sonata doctor` reported no failures throughout.
+
+  If you set `avoid_gateways` on 0.3.3 and have run `sonata init` since, check
+  that the key sits at the very top of `sonata.toml`, above every `[table]`
+  header; move it there if not.
+
 ## [0.3.3] - 2026-08-29
 
 ### Added
