@@ -27,10 +27,7 @@ import {
   detectTmux, detectHarnesses, offerableProviders, WELL_KNOWN_PROVIDER_URLS,
   type Problem, type HarnessStatus, type DetectEnv, type ProviderSummary,
 } from '../detect.js';
-import {
-  settingsPath, readSettings, writeSettings, installHook, allowSonataTools,
-  hookInstalled, hookCommand, type HookScope,
-} from '../settings.js';
+import { type HookScope } from '../settings.js';
 import { select, confirm, isInteractive, banner, CancelledError } from '../tui.js';
 import { keyReport, resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
 import { byokCandidateKey, wellKnownProviders } from '../native/models.js';
