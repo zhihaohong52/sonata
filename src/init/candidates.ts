@@ -21,7 +21,7 @@
 import { isOauthGatewayAuth } from '../config.js';
 import { WELL_KNOWN_PROVIDER_URLS } from '../detect.js';
 import { byokCandidateKey } from '../native/models.js';
-import type { NativeCandidate } from '../commands/init.js';
+import type { NativeCandidate } from './helpers.js';
 import type { InitEnvironment } from './discover.js';
 
 /**

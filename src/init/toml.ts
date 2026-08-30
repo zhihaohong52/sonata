@@ -1,10 +1,10 @@
-import type { NativeCandidate } from '../commands/init.js';
+import type { NativeCandidate } from './helpers.js';
 import type { CredentialSource } from '../config.js';
 import type { NativeGatewayAuth, NativeGatewayWireFormat } from '../config.js';
 import type { SonataConfig } from '../config.js';
 import { isOauthGatewayAuth, oauthGatewayBaseUrl } from '../config.js';
 import { proposeTiers } from '../catalog.js';
-import { gatewayNamesOf, avoidedKeysOf, duplicateKeys } from '../commands/init.js';
+import { gatewayNamesOf, avoidedKeysOf, duplicateKeys } from './helpers.js';
 
 const TOML_ESCAPES: Record<string, string> = {
   '\\': '\\\\', '"': '\\"', '\b': '\\b', '\t': '\\t',

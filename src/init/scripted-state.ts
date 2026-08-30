@@ -23,7 +23,7 @@ import { byokProviderName } from '../tui-ink/app-state.js';
 import {
   preTickedNative, deriveInitState, configPathFor, parseCredentialSourceFlags,
   type NativeCandidate, type InitOptions,
-} from '../commands/init.js';
+} from './helpers.js';
 import { validate } from './validate.js';
 import { addByokCandidates } from './candidates.js';
 import type { InitState } from '../tui-ink/types.js';

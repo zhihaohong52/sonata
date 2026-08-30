@@ -23,7 +23,7 @@ import {
   KNOWN_ROLES, configPath,
 } from '../config.js';
 import { resolveKeys } from '../native/credentials.js';
-import { credentialAvailabilityFor, nativeLabel, deriveInitState, configPathFor, type NativeCandidate } from '../commands/init.js';
+import { credentialAvailabilityFor, nativeLabel, deriveInitState, configPathFor, type NativeCandidate } from './helpers.js';
 import { runInitTui } from '../tui-ink/run.js';
 import type { InitState } from '../tui-ink/types.js';
 import type { WizardData } from '../tui-ink/app.js';

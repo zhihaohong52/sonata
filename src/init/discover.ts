@@ -30,8 +30,8 @@ import {
 import { migrateLegacyConfig } from '../normalize.js';
 import { wellKnownProviders } from '../native/models.js';
 import { byokProviderKey } from '../tui-ink/app-state.js';
-import { oauthProvidersFor, nativeCandidatesFrom, configNativeCandidates, gatewayNamesOf, avoidedKeysOf, dedupeOauthProviders, type NativeCandidate, configPathFor, defaultDetector, OPENCODE_RANGE } from '../commands/init.js';
-import type { Detector, ConfigScope, Detection, InitOptions } from '../commands/init.js';
+import { oauthProvidersFor, nativeCandidatesFrom, configNativeCandidates, gatewayNamesOf, avoidedKeysOf, dedupeOauthProviders, type NativeCandidate, configPathFor, defaultDetector, OPENCODE_RANGE } from './helpers.js';
+import type { Detector, ConfigScope, Detection, InitOptions } from './helpers.js';
 
 export interface InitEnvironment {
   cwd: string;
@@ -253,5 +253,5 @@ export async function discover(
 }
 
 // Re-export types and values needed by callers
-export type { InitOptions, ConfigScope, Detection, Detector } from '../commands/init.js';
-export { defaultDetector, OPENCODE_RANGE } from '../commands/init.js';
+export type { InitOptions, ConfigScope, Detection, Detector } from './helpers.js';
+export { defaultDetector, OPENCODE_RANGE } from './helpers.js';

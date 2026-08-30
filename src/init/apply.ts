@@ -8,7 +8,7 @@ import { cmdSync } from '../commands/sync.js';
 import { cmdRoute } from '../commands/route.js';
 import { writeSonataKey } from '../native/credentials.js';
 import type { InitPlan } from './plan.js';
-import type { InitOptions } from '../commands/init.js';
+import type { InitOptions } from './helpers.js';
 
 export interface ApplyIo {
   out: (line: string) => void;

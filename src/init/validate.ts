@@ -2,7 +2,7 @@ import type { InitEnvironment } from './discover.js';
 import type { InitState } from '../tui-ink/types.js';
 import { KNOWN_ROLES } from '../config.js';
 import type { Problem } from '../detect.js';
-import type { NativeCandidate } from '../commands/init.js';
+import type { NativeCandidate } from './helpers.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { isOauthGatewayAuth } from '../config.js';
