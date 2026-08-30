@@ -113,8 +113,21 @@ export async function discover(
       configuredGateways.set(model.gateway, (configuredGateways.get(model.gateway) ?? 0) + 1);
     }
   }
+  // deriveInitState names a gateway `config/<gateway>` when no harness
+  // offers it OR when more than one distinct harness does — both are equally
+  // unattributable; only the first case was synthesized here, so an ambiguous
+  // gateway produced a providerKey that `offered` never contained, and the
+  // `--yes` path rejected it as unknown.
+  const harnessesPerGateway = new Map<string, Set<string>>();
+  for (const provider of offered) {
+    if (!harnessesPerGateway.has(provider.provider)) {
+      harnessesPerGateway.set(provider.provider, new Set());
+    }
+    harnessesPerGateway.get(provider.provider)!.add(provider.harness);
+  }
   for (const [gateway, count] of configuredGateways) {
-    if (!offered.some((provider) => provider.provider === gateway)) {
+    const harnessCount = harnessesPerGateway.get(gateway)?.size ?? 0;
+    if (harnessCount !== 1) {
       offered.push({ harness: 'config', provider: gateway, key: `config/${gateway}`, count });
     }
   }
