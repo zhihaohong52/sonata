@@ -4,6 +4,8 @@ import type { InitEnvironment } from '../../src/init/discover.js';
 import type { InitOptions } from '../../src/init/helpers.js';
 
 const env = (over: Partial<InitEnvironment> = {}): InitEnvironment => ({
+  cwd: '/tmp/test',
+  home: '/home/test',
   tmux: { installed: true, version: '3.4', problems: [] },
   harnesses: [],
   problems: [],

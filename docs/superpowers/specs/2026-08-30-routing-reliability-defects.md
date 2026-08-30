@@ -63,6 +63,33 @@ identical matches, the same way the existing `>= 500 / 429 / 401 / 403`
 cooldown fires on a single failure. The retry remains pre-first-byte, so
 nothing about streaming changes.
 
+**Fingerprinting must not consume the body.** The fingerprinting path reads
+the response body to decide whether to count the 400, but `forwardToLitellm`
+returns non-500 responses with `response.body` as a one-shot async iterable
+— the existing 500 path in `forwardToLitellm` (`src/native/router.ts:355-374`)
+already shows the established pattern for this: it buffers the body with
+`Buffer.concat` over the async iterable, then returns the buffer as the
+response body. The 400 fingerprinting path must do the same: read the body
+into a `Buffer` (draining the iterable), compute the fingerprint from the
+buffer, and return the **buffer** as the response — not the original
+stream. A caller that reads the body to fingerprint and then hands the
+unread iterable to Claude Code would deliver an empty error body. The
+implementation must therefore mirror the 500 path exactly: same `Buffer.concat`
+over the async iterable, same `responseHeaders(response.headers)`, same
+`body: responseBodyBuf` in the returned `RouterResponse`. The
+above-threshold 400 (cooldown fires, next candidate tried) does not need to
+return a body at all, but the **below-threshold 400** must still return the
+full buffered body to the caller — a 400 the user can read is what lets them
+diagnose a one-off, and a fingerprint-mismatch path that swallows the body
+would turn every genuine 400 into a 502-shaped silence.
+
+Tests must cover both cases against `routeTierRequest`: a 400 below the
+threshold whose body reaches the caller intact (assert the body bytes
+match what the upstream produced), and a 400 at the threshold whose
+fingerprint matches N times in a row, cools the candidate, and causes the
+router to try the next ranked candidate instead of returning the 400 to
+Claude Code.
+
 ## Defect B — a killed subagent pins routing on permanently, and `route off` does not recover it
 
 `sonata route auto`'s guarantee is that a session *launches* from a settings
@@ -113,7 +140,21 @@ stop hook.
   `route-sessions.json` — it is the documented recovery and currently does not
   recover. This is the narrow, safe change: no liveness knowledge required,
   no ordering against `SubagentStart`/`SubagentStop` to reason about, and
-  it matches what the user already reached for.
+  it matches what the user already reached for. **The clear must take the
+  same `withSessionLock` (`src/filelock.js`) that every other registry
+  mutation takes** — `cmdRouteSubagent` mutates the registry under that
+  lock at `src/commands/route.ts:627, 692, 762`, and a clear that skips
+  it can be overwritten by a concurrent `SubagentStart`/`SubagentStop`
+  writing back the pre-clear list. That is the exact failure the change
+  exists to fix: a clear races against a hook that reads
+  count-before-clear, takes a running subagent as `+1` from `0`, and
+  then writes its own non-zero list back, restoring a leaked id and
+  re-pinning routing. The lock makes the clear atomic with respect to
+  those mutations. Tests must exercise this race directly: a `route off`
+  interleaved with a `SubagentStart`/`SubagentStop` pair on the same
+  registry must leave the registry empty, and a follow-up
+  `SubagentStop` whose id was already in the registry when the clear
+  ran must not resurrect it.
 - A reaper that purges leaked references without the user running `route
   off` is a *separate* change, and it must be designed before it ships. The
   current registry stores only the `agent_id` from the hook payload, which

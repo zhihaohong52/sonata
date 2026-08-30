@@ -14,6 +14,8 @@ const candidate = (key: string, gateway: string, id: string) =>
   ({ key, gateway, id, contextWindow: 128000, baseUrl: `https://${gateway}.example/v1`, auth: 'api-key' as const });
 
 const env = (over: Partial<InitEnvironment> = {}): InitEnvironment => ({
+  cwd: '/repo',
+  home: '/home/u',
   tmux: { installed: true, version: '3.4', problems: [] },
   harnesses: [], problems: [],
   offered: [{ harness: 'opencode', provider: 'acme', key: 'opencode/acme', count: 2 }],
