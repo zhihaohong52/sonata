@@ -25,6 +25,7 @@ import {
   type NativeCandidate, type InitOptions,
 } from '../commands/init.js';
 import { validate } from './validate.js';
+import { addByokCandidates } from './candidates.js';
 import type { InitState } from '../tui-ink/types.js';
 import type { InitEnvironment } from './discover.js';
 
@@ -144,31 +145,4 @@ export function scriptedState(
     },
     nativeByKey,
   };
-}
-
-/**
- * Candidates for models a user named directly.
- *
- * These must join `nativeByKey` before `nativeKeys` is resolved through it,
- * or every BYOK key looks up `undefined` and is filtered out silently — a
- * scripted run that appears to work and writes an empty config.
- */
-function addByokCandidates(
-  nativeByKey: Map<string, NativeCandidate>,
-  byokUrls: Map<string, string>,
-  byokModels: Record<string, string[]>,
-  wireFormats: Record<string, 'anthropic'> = {},
-): void {
-  for (const [gateway, ids] of Object.entries(byokModels)) {
-    const baseUrl = byokUrls.get(gateway);
-    if (baseUrl === undefined) continue;
-    const wireFormat = wireFormats[gateway];
-    for (const id of ids) {
-      const key = byokCandidateKey(gateway, id);
-      nativeByKey.set(key, {
-        key, gateway, id, contextWindow: 128000, baseUrl, auth: 'api-key',
-        ...(wireFormat !== undefined ? { wireFormat } : {}),
-      });
-    }
-  }
 }

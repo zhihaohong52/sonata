@@ -20,11 +20,9 @@
  */
 import { readChatGptOAuth, readOpencodeChatGptOAuth } from '../native/codex-auth.js';
 import {
-  KNOWN_ROLES, configPath, isOauthGatewayAuth,
+  KNOWN_ROLES, configPath,
 } from '../config.js';
-import { WELL_KNOWN_PROVIDER_URLS } from '../detect.js';
 import { resolveKeys } from '../native/credentials.js';
-import { byokCandidateKey } from '../native/models.js';
 import { credentialAvailabilityFor, nativeLabel, deriveInitState, configPathFor, type NativeCandidate } from '../commands/init.js';
 import { runInitTui } from '../tui-ink/run.js';
 import type { InitState } from '../tui-ink/types.js';
@@ -32,6 +30,7 @@ import type { WizardData } from '../tui-ink/app.js';
 import type { ConfigScope } from '../tui-ink/types.js';
 import type { InitEnvironment } from './discover.js';
 import { validate } from './validate.js';
+import { addByokCandidates, addLiveCandidates, rewriteOauthToApiKey } from './candidates.js';
 import type { InitLog } from '../commands/init-log.js';
 
 export async function interactiveState(
@@ -120,17 +119,7 @@ export async function interactiveState(
   }
   addByokCandidates(nativeByKey, byokUrls, result.state.byokModels ?? {}, result.state.customWireFormats);
   addLiveCandidates(env, nativeByKey, result.state.liveModels ?? {});
-  const byokKeys = result.state.byokKeys ?? {};
-  for (const gateway of Object.keys(byokKeys)) {
-    for (const [key, candidate] of nativeByKey) {
-      if (candidate.gateway !== gateway || candidate.auth === 'api-key') continue;
-      if (!Object.hasOwn(WELL_KNOWN_PROVIDER_URLS, gateway)) {
-        throw new Error(`sonata init: no API base URL is known for ${gateway}; cannot use an API key.`);
-      }
-      const baseUrl = WELL_KNOWN_PROVIDER_URLS[gateway];
-      nativeByKey.set(key, { ...candidate, baseUrl, auth: 'api-key' });
-    }
-  }
+  rewriteOauthToApiKey(nativeByKey, result.state.byokKeys ?? {});
   const credentialSources = result.state.credentialSources ?? {};
   const nativeKeys = result.state.nativeKeys ?? [];
   const roles = result.state.roles ?? [...KNOWN_ROLES];
@@ -166,63 +155,4 @@ export async function interactiveState(
     tiers: result.state.tiers,
   };
   return { state: stateForPlan, nativeByKey, cancelled: false };
-}
-
-/**
- * Candidates for models a user named directly.
- *
- * These must join `nativeByKey` before `nativeKeys` is resolved through it,
- * or every BYOK key looks up `undefined` and is filtered out silently — a
- * wizard that appears to work and writes an empty config.
- */
-function addByokCandidates(
-  nativeByKey: Map<string, NativeCandidate>,
-  byokUrls: Map<string, string>,
-  byokModels: Record<string, string[]>,
-  wireFormats: Record<string, 'anthropic'> = {},
-): void {
-  for (const [gateway, ids] of Object.entries(byokModels)) {
-    const baseUrl = byokUrls.get(gateway);
-    if (baseUrl === undefined) continue;
-    const wireFormat = wireFormats[gateway];
-    for (const id of ids) {
-      const key = byokCandidateKey(gateway, id);
-      nativeByKey.set(key, {
-        key, gateway, id, contextWindow: 128000, baseUrl, auth: 'api-key',
-        ...(wireFormat !== undefined ? { wireFormat } : {}),
-      });
-    }
-  }
-}
-
-/**
- * Candidates for models only a gateway's own `/models` endpoint reported.
- *
- * The models step refreshes each gateway's list from the gateway itself, so
- * it can surface a model the harness catalogue never listed. Such a model has no
- * `NativeCandidate`, and `nativeKeys` is resolved through `nativeByKey` — so
- * without this it is selected, kept in the tiers, and then silently dropped
- * from `[models]`, producing a config that names a model it never defines.
- * An existing candidate always wins: the harness one carries a `harness`
- * route this cannot know about.
- */
-function addLiveCandidates(
-  env: InitEnvironment,
-  nativeByKey: Map<string, NativeCandidate>,
-  liveModels: Record<string, string[]>,
-): void {
-  for (const [gateway, ids] of Object.entries(liveModels)) {
-    const baseUrl = env.providerBaseUrls[gateway];
-    if (baseUrl === undefined) continue;
-    const auth = env.gatewayAuth.get(gateway) ?? 'api-key';
-    // Only a key-authenticated gateway is ever refreshed, so this is a
-    // guard rather than a case: an OAuth gateway's URL is LiteLLM's, and
-    // writing it as an api-key entry would produce a route that 401s.
-    if (isOauthGatewayAuth(auth)) continue;
-    for (const id of ids) {
-      const key = byokCandidateKey(gateway, id);
-      if (nativeByKey.has(key)) continue;
-      nativeByKey.set(key, { key, gateway, id, contextWindow: 128000, baseUrl, auth: 'api-key' });
-    }
-  }
 }

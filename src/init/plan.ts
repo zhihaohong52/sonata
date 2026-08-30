@@ -8,14 +8,13 @@ import type { NativeGatewayAuth } from '../config.js';
 import { loadAaCatalog, proposeTiers } from '../catalog.js';
 import { nativeTomlFor } from './toml.js';
 import { reconcilePerRoleModels, reconcileTierList, gatewayNamesOf, avoidedKeysOf } from '../commands/init.js';
-import { byokCandidateKey } from '../native/models.js';
-import { WELL_KNOWN_PROVIDER_URLS } from '../detect.js';
 import { configPathFor, agentsDirFor } from '../commands/init.js';
 import { resolveKeyFromSource, keyReport } from '../native/credentials.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { readChatGptOAuth } from '../native/codex-auth.js';
 import { GLOBAL_CONFIG_RELATIVE } from '../config.js';
 import { isOauthGatewayAuth } from '../config.js';
+import { addByokCandidates, addLiveCandidates, rewriteOauthToApiKey } from './candidates.js';
 
 /** A resolvable bearer key for this gateway from this source. */
 export interface CredentialProbe {
@@ -51,6 +50,16 @@ export function plan(
   state: InitState,
   credentials: CredentialProbe,
   opts: Pick<{ cwd: string; home: string; packageRoot: string }, 'cwd' | 'home' | 'packageRoot'>,
+  /**
+   * The candidate map the front end (wizard or `--yes`) already built. Both
+   * branches call the same three shared operations against it before
+   * handing it to `plan`, so re-deriving it here is dead work — and the
+   * re-derivation was the substrate the OAuth→api-key divergence lived
+   * on. Optional so the existing tests that call `plan` directly with
+   * just (env, state, credentials, opts) still work; in that case `plan`
+   * builds the map itself from `env`.
+   */
+  nativeByKey?: Map<string, NativeCandidate>,
 ): InitPlan {
   const configScope = state.configScope ?? 'project';
   const configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
@@ -59,7 +68,7 @@ export function plan(
   const configForScope = env.configsByScope[configScope];
   const avoidGateways = configForScope?.avoidGateways ?? [];
 
-  // ---- migratedModels (the block duplicated in both branches of init.ts) ----
+  // ---- migratedModels ----
   // parseConfig always builds unifiedModels from the raw [models] table
   // (migrated or not), so this is complete regardless of whether the
   // existing config was legacy and just migrated in place above, or was
@@ -76,69 +85,32 @@ export function plan(
   const nativeKeys = state.nativeKeys ?? [];
   const roles = state.roles ?? [];
 
-  // Build nativeByKey from all available candidates
-  const nativeByKey = new Map<string, NativeCandidate>();
-  for (const candidate of env.allNativeCandidates) {
-    nativeByKey.set(candidate.key, candidate);
-  }
-
-  // Add custom providers to the URL map so their models can be minted
-  const customProviders = state.customProviders ?? [];
-  const providerBaseUrls = new Map(Object.entries(env.providerBaseUrls ?? {}));
-  for (const provider of customProviders) {
-    if (!providerBaseUrls.has(provider.name)) {
-      providerBaseUrls.set(provider.name, provider.url);
+  // Build nativeByKey if the front end did not already. The front end's
+  // map already has BYOK, live, and OAuth-rewrite applied, so when it is
+  // available, this falls through and the three shared operations run
+  // nowhere — exactly the case for the wizard and the `--yes` path.
+  if (nativeByKey === undefined) {
+    const built = new Map<string, NativeCandidate>();
+    for (const candidate of env.allNativeCandidates) {
+      built.set(candidate.key, candidate);
     }
-  }
-
-  // Add live candidates from state.liveModels (models from gateway's own /models endpoint)
-  const liveModels = state.liveModels ?? {};
-  for (const [gateway, ids] of Object.entries(liveModels)) {
-    const baseUrl = env.providerBaseUrls[gateway];
-    if (baseUrl === undefined) continue;
-    const auth = env.gatewayAuth.get(gateway) ?? 'api-key';
-    if (isOauthGatewayAuth(auth)) continue;
-    for (const id of ids) {
-      const key = byokCandidateKey(gateway, id);
-      if (nativeByKey.has(key)) continue;
-      nativeByKey.set(key, { key, gateway, id, contextWindow: 128000, baseUrl, auth: 'api-key' });
+    // Custom providers extend env's url map so a model the user added
+    // this run can be minted.
+    const providerBaseUrls = new Map(Object.entries(env.providerBaseUrls ?? {}));
+    for (const provider of state.customProviders ?? []) {
+      if (!providerBaseUrls.has(provider.name)) {
+        providerBaseUrls.set(provider.name, provider.url);
+      }
     }
-  }
-
-  // Handle BYOK providers and custom providers that may have been converted to api-key auth.
-  // A gateway that was originally OAuth (from env.gatewayAuth) but now has a BYOK key
-  // gets switched to api-key auth with the well-known base URL.
-  const byokKeys = state.byokKeys ?? {};
-  for (const gateway of Object.keys(byokKeys)) {
-    for (const [key, candidate] of nativeByKey) {
-      if (candidate.gateway !== gateway || candidate.auth === 'api-key') continue;
-      // When switching from OAuth to api-key, we MUST use the well-known provider URL,
-      // not any URL from the original config (which would be the OAuth endpoint).
-      const baseUrl = WELL_KNOWN_PROVIDER_URLS[gateway];
-      if (baseUrl === undefined) continue;
-      nativeByKey.set(key, { ...candidate, baseUrl, auth: 'api-key' });
-    }
-  }
-
-  // Add BYOK candidates from state.byokModels
-  const byokModels = state.byokModels ?? {};
-  const customWireFormats = state.customWireFormats ?? {};
-  for (const [gateway, ids] of Object.entries(byokModels)) {
-    const baseUrl = providerBaseUrls.get(gateway) ?? WELL_KNOWN_PROVIDER_URLS[gateway];
-    if (baseUrl === undefined) continue;
-    const wireFormat = customWireFormats[gateway];
-    for (const id of ids) {
-      const key = byokCandidateKey(gateway, id);
-      nativeByKey.set(key, {
-        key, gateway, id, contextWindow: 128000, baseUrl, auth: 'api-key',
-        ...(wireFormat !== undefined ? { wireFormat } : {}),
-      });
-    }
+    addByokCandidates(built, providerBaseUrls, state.byokModels ?? {}, state.customWireFormats ?? {});
+    addLiveCandidates(env, built, state.liveModels ?? {});
+    rewriteOauthToApiKey(built, state.byokKeys ?? {});
+    nativeByKey = built;
   }
 
   const chosenNative = nativeKeys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined);
 
-  // ---- tiers block (duplicated in both branches of init.ts) ----
+  // ---- tiers block ----
   // The saved tier comes from the wizard's own state when the user re-ranked
   // the tiers in the current run, and from the existing config otherwise —
   // not the user's input combined with the catalog proposal, which is what

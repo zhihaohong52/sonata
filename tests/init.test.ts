@@ -2015,12 +2015,14 @@ describe('cmdInit — BYOK', () => {
     writeSonataKey(home, 'deepseek', 'sk-test');
     const first = await cmdInit({ ...args, cwd, home, write });
     const before = readFileSync(first.configPath, 'utf8');
+    process.stderr.write('=== first config ===\n' + before + '\n');
 
     // No flags this time: everything must come back from the config on disk.
     const second = await cmdInit({
       packageRoot: '/pkg', yes: true, detect: noHarness, cwd, home, write,
       scope: 'skip' as const,
     });
+    process.stderr.write('=== second config ===\n' + readFileSync(second.configPath, 'utf8') + '\n');
     expect(second.models).toEqual(['deepseek-deepseek-v4-flash']);
     expect(readFileSync(second.configPath, 'utf8')).toBe(before);
   });
