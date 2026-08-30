@@ -156,6 +156,56 @@ stop hook.
   `SubagentStop` whose id was already in the registry when the clear
   ran must not resurrect it.
 
+  **The lock on the session registry cannot be acquired by `route off`
+  naively, because `cmdRouteSession('end')` already holds it when the
+  last session delegates cleanup.** The paragraph above asks `route off`
+  to clear `route-sessions.json` as well as `route-subagents.json`, and
+  the natural way to clear each registry atomically is to take *its own*
+  `withSessionLock`. The session-registry lock is held by the SessionEnd
+  path at `src/commands/route.ts:627`, which opens it and then runs
+  `await cmdRoute('off', opts)` at line 637 from inside the lock when
+  the last session leaves. `withSessionLock` (`src/filelock.ts:31-49`)
+  is a non-reentrant mutex: it takes the lock by winning `mkdirSync` on
+  `<file>.lock`, and a re-entry spins on `mkdirSync` failing and throws
+  at the 2000 ms deadline with
+  `sonata: timed out waiting for lock on <file>`. Today's `route off`
+  does not take the session lock, which is why the delegation at line
+  637 does not deadlock today — a `route off` that takes the session
+  lock to clear `route-sessions.json` would create the bug on the
+  last-session-out path. The deadlock only fires when the last session
+  leaves, so any reproduction must drive that exact branch, not an
+  earlier exit with peers still registered. This constraint was found
+  by review, not by running the code: the live failure is reachable on
+  every project's last session, but the spec is the first place the
+  SessionEnd delegation has been read together with a `route off` that
+  takes the session lock.
+
+  Three shapes resolve it. The first is an internal helper holding
+  the actual clear logic, called by both `cmdRoute('off', ...)` and
+  the SessionEnd path; the locked caller in `cmdRouteSession('end')`
+  calls the helper unlocked, the public `cmdRoute('off', ...)`
+  acquires the session lock itself and then calls the same helper.
+  The second is to pass an explicit "lock already held" signal
+  through to the clear path so it knows to skip acquisition. The
+  third is to make `withSessionLock` reentrant by recording
+  ownership — `withSessionLock` already computes
+  `ownerPath = join(lock, 'owner')` (`src/filelock.ts:33`) so an
+  ownership check has a foothold, but this is the most invasive
+  option because it changes a primitive used by every call site
+  in the file (the three writers in `src/commands/route.ts:627, 692,
+  762` plus any other consumers), each of which would need to
+  tolerate reentrancy semantics they do not ask for. The test that
+  would catch the deadlock is a final-session `SessionEnd` that
+  exercises the delegation directly: a single registered session, a
+  SessionEnd that drives the `left.length > 0` branch to false and
+  reaches the `await cmdRoute('off', opts)` at line 637, asserting
+  the clear path runs to completion rather than throwing at the
+  2000 ms lock deadline. A separate test must call `route off` from
+  the shell with no SessionEnd in flight, asserting the session
+  lock is still acquired and the file is cleared — together those
+  pin down both halves: the locked caller does not self-deadlock,
+  and the public entry point still locks.
+
   **The lock requirement extends to every writer of
   `route-subagents.json`, not just `cmdRouteSubagent`.** Reviewing the
   spec against the current source turned up a pre-existing split-lock
