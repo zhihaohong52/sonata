@@ -107,6 +107,7 @@ Key design points:
 src/
 ├── cli.ts                CLI entry point; arg parsing, then delegates to src/commands/*
 ├── commands/             command implementations (approve, auth, catalog, code, dispatch, doctor, gc, init, log, route, run, runs, serve, status, sync, tail, usage, verify, wait)
+├── init/                 init pipeline — discover.ts (machine state, gathered once), validate.ts (shared problem list, both paths), plan.ts (every write as one InitPlan value), apply.ts (I/O only), interactive-state.ts + scripted-state.ts (two front ends, one InitState), toml.ts (nativeTomlFor)
 ├── config.ts             config resolution (project → machine), sonata.toml parsing (unified [models], [tiers]), KNOWN_HARNESSES, isReadOnlyRole, resolveTierAlias, harnessModelFor
 ├── catalog.ts            model normalization (normalizeModelName), curated capability/cost table, proposeTiers, AA catalog cache (loadAaCatalog, aaCatalogPath, AA_ATTRIBUTION)
 ├── detect.ts             harness catalogues (`opencode models`, `pi --list-models`, reasonix doctor) → ModelRef, provider grouping; WELL_KNOWN_PROVIDER_URLS
@@ -253,6 +254,18 @@ dispatch_window_seconds = 1500 # blocking window for sonata wait/dispatch
   - `byokCandidateKey` is exported and shared rather than inlined: the wizard
     puts the key into `nativeKeys` and `cmdInit` looks the candidate up by it,
     so two copies of the formula is how the two stop agreeing.
+- **A gateway unattributable to a single harness is offered as `config/<gateway>`.**
+  `deriveInitState` (`src/commands/init.ts`) names a gateway `config/<gateway>` when
+  no harness offers it *or* when more than one distinct harness does — both are
+  equally unattributable, since a bare gateway name in `sonata.toml` doesn't record
+  which harness's discovery produced it (e.g. opencode and pi both separately
+  cataloguing the same public gateway, verified live). The discover phase
+  (`src/init/discover.ts`) synthesizes that row for both cases; previously it
+  synthesized only the absent case, so an ambiguous gateway produced a
+  `providerKey` that `offered` never contained, and scripted `sonata init --yes`
+  rejected it as unknown before role selection was even reached. Crediting
+  every overlapping harness would be just as wrong — it pre-selects a harness
+  the user never actually chose, with no way to make it stick unticked.
 - **A prompt must `ref()` stdin while it waits** (`src/tui.ts`, `readKeys`). A
   paused stdin's handle is *unreferenced*, so waiting on a keystroke is not work
   node knows about: with nothing else pending the process exits, code 0,
