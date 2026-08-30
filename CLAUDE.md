@@ -255,7 +255,7 @@ dispatch_window_seconds = 1500 # blocking window for sonata wait/dispatch
     puts the key into `nativeKeys` and `cmdInit` looks the candidate up by it,
     so two copies of the formula is how the two stop agreeing.
 - **A gateway unattributable to a single harness is offered as `config/<gateway>`.**
-  `deriveInitState` (`src/commands/init.ts`) names a gateway `config/<gateway>` when
+  `deriveInitState` (`src/init/helpers.ts`) names a gateway `config/<gateway>` when
   no harness offers it *or* when more than one distinct harness does — both are
   equally unattributable, since a bare gateway name in `sonata.toml` doesn't record
   which harness's discovery produced it (e.g. opencode and pi both separately

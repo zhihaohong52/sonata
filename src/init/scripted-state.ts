@@ -81,11 +81,17 @@ export function scriptedState(
   }
   if (byokSelected.length > 0) {
     addByokCandidates(nativeByKey, byokUrls, byokModels);
-    inScopeNative = [
-      ...inScopeNative,
-      ...Object.values(byokModels).flat().length === 0 ? [] : byokSelected.flatMap((name) =>
-        byokModels[name].map((id) => nativeByKey.get(byokCandidateKey(name, id))!)),
-    ];
+    // `addByokCandidates` silently skips a gateway with no resolvable URL
+    // (neither `byokUrls` nor `WELL_KNOWN_PROVIDER_URLS` has it). Filter those
+    // out here so `validate` can surface the unknown-provider error instead
+    // of the next line crashing on `c.key` for a candidate that was never
+    // minted — a crash would pre-empt the actionable message.
+    const byokAdded = byokSelected.flatMap((name) =>
+      byokModels[name]
+        .map((id) => nativeByKey.get(byokCandidateKey(name, id)))
+        .filter((c): c is NonNullable<typeof c> => c !== undefined),
+    );
+    inScopeNative = [...inScopeNative, ...byokAdded];
   }
 
   const nativeKeys = opts.models ?? d.nativeKeys

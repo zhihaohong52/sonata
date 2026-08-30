@@ -99,4 +99,25 @@ describe('validate', () => {
     expect(problems).toHaveLength(1);
     expect(problems[0].message).toContain('--routing global routes every project through the machine config');
   });
+
+  it('catches a nativeKey whose provider is no longer selected, even when the front end passed the full nativeByKey', () => {
+    // Regression: `nativeByKey` carries every gateway the front end has seen
+    // (BYOK, live, OAuth rewrite). When the wizard passed it through
+    // verbatim, the unknown-model check asked only "is this key in the map?",
+    // not "is its provider still selected?" — so a `nativeKey` for a
+    // provider the user deselected slipped through, and `plan` wrote the
+    // model into `[models]` for a provider that no longer exists. Scope the
+    // map to selected providers before the check.
+    const env = makeEnv();
+    const fullNativeByKey = new Map([
+      ...env.allNativeCandidates.map((c) => [c.key, c] as const),
+    ]);
+    const state = makeState({
+      providerKeys: ['opencode/openrouter'], // deepseek is NOT selected
+      nativeKeys: ['deepseek-deepseek-v4-flash'],
+    });
+    const problems = validate(env, state, { nativeByKey: fullNativeByKey });
+    expect(problems).toHaveLength(1);
+    expect(problems[0].message).toContain('do not offer deepseek-deepseek-v4-flash');
+  });
 });

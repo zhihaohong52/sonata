@@ -43,11 +43,25 @@ broken model is indistinguishable, to the fallback logic, from a working one.
 ### What to consider
 
 Distinguish *this request was malformed* from *this candidate cannot serve
-requests of this shape*. A 400 that repeats for a candidate is the second. A
-consecutive-400 count per candidate, cooled down like any other failure, would
-have skipped gemini after the first or second attempt and fallen through to a
-working model. The retry remains pre-first-byte, so nothing about streaming
-changes.
+requests of this shape*. A 400 that repeats for a candidate is the second —
+but the per-candidate counter must be keyed by something that separates the
+two, not by the response status alone. A bare count of "400s seen for this
+candidate" would catch the gemini case AND cool every healthy candidate
+whenever a caller sends a request the model genuinely cannot serve (a
+malformed tool call, a payload shape the model never accepted), turning a
+legitimate 400 into a 529. The counter has to be keyed by an error
+fingerprint that is stable across "this candidate cannot serve requests of
+this shape" (the gemini `thought_signature` error, a 400 on every streaming
+tool-call turn) and unstable across "this request was malformed" (a different
+client-side error, a payload the model has never been asked). One
+implementation: a narrow allow-list of candidate-capability failures (the
+thought-signature text, plus a small set of equivalent "this model has
+never served this shape" signatures), and the counter increments only when
+a 400 body matches one of them. A different fingerprint — or a successful
+response — resets the count. The cooldown then fires on `count >= N`
+identical matches, the same way the existing `>= 500 / 429 / 401 / 403`
+cooldown fires on a single failure. The retry remains pre-first-byte, so
+nothing about streaming changes.
 
 ## Defect B — a killed subagent pins routing on permanently, and `route off` does not recover it
 
@@ -97,9 +111,21 @@ stop hook.
 
 - `route off` should clear `route-subagents.json` as well as
   `route-sessions.json` — it is the documented recovery and currently does not
-  recover.
-- A leaked reference should be reapable without waiting for every session to
-  exit. The registry holds agent ids; liveness is checkable.
+  recover. This is the narrow, safe change: no liveness knowledge required,
+  no ordering against `SubagentStart`/`SubagentStop` to reason about, and
+  it matches what the user already reached for.
+- A reaper that purges leaked references without the user running `route
+  off` is a *separate* change, and it must be designed before it ships. The
+  current registry stores only the `agent_id` from the hook payload, which
+  does not identify a process, PID, or session — so any liveness check the
+  reaper performs has to be defined up front: which signal it uses
+  (`pgrep` against a known parent, a heartbeat file the subagent touches
+  while alive, an mtime bound on the registry row, or a session id
+  cross-referenced against `route-sessions.json`), the ordering against
+  `SubagentStart`/`SubagentStop` so the reaper cannot disable routing for
+  *active* work, and what it does when the liveness signal is itself
+  ambiguous. Until such a signal exists, the only change that is safe to
+  ship is the narrower one above.
 - `sonata doctor` cannot presently tell a genuinely-routed project from a
   pinned-by-leak one. It reports routing as on in both cases, which is why this
   went unnoticed until Remote Control was missed and looked for deliberately.

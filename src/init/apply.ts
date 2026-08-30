@@ -113,10 +113,5 @@ export async function apply(
     }
   }
 
-  io.out('');
-  io.out('  Done. Run /reload-plugins to pick up the new agents.');
-  io.out('  Native sessions: run `sonata code`, or `sonata route on` to route plain claude sessions.');
-  io.out('');
-
   return { agentsWritten, pruned, hookChanged };
 }

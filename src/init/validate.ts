@@ -36,7 +36,16 @@ export function validate(env: InitEnvironment, state: InitState, opts?: Validate
   // Resolve native candidates for the selected providers
   const selectedProviders = new Set(providerKeys.map((k) => k.split('/')[1] ?? k));
   const inScopeNative = env.allNativeCandidates.filter((c) => selectedProviders.has(c.gateway));
-  const inScopeNativeByKey = opts?.nativeByKey ?? new Map(inScopeNative.map((c) => [c.key, c]));
+  // Scope the front end's `nativeByKey` (which has BYOK and live additions
+  // for every gateway) to the selected providers — otherwise a `nativeKey`
+  // the user no longer has a provider for slips past the unknown-model check,
+  // since the check only asks "is this key in the map?" — and the model
+  // would be written into `[models]` for a provider that isn't selected.
+  const inScopeNativeByKey = opts?.nativeByKey !== undefined
+    ? new Map(
+        [...opts.nativeByKey].filter(([, candidate]) => selectedProviders.has(candidate.gateway)),
+      )
+    : new Map(inScopeNative.map((c) => [c.key, c]));
 
   // 1. unknownProviders — no harness offers this provider
   // Skip keys for providers the user added through the wizard this run: those
