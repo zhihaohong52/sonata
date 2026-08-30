@@ -45,6 +45,7 @@ import { openInitLog, type InitLog } from './init-log.js';
 import { nativeTomlFor } from '../init/toml.js';
 import { discover, type InitEnvironment } from '../init/discover.js';
 import { validate } from '../init/validate.js';
+import { plan, fsCredentialProbe, type InitPlan } from '../init/plan.js';
 
 export { nativeTomlFor } from '../init/toml.js';
 import type { WizardData } from '../tui-ink/app.js';
@@ -655,6 +656,7 @@ async function runInit(
   let migratedModels: Record<string, { harness?: string; harnessId?: string }> = {};
   /** BYOK keys typed in the wizard, written only after the confirm gate. */
   let byokKeys: Record<string, string> = {};
+  let stateForPlan: InitState;
   const nativeByKey = new Map(env.allNativeCandidates.map((c) => [c.key, c]));
   const byokUrls = new Map(env.byokProviders.map((provider) => [provider.name, provider.url]));
 
@@ -856,6 +858,23 @@ async function runInit(
     };
     const problems = validate(env, state, { nativeByKey });
     if (problems.length > 0) throw new Error(problems[0].message);
+
+    // Build stateForPlan for interactive branch
+    stateForPlan = {
+      configScope,
+      providerKeys: result.state.providerKeys ?? [],
+      nativeKeys,
+      roles,
+      credentialSources,
+      routing: result.state.routing ?? 'project',
+      hookScope: result.state.hookScope ?? 'project',
+      customProviders: result.state.customProviders,
+      byokModels: result.state.byokModels,
+      liveModels: result.state.liveModels,
+      customWireFormats: result.state.customWireFormats,
+      byokKeys: result.state.byokKeys,
+      tiers: result.state.tiers,
+    };
   } else {
     // ---- flag-driven (non-interactive) path -----------------------------
     configScope = opts.configScope ?? 'project';
@@ -980,7 +999,24 @@ async function runInit(
         }];
       }));
     }
-  }
+
+  // Build stateForPlan for non-interactive branch
+  stateForPlan = {
+    configScope,
+    providerKeys,
+    nativeKeys,
+    roles,
+    credentialSources,
+    routing: opts.routing ?? 'project',
+    hookScope: opts.scope ?? 'project',
+    customProviders: undefined,
+    byokModels,
+    liveModels: {},
+    customWireFormats: {},
+    byokKeys: {},
+    tiers: d.tiers,
+  };
+}
 
   // A gateway pinned to credential_source = "sonata" with an OAuth auth type
   // needs a credential sonata itself minted (via `sonata auth login`), and the
@@ -999,129 +1035,21 @@ async function runInit(
     }
   }
 
-  // ---- key check --------------------------------------------------------
+  // Call plan() once - it computes everything we need to write
+  const initPlan = plan(env, stateForPlan, fsCredentialProbe(opts.home, env.copilotUsable), opts);
+
+  // Print notices and summary from the plan
+  for (const line of initPlan.notices) out(line);
   out('');
-  const gateways = [...new Set(chosenNative.map((c) => c.gateway))];
-  const gatewayAuths = new Map(chosenNative.map((c) => [c.gateway, c.auth]));
-  const autoSources = new Map(keyReport(gateways, opts.home).map((r) => [r.gateway, r.source]));
-  for (const gateway of gateways) {
-    // A gateway with a recorded credentialSource is about to be written
-    // pinned to that source — report on the source that will actually be
-    // used, not whichever store `keyReport`'s automatic precedence happens
-    // to find first.
-    const source = credentialSources[gateway];
-    const auth = gatewayAuths.get(gateway);
-    if (auth === 'api-key' && (source === 'sonata' || source === 'opencode')) {
-      const found = resolveKeyFromSource(gateway, opts.home, source) !== undefined;
-      out(found
-        ? `  ✓ ${gateway}: key from ${source}`
-        : source === 'sonata'
-          ? `  ! ${gateway}: no key from sonata — run \`sonata auth add ${gateway}\``
-          : `  ! ${gateway}: no key from opencode — log into opencode itself, sonata does not manage its credentials`);
-      continue;
-    }
-    if (auth !== undefined && isOauthGatewayAuth(auth) && source !== undefined) {
-      // Bearer keys and device-login OAuth credentials live in different
-      // stores per source, so presence and the repair hint both branch on
-      // (source, auth) rather than reusing the api-key path above.
-      // A stored GitHub token is not the same as a usable one: opencode's own
-      // login requests only `read:user`, and GitHub then refuses the Copilot
-      // exchange with a 403 — so presence alone would report a credential as
-      // healthy that `sonata serve` cannot actually use. `copilotUsable` above
-      // already answered this for the one token opencode can hold — reuse it
-      // rather than probing GitHub a second time, which could also disagree
-      // with the first probe on a flaky connection.
-      const found = source === 'sonata'
-        ? existsSync(join(credentialDir(opts.home, gateway), credentialFileFor(auth)))
-        : auth === 'copilot-oauth'
-          ? env.copilotUsable
-          : readChatGptOAuth(opts.home, source) !== null;
-      const repair = source === 'sonata'
-        ? `run \`sonata auth login ${gateway}\``
-        : source === 'codex'
-          ? 'log in with `codex login`'
-          : auth === 'copilot-oauth'
-            ? 'log into opencode with a GitHub Copilot account'
-            : 'log into opencode with a ChatGPT account';
-      out(found
-        ? `  ✓ ${gateway}: credential from ${source}`
-        : `  ! ${gateway}: no credential from ${source} — ${repair}`);
-      continue;
-    }
-    const auto = autoSources.get(gateway) ?? null;
-    out(auto
-      ? `  ✓ ${gateway}: key from ${auto}`
-      : `  ! ${gateway}: no key — run \`sonata auth add ${gateway}\``);
-  }
+  for (const line of initPlan.summary) out(line);
 
-  // ---- hook scope -------------------------------------------------------
-  const command = hookCommand(opts.packageRoot);
-  const alreadyGlobal = hookInstalled(readSettings(settingsPath('global', opts.cwd, opts.home)), command);
-  const alreadyProject = hookInstalled(readSettings(settingsPath('project', opts.cwd, opts.home)), command);
-
-  // Where an already-installed hook actually lives — kept separate from
-  // `scope` so an upgrade (hook present, but its settings file still carries
-  // the pre-dispatch-CLI MCP tool names) still gets its allow-list checked
-  // below, even though `scope` itself becomes 'skip' for "no new hook to ask
-  // about".
-  const existingHookScope: HookScope | undefined = env.existingHookScope;
-
-  let scope: HookScope | 'skip';
-  if (opts.scope) {
-    scope = opts.scope;
-  } else if (alreadyGlobal || alreadyProject) {
-    out('');
-    out(`  ✓ permission hook already installed (${alreadyGlobal ? 'global' : 'project'})`);
-    scope = 'skip';
-  } else if (interactive) {
-    out('');
-    log.line('prompting for hook scope');
-    scope = await select<HookScope | 'skip'>('Install the permission hook', [
-      { value: 'project', label: 'This project only', hint: 'no effect on your other repos' },
-      { value: 'global', label: 'All projects', hint: 'adds ~40ms per Bash call everywhere' },
-      { value: 'skip', label: 'Skip', hint: 'sonata assumes default mode' },
-    ]);
-  } else {
-    scope = 'project';
-  }
-
-  // ---- loop skill and routing ------------------------------------------
-  let routing: 'project' | 'global' | 'skip';
-  if (opts.routing) {
-    routing = opts.routing;
-  } else if (interactive) {
-    out('');
-    log.line('prompting for tier-agent routing');
-    routing = await select<'project' | 'global' | 'skip'>('Route tier agents through the native router', [
-      { value: 'project', label: 'sonata route auto', hint: 'this project only' },
-      ...(configScope === 'project' ? [] : [
-        { value: 'global' as const, label: 'sonata route auto --global', hint: 'all projects' },
-      ]),
-      { value: 'skip', label: 'Skip', hint: 'doctor will warn for tier agents' },
-    ]);
-  } else {
-    routing = 'project';
-  }
-
-  // ---- confirm ----------------------------------------------------------
-  out('');
-  out('  Summary');
-  out(`    models  ${chosenNative.map(nativeLabel).join(', ')}`);
-  out(`    roles   ${roles.join(', ')}`);
-  const totalAgents = Object.values(nativeRoleModels).reduce((n, m) => n + m.length, 0);
-  out(`    agents  ${totalAgents} files in .claude/agents/`);
-  out(`    hook    ${scope === 'skip' ? 'not installed' : `${scope} settings.json`}`);
-  out(`    routing ${routing === 'skip' ? 'not configured' : `sonata route auto${routing === 'global' ? ' --global' : ''}`}`);
-  out(`    config  ${configPathResolved}`);
-  out('');
-
-  log.line(`hook scope resolved: ${scope}`);
+  log.line(`hook scope resolved: ${initPlan.hook.scope}`);
   if (interactive) log.line('prompting for write confirmation');
   if (interactive && !(await confirm('Write these changes?', true))) {
     out('  Nothing written.');
     return {
-      problems: env.problems, models: nativeKeys, roles, scope, routing, hookChanged: false,
-      agentsWritten: [], configPath: configPathResolved, cancelled: true,
+      problems: env.problems, models: initPlan.nativeKeys, roles: initPlan.roles, scope: initPlan.hook.scope, routing: initPlan.routing, hookChanged: false,
+      agentsWritten: [], configPath: initPlan.configPath, cancelled: true,
       pruned: [],
     };
   }
@@ -1134,9 +1062,9 @@ async function runInit(
     out(`  ✓ stored the key for ${gateway}`);
   }
 
-  mkdirSync(dirname(configPathResolved), { recursive: true });
-  writeFileSync(configPathResolved, nativeTomlFor(nativeRoleModels, credentialSources, tiers, migratedModels, chosenNative, env.configsByScope[configScope]?.run, avoidGatewaysFor(configScope)));
-  out(`  ✓ wrote ${configPathResolved}`);
+  mkdirSync(dirname(initPlan.configPath), { recursive: true });
+  writeFileSync(initPlan.configPath, initPlan.configToml);
+  out(`  ✓ wrote ${initPlan.configPath}`);
 
   let hookChanged = false;
   // Refresh the allow-list at whichever scope the hook actually lives in —
@@ -1144,16 +1072,17 @@ async function runInit(
   // already there (an upgrade from the MCP-based release otherwise keeps
   // its old mcp__sonata__* entries forever, since "hook already installed"
   // used to mean skipping this whole block).
-  const allowListScope = scope !== 'skip' ? scope : existingHookScope;
-  if (allowListScope !== undefined) {
+  const allowListScope = initPlan.hook.allowListScope ?? (initPlan.hook.scope !== 'skip' ? initPlan.hook.scope : env.existingHookScope);
+  if (allowListScope !== undefined && allowListScope !== 'skip') {
     const path = settingsPath(allowListScope, opts.cwd, opts.home);
-    const withHook = scope !== 'skip'
-      ? installHook(readSettings(path), command)
+    const cmd = hookCommand(opts.packageRoot);
+    const withHook = initPlan.hook.scope !== 'skip'
+      ? installHook(readSettings(path), cmd)
       : { settings: readSettings(path), changed: false };
     const withAllow = allowSonataTools(withHook.settings);
     if (withHook.changed || withAllow.changed) writeSettings(path, withAllow.settings);
     hookChanged = withHook.changed;
-    if (scope !== 'skip') {
+    if (initPlan.hook.scope !== 'skip') {
       out(withHook.changed ? `  ✓ installed hook in ${path}` : `  · hook already present in ${path}`);
     }
     out(withAllow.changed
@@ -1161,37 +1090,27 @@ async function runInit(
       : `  · sonata tools already allow-listed in ${path}`);
   }
 
-  const skillBaseDir = configScope === 'global' ? opts.home : opts.cwd;
-  const skillPath = join(skillBaseDir, '.claude', 'skills', 'sonata-loop', 'SKILL.md');
-  mkdirSync(dirname(skillPath), { recursive: true });
+  mkdirSync(dirname(initPlan.skillPath), { recursive: true });
   const packageSkill = join(opts.packageRoot, 'skills', 'loop', 'SKILL.md');
   const skillSource = existsSync(packageSkill)
     ? packageSkill
     : join(process.cwd(), 'skills', 'loop', 'SKILL.md');
-  writeFileSync(skillPath, readFileSync(skillSource));
-  out(`  ✓ installed loop skill in ${skillPath}`);
+  writeFileSync(initPlan.skillPath, readFileSync(skillSource));
+  out(`  ✓ installed loop skill in ${initPlan.skillPath}`);
 
-  if (routing !== 'skip') {
+  if (initPlan.routing !== 'skip') {
     await cmdRoute('auto', {
       cwd: opts.cwd,
       home: opts.home,
       packageRoot: opts.packageRoot,
-      scope: routing,
+      scope: initPlan.routing,
     });
-    out(`  ✓ configured sonata route auto${routing === 'global' ? ' --global' : ''}`);
+    out(`  ✓ configured sonata route auto${initPlan.routing === 'global' ? ' --global' : ''}`);
   }
 
-  const agentsDir = agentsDirFor(configScope, opts.cwd, opts.home);
-  // cmdSync loads its own config via `loadConfig(cwd, home)` — passing the
-  // invoking repo's cwd unconditionally would sync from THAT project's
-  // sonata.toml even when writing --config-scope global, if the repo
-  // happens to have its own config file too. Pointing cwd at the machine
-  // config's own directory for the global case makes loadConfig resolve
-  // the config just written above, not whatever the invoking directory has.
-  const syncCwd = configScope === 'global' ? dirname(join(opts.home, GLOBAL_CONFIG_RELATIVE)) : opts.cwd;
-  const sync = cmdSync({ cwd: syncCwd, home: opts.home, agentsDir });
+  const sync = cmdSync({ cwd: initPlan.syncCwd, home: opts.home, agentsDir: initPlan.agentsDir });
   const agentsWritten = sync.written;
-  out(`  ✓ generated ${agentsWritten.length} agents in ${agentsDir}`);
+  out(`  ✓ generated ${agentsWritten.length} agents in ${initPlan.agentsDir}`);
 
 
   if (sync.skipped.length > 0) {
@@ -1210,7 +1129,7 @@ async function runInit(
     if (stale.length > 5) out(`      … and ${stale.length - 5} more`);
     const remove = opts.prune ?? (interactive && await confirm('Delete them?', true));
     if (remove) {
-      pruned = pruneAgents(agentsDir, stale);
+      pruned = pruneAgents(initPlan.agentsDir, stale);
       out(`  ✓ removed ${pruned.length} stale agent file(s)`);
     } else {
       out('      ❯ delete them by hand, or re-run with --prune');
@@ -1223,8 +1142,8 @@ async function runInit(
   out('');
 
   return {
-    problems: env.problems, models: nativeKeys, roles, scope, routing, hookChanged, agentsWritten,
-    configPath: configPathResolved, pruned,
+    problems: env.problems, models: initPlan.nativeKeys, roles: initPlan.roles, scope: initPlan.hook.scope, routing: initPlan.routing, hookChanged, agentsWritten,
+    configPath: initPlan.configPath, pruned,
   };
 }
 
