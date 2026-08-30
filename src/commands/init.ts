@@ -960,18 +960,6 @@ async function runInit(
       );
     }
 
-    // Sonata-source OAuth credential check needs home — keep it here
-    const gatewayAuths = new Map(chosenNative.map((candidate) => [candidate.gateway, candidate.auth]));
-    for (const [gateway, source] of Object.entries(credentialSources)) {
-      const auth = gatewayAuths.get(gateway);
-      if (source !== 'sonata' || auth === undefined || !isOauthGatewayAuth(auth)) continue;
-      if (existsSync(join(credentialDir(opts.home, gateway), credentialFileFor(auth)))) continue;
-      throw new Error(
-        `sonata init: gateway "${gateway}" needs a credential. ` +
-        `Log in first: sonata auth login ${gateway}`,
-      );
-    }
-
     nativeRoleModels = Object.fromEntries(
       Object.entries(reconcilePerRoleModels(d.perRoleModels, d.nativeKeys ?? [], nativeKeys, roles))
         .map(([role, keys]) => [
@@ -994,28 +982,14 @@ async function runInit(
     }
   }
 
-  // A codex-sourced credential applies to neither an api-key gateway (codex
-  // holds a subscription, not a bearer key) nor a copilot-oauth gateway
-  // (Copilot logins come only from opencode). The wizard's picker already
-  // hides these combinations, but stale state or a picker regression could
-  // still produce one, so this is checked for both paths rather than trusted
-  // to the interactive UI alone.
+  // A gateway pinned to credential_source = "sonata" with an OAuth auth type
+  // needs a credential sonata itself minted (via `sonata auth login`), and the
+  // --yes path cannot pause for a browser device login. Check this for both
+  // paths here, since it depends on filesystem state.
   {
     const gatewayAuths = new Map(chosenNative.map((candidate) => [candidate.gateway, candidate.auth]));
     for (const [gateway, source] of Object.entries(credentialSources)) {
       const auth = gatewayAuths.get(gateway);
-      if (source === 'codex' && auth === 'api-key') {
-        throw new Error(
-          `sonata init: gateway "${gateway}" is auth = "api-key", so it cannot take its credential from codex — ` +
-          'that is a subscription, not a key.',
-        );
-      }
-      if (source === 'codex' && auth === 'copilot-oauth') {
-        throw new Error(
-          `sonata init: gateway "${gateway}" is copilot-oauth, so it cannot take its credential from codex — ` +
-          'Copilot logins come only from opencode.',
-        );
-      }
       if (source !== 'sonata' || auth === undefined || !isOauthGatewayAuth(auth)) continue;
       if (existsSync(join(credentialDir(opts.home, gateway), credentialFileFor(auth)))) continue;
       throw new Error(
