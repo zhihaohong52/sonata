@@ -37,7 +37,6 @@ import { cmdRoute } from './route.js';
 import { select, confirm, isInteractive, banner, CancelledError } from '../tui.js';
 import { keyReport, resolveKeyFromSource, resolveKeys, writeSonataKey } from '../native/credentials.js';
 import { byokCandidateKey, wellKnownProviders } from '../native/models.js';
-import { loadAaCatalog, proposeTiers } from '../catalog.js';
 import { migrateLegacyConfig } from '../normalize.js';
 import { byokProviderKey, byokProviderName, type AvailableCredentials } from '../tui-ink/app-state.js';
 import { runInitTui } from '../tui-ink/run.js';
@@ -651,9 +650,7 @@ async function runInit(
   let chosenNative!: NativeCandidate[];
   let roles!: string[];
   let nativeRoleModels: Record<string, NativeCandidate[]> = {};
-  let tiers: Record<string, { simple: string[]; complex: string[] }> = {};
   let credentialSources: Record<string, CredentialSource> = {};
-  let migratedModels: Record<string, { harness?: string; harnessId?: string }> = {};
   /** BYOK keys typed in the wizard, written only after the confirm gate. */
   let byokKeys: Record<string, string> = {};
   let stateForPlan: InitState;
@@ -785,18 +782,6 @@ async function runInit(
     // Map result.state to the variables the write path needs:
     configScope = result.state.configScope ?? 'project';
     configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
-    // parseConfig always builds unifiedModels from the raw [models] table
-    // (migrated or not), so this is complete regardless of whether the
-    // existing config was legacy and just migrated in place above, or was
-    // already in the unified shape — no need to re-run the migration here.
-    const existingForScope = env.configsByScope[configScope];
-    if (existingForScope !== undefined) {
-      migratedModels = Object.fromEntries(
-        Object.entries(existingForScope.unifiedModels)
-          .filter(([, model]) => model.harness !== undefined && model.gateway === undefined)
-          .map(([key, model]) => [key, { harness: model.harness, harnessId: model.harnessId }]),
-      );
-    }
     // Custom providers added through the wizard: register their URL before
     // adding BYOK candidates so validate() can exclude them from the
     // unknown-providers check.
@@ -823,19 +808,6 @@ async function runInit(
     // per-role map starts from the existing config, so iterating *it* rather
     // than `roles` kept a role the user had just deselected.
     const savedNativeKeys = initialStateByScope[configScope]?.nativeKeys ?? [];
-    {
-      const validTierKeys = new Set([...nativeKeys, ...Object.keys(migratedModels)]);
-      const catalog = loadAaCatalog(opts.home);
-      const addedKeys = nativeKeys.filter((key) => !savedNativeKeys.includes(key));
-      tiers = Object.fromEntries(roles.map((role) => {
-        const proposal = proposeTiers(nativeKeys, catalog, gatewayNamesOf(nativeByKey), avoidedKeysOf(nativeByKey, avoidGatewaysFor(configScope)));
-        const saved = result.state.tiers?.[role];
-        return [role, {
-          simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple, addedKeys),
-          complex: reconcileTierList(saved?.complex, validTierKeys, proposal.complex, addedKeys),
-        }];
-      }));
-    }
     chosenNative = nativeKeys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined);
     nativeRoleModels = Object.fromEntries(
       Object.entries(reconcilePerRoleModels(result.state.perRoleModels, savedNativeKeys, nativeKeys, roles))
@@ -880,18 +852,7 @@ async function runInit(
     configScope = opts.configScope ?? 'project';
     configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
     configText = existsSync(configPathResolved) ? readFileSync(configPathResolved, 'utf8') : '';
-    // parseConfig always builds unifiedModels from the raw [models] table
-    // (migrated or not), so this is complete regardless of whether the
-    // existing config was legacy and just migrated in place above, or was
-    // already in the unified shape — no need to re-run the migration here.
     const parsedConfig = env.configsByScope[configScope];
-    if (parsedConfig !== undefined) {
-      migratedModels = Object.fromEntries(
-        Object.entries(parsedConfig.unifiedModels)
-          .filter(([, model]) => model.harness !== undefined && model.gateway === undefined)
-          .map(([key, model]) => [key, { harness: model.harness, harnessId: model.harnessId }]),
-      );
-    }
     ticked = preTickedNative(configText, env.allNativeCandidates);
     const d = parsedConfig ? deriveInitState(parsedConfig, configScope, env.offered) : { configScope };
     credentialSources = {
@@ -986,19 +947,6 @@ async function runInit(
           keys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined),
         ]),
     );
-    {
-      const validTierKeys = new Set([...nativeKeys, ...Object.keys(migratedModels)]);
-      const catalog = loadAaCatalog(opts.home);
-      const addedKeys = nativeKeys.filter((key) => !(d.nativeKeys ?? []).includes(key));
-      tiers = Object.fromEntries(roles.map((role) => {
-        const proposal = proposeTiers(nativeKeys, catalog, gatewayNamesOf(nativeByKey), avoidedKeysOf(nativeByKey, avoidGatewaysFor(configScope)));
-        const saved = d.tiers?.[role];
-        return [role, {
-          simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple, addedKeys),
-          complex: reconcileTierList(saved?.complex, validTierKeys, proposal.complex, addedKeys),
-        }];
-      }));
-    }
 
   // Build stateForPlan for non-interactive branch
   stateForPlan = {
