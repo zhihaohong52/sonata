@@ -11,9 +11,12 @@
  * cancelled-`InitResult` shape — that shape never lived inside the wizard
  * branch and stays in `runInit`/`cmdInit`.
  *
- * `nativeByKey` is passed in (not built here) so the candidate map lives
- * exactly where it always has — in `runInit` — and the front ends never
- * disagree about which gateways a user has surfaced.
+ * `nativeByKey` is built here, not passed in: this is the front end's own
+ * candidate map for BYOK and live-candidate additions, and validate's call
+ * below resolves candidates separately. `validate` runs twice — once here
+ * to catch problems at the screen that produced them, and again in `runInit`
+ * after the state is finalised. The duplicated check is the price of
+ * surfacing the failure to the right place.
  */
 import { readChatGptOAuth, readOpencodeChatGptOAuth } from '../native/codex-auth.js';
 import {
@@ -41,9 +44,9 @@ export async function interactiveState(
     routing?: 'project' | 'global' | 'skip';
   },
   log: InitLog,
-  nativeByKey: Map<string, NativeCandidate>,
-): Promise<{ state: InitState; cancelled: boolean }> {
+): Promise<{ state: InitState; nativeByKey: Map<string, NativeCandidate>; cancelled: boolean }> {
   const byokUrls = new Map(env.byokProviders.map((provider) => [provider.name, provider.url]));
+  const nativeByKey = new Map(env.allNativeCandidates.map((c) => [c.key, c]));
   const existingConfigPath = configPath(opts.cwd, opts.home);
   const resolvedScope: ConfigScope = existingConfigPath === configPathFor('global', opts.cwd, opts.home)
     ? 'global' : 'project';
@@ -104,7 +107,7 @@ export async function interactiveState(
     `roles=[${result.state.roles ?? []}] keysEnteredFor=[${Object.keys(result.state.byokKeys ?? {})}]`);
 
   if (result.cancelled) {
-    return { state: result.state, cancelled: true };
+    return { state: result.state, nativeByKey, cancelled: true };
   }
 
   // Map result.state to the variables the write path needs.
@@ -162,7 +165,7 @@ export async function interactiveState(
     byokKeys: result.state.byokKeys,
     tiers: result.state.tiers,
   };
-  return { state: stateForPlan, cancelled: false };
+  return { state: stateForPlan, nativeByKey, cancelled: false };
 }
 
 /**

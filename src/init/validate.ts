@@ -126,8 +126,21 @@ export function validate(env: InitEnvironment, state: InitState, opts?: Validate
           'Copilot logins come only from opencode.',
       });
     }
-    // The sonata-source OAuth credential check needs home to check the
-    // filesystem; the --yes branch keeps its own copy.
+    // A gateway pinned to credential_source = "sonata" with an OAuth auth type
+    // needs a credential sonata itself minted (via `sonata auth login`), and
+    // the --yes path cannot pause for a browser device login. The old runInit
+    // carried this as a pre-flight after the front end; validate is the new
+    // home for it.
+    if (source === 'sonata' && auth !== undefined && isOauthGatewayAuth(auth)) {
+      if (!existsSync(join(credentialDir(env.home, gateway), credentialFileFor(auth)))) {
+        problems.push({
+          severity: 'error',
+          message:
+            `sonata init: gateway "${gateway}" needs a credential. ` +
+            `Log in first: sonata auth login ${gateway}`,
+        });
+      }
+    }
   }
 
   // 9. --routing global with project-scoped config

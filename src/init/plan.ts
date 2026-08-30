@@ -244,7 +244,11 @@ export function plan(
   // The hook scope comes from state.hookScope if set, otherwise we need to compute it
   // For the plan, we just use what the state says, the actual hook logic is done during write
   const hookScope = state.hookScope ?? 'project';
-  const hook: InitPlan['hook'] = { scope: hookScope };
+  // The allow-list must be touched even when the hook itself is skipped, so an
+  // upgrade from the MCP-based release still replaces the old `mcp__sonata__*`
+  // tool entries. `existingHookScope` says where the old hook lived, when any.
+  const allowListScope = hookScope !== 'skip' ? hookScope : env.existingHookScope;
+  const hook: InitPlan['hook'] = { scope: hookScope, allowListScope };
 
   // ---- skillPath ----
   const skillBaseDir = configScope === 'global' ? opts.home : opts.cwd;
@@ -263,7 +267,7 @@ export function plan(
     configScope,
     configPath: configPathResolved,
     configToml,
-    keysToStore: [], // BYOK keys are stored during write phase, not in plan
+    keysToStore: Object.entries(state.byokKeys ?? {}).map(([gateway, key]) => ({ gateway, key })),
     hook,
     skillPath,
     routing,

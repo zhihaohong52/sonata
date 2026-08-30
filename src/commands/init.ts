@@ -12,7 +12,6 @@
  * (`migrateLegacyConfig`, `src/normalize.ts`) rather than left behind or
  * silently dropped.
  */
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   KNOWN_ROLES, GLOBAL_CONFIG_RELATIVE, parseConfig,
@@ -20,7 +19,6 @@ import {
   CREDENTIAL_SOURCES, type SonataConfig, type NativeGatewayAuth, type NativeGatewayWireFormat, type CredentialSource,
 } from '../config.js';
 import { readChatGptOAuth, readOpencodeChatGptOAuth } from '../native/codex-auth.js';
-import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { readCopilotToken } from '../native/copilot-auth.js';
 import type { ModelRef } from '../types.js';
 import {
@@ -38,6 +36,7 @@ import { interactiveState } from '../init/interactive-state.js';
 import { scriptedState } from '../init/scripted-state.js';
 import { plan, fsCredentialProbe } from '../init/plan.js';
 import { apply } from '../init/apply.js';
+import { validate } from '../init/validate.js';
 
 export { nativeTomlFor } from '../init/toml.js';
 import type { InitState } from '../tui-ink/types.js';
@@ -599,7 +598,6 @@ async function runInit(
   log: InitLog,
   interactive: boolean,
 ): Promise<InitResult> {
-
   out('');
   out(interactive ? banner() : '  sonata init');
   out('');
@@ -612,127 +610,92 @@ async function runInit(
     detect: opts.detect,
   }, out);
 
-  const blocking = env.problems.filter((p) => p.severity === 'error');
-  if (blocking.length > 0) {
+  if (env.problems.some((p) => p.severity === 'error')) {
     for (const p of env.problems) out(renderProblem(p));
     out('');
     out('  Fix the errors above, then run `sonata init` again.');
-    return {
-      problems: env.problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
-      agentsWritten: [], configPath: join(opts.cwd, 'sonata.toml'),
-      pruned: [],
-    };
+    return blockedResult(env.problems, opts);
   }
   for (const p of env.problems) out(renderProblem(p));
 
-  // ---- the question sequence -------------------------------------------
+  // ---- choose -----------------------------------------------------------
   // The two front ends (`interactiveState`, `scriptedState`) live in
-  // `src/init/`. Each one returns the same `InitState` shape — the wizard
-  // additionally reports whether the user cancelled. `nativeByKey` lives in
-  // `runInit` so the front ends never disagree about which models the user
-  // has surfaced; the front ends mutate it for BYOK and live candidates.
-  const nativeByKey = new Map(env.allNativeCandidates.map((c) => [c.key, c]));
-
-  let stateForPlan: InitState;
-  if (interactive) {
-    const result = await interactiveState(env, opts, log, nativeByKey);
-    if (result.cancelled) {
-      out('  Nothing written.');
-      return {
-        problems: env.problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
-        agentsWritten: [], configPath: configPathFor(
-          result.state.configScope ?? 'project', opts.cwd, opts.home),
-        pruned: [], cancelled: true,
-      };
-    }
-    stateForPlan = result.state;
-  } else {
-    stateForPlan = scriptedState(env, opts, nativeByKey);
+  // `src/init/`. Each one returns the same `InitState` shape plus a
+  // candidate map covering BYOK and live additions the front end made — the
+  // post-frontend `validate` step needs those additions to recognise the
+  // user-selected models. The wizard additionally reports whether the user
+  // cancelled.
+  const chosen = interactive
+    ? await interactiveState(env, opts, log)
+    : { ...scriptedState(env, opts), cancelled: false };
+  if (chosen.cancelled) {
+    out('  Nothing written.');
+    return cancelledResult(env.problems, chosen.state, opts);
   }
 
-  // The OAuth check below iterates `chosenNative`; both front ends
-  // validate-by-throwing on unknown model ids, so every selected key is
-  // present in `nativeByKey` here. `nativeRoleModels` is recomputed against
-  // the existing config for the chosen scope, so a role the user just
-  // deselected isn't kept around by a stale per-role map.
-  const configScope = stateForPlan.configScope ?? 'project';
-  const previousState = env.configsByScope[configScope]
-    ? deriveInitState(env.configsByScope[configScope]!, configScope, env.offered)
-    : undefined;
-  const savedNativeKeys = previousState?.nativeKeys ?? [];
-  const previousPerRoleModels = previousState?.perRoleModels;
-  const nativeKeys = stateForPlan.nativeKeys ?? [];
-  const roles = stateForPlan.roles ?? [...KNOWN_ROLES];
-  const credentialSources = stateForPlan.credentialSources ?? {};
-  const byokKeys = stateForPlan.byokKeys ?? {};
-  const chosenNative: NativeCandidate[] = nativeKeys
-    .map((k) => nativeByKey.get(k))
-    .filter((k): k is NativeCandidate => k !== undefined);
-  const nativeRoleModels: Record<string, NativeCandidate[]> = Object.fromEntries(
-    Object.entries(reconcilePerRoleModels(previousPerRoleModels, savedNativeKeys, nativeKeys, roles))
-      .map(([role, keys]) => [
-        role,
-        keys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined),
-      ]),
-  );
-
-
-  // A gateway pinned to credential_source = "sonata" with an OAuth auth type
-  // needs a credential sonata itself minted (via `sonata auth login`), and the
-  // --yes path cannot pause for a browser device login. Check this for both
-  // paths here, since it depends on filesystem state.
-  {
-    const gatewayAuths = new Map(chosenNative.map((candidate) => [candidate.gateway, candidate.auth]));
-    for (const [gateway, source] of Object.entries(credentialSources)) {
-      const auth = gatewayAuths.get(gateway);
-      if (source !== 'sonata' || auth === undefined || !isOauthGatewayAuth(auth)) continue;
-      if (existsSync(join(credentialDir(opts.home, gateway), credentialFileFor(auth)))) continue;
-      throw new Error(
-        `sonata init: gateway "${gateway}" needs a credential. ` +
-        `Log in first: sonata auth login ${gateway}`,
-      );
-    }
+  // ---- validate ---------------------------------------------------------
+  // Validation precedes planning: a plan built from an invalid state is a
+  // plan nobody should see, and `validate` resolves its own candidates so it
+  // has no dependency on `plan` having run. The front end's `nativeByKey`
+  // is passed so BYOK and live-refresh candidates are visible to the
+  // unknown-model check — they were added in the front end's own scope and
+  // are not in `env.allNativeCandidates`.
+  const problems = validate(env, chosen.state, { nativeByKey: chosen.nativeByKey });
+  if (problems.length > 0) {
+    if (!interactive) throw new Error(problems[0].message);
+    for (const p of problems) out(renderProblem(p));
+    return cancelledResult(env.problems, chosen.state, opts);
   }
 
-  // Call plan() once - it computes everything we need to write
-  const initPlan = plan(env, stateForPlan, fsCredentialProbe(opts.home, env.copilotUsable), opts);
+  // ---- plan -------------------------------------------------------------
+  const credentials = fsCredentialProbe(opts.home, env.copilotUsable);
+  const initPlan = plan(env, chosen.state, credentials, opts);
 
-  // Print notices and summary from the plan
   for (const line of initPlan.notices) out(line);
   out('');
   for (const line of initPlan.summary) out(line);
+  out('');
 
   log.line(`hook scope resolved: ${initPlan.hook.scope}`);
   if (interactive) log.line('prompting for write confirmation');
   if (interactive && !(await confirm('Write these changes?', true))) {
     out('  Nothing written.');
-    return {
-      problems: env.problems, models: initPlan.nativeKeys, roles: initPlan.roles, scope: initPlan.hook.scope, routing: initPlan.routing, hookChanged: false,
-      agentsWritten: [], configPath: initPlan.configPath, cancelled: true,
-      pruned: [],
-    };
+    return cancelledResult(env.problems, chosen.state, opts);
   }
 
-  // ---- write ------------------------------------------------------------
-  // Resolve the allow-list scope and attach the wizard's BYOK keys to the
-  // plan before handing it to `apply`. Both belong in the plan: the former
-  // because the MCP-era upgrade path needs `env.existingHookScope`, which
-  // `apply` does not see, and the latter because the wizard collects them
-  // and they must reach the write phase without `runInit` having to keep
-  // them in a local.
-  const allowListScope = initPlan.hook.allowListScope
-    ?? (initPlan.hook.scope !== 'skip' ? initPlan.hook.scope : env.existingHookScope);
-  initPlan.hook.allowListScope = allowListScope;
-  initPlan.keysToStore = Object.entries(byokKeys).map(([gateway, key]) => ({ gateway, key }));
-
-  const { agentsWritten, pruned, hookChanged } = await apply(initPlan, opts, {
+  // ---- apply ------------------------------------------------------------
+  const applied = await apply(initPlan, opts, {
     out,
     prune: opts.prune ?? (interactive ? async () => confirm('Delete them?', true) : false),
   });
 
+  out('');
+  out('  Done. Run /reload-plugins to pick up the new agents.');
+  out('  Native sessions: run `sonata code`, or `sonata route on` to route plain claude sessions.');
+  out('');
+
   return {
-    problems: env.problems, models: initPlan.nativeKeys, roles: initPlan.roles, scope: initPlan.hook.scope, routing: initPlan.routing, hookChanged, agentsWritten,
-    configPath: initPlan.configPath, pruned,
+    problems: env.problems, models: initPlan.nativeKeys, roles: initPlan.roles,
+    scope: initPlan.hook.scope, routing: initPlan.routing,
+    hookChanged: applied.hookChanged, agentsWritten: applied.agentsWritten,
+    configPath: initPlan.configPath, pruned: applied.pruned,
+  };
+}
+
+function blockedResult(problems: Problem[], opts: InitOptions): InitResult {
+  return {
+    problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
+    agentsWritten: [], configPath: join(opts.cwd, 'sonata.toml'),
+    pruned: [],
+  };
+}
+
+function cancelledResult(problems: Problem[], state: InitState, opts: InitOptions): InitResult {
+  return {
+    problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
+    agentsWritten: [], configPath: configPathFor(
+      state.configScope ?? 'project', opts.cwd, opts.home),
+    pruned: [], cancelled: true,
   };
 }
 

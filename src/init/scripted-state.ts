@@ -11,9 +11,9 @@
  * post-branch code (OAuth check, `plan()`, confirm gate, `apply()`) needs no
  * knowledge of which front end ran.
  *
- * `nativeByKey` is passed in (not built here) so the candidate map lives
- * exactly where it always has — in `runInit` — and the front ends never
- * disagree about which models a user has surfaced.
+ * `nativeByKey` is built here, not passed in: this is the front end's own
+ * candidate map for BYOK additions, and validate's call below uses the same
+ * one to catch unknown providers before they leave this branch.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { KNOWN_ROLES } from '../config.js';
@@ -31,9 +31,9 @@ import type { InitEnvironment } from './discover.js';
 export function scriptedState(
   env: InitEnvironment,
   opts: InitOptions,
-  nativeByKey: Map<string, NativeCandidate>,
-): InitState {
+): { state: InitState; nativeByKey: Map<string, NativeCandidate> } {
   const byokUrls = new Map(env.byokProviders.map((provider) => [provider.name, provider.url]));
+  const nativeByKey = new Map(env.allNativeCandidates.map((c) => [c.key, c]));
 
   const configScope = opts.configScope ?? 'project';
   const configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
@@ -127,19 +127,22 @@ export function scriptedState(
   }
 
   return {
-    configScope,
-    providerKeys,
-    nativeKeys,
-    roles,
-    credentialSources,
-    routing: opts.routing ?? 'project',
-    hookScope: opts.scope ?? (env.existingHookScope ? 'skip' : 'project'),
-    customProviders: undefined,
-    byokModels,
-    liveModels: {},
-    customWireFormats: {},
-    byokKeys: {},
-    tiers: d.tiers,
+    state: {
+      configScope,
+      providerKeys,
+      nativeKeys,
+      roles,
+      credentialSources,
+      routing: opts.routing ?? 'project',
+      hookScope: opts.scope ?? (env.existingHookScope ? 'skip' : 'project'),
+      customProviders: undefined,
+      byokModels,
+      liveModels: {},
+      customWireFormats: {},
+      byokKeys: {},
+      tiers: d.tiers,
+    },
+    nativeByKey,
   };
 }
 
