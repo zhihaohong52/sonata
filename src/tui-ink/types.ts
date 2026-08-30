@@ -43,6 +43,8 @@ export interface InitState {
    * Holds no credential material — a login writes through LiteLLM to disk.
    */
   credentialSources?: Record<string, CredentialSource>;
+  /** Routing mode for tier agents: project, global, or skip. */
+  routing?: 'project' | 'global' | 'skip';
 }
 
 // The JSON written by the Ink app, read by cmdInit

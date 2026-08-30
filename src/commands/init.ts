@@ -44,6 +44,7 @@ import { runInitTui } from '../tui-ink/run.js';
 import { openInitLog, type InitLog } from './init-log.js';
 import { nativeTomlFor } from '../init/toml.js';
 import { discover, type InitEnvironment } from '../init/discover.js';
+import { validate } from '../init/validate.js';
 
 export { nativeTomlFor } from '../init/toml.js';
 import type { WizardData } from '../tui-ink/app.js';
@@ -794,6 +795,9 @@ async function runInit(
           .map(([key, model]) => [key, { harness: model.harness, harnessId: model.harnessId }]),
       );
     }
+    // Custom providers added through the wizard: register their URL before
+    // adding BYOK candidates so validate() can exclude them from the
+    // unknown-providers check.
     for (const provider of result.state.customProviders ?? []) {
       byokUrls.set(provider.name, provider.url);
     }
@@ -838,6 +842,20 @@ async function runInit(
           keys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined),
         ]),
     );
+
+    // Validate interactive path state (after customProviders are registered
+    // so the unknown-providers check skips them).
+    const state: InitState = {
+      configScope,
+      providerKeys: result.state.providerKeys ?? [],
+      nativeKeys,
+      roles,
+      credentialSources,
+      routing: result.state.routing ?? 'project',
+      customProviders: result.state.customProviders,
+    };
+    const problems = validate(env, state, { nativeByKey });
+    if (problems.length > 0) throw new Error(problems[0].message);
   } else {
     // ---- flag-driven (non-interactive) path -----------------------------
     configScope = opts.configScope ?? 'project';
@@ -869,13 +887,6 @@ async function runInit(
     // engages BYOK here.
     providerKeys = opts.providers ?? d.providerKeys
       ?? env.offered.filter((p) => p.harness !== 'byok').map((p) => p.key);
-    const unknownProviders = providerKeys.filter((k) => !env.offered.some((p) => p.key === k));
-    if (unknownProviders.length > 0) {
-      throw new Error(
-        `sonata init: no harness offers ${unknownProviders.join(', ')}. ` +
-        `Available: ${env.offered.map((p) => p.key).join(', ')}`,
-      );
-    }
 
     // Scope native candidates to the selected providers.
     const selectedProviders = new Set(providerKeys.map((k) => k.split('/')[1] ?? k));
@@ -887,22 +898,21 @@ async function runInit(
     const byokSelected = providerKeys
       .map(byokProviderName)
       .filter((name): name is string => name !== undefined);
+
+    // Parse BYOK model ids from opts.models so we can add candidates to
+    // nativeByKey BEFORE calling validate. This lets validate's unknown-model
+    // check see the BYOK models. The missing-key check itself (which needs
+    // home) stays after validate so the unknown-providers check runs first,
+    // matching the original --yes branch order where unknown-providers was
+    // checked before the BYOK missing-key throw.
+    const byokModels: Record<string, string[]> = {};
+    for (const name of byokSelected) {
+      const prefix = `${name}-`;
+      byokModels[name] = (opts.models ?? [])
+        .filter((key) => key.startsWith(prefix))
+        .map((key) => key.slice(prefix.length));
+    }
     if (byokSelected.length > 0) {
-      const stored = new Set(resolveKeys(byokSelected, opts.home).map((source) => source.gateway));
-      const missing = byokSelected.filter((name) => !stored.has(name));
-      if (missing.length > 0) {
-        throw new Error(
-          `sonata init: no key for ${missing.join(', ')}. ` +
-          `Store it first: ${missing.map((name) => `sonata auth add ${name}`).join('; ')}`,
-        );
-      }
-      const byokModels: Record<string, string[]> = {};
-      for (const name of byokSelected) {
-        const prefix = `${name}-`;
-        byokModels[name] = (opts.models ?? [])
-          .filter((key) => key.startsWith(prefix))
-          .map((key) => key.slice(prefix.length));
-      }
       addByokCandidates(byokModels);
       inScopeNative = [
         ...inScopeNative,
@@ -913,6 +923,35 @@ async function runInit(
 
     nativeKeys = opts.models ?? d.nativeKeys ?? inScopeNative.filter((c) => ticked.has(c.key)).map((c) => c.key);
     const inScopeNativeByKey = new Map(inScopeNative.map((c) => [c.key, c]));
+    chosenNative = nativeKeys.map((k) => inScopeNativeByKey.get(k)!);
+
+    roles = opts.roles ?? d.roles ?? [...KNOWN_ROLES];
+
+    // Build state for validation
+    const state = {
+      configScope,
+      providerKeys,
+      nativeKeys,
+      roles,
+      credentialSources,
+      routing: opts.routing ?? 'project',
+    };
+    const problems = validate(env, state, { nativeByKey });
+    if (problems.length > 0) throw new Error(problems[0].message);
+
+    // BYOK missing-key check needs home — keep it here (after validation so unknown providers are caught first)
+    if (byokSelected.length > 0) {
+      const stored = new Set(resolveKeys(byokSelected, opts.home).map((source) => source.gateway));
+      const missing = byokSelected.filter((name) => !stored.has(name));
+      if (missing.length > 0) {
+        throw new Error(
+          `sonata init: no key for ${missing.join(', ')}. ` +
+          `Store it first: ${missing.map((name) => `sonata auth add ${name}`).join('; ')}`,
+        );
+      }
+    }
+
+    // Unknown model check (needs inScopeNativeByKey which is built after BYOK candidates added)
     const unknown = nativeKeys.filter((k) => !inScopeNativeByKey.has(k));
     if (unknown.length > 0) {
       throw new Error(
@@ -920,28 +959,17 @@ async function runInit(
         `Available: ${[...inScopeNativeByKey.keys()].join(', ')}`,
       );
     }
-    if (nativeKeys.length === 0) {
-      throw new Error('sonata init: no models selected — nothing to generate.');
-    }
-    chosenNative = nativeKeys.map((k) => inScopeNativeByKey.get(k)!);
 
-    // --yes cannot pause for a browser-based device login. Require a credential
-    // that sonata already minted before recording that source in the config.
-    const nativeGateways = new Map(chosenNative.map((candidate) => [candidate.gateway, candidate]));
-    for (const gateway of Object.keys(parseCredentialSourceFlags(opts.credentialSource ?? []))) {
-      if (nativeGateways.has(gateway)) continue;
+    // Sonata-source OAuth credential check needs home — keep it here
+    const gatewayAuths = new Map(chosenNative.map((candidate) => [candidate.gateway, candidate.auth]));
+    for (const [gateway, source] of Object.entries(credentialSources)) {
+      const auth = gatewayAuths.get(gateway);
+      if (source !== 'sonata' || auth === undefined || !isOauthGatewayAuth(auth)) continue;
+      if (existsSync(join(credentialDir(opts.home, gateway), credentialFileFor(auth)))) continue;
       throw new Error(
-        `sonata init: --credential-source names gateway "${gateway}", which is not among the selected models. ` +
-        `Known gateways: ${[...nativeGateways.keys()].join(', ') || '(none)'}`,
+        `sonata init: gateway "${gateway}" needs a credential. ` +
+        `Log in first: sonata auth login ${gateway}`,
       );
-    }
-    roles = opts.roles ?? d.roles ?? [...KNOWN_ROLES];
-    const badRoles = roles.filter((r) => !KNOWN_ROLES.includes(r as never));
-    if (badRoles.length > 0) {
-      throw new Error(`sonata init: unknown role(s) ${badRoles.join(', ')}`);
-    }
-    if (roles.length === 0) {
-      throw new Error('sonata init: no roles selected — nothing to generate.');
     }
 
     nativeRoleModels = Object.fromEntries(
@@ -1099,29 +1127,6 @@ async function runInit(
     ]);
   } else {
     routing = 'project';
-  }
-
-  if (routing === 'global' && configScope === 'project') {
-    throw new Error(
-      'sonata init: --routing global routes every project through the machine config ' +
-      '(~/.config/sonata/sonata.toml), but this config was written to the project ' +
-      '(./sonata.toml) — the two would silently disagree. Use --config-scope global ' +
-      'together with --routing global, or keep --routing project.',
-    );
-  }
-
-  if (
-    configScope === 'global'
-    && routing !== 'global'
-    && routing !== 'skip'
-    && existsSync(join(opts.cwd, 'sonata.toml'))
-  ) {
-    throw new Error(
-      'sonata init: this repository has its own sonata.toml, which would shadow the ' +
-      'global config just written when routing is project-scoped — the generated global ' +
-      "agents would resolve against this project's local config instead. Use --routing " +
-      "global, or remove/rename this project's own sonata.toml.",
-    );
   }
 
   // ---- confirm ----------------------------------------------------------

@@ -34,6 +34,8 @@ import { oauthProvidersFor, nativeCandidatesFrom, configNativeCandidates, gatewa
 import type { Detector, ConfigScope, Detection, InitOptions } from '../commands/init.js';
 
 export interface InitEnvironment {
+  cwd: string;
+  home: string;
   tmux: Detection['tmux'];
   harnesses: Detection['harnesses'];
   problems: Problem[];
@@ -233,6 +235,8 @@ export async function discover(
   const existingHookScope: HookScope | undefined = alreadyGlobal ? 'global' : alreadyProject ? 'project' : undefined;
 
   return {
+    cwd: opts.cwd,
+    home: opts.home,
     tmux,
     harnesses,
     problems,
