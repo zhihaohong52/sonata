@@ -141,7 +141,7 @@ stop hook.
   recover. This is the narrow, safe change: no liveness knowledge required,
   no ordering against `SubagentStart`/`SubagentStop` to reason about, and
   it matches what the user already reached for. **The clear must take the
-  same `withSessionLock` (`src/filelock.js`) that every other registry
+  same `withSessionLock` (`src/filelock.ts`) that every other registry
   mutation takes** — `cmdRouteSubagent` mutates the registry under that
   lock at `src/commands/route.ts:627, 692, 762`, and a clear that skips
   it can be overwritten by a concurrent `SubagentStart`/`SubagentStop`
@@ -155,6 +155,44 @@ stop hook.
   registry must leave the registry empty, and a follow-up
   `SubagentStop` whose id was already in the registry when the clear
   ran must not resurrect it.
+
+  **The lock requirement extends to every writer of
+  `route-subagents.json`, not just `cmdRouteSubagent`.** Reviewing the
+  spec against the current source turned up a pre-existing split-lock
+  defect: the SessionEnd path in `cmdRouteSession` already writes
+  `route-subagents.json`, and it does so under a *different* lock.
+  Concretely, `cmdRouteSession('end')` opens its `withSessionLock`
+  against the *session* registry at `src/commands/route.ts:627`
+  (the file resolved at line 587), then writes the *subagent*
+  registry at line 636, while `cmdRouteSubagent` opens its
+  `withSessionLock` against the subagent registry at line 762
+  (the file resolved at line 756). Two distinct locks on the same
+  file do not exclude each other, so an interleaving like the
+  following is real: `SubagentStart` acquires the subagent lock,
+  reads the current list, and pauses; SessionEnd acquires the
+  session lock, clears `route-subagents.json`, and returns;
+  `SubagentStart` resumes and writes its pre-clear list plus its
+  new id, restoring every id the cleanup just erased. The cleared
+  ids are restored, and the same "stale id pins routing on" failure
+  Defect B is about is produced by the cleanup path meant to
+  prevent it. The current split-lock arrangement is itself a
+  defect, independent of whether the `route off` change above
+  ships.
+
+  Two acceptable resolutions. Either **every writer of
+  `route-subagents.json` takes the *subagent* registry's lock**
+  (so `cmdRouteSession('end')` and `cmdRouteSubagent` acquire the
+  same lock, and the clear and the start/stop mutations cannot
+  interleave), or **an explicit lock-ordering protocol is defined
+  that covers both registries** (so a writer holding one lock may
+  acquire the other without risk of deadlock, and the protocol
+  itself is the unit reviewed). The first is smaller and the
+  second is more general; the choice is a design call, not a
+  bug-fix detail. The fix must include a test exercising
+  `SessionEnd` concurrently with `SubagentStart` (and a separate
+  one for `SubagentStop`) and asserting the post-interleaving
+  registry state, since the regression is precisely the kind that
+  passes a serial test and only fails under contention.
 - A reaper that purges leaked references without the user running `route
   off` is a *separate* change, and it must be designed before it ships. The
   current registry stores only the `agent_id` from the hook payload, which
