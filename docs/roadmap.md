@@ -40,6 +40,8 @@ Status legend: ✅ shipped · 🔸 in progress · ⏳ not started.
 | 05 | A daemon lifecycle you can trust (instance-id handshake, actionable takeover) | P0 | S–M | ✅ shipped in [0.3.0](https://github.com/zhihaohong52/sonata/pull/4) |
 | 06 | `sonata init` hardening — the front door is the largest, least-tested file | P0 | L | 🔸 in progress — 0.3.1/0.3.2 fixed a run of wizard and ranking defects; the decomposition and end-to-end tests this item asks for are still outstanding |
 | 07 | Close the last false-success gap (worktree delta captured at launch and exit) | P1 | S | ⏳ not started |
+| 13 | A repeating 400 must cool a candidate down — a permanently-broken model currently absorbs its whole tier ([spec](specs/2026-08-30-routing-reliability-defects.md)) | P0 | S | ⏳ not started |
+| 14 | A killed subagent pins routing on for good, and `sonata route off` does not clear it ([spec](specs/2026-08-30-routing-reliability-defects.md)) | P0 | S | ⏳ not started |
 
 ### III. Distribution — can a stranger actually run this?
 
