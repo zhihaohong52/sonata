@@ -142,7 +142,9 @@ stop hook.
   no ordering against `SubagentStart`/`SubagentStop` to reason about, and
   it matches what the user already reached for. **The clear must take the
   same `withSessionLock` (`src/filelock.ts`) that every other registry
-  mutation takes** — `cmdRouteSubagent` mutates the registry under that
+  mutation takes — but it cannot simply acquire it, because one caller
+  already holds it; see the deadlock constraint below before implementing
+  this** — `cmdRouteSubagent` mutates the registry under that
   lock at `src/commands/route.ts:627, 692, 762`, and a clear that skips
   it can be overwritten by a concurrent `SubagentStart`/`SubagentStop`
   writing back the pre-clear list. That is the exact failure the change
