@@ -12,37 +12,34 @@
  * (`migrateLegacyConfig`, `src/normalize.ts`) rather than left behind or
  * silently dropped.
  */
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import {
-  KNOWN_ROLES, configPath, GLOBAL_CONFIG_RELATIVE, parseConfig,
+  KNOWN_ROLES, GLOBAL_CONFIG_RELATIVE, parseConfig,
   isOauthGatewayAuth, oauthGatewayBaseUrl, isAnthropicRoutedName,
   CREDENTIAL_SOURCES, type SonataConfig, type NativeGatewayAuth, type NativeGatewayWireFormat, type CredentialSource,
 } from '../config.js';
 import { readChatGptOAuth, readOpencodeChatGptOAuth } from '../native/codex-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
-import { readCopilotToken, copilotTokenCanExchange } from '../native/copilot-auth.js';
+import { readCopilotToken } from '../native/copilot-auth.js';
 import type { ModelRef } from '../types.js';
 import {
   detectTmux, detectHarnesses, offerableProviders, WELL_KNOWN_PROVIDER_URLS,
   type Problem, type HarnessStatus, type DetectEnv, type ProviderSummary,
 } from '../detect.js';
 import { type HookScope } from '../settings.js';
-import { select, confirm, isInteractive, banner, CancelledError } from '../tui.js';
-import { keyReport, resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
-import { byokCandidateKey, wellKnownProviders } from '../native/models.js';
+import { confirm, isInteractive, banner, CancelledError } from '../tui.js';
 import { migrateLegacyConfig } from '../normalize.js';
-import { byokProviderKey, byokProviderName, type AvailableCredentials } from '../tui-ink/app-state.js';
-import { runInitTui } from '../tui-ink/run.js';
+import { type AvailableCredentials } from '../tui-ink/app-state.js';
 import { openInitLog, type InitLog } from './init-log.js';
 import { nativeTomlFor } from '../init/toml.js';
 import { discover, type InitEnvironment } from '../init/discover.js';
-import { validate } from '../init/validate.js';
-import { plan, fsCredentialProbe, type InitPlan } from '../init/plan.js';
+import { interactiveState } from '../init/interactive-state.js';
+import { scriptedState } from '../init/scripted-state.js';
+import { plan, fsCredentialProbe } from '../init/plan.js';
 import { apply } from '../init/apply.js';
 
 export { nativeTomlFor } from '../init/toml.js';
-import type { WizardData } from '../tui-ink/app.js';
 import type { InitState } from '../tui-ink/types.js';
 
 export const OPENCODE_RANGE = '>=1.18.0 <2.0.0';
@@ -629,141 +626,16 @@ async function runInit(
   for (const p of env.problems) out(renderProblem(p));
 
   // ---- the question sequence -------------------------------------------
-  let configScope!: ConfigScope;
-  let configPathResolved!: string;
-  let configText!: string;
-  let ticked!: Set<string>;
-  let providerKeys!: string[];
-  let inScopeNative!: NativeCandidate[];
-  let nativeKeys!: string[];
-  // Carried from whichever config this run is rewriting: the setting is the
-  // user's, not something the wizard asks about, so it must survive untouched.
-  // Read by scope rather than captured once, since the scope is only settled
-  // after the wizard (or the flags) answer it.
-  const avoidGatewaysFor = (scope: ConfigScope): string[] =>
-    env.configsByScope[scope]?.avoidGateways ?? [];
-  let chosenNative!: NativeCandidate[];
-  let roles!: string[];
-  let nativeRoleModels: Record<string, NativeCandidate[]> = {};
-  let credentialSources: Record<string, CredentialSource> = {};
-  /** BYOK keys typed in the wizard, written only after the confirm gate. */
-  let byokKeys: Record<string, string> = {};
-  let stateForPlan: InitState;
+  // The two front ends (`interactiveState`, `scriptedState`) live in
+  // `src/init/`. Each one returns the same `InitState` shape — the wizard
+  // additionally reports whether the user cancelled. `nativeByKey` lives in
+  // `runInit` so the front ends never disagree about which models the user
+  // has surfaced; the front ends mutate it for BYOK and live candidates.
   const nativeByKey = new Map(env.allNativeCandidates.map((c) => [c.key, c]));
-  const byokUrls = new Map(env.byokProviders.map((provider) => [provider.name, provider.url]));
 
-  /**
-   * Candidates for models a user named directly.
-   *
-   * These must join `nativeByKey` before `nativeKeys` is resolved through it,
-   * or every BYOK key looks up `undefined` and is filtered out silently — a
-   * wizard that appears to work and writes an empty config.
-   */
-  /**
-   * Candidates for models only a gateway's own `/models` endpoint reported.
-   *
-   * The models step refreshes each gateway's list from the gateway itself, so
-   * it can surface a model no harness catalogue lists. Such a model has no
-   * `NativeCandidate`, and `nativeKeys` is resolved through `nativeByKey` — so
-   * without this it is selected, kept in the tiers, and then silently dropped
-   * from `[models]`, producing a config that names a model it never defines.
-   * An existing candidate always wins: the harness one carries a `harness`
-   * route this cannot know about.
-   */
-  const addLiveCandidates = (liveModels: Record<string, string[]>): void => {
-    for (const [gateway, ids] of Object.entries(liveModels)) {
-      const baseUrl = env.providerBaseUrls[gateway];
-      if (baseUrl === undefined) continue;
-      const auth = env.gatewayAuth.get(gateway) ?? 'api-key';
-      // Only a key-authenticated gateway is ever refreshed, so this is a
-      // guard rather than a case: an OAuth gateway's URL is LiteLLM's, and
-      // writing it as an api-key entry would produce a route that 401s.
-      if (isOauthGatewayAuth(auth)) continue;
-      for (const id of ids) {
-        const key = byokCandidateKey(gateway, id);
-        if (nativeByKey.has(key)) continue;
-        nativeByKey.set(key, { key, gateway, id, contextWindow: 128000, baseUrl, auth: 'api-key' });
-      }
-    }
-  };
-
-  const addByokCandidates = (
-    byokModels: Record<string, string[]>,
-    wireFormats: Record<string, 'anthropic'> = {},
-  ): void => {
-    for (const [gateway, ids] of Object.entries(byokModels)) {
-      const baseUrl = byokUrls.get(gateway);
-      if (baseUrl === undefined) continue;
-      const wireFormat = wireFormats[gateway];
-      for (const id of ids) {
-        const key = byokCandidateKey(gateway, id);
-        nativeByKey.set(key, {
-          key, gateway, id, contextWindow: 128000, baseUrl, auth: 'api-key',
-          ...(wireFormat !== undefined ? { wireFormat } : {}),
-        });
-      }
-    }
-  };
-
+  let stateForPlan: InitState;
   if (interactive) {
-    const existingConfigPath = configPath(opts.cwd, opts.home);
-    const resolvedScope: ConfigScope = existingConfigPath === configPathFor('global', opts.cwd, opts.home)
-      ? 'global' : 'project';
-    const initialState = env.configsByScope[resolvedScope]
-      ? deriveInitState(env.configsByScope[resolvedScope]!, resolvedScope, env.offered)
-      : { configScope: resolvedScope };
-    const initialStateByScope: Partial<Record<ConfigScope, InitState>> = {};
-    for (const scope of ['project', 'global'] as const) {
-      if (env.configsByScope[scope]) initialStateByScope[scope] = deriveInitState(env.configsByScope[scope]!, scope, env.offered);
-    }
-
-    const codexCredential = readChatGptOAuth(opts.home, 'codex');
-    const opencodeCredential = readOpencodeChatGptOAuth(opts.home);
-    const daysUntil = (expiresAt: number | undefined): number | null => expiresAt === undefined
-      ? null
-      : Math.floor((expiresAt * 1000 - Date.now()) / (24 * 60 * 60 * 1000));
-    const data: WizardData = {
-      home: opts.home,
-      harnesses: env.harnesses.map((h) => ({ name: h.name, installed: h.installed })),
-      providers: env.offered.map((p) => ({ key: p.key, harness: p.harness, provider: p.provider, count: p.count })),
-      candidates: env.allNativeCandidates.map((c) => ({ key: c.key, gateway: c.gateway, id: c.id, label: nativeLabel(c) })),
-      roles: [...KNOWN_ROLES],
-      byokProviders: env.byokProviders,
-      // Every offered gateway, not just the BYOK ones: the models step asks a
-      // gateway what it serves rather than trusting a harness snapshot, and
-      // that call has to authenticate. A gateway with no resolvable key simply
-      // keeps its harness list.
-      storedKeys: Object.fromEntries(
-        resolveKeys(
-          [...new Set([...env.byokProviders.map((provider) => provider.name), ...env.offered.map((p) => p.provider)])],
-          opts.home,
-        ).map((source) => [source.gateway, source.key]),
-      ),
-      credentialAvailability: credentialAvailabilityFor(
-        env.offered,
-        env.gatewayAuth,
-        {
-          codex: codexCredential === null ? null : { expiresInDays: daysUntil(codexCredential.expires_at) },
-          opencode: opencodeCredential === null ? null : { expiresInDays: daysUntil(opencodeCredential.expires_at) },
-          // Unlike the `oauthProviders` call above, this specifically reports
-          // whether *opencode's* token is importable — so it stays gated on
-          // exchangeability, not mere presence.
-          copilot: env.copilotUsable ? { expiresInDays: null } : null,
-        },
-        (gateway) => resolveKeys([gateway], opts.home)[0] !== undefined,
-      ),
-      gatewayAuth: Object.fromEntries(env.gatewayAuth),
-      gatewayBaseUrls: env.providerBaseUrls,
-      avoidGateways: avoidGatewaysFor(resolvedScope),
-      initialState,
-      initialStateByScope,
-    };
-    log.line(`wizard: offering ${data.providers.length} providers, ${data.candidates.length} models`);
-    const result = await runInitTui(data, (line) => log.line(line));
-    // Keys are recorded as the gateways they belong to, never as their value.
-    log.line(`wizard returned: cancelled=${result.cancelled} scope=${result.state.configScope} ` +
-      `providers=[${result.state.providerKeys ?? []}] models=[${result.state.nativeKeys ?? []}] ` +
-      `roles=[${result.state.roles ?? []}] keysEnteredFor=[${Object.keys(result.state.byokKeys ?? {})}]`);
+    const result = await interactiveState(env, opts, log, nativeByKey);
     if (result.cancelled) {
       out('  Nothing written.');
       return {
@@ -773,193 +645,37 @@ async function runInit(
         pruned: [], cancelled: true,
       };
     }
-
-    // Map result.state to the variables the write path needs:
-    configScope = result.state.configScope ?? 'project';
-    configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
-    // Custom providers added through the wizard: register their URL before
-    // adding BYOK candidates so validate() can exclude them from the
-    // unknown-providers check.
-    for (const provider of result.state.customProviders ?? []) {
-      byokUrls.set(provider.name, provider.url);
-    }
-    addByokCandidates(result.state.byokModels ?? {}, result.state.customWireFormats);
-    addLiveCandidates(result.state.liveModels ?? {});
-    byokKeys = result.state.byokKeys ?? {};
-    for (const gateway of Object.keys(byokKeys)) {
-      for (const [key, candidate] of nativeByKey) {
-        if (candidate.gateway !== gateway || candidate.auth === 'api-key') continue;
-        if (!Object.hasOwn(WELL_KNOWN_PROVIDER_URLS, gateway)) {
-          throw new Error(`sonata init: no API base URL is known for ${gateway}; cannot use an API key.`);
-        }
-        const baseUrl = WELL_KNOWN_PROVIDER_URLS[gateway];
-        nativeByKey.set(key, { ...candidate, baseUrl, auth: 'api-key' });
-      }
-    }
-    credentialSources = result.state.credentialSources ?? {};
-    nativeKeys = result.state.nativeKeys ?? [];
-    roles = result.state.roles ?? [...KNOWN_ROLES];
-    // Reconciled against the roles and models actually selected: the wizard's
-    // per-role map starts from the existing config, so iterating *it* rather
-    // than `roles` kept a role the user had just deselected.
-    const savedNativeKeys = initialStateByScope[configScope]?.nativeKeys ?? [];
-    chosenNative = nativeKeys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined);
-    nativeRoleModels = Object.fromEntries(
-      Object.entries(reconcilePerRoleModels(result.state.perRoleModels, savedNativeKeys, nativeKeys, roles))
-        .map(([role, keys]) => [
-          role,
-          keys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined),
-        ]),
-    );
-
-    // Validate interactive path state (after customProviders are registered
-    // so the unknown-providers check skips them).
-    const state: InitState = {
-      configScope,
-      providerKeys: result.state.providerKeys ?? [],
-      nativeKeys,
-      roles,
-      credentialSources,
-      routing: result.state.routing ?? 'project',
-      customProviders: result.state.customProviders,
-    };
-    const problems = validate(env, state, { nativeByKey });
-    if (problems.length > 0) throw new Error(problems[0].message);
-
-    // Build stateForPlan for interactive branch
-    stateForPlan = {
-      configScope,
-      providerKeys: result.state.providerKeys ?? [],
-      nativeKeys,
-      roles,
-      credentialSources,
-      routing: result.state.routing ?? 'project',
-      hookScope: result.state.hookScope ?? 'project',
-      customProviders: result.state.customProviders,
-      byokModels: result.state.byokModels,
-      liveModels: result.state.liveModels,
-      customWireFormats: result.state.customWireFormats,
-      byokKeys: result.state.byokKeys,
-      tiers: result.state.tiers,
-    };
+    stateForPlan = result.state;
   } else {
-    // ---- flag-driven (non-interactive) path -----------------------------
-    configScope = opts.configScope ?? 'project';
-    configPathResolved = configPathFor(configScope, opts.cwd, opts.home);
-    configText = existsSync(configPathResolved) ? readFileSync(configPathResolved, 'utf8') : '';
-    const parsedConfig = env.configsByScope[configScope];
-    ticked = preTickedNative(configText, env.allNativeCandidates);
-    const d = parsedConfig ? deriveInitState(parsedConfig, configScope, env.offered) : { configScope };
-    credentialSources = {
-      ...d.credentialSources,
-      ...parseCredentialSourceFlags(opts.credentialSource ?? []),
-    };
+    stateForPlan = scriptedState(env, opts, nativeByKey);
+  }
 
-    // BYOK is opt-in. The default is "everything on offer", and BYOK rows are
-    // now on offer — so without this, a plain `--yes` with no --providers asks
-    // for a key for all thirty well-known providers and refuses. Only an
-    // explicit `--providers byok/x`, or a config that already names one,
-    // engages BYOK here.
-    providerKeys = opts.providers ?? d.providerKeys
-      ?? env.offered.filter((p) => p.harness !== 'byok').map((p) => p.key);
+  // The OAuth check below iterates `chosenNative`; both front ends
+  // validate-by-throwing on unknown model ids, so every selected key is
+  // present in `nativeByKey` here. `nativeRoleModels` is recomputed against
+  // the existing config for the chosen scope, so a role the user just
+  // deselected isn't kept around by a stale per-role map.
+  const configScope = stateForPlan.configScope ?? 'project';
+  const previousState = env.configsByScope[configScope]
+    ? deriveInitState(env.configsByScope[configScope]!, configScope, env.offered)
+    : undefined;
+  const savedNativeKeys = previousState?.nativeKeys ?? [];
+  const previousPerRoleModels = previousState?.perRoleModels;
+  const nativeKeys = stateForPlan.nativeKeys ?? [];
+  const roles = stateForPlan.roles ?? [...KNOWN_ROLES];
+  const credentialSources = stateForPlan.credentialSources ?? {};
+  const byokKeys = stateForPlan.byokKeys ?? {};
+  const chosenNative: NativeCandidate[] = nativeKeys
+    .map((k) => nativeByKey.get(k))
+    .filter((k): k is NativeCandidate => k !== undefined);
+  const nativeRoleModels: Record<string, NativeCandidate[]> = Object.fromEntries(
+    Object.entries(reconcilePerRoleModels(previousPerRoleModels, savedNativeKeys, nativeKeys, roles))
+      .map(([role, keys]) => [
+        role,
+        keys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined),
+      ]),
+  );
 
-    // Scope native candidates to the selected providers.
-    const selectedProviders = new Set(providerKeys.map((k) => k.split('/')[1] ?? k));
-    inScopeNative = env.allNativeCandidates.filter((c) => selectedProviders.has(c.gateway));
-
-    // A BYOK provider has no local catalogue, so each --models entry is taken
-    // as a raw model id. Validating it would mean a network call, and a scripted
-    // path must not depend on one.
-    const byokSelected = providerKeys
-      .map(byokProviderName)
-      .filter((name): name is string => name !== undefined);
-
-    // Parse BYOK model ids from opts.models so we can add candidates to
-    // nativeByKey BEFORE calling validate. This lets validate's unknown-model
-    // check see the BYOK models. The missing-key check itself (which needs
-    // home) stays after validate so the unknown-providers check runs first,
-    // matching the original --yes branch order where unknown-providers was
-    // checked before the BYOK missing-key throw.
-    const byokModels: Record<string, string[]> = {};
-    for (const name of byokSelected) {
-      const prefix = `${name}-`;
-      byokModels[name] = (opts.models ?? [])
-        .filter((key) => key.startsWith(prefix))
-        .map((key) => key.slice(prefix.length));
-    }
-    if (byokSelected.length > 0) {
-      addByokCandidates(byokModels);
-      inScopeNative = [
-        ...inScopeNative,
-        ...Object.values(byokModels).flat().length === 0 ? [] : byokSelected.flatMap((name) =>
-          byokModels[name].map((id) => nativeByKey.get(byokCandidateKey(name, id))!)),
-      ];
-    }
-
-    nativeKeys = opts.models ?? d.nativeKeys ?? inScopeNative.filter((c) => ticked.has(c.key)).map((c) => c.key);
-    const inScopeNativeByKey = new Map(inScopeNative.map((c) => [c.key, c]));
-    chosenNative = nativeKeys.map((k) => inScopeNativeByKey.get(k)!);
-
-    roles = opts.roles ?? d.roles ?? [...KNOWN_ROLES];
-
-    // Build state for validation
-    const state = {
-      configScope,
-      providerKeys,
-      nativeKeys,
-      roles,
-      credentialSources,
-      routing: opts.routing ?? 'project',
-    };
-    const problems = validate(env, state, { nativeByKey });
-    if (problems.length > 0) throw new Error(problems[0].message);
-
-    // BYOK missing-key check needs home — keep it here (after validation so unknown providers are caught first)
-    if (byokSelected.length > 0) {
-      const stored = new Set(resolveKeys(byokSelected, opts.home).map((source) => source.gateway));
-      const missing = byokSelected.filter((name) => !stored.has(name));
-      if (missing.length > 0) {
-        throw new Error(
-          `sonata init: no key for ${missing.join(', ')}. ` +
-          `Store it first: ${missing.map((name) => `sonata auth add ${name}`).join('; ')}`,
-        );
-      }
-    }
-
-    // Unknown model check (needs inScopeNativeByKey which is built after BYOK candidates added)
-    const unknown = nativeKeys.filter((k) => !inScopeNativeByKey.has(k));
-    if (unknown.length > 0) {
-      throw new Error(
-        `sonata init: the selected providers do not offer ${unknown.join(', ')}. ` +
-        `Available: ${[...inScopeNativeByKey.keys()].join(', ')}`,
-      );
-    }
-
-    nativeRoleModels = Object.fromEntries(
-      Object.entries(reconcilePerRoleModels(d.perRoleModels, d.nativeKeys ?? [], nativeKeys, roles))
-        .map(([role, keys]) => [
-          role,
-          keys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined),
-        ]),
-    );
-
-  // Build stateForPlan for non-interactive branch
-  stateForPlan = {
-    configScope,
-    providerKeys,
-    nativeKeys,
-    roles,
-    credentialSources,
-    routing: opts.routing ?? 'project',
-    hookScope: opts.scope ?? 'project',
-    customProviders: undefined,
-    byokModels,
-    liveModels: {},
-    customWireFormats: {},
-    byokKeys: {},
-    tiers: d.tiers,
-  };
-}
 
   // A gateway pinned to credential_source = "sonata" with an OAuth auth type
   // needs a credential sonata itself minted (via `sonata auth login`), and the
