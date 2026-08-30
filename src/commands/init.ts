@@ -12,7 +12,7 @@
  * (`migrateLegacyConfig`, `src/normalize.ts`) rather than left behind or
  * silently dropped.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   KNOWN_ROLES, configPath, GLOBAL_CONFIG_RELATIVE, parseConfig,
@@ -31,11 +31,8 @@ import {
   settingsPath, readSettings, writeSettings, installHook, allowSonataTools,
   hookInstalled, hookCommand, type HookScope,
 } from '../settings.js';
-import { pruneAgents } from '../detect.js';
-import { cmdSync } from './sync.js';
-import { cmdRoute } from './route.js';
 import { select, confirm, isInteractive, banner, CancelledError } from '../tui.js';
-import { keyReport, resolveKeyFromSource, resolveKeys, writeSonataKey } from '../native/credentials.js';
+import { keyReport, resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
 import { byokCandidateKey, wellKnownProviders } from '../native/models.js';
 import { migrateLegacyConfig } from '../normalize.js';
 import { byokProviderKey, byokProviderName, type AvailableCredentials } from '../tui-ink/app-state.js';
@@ -45,6 +42,7 @@ import { nativeTomlFor } from '../init/toml.js';
 import { discover, type InitEnvironment } from '../init/discover.js';
 import { validate } from '../init/validate.js';
 import { plan, fsCredentialProbe, type InitPlan } from '../init/plan.js';
+import { apply } from '../init/apply.js';
 
 export { nativeTomlFor } from '../init/toml.js';
 import type { WizardData } from '../tui-ink/app.js';
@@ -1003,91 +1001,21 @@ async function runInit(
   }
 
   // ---- write ------------------------------------------------------------
-  // Keys typed in the wizard are stored here and nowhere earlier: a cancelled
-  // run must leave no credential behind. The gateway is printed, never the key.
-  for (const [gateway, key] of Object.entries(byokKeys)) {
-    writeSonataKey(opts.home, gateway, key);
-    out(`  ✓ stored the key for ${gateway}`);
-  }
+  // Resolve the allow-list scope and attach the wizard's BYOK keys to the
+  // plan before handing it to `apply`. Both belong in the plan: the former
+  // because the MCP-era upgrade path needs `env.existingHookScope`, which
+  // `apply` does not see, and the latter because the wizard collects them
+  // and they must reach the write phase without `runInit` having to keep
+  // them in a local.
+  const allowListScope = initPlan.hook.allowListScope
+    ?? (initPlan.hook.scope !== 'skip' ? initPlan.hook.scope : env.existingHookScope);
+  initPlan.hook.allowListScope = allowListScope;
+  initPlan.keysToStore = Object.entries(byokKeys).map(([gateway, key]) => ({ gateway, key }));
 
-  mkdirSync(dirname(initPlan.configPath), { recursive: true });
-  writeFileSync(initPlan.configPath, initPlan.configToml);
-  out(`  ✓ wrote ${initPlan.configPath}`);
-
-  let hookChanged = false;
-  // Refresh the allow-list at whichever scope the hook actually lives in —
-  // scope !== 'skip' for a fresh install, or existingHookScope when it was
-  // already there (an upgrade from the MCP-based release otherwise keeps
-  // its old mcp__sonata__* entries forever, since "hook already installed"
-  // used to mean skipping this whole block).
-  const allowListScope = initPlan.hook.allowListScope ?? (initPlan.hook.scope !== 'skip' ? initPlan.hook.scope : env.existingHookScope);
-  if (allowListScope !== undefined && allowListScope !== 'skip') {
-    const path = settingsPath(allowListScope, opts.cwd, opts.home);
-    const cmd = hookCommand(opts.packageRoot);
-    const withHook = initPlan.hook.scope !== 'skip'
-      ? installHook(readSettings(path), cmd)
-      : { settings: readSettings(path), changed: false };
-    const withAllow = allowSonataTools(withHook.settings);
-    if (withHook.changed || withAllow.changed) writeSettings(path, withAllow.settings);
-    hookChanged = withHook.changed;
-    if (initPlan.hook.scope !== 'skip') {
-      out(withHook.changed ? `  ✓ installed hook in ${path}` : `  · hook already present in ${path}`);
-    }
-    out(withAllow.changed
-      ? `  ✓ allow-listed the sonata tools in ${path}`
-      : `  · sonata tools already allow-listed in ${path}`);
-  }
-
-  mkdirSync(dirname(initPlan.skillPath), { recursive: true });
-  const packageSkill = join(opts.packageRoot, 'skills', 'loop', 'SKILL.md');
-  const skillSource = existsSync(packageSkill)
-    ? packageSkill
-    : join(process.cwd(), 'skills', 'loop', 'SKILL.md');
-  writeFileSync(initPlan.skillPath, readFileSync(skillSource));
-  out(`  ✓ installed loop skill in ${initPlan.skillPath}`);
-
-  if (initPlan.routing !== 'skip') {
-    await cmdRoute('auto', {
-      cwd: opts.cwd,
-      home: opts.home,
-      packageRoot: opts.packageRoot,
-      scope: initPlan.routing,
-    });
-    out(`  ✓ configured sonata route auto${initPlan.routing === 'global' ? ' --global' : ''}`);
-  }
-
-  const sync = cmdSync({ cwd: initPlan.syncCwd, home: opts.home, agentsDir: initPlan.agentsDir });
-  const agentsWritten = sync.written;
-  out(`  ✓ generated ${agentsWritten.length} agents in ${initPlan.agentsDir}`);
-
-
-  if (sync.skipped.length > 0) {
-    out('');
-    out(`  ! ${sync.skipped.length} existing agent file(s) were NOT overwritten (not sonata-generated):`);
-    for (const f of sync.skipped.slice(0, 5)) out(`      ${f}`);
-    if (sync.skipped.length > 5) out(`      … and ${sync.skipped.length - 5} more`);
-  }
-
-  const stale = sync.stale;
-  let pruned: string[] = [];
-  if (stale.length > 0) {
-    out('');
-    out(`  ! ${stale.length} stale agent file(s) no longer in your config:`);
-    for (const f of stale.slice(0, 5)) out(`      ${f}`);
-    if (stale.length > 5) out(`      … and ${stale.length - 5} more`);
-    const remove = opts.prune ?? (interactive && await confirm('Delete them?', true));
-    if (remove) {
-      pruned = pruneAgents(initPlan.agentsDir, stale);
-      out(`  ✓ removed ${pruned.length} stale agent file(s)`);
-    } else {
-      out('      ❯ delete them by hand, or re-run with --prune');
-    }
-  }
-
-  out('');
-  out('  Done. Run /reload-plugins to pick up the new agents.');
-  out('  Native sessions: run `sonata code`, or `sonata route on` to route plain claude sessions.');
-  out('');
+  const { agentsWritten, pruned, hookChanged } = await apply(initPlan, opts, {
+    out,
+    prune: opts.prune ?? (interactive ? async () => confirm('Delete them?', true) : false),
+  });
 
   return {
     problems: env.problems, models: initPlan.nativeKeys, roles: initPlan.roles, scope: initPlan.hook.scope, routing: initPlan.routing, hookChanged, agentsWritten,
