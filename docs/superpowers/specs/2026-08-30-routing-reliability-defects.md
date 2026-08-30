@@ -99,11 +99,51 @@ consults it for the Remote Control gate. Routing is switched on by
 `.sonata/route-subagents.json` so a sibling finishing cannot un-route a running
 subagent.
 
+Two distinct mechanisms can leave a subagent id in that file, and either one
+alone is enough to keep the count above zero. They differ in how ordinary they
+are.
+
 **A subagent that dies without firing `SubagentStop` leaves its id in that
 file.** The running count then never returns to zero, `route off` never fires,
 and `ANTHROPIC_BASE_URL` stays in `.claude/settings.local.json` indefinitely.
 Every session launched in that project afterwards inherits it and loses Remote
 Control — including sessions that never dispatch a foreign-model agent at all.
+
+**A healthy, cleanly-exiting subagent can leak its id too.** The writer and
+the cleaner of `route-subagents.json` default to different scopes:
+
+```ts
+src/commands/route.ts:636   writeSessions(routeSubagentsFile(opts.cwd, opts.scope ?? 'project', opts.home), [])
+src/commands/route.ts:756   const registry = routeSubagentsFile(opts.cwd, opts.scope ?? 'global', opts.home)
+```
+
+Line 636 is `cmdRouteSession('end')` clearing the registry on the last session
+out. Line 756 is `cmdRouteSubagent` writing it on every `SubagentStart` and
+`SubagentStop`. Same kind of file, **opposite defaults** — `'project'` versus
+`'global'`. When a caller omits `scope`, those resolve to two different
+files: the registry that receives subagent ids is never the one that gets
+cleared, so ids accumulate in it permanently and routing stays pinned on.
+**It is the `opts.scope ?? ...` defaulting that diverges, not the function
+itself** — a caller passing an explicit scope is consistent between the two
+sites, and the test suite (e.g. `tests/commands/route.test.ts:686-688`) only
+ever passes an explicit `scope: 'global'`, so the regression is invisible
+under the existing tests. The production CLI (`src/cli.ts:597`) also assigns
+`scope` from the `--global` flag before reaching either function, so the
+defaulted path is not reached from a normal `sonata route auto` install
+today. The trap is latent: a future caller that calls either function
+directly without a `scope` lands on the wrong file, and the same trap is
+re-introduced at any new site that defaults internally. It is plausibly
+contributing to the leak observed while this branch was developed — nine
+stale ids were found in a project-scoped registry with zero running
+subagents — but with the present CLI it is not the only explanation the
+field data can support.
+
+This weakens the framing the document started with: the leak was described
+as a consequence of abnormal termination, and this shows a normal, healthy
+subagent can leak too. The two mechanisms are additive — either one alone is
+enough to leave a positive count behind — and a fix that targets only the
+killed-subagent case leaves the defaulting path able to re-pin routing
+unobserved.
 
 This is already documented as the safe failure direction, and it is: losing
 Remote Control is visible at launch, whereas silently demoting a foreign-model
@@ -136,6 +176,27 @@ stop hook.
 
 ### What to consider
 
+- **One canonical scope resolution must reach every registry path.** Today
+  the writer and the cleaner of `route-subagents.json` default to different
+  scopes (lines 636 and 756), and any shared clear helper (the subject of
+  the deadlock constraint below) must take that resolved scope as an
+  argument rather than defaulting internally — otherwise the helper
+  re-introduces exactly this bug at a new site. The same `opts.scope ??`
+  pattern appears at `src/commands/route.ts:471, 587, 636, 723, 756`, and
+  the disagreement between them is the latent trap. The fix is a single
+  resolution — `cmdRoute`, `cmdRouteSession`, `cmdRouteSubagent` and
+  `cmdRoute('off')` all share one computed scope, the registry file
+  computed from it, and any helper is invoked with that file as an
+  argument. Tests must cover the *defaulted* path, not the explicit-scope
+  one: the existing test suite only ever passes `scope: 'global'`
+  explicitly (`tests/commands/route.test.ts:686-688`), which is why the
+  disagreement is invisible to it. A regression test that calls
+  `cmdRouteSession('end', ...)` and `cmdRouteSubagent('start', ...)` with
+  no `scope` field, and asserts the two write to the same file, would
+  catch a future re-defaulting. The test is the only thing that makes
+  the latent trap live — without it, any refactor that moves a
+  `?? 'project'` or `?? 'global'` literal around can reintroduce the
+  divergence without the suite noticing.
 - `route off` should clear `route-subagents.json` as well as
   `route-sessions.json` — it is the documented recovery and currently does not
   recover. This is the narrow, safe change: no liveness knowledge required,
