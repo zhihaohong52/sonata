@@ -5,6 +5,7 @@ import type { InitState } from '../tui-ink/types.js';
 import type { NativeCandidate } from './helpers.js';
 import type { CredentialSource } from '../config.js';
 import type { NativeGatewayAuth } from '../config.js';
+import { tierAgentNames } from '../config.js';
 import { loadAaCatalog, proposeTiers } from '../catalog.js';
 import { nativeTomlFor } from './toml.js';
 import { reconcilePerRoleModels, reconcileTierList, gatewayNamesOf, avoidedKeysOf } from './helpers.js';
@@ -193,19 +194,30 @@ export function plan(
       continue;
     }
 
+    // A key typed in this run is still only in memory — `apply` writes it, and
+    // `keyReport` reads the disk, so it cannot see one yet. Reporting it
+    // missing contradicted the `✓ stored the key for <gateway>` line `apply`
+    // prints seconds later, and sent the user to `sonata auth add` for a key
+    // they had just entered.
+    const entered = state.byokKeys?.[gateway] !== undefined;
     const auto = autoSources.get(gateway) ?? null;
-    notices.push(auto
-      ? `  ✓ ${gateway}: key from ${auto}`
-      : `  ! ${gateway}: no key — run \`sonata auth add ${gateway}\``);
+    notices.push(entered
+      ? `  ✓ ${gateway}: key entered in this run`
+      : auto
+        ? `  ✓ ${gateway}: key from ${auto}`
+        : `  ! ${gateway}: no key — run \`sonata auth add ${gateway}\``);
   }
 
   // ---- summary ----
-  const totalAgents = Object.values(nativeRoleModels).reduce((n, m) => n + m.length, 0);
+  // Counted with the same rule `sync` writes by (`tierAgentNames`), not by
+  // roles × models: a role whose `simple` and `complex` lists match collapses
+  // to one file, so the old count promised 8 files and `sync` then wrote 4.
+  const totalAgents = tierAgentNames(tiers).length;
   const summary: string[] = [
     '  Summary',
     `    models  ${chosenNative.map((c) => `${c.gateway}/${c.id}`).join(', ')}`,
     `    roles   ${roles.join(', ')}`,
-    `    agents  ${totalAgents} files in .claude/agents/`,
+    `    agents  ${totalAgents} file${totalAgents === 1 ? '' : 's'} in .claude/agents/`,
     `    hook    ${state.hookScope === 'skip' ? 'not installed' : `${state.hookScope} settings.json`}`,
     `    routing ${state.routing === 'skip' ? 'not configured' : `sonata route auto${state.routing === 'global' ? ' --global' : ''}`}`,
     `    config  ${configPathResolved}`,

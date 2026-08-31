@@ -82,8 +82,16 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
           </Text>
         );
       })}
+      {/*
+        `enter` is ignored while nothing is ranked, so without this line the
+        screen just sits there against a footer promising "enter confirm" —
+        indistinguishable from a hang.
+      */}
+      {state.ranked.length === 0 && (
+        <Text color="yellow">Select at least one model — space toggles, and the order you pick is the fallback order.</Text>
+      )}
       <Text dimColor>
-        {`space toggle · [ ] rank · enter confirm${onBack ? ' · ← back' : ''}${onCancel ? ' · esc cancel' : ''}`}
+        {`↑↓ choose · space toggle · [ or ] to reorder · enter confirm${onBack ? ' · ← back' : ''}${onCancel ? ' · esc cancel' : ''}`}
       </Text>
       {footer !== undefined && <Text dimColor>{footer}</Text>}
     </Box>

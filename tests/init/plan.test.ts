@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseConfig } from '../../src/config.js';
+import { parseConfig, tierAgentNames } from '../../src/config.js';
 import { plan, type CredentialProbe } from '../../src/init/plan.js';
 import type { InitEnvironment } from '../../src/init/discover.js';
 
@@ -67,10 +67,50 @@ describe('plan — the config it emits', () => {
   });
 });
 
+describe('plan — the agent count it promises', () => {
+  // The summary is the one screen whose job is to say what is about to be
+  // written, and it counted roles × models — a rule `sync` does not use. A role
+  // whose `simple` and `complex` lists match collapses to a single file, so a
+  // two-model, four-role config was promised 8 files and given 4. Assert the
+  // invariant rather than a literal: the promise must equal what `sync`'s own
+  // rule yields for the very config this plan emits.
+  const promisedAgentCount = (summary: string[]): number => {
+    const line = summary.find((l) => l.includes('in .claude/agents/'));
+    return Number(/agents\s+(\d+) file/.exec(line ?? '')?.[1]);
+  };
+
+  for (const [name, tiers] of [
+    ['tiers that collapse', { code: { simple: ['acme-fast', 'flaky-slow'], complex: ['acme-fast', 'flaky-slow'] } }],
+    ['tiers as the fixture reconciles them', state.tiers],
+  ] as const) {
+    it(`promises exactly what sync will write, for ${name}`, () => {
+      const p = plan(env(), { ...state, tiers }, noCredentials, opts);
+      const written = tierAgentNames(parseConfig(p.configToml).tiers!);
+      expect(promisedAgentCount(p.summary)).toBe(written.length);
+    });
+  }
+
+  it('says "1 file" rather than "1 files"', () => {
+    const collapsed = { code: { simple: ['acme-fast', 'flaky-slow'], complex: ['acme-fast', 'flaky-slow'] } };
+    const p = plan(env(), { ...state, tiers: collapsed }, noCredentials, opts);
+    expect(p.summary).toContain('    agents  1 file in .claude/agents/');
+  });
+});
+
 describe('plan — the key-check notices', () => {
   it('names the sonata repair path for a gateway with no key', () => {
     const p = plan(env(), state, noCredentials, opts);
     expect(p.notices).toContain('  ! acme: no key — run `sonata auth add acme`');
+  });
+
+  it('does not report a gateway as keyless when the wizard just took its key', () => {
+    // The key is still only in memory at plan time — `apply` writes it — so a
+    // disk probe cannot see it. Reporting it missing contradicted the
+    // `✓ stored the key for acme` line printed moments later, and sent the
+    // user to `sonata auth add` for a key they had just typed.
+    const p = plan(env(), { ...state, byokKeys: { acme: 'sk-typed-in-the-wizard' } }, noCredentials, opts);
+    expect(p.notices).toContain('  ✓ acme: key entered in this run');
+    expect(p.notices).not.toContain('  ! acme: no key — run `sonata auth add acme`');
   });
 
   it('reports the pinned source rather than automatic precedence', () => {

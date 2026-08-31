@@ -138,7 +138,12 @@ async function runInit(
 
   log.line(`hook scope resolved: ${initPlan.hook.scope}`);
   if (interactive) log.line('prompting for write confirmation');
-  if (interactive && !(await confirm('Write these changes?', true))) {
+  // `confirm` draws in the alternate screen buffer (`[?1049h`, `src/tui.ts`),
+  // which hides everything printed before it — so the question appeared alone on
+  // a cleared screen, asking the user to approve a summary they could no longer
+  // read. The prompt has to carry its own copy of what it is asking about.
+  const writeQuestion = [...initPlan.summary, 'Write these changes?'].join('\n');
+  if (interactive && !(await confirm(writeQuestion, true))) {
     out('  Nothing written.');
     return cancelledResult(env.problems, chosen.state, opts);
   }

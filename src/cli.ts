@@ -418,8 +418,12 @@ export async function main(argv: string[]): Promise<number> {
       console.log(JSON.stringify(report, null, 2));
       return 0;
     }
+    // Widen to the longest label rather than a fixed 30: a model key like
+    // `openrouter-nemotron-3.5-lightning` overruns that, and every number on
+    // its row then shifts out of its column.
+    const labelWidth = Math.max(0, ...report.buckets.map((bucket) => bucket.label.length));
     for (const bucket of report.buckets) {
-      console.log(`${bucket.label.padEnd(30)} ${String(bucket.requests).padStart(8)} ${String(bucket.input).padStart(12)} ${String(bucket.output).padStart(10)}  ${bucket.costUsd === 0 && bucket.unpricedRequests === bucket.requests ? '—' : `$${bucket.costUsd.toFixed(4)}`}`);
+      console.log(`${bucket.label.padEnd(labelWidth)} ${String(bucket.requests).padStart(8)} ${String(bucket.input).padStart(12)} ${String(bucket.output).padStart(10)}  ${bucket.costUsd === 0 && bucket.unpricedRequests === bucket.requests ? '—' : `$${bucket.costUsd.toFixed(4)}`}`);
     }
     console.log(`\npriced total   $${report.pricedTotalUsd.toFixed(4)}`);
     if (report.unpriced.requests > 0) {
