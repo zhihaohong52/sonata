@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, flattenSystemBlocks, requestedModel, withModel, clearCooldowns } from '../../src/native/router.js';
+import { routeRequest, flattenSystemBlocks, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD } from '../../src/native/router.js';
 
 function fakeFetch(record: any[]) {
   return async (url: string, init: any) => {
@@ -122,6 +122,120 @@ describe('tier alias routing', () => {
     // second request inside the cooldown skips flash entirely
     await routeRequest(req('sonata-code-simple'), deps);
     expect(seen).toEqual(['flash', 'luna', 'luna']);
+  });
+
+  // ── Defect A: a repeating capability 400 must cool the candidate down ──
+  //
+  // `google-gemini-3.7-flash` rejects every multi-turn tool-use request with
+  // "Function call is missing a thought_signature in functionCall parts".
+  // 400 was not a cooldown trigger, so such a model became an ABSORBING state:
+  // permanently first among non-cooling candidates, killing every agent that
+  // reached it. Measured live 2026-08-30 — four consecutive requests went to
+  // the same broken model and retrying could never have recovered.
+  const THOUGHT_SIG_400 = JSON.stringify({
+    error: { message: 'Function call is missing a thought_signature in functionCall parts' },
+  });
+
+  const bodyText = async (body: AsyncIterable<Uint8Array> | Buffer): Promise<string> => {
+    if (Buffer.isBuffer(body)) return body.toString();
+    const chunks: Buffer[] = [];
+    for await (const c of body) chunks.push(Buffer.from(c));
+    return Buffer.concat(chunks).toString();
+  };
+
+  it('returns a one-off capability 400 to the caller, body intact', async () => {
+    // Below the threshold the 400 is the caller's answer, and they must be able
+    // to READ it — the fingerprinting path buffers the body to inspect it, so a
+    // naive implementation hands back an already-drained stream and the user
+    // sees an empty error.
+    const seen: string[] = [];
+    const res = await routeRequest(req('sonata-code-simple'), {
+      fetch: (async (_url: string, init: RequestInit) => {
+        seen.push((JSON.parse(init.body as string) as { model: string }).model);
+        return new Response(THOUGHT_SIG_400, { status: 400 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    });
+    expect(res.status).toBe(400);
+    expect(await bodyText(res.body)).toBe(THOUGHT_SIG_400);
+    expect(seen).toEqual(['flash']);
+  });
+
+  it('returns a 400 the fingerprint does not match, and never counts it', async () => {
+    // The counter must separate "this request was malformed" from "this
+    // candidate cannot serve requests of this shape". A bare count of 400s
+    // would cool a healthy candidate whenever a caller sends a bad request.
+    const other = JSON.stringify({ error: { message: 'messages: text content blocks must be non-empty' } });
+    const seen: string[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        seen.push((JSON.parse(init.body as string) as { model: string }).model);
+        return new Response(other, { status: 400 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    };
+    for (let i = 0; i < TIER_CAPABILITY_400_THRESHOLD + 2; i++) {
+      const res = await routeRequest(req('sonata-code-simple'), deps);
+      expect(res.status).toBe(400);
+      expect(await bodyText(res.body)).toBe(other);
+    }
+    // every request still went to flash — no cooldown was ever recorded
+    expect(new Set(seen)).toEqual(new Set(['flash']));
+  });
+
+  it('cools the candidate and falls through once the same capability 400 repeats', async () => {
+    const seen: string[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return model === 'flash'
+          ? new Response(THOUGHT_SIG_400, { status: 400 })
+          : new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    };
+    // Below the threshold the 400 is returned as the answer.
+    for (let i = 0; i < TIER_CAPABILITY_400_THRESHOLD - 1; i++) {
+      expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(400);
+    }
+    // At the threshold the candidate is cooled and the next one serves.
+    expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
+    expect(seen[seen.length - 1]).toBe('luna');
+    // And it stays cooled: a later request skips flash entirely.
+    seen.length = 0;
+    expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
+    expect(seen).toEqual(['luna']);
+  });
+
+  it('resets the count when the candidate serves a request successfully', async () => {
+    // A model that intermittently 400s must not accumulate toward a cooldown
+    // across unrelated successes — otherwise a healthy candidate is eventually
+    // cooled by noise spread over hours.
+    let fail = true;
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        if (model !== 'flash') return new Response('{}', { status: 200 });
+        return fail
+          ? new Response(THOUGHT_SIG_400, { status: 400 })
+          : new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    };
+    for (let i = 0; i < TIER_CAPABILITY_400_THRESHOLD - 1; i++) {
+      expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(400);
+    }
+    fail = false;
+    expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
+    fail = true;
+    // The count restarted, so this is again below the threshold: a 400, not a
+    // fallthrough to luna.
+    expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(400);
   });
 
   it('falls back when fetch throws (connect error)', async () => {
