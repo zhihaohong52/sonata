@@ -30,7 +30,31 @@ npm test           # vitest run (1177 tests; needs tmux — runs against a fake 
 npm run dev        # tsx src/cli.ts
 
 npm link           # puts `sonata` on your PATH (until published to npm)
+
+npm run release -- 0.4.0   # promote [Unreleased] → a dated section, bump the
+                           # manifest + lock, commit `chore(release): v0.4.0`,
+                           # annotate the tag. Pushes nothing.
+git push --follow-tags     # this is what publishes: the tag fires release.yml
 ```
+
+**Releases are prepared locally and published by the tag.** Changelog entries
+accumulate under `## [Unreleased]` while the work is fresh, rather than being
+reconstructed at release time from `git log` — the moment you are least able
+to say why a change mattered. `scripts/release.mjs` promotes that section and
+refuses an absent or empty one, because `release.yml` reads the GitHub Release
+body straight back out of `CHANGELOG.md`. The workflow re-runs the same
+composite action CI does (`.github/actions/verify`) — one definition, since a
+release path that has quietly stopped matching the path gating merges is worth
+nothing — and refuses outright if the tag and `package.json` disagree.
+
+**Publishing uses npm trusted publishing (OIDC), so no npm token is stored in
+repository secrets.** That has a bootstrap consequence worth knowing before
+the first release: npm cannot attach a trusted publisher to a package that
+does not exist, so version one must be published by hand
+(`npm publish --access public`) and OIDC configured afterwards. This is also
+why `publishConfig` sets `access` but **not** `provenance` — provenance needs
+CI's OIDC token, and setting it in the manifest would break exactly that
+manual bootstrap.
 
 The CLI (after `npm link`):
 - `sonata init` — set up sonata (interactive wizard; asks the config scope, then providers, models, roles, per-role models, then ranks each role's selected models into `simple`/`complex` tiers — pre-sorted from a cached Artificial Analysis catalog when one exists, else built-in defaults. Left goes back a screen, skipping any answered by a flag; `A` on a ranking screen confirms it **and every screen after it** with the ranking each would have opened on — a tier screen per role × tier means four roles cost eight near-identical confirmations, and `acceptRemainingTiers` (`src/tui-ink/app-state.ts`) applies `seededRankingFor` so the result is indistinguishable from pressing enter through the rest, verified by writing a byte-identical `sonata.toml`. **Seeding alone is not that answer**, which is what made the first version of this wrong: `tierPickerKeys` withholds a key that has a native route but whose provider is deselected this session, and `RankedSelect` drops any seeded value missing from its rows — so confirming a screen writes the tier *without* that key, while bulk acceptance skipped the component and kept it. `seededRankingFor` reproduces both steps; writes `[models]`+`[tiers]`, generates one agent per role × tier, offers the permission hook, installs the `sonata-loop` skill, offers `sonata route auto`). A config still in the older `[generate.roles]`/`[generate.native]` shape is migrated automatically (`migrateLegacyConfig`, `src/normalize.ts`). Unattended flags: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope project|global`, `--scope project|global|skip`, `--routing project|global|skip`, `--prune`

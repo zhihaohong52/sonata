@@ -6,6 +6,51 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/) informally
 (pre-1.0, so minor bumps can carry breaking changes).
 
+## [Unreleased]
+
+### Added
+- `sonata init`'s tier screens take `A` to accept the ranking every remaining
+  screen would have opened with, so four roles no longer cost eight
+  near-identical confirmations. It is not a shortcut past the picker: it
+  applies the same seed-then-filter the screen itself applies, so a model
+  whose provider is deselected is dropped exactly as confirming would drop it.
+- `npm run release -- <version>` prepares the release commit and its tag from
+  the `[Unreleased]` section above, and `release.yml` publishes on the pushed
+  tag using npm trusted publishing (OIDC) with provenance — no long-lived
+  token in repository secrets.
+
+### Changed
+- `src/commands/init.ts` went from 1502 lines to 184, decomposed into a
+  pipeline under `src/init/` (discover → interactive/scripted state → validate
+  → plan → apply). Every write is expressed as one `InitPlan` value and all
+  I/O is confined to `apply`, so what the wizard is about to do can be
+  inspected without performing it.
+- `sonata doctor` now says *why* tier routing is not detected rather than only
+  what to run. Five states printed one sentence naming the fix; the one that
+  bit in practice was hooks belonging to a *different* sonata install, where
+  the advice was to run the command that was already correctly applied.
+
+### Fixed
+- `sonata init`'s confirm summary counted agent files as roles × models, a
+  rule `sonata sync` does not use — a four-role config on two models was
+  promised 8 files and given 4, on the one screen whose purpose is to say what
+  is about to be written. `tiersCollapse` is now the single definition shared
+  by the code that writes the files, routes to them, and counts them.
+- A gateway whose API key was typed during `sonata init` was reported as
+  having none, immediately above the line confirming the key had been stored.
+- The models step could not be used at the size it reaches in practice: the
+  picker filters as you type and shows a `Filter:` field, but its footer never
+  said so, and on a 396-model list that is the difference between a usable
+  list and an unusable one. It now also shows how many are selected, and
+  labels the bulk toggle with what it will act on.
+- Confirming a tier screen with nothing selected did nothing at all, against a
+  footer promising `enter confirm` — indistinguishable from a hang.
+- `Write these changes?` was asked on a cleared screen, because the prompt
+  draws in the alternate screen buffer and hid the summary printed just above
+  it. The prompt now carries its own copy of what it is asking about.
+- `sonata usage` printed a nameless row for requests that never resolved a
+  model, and misaligned every column once a model key exceeded 30 characters.
+
 ## [0.3.4] - 2026-08-29
 
 ### Fixed

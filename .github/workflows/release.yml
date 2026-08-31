@@ -1,0 +1,126 @@
+name: release
+
+# Fires on the tag `scripts/release.mjs` creates. That script deliberately
+# does not push, so publishing is always a separate, deliberate act:
+# `git push --follow-tags` is the moment a release becomes public.
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # npm trusted publishing (OIDC) — this is what removes the need for a
+      # long-lived NPM_TOKEN in repo secrets. It also backs --provenance.
+      id-token: write
+      # Creating the GitHub Release.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `contents: write` above makes the job token powerful enough to push.
+          # checkout persists it into local git config by default, where every
+          # later step — including anything npm runs — can reach it. `gh release
+          # create` is handed GH_TOKEN explicitly, so nothing here needs it.
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          # Required for npm to authenticate against the registry at publish
+          # time, OIDC included.
+          registry-url: 'https://registry.npmjs.org'
+
+      # Node 22 bundles npm 10.x, and trusted publishing needs >= 11.5.1 — the
+      # runner was measured at node v22.23.2. Without this the OIDC publish
+      # fails at the registry rather than in any check above it. Node itself
+      # stays on 22 deliberately: that is the version the suite is tested on,
+      # and the publishing client is the only part that needs to be newer.
+      - name: Ensure npm supports trusted publishing
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      # The tag names the version, but package.json is what npm actually
+      # publishes. If they disagree, the tag points at one version and the
+      # registry receives another — the one failure this scheme cannot
+      # self-correct, and it is silent without an explicit check.
+      - name: Tag must match package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "Tag $GITHUB_REF_NAME implies version $tag, but package.json says $pkg."
+            echo "Re-tag, or fix package.json — do not publish a mismatch."
+            exit 1
+          fi
+          echo "Publishing version $pkg."
+
+      # Identical to what gates every merge: same suite, same tmux, same
+      # tarball-contents check, one definition.
+      - uses: ./.github/actions/verify
+
+      # `npm ci` in the composite action installs devDependencies; the build
+      # it runs is what `files` ships. Nothing else to do before publishing.
+      #
+      # Skipped when this exact version is already on the registry, so a rerun
+      # after a later step failed does not die on npm's "cannot publish over an
+      # existing version" — the publish is the one step in this job that cannot
+      # be undone, which makes it the one that most needs to be re-runnable.
+      - name: Publish to npm
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          # `npm view` exits non-zero for "does not exist" AND for a network,
+          # auth or rate-limit failure, so the exit code alone cannot decide
+          # this. Only a confirmed E404 means "not published yet"; anything
+          # else is an unanswered question, and guessing on it is how a
+          # transient blip turns back into the confusing duplicate-version
+          # error this guard exists to prevent.
+          set +e
+          out=$(npm view "$name@$version" version 2>&1)
+          rc=$?
+          set -e
+          if [ $rc -eq 0 ]; then
+            echo "$name@$version is already on the registry — skipping publish."
+          elif printf '%s' "$out" | grep -q 'E404'; then
+            npm publish --access public --provenance
+          else
+            echo "Could not determine whether $name@$version is published:"
+            printf '%s\n' "$out"
+            exit 1
+          fi
+
+      # The body is this version's CHANGELOG section, so the release notes and
+      # the changelog cannot drift — there is only one place they are written.
+      # Extraction lives in the script, where it is tested, rather than inline
+      # in YAML where it would be neither reviewed nor run before a release.
+      - name: Extract release notes
+        run: |
+          node scripts/release.mjs --notes "${GITHUB_REF_NAME#v}" > /tmp/notes.md
+          echo "Extracted $(wc -l < /tmp/notes.md) lines of notes."
+
+      # Same rerun reasoning as the publish step: `gh release create` fails on a
+      # tag that already has a release, which would leave a rerun red after the
+      # work it was rerun to finish had actually succeeded.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Same fail-closed reasoning as the publish step: `gh release view`
+          # exits non-zero for a missing release and for a failed lookup alike.
+          set +e
+          out=$(gh release view "$GITHUB_REF_NAME" 2>&1)
+          rc=$?
+          set -e
+          if [ $rc -eq 0 ]; then
+            echo "Release $GITHUB_REF_NAME already exists — skipping."
+          elif printf '%s' "$out" | grep -qi 'release not found'; then
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file /tmp/notes.md
+          else
+            echo "Could not determine whether release $GITHUB_REF_NAME exists:"
+            printf '%s\n' "$out"
+            exit 1
+          fi
