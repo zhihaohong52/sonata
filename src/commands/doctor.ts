@@ -30,7 +30,7 @@ import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '..
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { serveHealthUrl } from './serve.js';
 import { nativeSessionEnv } from './code.js';
-import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile, diagnoseRouteAuto } from './route.js';
+import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile, diagnoseRouteAuto, isLocalhostUrl } from './route.js';
 
 const run = promisify(execFile);
 
@@ -111,10 +111,21 @@ export function routingFailureDetail(input: {
   const need = 'tier agents need a routed session';
   const fix = 'run `sonata route auto`';
 
-  // A base URL that is set, but names a port this config no longer uses. It
-  // reads as routed to anything checking presence, and 502s on every native
-  // request — so it has to be told apart from having no routing at all.
   const current = routeEnv(input.projectSettings).ANTHROPIC_BASE_URL;
+
+  // Sonata owns only `http://localhost:<port>`; `route on` refuses to clobber
+  // anything else and `route off` refuses to remove it. So a corporate proxy
+  // here is not a sonata misconfiguration, and `route auto` is not the repair
+  // — it calls `planRouteOff`, which throws on exactly this URL. Recommending
+  // it would hand the user a command that fails.
+  if (current !== undefined && !isLocalhostUrl(current)) {
+    return `${need} — ANTHROPIC_BASE_URL is set to ${current}, which sonata did not write; ` +
+      'remove or update it yourself if sonata should route this project';
+  }
+
+  // A base URL sonata does own, but naming a port this config no longer uses.
+  // It reads as routed to anything checking presence, and 502s on every native
+  // request — so it has to be told apart from having no routing at all.
   if (current !== undefined && input.configuredRouterUrl !== undefined && current !== input.configuredRouterUrl) {
     return `${need} — settings route to ${current}, but this config's router is ${input.configuredRouterUrl}; ${fix}`;
   }

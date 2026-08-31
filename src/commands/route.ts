@@ -109,8 +109,15 @@ export function planRouteOn(
   return { settings: next, changed: hook.changed || envChanged(settings, target) };
 }
 
-/** The shape of every URL sonata's router answers on — the ownership test. */
-function isLocalhostUrl(url: string): boolean {
+/**
+ * The shape of every URL sonata's router answers on — the ownership test.
+ *
+ * Exported because `sonata doctor` has to make the same distinction before it
+ * advises anything: `route on` refuses to clobber a URL failing this test and
+ * `route off` refuses to remove one, so telling that user to run `route auto`
+ * recommends a command that throws.
+ */
+export function isLocalhostUrl(url: string): boolean {
   return /^http:\/\/localhost:\d+$/.test(url);
 }
 
