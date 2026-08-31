@@ -38,7 +38,7 @@ Status legend: ✅ shipped · 🔸 in progress · ⏳ not started.
 | # | Item | Priority | Size | Status |
 |---|---|---|---|---|
 | 05 | A daemon lifecycle you can trust (instance-id handshake, actionable takeover) | P0 | S–M | ✅ shipped in [0.3.0](https://github.com/zhihaohong52/sonata/pull/4) |
-| 06 | `sonata init` hardening — the front door is the largest, least-tested file | P0 | L | ✅ merged, awaiting the 0.4.0 release — `init.ts` 1502 → 184 lines, decomposed into `src/init/` (discover / validate / plan / apply / interactive-state / scripted-state / toml) with end-to-end tests for the pipeline. The interactive TUI **has** now been hand-driven through `/cmux` (2026-08-31), which found two functional bugs no test had: a confirm summary promising 8 agent files where `sync` writes 4, and a gateway reported keyless one line above `✓ stored the key`. The Ink stdin-teardown class remains knowingly uncovered |
+| 06 | `sonata init` hardening — the front door is the largest, least-tested file | P0 | L | ✅ shipped in [0.4.0](https://github.com/zhihaohong52/sonata/releases/tag/v0.4.0) — `init.ts` 1502 → 184 lines, decomposed into `src/init/` (discover / validate / plan / apply / interactive-state / scripted-state / toml) with end-to-end tests for the pipeline. The interactive TUI **has** now been hand-driven through `/cmux` (2026-08-31), which found two functional bugs no test had: a confirm summary promising 8 agent files where `sync` writes 4, and a gateway reported keyless one line above `✓ stored the key`. The Ink stdin-teardown class remains knowingly uncovered |
 | 07 | Close the last false-success gap (worktree delta captured at launch and exit) | P1 | S | ⏳ not started |
 | 13 | A repeating 400 must cool a candidate down — a permanently-broken model currently absorbs its whole tier ([spec](specs/2026-08-30-routing-reliability-defects.md)) | P0 | S | ⏳ not started |
 | 14 | A killed subagent pins routing on for good, and `sonata route off` does not clear it ([spec](specs/2026-08-30-routing-reliability-defects.md)) | P0 | S | ⏳ not started |
@@ -47,7 +47,7 @@ Status legend: ✅ shipped · 🔸 in progress · ⏳ not started.
 
 | # | Item | Priority | Size | Status |
 |---|---|---|---|---|
-| 08 | Publish to npm, and automate the release | P0 | S | 🔨 automation built, first publish pending — `npm run release -- <version>` promotes `[Unreleased]`, bumps the manifest and lock, and tags; `release.yml` publishes on the pushed tag via npm trusted publishing (OIDC) with provenance, storing no token. **The one-time bootstrap is manual and deliberate**: npm cannot attach a trusted publisher to a package that does not exist, so the first `npm publish --access public` is run by hand, and only then is OIDC configurable. The install docs are written for the published state and land in the release commit, so they are **ahead of reality until that first publish succeeds** — if it fails, they are the thing to fix before merging anything else |
+| 08 | Publish to npm, and automate the release | P0 | S | ✅ shipped in [0.4.0](https://www.npmjs.com/package/@zhihaohong52/sonata) — `npm run release -- <version>` promotes `[Unreleased]`, bumps the manifest and lock, and tags; `release.yml` publishes on the pushed tag via npm trusted publishing (OIDC) with provenance, storing no token. **Correction to what this entry previously said**: the bootstrap does *not* require publishing by hand first. `npm trust github <pkg> --file release.yml --repo <owner/repo> --allow-publish` (npm 11.10+) configures a trusted publisher for a package that does not exist yet — only the npmjs.com *web UI* has that limitation. 0.4.0 was in fact published manually before this was known. Remaining: run that `npm trust` command, or 0.4.1 reaches the publish step with no OIDC and fails after the tag is already pushed |
 | 09 | Own the LiteLLM dependency — manage it, don't replace it (pinned managed venv, doctor installs/repairs) | P0 | M | ⏳ not started |
 
 ### IV. Contract — the part where the number stops being decorative
@@ -78,6 +78,14 @@ to try any of it. Freeze last.
   shipping the install path while those defects are open would hand new
   users the very things that bit the existing ones. *Items 06 · 08 · 09 ·
   13 · 14.*
+
+  **0.4.0 shipped 2026-08-31 carrying 06 and 08 only.** A stranger can now
+  install sonata, which was the point of the release — but 09 · 13 · 14 are
+  still open, and the paragraph above is the argument for why that is
+  uncomfortable: 13 and 14 are defects that already bit existing users, and
+  the install path is now open to new ones. The version number describes the
+  code it ships, not the completeness of the milestone; the milestone closes
+  when those three land.
 - **1.0 — "Freeze the contract."** Schema version and load-time migration,
   structured doctor output, budget caps, the false-success check, and one
   report manifest. Ship 1.0 only after 0.4 has been in strangers' hands
