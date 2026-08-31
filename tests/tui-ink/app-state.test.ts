@@ -10,6 +10,7 @@ import {
   configuredProviderNames,
   importableProviders,
   initialRankedFor,
+  acceptRemainingTiers,
   importHint,
   validateCustomProviderName,
   validateProviderUrl,
@@ -408,6 +409,46 @@ describe('importHint', () => {
   it('says so when an expiry is unknown', () => {
     expect(importHint('opencode', { ...noCred, opencode: { expiresInDays: null } }))
       .toBe('via opencode · expiry unknown');
+  });
+});
+
+describe('acceptRemainingTiers', () => {
+  const roles = ['review', 'code'];
+  const proposal = { simple: ['cheap', 'mid'], complex: ['mid', 'cheap'] };
+
+  it('fills every remaining role and tier, so the summary is reachable in one keypress', () => {
+    const state = acceptRemainingTiers({ roles }, roles, 0, proposal);
+    expect(state.tiers).toEqual({
+      review: { simple: ['cheap', 'mid'], complex: ['mid', 'cheap'] },
+      code: { simple: ['cheap', 'mid'], complex: ['mid', 'cheap'] },
+    });
+  });
+
+  it('leaves screens before the start index untouched', () => {
+    // The caller has already applied the current screen with whatever the user
+    // ranked on it; accepting the rest must not overwrite that with the seed.
+    const ranked = { roles, tiers: { review: { simple: ['mid'], complex: [] } } };
+    const state = acceptRemainingTiers(ranked, roles, 1, proposal);
+    expect(state.tiers?.review.simple).toEqual(['mid']);
+  });
+
+  it('keeps a ranking already saved for a later role rather than resetting it to the proposal', () => {
+    const saved = { roles, tiers: { code: { simple: ['mid'], complex: ['cheap'] } } };
+    const state = acceptRemainingTiers(saved, roles, 0, proposal);
+    expect(state.tiers?.code).toEqual({ simple: ['mid'], complex: ['cheap'] });
+  });
+
+  it('is indistinguishable from pressing enter through every remaining screen', () => {
+    // The guarantee that makes the shortcut safe to offer at all.
+    let stepped: ReturnType<typeof applyStep> = { roles };
+    for (let index = 0; index < roles.length * 2; index++) {
+      const role = roles[Math.floor(index / 2)];
+      const tier = index % 2 === 0 ? 'simple' : 'complex';
+      stepped = applyStep(stepped, 4, {
+        role, tier, ranked: initialRankedFor(stepped.tiers?.[role]?.[tier], proposal[tier]),
+      });
+    }
+    expect(acceptRemainingTiers({ roles }, roles, 0, proposal)).toEqual(stepped);
   });
 });
 

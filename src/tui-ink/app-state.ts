@@ -191,6 +191,38 @@ export function initialRankedFor(saved: string[] | undefined, proposal: string[]
 }
 
 /**
+ * Fills in every role × tier ranking from `fromIndex` onward with the value
+ * that screen would have been seeded with, so the wizard can offer "accept all
+ * remaining" instead of walking the user through `roles × 2` pre-answered
+ * screens. Four roles on two models meant eight confirmations of the same two
+ * models, which is the most repetitive stretch of the wizard by a wide margin.
+ *
+ * It applies exactly `initialRankedFor(saved, proposal)` — what the screen
+ * itself would have shown — so accepting is indistinguishable from pressing
+ * enter through the rest, and a role already ranked in the config keeps that
+ * ranking rather than being reset to the proposal.
+ */
+export function acceptRemainingTiers(
+  state: InitState,
+  roles: string[],
+  fromIndex: number,
+  proposal: { simple: string[]; complex: string[] },
+): InitState {
+  let next = state;
+  for (let index = Math.max(0, fromIndex); index < roles.length * 2; index++) {
+    const role = roles[Math.floor(index / 2)];
+    if (role === undefined) continue;
+    const tier = index % 2 === 0 ? 'simple' : 'complex';
+    next = applyStep(next, 4, {
+      role,
+      tier,
+      ranked: initialRankedFor(next.tiers?.[role]?.[tier], proposal[tier]),
+    });
+  }
+  return next;
+}
+
+/**
  * A lookup key for one (gateway, id) pair.
  *
  * Both halves are free-form — an id routinely carries `/`, `-` and `.` — so

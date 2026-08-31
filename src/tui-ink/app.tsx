@@ -9,6 +9,7 @@ import {
   applyStep,
   candidatesForProviders,
   initialRankedFor,
+  acceptRemainingTiers,
   tierPickerKeys,
   type AvailableCredentials,
   type CandidateOption,
@@ -248,6 +249,17 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
           if (tierIndex + 1 < roles.length * 2) setTierIndex((current) => current + 1);
           else setStep(5);
         }}
+        onAcceptRest={tierIndex + 1 < roles.length * 2
+          ? (ranked) => {
+              // This screen keeps what the user actually ranked; only the
+              // screens after it take the seed they would have opened with.
+              setState((current) => acceptRemainingTiers(
+                applyStep(current, 4, { role, tier, ranked }),
+                roles, tierIndex + 1, proposal,
+              ));
+              setStep(5);
+            }
+          : undefined}
         onBack={() => {
           if (tierIndex === 0) back();
           else setTierIndex((current) => current - 1);
