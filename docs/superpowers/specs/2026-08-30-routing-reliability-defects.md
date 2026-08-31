@@ -127,7 +127,7 @@ cleared, so ids accumulate in it permanently and routing stays pinned on.
 itself** — a caller passing an explicit scope is consistent between the two
 sites, and the test suite (e.g. `tests/commands/route.test.ts:686-688`) only
 ever passes an explicit `scope: 'global'`, so the regression is invisible
-under the existing tests. The production CLI (`src/cli.ts:597`) also assigns
+under the existing tests. The production CLI (`src/cli.ts:601`) also assigns
 `scope` from the `--global` flag before reaching either function, so the
 defaulted path is not reached from a normal `sonata route auto` install
 today. The trap is latent: a future caller that calls either function

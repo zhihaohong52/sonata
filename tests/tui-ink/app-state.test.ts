@@ -438,17 +438,45 @@ describe('acceptRemainingTiers', () => {
     expect(state.tiers?.code).toEqual({ simple: ['mid'], complex: ['cheap'] });
   });
 
-  it('is indistinguishable from pressing enter through every remaining screen', () => {
-    // The guarantee that makes the shortcut safe to offer at all.
-    let stepped: ReturnType<typeof applyStep> = { roles };
+  it('drops a saved model whose provider was deselected, as confirming the screen would', () => {
+    // `tierPickerKeys` deliberately withholds a key that HAS a native route but
+    // whose provider is deselected this session, so it never reaches the
+    // picker's items — and `RankedSelect` drops any initialRanked value missing
+    // from items. Pressing enter through the screen therefore writes the tier
+    // without it. Bulk acceptance has to reach the same answer, or `A` and
+    // enter produce different configs from the same state.
+    const state = {
+      roles: ['code'],
+      nativeKeys: ['a'],
+      tiers: { code: { simple: ['a', 'b'], complex: ['a', 'b'] } },
+    };
+    const next = acceptRemainingTiers(state, ['code'], 0, { simple: ['a'], complex: ['a'] }, ['a', 'b']);
+    expect(next.tiers?.code.simple).toEqual(['a']);
+    expect(next.tiers?.code.complex).toEqual(['a']);
+  });
+
+  it.each([
+    ['every model still selected', { roles, nativeKeys: ['cheap', 'mid'] }, ['cheap', 'mid']],
+    ['a saved model whose provider was deselected', {
+      roles, nativeKeys: ['cheap'], tiers: { review: { simple: ['cheap', 'mid'], complex: ['mid'] } },
+    }, ['cheap', 'mid']],
+  ])('is indistinguishable from pressing enter through every remaining screen — %s', (_name, start, universe) => {
+    // The guarantee that makes the shortcut safe to offer at all. The walk
+    // restates what the component does rather than calling the shared helper:
+    // RankedSelect builds its rows with tierPickerKeys and then drops any
+    // seeded value missing from them, so simulating that independently is what
+    // makes this an equivalence check instead of a tautology.
+    let stepped = start as ReturnType<typeof applyStep>;
     for (let index = 0; index < roles.length * 2; index++) {
       const role = roles[Math.floor(index / 2)];
       const tier = index % 2 === 0 ? 'simple' : 'complex';
+      const seeded = initialRankedFor(stepped.tiers?.[role]?.[tier], proposal[tier]);
+      const rows = tierPickerKeys(stepped.nativeKeys ?? [], seeded, universe);
       stepped = applyStep(stepped, 4, {
-        role, tier, ranked: initialRankedFor(stepped.tiers?.[role]?.[tier], proposal[tier]),
+        role, tier, ranked: seeded.filter((key) => rows.includes(key)),
       });
     }
-    expect(acceptRemainingTiers({ roles }, roles, 0, proposal)).toEqual(stepped);
+    expect(acceptRemainingTiers(start, roles, 0, proposal, universe)).toEqual(stepped);
   });
 });
 

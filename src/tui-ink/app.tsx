@@ -256,6 +256,10 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
               setState((current) => acceptRemainingTiers(
                 applyStep(current, 4, { role, tier, ranked }),
                 roles, tierIndex + 1, proposal,
+                // The same universe the picker builds its items from, so a
+                // deselected-but-natively-routable key is withheld here exactly
+                // as it would be on the screen this is standing in for.
+                data.candidates.map((c) => c.key),
               ));
               setStep(5);
             }

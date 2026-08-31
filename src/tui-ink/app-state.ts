@@ -207,6 +207,7 @@ export function acceptRemainingTiers(
   roles: string[],
   fromIndex: number,
   proposal: { simple: string[]; complex: string[] },
+  allNativeKeys: string[] = state.nativeKeys ?? [],
 ): InitState {
   let next = state;
   for (let index = Math.max(0, fromIndex); index < roles.length * 2; index++) {
@@ -216,10 +217,33 @@ export function acceptRemainingTiers(
     next = applyStep(next, 4, {
       role,
       tier,
-      ranked: initialRankedFor(next.tiers?.[role]?.[tier], proposal[tier]),
+      ranked: seededRankingFor(
+        next.tiers?.[role]?.[tier], proposal[tier], next.nativeKeys ?? [], allNativeKeys,
+      ),
     });
   }
   return next;
+}
+
+/**
+ * The ranking a tier screen submits when it is opened and confirmed untouched.
+ *
+ * Seeding alone is not that answer. `tierPickerKeys` withholds a key that has a
+ * native route but whose provider is deselected this session, and `RankedSelect`
+ * drops any `initialRanked` value missing from its items — so confirming the
+ * screen writes the tier *without* that key. Bulk acceptance skips the
+ * component, so it has to reproduce the same two steps here, or `A` and enter
+ * write different configs from identical state.
+ */
+export function seededRankingFor(
+  saved: string[] | undefined,
+  proposal: string[],
+  nativeKeys: string[],
+  allNativeKeys: string[],
+): string[] {
+  const initial = initialRankedFor(saved, proposal);
+  const offered = new Set(tierPickerKeys(nativeKeys, initial, allNativeKeys));
+  return initial.filter((key) => offered.has(key));
 }
 
 /**
