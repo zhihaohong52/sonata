@@ -49,13 +49,31 @@ release path that has quietly stopped matching the path gating merges is worth
 nothing — and refuses outright if the tag and `package.json` disagree.
 
 **Publishing uses npm trusted publishing (OIDC), so no npm token is stored in
-repository secrets.** That has a bootstrap consequence worth knowing before
-the first release: npm cannot attach a trusted publisher to a package that
-does not exist, so version one must be published by hand
-(`npm publish --access public`) and OIDC configured afterwards. This is also
-why `publishConfig` sets `access` but **not** `provenance` — provenance needs
-CI's OIDC token, and setting it in the manifest would break exactly that
-manual bootstrap.
+repository secrets.** The trust relationship is configured once, from the CLI:
+
+```bash
+npm trust github @zhihaohong52/sonata \
+  --file release.yml --repo zhihaohong52/sonata --allow-publish
+```
+
+**`npm trust` works on a package that does not exist yet** — only the
+npmjs.com *web UI* has the chicken-and-egg limitation, and an earlier version
+of this file wrongly recorded that limitation as npm's. 0.4.0 was published by
+hand because of that mistake; nothing after it needs to be. The operation
+requires 2FA on the account, and npm requires 2FA (or a bypass token, itself
+[being retired](https://github.blog/changelog/2026-07-08-npm-install-time-security-and-gat-bypass2fa-deprecation/))
+to publish anything at all.
+
+`publishConfig` sets `access` but **not** `provenance`: provenance needs CI's
+OIDC token, so declaring it in the manifest would break any local publish —
+which is exactly the escape hatch you want available when the pipeline is the
+thing that is broken.
+
+**Trusted publishing makes GitHub repository write access equivalent to
+publish rights.** npm says so when configuring it. For a solo repository that
+is the same trust boundary as before; adding collaborators changes that, and
+`--environment` (a protected GitHub environment with required reviewers) is
+how it narrows.
 
 The CLI (after `npm link`):
 - `sonata init` — set up sonata (interactive wizard; asks the config scope, then providers, models, roles, per-role models, then ranks each role's selected models into `simple`/`complex` tiers — pre-sorted from a cached Artificial Analysis catalog when one exists, else built-in defaults. Left goes back a screen, skipping any answered by a flag; `A` on a ranking screen confirms it **and every screen after it** with the ranking each would have opened on — a tier screen per role × tier means four roles cost eight near-identical confirmations, and `acceptRemainingTiers` (`src/tui-ink/app-state.ts`) applies `seededRankingFor` so the result is indistinguishable from pressing enter through the rest, verified by writing a byte-identical `sonata.toml`. **Seeding alone is not that answer**, which is what made the first version of this wrong: `tierPickerKeys` withholds a key that has a native route but whose provider is deselected this session, and `RankedSelect` drops any seeded value missing from its rows — so confirming a screen writes the tier *without* that key, while bulk acceptance skipped the component and kept it. `seededRankingFor` reproduces both steps; writes `[models]`+`[tiers]`, generates one agent per role × tier, offers the permission hook, installs the `sonata-loop` skill, offers `sonata route auto`). A config still in the older `[generate.roles]`/`[generate.native]` shape is migrated automatically (`migrateLegacyConfig`, `src/normalize.ts`). Unattended flags: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope project|global`, `--scope project|global|skip`, `--routing project|global|skip`, `--prune`
