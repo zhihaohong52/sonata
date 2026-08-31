@@ -77,7 +77,9 @@ export function MultiSelect<T>(props: MultiSelectProps<T>): React.ReactElement {
     <Box flexDirection="column">
       <Text bold>{title}</Text>
       {filterable && <Text>Filter: {state.filter}</Text>}
-      <Text dimColor>{visible.length} of {items.length} shown</Text>
+      <Text dimColor>
+        {visible.length} of {items.length} shown · {state.selected.size} selected
+      </Text>
       {start > 0 && <Text dimColor>  ↑ {start} more</Text>}
       {Array.from({ length: end - start }, (_, offset) => {
         const row = start + offset;
@@ -85,8 +87,12 @@ export function MultiSelect<T>(props: MultiSelectProps<T>): React.ReactElement {
         const index = isToggle ? undefined : visible[row - 1];
         const item = index === undefined ? undefined : items[index];
         const checked = isToggle ? allVisibleSelected : index !== undefined && state.selected.has(index);
+        // Naming the count is what makes this row safe to press. It acts on the
+        // *filtered* rows, so on an unfiltered 396-model list "Select All"
+        // really does mean all 396 — and with a filter active it means only
+        // the matches, which the bare label never distinguished.
         const label = isToggle
-          ? allVisibleSelected ? '[ Deselect All ]' : '[ Select All ]'
+          ? `[ ${allVisibleSelected ? 'Deselect' : 'Select'} all ${visible.length}${state.filter === '' ? '' : ' matching'} ]`
           : item?.label ?? '';
         return (
           <Text key={isToggle ? 'toggle' : index} inverse={row === state.cursor}>
@@ -95,7 +101,15 @@ export function MultiSelect<T>(props: MultiSelectProps<T>): React.ReactElement {
         );
       })}
       {end < rowCount && <Text dimColor>  ↓ {rowCount - end} more</Text>}
-      <Text dimColor>space toggle · enter confirm{onBack ? ' · ← back' : ''}{onCancel ? ' · esc cancel' : ''}</Text>
+      {/*
+        Filtering is on by default and the Filter field is drawn above, but the
+        footer never said so — on the 396-model picker that is the difference
+        between a usable list and an unusable one.
+      */}
+      <Text dimColor>
+        ↑↓ choose · space toggle{filterable ? ' · type to filter' : ''} · enter confirm
+        {onBack ? ' · ← back' : ''}{onCancel ? ' · esc cancel' : ''}
+      </Text>
     </Box>
   );
 }

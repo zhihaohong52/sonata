@@ -120,7 +120,16 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
       <MultiSelect
         key="models"
         title="Models"
-        items={merged.map((candidate) => ({ value: candidate.key, label: candidate.label, hint: candidate.id }))}
+        // A harness-imported candidate is already labelled `<gateway>/<id>`, so
+        // the id hint repeated it — printing the id twice on one row and
+        // wrapping the longer ones past the terminal width. A BYOK candidate is
+        // labelled with its display name, where the id is genuinely new
+        // information, so the hint is kept there.
+        items={merged.map((candidate) => ({
+          value: candidate.key,
+          label: candidate.label,
+          hint: candidate.label.endsWith(candidate.id) ? undefined : candidate.id,
+        }))}
         initialSelected={initialSelected}
         onSubmit={(selected) => onSubmit(selected as string[], live)}
         onBack={onBack}

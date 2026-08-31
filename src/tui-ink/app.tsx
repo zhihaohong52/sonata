@@ -9,6 +9,7 @@ import {
   applyStep,
   candidatesForProviders,
   initialRankedFor,
+  acceptRemainingTiers,
   tierPickerKeys,
   type AvailableCredentials,
   type CandidateOption,
@@ -16,6 +17,7 @@ import {
 } from './app-state.js';
 import { type NativeGatewayAuth } from '../config.js';
 import { byokCandidateKey, fetchModels as defaultFetchModels } from '../native/models.js';
+import { ROLE_BLURB } from '../roles.js';
 import type { InitState, TuiResult } from './types.js';
 
 export interface WizardData {
@@ -62,7 +64,7 @@ export { applyStep, candidatesForProviders } from './app-state.js';
 
 interface ChoiceProps<T> {
   title: string;
-  choices: Array<{ value: T; label: string }>;
+  choices: Array<{ value: T; label: string; hint?: string }>;
   initial?: T;
   onSubmit: (value: T) => void;
   onBack?: () => void;
@@ -85,7 +87,7 @@ function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: Choi
       <Text bold>{title}</Text>
       {choices.map((choice, index) => (
         <Text key={String(choice.value)} inverse={index === cursor}>
-          {index === cursor ? '›' : ' '} {choice.label}
+          {index === cursor ? '›' : ' '} {choice.label}{choice.hint ? `  · ${choice.hint}` : ''}
         </Text>
       ))}
       <Text dimColor>↑↓ choose · enter confirm{onBack ? ' · ← back' : ''} · esc cancel</Text>
@@ -105,7 +107,12 @@ function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWiza
     <Box flexDirection="column">
       <Text bold>Summary</Text>
       <Text>Config scope: {state.configScope ?? 'none'}</Text>
-      <Text>Harnesses: {state.harnesses?.join(', ') || 'none'}</Text>
+      {/*
+        This lists the harnesses imported *from*, not the ones installed — and
+        the detection block directly above shows four of those, so a bare
+        "none" read as "nothing was detected" when it meant "native models only".
+      */}
+      <Text>Imported from: {state.harnesses?.join(', ') || 'no harness (native models only)'}</Text>
       <Text>Providers: {state.providerKeys?.join(', ') || 'none'}</Text>
       <Text>Models: {state.nativeKeys?.join(', ') || 'none'}</Text>
       {!hasModels && <Text color="red">Select at least one model before continuing.</Text>}
@@ -144,7 +151,12 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
 
   switch (step) {
     case 0:
-      return <Choice key="config-scope" title="Config scope" choices={[{ value: 'project', label: 'Project' }, { value: 'global', label: 'Global' }]} initial={state.configScope} onSubmit={chooseScope} onCancel={cancel} />;
+      // A project config *replaces* the machine one rather than merging, which
+      // is the whole consequence of this answer and was nowhere on the screen.
+      return <Choice key="config-scope" title="Where should this config live?" choices={[
+        { value: 'project', label: 'Project', hint: './sonata.toml — this repo only, and it replaces the machine config here' },
+        { value: 'global', label: 'Global', hint: '~/.config/sonata/sonata.toml — every project without its own' },
+      ]} initial={state.configScope} onSubmit={chooseScope} onCancel={cancel} />;
     case 1: {
       const providers = data.providers;
       return <ProvidersStep
@@ -203,7 +215,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     }
     case 3: {
       const candidates = candidatesForProviders(data.candidates, data.providers, state.providerKeys);
-      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={() => setStep(candidates.length > 0 ? 2 : 1)} onCancel={cancel} filterable={false} />;
+      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role, hint: ROLE_BLURB[role] }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={() => setStep(candidates.length > 0 ? 2 : 1)} onCancel={cancel} filterable={false} />;
     }
     case 4: {
       const roles = state.roles ?? [];
@@ -237,6 +249,21 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
           if (tierIndex + 1 < roles.length * 2) setTierIndex((current) => current + 1);
           else setStep(5);
         }}
+        onAcceptRest={tierIndex + 1 < roles.length * 2
+          ? (ranked) => {
+              // This screen keeps what the user actually ranked; only the
+              // screens after it take the seed they would have opened with.
+              setState((current) => acceptRemainingTiers(
+                applyStep(current, 4, { role, tier, ranked }),
+                roles, tierIndex + 1, proposal,
+                // The same universe the picker builds its items from, so a
+                // deselected-but-natively-routable key is withheld here exactly
+                // as it would be on the screen this is standing in for.
+                data.candidates.map((c) => c.key),
+              ));
+              setStep(5);
+            }
+          : undefined}
         onBack={() => {
           if (tierIndex === 0) back();
           else setTierIndex((current) => current - 1);

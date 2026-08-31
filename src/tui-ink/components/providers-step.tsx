@@ -5,6 +5,7 @@ import { TextInput } from './text-input.js';
 import { SearchSelect } from './search-select.js';
 import { LoginScreen } from './login-screen.js';
 import { ByokStep } from './byok-step.js';
+import { WELL_KNOWN_PROVIDER_URLS } from '../../detect.js';
 import {
   addProviderCatalog,
   alreadyImportedKeys,
@@ -237,7 +238,17 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
   if (screen.kind === 'pick') {
     const catalog = addProviderCatalog(providers, configured);
     const items = [
-      ...catalog.map((provider) => ({ value: provider.key, label: provider.provider, hint: provider.harness })),
+      // Several names in `WELL_KNOWN_PROVIDER_URLS` are near-duplicates that the
+      // picker rendered as indistinguishable rows — `together`/`together_ai`
+      // point at one URL, while `deep-infra`/`deepinfra` point at *different*
+      // ones. They cannot be merged away, since the table doubles as the
+      // name → base-URL lookup every harness's own provider name resolves
+      // through, so the row shows the URL and disambiguates itself.
+      ...catalog.map((provider) => ({
+        value: provider.key,
+        label: provider.provider,
+        hint: [provider.harness, WELL_KNOWN_PROVIDER_URLS[provider.provider]].filter(Boolean).join(' · '),
+      })),
       { value: '__custom__', label: 'Add a custom provider…' },
     ];
     return (

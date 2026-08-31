@@ -1,19 +1,13 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { generatedAgents, generatedNativeAgents, expectedAgentNames, isReadOnlyRole, loadConfig, TIER_NAMES } from '../config.js';
+import { generatedAgents, generatedNativeAgents, expectedAgentNames, isReadOnlyRole, loadConfig, TIER_NAMES, tiersCollapse } from '../config.js';
 import { isSonataAgent, staleAgents } from '../detect.js';
 import { TIER_AGENT_MARKER } from '../agent-markers.js';
+import { ROLE_BLURB } from '../roles.js';
 
 export { TIER_AGENT_MARKER } from '../agent-markers.js';
 
 export interface AgentSpec { role: string; model: string; harness: string }
-
-const ROLE_BLURB: Record<string, string> = {
-  code: 'implementation, refactors, and mechanical code changes',
-  review: 'reviewing existing code for defects, without modifying it',
-  explore: 'locating code and answering questions about the codebase, without modifying it',
-  plan: 'producing an implementation plan for a change, without performing it',
-};
 
 export function agentMarkdown(spec: AgentSpec): string {
   const name = `${spec.role}-${spec.model}`;
@@ -201,9 +195,7 @@ export function cmdSync(opts: SyncOptions): SyncResult {
     const written: string[] = [];
     const skipped: string[] = [];
     for (const [role, lists] of Object.entries(config.tiers)) {
-      const collapsed = lists.simple.length === lists.complex.length &&
-        lists.simple.every((model, index) => model === lists.complex[index]);
-      const tiers: ('simple' | 'complex' | undefined)[] = collapsed ? [undefined] : [...TIER_NAMES];
+      const tiers: ('simple' | 'complex' | undefined)[] = tiersCollapse(lists) ? [undefined] : [...TIER_NAMES];
       for (const tier of tiers) {
         const path = join(opts.agentsDir, `${role}${tier === undefined ? '' : `-${tier}`}.md`);
         if (existsSync(path) && !isSonataAgent(path)) {

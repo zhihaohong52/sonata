@@ -191,6 +191,62 @@ export function initialRankedFor(saved: string[] | undefined, proposal: string[]
 }
 
 /**
+ * Fills in every role × tier ranking from `fromIndex` onward with the value
+ * that screen would have been seeded with, so the wizard can offer "accept all
+ * remaining" instead of walking the user through `roles × 2` pre-answered
+ * screens. Four roles on two models meant eight confirmations of the same two
+ * models, which is the most repetitive stretch of the wizard by a wide margin.
+ *
+ * It applies exactly `initialRankedFor(saved, proposal)` — what the screen
+ * itself would have shown — so accepting is indistinguishable from pressing
+ * enter through the rest, and a role already ranked in the config keeps that
+ * ranking rather than being reset to the proposal.
+ */
+export function acceptRemainingTiers(
+  state: InitState,
+  roles: string[],
+  fromIndex: number,
+  proposal: { simple: string[]; complex: string[] },
+  allNativeKeys: string[] = state.nativeKeys ?? [],
+): InitState {
+  let next = state;
+  for (let index = Math.max(0, fromIndex); index < roles.length * 2; index++) {
+    const role = roles[Math.floor(index / 2)];
+    if (role === undefined) continue;
+    const tier = index % 2 === 0 ? 'simple' : 'complex';
+    next = applyStep(next, 4, {
+      role,
+      tier,
+      ranked: seededRankingFor(
+        next.tiers?.[role]?.[tier], proposal[tier], next.nativeKeys ?? [], allNativeKeys,
+      ),
+    });
+  }
+  return next;
+}
+
+/**
+ * The ranking a tier screen submits when it is opened and confirmed untouched.
+ *
+ * Seeding alone is not that answer. `tierPickerKeys` withholds a key that has a
+ * native route but whose provider is deselected this session, and `RankedSelect`
+ * drops any `initialRanked` value missing from its items — so confirming the
+ * screen writes the tier *without* that key. Bulk acceptance skips the
+ * component, so it has to reproduce the same two steps here, or `A` and enter
+ * write different configs from identical state.
+ */
+export function seededRankingFor(
+  saved: string[] | undefined,
+  proposal: string[],
+  nativeKeys: string[],
+  allNativeKeys: string[],
+): string[] {
+  const initial = initialRankedFor(saved, proposal);
+  const offered = new Set(tierPickerKeys(nativeKeys, initial, allNativeKeys));
+  return initial.filter((key) => offered.has(key));
+}
+
+/**
  * A lookup key for one (gateway, id) pair.
  *
  * Both halves are free-form — an id routinely carries `/`, `-` and `.` — so
