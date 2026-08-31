@@ -19,6 +19,7 @@ import {
   settingsPath,
   missingAllowEntries,
 } from '../settings.js';
+import type { Settings } from '../settings.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { findLitellm } from '../native/litellm.js';
@@ -29,7 +30,7 @@ import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '..
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { serveHealthUrl } from './serve.js';
 import { nativeSessionEnv } from './code.js';
-import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile } from './route.js';
+import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile, diagnoseRouteAuto, isLocalhostUrl } from './route.js';
 
 const run = promisify(execFile);
 
@@ -85,6 +86,80 @@ export function staleMcpRegistration(cwd: string, home: string): string | undefi
     }
   }
   return undefined;
+}
+
+/**
+ * Why this project's sessions are not routed, in the user's terms.
+ *
+ * Five distinct states used to print one sentence — "tier agents need a routed
+ * session — run `sonata route auto`". That is the correct instruction for the
+ * first one only. For the rest the command is still what repairs them, but
+ * saying nothing else leaves a user who has *just run it* with no next step:
+ * the hooks are installed, `route auto` reports success, and doctor keeps
+ * failing. Each branch below names the state the command is about to fix.
+ *
+ * Exported so the message is testable without standing up a doctor run.
+ */
+export function routingFailureDetail(input: {
+  cwd: string;
+  packageRoot?: string;
+  projectSettings: Settings;
+  globalSettings: Settings;
+  configuredRouterUrl?: string;
+  projectResolvesToMachineConfig: boolean;
+}): string {
+  const need = 'tier agents need a routed session';
+  const fix = 'run `sonata route auto`';
+
+  const current = routeEnv(input.projectSettings).ANTHROPIC_BASE_URL;
+
+  // Sonata owns only `http://localhost:<port>`; `route on` refuses to clobber
+  // anything else and `route off` refuses to remove it. So a corporate proxy
+  // here is not a sonata misconfiguration, and `route auto` is not the repair
+  // — it calls `planRouteOff`, which throws on exactly this URL. Recommending
+  // it would hand the user a command that fails.
+  if (current !== undefined && !isLocalhostUrl(current)) {
+    return `${need} — ANTHROPIC_BASE_URL is set to ${current}, which sonata did not write; ` +
+      'remove or update it yourself if sonata should route this project';
+  }
+
+  // A base URL sonata does own, but naming a port this config no longer uses.
+  // It reads as routed to anything checking presence, and 502s on every native
+  // request — so it has to be told apart from having no routing at all.
+  if (current !== undefined && input.configuredRouterUrl !== undefined && current !== input.configuredRouterUrl) {
+    return `${need} — settings route to ${current}, but this config's router is ${input.configuredRouterUrl}; ${fix}`;
+  }
+
+  if (input.packageRoot === undefined) return `${need} — ${fix}`;
+  const project = diagnoseRouteAuto(input.projectSettings, input.packageRoot, 'project');
+  const global = diagnoseRouteAuto(input.globalSettings, input.packageRoot, 'global');
+
+  // Routing is installed globally and healthy — it just cannot serve *this*
+  // project, because a project with its own sonata.toml resolves a different
+  // configuration than the machine one a global hook would load.
+  if (global.kind === 'installed' && !input.projectResolvesToMachineConfig) {
+    return `${need} — routing is installed globally, but this project has its own sonata.toml, ` +
+      `so a global hook would resolve a different config; ${fix} here, without \`--global\``;
+  }
+
+  // Checked before `partial`: a foreign install is also missing every command
+  // this one expects, so reporting it as incomplete would be true and useless.
+  for (const diagnosis of [project, global]) {
+    if (diagnosis.kind === 'other-install') {
+      return `${need} — the installed hooks run a different sonata (${diagnosis.roots.join(', ')}), ` +
+        `not the one you are running (${input.packageRoot}); ${fix} to repoint them`;
+    }
+  }
+
+  for (const diagnosis of [project, global]) {
+    if (diagnosis.kind === 'partial') {
+      const subagent = diagnosis.missing.some((event) => event.startsWith('Subagent'));
+      return `${need} — the install is missing ${diagnosis.missing.join(' and ')}` +
+        `${subagent ? ', which are the hooks that actually route' : ''}; ${fix}`;
+    }
+  }
+
+  return `${need} — ${fix}`;
 }
 
 
@@ -192,7 +267,16 @@ export async function cmdDoctor(
       checks.push({
         name: 'tier routing',
         ok: false,
-        detail: 'tier agents need a routed session — run `sonata route auto`',
+        detail: routingFailureDetail({
+          cwd: opts.cwd,
+          packageRoot: opts.packageRoot,
+          projectSettings,
+          globalSettings,
+          configuredRouterUrl: config.native !== undefined
+            ? `http://localhost:${config.native.ports.router}`
+            : undefined,
+          projectResolvesToMachineConfig,
+        }),
       });
     }
   }
