@@ -6,7 +6,13 @@ Worth knowing before you depend on this:
   `models` subcommand, so its catalogue comes from `codex app-server`'s
   `model/list` (JSON-RPC over stdio), with a real response captured in
   `tests/fixtures/codex/model-list.json`.
-- **Not published to npm yet**, so installation is from source.
+- **Nested agents are unbounded and unattributed.** A generated agent can
+  spawn further agents, and nothing counts depth — a `code-complex` agent can
+  call `Agent(subagent_type: "code-complex")` on itself. Read-only roles are
+  told to delegate only to other read-only roles, but that is prompt text:
+  `tools:` frontmatter grants tools, not permitted argument values. `sonata
+  usage` attributes spend per session rather than to the dispatch that caused
+  nested cost.
 - **Prompt detection is regex against TUIs sonata does not control.** Codex's
   patterns are written from captured real output in `tests/fixtures/panes/`,
   but they will still break when codex changes its interface. The `STALLED`

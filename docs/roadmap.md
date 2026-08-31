@@ -47,7 +47,7 @@ Status legend: ✅ shipped · 🔸 in progress · ⏳ not started.
 
 | # | Item | Priority | Size | Status |
 |---|---|---|---|---|
-| 08 | Publish to npm, and automate the release | P0 | S | 🔨 automation built, first publish pending — `npm run release -- <version>` promotes `[Unreleased]`, bumps the manifest and lock, and tags; `release.yml` publishes on the pushed tag via npm trusted publishing (OIDC) with provenance, storing no token. **The one-time bootstrap is manual and deliberate**: npm cannot attach a trusted publisher to a package that does not exist, so the first `npm publish --access public` is run by hand, and only then is OIDC configurable. Until that happens the name is unclaimed and "install from source" still holds |
+| 08 | Publish to npm, and automate the release | P0 | S | 🔨 automation built, first publish pending — `npm run release -- <version>` promotes `[Unreleased]`, bumps the manifest and lock, and tags; `release.yml` publishes on the pushed tag via npm trusted publishing (OIDC) with provenance, storing no token. **The one-time bootstrap is manual and deliberate**: npm cannot attach a trusted publisher to a package that does not exist, so the first `npm publish --access public` is run by hand, and only then is OIDC configurable. The install docs are written for the published state and land in the release commit, so they are **ahead of reality until that first publish succeeds** — if it fails, they are the thing to fix before merging anything else |
 | 09 | Own the LiteLLM dependency — manage it, don't replace it (pinned managed venv, doctor installs/repairs) | P0 | M | ⏳ not started |
 
 ### IV. Contract — the part where the number stops being decorative
