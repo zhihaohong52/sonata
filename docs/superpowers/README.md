@@ -36,3 +36,4 @@ that didn't lead to a standalone implementation plan.
 | 2026-08-27 | Dynamic context-window resolution | [spec](specs/2026-08-27-dynamic-context-window.md) | — **queued**, not yet implemented |
 | 2026-08-27 | Pricing accuracy follow-ups (genai-prices, day-of-week windows, cache-creation rate) | [spec](specs/2026-08-27-pricing-accuracy-followups.md) | — **queued**, not yet implemented |
 | 2026-08-30 | `sonata init` hardening: decompose the front door, and test it | [spec](specs/2026-08-30-init-hardening-design.md) | [plan](plans/2026-08-30-init-hardening.md) |
+| 2026-08-30 | Two routing reliability defects (tier-absorbing 400, leaked subagent pin) | [spec](specs/2026-08-30-routing-reliability-defects.md) | — **queued**, roadmap items 13 and 14 |

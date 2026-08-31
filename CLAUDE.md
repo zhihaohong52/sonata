@@ -33,7 +33,7 @@ npm link           # puts `sonata` on your PATH (until published to npm)
 ```
 
 The CLI (after `npm link`):
-- `sonata init` — set up sonata (interactive wizard; asks the config scope, then providers, models, roles, per-role models, then ranks each role's selected models into `simple`/`complex` tiers — pre-sorted from a cached Artificial Analysis catalog when one exists, else built-in defaults. Left goes back a screen, skipping any answered by a flag; writes `[models]`+`[tiers]`, generates one agent per role × tier, offers the permission hook, installs the `sonata-loop` skill, offers `sonata route auto`). A config still in the older `[generate.roles]`/`[generate.native]` shape is migrated automatically (`migrateLegacyConfig`, `src/normalize.ts`). Unattended flags: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope project|global`, `--scope project|global|skip`, `--routing project|global|skip`, `--prune`
+- `sonata init` — set up sonata (interactive wizard; asks the config scope, then providers, models, roles, per-role models, then ranks each role's selected models into `simple`/`complex` tiers — pre-sorted from a cached Artificial Analysis catalog when one exists, else built-in defaults. Left goes back a screen, skipping any answered by a flag; `A` on a ranking screen confirms it **and every screen after it** with the ranking each would have opened on — a tier screen per role × tier means four roles cost eight near-identical confirmations, and `acceptRemainingTiers` (`src/tui-ink/app-state.ts`) applies `seededRankingFor` so the result is indistinguishable from pressing enter through the rest, verified by writing a byte-identical `sonata.toml`. **Seeding alone is not that answer**, which is what made the first version of this wrong: `tierPickerKeys` withholds a key that has a native route but whose provider is deselected this session, and `RankedSelect` drops any seeded value missing from its rows — so confirming a screen writes the tier *without* that key, while bulk acceptance skipped the component and kept it. `seededRankingFor` reproduces both steps; writes `[models]`+`[tiers]`, generates one agent per role × tier, offers the permission hook, installs the `sonata-loop` skill, offers `sonata route auto`). A config still in the older `[generate.roles]`/`[generate.native]` shape is migrated automatically (`migrateLegacyConfig`, `src/normalize.ts`). Unattended flags: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope project|global`, `--scope project|global|skip`, `--routing project|global|skip`, `--prune`
 - `sonata doctor` — check tmux, harnesses, auth, versions, permission hook, tier routing (a tiered config with no routed session), stale MCP registrations, legacy (pre-`[tiers]`) configs, ranking-catalog freshness (advisory: a catalog older than `AA_CATALOG_MAX_AGE_DAYS`, or none at all, still ranks — on superseded scores or the built-in table — so the failure is a silently-wrong ordering rather than an error)
 - `sonata sync` — regenerate agent files from `sonata.toml`; Claude Code picks them up automatically. When `[tiers]` is set, generates only tier agents (one per role × tier, or one collapsed agent when a role's `simple`/`complex` lists are element-wise identical) — legacy per-model generation is skipped entirely. Supports `--prune`
 - `sonata run` — launch a run, print its id
@@ -107,6 +107,7 @@ Key design points:
 src/
 ├── cli.ts                CLI entry point; arg parsing, then delegates to src/commands/*
 ├── commands/             command implementations (approve, auth, catalog, code, dispatch, doctor, gc, init, log, route, run, runs, serve, status, sync, tail, usage, verify, wait)
+├── init/                 init pipeline — discover.ts (machine state, gathered once), validate.ts (shared problem list, both paths), plan.ts (every write as one InitPlan value), apply.ts (I/O only), interactive-state.ts + scripted-state.ts (two front ends, one InitState), toml.ts (nativeTomlFor)
 ├── config.ts             config resolution (project → machine), sonata.toml parsing (unified [models], [tiers]), KNOWN_HARNESSES, isReadOnlyRole, resolveTierAlias, harnessModelFor
 ├── catalog.ts            model normalization (normalizeModelName), curated capability/cost table, proposeTiers, AA catalog cache (loadAaCatalog, aaCatalogPath, AA_ATTRIBUTION)
 ├── detect.ts             harness catalogues (`opencode models`, `pi --list-models`, reasonix doctor) → ModelRef, provider grouping; WELL_KNOWN_PROVIDER_URLS
@@ -220,6 +221,7 @@ dispatch_window_seconds = 1500 # blocking window for sonata wait/dispatch
 - **The key is `<harness>-<provider>-<model>`, slashes flattened to dashes**, and doubles as the agent filename (`code-<key>.md`). The harness segment is load-bearing: pi and opencode can serve the identical ref. Flattening is *not* injective (`opencode/go-x` and `opencode-go/x` collide), so `init` checks the keys it is about to write.
 - **Ids are provider-qualified for opencode, pi and reasonix**, bare for codex; `parseConfig` enforces this per harness. Picker rows are labelled `<harness>/<provider>/<model>` (`refLabel`), because opencode and pi can serve the identical `provider/model` — labelling by ref alone printed two identical rows that also shared a selection value.
 - **Each role chooses its own ranked model list, per tier,** through `[tiers.<role>]`; `sonata sync` generates only tier agents when `[tiers]` is set (skipping legacy per-model generation entirely) — one agent per role × tier, or one collapsed agent when a role's `simple`/`complex` lists are element-wise identical.
+- **`tiersCollapse` (`src/config.ts`) is the single definition of "element-wise identical".** Three call sites had each rebuilt that predicate — `cmdSync`, which *writes* the agent files; `resolveTierAlias`, which *routes* to them; and `sonata init`'s confirm summary, which *counts* them. The third had rebuilt it as roles × models, so a four-role config on two models promised 8 files and `sync` then wrote 4 — wrong on the one screen whose entire job is to say what is about to be written. Comparison is ordered, because a tier is a ranking: the same models in a different order are a different fallback chain.
 - Four roles ship: `code`, `review`, `explore`, `plan`. The last three are read-only, enforced by the harness (read-only sandbox on codex, tool allowlist on pi, read-only agent on opencode, `dontAsk` on reasonix).
 - `sonata init` discovers OpenCode, Pi and Reasonix models (reasonix's catalogue and its per-provider auth state both come from `reasonix doctor --json`). Codex has no provider dimension and is added by hand; hand-written entries survive `sonata init`, which carries through any model whose harness it does not manage.
 - **BYOK: a provider can be named directly, with no harness installed.** `init`
@@ -253,6 +255,18 @@ dispatch_window_seconds = 1500 # blocking window for sonata wait/dispatch
   - `byokCandidateKey` is exported and shared rather than inlined: the wizard
     puts the key into `nativeKeys` and `cmdInit` looks the candidate up by it,
     so two copies of the formula is how the two stop agreeing.
+- **A gateway unattributable to a single harness is offered as `config/<gateway>`.**
+  `deriveInitState` (`src/init/helpers.ts`) names a gateway `config/<gateway>` when
+  no harness offers it *or* when more than one distinct harness does — both are
+  equally unattributable, since a bare gateway name in `sonata.toml` doesn't record
+  which harness's discovery produced it (e.g. opencode and pi both separately
+  cataloguing the same public gateway, verified live). The discover phase
+  (`src/init/discover.ts`) synthesizes that row for both cases; previously it
+  synthesized only the absent case, so an ambiguous gateway produced a
+  `providerKey` that `offered` never contained, and scripted `sonata init --yes`
+  rejected it as unknown before role selection was even reached. Crediting
+  every overlapping harness would be just as wrong — it pre-selects a harness
+  the user never actually chose, with no way to make it stick unticked.
 - **A prompt must `ref()` stdin while it waits** (`src/tui.ts`, `readKeys`). A
   paused stdin's handle is *unreferenced*, so waiting on a keystroke is not work
   node knows about: with nothing else pending the process exits, code 0,

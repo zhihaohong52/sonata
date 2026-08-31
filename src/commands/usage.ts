@@ -46,7 +46,10 @@ function labelOf(row: LedgerRow, by: UsageDimension, sessions: Record<string, Se
   switch (by) {
     // An anthropic row has no sonata key; its alias is the model, which is
     // exactly the baseline the comparison needs on the same axis.
-    case 'model': return row.key ?? row.alias;
+    // `??` alone let an empty-string alias through, and a router request that
+    // never resolved a model writes exactly that — producing a nameless row in
+    // a cost report, which is the one thing a cost report may not have.
+    case 'model': return row.key || row.alias || '(unresolved)';
     case 'role': return row.role ?? '—';
     case 'tier': return row.tier ?? '—';
     case 'gateway': return row.gateway ?? row.upstream;

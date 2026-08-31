@@ -13,6 +13,12 @@ export interface RankedSelectProps<T> {
   initialRanked?: T[];
   footer?: string;
   onSubmit: (ranked: T[]) => void;
+  /**
+   * Confirm this screen AND every screen after it. Passed only while later
+   * screens exist, so the key never appears on the last one, where it would
+   * mean exactly what `enter` already does.
+   */
+  onAcceptRest?: (ranked: T[]) => void;
   onBack?: () => void;
   onCancel?: () => void;
 }
@@ -25,7 +31,7 @@ function initialIndices<T>(items: Array<RankedSelectItem<T>>, initialRanked: T[]
 }
 
 export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement {
-  const { title, items, initialRanked, footer, onSubmit, onBack, onCancel } = props;
+  const { title, items, initialRanked, footer, onSubmit, onAcceptRest, onBack, onCancel } = props;
   const [state, dispatch] = useReducer(
     (current: ReturnType<typeof rsInitial>, action: Parameters<typeof rsReduce>[1]) => (
       rsReduce(current, action, items.length)
@@ -61,6 +67,12 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
       dispatch({ type: 'toggle' });
       return;
     }
+    // Guarded by the same non-empty rule as `enter`: accepting the rest must
+    // not be a way to submit a ranking `enter` would have refused.
+    if ((input === 'a' || input === 'A') && onAcceptRest && state.ranked.length > 0) {
+      onAcceptRest(state.ranked.map((index) => items[index].value));
+      return;
+    }
     if (input === '[') {
       dispatch({ type: 'moveUp' });
       return;
@@ -82,8 +94,16 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
           </Text>
         );
       })}
+      {/*
+        `enter` is ignored while nothing is ranked, so without this line the
+        screen just sits there against a footer promising "enter confirm" —
+        indistinguishable from a hang.
+      */}
+      {state.ranked.length === 0 && (
+        <Text color="yellow">Select at least one model — space toggles, and the order you pick is the fallback order.</Text>
+      )}
       <Text dimColor>
-        {`space toggle · [ ] rank · enter confirm${onBack ? ' · ← back' : ''}${onCancel ? ' · esc cancel' : ''}`}
+        {`↑↓ choose · space toggle · [ or ] to reorder · enter confirm${onAcceptRest ? ' · A accept all remaining' : ''}${onBack ? ' · ← back' : ''}${onCancel ? ' · esc cancel' : ''}`}
       </Text>
       {footer !== undefined && <Text dimColor>{footer}</Text>}
     </Box>

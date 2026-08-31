@@ -10,6 +10,7 @@ import {
   configuredProviderNames,
   importableProviders,
   initialRankedFor,
+  acceptRemainingTiers,
   importHint,
   validateCustomProviderName,
   validateProviderUrl,
@@ -408,6 +409,74 @@ describe('importHint', () => {
   it('says so when an expiry is unknown', () => {
     expect(importHint('opencode', { ...noCred, opencode: { expiresInDays: null } }))
       .toBe('via opencode · expiry unknown');
+  });
+});
+
+describe('acceptRemainingTiers', () => {
+  const roles = ['review', 'code'];
+  const proposal = { simple: ['cheap', 'mid'], complex: ['mid', 'cheap'] };
+
+  it('fills every remaining role and tier, so the summary is reachable in one keypress', () => {
+    const state = acceptRemainingTiers({ roles }, roles, 0, proposal);
+    expect(state.tiers).toEqual({
+      review: { simple: ['cheap', 'mid'], complex: ['mid', 'cheap'] },
+      code: { simple: ['cheap', 'mid'], complex: ['mid', 'cheap'] },
+    });
+  });
+
+  it('leaves screens before the start index untouched', () => {
+    // The caller has already applied the current screen with whatever the user
+    // ranked on it; accepting the rest must not overwrite that with the seed.
+    const ranked = { roles, tiers: { review: { simple: ['mid'], complex: [] } } };
+    const state = acceptRemainingTiers(ranked, roles, 1, proposal);
+    expect(state.tiers?.review.simple).toEqual(['mid']);
+  });
+
+  it('keeps a ranking already saved for a later role rather than resetting it to the proposal', () => {
+    const saved = { roles, tiers: { code: { simple: ['mid'], complex: ['cheap'] } } };
+    const state = acceptRemainingTiers(saved, roles, 0, proposal);
+    expect(state.tiers?.code).toEqual({ simple: ['mid'], complex: ['cheap'] });
+  });
+
+  it('drops a saved model whose provider was deselected, as confirming the screen would', () => {
+    // `tierPickerKeys` deliberately withholds a key that HAS a native route but
+    // whose provider is deselected this session, so it never reaches the
+    // picker's items — and `RankedSelect` drops any initialRanked value missing
+    // from items. Pressing enter through the screen therefore writes the tier
+    // without it. Bulk acceptance has to reach the same answer, or `A` and
+    // enter produce different configs from the same state.
+    const state = {
+      roles: ['code'],
+      nativeKeys: ['a'],
+      tiers: { code: { simple: ['a', 'b'], complex: ['a', 'b'] } },
+    };
+    const next = acceptRemainingTiers(state, ['code'], 0, { simple: ['a'], complex: ['a'] }, ['a', 'b']);
+    expect(next.tiers?.code.simple).toEqual(['a']);
+    expect(next.tiers?.code.complex).toEqual(['a']);
+  });
+
+  it.each([
+    ['every model still selected', { roles, nativeKeys: ['cheap', 'mid'] }, ['cheap', 'mid']],
+    ['a saved model whose provider was deselected', {
+      roles, nativeKeys: ['cheap'], tiers: { review: { simple: ['cheap', 'mid'], complex: ['mid'] } },
+    }, ['cheap', 'mid']],
+  ])('is indistinguishable from pressing enter through every remaining screen — %s', (_name, start, universe) => {
+    // The guarantee that makes the shortcut safe to offer at all. The walk
+    // restates what the component does rather than calling the shared helper:
+    // RankedSelect builds its rows with tierPickerKeys and then drops any
+    // seeded value missing from them, so simulating that independently is what
+    // makes this an equivalence check instead of a tautology.
+    let stepped = start as ReturnType<typeof applyStep>;
+    for (let index = 0; index < roles.length * 2; index++) {
+      const role = roles[Math.floor(index / 2)];
+      const tier = index % 2 === 0 ? 'simple' : 'complex';
+      const seeded = initialRankedFor(stepped.tiers?.[role]?.[tier], proposal[tier]);
+      const rows = tierPickerKeys(stepped.nativeKeys ?? [], seeded, universe);
+      stepped = applyStep(stepped, 4, {
+        role, tier, ranked: seeded.filter((key) => rows.includes(key)),
+      });
+    }
+    expect(acceptRemainingTiers(start, roles, 0, proposal, universe)).toEqual(stepped);
   });
 });
 

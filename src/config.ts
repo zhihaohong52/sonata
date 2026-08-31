@@ -21,6 +21,23 @@ export interface ModelConfig { harness: string; id: string }
 export const TIER_NAMES = ['simple', 'complex'] as const;
 
 /**
+ * Whether a role's two tier lists are element-wise identical — the single
+ * condition behind both "this role needs one agent file, not two" and "the
+ * unsuffixed `sonata-<role>` alias cannot hide a tier choice". Ordered
+ * equality, because a tier is a *ranking*: the same models in a different
+ * order are a different fallback chain.
+ *
+ * Extracted because three call sites had each rebuilt it — `cmdSync`, which
+ * writes the agent files; `resolveTierAlias`, which routes to them; and
+ * `sonata init`'s confirm summary, which counts them. The third had rebuilt it
+ * differently and so promised twice the files `sync` went on to write.
+ */
+export function tiersCollapse(lists: { simple: string[]; complex: string[] }): boolean {
+  return lists.simple.length === lists.complex.length &&
+    lists.simple.every((key, index) => key === lists.complex[index]);
+}
+
+/**
  * One model, however it is reached. `gateway` is the native route (default
  * execution path, through the router); `harness` is the fallback route the
  * dispatch CLI uses when every native route is down. At least one must be
@@ -646,12 +663,7 @@ export function resolveTierAlias(
   // An unsuffixed alias is valid only when it cannot hide a tier choice. Use
   // ordered equality: both ranking and membership are part of the contract.
   const hasExplicitTier = rest !== role;
-  if (!hasExplicitTier && (
-    lists.simple.length !== lists.complex.length ||
-    !lists.simple.every((key, index) => key === lists.complex[index])
-  )) {
-    return undefined;
-  }
+  if (!hasExplicitTier && !tiersCollapse(lists)) return undefined;
   const keys = tier === 'simple' ? lists.simple : lists.complex;
   const routes = keys.map((key): TierRoute => {
     const model = config.unifiedModels[key];
@@ -748,17 +760,27 @@ export function generatedNativeAgents(config: SonataConfig): { role: string; mod
  * `doctor` computed this separately and disagreed, so `sync` wrote a file that
  * `doctor` then reported as stale, on every run.
  */
-export function expectedAgentNames(config: SonataConfig): string[] {
-  if (config.tiers !== undefined) {
-    const names: string[] = [];
-    for (const [role, lists] of Object.entries(config.tiers)) {
-      const collapsed = lists.simple.length === lists.complex.length &&
-        lists.simple.every((model, index) => model === lists.complex[index]);
-      if (collapsed) names.push(role);
-      else names.push(...TIER_NAMES.map((tier) => `${role}-${tier}`));
-    }
-    return names;
+/**
+ * Agent file names for a `[tiers]` config: one per role when that role's
+ * `simple` and `complex` lists are element-wise identical, otherwise one per
+ * role × tier.
+ *
+ * Exported because `sonata init`'s confirm summary has to predict this count
+ * before `sync` runs. It previously counted roles × models instead, so a
+ * config whose tiers collapse was promised twice the files it got — the one
+ * screen whose whole job is to say what will be written.
+ */
+export function tierAgentNames(tiers: NonNullable<SonataConfig['tiers']>): string[] {
+  const names: string[] = [];
+  for (const [role, lists] of Object.entries(tiers)) {
+    if (tiersCollapse(lists)) names.push(role);
+    else names.push(...TIER_NAMES.map((tier) => `${role}-${tier}`));
   }
+  return names;
+}
+
+export function expectedAgentNames(config: SonataConfig): string[] {
+  if (config.tiers !== undefined) return tierAgentNames(config.tiers);
   const harness = generatedAgents(config);
   const native = generatedNativeAgents(config);
   const harnessNames = harness.map((a) => `${a.role}-${a.model}`);

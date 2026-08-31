@@ -20,7 +20,7 @@ keep — every item below exists to close one of them:
 - **Your config survives** — a `sonata.toml` written on launch day still
   loads at 1.9, with migration that runs itself.
 
-## Twelve items, four movements
+## Fourteen items, four movements
 
 Status legend: ✅ shipped · 🔸 in progress · ⏳ not started.
 
@@ -38,8 +38,10 @@ Status legend: ✅ shipped · 🔸 in progress · ⏳ not started.
 | # | Item | Priority | Size | Status |
 |---|---|---|---|---|
 | 05 | A daemon lifecycle you can trust (instance-id handshake, actionable takeover) | P0 | S–M | ✅ shipped in [0.3.0](https://github.com/zhihaohong52/sonata/pull/4) |
-| 06 | `sonata init` hardening — the front door is the largest, least-tested file | P0 | L | 🔸 in progress — 0.3.1/0.3.2 fixed a run of wizard and ranking defects; the decomposition and end-to-end tests this item asks for are still outstanding |
+| 06 | `sonata init` hardening — the front door is the largest, least-tested file | P0 | L | ✅ shipped in 0.4.0 — `init.ts` decomposed into `src/init/` (discover / validate / plan / apply / interactive-state / scripted-state / toml) with end-to-end tests for the pipeline; the interactive TUI has not been hand-driven through `/cmux`, and the Ink stdin-teardown class is knowingly uncovered |
 | 07 | Close the last false-success gap (worktree delta captured at launch and exit) | P1 | S | ⏳ not started |
+| 13 | A repeating 400 must cool a candidate down — a permanently-broken model currently absorbs its whole tier ([spec](specs/2026-08-30-routing-reliability-defects.md)) | P0 | S | ⏳ not started |
+| 14 | A killed subagent pins routing on for good, and `sonata route off` does not clear it ([spec](specs/2026-08-30-routing-reliability-defects.md)) | P0 | S | ⏳ not started |
 
 ### III. Distribution — can a stranger actually run this?
 
@@ -70,8 +72,12 @@ to try any of it. Freeze last.
 - **0.4 — "Let strangers in."** npm publish with an automated release, a
   managed LiteLLM venv, and a decomposed, end-to-end-tested `init`. This is
   the release that converts a repository into a product — and the one that
-  will generate the bug reports 1.0 needs to have already answered. *Items
-  06 · 08 · 09.*
+  will generate the bug reports 1.0 needs to have already answered. Two
+  P0 reliability defects found in live use (a broken model absorbing its
+  tier; a killed subagent pinning routing on for good) belong here too —
+  shipping the install path while those defects are open would hand new
+  users the very things that bit the existing ones. *Items 06 · 08 · 09 ·
+  13 · 14.*
 - **1.0 — "Freeze the contract."** Schema version and load-time migration,
   structured doctor output, budget caps, the false-success check, and one
   report manifest. Ship 1.0 only after 0.4 has been in strangers' hands

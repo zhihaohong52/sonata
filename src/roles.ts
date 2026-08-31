@@ -1,6 +1,19 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+/**
+ * One line per role, in the same words the generated agent's `description`
+ * uses. Lives here rather than in `sync.ts` so `sonata init`'s role picker can
+ * label its rows with it: the wizard used to list the four roles as bare words,
+ * leaving a first-time user to guess what `plan` did that `explore` did not.
+ */
+export const ROLE_BLURB: Record<string, string> = {
+  code: 'implementation, refactors, and mechanical code changes',
+  review: 'reviewing existing code for defects, without modifying it',
+  explore: 'locating code and answering questions about the codebase, without modifying it',
+  plan: 'producing an implementation plan for a change, without performing it',
+};
+
 export function loadRole(role: string, rolesDir: string): string {
   const path = join(rolesDir, `${role}.md`);
   if (!existsSync(path)) {
