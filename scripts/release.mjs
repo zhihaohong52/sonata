@@ -33,8 +33,12 @@ function compare(a, b) {
 }
 
 export function assertNextVersion(next, current) {
-  if (!/^\d+\.\d+\.\d+$/.test(next)) {
-    throw new Error(`release: "${next}" is not a semver version (expected MAJOR.MINOR.PATCH, no leading v)`);
+  // `\d+` per component would accept `01.0.0`, which SemVer 2.0.0 disallows —
+  // and it compares as 1.0.0, so it clears the greater-than check below and
+  // reaches the CHANGELOG heading, which is written before `npm version` ever
+  // sees the string. `(0|[1-9]\d*)` is the spec's own numeric identifier.
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(next)) {
+    throw new Error(`release: "${next}" is not a semver version (expected MAJOR.MINOR.PATCH, no leading v or leading zeroes)`);
   }
   if (compare(next, current) <= 0) {
     throw new Error(`release: ${next} must be greater than the current version ${current}`);

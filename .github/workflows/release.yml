@@ -18,6 +18,12 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # `contents: write` above makes the job token powerful enough to push.
+          # checkout persists it into local git config by default, where every
+          # later step — including anything npm runs — can reach it. `gh release
+          # create` is handed GH_TOKEN explicitly, so nothing here needs it.
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -26,6 +32,16 @@ jobs:
           # Required for npm to authenticate against the registry at publish
           # time, OIDC included.
           registry-url: 'https://registry.npmjs.org'
+
+      # Node 22 bundles npm 10.x, and trusted publishing needs >= 11.5.1 — the
+      # runner was measured at node v22.23.2. Without this the OIDC publish
+      # fails at the registry rather than in any check above it. Node itself
+      # stays on 22 deliberately: that is the version the suite is tested on,
+      # and the publishing client is the only part that needs to be newer.
+      - name: Ensure npm supports trusted publishing
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
 
       # The tag names the version, but package.json is what npm actually
       # publishes. If they disagree, the tag points at one version and the
@@ -48,8 +64,20 @@ jobs:
 
       # `npm ci` in the composite action installs devDependencies; the build
       # it runs is what `files` ships. Nothing else to do before publishing.
+      #
+      # Skipped when this exact version is already on the registry, so a rerun
+      # after a later step failed does not die on npm's "cannot publish over an
+      # existing version" — the publish is the one step in this job that cannot
+      # be undone, which makes it the one that most needs to be re-runnable.
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already on the registry — skipping publish."
+          else
+            npm publish --access public --provenance
+          fi
 
       # The body is this version's CHANGELOG section, so the release notes and
       # the changelog cannot drift — there is only one place they are written.
@@ -60,7 +88,15 @@ jobs:
           node scripts/release.mjs --notes "${GITHUB_REF_NAME#v}" > /tmp/notes.md
           echo "Extracted $(wc -l < /tmp/notes.md) lines of notes."
 
+      # Same rerun reasoning as the publish step: `gh release create` fails on a
+      # tag that already has a release, which would leave a rerun red after the
+      # work it was rerun to finish had actually succeeded.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file /tmp/notes.md
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists — skipping."
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file /tmp/notes.md
+          fi

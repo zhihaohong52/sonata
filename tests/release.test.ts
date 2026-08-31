@@ -108,6 +108,22 @@ describe('assertNextVersion', () => {
     expect(() => assertNextVersion('v0.4', '0.3.4')).toThrow(/semver/i);
   });
 
+  it('rejects numeric identifiers padded with leading zeroes', () => {
+    // SemVer 2.0.0 disallows these, and `\d+` per component happily accepts
+    // them. `01.0.0` compares as 1.0.0 and so clears the greater-than check,
+    // and the changelog heading is written before `npm version` ever sees it —
+    // leaving an invalid version in a file the GitHub Release body is read
+    // from.
+    for (const bad of ['01.0.0', '0.04.0', '0.3.04']) {
+      expect(() => assertNextVersion(bad, '0.3.4'), bad).toThrow(/semver/i);
+    }
+  });
+
+  it('still accepts legitimate zero components', () => {
+    expect(() => assertNextVersion('1.0.0', '0.3.4')).not.toThrow();
+    expect(() => assertNextVersion('0.4.0', '0.3.4')).not.toThrow();
+  });
+
   it('rejects a version equal to or below the current one', () => {
     // Re-releasing a version silently overwrites a tag and confuses npm.
     expect(() => assertNextVersion('0.3.4', '0.3.4')).toThrow(/greater/i);
