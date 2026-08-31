@@ -9,6 +9,19 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 ## [Unreleased]
 
 ### Added
+- Generated agents can spawn subagents of their own. Write-capable roles
+  already inherited the agent tools, since they carry no `tools:` line at all;
+  read-only roles are now granted them explicitly (`Agent, Task, Workflow` —
+  `Task` is the pre-rename alias, and a stale name in an allow-list matches
+  nothing).
+
+  Read-only agents also carry a `## Delegating` section telling them to
+  delegate only to other read-only roles, because delegating to a `code-*`
+  agent writes to the repository through it. **That is guidance, not
+  enforcement**: `tools:` frontmatter grants tools, not permitted argument
+  values, so nothing stops a read-only agent from naming a write-capable
+  subagent. Nothing bounds recursion depth either — see Known Limitations in
+  `CLAUDE.md` for the full shape of what is unguarded.
 - `sonata init`'s tier screens take `A` to accept the ranking every remaining
   screen would have opened with, so four roles no longer cost eight
   near-identical confirmations. It is not a shortcut past the picker: it
