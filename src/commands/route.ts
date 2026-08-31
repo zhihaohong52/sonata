@@ -608,8 +608,8 @@ export async function cmdRoute(
     const sessions = routeSessionsFile(opts.cwd, scope, opts.home);
     // Takes the session lock here; `cmdRouteSession('end')` already holds it
     // when it delegates, so it calls `routeOffUnlocked` directly instead of
-    // coming through this branch. See LOCK ORDER above `clearSubagentRegistry`.
-    const settingsAfter = await withSessionLock(sessions, () => routeOffUnlocked(opts, scope, file, settings));
+    // coming through this branch. See LOCK ORDER above `routeOffUnlocked`.
+    const settingsAfter = await withSessionLock(sessions, () => routeOffUnlocked(opts, scope, file));
     return status(settingsAfter);
   }
 
@@ -720,8 +720,7 @@ export async function cmdRouteSession(
       // different locks guarded one file and excluded nothing. A SubagentStart
       // could read the pre-clear list, pause, and write it back afterwards,
       // restoring every id this cleanup had just erased.
-      await routeOffUnlocked(opts, scope, routeSettingsFile(opts.cwd, scope, opts.home),
-        readSettings(routeSettingsFile(opts.cwd, scope, opts.home)));
+      await routeOffUnlocked(opts, scope, routeSettingsFile(opts.cwd, scope, opts.home));
       return { sessions: 0, routing: 'off' };
     });
   }
@@ -816,12 +815,9 @@ export async function cmdRouteSession(
  * the last `SessionEnd`). `cmdRouteSubagent` holds the subagent lock alone and
  * must never acquire the session lock inside it — which is why it calls
  * `routeOffKeepingRegistries` rather than `cmdRoute('off')`.
- */
-async function clearSubagentRegistry(file: string): Promise<void> {
-  await withSessionLock(file, () => { writeSessions(file, []); });
-}
-
-/**
+ *
+ * ---
+ *
  * Everything `route off` does, assuming **the caller already holds the session
  * registry's lock**.
  *
@@ -837,21 +833,33 @@ async function routeOffUnlocked(
   opts: { cwd: string; home: string; packageRoot: string },
   scope: 'project' | 'global',
   settingsFile: string,
-  settings: Settings,
 ): Promise<Settings> {
-  const plan = planRouteOff(settings, opts.packageRoot);
-  if (plan.changed) writeSettings(settingsFile, plan.settings);
   // An explicit `off` means stop routing, so the auto registries go with it —
   // otherwise a stale id from a crashed session or subagent would have the next
   // hook turn routing straight back on. Only this scope's registries: an
   // explicit project-scoped `route off` must not wipe the shared global count
   // out from under other projects.
   writeSessions(routeSessionsFile(opts.cwd, scope, opts.home), []);
-  // The subagent registry was the half that never got cleared, which is why
-  // `route off` did not recover a pinned project: the ids survived their own
-  // documented fix, and the next SubagentStart took the count 6 -> 7, never 0.
-  await clearSubagentRegistry(routeSubagentsFile(opts.cwd, scope, opts.home));
-  return plan.settings;
+
+  // The settings are read HERE, inside the subagent lock, and deliberately NOT
+  // taken from the caller. `cmdRoute` reads settings ~60 lines before reaching
+  // this branch, and `SubagentStart` writes them while holding this very lock,
+  // so a plan computed from the caller's copy can be stale by the time it is
+  // applied: `planRouteOff` on already-off settings reports `changed: false`,
+  // nothing is written, and routing is left ON while both registries are
+  // cleared — exactly the pin this function exists to remove, now with no
+  // subagent registered to ever turn it off again.
+  //
+  // The subagent registry is also the half that never got cleared, which is
+  // why `route off` did not recover a pinned project: the ids survived their
+  // own documented fix, and the next SubagentStart took the count 6 -> 7.
+  const subagents = routeSubagentsFile(opts.cwd, scope, opts.home);
+  return await withSessionLock(subagents, () => {
+    const plan = planRouteOff(readSettings(settingsFile), opts.packageRoot);
+    if (plan.changed) writeSettings(settingsFile, plan.settings);
+    writeSessions(subagents, []);
+    return plan.settings;
+  });
 }
 
 function routeOffKeepingRegistries(

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 
 import {
   planRouteOn,
@@ -26,6 +26,7 @@ import {
   diagnoseRouteAuto,
 } from '../../src/commands/route.js';
 import type { Settings, HookEntry } from '../../src/settings.js';
+import { readSettings } from '../../src/settings.js';
 
 const NATIVE_TOML = `
 [native.models."deepseek"]
@@ -903,6 +904,35 @@ describe('Defect B — the registry that pins routing on', () => {
     expect(res).toEqual({ sessions: 0, routing: 'off' });
     expect(Date.now() - started).toBeLessThan(1_500);
     expect(readSessions(routeSubagentsFile(cwd, 'project', home))).toEqual([]);
+  });
+
+  it('applies route off to the settings as they are when the lock is taken, not as they were before', async () => {
+    // `cmdRoute` reads settings ~60 lines before this branch takes its lock,
+    // and `SubagentStart` writes settings while holding the subagent lock. A
+    // plan computed from that early copy is stale by the time it is applied:
+    // `planRouteOff` on already-off settings reports `changed: false`, nothing
+    // is written, and routing is left ON while both registries are cleared —
+    // routing on, count zero, and nothing left that could ever turn it off.
+    //
+    // Racing two promises does not reliably hit that window (measured: 0/10),
+    // so the interleaving is forced. Holding the subagent lock parks `route
+    // off` exactly between its settings read and its settings write, which is
+    // the whole window.
+    const o = base();
+    const subagents = routeSubagentsFile(cwd, 'project', home);
+    mkdirSync(dirname(subagents), { recursive: true });
+    mkdirSync(`${subagents}.lock`);
+
+    const off = cmdRoute('off', o);
+    await new Promise((r) => setTimeout(r, 50));
+    // What a concurrent SubagentStart does while `route off` is parked.
+    await cmdRoute('on', o);
+    rmSync(`${subagents}.lock`, { recursive: true, force: true });
+    await off;
+
+    // `route off` must act on the routing it found when it took the lock.
+    expect(routeEnv(readSettings(routeSettingsFile(cwd, 'project', home))).ANTHROPIC_BASE_URL)
+      .toBeUndefined();
   });
 
   it('a SubagentStart racing the clear cannot resurrect the cleared ids', async () => {
