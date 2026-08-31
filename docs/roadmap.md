@@ -38,7 +38,7 @@ Status legend: ✅ shipped · 🔸 in progress · ⏳ not started.
 | # | Item | Priority | Size | Status |
 |---|---|---|---|---|
 | 05 | A daemon lifecycle you can trust (instance-id handshake, actionable takeover) | P0 | S–M | ✅ shipped in [0.3.0](https://github.com/zhihaohong52/sonata/pull/4) |
-| 06 | `sonata init` hardening — the front door is the largest, least-tested file | P0 | L | ✅ shipped in 0.4.0 — `init.ts` decomposed into `src/init/` (discover / validate / plan / apply / interactive-state / scripted-state / toml) with end-to-end tests for the pipeline; the interactive TUI has not been hand-driven through `/cmux`, and the Ink stdin-teardown class is knowingly uncovered |
+| 06 | `sonata init` hardening — the front door is the largest, least-tested file | P0 | L | ✅ merged, awaiting the 0.4.0 release — `init.ts` 1502 → 184 lines, decomposed into `src/init/` (discover / validate / plan / apply / interactive-state / scripted-state / toml) with end-to-end tests for the pipeline. The interactive TUI **has** now been hand-driven through `/cmux` (2026-08-31), which found two functional bugs no test had: a confirm summary promising 8 agent files where `sync` writes 4, and a gateway reported keyless one line above `✓ stored the key`. The Ink stdin-teardown class remains knowingly uncovered |
 | 07 | Close the last false-success gap (worktree delta captured at launch and exit) | P1 | S | ⏳ not started |
 | 13 | A repeating 400 must cool a candidate down — a permanently-broken model currently absorbs its whole tier ([spec](specs/2026-08-30-routing-reliability-defects.md)) | P0 | S | ⏳ not started |
 | 14 | A killed subagent pins routing on for good, and `sonata route off` does not clear it ([spec](specs/2026-08-30-routing-reliability-defects.md)) | P0 | S | ⏳ not started |
@@ -47,7 +47,7 @@ Status legend: ✅ shipped · 🔸 in progress · ⏳ not started.
 
 | # | Item | Priority | Size | Status |
 |---|---|---|---|---|
-| 08 | Publish to npm, and automate the release | P0 | S | ⏳ not started |
+| 08 | Publish to npm, and automate the release | P0 | S | 🔨 automation built, first publish pending — `npm run release -- <version>` promotes `[Unreleased]`, bumps the manifest and lock, and tags; `release.yml` publishes on the pushed tag via npm trusted publishing (OIDC) with provenance, storing no token. **The one-time bootstrap is manual and deliberate**: npm cannot attach a trusted publisher to a package that does not exist, so the first `npm publish --access public` is run by hand, and only then is OIDC configurable. Until that happens the name is unclaimed and "install from source" still holds |
 | 09 | Own the LiteLLM dependency — manage it, don't replace it (pinned managed venv, doctor installs/repairs) | P0 | M | ⏳ not started |
 
 ### IV. Contract — the part where the number stops being decorative
