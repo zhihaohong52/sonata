@@ -1,0 +1,66 @@
+name: release
+
+# Fires on the tag `scripts/release.mjs` creates. That script deliberately
+# does not push, so publishing is always a separate, deliberate act:
+# `git push --follow-tags` is the moment a release becomes public.
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # npm trusted publishing (OIDC) — this is what removes the need for a
+      # long-lived NPM_TOKEN in repo secrets. It also backs --provenance.
+      id-token: write
+      # Creating the GitHub Release.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          # Required for npm to authenticate against the registry at publish
+          # time, OIDC included.
+          registry-url: 'https://registry.npmjs.org'
+
+      # The tag names the version, but package.json is what npm actually
+      # publishes. If they disagree, the tag points at one version and the
+      # registry receives another — the one failure this scheme cannot
+      # self-correct, and it is silent without an explicit check.
+      - name: Tag must match package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "Tag $GITHUB_REF_NAME implies version $tag, but package.json says $pkg."
+            echo "Re-tag, or fix package.json — do not publish a mismatch."
+            exit 1
+          fi
+          echo "Publishing version $pkg."
+
+      # Identical to what gates every merge: same suite, same tmux, same
+      # tarball-contents check, one definition.
+      - uses: ./.github/actions/verify
+
+      # `npm ci` in the composite action installs devDependencies; the build
+      # it runs is what `files` ships. Nothing else to do before publishing.
+      - name: Publish to npm
+        run: npm publish --access public --provenance
+
+      # The body is this version's CHANGELOG section, so the release notes and
+      # the changelog cannot drift — there is only one place they are written.
+      # Extraction lives in the script, where it is tested, rather than inline
+      # in YAML where it would be neither reviewed nor run before a release.
+      - name: Extract release notes
+        run: |
+          node scripts/release.mjs --notes "${GITHUB_REF_NAME#v}" > /tmp/notes.md
+          echo "Extracted $(wc -l < /tmp/notes.md) lines of notes."
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file /tmp/notes.md
