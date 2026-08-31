@@ -96,9 +96,10 @@ declined, with the reason attached.
   exactly why it never corrupts a response in flight. Failing over
   mid-stream means buffering, which forfeits streaming. The 529-and-retry
   path already covers the case that matters.
-- **A rendering or streaming layer.** Parity with a native Claude subagent
-  is the ceiling, not a floor. Work aimed above it was considered earlier
-  and declined; nothing has changed.
+- **A rendering or streaming layer.** For rendering and streaming, parity
+  with a native Claude subagent remains the ceiling, not a floor. Agent
+  fan-out is the deliberate exception granted on 2026-08-30; it does not
+  reopen work on either declined layer.
 - **An MCP server.** Removed on purpose in 0.2.0. Bash commands with a
   working allow-list beat RPC tools the permission classifier judges
   inconsistently — that failure was observed, not theorised.

@@ -9,6 +9,44 @@ export { TIER_AGENT_MARKER } from '../agent-markers.js';
 
 export interface AgentSpec { role: string; model: string; harness: string }
 
+/**
+ * Tools that let a generated agent spawn further agents.
+ *
+ * `Task` is the pre-rename alias for `Agent`; both are listed because sonata
+ * generates files for whatever Claude Code version the user has, and a stale
+ * name in an allow-list matches nothing while a missing one silently drops the
+ * capability.
+ */
+const FANOUT_TOOLS = 'Agent, Task, Workflow';
+
+const DELEGATING = `## Delegating
+
+You may spawn subagents. Delegate only to read-only agent types — \`review-*\`,
+\`explore-*\`, \`plan-*\`. This run is read-only, and delegating to a \`code-*\` agent
+writes to the repository through it. Nothing enforces this but you.
+
+Keep fan-out proportionate: every subagent spends tokens your caller pays for, and
+nothing bounds how deep this nests.
+`;
+
+/**
+ * A read-only role's frontmatter tool list. Fan-out is granted to read-only
+ * roles explicitly because their `tools:` line is an allow-list — omitting the
+ * agent tools there is what would remove the capability, whereas a
+ * write-capable role has no `tools:` line at all and already inherits them.
+ */
+function toolsForRole(role: string): string {
+  if (!isReadOnlyRole(role)) {
+    // Write-capable agents already inherit the full tool set, including fan-out.
+    return '';
+  }
+  return `tools: Read, Grep, Glob, ${FANOUT_TOOLS}\n`;
+}
+
+function delegatingForRole(role: string): string {
+  return isReadOnlyRole(role) ? `\n\n${DELEGATING}` : '';
+}
+
 export function agentMarkdown(spec: AgentSpec): string {
   const name = `${spec.role}-${spec.model}`;
   const blurb = ROLE_BLURB[spec.role] ?? spec.role;
@@ -138,7 +176,8 @@ Your final message must end with a line naming the run:
 
 export function nativeAgentMarkdown(spec: { role: string; model: string }): string {
   const blurb = ROLE_BLURB[spec.role] ?? spec.role;
-  const tools = isReadOnlyRole(spec.role) ? 'tools: Read, Grep, Glob\n' : '';
+  const tools = toolsForRole(spec.role);
+  const delegating = delegatingForRole(spec.role);
 
   return `---
 name: native-${spec.role}-${spec.model}
@@ -148,7 +187,7 @@ ${tools}---
 
 This agent only works in a routed session (sonata code, or sonata route on).
 
-Focus on ${blurb}.
+Focus on ${blurb}.${delegating}
 `;
 }
 
@@ -157,7 +196,8 @@ export function tierAgentMarkdown(spec: { role: string; tier?: 'simple' | 'compl
   const tier = spec.tier;
   const name = tier === undefined ? spec.role : `${spec.role}-${tier}`;
   const model = tier === undefined ? `sonata-${spec.role}` : `sonata-${spec.role}-${tier}`;
-  const tools = isReadOnlyRole(spec.role) ? 'tools: Read, Grep, Glob\n' : '';
+  const tools = toolsForRole(spec.role);
+  const delegating = delegatingForRole(spec.role);
   const description = tier === undefined
     ? `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop. Requires a routed session (sonata code, or sonata route on/auto).`
     : `Runs ${blurb} on a ranked list of foreign models (${tier} tier), natively inside Claude Code's loop. Simple = mechanical, well-specified, contained work (single file, clear spec, bulk edits). Complex = cross-cutting, ambiguous, design-sensitive, or needs sustained reasoning. When unsure, use -complex. Requires a routed session (sonata code, or sonata route on/auto).`;
@@ -172,7 +212,7 @@ This agent only works in a routed session (sonata code, or sonata route on/auto)
 
 ${TIER_AGENT_MARKER} — edits here are overwritten on the next sync.
 
-Focus on ${blurb}.
+Focus on ${blurb}.${delegating}
 `;
 }
 

@@ -116,9 +116,44 @@ describe('nativeAgentMarkdown', () => {
     expect(md).toContain('sonata code');
   });
 
-  it('restricts a read-only native role to read tools', () => {
+  it('gives a read-only native role read and fan-out tools with the delegation guard', () => {
     const md = nativeAgentMarkdown({ role: 'explore', model: 'deepseek-v4-flash' });
-    expect(md).toMatch(/^tools: Read, Grep, Glob$/m);
+    expect(md).toMatch(/^tools: Read, Grep, Glob, Agent, Task, Workflow$/m);
+    expect(md).toContain('## Delegating');
+  });
+
+  it('leaves a write-capable native role unrestricted without the delegation guard', () => {
+    // A write-capable role has no `tools:` line at all, so it already inherits
+    // fan-out. The guard is addressed to roles that must not delegate writes,
+    // and adding it here would be advice about a constraint that is not theirs.
+    const md = nativeAgentMarkdown({ role: 'code', model: 'deepseek-v4-flash' });
+    expect(md).not.toMatch(/^tools:/m);
+    expect(md).not.toContain('## Delegating');
+  });
+});
+
+describe('tierAgentMarkdown', () => {
+  it('gives a read-only tier agent read and fan-out tools', () => {
+    // `tools:` is an allow-list: omitting the agent tools from a read-only
+    // role's line is what removes the capability, so granting fan-out has to
+    // be explicit here even though a write-capable role gets it for free.
+    const md = tierAgentMarkdown({ role: 'explore' });
+    expect(md).toMatch(/^tools: Read, Grep, Glob, Agent, Task, Workflow$/m);
+  });
+
+  it('leaves a write-capable tier agent unrestricted', () => {
+    const md = tierAgentMarkdown({ role: 'code', tier: 'simple' });
+    expect(md).not.toMatch(/^tools:/m);
+  });
+
+  it('adds the delegation guard to a read-only tier agent', () => {
+    const md = tierAgentMarkdown({ role: 'explore' });
+    expect(md).toContain('## Delegating');
+  });
+
+  it('does not add the delegation guard to a write-capable tier agent', () => {
+    const md = tierAgentMarkdown({ role: 'code', tier: 'simple' });
+    expect(md).not.toContain('## Delegating');
   });
 });
 
@@ -307,7 +342,7 @@ complex = ["simple-model"]
     expect(readFileSync(join(agentsDir, 'code-complex.md'), 'utf8')).toContain('model: sonata-code-complex');
     const explore = readFileSync(join(agentsDir, 'explore.md'), 'utf8');
     expect(explore).toContain('model: sonata-explore');
-    expect(explore).toMatch(/^tools: Read, Grep, Glob$/m);
+    expect(explore).toMatch(/^tools: Read, Grep, Glob, Agent, Task, Workflow$/m);
     expect(existsSync(join(agentsDir, 'code-simple-model.md'))).toBe(false);
     expect(existsSync(join(agentsDir, 'native-code-simple-model.md'))).toBe(false);
   });
