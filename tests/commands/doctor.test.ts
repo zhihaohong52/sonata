@@ -827,6 +827,22 @@ describe('routingFailureDetail — naming the cause, not just the fix', () => {
     });
     expect(detail).toContain('http://localhost:9999');
     expect(detail).toContain('http://localhost:4100');
+    expect(detail).toContain('sonata route auto');
+  });
+
+  it('does not call a base URL sonata never wrote a stale router port', () => {
+    // `route on`/`route off` own only `http://localhost:<port>`; anything else
+    // was set deliberately by someone with a reason. Recommending
+    // `sonata route auto` here is not merely imprecise — `planRouteAuto` calls
+    // `planRouteOff`, which THROWS on a URL sonata does not own, so the
+    // suggested repair fails outright for a user behind a corporate proxy.
+    const detail = routingFailureDetail({
+      ...base,
+      projectSettings: { env: { ANTHROPIC_BASE_URL: 'https://proxy.example' } },
+    });
+    expect(detail).toContain('https://proxy.example');
+    expect(detail).toMatch(/sonata did not write|not written by sonata/i);
+    expect(detail).not.toContain('sonata route auto');
   });
 
   it('falls back to the plain instruction when packageRoot is unknown', () => {
