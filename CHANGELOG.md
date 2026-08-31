@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-31
+
 ### Added
 - Generated agents can spawn subagents of their own. Write-capable roles
   already inherited the agent tools, since they carry no `tools:` line at all;
