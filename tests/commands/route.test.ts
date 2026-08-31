@@ -23,6 +23,7 @@ import {
   routeSubagentsFile,
   subagentHookCommand,
   SONATA_AGENT_MATCHER,
+  diagnoseRouteAuto,
 } from '../../src/commands/route.js';
 import type { Settings, HookEntry } from '../../src/settings.js';
 
@@ -778,5 +779,66 @@ describe('subagent hook installation', () => {
     const manual = planRouteManual(auto.settings, PACKAGE_ROOT);
     expect(manual.settings.hooks?.SubagentStart ?? []).toHaveLength(0);
     expect(manual.settings.hooks?.SubagentStop ?? []).toHaveLength(0);
+  });
+});
+
+describe('diagnoseRouteAuto — why routing is not detected', () => {
+  // `sonata doctor` reported every one of these as
+  // "tier agents need a routed session — run `sonata route auto`", which is
+  // the right instruction for exactly one of them and a dead end for the
+  // rest: a user who has just run that command is told to run it again, with
+  // nothing naming what is actually wrong.
+  const OTHER_ROOT = '/somewhere/else/sonata';
+
+  it('reports a complete install as installed', () => {
+    const { settings } = planRouteAuto({}, PACKAGE_ROOT);
+    expect(diagnoseRouteAuto(settings, PACKAGE_ROOT)).toEqual({ kind: 'installed' });
+  });
+
+  it('reports settings with no sonata routing hooks as absent', () => {
+    expect(diagnoseRouteAuto({}, PACKAGE_ROOT)).toEqual({ kind: 'absent' });
+  });
+
+  it('leaves an unrelated hook classified as absent rather than partial', () => {
+    const settings: Settings = {
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'node /some/other/tool.mjs' }] }] },
+    };
+    expect(diagnoseRouteAuto(settings, PACKAGE_ROOT)).toEqual({ kind: 'absent' });
+  });
+
+  it('names the other install when the hooks belong to a different sonata', () => {
+    // The case that made this worth fixing: `route auto` really has been run,
+    // the hooks really are there, and they run a sonata at a different path —
+    // an npm-global install after a source checkout, a moved clone, a worktree.
+    const { settings } = planRouteAuto({}, OTHER_ROOT);
+    expect(diagnoseRouteAuto(settings, PACKAGE_ROOT)).toEqual({
+      kind: 'other-install', roots: [OTHER_ROOT],
+    });
+  });
+
+  it('reports an install carrying only the session pair as partial, naming the subagent hooks', () => {
+    // The pre-subagent install: the session pair alone never routes anything,
+    // because the subagent pair is what actually turns routing on.
+    const { settings } = planRouteAuto({}, PACKAGE_ROOT);
+    delete settings.hooks!.SubagentStart;
+    delete settings.hooks!.SubagentStop;
+    expect(diagnoseRouteAuto(settings, PACKAGE_ROOT)).toEqual({
+      kind: 'partial', missing: ['SubagentStart', 'SubagentStop'],
+    });
+  });
+
+  it('prefers the other-install diagnosis over partial when both could apply', () => {
+    // A foreign install is also, technically, "missing" every expected
+    // command. Saying so would send the user to re-run a command whose real
+    // effect is repointing the hooks — true, but it never names why.
+    const { settings } = planRouteAuto({}, OTHER_ROOT);
+    delete settings.hooks!.SubagentStop;
+    expect(diagnoseRouteAuto(settings, PACKAGE_ROOT).kind).toBe('other-install');
+  });
+
+  it('does not confuse the two scopes: a global install is not this project install', () => {
+    const { settings } = planRouteAuto({}, PACKAGE_ROOT, 'global');
+    expect(diagnoseRouteAuto(settings, PACKAGE_ROOT, 'global')).toEqual({ kind: 'installed' });
+    expect(diagnoseRouteAuto(settings, PACKAGE_ROOT, 'project').kind).toBe('partial');
   });
 });

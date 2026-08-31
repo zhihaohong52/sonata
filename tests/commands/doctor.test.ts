@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { checkVersion, cmdDoctor, staleMcpRegistration } from '../../src/commands/doctor.js';
+import { checkVersion, cmdDoctor, staleMcpRegistration, routingFailureDetail } from '../../src/commands/doctor.js';
+import { planRouteAuto } from '../../src/commands/route.js';
+import type { Settings } from '../../src/settings.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
 import { credentialDir } from '../../src/native/oauth-login.js';
 import { cmdRoute } from '../../src/commands/route.js';
@@ -764,5 +766,72 @@ router = 4200
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe('routingFailureDetail — naming the cause, not just the fix', () => {
+  // All five of these printed the same sentence, so a user who had already run
+  // `sonata route auto` was told to run it again with nothing saying why it
+  // had not taken. Observed for real: a build run out of a git worktree
+  // reported "run `sonata route auto`" while `route auto` was correctly
+  // installed and pointing at the main checkout.
+  const THIS_ROOT = '/opt/sonata';
+  const OTHER_ROOT = '/Users/dev/code/sonata';
+  const base = {
+    cwd: '/repo',
+    packageRoot: THIS_ROOT,
+    projectSettings: {} as Settings,
+    globalSettings: {} as Settings,
+    configuredRouterUrl: 'http://localhost:4100',
+    projectResolvesToMachineConfig: true,
+  };
+
+  it('keeps the plain instruction when nothing is installed at all', () => {
+    expect(routingFailureDetail(base))
+      .toBe('tier agents need a routed session — run `sonata route auto`');
+  });
+
+  it('names the other install when the hooks belong to a different sonata', () => {
+    const detail = routingFailureDetail({
+      ...base, projectSettings: planRouteAuto({}, OTHER_ROOT).settings,
+    });
+    expect(detail).toContain(OTHER_ROOT);
+    expect(detail).toContain(THIS_ROOT);
+    expect(detail).toContain('repoint');
+  });
+
+  it('names the subagent hooks when an older install carries only the session pair', () => {
+    const settings = planRouteAuto({}, THIS_ROOT).settings;
+    delete settings.hooks!.SubagentStart;
+    delete settings.hooks!.SubagentStop;
+    const detail = routingFailureDetail({ ...base, projectSettings: settings });
+    expect(detail).toContain('SubagentStart and SubagentStop');
+    expect(detail).toContain('the hooks that actually route');
+  });
+
+  it('explains that global routing cannot serve a project with its own config', () => {
+    const detail = routingFailureDetail({
+      ...base,
+      globalSettings: planRouteAuto({}, THIS_ROOT, 'global').settings,
+      projectResolvesToMachineConfig: false,
+    });
+    expect(detail).toContain('installed globally');
+    expect(detail).toContain('its own sonata.toml');
+    expect(detail).toContain('without `--global`');
+  });
+
+  it('distinguishes a base URL left pointing at a since-changed router port', () => {
+    const detail = routingFailureDetail({
+      ...base,
+      projectSettings: { env: { ANTHROPIC_BASE_URL: 'http://localhost:9999' } },
+    });
+    expect(detail).toContain('http://localhost:9999');
+    expect(detail).toContain('http://localhost:4100');
+  });
+
+  it('falls back to the plain instruction when packageRoot is unknown', () => {
+    const { packageRoot: _drop, ...noRoot } = base;
+    expect(routingFailureDetail(noRoot))
+      .toBe('tier agents need a routed session — run `sonata route auto`');
   });
 });

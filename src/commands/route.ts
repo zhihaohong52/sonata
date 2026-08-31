@@ -321,6 +321,74 @@ export function autoInstalled(
     && hookInstalled(settings, subagentHookCommand(packageRoot, 'stop', scope), 'SubagentStop');
 }
 
+/** The four lifecycle events `route auto` installs into, and what it puts there. */
+const AUTO_HOOK_EVENTS = ['SessionStart', 'SessionEnd', 'SubagentStart', 'SubagentStop'] as const;
+
+/** Matches a sonata routing hook command whatever install wrote it. */
+const ROUTE_HOOK_PATH = /"([^"]+)[/\\]hooks[/\\]route-(?:session|subagent)\.mjs"/;
+
+/**
+ * Why `autoInstalled` said no.
+ *
+ * `absent` is the only one whose fix is "run `sonata route auto`" for the
+ * reason a first-time reader assumes. `other-install` and `partial` also take
+ * that command, but for different reasons a message has to say out loud —
+ * otherwise a user who has just run it is told to run it again, with nothing
+ * naming what is wrong.
+ */
+export type RoutingDiagnosis =
+  | { kind: 'installed' }
+  | { kind: 'absent' }
+  | { kind: 'other-install'; roots: string[] }
+  | { kind: 'partial'; missing: string[] };
+
+/** Every sonata routing hook command in these settings, from any install. */
+function routeHookRoots(settings: Settings): string[] {
+  const roots: string[] = [];
+  for (const event of AUTO_HOOK_EVENTS) {
+    for (const entry of settings.hooks?.[event] ?? []) {
+      for (const hook of entry.hooks) {
+        const root = ROUTE_HOOK_PATH.exec(hook.command)?.[1];
+        if (root !== undefined) roots.push(root);
+      }
+    }
+  }
+  return roots;
+}
+
+/**
+ * Classifies why auto-mode routing is not installed for this scope.
+ *
+ * The `other-install` case is not hypothetical: the hook command embeds the
+ * absolute `packageRoot`, so re-installing sonata anywhere else — an npm
+ * global over a source checkout, a moved clone, a second worktree — leaves
+ * four valid-looking hooks that run a *different* sonata, and every check
+ * that compares command strings reads them as missing.
+ */
+export function diagnoseRouteAuto(
+  settings: Settings,
+  packageRoot: string,
+  scope: 'project' | 'global' = 'project',
+): RoutingDiagnosis {
+  if (autoInstalled(settings, packageRoot, scope)) return { kind: 'installed' };
+
+  const roots = routeHookRoots(settings);
+  if (roots.length === 0) return { kind: 'absent' };
+
+  // A foreign install is also "missing" every expected command, so this order
+  // matters: reporting it as partial would be true and useless.
+  const foreign = [...new Set(roots.filter((root) => root !== packageRoot))];
+  if (foreign.length > 0) return { kind: 'other-install', roots: foreign };
+
+  const missing = AUTO_HOOK_EVENTS.filter((event) => {
+    const command = event.startsWith('Session')
+      ? sessionHookCommand(packageRoot, event === 'SessionStart' ? 'start' : 'end', scope)
+      : subagentHookCommand(packageRoot, event === 'SubagentStart' ? 'start' : 'stop', scope);
+    return !hookInstalled(settings, command, event);
+  });
+  return { kind: 'partial', missing };
+}
+
 export interface RouteAutoPlan {
   settings: Settings;
   changed: boolean;
