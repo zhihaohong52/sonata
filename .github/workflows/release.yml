@@ -73,10 +73,24 @@ jobs:
         run: |
           name=$(node -p "require('./package.json').name")
           version=$(node -p "require('./package.json').version")
-          if npm view "$name@$version" version >/dev/null 2>&1; then
+          # `npm view` exits non-zero for "does not exist" AND for a network,
+          # auth or rate-limit failure, so the exit code alone cannot decide
+          # this. Only a confirmed E404 means "not published yet"; anything
+          # else is an unanswered question, and guessing on it is how a
+          # transient blip turns back into the confusing duplicate-version
+          # error this guard exists to prevent.
+          set +e
+          out=$(npm view "$name@$version" version 2>&1)
+          rc=$?
+          set -e
+          if [ $rc -eq 0 ]; then
             echo "$name@$version is already on the registry — skipping publish."
-          else
+          elif printf '%s' "$out" | grep -q 'E404'; then
             npm publish --access public --provenance
+          else
+            echo "Could not determine whether $name@$version is published:"
+            printf '%s\n' "$out"
+            exit 1
           fi
 
       # The body is this version's CHANGELOG section, so the release notes and
@@ -95,8 +109,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+          # Same fail-closed reasoning as the publish step: `gh release view`
+          # exits non-zero for a missing release and for a failed lookup alike.
+          set +e
+          out=$(gh release view "$GITHUB_REF_NAME" 2>&1)
+          rc=$?
+          set -e
+          if [ $rc -eq 0 ]; then
             echo "Release $GITHUB_REF_NAME already exists — skipping."
-          else
+          elif printf '%s' "$out" | grep -qi 'release not found'; then
             gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file /tmp/notes.md
+          else
+            echo "Could not determine whether release $GITHUB_REF_NAME exists:"
+            printf '%s\n' "$out"
+            exit 1
           fi
