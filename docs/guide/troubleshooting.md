@@ -6,7 +6,7 @@ version and auth, and the permission hook.
 | Symptom | Cause |
 |---|---|
 | Agents don't appear in Claude Code | Run `sonata sync`; Claude Code picks up regenerated agents automatically. |
-| `sonata: command not found` | The generated agents call `sonata` on your PATH. Run `npm link` in the clone (or install globally once published). |
+| `sonata: command not found` | The generated agents call `sonata` on your PATH. Install it with `npm install -g @zhihaohong52/sonata`, or run `npm link` in a clone if you are working on sonata itself. |
 | Dispatch fails: "cannot ask for approval" | You are in `default` mode with opencode or pi, which cannot prompt. Switch to `acceptEdits`, use a codex or reasonix model, or dispatch a read-only role. |
 | A tier agent errors with "all native routes … failed" | Every candidate for that tier failed. Run the `sonata dispatch --tier <role>-<tier>` command the error names, in Bash. |
 | Every opencode/pi dispatch refuses | The permission hook is not installed, so sonata assumes `default`. Run `sonata init` and choose a hook scope. |

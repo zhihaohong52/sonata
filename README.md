@@ -52,9 +52,8 @@ and the `claude` harness adapter) is also complete and verified live —
 routing, permission modes, and the router's Codex-overload handling have all
 been confirmed against real dispatches.
 
-Not yet published to npm — install from source (below). Read
-[Limitations](docs/guide/limitations.md) and [Security](docs/guide/security.md)
-before depending on it.
+Read [Limitations](docs/guide/limitations.md) and
+[Security](docs/guide/security.md) before depending on it.
 
 ## Requirements
 
@@ -80,7 +79,13 @@ before depending on it.
 
 ## Install
 
-Sonata is not on npm yet. Install from source:
+```bash
+npm install -g @zhihaohong52/sonata
+```
+
+### From source
+
+For working on sonata itself, or to run a change that has not been released:
 
 ```bash
 git clone https://github.com/zhihaohong52/sonata.git
@@ -90,7 +95,8 @@ npm run build
 npm link          # puts `sonata` on your PATH
 ```
 
-Once it is published, this becomes `npm install -g @zhihaohong52/sonata`.
+`sonata` on your PATH runs `dist/`, not `src/` — after changing anything under
+`src/`, run `npm run build` or the command keeps its old behaviour.
 
 Then, in the repository where you want to use it:
 
