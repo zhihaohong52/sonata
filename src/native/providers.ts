@@ -66,25 +66,32 @@ export function transportFor(gw: NativeGatewayConfig, gateway: string): Transpor
 }
 
 /**
- * Whether ANY model reachable from `[tiers]` needs LiteLLM.
+ * Whether ANY model this config can actually route needs LiteLLM.
  *
  * When false, `serve` starts no LiteLLM child, and the Python prerequisite
  * disappears rather than being managed — which is a better answer to "let
- * strangers in" than owning the dependency is. Scoped to tiers deliberately:
- * an unused `[models]` entry must not drag in a Python requirement for a
- * gateway nothing routes to.
+ * strangers in" than owning the dependency is.
+ *
+ * Reachability is every `[models]` entry and every legacy `[native.models]`
+ * one, NOT just tier membership. An earlier version scoped this to `[tiers]`,
+ * reasoning that an unused `[models]` entry should not drag in a Python
+ * requirement — but such an entry is not unused: a request naming a bare model
+ * key never calls `resolveTier` at all and is forwarded to LiteLLM like any
+ * other, and a config still on `[native.models]` has no tiers to be reachable
+ * from in the first place. Both cases would have started no child and answered
+ * every request with a 502 from an upstream that was never launched. A gateway
+ * declared with no models against it still costs nothing.
  */
 export function litellmRequired(config: SonataConfig): boolean {
   const gateways = config.native?.gateways ?? {};
-  const keys = new Set(
-    Object.values(config.tiers ?? {}).flatMap((t) => [...t.simple, ...t.complex]),
-  );
-  for (const key of keys) {
-    const gateway = config.unifiedModels[key]?.gateway;
-    if (gateway === undefined) continue;
-    const gw = gateways[gateway];
-    if (gw === undefined) continue;
-    if (transportFor(gw, gateway) === 'litellm') return true;
+  const names = new Set<string>();
+  for (const model of Object.values(config.unifiedModels)) {
+    if (model.gateway !== undefined) names.add(model.gateway);
+  }
+  for (const model of Object.values(config.native?.models ?? {})) names.add(model.gateway);
+  for (const name of names) {
+    const gw = gateways[name];
+    if (gw !== undefined && transportFor(gw, name) === 'litellm') return true;
   }
   return false;
 }

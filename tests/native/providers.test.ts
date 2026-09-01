@@ -67,14 +67,46 @@ describe('litellmRequired', () => {
     ))).toBe(true);
   });
 
-  it('ignores models that are not reachable from any tier', () => {
-    // An unused `[models]` entry must not drag in a Python prerequisite.
+  it('counts a model no tier lists — a bare model key is routable', () => {
+    // Not a hypothetical: `tests/commands/serve.test.ts` drives a `[models]`
+    // entry that appears in no tier through the router by name, and the
+    // request is forwarded to litellm without `resolveTier` ever being called.
+    // Scoping this to tier membership started no child for that config and
+    // 502'd against an upstream that was never launched.
     const c = cfg({ or: gw({ provider: 'anthropic' }), g: gw({ provider: 'gemini' }) }, ['or:a']);
-    (c as { unifiedModels: Record<string, unknown> }).unifiedModels['g:unused'] = { gateway: 'g', id: 'x' };
-    expect(litellmRequired(c)).toBe(false);
+    (c as { unifiedModels: Record<string, unknown> }).unifiedModels['g:untiered'] = { gateway: 'g', id: 'x' };
+    expect(litellmRequired(c)).toBe(true);
   });
 
-  it('is false for a config with no tiers at all', () => {
+  it('is false for a gateway with no models against it', () => {
+    // Declaring a gateway is not routing to it, so a leftover `[native.gateways]`
+    // entry still costs no Python.
+    expect(litellmRequired({
+      unifiedModels: {}, native: { gateways: { g: gw({ provider: 'gemini' }) } },
+    } as unknown as SonataConfig)).toBe(false);
+  });
+
+  it('is false for an empty config', () => {
     expect(litellmRequired({ unifiedModels: {}, native: { gateways: {} } } as unknown as SonataConfig)).toBe(false);
+  });
+});
+
+describe('litellmRequired on a pre-[tiers] config', () => {
+  // A legacy config routes through `[native.models]` and has no tiers at all.
+  // Gating purely on tiers would report `not-required` for it, `serve` would
+  // start no child, and every request would 502 against an upstream that was
+  // never launched — a silent regression for exactly the installs that have
+  // not migrated yet.
+  const legacy = (gateways: Record<string, NativeGatewayConfig>): SonataConfig => ({
+    unifiedModels: {},
+    native: { gateways, models: { flash: { gateway: 'g', id: 'x', contextWindow: 1 } } },
+  }) as unknown as SonataConfig;
+
+  it('is true when its gateway needs translation', () => {
+    expect(litellmRequired(legacy({ g: gw({ provider: 'gemini' }) }))).toBe(true);
+  });
+
+  it('is false when its gateway speaks anthropic', () => {
+    expect(litellmRequired(legacy({ g: gw({ provider: 'anthropic' }) }))).toBe(false);
   });
 });

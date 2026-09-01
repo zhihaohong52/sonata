@@ -13,6 +13,8 @@ import { codexAuthPath, opencodeAuthPath, readChatGptOAuth } from '../native/cod
 import { credentialDir } from '../native/oauth-login.js';
 import { readCopilotToken } from '../native/copilot-auth.js';
 import { envVarForGateway, litellmConfigYaml } from '../native/litellm.js';
+import { litellmRequired, transportFor } from '../native/providers.js';
+import { litellmStatus, managedLitellmPath } from '../native/litellm-venv.js';
 import { createRouterServer } from '../native/router.js';
 import { resolvePrice } from '../pricing.js';
 import { timestampedLogPath } from './init-log.js';
@@ -37,7 +39,7 @@ export interface SpawnedLitellm {
 }
 
 export interface ServeDeps {
-  spawnLitellm?: (configPath: string, env: NodeJS.ProcessEnv, port: number) => SpawnedLitellm;
+  spawnLitellm?: (configPath: string, env: NodeJS.ProcessEnv, port: number, bin: string) => SpawnedLitellm;
   /** Test seam: resolves when litellm answers on its port, rejects on timeout. */
   waitForLitellm?: (port: number) => Promise<void>;
   /**
@@ -240,8 +242,14 @@ export async function occupiedPortMessage(
  * deployments for this model" — with the actual cause (for one real case, a 403
  * from GitHub's Copilot token exchange) written only to a stream nobody read.
  */
-function defaultSpawnLitellm(configPath: string, env: NodeJS.ProcessEnv, port: number): SpawnedLitellm {
-  const child = spawn('litellm', ['--config', configPath, '--port', String(port)], {
+function defaultSpawnLitellm(
+  configPath: string, env: NodeJS.ProcessEnv, port: number, bin: string,
+): SpawnedLitellm {
+  // The managed venv's binary, never the bare name. `which litellm` resolving
+  // says a script exists, not that an importable LiteLLM does — measured on the
+  // development machine, the PATH hit's shebang names an interpreter under
+  // which `import litellm` fails outright.
+  const child = spawn(bin, ['--config', configPath, '--port', String(port)], {
     env,
     stdio: ['ignore', 'inherit', 'inherit'],
   });
@@ -429,6 +437,26 @@ export async function cmdServe(
   if (!config.native) throw new Error('sonata serve: no [native] table');
 
   const native = config.native;
+
+  // LiteLLM is conditional: a config whose every routable gateway speaks
+  // Anthropic natively needs no translation layer, so no child is started and
+  // the Python prerequisite disappears rather than being managed.
+  const needsLitellm = litellmRequired(config);
+  const litellmBin = managedLitellmPath(opts.home);
+  if (needsLitellm) {
+    const status = litellmStatus(opts.home, true);
+    // `serve` never installs. `hooks/ensure-serve.mjs` starts it headless from
+    // a SessionStart hook, where a silent multi-minute install is
+    // indistinguishable from a hang. `stale` still runs: an older pinned
+    // version is a warning for `doctor`, not a reason to refuse to serve.
+    if (status.state !== 'ok' && status.state !== 'stale') {
+      throw new Error(
+        `sonata serve: this config routes through LiteLLM, which is ${status.state} — `
+        + 'run `sonata litellm install`',
+      );
+    }
+  }
+
   const masterKey = `sk-sonata-${randomBytes(32).toString('hex')}`;
   const instanceId = opts.instanceId ?? process.env.SONATA_SERVE_INSTANCE_ID ?? randomUUID();
   const tempDir = opts.tempDir ?? mkdtempSync(join(tmpdir(), 'sonata-litellm-'));
@@ -451,6 +479,21 @@ export async function cmdServe(
     writeFileSync(configPath, litellmConfigYaml(native, masterKey, config.unifiedModels), { mode: 0o600 });
 
     let childEnv = buildChildEnv(native, opts.home, tempDir);
+
+    // The direct transport bypasses LiteLLM entirely, so the gateway's own
+    // credential has to reach the router rather than the child's environment.
+    // Mutated in place (not rebuilt) so the object the router closed over stays
+    // current across a config-triggered rebuild of `childEnv`.
+    const gatewayKeys: Record<string, string> = {};
+    const refreshGatewayKeys = (cfg: NativeConfig): void => {
+      for (const name of Object.keys(gatewayKeys)) delete gatewayKeys[name];
+      for (const [name, gateway] of Object.entries(cfg.gateways)) {
+        if (transportFor(gateway, name) !== 'direct') continue;
+        const key = childEnv[envVarForGateway(name)];
+        if (key !== undefined && key !== '') gatewayKeys[name] = key;
+      }
+    };
+    refreshGatewayKeys(native);
 
     // A predecessor's orphaned litellm would hold the port and answer with the
     // wrong master key; kill it (recorded pid only) before spawning our own.
@@ -497,7 +540,9 @@ export async function cmdServe(
     let litellmReady: Promise<void> = Promise.resolve();
 
     const spawnLitellmChild = (): SpawnedLitellm => {
-      const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(configPath, childEnv, native.ports.litellm);
+      const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(
+        configPath, childEnv, native.ports.litellm, litellmBin,
+      );
       recordLitellmPid(opts.home, spawned.pid);
       spawned.onExit?.((code, signal) => {
         if (stopping) return;
@@ -546,6 +591,27 @@ export async function cmdServe(
       if (freshModelsJson === activeModelsJson) return;
       if (!freshConfig.native) {
         activeModelsJson = freshModelsJson;
+        return;
+      }
+      // With no litellm child there is nothing to restart — but the direct
+      // path's credentials still have to follow the new registry. A config
+      // that has newly grown a litellm-transport gateway needs a real
+      // `sonata restart`, because `serve` must never install.
+      if (!needsLitellm) {
+        try {
+          childEnv = buildChildEnv(freshConfig.native, opts.home, tempDir);
+          refreshGatewayKeys(freshConfig.native);
+          activeModelsJson = freshModelsJson;
+        } catch (error) {
+          console.error(`sonata serve: could not refresh gateway credentials: ${String(error)}`);
+          return;
+        }
+        if (litellmRequired(freshConfig)) {
+          console.error(
+            'sonata serve: this config now routes through LiteLLM, which this router started '
+            + 'without — run `sonata restart`.',
+          );
+        }
         return;
       }
       // Only committed once the replacement config and credentials are
@@ -612,9 +678,10 @@ export async function cmdServe(
       }
     };
 
-    child = spawnLitellmChild();
-
-    await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
+    if (needsLitellm) {
+      child = spawnLitellmChild();
+      await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
+    }
 
     // Retention is enforced where the writer starts, so a long-lived daemon
     // cannot accumulate day-files indefinitely the way opencode's event table
@@ -657,6 +724,9 @@ export async function cmdServe(
       // `gateway` and can reach pricing's gateway step. Config is re-read here
       // too, for the same reason as `resolveTier` above.
       resolveGateway: (key) => loadConfig(opts.cwd, opts.home).unifiedModels[key]?.gateway,
+      // Read per request off the mutable record above, so a credential
+      // refreshed by a config change reaches the very next direct forward.
+      gatewayKeys,
       // Fire-and-forget, called on every litellm-bound request (direct model
       // calls and each tier candidate alike) — not just tier resolution,
       // since a direct `--model <key>` request for a newly added native-only
