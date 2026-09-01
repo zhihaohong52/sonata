@@ -258,11 +258,64 @@ export function withModel(body: Buffer, model: string): Buffer {
 
 export const TIER_COOLDOWN_MS = 60_000;
 
+/**
+ * How many identical capability 400s from one candidate earn it a cooldown.
+ *
+ * Higher than the single failure that cools a 5xx/429/401/403, because a 400
+ * is ambiguous in a way those are not: it may be the request's fault. Three
+ * consecutive *identically fingerprinted* rejections is strong evidence the
+ * candidate cannot serve this shape at all, while still returning the first
+ * two to the caller, who is the only one who can tell a genuine client error.
+ */
+export const TIER_CAPABILITY_400_THRESHOLD = 3;
+
+/**
+ * 400 bodies that mean "this candidate cannot serve requests of this shape",
+ * as opposed to "this request was malformed".
+ *
+ * Exactly one entry, because exactly one has been measured: Gemini 3 returns a
+ * `thought_signature` on each function call and requires it echoed back, and
+ * LiteLLM does not preserve it — so every multi-turn tool-use request 400s.
+ * Probed directly on 2026-08-30: the identical two-turn exchange 400s on
+ * `gemini-3.7-flash`, `gemini-3.5-flash` and `gemini-flash-latest`, and
+ * returns 200 on `gemini-2.5-flash`.
+ *
+ * Guessing at "equivalent" signatures would break this repo's evidence-over-
+ * inference rule, and the cost of a wrong guess is asymmetric: a signature
+ * that matches too broadly cools healthy candidates on ordinary client errors,
+ * turning a legible 400 into a 529. Add an entry when a failure is captured,
+ * not when one is imagined.
+ */
+const CAPABILITY_400_SIGNATURES = [
+  'thought_signature',
+] as const;
+
 /** Module-level so a cooling-down key stays cool across requests. Test seam: `clearCooldowns()`. */
 const cooldowns = new Map<string, number>();
 
+/**
+ * Consecutive identical capability 400s per candidate, keyed by candidate AND
+ * fingerprint. Keying by candidate alone would let two different capability
+ * failures add up to a cooldown neither one earned.
+ */
+const capability400Counts = new Map<string, number>();
+
 export function clearCooldowns(): void {
   cooldowns.clear();
+  capability400Counts.clear();
+}
+
+/** Which capability failure this 400 body is, or undefined if it is not one. */
+function capability400Fingerprint(body: string): string | undefined {
+  return CAPABILITY_400_SIGNATURES.find((signature) => body.includes(signature));
+}
+
+/** Reads a response body into a Buffer, leaving it readable by the caller. */
+async function bufferBody(body: AsyncIterable<Uint8Array> | Buffer): Promise<Buffer> {
+  if (Buffer.isBuffer(body)) return body;
+  const chunks: Buffer[] = [];
+  for await (const chunk of body) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks);
 }
 
 /**
@@ -454,6 +507,64 @@ async function routeTierRequest(
       cooldowns.set(route.key, now() + TIER_COOLDOWN_MS);
       deps.log?.(`router: ${route.key} failed (${response.status}), trying next`);
       continue;
+    }
+    // A 400 usually means the request was wrong, which retrying cannot fix —
+    // that is why it is not in the list above. But a model that 400s *every*
+    // request of a given shape becomes an absorbing state: permanently the
+    // first non-cooling candidate, killing every agent that reaches it, and
+    // never earning the cooldown that would let the tier fall through.
+    //
+    // The two are told apart by fingerprint, not by status. A recognised
+    // capability failure repeated `TIER_CAPABILITY_400_THRESHOLD` times in a
+    // row cools the candidate; anything else is returned to the caller, who is
+    // the only one able to tell a genuine client error from a broken model.
+    if (response.status === 400) {
+      // Buffered because deciding requires reading the body, and the body is a
+      // one-shot iterable — handing the caller the drained original would give
+      // them an empty error. This mirrors the 500 path in `forwardToLitellm`.
+      const bodyBuf = await bufferBody(response.body);
+      const fingerprint = capability400Fingerprint(bodyBuf.toString());
+      const counterKey = fingerprint === undefined ? undefined : `${route.key} ${fingerprint}`;
+
+      if (counterKey !== undefined) {
+        const seen = (capability400Counts.get(counterKey) ?? 0) + 1;
+        capability400Counts.set(counterKey, seen);
+        if (seen >= TIER_CAPABILITY_400_THRESHOLD) {
+          capability400Counts.delete(counterKey);
+          attempts.push({ key: route.key, status: response.status });
+          cooldowns.set(route.key, now() + TIER_COOLDOWN_MS);
+          deps.log?.(
+            `router: ${route.key} cannot serve this request shape ` +
+            `(${seen}× 400 "${fingerprint}"), cooling down and trying next`,
+          );
+          continue;
+        }
+      } else {
+        // A different failure means the run of identical ones is broken.
+        for (const key of capability400Counts.keys()) {
+          if (key.startsWith(`${route.key} `)) capability400Counts.delete(key);
+        }
+      }
+
+      return withUsageRecording({
+        status: response.status,
+        headers: response.headers,
+        body: bodyBuf,
+      }, {
+        startedAt,
+        session,
+        alias,
+        role: resolved.role,
+        tier: resolved.tier,
+        key: route.key,
+        gateway: route.native!.gateway,
+        upstream: 'litellm',
+        attempts,
+      }, deps);
+    }
+    // A candidate that served a request is not accumulating toward a cooldown.
+    for (const key of capability400Counts.keys()) {
+      if (key.startsWith(`${route.key} `)) capability400Counts.delete(key);
     }
     deps.log?.(`${req.method} ${req.url} model=${alias} -> ${route.key} -> litellm`);
     return withUsageRecording(response, {

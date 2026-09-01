@@ -605,15 +605,12 @@ export async function cmdRoute(
   }
 
   if (action === 'off') {
-    const plan = planRouteOff(settings, opts.packageRoot);
-    if (plan.changed) writeSettings(file, plan.settings);
-    // An explicit `off` means stop routing, so the auto registry goes with it —
-    // otherwise a stale id from a crashed session would have the next
-    // SessionStart turn routing straight back on. This clears only this
-    // scope's registry: an explicit `route off` (project-scoped) must not
-    // wipe the shared global session count out from under other projects.
-    writeSessions(routeSessionsFile(opts.cwd, scope, opts.home), []);
-    return status(plan.settings);
+    const sessions = routeSessionsFile(opts.cwd, scope, opts.home);
+    // Takes the session lock here; `cmdRouteSession('end')` already holds it
+    // when it delegates, so it calls `routeOffUnlocked` directly instead of
+    // coming through this branch. See LOCK ORDER above `routeOffUnlocked`.
+    const settingsAfter = await withSessionLock(sessions, () => routeOffUnlocked(opts, scope, file));
+    return status(settingsAfter);
   }
 
   if (action === 'auto' || action === 'manual') {
@@ -655,11 +652,18 @@ export async function cmdRouteSession(
   opts: { cwd: string; home: string; packageRoot: string; serveArgv: string[]; scope?: 'project' | 'global' },
   deps: SessionDeps = {},
 ): Promise<SessionPhaseResult> {
+  // ONE scope resolution for this entry point; everything below takes the
+  // resolved value. The writer and the cleaner of `route-subagents.json` used
+  // to default independently — `?? 'project'` here and `?? 'global'` in
+  // `cmdRouteSubagent` — so a caller omitting `scope` wrote one registry and
+  // cleared another, and ids accumulated forever in the one never cleared.
+  const scope = opts.scope ?? 'project';
+
   // A global session shares one machine-wide registry with every other
   // routed project — otherwise this project's own registry hitting zero
   // would turn off the single shared router while another project's global
   // sessions, tracked in a registry this one never sees, are still live.
-  const registry = routeSessionsFile(opts.cwd, opts.scope ?? 'project', opts.home);
+  const registry = routeSessionsFile(opts.cwd, scope, opts.home);
 
   // Using the machine config's own DIRECTORY as `configCwd` for global scope
   // — not `opts.home` itself — matters: configPath()'s first check is
@@ -708,8 +712,15 @@ export async function cmdRouteSession(
       // subagent killed before its SubagentStop hook would otherwise leak a
       // reference and leave routing on for good; bounding that leak by the
       // session's own lifetime is what keeps it from becoming permanent.
-      writeSessions(routeSubagentsFile(opts.cwd, opts.scope ?? 'project', opts.home), []);
-      await cmdRoute('off', opts);
+      //
+      // `routeOffUnlocked`, not `cmdRoute('off')`: this runs inside the session
+      // registry's lock, and the public command now takes that same lock. It
+      // also clears the subagent registry under the *subagent* lock — this used
+      // to write that file directly from here, under the session lock, so two
+      // different locks guarded one file and excluded nothing. A SubagentStart
+      // could read the pre-clear list, pause, and write it back afterwards,
+      // restoring every id this cleanup had just erased.
+      await routeOffUnlocked(opts, scope, routeSettingsFile(opts.cwd, scope, opts.home));
       return { sessions: 0, routing: 'off' };
     });
   }
@@ -792,10 +803,73 @@ export async function cmdRouteSession(
  * `cmdRoute('off')` means "the user said stop routing" and clears the session
  * registry with it. The subagent path needs only the settings half.
  */
+/**
+ * **LOCK ORDER: session registry, then subagent registry. Never the reverse.**
+ *
+ * They are different files, so nesting is mechanically fine; the *order* is
+ * what makes it deadlock-free, and `withSessionLock` (`src/filelock.ts`) is a
+ * non-reentrant `mkdirSync` mutex that throws at a 2000 ms deadline rather
+ * than blocking forever, so a violation shows up as a timeout, not a hang.
+ *
+ * The only path that holds both is `route off` (directly, or delegated from
+ * the last `SessionEnd`). `cmdRouteSubagent` holds the subagent lock alone and
+ * must never acquire the session lock inside it — which is why it calls
+ * `routeOffKeepingRegistries` rather than `cmdRoute('off')`.
+ *
+ * ---
+ *
+ * Everything `route off` does, assuming **the caller already holds the session
+ * registry's lock**.
+ *
+ * Split out because `cmdRouteSession('end')` delegates to `route off` from
+ * *inside* that lock when the last session leaves. A public `cmdRoute('off')`
+ * that acquires the session lock would therefore deadlock on the one path that
+ * matters most — the last session out is the moment leaked subagent ids are
+ * supposed to be cleared, so the recovery would fail exactly where it is
+ * needed. Review caught this in the spec before it was written; this shape is
+ * the resolution.
+ */
+async function routeOffUnlocked(
+  opts: { cwd: string; home: string; packageRoot: string },
+  scope: 'project' | 'global',
+  settingsFile: string,
+): Promise<Settings> {
+  // An explicit `off` means stop routing, so the auto registries go with it —
+  // otherwise a stale id from a crashed session or subagent would have the next
+  // hook turn routing straight back on. Only this scope's registries: an
+  // explicit project-scoped `route off` must not wipe the shared global count
+  // out from under other projects.
+  writeSessions(routeSessionsFile(opts.cwd, scope, opts.home), []);
+
+  // The settings are read HERE, inside the subagent lock, and deliberately NOT
+  // taken from the caller. `cmdRoute` reads settings ~60 lines before reaching
+  // this branch, and `SubagentStart` writes them while holding this very lock,
+  // so a plan computed from the caller's copy can be stale by the time it is
+  // applied: `planRouteOff` on already-off settings reports `changed: false`,
+  // nothing is written, and routing is left ON while both registries are
+  // cleared — exactly the pin this function exists to remove, now with no
+  // subagent registered to ever turn it off again.
+  //
+  // The subagent registry is also the half that never got cleared, which is
+  // why `route off` did not recover a pinned project: the ids survived their
+  // own documented fix, and the next SubagentStart took the count 6 -> 7.
+  const subagents = routeSubagentsFile(opts.cwd, scope, opts.home);
+  return await withSessionLock(subagents, () => {
+    const plan = planRouteOff(readSettings(settingsFile), opts.packageRoot);
+    if (plan.changed) writeSettings(settingsFile, plan.settings);
+    writeSessions(subagents, []);
+    return plan.settings;
+  });
+}
+
 function routeOffKeepingRegistries(
-  opts: { cwd: string; home: string; packageRoot: string; scope?: 'project' | 'global' },
+  opts: { cwd: string; home: string; packageRoot: string },
+  // Required, never defaulted: a helper that resolves scope itself is exactly
+  // how the writer and the cleaner of `route-subagents.json` came to disagree.
+  // Callers pass the scope their entry point already resolved.
+  scope: 'project' | 'global',
 ): void {
-  const file = routeSettingsFile(opts.cwd, opts.scope ?? 'project', opts.home);
+  const file = routeSettingsFile(opts.cwd, scope, opts.home);
   const plan = planRouteOff(readSettings(file), opts.packageRoot);
   if (plan.changed) writeSettings(file, plan.settings);
 }
@@ -828,7 +902,11 @@ export async function cmdRouteSubagent(
   agentId: string,
   opts: { cwd: string; home: string; packageRoot: string; scope?: 'project' | 'global' },
 ): Promise<SubagentPhaseResult> {
-  const registry = routeSubagentsFile(opts.cwd, opts.scope ?? 'global', opts.home);
+  // 'project', matching `routeSubagentsFile`'s own default and every other
+  // scope default in this file. This read `?? 'global'` — the lone outlier —
+  // which is what made it disagree with the cleaner in `cmdRouteSession`.
+  const scope = opts.scope ?? 'project';
+  const registry = routeSubagentsFile(opts.cwd, scope, opts.home);
 
   // Read, decide and act inside one lock hold, for the same reason the session
   // registry does: deciding "none left" and acting on it as two acquisitions
@@ -843,7 +921,7 @@ export async function cmdRouteSubagent(
       // Not `cmdRoute('off')`: that also clears the *session* registry, which
       // is a different lifetime entirely. A finishing subagent erasing session
       // liveness would make the next SessionEnd believe it was the last one.
-      routeOffKeepingRegistries(opts);
+      routeOffKeepingRegistries(opts, scope);
       return { subagents: 0, routing: 'off' };
     }
     const next = current.includes(agentId) ? current : [...current, agentId];
