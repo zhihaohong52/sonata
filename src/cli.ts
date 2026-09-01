@@ -25,6 +25,7 @@ import { recentRoutes } from './commands/status.js';
 import { summarizeRuns } from './commands/runs.js';
 import { cmdRoute, cmdRouteSession, cmdRouteSubagent, type RouteAction } from './commands/route.js';
 import { cmdCatalogUpdate } from './commands/catalog.js';
+import { cmdLitellm } from './commands/litellm.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
 import { AI_PRICING_ATTRIBUTION } from './aipricing.js';
 import { cmdUsage, type UsageDimension } from './commands/usage.js';
@@ -50,6 +51,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
                    auto|manual — route each session for its lifetime, keeping Remote Control
   sonata auth      manage gateway credentials (list/add/remove/login)
   sonata catalog   show or refresh the Artificial Analysis model catalog
+  sonata litellm   install or report sonata's own pinned LiteLLM (install|status)
   sonata usage     report native-path token and cost usage from the ledger
   sonata status    router health and the last hour of routes
   sonata runs      list every run, with state and whether it wrote a report
@@ -351,6 +353,14 @@ export async function main(argv: string[]): Promise<number> {
     });
     for (const c of checks) console.log(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: ${c.detail}`);
     return ok ? 0 : 1;
+  }
+
+  if (command === 'litellm') {
+    const action = rest[0] ?? 'status';
+    if (action !== 'install' && action !== 'status') {
+      throw new Error('sonata litellm requires install or status');
+    }
+    return await cmdLitellm(action, { cwd: process.cwd(), home: homedir() });
   }
 
   if (command === 'catalog') {

@@ -23,6 +23,9 @@ import type { Settings } from '../settings.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { findLitellm } from '../native/litellm.js';
+import { litellmRequired } from '../native/providers.js';
+import { litellmStatus } from '../native/litellm-venv.js';
+import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm.js';
 import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, loadAaCatalog } from '../catalog.js';
 import { keyReport, resolveKeyFromSource } from '../native/credentials.js';
 import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
@@ -308,10 +311,23 @@ export async function cmdDoctor(
        });
 
   if (config.native) {
-    const litellm = findLitellm();
-    checks.push(litellm
-      ? { name: 'litellm', ok: true, detail: litellm }
-      : { name: 'litellm', ok: false, detail: "not found — pip install 'litellm[proxy]'" });
+    // Six states, six repairs. "not found — pip install" was one sentence for
+    // all of them, and it was wrong for the case that matters most: a config
+    // no gateway routes through litellm needs none, and reporting that as a
+    // fault sends the user to install something they will never use.
+    const status = litellmStatus(home, litellmRequired(config), defaultInstallerDeps);
+    checks.push({ name: 'litellm', ok: statusIsHealthy(status), detail: describeStatus(status) });
+
+    // A PATH litellm is information, not what sonata runs: `which litellm`
+    // resolving says a script exists, not that an importable LiteLLM does.
+    const onPath = findLitellm();
+    if (onPath !== null && status.state !== 'not-required') {
+      checks.push({
+        name: 'litellm (PATH)',
+        ok: true,
+        detail: `${onPath} — not used; sonata runs its own pinned venv`,
+      });
+    }
 
     try {
       const response = await fetch(serveHealthUrl(config.native.ports.router));

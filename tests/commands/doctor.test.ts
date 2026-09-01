@@ -282,9 +282,14 @@ code = ["deepseek-v4-flash"]
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
       const { checks } = await cmdDoctor({ cwd, home });
-      expect(checks.find((c) => c.name === 'litellm')).toEqual({
-        name: 'litellm', ok: true, detail: '/usr/local/bin/litellm',
+      // The state, and the repair for that state — not "not found", which was
+      // the same sentence for six different causes.
+      expect(checks.find((c) => c.name === 'litellm')).toMatchObject({
+        name: 'litellm', ok: false, detail: expect.stringContaining('sonata litellm install'),
       });
+      // A PATH litellm is reported as information, explicitly not what runs.
+      expect(checks.find((c) => c.name === 'litellm (PATH)')?.detail)
+        .toContain('not used; sonata runs its own pinned venv');
       expect(checks.find((c) => c.name === 'serve health')).toEqual({
         name: 'serve health', ok: true, detail: 'not running — start with `sonata serve`',
       });
@@ -849,5 +854,48 @@ describe('routingFailureDetail — naming the cause, not just the fix', () => {
     const { packageRoot: _drop, ...noRoot } = base;
     expect(routingFailureDetail(noRoot))
       .toBe('tier agents need a routed session — run `sonata route auto`');
+  });
+});
+
+describe('cmdDoctor — litellm is conditional', () => {
+  const ANTHROPIC_ONLY = `
+[models."or-flash"]
+gateway = "openrouter"
+id = "deepseek/deepseek-v4-flash"
+context_window = 128000
+
+[tiers.code]
+simple = ["or-flash"]
+complex = ["or-flash"]
+
+[native.gateways."openrouter"]
+base_url = "https://openrouter.ai/api/v1"
+provider = "anthropic"
+`;
+
+  const setup = (toml: string) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-lite-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-lite-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), toml);
+    mkdirSync(join(cwd, '.claude', 'agents'), { recursive: true });
+    return { cwd, home };
+  };
+
+  it('says litellm is not needed rather than not installed', async () => {
+    // "not installed" reads as a fault. For a config no gateway routes through
+    // litellm, its absence is the correct state.
+    const { cwd, home } = setup(ANTHROPIC_ONLY);
+    const { checks } = await cmdDoctor({ cwd, home });
+    const check = checks.find((c) => c.name === 'litellm');
+    expect(check?.ok).toBe(true);
+    expect(check?.detail).toMatch(/no gateway/i);
+  });
+
+  it('does not mention a PATH litellm when none is needed', async () => {
+    // Naming an unused binary beside "not needed" only invites the question of
+    // whether it is about to be used.
+    const { cwd, home } = setup(ANTHROPIC_ONLY);
+    const { checks } = await cmdDoctor({ cwd, home });
+    expect(checks.find((c) => c.name === 'litellm (PATH)')).toBeUndefined();
   });
 });

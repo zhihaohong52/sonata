@@ -1768,3 +1768,66 @@ litellm = 4000
     expect(seen?.auth).toBe('Bearer OPENROUTER-KEY');
   });
 });
+
+describe('cmdServe — a config change refreshes direct credentials', () => {
+  it('picks up a rotated gateway key on the litellm-restart path too', async () => {
+    // A mixed config restarts litellm for its translated gateways, and that
+    // path rebuilds `childEnv`. The direct gateways' keys are read off that
+    // env, so missing the refresh there leaves them serving the old key
+    // indefinitely — the one branch where "stays current" was not true.
+    const mixed = (id: string) => `
+[models."or-flash"]
+gateway = "openrouter"
+id = "deepseek/deepseek-v4-flash"
+context_window = 128000
+
+[models."acme-${id}"]
+gateway = "acme"
+id = "${id}"
+context_window = 128000
+
+[tiers.code]
+simple = ["or-flash"]
+complex = ["or-flash"]
+
+[native.gateways."openrouter"]
+base_url = "https://openrouter.ai/api/v1"
+provider = "anthropic"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43991
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), mixed('first'));
+    writeSonataKey(home, 'openrouter', 'OLD-KEY');
+    const auths: (string | undefined)[] = [];
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+      auths.push((init.headers as Record<string, string>).authorization);
+      return new Response('{}', { status: 200 });
+    });
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: () => ({ pid: 1, kill() {}, onExit: (cb) => cb(null, 'SIGTERM') }),
+    });
+    handles.push(handle);
+    const send = () => realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    await send();
+    // Rotate the credential and change the model registry, which is what
+    // triggers the litellm restart branch.
+    writeSonataKey(home, 'openrouter', 'NEW-KEY');
+    writeFileSync(join(cwd, 'sonata.toml'), mixed('second'));
+    await send();
+    await send();
+    expect(auths[0]).toBe('Bearer OLD-KEY');
+    expect(auths.at(-1)).toBe('Bearer NEW-KEY');
+  });
+});

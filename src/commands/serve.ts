@@ -625,6 +625,10 @@ export async function cmdServe(
       try {
         writeFileSync(configPath, litellmConfigYaml(freshConfig.native, masterKey, freshConfig.unifiedModels), { mode: 0o600 });
         childEnv = buildChildEnv(freshConfig.native, opts.home, tempDir);
+        // A mixed config restarts litellm for its translated gateways while
+        // its direct ones keep serving from `gatewayKeys` — which is read off
+        // `childEnv` and would otherwise still hold the pre-change credential.
+        refreshGatewayKeys(freshConfig.native);
         activeModelsJson = freshModelsJson;
         console.error('sonata serve: model registry changed — restarting litellm to pick it up...');
         const oldChild = child;
