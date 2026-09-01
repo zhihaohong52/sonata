@@ -97,6 +97,15 @@ export type NativeGatewayAuth = 'api-key' | 'codex-oauth' | 'copilot-oauth';
 
 export const NATIVE_GATEWAY_AUTHS: readonly NativeGatewayAuth[] = ['api-key', 'codex-oauth', 'copilot-oauth'];
 
+import type { LitellmProvider } from './native/providers.js';
+import { LITELLM_PROVIDERS } from './native/providers.js';
+export type { LitellmProvider };
+
+/**
+ * @deprecated Superseded by `provider`, which names the LiteLLM provider
+ * rather than only distinguishing two wire shapes. Still parsed, and mapped
+ * onto `provider`, because it ships in configs today.
+ */
 export type NativeGatewayWireFormat = 'openai' | 'anthropic';
 
 export const NATIVE_GATEWAY_WIRE_FORMATS: readonly NativeGatewayWireFormat[] = ['openai', 'anthropic'];
@@ -148,6 +157,12 @@ export interface NativeGatewayConfig {
   baseUrl: string;
   auth: NativeGatewayAuth;
   credentialSource?: CredentialSource;
+  /**
+   * Which LiteLLM provider this gateway speaks. Also decides transport: an
+   * `anthropic` api-key gateway is reached directly, with no LiteLLM at all.
+   */
+  provider?: LitellmProvider;
+  /** @deprecated Read at parse time and mapped onto `provider`. */
   wireFormat?: NativeGatewayWireFormat;
   price?: PriceConfig;
   pricingProvider?: string;
@@ -495,6 +510,27 @@ export function parseConfig(text: string): SonataConfig {
         }
         wireFormat = rawFormat as NativeGatewayWireFormat;
       }
+      // `provider` supersedes `wire_format`: same idea, but naming the LiteLLM
+      // provider instead of only distinguishing two wire shapes. Parsed here
+      // rather than in `migrateLegacyConfig` so every load path is covered,
+      // not just the legacy-config one. An explicit `provider` wins.
+      let provider: LitellmProvider | undefined = wireFormat;
+      if (d.provider !== undefined) {
+        const raw = d.provider;
+        if (typeof raw !== 'string' || !LITELLM_PROVIDERS.includes(raw as LitellmProvider)) {
+          throw new Error(
+            `sonata.toml: native gateway "${name}" has unknown provider "${String(raw)}". ` +
+            `Known: ${LITELLM_PROVIDERS.join(', ')}`,
+          );
+        }
+        if (isOauthGatewayAuth(auth)) {
+          throw new Error(
+            `sonata.toml: native gateway "${name}" is ${auth}, so it cannot set provider — ` +
+            'that credential\'s provider is fixed by its auth kind. Remove provider.',
+          );
+        }
+        provider = raw as LitellmProvider;
+      }
       const price = parsePrice(d.price, `[native.gateways."${name}"]`);
       let pricingProvider: string | undefined;
       if (d.pricing_provider !== undefined) {
@@ -522,7 +558,7 @@ export function parseConfig(text: string): SonataConfig {
       if (typeof d.base_url !== 'string') {
         throw new Error(`sonata.toml: native gateway "${name}" needs string "base_url"`);
       }
-      gateways[name] = { baseUrl: d.base_url, auth, credentialSource, wireFormat, price, pricingProvider };
+      gateways[name] = { baseUrl: d.base_url, auth, credentialSource, provider, wireFormat, price, pricingProvider };
     }
 
     const nativeModels: Record<string, NativeModelConfig> = {};
