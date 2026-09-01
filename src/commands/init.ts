@@ -29,6 +29,8 @@ import { interactiveState } from '../init/interactive-state.js';
 import { scriptedState } from '../init/scripted-state.js';
 import { plan, fsCredentialProbe } from '../init/plan.js';
 import { apply } from '../init/apply.js';
+import { installLitellm as installLitellmVenv } from '../native/litellm-venv.js';
+import { defaultInstallerDeps } from './litellm.js';
 import { validate } from '../init/validate.js';
 
 export { nativeTomlFor } from '../init/toml.js';
@@ -152,6 +154,11 @@ async function runInit(
   const applied = await apply(initPlan, opts, {
     out,
     prune: opts.prune ?? (interactive ? async () => confirm('Delete them?', true) : false),
+    // The one place the real installer is wired in. `init` is the interactive,
+    // foregrounded moment where a multi-minute install makes sense; every
+    // other caller has to ask for it explicitly.
+    installLitellm: opts.installLitellm
+      ?? ((home: string) => installLitellmVenv(home, defaultInstallerDeps)),
   });
 
   out('');

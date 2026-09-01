@@ -7,8 +7,7 @@ import { pruneAgents } from '../detect.js';
 import { cmdSync } from '../commands/sync.js';
 import { cmdRoute } from '../commands/route.js';
 import { writeSonataKey } from '../native/credentials.js';
-import { installLitellm as installLitellmVenv, litellmStatus } from '../native/litellm-venv.js';
-import { defaultInstallerDeps } from '../commands/litellm.js';
+import { litellmStatus } from '../native/litellm-venv.js';
 import type { InitPlan } from './plan.js';
 import type { InitOptions } from './helpers.js';
 
@@ -16,7 +15,16 @@ export interface ApplyIo {
   out: (line: string) => void;
   /** Stale agents are only known after cmdSync runs, so prune cannot be pre-planned. */
   prune: boolean | ((stale: string[]) => Promise<boolean>);
-  /** Test seam: the real one builds a venv over the network. */
+  /**
+   * How to install LiteLLM, when the planned config needs it.
+   *
+   * There is deliberately NO default here: an install is a multi-minute
+   * network operation, and a default would make it the behaviour of every
+   * caller that forgot to think about it — which is exactly what happened
+   * while this was internal, with 46 init tests silently running `uv pip
+   * install` against PyPI on any machine that had uv. `cmdInit` supplies the
+   * real one; absent it, `apply` names the command instead of running it.
+   */
   installLitellm?: (home: string) => Promise<void>;
 }
 
@@ -53,10 +61,12 @@ export async function apply(
   if (plan.installLitellm) {
     if (litellmStatus(home, true).state === 'ok') {
       io.out('  · litellm already installed');
+    } else if (io.installLitellm === undefined) {
+      io.out('  · litellm is needed by this config — run `sonata litellm install`');
     } else {
-      io.out(`  … installing litellm${defaultInstallerDeps.which('uv') !== undefined ? ' (uv: seconds)' : ' (pip: a few minutes)'}`);
+      io.out('  … installing litellm (uv: seconds; pip: a few minutes)');
       try {
-        await (io.installLitellm ?? ((h: string) => installLitellmVenv(h, defaultInstallerDeps)))(home);
+        await io.installLitellm(home);
         io.out('  ✓ installed litellm');
       } catch (error) {
         io.out(`  ! litellm install failed: ${error instanceof Error ? error.message : String(error)}`);

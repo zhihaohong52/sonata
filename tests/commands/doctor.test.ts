@@ -243,6 +243,13 @@ explore = ["a"]
   });
 });
 
+/**
+ * A machine that can build the venv. Pinned rather than probed: `no-python` is
+ * a real state that depends on PATH, so an unseamed check answers differently
+ * on stock macOS (python3 3.9, no uv) than in CI.
+ */
+const USABLE_PYTHON = { which: (b: string) => (b === 'uv' ? '/bin/uv' : undefined), pythonVersion: () => '3.12.0' };
+
 describe('cmdDoctor — native path', () => {
   const NATIVE = `
 [models."a"]
@@ -885,7 +892,7 @@ provider = "anthropic"
     // "not installed" reads as a fault. For a config no gateway routes through
     // litellm, its absence is the correct state.
     const { cwd, home } = setup(ANTHROPIC_ONLY);
-    const { checks } = await cmdDoctor({ cwd, home });
+    const { checks } = await cmdDoctor({ cwd, home, installerDeps: USABLE_PYTHON });
     const check = checks.find((c) => c.name === 'litellm');
     expect(check?.ok).toBe(true);
     expect(check?.detail).toMatch(/no gateway/i);
@@ -895,7 +902,33 @@ provider = "anthropic"
     // Naming an unused binary beside "not needed" only invites the question of
     // whether it is about to be used.
     const { cwd, home } = setup(ANTHROPIC_ONLY);
-    const { checks } = await cmdDoctor({ cwd, home });
+    const { checks } = await cmdDoctor({ cwd, home, installerDeps: USABLE_PYTHON });
     expect(checks.find((c) => c.name === 'litellm (PATH)')).toBeUndefined();
+  });
+});
+
+describe('cmdDoctor — litellm on a machine that cannot build it', () => {
+  it('says install uv, not install litellm', async () => {
+    // The repair differs: uv can fetch a conforming interpreter, so "install
+    // uv" is much cheaper advice than "install a different Python" — and the
+    // state that distinguishes them exists only because doctor probes.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-nopy-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-nopy-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+context_window = 128000
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+`);
+    mkdirSync(join(cwd, '.claude', 'agents'), { recursive: true });
+    const { checks } = await cmdDoctor({
+      cwd, home, installerDeps: { which: () => undefined, pythonVersion: () => '3.9.6' },
+    });
+    const check = checks.find((c) => c.name === 'litellm');
+    expect(check?.ok).toBe(false);
+    expect(check?.detail).toContain('install uv');
   });
 });

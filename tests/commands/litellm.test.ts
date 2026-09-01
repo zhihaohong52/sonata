@@ -44,7 +44,12 @@ function fakeInstaller(home: string, opts: { uv?: boolean } = {}): InstallerDeps
     pythonVersion: () => '3.12.0',
     run: async (cmd, args) => {
       calls.push([cmd, ...args].join(' '));
-      mkdirSync(join(`${venvDir(home)}.installing`, 'bin'), { recursive: true });
+      // Including the binary: without it the post-install status is `broken`,
+      // and the "Done —" assertion would pass only because the broken message
+      // happens to contain the same path.
+      const staging = `${venvDir(home)}.installing`;
+      mkdirSync(join(staging, 'bin'), { recursive: true });
+      writeFileSync(join(staging, 'bin', 'litellm'), '#!/bin/sh\n', { mode: 0o755 });
     },
   };
 }
@@ -111,6 +116,8 @@ describe('cmdLitellm install', () => {
     expect(deps.calls.some((c) => c.includes(`litellm[proxy]==${LITELLM_VERSION}`))).toBe(true);
     expect(readFileSync(join(venvDir(home), '.sonata-pin'), 'utf8')).toBe(LITELLM_VERSION);
     expect(w.text()).toContain(managedLitellmPath(home));
+    expect(w.text()).toContain(LITELLM_VERSION);
+    expect(w.text()).not.toContain('unusable');
   });
 
   it('states the expected duration, which differs by an order of magnitude', async () => {

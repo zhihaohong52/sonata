@@ -58,3 +58,44 @@ describe('apply', () => {
     expect(res.pruned).toEqual([]);
   });
 });
+
+describe('apply — the litellm install', () => {
+  it('runs the supplied installer when the planned config needs one', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'apply-lite-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'apply-lite-home-'));
+    let installed: string | undefined;
+    await apply(
+      { ...planFor(), installLitellm: true },
+      { cwd, home, packageRoot: resolve('.') },
+      { out: () => {}, prune: false, installLitellm: async (h) => { installed = h; } },
+    );
+    expect(installed).toBe(home);
+  });
+
+  it('names the command rather than installing when no installer is supplied', async () => {
+    // There is deliberately no default: an install is a multi-minute network
+    // operation, and defaulting it made it the behaviour of every caller that
+    // had not thought about it — 46 init tests reached PyPI that way.
+    const cwd = mkdtempSync(join(tmpdir(), 'apply-lite2-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'apply-lite2-home-'));
+    const out: string[] = [];
+    await apply(
+      { ...planFor(), installLitellm: true },
+      { cwd, home, packageRoot: resolve('.') },
+      { out: (l) => out.push(l), prune: false },
+    );
+    expect(out.join('\n')).toContain('sonata litellm install');
+  });
+
+  it('installs nothing when the planned config needs none', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'apply-lite3-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'apply-lite3-home-'));
+    let called = false;
+    await apply(
+      { ...planFor(), installLitellm: false },
+      { cwd, home, packageRoot: resolve('.') },
+      { out: () => {}, prune: false, installLitellm: async () => { called = true; } },
+    );
+    expect(called).toBe(false);
+  });
+});
