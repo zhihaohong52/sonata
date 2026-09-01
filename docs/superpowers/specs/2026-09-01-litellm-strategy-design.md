@@ -303,6 +303,7 @@ HOME and ports; the live :4100 daemon was not the subject of any of them.
 | check | result |
 |---|---|
 | `litellm status`, Anthropic-only config, empty HOME | `not-required — no gateway in this config routes through it`; **no venv directory ever created** |
+| what `serve` printed on startup for it | `router listening on 4177; no litellm needed by this config`, and zero listeners on the configured litellm port |
 | request through the direct transport | `HTTP 200`, `minimax/minimax-m3:free`, model obeyed (`DIRECT-TRANSPORT-OK`) |
 | router log for it | `POST /v1/messages model=sonata-code-simple -> or-minimax -> direct` |
 | `cache_control` on the way out | upstream answered `cache_read_input_tokens: 128` — the caching the LiteLLM path discards |

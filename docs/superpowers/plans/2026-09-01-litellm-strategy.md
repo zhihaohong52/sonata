@@ -10,6 +10,30 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-01-litellm-strategy-design.md`
 
+## Status: executed 2026-09-01/02
+
+All twelve tasks are done, on branch `litellm-venv`. `1408 tests across 79
+files`, typecheck and build clean. Task 5 was implemented by a foreign-model
+subagent; tasks 6–12 were implemented directly after two `code-simple`
+dispatches died on routing infrastructure rather than on the work (recorded in
+`CLAUDE.md`).
+
+**Five things this plan got wrong**, each recorded in the spec rather than
+quietly fixed:
+
+1. `litellmRequired` was scoped to `[tiers]`. A bare model key never calls
+   `resolveTier`, so an untiered `[models]` entry — and every pre-`[tiers]`
+   config — would have started no child and 502'd.
+2. Nothing populated `RouterDeps.gatewayKeys`, so the direct transport was
+   structurally dead in production.
+3. Task 10's `cmdLitellm` snippet used `require()` inside ESM: it typechecks
+   (@types/node declares it globally) and fails only on a user's machine.
+4. The install seam had a default, so 46 init tests ran real `uv pip install`
+   against PyPI on any machine with uv.
+5. **The atomic staging rename does not work.** A venv's console scripts carry
+   absolute shebangs; the renamed venv could not run, and `litellmStatus`
+   called it `ok`. Found only by task 12's live run.
+
 ## Global Constraints
 
 - **LiteLLM pin is exactly `1.98.0`.** Written to `.sonata-pin`; a range is forbidden.
@@ -33,7 +57,7 @@
 - Consumes: nothing.
 - Produces: `type LitellmProvider = 'openai' | 'anthropic' | 'gemini' | 'deepseek' | 'mistral' | 'groq'`; `PROVIDER_FOR_GATEWAY: Record<string, LitellmProvider>`; `providerForBaseUrl(name: string): LitellmProvider`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // tests/native/providers.test.ts
@@ -59,12 +83,12 @@ describe('providerForBaseUrl', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/native/providers.test.ts`
 Expected: FAIL — cannot resolve `../../src/native/providers.js`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```ts
 // src/native/providers.ts
@@ -98,12 +122,12 @@ export function providerForBaseUrl(gateway: string): LitellmProvider {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/native/providers.test.ts`
 Expected: PASS (3 tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/native/providers.ts tests/native/providers.test.ts
@@ -123,7 +147,7 @@ git commit -m "feat(native): a provider table, so a gateway's dialect is a fact 
 - Consumes: `LitellmProvider` from Task 1.
 - Produces: `NativeGatewayConfig.provider?: LitellmProvider`. `wireFormat` remains readable for migration only.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // tests/config.test.ts — add
@@ -166,12 +190,12 @@ it('migrates wire_format to provider', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run tests/config.test.ts tests/normalize.test.ts`
 Expected: FAIL — `provider` is not a property; `migrateLegacyConfig` leaves `wireFormat`
 
-- [ ] **Step 3: Add the field and parsing**
+- [x] **Step 3: Add the field and parsing**
 
 In `src/config.ts`, beside the existing wire-format types:
 
@@ -205,7 +229,7 @@ In the gateway parsing block (around line 480), after the `wireFormat` handling:
 
 and add `provider` to the object written at line 525.
 
-- [ ] **Step 4: Migrate `wire_format`**
+- [x] **Step 4: Migrate `wire_format`**
 
 In `src/normalize.ts`, inside `migrateLegacyConfig`, for each gateway:
 
@@ -218,12 +242,12 @@ In `src/normalize.ts`, inside `migrateLegacyConfig`, for each gateway:
     }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `npx vitest run tests/config.test.ts tests/normalize.test.ts`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/config.ts src/normalize.ts tests/config.test.ts tests/normalize.test.ts
@@ -242,7 +266,7 @@ git commit -m "feat(config): gateways declare a provider; wire_format migrates t
 - Consumes: `NativeGatewayConfig.provider` (Task 2), `providerForBaseUrl` (Task 1).
 - Produces: no new exports; `litellmModelEntry` behaviour changes.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // tests/native/litellm.test.ts — add
@@ -272,12 +296,12 @@ it('still emits openai/ for an endpoint nobody has classified', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/native/litellm.test.ts`
 Expected: FAIL — receives `openai/gemini-2.5-flash`
 
-- [ ] **Step 3: Replace the trailing openai branch**
+- [x] **Step 3: Replace the trailing openai branch**
 
 In `src/native/litellm.ts`, replace the final `return` of `litellmModelEntry`:
 
@@ -303,12 +327,12 @@ Delete the now-dead `wireFormat === 'anthropic'` branch above it (Task 2 migrate
 import { providerForBaseUrl } from './providers.js';
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/native/litellm.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/native/litellm.ts tests/native/litellm.test.ts
@@ -327,7 +351,7 @@ git commit -m "feat(litellm): emit each gateway's own provider prefix"
 - Consumes: `SonataConfig`, `NativeGatewayConfig`.
 - Produces: `type Transport = 'direct' | 'litellm' | 'anthropic'`; `transportFor(gw: NativeGatewayConfig, gateway: string): Transport`; `litellmRequired(config: SonataConfig): boolean`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // tests/native/providers.test.ts — add
@@ -374,12 +398,12 @@ describe('litellmRequired', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/native/providers.test.ts`
 Expected: FAIL — `transportFor` is not exported
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```ts
 // src/native/providers.ts — append
@@ -416,12 +440,12 @@ export function litellmRequired(config: SonataConfig): boolean {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/native/providers.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/native/providers.ts tests/native/providers.test.ts
@@ -440,7 +464,7 @@ git commit -m "feat(native): derive transport, and whether litellm is needed at 
 - Consumes: `transportFor` (Task 4).
 - Produces: `forwardDirect(body: Buffer, gw: { baseUrl: string; key: string; authHeader?: string }, req: RouterRequest, deps: RouterDeps): Promise<RouterResponse>`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // tests/native/router.test.ts — add inside 'tier alias routing'
@@ -477,12 +501,12 @@ it('sends a direct-transport candidate straight to the gateway, with the gateway
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/native/router.test.ts`
 Expected: FAIL — request goes to `http://litellm/v1/messages`
 
-- [ ] **Step 3: Add `forwardDirect`**
+- [x] **Step 3: Add `forwardDirect`**
 
 ```ts
 // src/native/router.ts
@@ -522,7 +546,7 @@ async function forwardDirect(
 }
 ```
 
-- [ ] **Step 4: Dispatch on transport in the tier loop**
+- [x] **Step 4: Dispatch on transport in the tier loop**
 
 In `routeTierRequest`, replace the single `forwardToLitellm` call:
 
@@ -540,12 +564,12 @@ In `routeTierRequest`, replace the single `forwardToLitellm` call:
 
 Add `gatewayKeys?: Record<string, string>` to `RouterDeps`, and `transport?: Transport; baseUrl?: string` to the native half of `TierRoute` in `src/config.ts`, populated by `resolveTierAlias` from the gateway config.
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `npx vitest run tests/native/router.test.ts`
 Expected: PASS (all, including the pre-existing tier tests)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/native/router.ts src/config.ts tests/native/router.test.ts
@@ -563,7 +587,7 @@ git commit -m "feat(router): forward anthropic-native gateways directly, no lite
 - Consumes: `forwardDirect` (Task 5).
 - Produces: nothing — a guard on the Global Constraint.
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 ```ts
 // tests/native/router.test.ts — add
@@ -595,12 +619,12 @@ it('never rewrites assistant content blocks', async () => {
 });
 ```
 
-- [ ] **Step 2: Run test**
+- [x] **Step 2: Run test**
 
 Run: `npx vitest run tests/native/router.test.ts -t "never rewrites"`
 Expected: PASS if Task 5 is correct. If it FAILS, `withModel` or a flatten is touching messages — fix that, do not weaken the test.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/native/router.test.ts
@@ -619,7 +643,7 @@ git commit -m "test(router): pin that assistant blocks round-trip byte-identical
 - Consumes: nothing.
 - Produces: `LITELLM_VERSION = '1.98.0'`; `PYTHON_MIN = '3.10'`, `PYTHON_MAX_EXCLUSIVE = '3.15'`; `venvDir(home): string`; `managedLitellmPath(home): string`; `pythonInRange(v: string): boolean`; `type LitellmStatus`; `litellmStatus(home, required): LitellmStatus`; `type Installer`; `detectInstaller(deps): Installer | undefined`; `installLitellm(home, deps): Promise<void>`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // tests/native/litellm-venv.test.ts
@@ -696,12 +720,12 @@ describe('detectInstaller', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run tests/native/litellm-venv.test.ts`
 Expected: FAIL — module not found
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```ts
 // src/native/litellm-venv.ts
@@ -818,12 +842,12 @@ export async function installLitellm(home: string, deps: InstallerDeps): Promise
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npx vitest run tests/native/litellm-venv.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/native/litellm-venv.ts tests/native/litellm-venv.test.ts
@@ -841,7 +865,7 @@ git commit -m "feat(native): a pinned, atomically-installed managed litellm venv
 - Consumes: `Installer`, `installLitellm` (Task 7).
 - Produces: nothing — a guard on the Global Constraint about two paths.
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 ```ts
 // tests/native/litellm-venv.test.ts — add
@@ -890,12 +914,12 @@ describe.each([
 });
 ```
 
-- [ ] **Step 2: Run test**
+- [x] **Step 2: Run test**
 
 Run: `npx vitest run tests/native/litellm-venv.test.ts`
 Expected: PASS for both parameterisations
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/native/litellm-venv.test.ts
@@ -914,7 +938,7 @@ git commit -m "test(native): both installers under one suite, and a failed insta
 - Consumes: `litellmRequired` (Task 4), `litellmStatus`, `managedLitellmPath` (Task 7).
 - Produces: no new exports.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // tests/commands/serve.test.ts — add
@@ -936,12 +960,12 @@ it('refuses to start, naming the repair, when litellm is required but missing', 
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run tests/commands/serve.test.ts`
 Expected: FAIL — a child is spawned; no refusal
 
-- [ ] **Step 3: Gate the child on requirement and status**
+- [x] **Step 3: Gate the child on requirement and status**
 
 In `cmdServe`, before spawning:
 
@@ -970,12 +994,12 @@ and make the spawn conditional, using the managed path:
 
 Change `defaultSpawnLitellm` (line 244) to spawn `managedLitellmPath(home)` rather than the bare name, and guard the respawn watcher on `child !== undefined`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npx vitest run tests/commands/serve.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/commands/serve.ts tests/commands/serve.test.ts
@@ -995,7 +1019,7 @@ git commit -m "feat(serve): no litellm child when nothing needs one; refuse rath
 - Consumes: everything above.
 - Produces: `cmdLitellm(action: 'install' | 'status', opts): Promise<number>`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // tests/commands/doctor.test.ts — add
@@ -1016,12 +1040,12 @@ it('names the repair command when litellm is required but missing', async () => 
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run tests/commands/doctor.test.ts`
 Expected: FAIL — detail still reads `not found — pip install ...`
 
-- [ ] **Step 3: Report the status value in doctor**
+- [x] **Step 3: Report the status value in doctor**
 
 Replace the block at `src/commands/doctor.ts:311`:
 
@@ -1044,7 +1068,7 @@ Replace the block at `src/commands/doctor.ts:311`:
     }
 ```
 
-- [ ] **Step 4: Add the command**
+- [x] **Step 4: Add the command**
 
 ```ts
 // src/commands/litellm.ts
@@ -1087,12 +1111,12 @@ export async function cmdLitellm(
 
 Wire it in `src/cli.ts` beside the other commands.
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `npm test`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/commands/litellm.ts src/commands/doctor.ts src/cli.ts tests/
@@ -1112,7 +1136,7 @@ git commit -m "feat(cli): sonata litellm install|status, and a doctor check that
 - Consumes: `litellmRequired`, `installLitellm`.
 - Produces: nothing.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // tests/init/plan.test.ts — add
@@ -1125,28 +1149,28 @@ it('plans a litellm install only when the chosen config needs one', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/init/plan.test.ts`
 Expected: FAIL — `installLitellm` is not on `InitPlan`
 
-- [ ] **Step 3: Add it to the plan and apply it**
+- [x] **Step 3: Add it to the plan and apply it**
 
 Add `installLitellm: boolean` to `InitPlan`, set from `litellmRequired` on the config the plan emits, show it in the summary (`  litellm  install litellm[proxy]==1.98.0` or `not needed`), and in `apply` run `installLitellm(home, …)` when true, printing progress.
 
-- [ ] **Step 4: Update the docs**
+- [x] **Step 4: Update the docs**
 
 - `README.md` Requirements: LiteLLM is no longer an unconditional prerequisite. State that sonata manages a pinned venv when a gateway needs one, and that `uv` or `python3 >=3.10,<3.15` is required only in that case.
 - `CLAUDE.md`: replace the `pip install 'litellm[proxy]'` prerequisite line with the managed-venv description and the provider/transport model.
 - `docs/roadmap.md` item 09: mark shipped, noting LiteLLM became conditional.
 - `CHANGELOG.md` under `## [Unreleased]`.
 
-- [ ] **Step 5: Run the full suite and build**
+- [x] **Step 5: Run the full suite and build**
 
 Run: `npm run typecheck && npm test && npm run build`
 Expected: all PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -1163,15 +1187,15 @@ git commit -m "feat(init): install litellm only when the config needs it; update
 - Consumes: everything.
 - Produces: a paragraph for the PR body.
 
-- [ ] **Step 1: Direct transport, end to end**
+- [x] **Step 1: Direct transport, end to end**
 
 Configure a scratch `HOME` with an `openrouter` gateway at `provider = "anthropic"`, run `sonata serve`, dispatch one real request, and confirm from `sonata usage` that a row was recorded with correct tokens. Confirm from the serve log that **no litellm child was started**.
 
-- [ ] **Step 2: The install, on the slow path**
+- [x] **Step 2: The install, on the slow path**
 
 On a machine or container without `uv` on PATH, run `sonata litellm install` and confirm it completes and `sonata litellm status` reports `ok`. This is the path most users take and the one CI cannot exercise.
 
-- [ ] **Step 3: Record the results in the PR body**
+- [x] **Step 3: Record the results in the PR body**
 
 Both outcomes verbatim, including the absence of the litellm child. Do not claim either without the output.
 
