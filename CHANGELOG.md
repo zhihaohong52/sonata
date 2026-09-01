@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-01
+
 ### Fixed
 - **A model that rejects every request no longer absorbs its whole tier.** A
   400 was returned as the answer and never cooled the candidate down, so a
