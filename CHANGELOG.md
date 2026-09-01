@@ -21,14 +21,18 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 - **`sonata litellm install|status`.** When LiteLLM *is* needed, sonata installs
   its own venv at `~/.config/sonata/litellm`, pinned to exactly `1.98.0` — the
   version every LiteLLM behaviour recorded in `CLAUDE.md` was measured against.
-  The install is atomic: it builds in a staging directory and moves into place
-  on success only, so a network failure leaves `missing` (which has a working
-  repair) rather than a half-built environment. `uv` is used when present
-  (seconds, and it can fetch a conforming interpreter); `python3 -m venv`
-  otherwise, and both run against one test suite. `sonata init` offers the
-  install, `sonata doctor` reports it, and **`sonata serve` never installs** —
-  it is started headless from a SessionStart hook, where a silent multi-minute
-  install is indistinguishable from a hang.
+  The install is atomic: any existing venv is moved aside and restored if the
+  install throws, so a network failure leaves `missing` (which has a working
+  repair) rather than a half-built environment, and a failed upgrade does not
+  cost you the working install you had. `uv` is used when present (seconds, and
+  it can fetch a conforming interpreter); `python3 -m venv` otherwise, and both
+  run against one test suite. `sonata init` offers the install, `sonata doctor`
+  reports it, and **`sonata serve` never installs** — it is started headless
+  from a SessionStart hook, where a silent multi-minute install is
+  indistinguishable from a hang. Verified live on the pip path (29–36 s),
+  producing a venv whose `litellm --version` really answers `1.98.0`; `doctor`
+  reports `broken` — not `ok` — for a venv whose interpreter has gone, which is
+  the failure a file-exists check cannot see.
 - Each gateway's own LiteLLM provider prefix is emitted (`gemini/<id>` for a
   Google gateway rather than `openai/<id>`), so a request reaches the vendor's
   native API instead of a compatibility shim — which is where vendor-specific
