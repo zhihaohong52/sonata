@@ -14,7 +14,9 @@ endpoint. What is LiteLLM translating?
 **And its follow-up:** what about an aggregator serving a mixture of models,
 some with Anthropic support and some without?
 
-Answering them turned up a live defect, so that is in scope too.
+Answering them also produced a claim that did not survive checking, retracted
+in Finding 3 — the record of what was withdrawn is kept, because a spec that
+quietly drops a wrong finding teaches nothing.
 
 Supersedes `2026-09-01-managed-litellm-design.md`, whose decisions are carried
 forward unchanged.
@@ -32,11 +34,12 @@ All probed live on 2026-09-01. Nothing below is inferred.
 | 5 | sonata's own `createUsageCollector` over that stream | `{"tokens":{"input":85,"output":17,…},"complete":true}` |
 | 6 | **Gemini** via OpenRouter `/v1/messages`, tool call | `200`, blocks `redacted_thinking + tool_use` |
 | 7 | **Gemini**, echo `redacted_thinking` back + `tool_result` | `200` |
-| 8 | `openai/gemini-3.7-flash` → `generativelanguage.googleapis.com/v1beta`, plain "Say OK" | **`404`** |
+| 8 | `openai/gemini-3.7-flash` → `generativelanguage.googleapis.com/v1beta`, plain "Say OK", **scratch instance** | `404` — unexplained; contradicted by 34 successful ledger rows on the same config (see Finding 3) |
 | 9 | `gemini/gemini-3.7-flash` → same key | `429` quota — i.e. routed and authenticated |
 
 Probe 5 decides the architecture: the ledger needs no changes. Probes 6–7
-answer the aggregator question. Probes 8–9 are the live defect.
+answer the aggregator question. Probe 9 shows the native prefix routes and authenticates. Probe 8 is an
+unresolved observation, not a defect — see Finding 3.
 
 ## Finding 1 — an Anthropic-native upstream needs no LiteLLM
 
@@ -67,20 +70,33 @@ back byte-identical, so **sonata must never rewrite assistant content blocks.**
 True today — `flattenSystemBlocks` touches only `system` — but now a rule
 rather than an accident, and a test.
 
-## Finding 3 — `openai/` is not a safe default (live defect)
+## Finding 3 — the native prefix is better, but nothing is broken today
 
-Every api-key gateway is emitted as `openai/<id>` regardless of vendor. Against
-Google's `/v1beta` that **404s on a plain request** (probe 8): LiteLLM's openai
-provider appends `/chat/completions`, and Google's OpenAI-compatible path is
-`/v1beta/openai/chat/completions`. The native prefix routes correctly — probe 9
-returns `429`, which is the upstream authenticating and metering.
+**Retracted claim.** An earlier revision of this document asserted that
+`openai/` against Google's `/v1beta` is a live defect, on the strength of
+probe 8 returning 404. That claim does not survive checking and is withdrawn.
 
-This is live: `google-gemini-2.5-flash` appears in four `[tiers]` lists in the
-development config, on a gateway whose emitted prefix cannot reach it.
+The ledger is real traffic through the real path, and it disagrees:
 
-*Not claimed:* that this caused item 13's `thought_signature` 400. A 404 is not
-a 400, so that incident came from elsewhere. Item 13's cooldown stands on its
-own regardless of cause.
+| evidence | result |
+|---|---|
+| the config `serve` actually generates vs. the probe's | byte-identical |
+| `gemini-3.7-flash` present in Google's `/v1beta/models` | yes |
+| ledger rows for `openai/gemini-*` | **34 successful**, most recent 57,877 input tokens |
+| `google-gemini-2.5-flash` failures in tier attempts | **429 quota**, never 404 |
+
+The probe's 404 is unexplained. The most likely cause is that the key
+hand-extracted for the scratch instance differs from the one
+`SONATA_KEY_GOOGLE` resolves, and Google answers 404 for a model a key's
+project cannot reach. It is recorded here as an unresolved observation, not
+as a defect.
+
+**The design decision stands on its own merits.** Emitting `gemini/<id>` for a
+Google gateway is better than `openai/<id>` because it speaks the vendor's
+native API instead of a compatibility shim, which is where vendor-specific
+state (Gemini's `thought_signature`) has nowhere to live. Probe 9 confirms
+that prefix routes and authenticates. That is an argument from architecture,
+not from an outage — and this section previously dressed it up as the latter.
 
 ## The model: a gateway declares its provider
 
@@ -117,8 +133,8 @@ defaulted differently and ids leaked forever.
 `WELL_KNOWN_PROVIDER_URLS` becomes `{ url, provider }` per entry, so a known
 vendor gets its native prefix without the user knowing any of this. `openai` is
 the fallback for genuinely unknown custom endpoints — a default for the
-unknown, not for known vendors. **Fixing Google is then a table entry**, and
-the same table gains Anthropic-capable rows (`openrouter` → `anthropic`), each
+unknown, not for known vendors. **Changing Google's dialect is then a table
+entry** (a better prefix, not a repair — see Finding 3), and the same table gains Anthropic-capable rows (`openrouter` → `anthropic`), each
 added only after its endpoint is probed: the table doubles as the name→URL
 lookup, where a wrong entry is worse than a missing one.
 
@@ -222,7 +238,8 @@ from a hang.
   block in, the same bytes out.
 - Usage recording over the captured real Anthropic SSE stream from probe 4.
 - `migrateLegacyConfig`: `wire_format` → `provider`, both values.
-- Google regression: the `google` gateway emits `gemini/<id>`, not `openai/<id>`.
+- The `google` gateway emits `gemini/<id>`, not `openai/<id>` — a change of
+  dialect, not a bug fix; nothing is broken today.
 - Venv: installer selection, the range including a 3.15 rejection, `status()`
   for each of six states, both installers against the same assertions, and
   atomicity.
