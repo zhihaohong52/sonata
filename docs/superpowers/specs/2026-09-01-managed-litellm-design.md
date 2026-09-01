@@ -1,5 +1,13 @@
 # Own the LiteLLM dependency (roadmap item 09)
 
+> **Superseded by [`2026-09-01-litellm-strategy-design.md`](2026-09-01-litellm-strategy-design.md).**
+> Kept as the design-history record: its three decisions and both probe
+> findings are carried forward unchanged. What changed is the frame — a probe
+> the same day showed that a gateway speaking Anthropic natively needs no
+> LiteLLM at all, so the managed venv became a prerequisite of *OpenAI-shaped
+> gateways* rather than of the native path. Read the successor for the
+> current design.
+
 The native path is sonata's default, and it does not work until the user has
 run `pip install 'litellm[proxy]'` by hand. That is the first wall a stranger
 hits after `npm install -g @zhihaohong52/sonata`, and it is the last item
