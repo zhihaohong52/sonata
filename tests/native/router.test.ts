@@ -475,6 +475,43 @@ describe('tier alias routing', () => {
     expect(JSON.parse(sent).messages[0].content).toEqual(assistant);
   });
 
+  it('never rewrites assistant content blocks on the litellm path either', async () => {
+    // The constraint is global, but this is the path that could plausibly
+    // break it: `flattenSystemBlocks` runs here, so any future widening of
+    // "flatten what Claude Code sends" from `system` to `messages` would
+    // silently destroy `redacted_thinking` — opaque vendor state (measured:
+    // Gemini's thought_signature through an aggregator) the upstream requires
+    // echoed back byte-identical.
+    const assistant = [
+      { type: 'redacted_thinking', data: 'OPAQUE-VENDOR-STATE-DO-NOT-TOUCH' },
+      { type: 'tool_use', id: 'tu_1', name: 'get_weather', input: { city: 'Paris' } },
+    ];
+    let sent = '';
+    await routeRequest(
+      {
+        method: 'POST', url: '/v1/messages', headers: { 'content-type': 'application/json' },
+        body: Buffer.from(JSON.stringify({
+          model: 'sonata-code-simple',
+          system: [{ type: 'text', text: 'flatten me' }],
+          messages: [{ role: 'assistant', content: assistant }],
+        })),
+      },
+      {
+        fetch: (async (_u: string, init: RequestInit) => {
+          sent = init.body as string;
+          return new Response('{}', { status: 200 });
+        }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTier: () => ROUTES,
+      },
+    );
+    const body = JSON.parse(sent) as { system: unknown; messages: { content: unknown }[] };
+    expect(body.messages[0].content).toEqual(assistant);
+    // …while `system` IS flattened here. Asserting both is what makes the line
+    // above a real distinction rather than "this path touches nothing".
+    expect(body.system).toBe('flatten me');
+  });
+
   it('falls back from a failed direct candidate to a litellm candidate, and vice versa', async () => {
     const mixedRoutes = {
       role: 'code', tier: 'simple',
