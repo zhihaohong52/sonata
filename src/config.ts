@@ -74,7 +74,7 @@ export interface TierLists { simple: string[]; complex: string[] }
 
 export interface TierRoute {
   key: string;
-  native?: { gateway: string; id: string };
+  native?: { gateway: string; id: string; transport?: Transport; baseUrl?: string };
   harness?: { harness: string; id: string };
 }
 
@@ -97,9 +97,9 @@ export type NativeGatewayAuth = 'api-key' | 'codex-oauth' | 'copilot-oauth';
 
 export const NATIVE_GATEWAY_AUTHS: readonly NativeGatewayAuth[] = ['api-key', 'codex-oauth', 'copilot-oauth'];
 
-import type { LitellmProvider } from './native/providers.js';
-import { LITELLM_PROVIDERS } from './native/providers.js';
-export type { LitellmProvider };
+import type { LitellmProvider, Transport } from './native/providers.js';
+import { LITELLM_PROVIDERS, transportFor } from './native/providers.js';
+export type { LitellmProvider, Transport };
 
 /**
  * @deprecated Superseded by `provider`, which names the LiteLLM provider
@@ -703,10 +703,16 @@ export function resolveTierAlias(
   const keys = tier === 'simple' ? lists.simple : lists.complex;
   const routes = keys.map((key): TierRoute => {
     const model = config.unifiedModels[key];
+    const gw = model?.gateway !== undefined ? config.native?.gateways?.[model.gateway] : undefined;
     return {
       key,
       native: model?.gateway !== undefined && model.id !== undefined
-        ? { gateway: model.gateway, id: model.id }
+        ? {
+          gateway: model.gateway,
+          id: model.id,
+          transport: gw !== undefined ? transportFor(gw, model.gateway) : undefined,
+          baseUrl: gw?.baseUrl,
+        }
         : undefined,
       harness: model?.harness !== undefined && model.harnessId !== undefined
         ? { harness: model.harness, id: model.harnessId }

@@ -710,7 +710,10 @@ base_url = "https://acme.example/v1"
     const config = parseConfig(TIERED);
     const resolved = resolveTierAlias(config, 'sonata-code-complex');
     expect(resolved?.routes.map((r) => r.key)).toEqual(['gpt-5.6-terra', 'deepseek-v4-flash']);
-    expect(resolved?.routes[1].native).toEqual({ gateway: 'vendorx', id: 'deepseek-v4-flash-0731' });
+    expect(resolved?.routes[1].native).toEqual({
+      gateway: 'vendorx', id: 'deepseek-v4-flash-0731',
+      transport: 'litellm', baseUrl: 'http://gateway.example/v1',
+    });
     expect(resolved?.routes[1].harness).toEqual({ harness: 'opencode', id: 'vendorx/deepseek-v4-flash-0731' });
   });
 

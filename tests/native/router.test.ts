@@ -360,6 +360,144 @@ describe('tier alias routing', () => {
     });
     expect(lines.some((l) => l.includes('model=sonata-code-simple -> flash -> litellm'))).toBe(true);
   });
+
+  // ── Direct transport: an Anthropic-native gateway is reached with no
+  // LiteLLM in the path at all. ──
+  const DIRECT_ROUTES = {
+    role: 'code', tier: 'simple',
+    routes: [
+      { key: 'direct-1', native: {
+        gateway: 'g', id: 'model-1', transport: 'direct' as const, baseUrl: 'https://gw.example/v1',
+      } },
+    ],
+  };
+
+  it('sends a direct-transport candidate straight to the gateway, never touching litellm', async () => {
+    let seenUrl = '';
+    const res = await routeRequest(req('sonata-code-simple'), {
+      fetch: (async (url: string) => { seenUrl = url; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      gatewayKeys: { g: 'GATEWAY-KEY' },
+      resolveTier: () => DIRECT_ROUTES,
+    });
+    expect(res.status).toBe(200);
+    expect(seenUrl).toBe('https://gw.example/v1/messages');
+  });
+
+  it('injects the gateway key and never forwards the caller credential', async () => {
+    let seenAuth: string | undefined;
+    const res = await routeRequest(
+      {
+        method: 'POST', url: '/v1/messages',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer CALLER-SECRET' },
+        body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [] })),
+      },
+      {
+        fetch: (async (_url: string, init: RequestInit) => {
+          seenAuth = (init.headers as Record<string, string>).authorization;
+          return new Response('{}', { status: 200 });
+        }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        gatewayKeys: { g: 'GATEWAY-KEY' },
+        resolveTier: () => DIRECT_ROUTES,
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(seenAuth).toBe('Bearer GATEWAY-KEY');
+    expect(seenAuth).not.toBe('Bearer CALLER-SECRET');
+  });
+
+  it('passes a system block array with cache_control through intact, unflattened', async () => {
+    let seenBody = '';
+    const res = await routeRequest(
+      {
+        method: 'POST', url: '/v1/messages',
+        headers: { 'content-type': 'application/json' },
+        body: Buffer.from(JSON.stringify({
+          model: 'sonata-code-simple',
+          system: [{ type: 'text', text: 'hi', cache_control: { type: 'ephemeral' } }],
+          messages: [],
+        })),
+      },
+      {
+        fetch: (async (_url: string, init: RequestInit) => {
+          seenBody = init.body as string;
+          return new Response('{}', { status: 200 });
+        }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        gatewayKeys: { g: 'GATEWAY-KEY' },
+        resolveTier: () => DIRECT_ROUTES,
+      },
+    );
+    expect(res.status).toBe(200);
+    const sent = JSON.parse(seenBody);
+    expect(sent.system).toEqual([{ type: 'text', text: 'hi', cache_control: { type: 'ephemeral' } }]);
+  });
+
+  it('rewrites only the model field, to the gateway\'s own id — not the sonata key', async () => {
+    let sentModel = '';
+    await routeRequest(req('sonata-code-simple'), {
+      fetch: (async (_url: string, init: RequestInit) => {
+        sentModel = (JSON.parse(init.body as string) as { model: string }).model;
+        return new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      gatewayKeys: { g: 'GATEWAY-KEY' },
+      resolveTier: () => DIRECT_ROUTES,
+    });
+    expect(sentModel).toBe('model-1');
+  });
+
+  it('never rewrites assistant content blocks on the direct path', async () => {
+    // `redacted_thinking` carries opaque vendor state that the upstream
+    // requires echoed back byte-identical; any rewriting silently breaks the
+    // next turn.
+    const assistant = [
+      { type: 'redacted_thinking', data: 'OPAQUE-VENDOR-STATE-DO-NOT-TOUCH' },
+      { type: 'tool_use', id: 'tu_1', name: 'get_weather', input: { city: 'Paris' } },
+    ];
+    let sent = '';
+    await routeRequest(
+      {
+        method: 'POST', url: '/v1/messages', headers: { 'content-type': 'application/json' },
+        body: Buffer.from(JSON.stringify({
+          model: 'sonata-code-simple',
+          messages: [{ role: 'assistant', content: assistant }],
+        })),
+      },
+      {
+        fetch: (async (_u: string, init: RequestInit) => { sent = init.body as string; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        gatewayKeys: { g: 'GATEWAY-KEY' },
+        resolveTier: () => DIRECT_ROUTES,
+      },
+    );
+    expect(JSON.parse(sent).messages[0].content).toEqual(assistant);
+  });
+
+  it('falls back from a failed direct candidate to a litellm candidate, and vice versa', async () => {
+    const mixedRoutes = {
+      role: 'code', tier: 'simple',
+      routes: [
+        { key: 'direct-1', native: {
+          gateway: 'g', id: 'model-1', transport: 'direct' as const, baseUrl: 'https://gw.example/v1',
+        } },
+        { key: 'flash', native: { gateway: 'lg', id: 'flash-1' } },
+      ],
+    };
+    const seenUrls: string[] = [];
+    const res = await routeRequest(req('sonata-code-simple'), {
+      fetch: (async (url: string) => {
+        seenUrls.push(url);
+        return new Response('{}', { status: url.startsWith('https://gw.example') ? 503 : 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      gatewayKeys: { g: 'GATEWAY-KEY' },
+      resolveTier: () => mixedRoutes,
+    });
+    expect(res.status).toBe(200);
+    expect(seenUrls).toEqual(['https://gw.example/v1/messages', 'http://litellm/v1/messages']);
+  });
 });
 
 describe('withModel', () => {
