@@ -1831,3 +1831,44 @@ litellm = 43991
     expect(auths.at(-1)).toBe('Bearer NEW-KEY');
   });
 });
+
+describe('cmdServe — what the startup line may claim', () => {
+  it('reports no litellm port when no child was started', async () => {
+    // The line a user reads to find out what came up must not name a port
+    // nothing is listening on. Measured live 2026-09-01: an Anthropic-only
+    // config printed "litellm listening on 4178" with no child anywhere.
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."or-flash"]
+gateway = "openrouter"
+id = "deepseek/deepseek-v4-flash"
+context_window = 128000
+
+[tiers.code]
+simple = ["or-flash"]
+complex = ["or-flash"]
+
+[native.gateways."openrouter"]
+base_url = "https://openrouter.ai/api/v1"
+provider = "anthropic"
+
+[native.ports]
+router = 0
+litellm = 4000
+`);
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+    expect(handle.litellmPort).toBeUndefined();
+  });
+
+  it('still reports the port when a child is running', async () => {
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+    expect(handle.litellmPort).toBe(4000);
+  });
+});

@@ -21,7 +21,14 @@ import { timestampedLogPath } from './init-log.js';
 
 export interface ServeHandle {
   routerPort: number;
-  litellmPort: number;
+  /**
+   * The port a LiteLLM child is listening on, or `undefined` when this config
+   * needs none. Reported rather than assumed: the startup line used to name a
+   * port unconditionally, so an Anthropic-only config announced "litellm
+   * listening on 4178" with no child anywhere — a claim measurably untrue, on
+   * the exact line a user reads to find out what came up.
+   */
+  litellmPort?: number;
   stop(): Promise<void>;
 }
 
@@ -800,7 +807,7 @@ export async function cmdServe(
 
   return {
     routerPort,
-    litellmPort: native.ports.litellm,
+    litellmPort: needsLitellm ? native.ports.litellm : undefined,
     async stop(): Promise<void> {
       if (stopped) return;
       stopped = true;

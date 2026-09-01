@@ -39,7 +39,7 @@ export const PYTHON_RANGE = `>=${PYTHON_MIN.join('.')},<${PYTHON_MAX_EXCLUSIVE.j
 export function venvDir(home: string): string { return join(home, '.config', 'sonata', 'litellm'); }
 export function managedLitellmPath(home: string): string { return join(venvDir(home), 'bin', 'litellm'); }
 function pinPath(home: string): string { return join(venvDir(home), '.sonata-pin'); }
-function stagingDir(home: string): string { return `${venvDir(home)}.installing`; }
+function previousDir(home: string): string { return `${venvDir(home)}.previous`; }
 
 /**
  * Not a boolean, because the repair differs per state.
@@ -74,12 +74,31 @@ export function litellmStatus(home: string, required: boolean, deps?: InstallerD
   }
   const bin = managedLitellmPath(home);
   if (!existsSync(bin)) return { state: 'broken', reason: `${bin} is missing` };
+  // A venv's console scripts carry an ABSOLUTE shebang, so a venv that has been
+  // moved since it was built has a binary that exists and cannot run. Measured
+  // live 2026-09-01: an install that built in a staging directory and renamed
+  // it into place left `bad interpreter: …/litellm.installing/bin/python3.13`,
+  // and a status check that only tested for the file reported `ok`. Confidently
+  // wrong is worse than missing, which at least has a repair.
+  const interpreter = shebangOf(bin);
+  if (interpreter !== undefined && !existsSync(interpreter)) {
+    return { state: 'broken', reason: `its interpreter ${interpreter} does not exist` };
+  }
   let installed = '';
   try { installed = readFileSync(pinPath(home), 'utf8').trim(); } catch { /* absent */ }
   if (installed === '') return { state: 'broken', reason: 'no .sonata-pin — provenance unknown' };
   return installed === LITELLM_VERSION
     ? { state: 'ok', version: installed, path: bin }
     : { state: 'stale', installed, expected: LITELLM_VERSION, path: bin };
+}
+
+/** The absolute interpreter a `#!` line names, when it names one. */
+function shebangOf(file: string): string | undefined {
+  let head = '';
+  try { head = readFileSync(file, 'utf8').slice(0, 512); } catch { return undefined; }
+  const m = /^#!\s*(\S+)/.exec(head);
+  // `#!/usr/bin/env python` resolves through PATH, not to a literal path.
+  return m === null || m[1].endsWith('/env') ? undefined : m[1];
 }
 
 export interface InstallerDeps {
@@ -119,11 +138,20 @@ export function detectInstaller(deps: InstallerDeps): Installer | undefined {
 }
 
 /**
- * Builds in a staging directory and moves into place only on success.
+ * Builds at the final path, with any existing venv moved aside and restored on
+ * failure.
  *
- * A network failure part-way through must leave `missing`, which has a working
- * repair, rather than `broken`, which invites the user to debug a half-built
- * environment.
+ * The obvious design — build in `<venv>.installing`, rename into place — does
+ * not work and its failure is silent: a venv's console scripts carry an
+ * absolute shebang, and `pyvenv.cfg` records the path it was created at, so a
+ * renamed venv has a `bin/litellm` that exists and cannot run. Measured live,
+ * not reasoned about; the suite could not see it because a fake installer
+ * writes no shebang.
+ *
+ * Both properties the staging approach was chosen for are kept: a failed
+ * install leaves `missing`, which has a working repair, rather than a
+ * half-built environment; and a failed REINSTALL leaves the previous working
+ * venv exactly where it was.
  */
 export async function installLitellm(home: string, deps: InstallerDeps): Promise<void> {
   const installer = detectInstaller(deps);
@@ -136,17 +164,19 @@ export async function installLitellm(home: string, deps: InstallerDeps): Promise
   const run = deps.run;
   if (run === undefined) throw new Error('sonata: no runner supplied');
   const final = venvDir(home);
-  const staging = stagingDir(home);
-  rmSync(staging, { recursive: true, force: true });
+  const previous = previousDir(home);
   mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+  rmSync(previous, { recursive: true, force: true });
+  const hadPrevious = existsSync(final);
+  if (hadPrevious) renameSync(final, previous);
   try {
-    await installer.create(staging, run);
-    await installer.install(staging, `litellm[proxy]==${LITELLM_VERSION}`, run);
-    writeFileSync(join(staging, '.sonata-pin'), LITELLM_VERSION);
-    rmSync(final, { recursive: true, force: true });
-    renameSync(staging, final);
+    await installer.create(final, run);
+    await installer.install(final, `litellm[proxy]==${LITELLM_VERSION}`, run);
+    writeFileSync(join(final, '.sonata-pin'), LITELLM_VERSION);
+    rmSync(previous, { recursive: true, force: true });
   } catch (error) {
-    rmSync(staging, { recursive: true, force: true });
+    rmSync(final, { recursive: true, force: true });
+    if (hadPrevious) renameSync(previous, final);
     throw error;
   }
 }

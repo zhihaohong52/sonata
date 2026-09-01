@@ -578,7 +578,9 @@ export async function main(argv: string[]): Promise<number> {
     }
 
     const handle = await cmdServe({ cwd: process.cwd(), home: homedir(), daemon: values.daemon });
-    console.log(`router listening on ${handle.routerPort}; litellm listening on ${handle.litellmPort}`);
+    console.log(handle.litellmPort === undefined
+      ? `router listening on ${handle.routerPort}; no litellm needed by this config`
+      : `router listening on ${handle.routerPort}; litellm listening on ${handle.litellmPort}`);
 
     // serve runs until it is killed, so the signal handlers ARE its normal exit
     // path — without them `stop()` never runs and the run's temp directory

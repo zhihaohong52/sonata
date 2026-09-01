@@ -241,12 +241,30 @@ type LitellmStatus =
 `not-required` is the point: `doctor` says "no gateway needs LiteLLM" rather
 than "not installed", which reads as a fault.
 
-**Install is atomic** — build in a temp directory, move into place on success
-only, so a failure leaves `missing` (repairable) not `broken` (invites
-debugging a half-built environment). **`init` installs, `doctor` repairs,
-`serve` never installs**: `ensure-serve.mjs` runs it headless from a
-SessionStart hook, where a silent multi-minute install is indistinguishable
-from a hang.
+**Install is atomic — but not by staging.** The obvious design, and the one
+this document originally specified, was to build in a temp directory and rename
+into place. **It does not work, and it fails silently.** A Python venv's console
+scripts carry an *absolute* shebang and `pyvenv.cfg` records the path the venv
+was created at, so a renamed venv has a `bin/litellm` that exists and cannot
+run: measured live 2026-09-01, `bad interpreter:
+…/litellm.installing/bin/python3.13`. No test could have caught it — a fake
+installer writes no shebang.
+
+The install instead builds **at the final path**, with any existing venv moved
+to `<venv>.previous` first and restored if the install throws. Both properties
+staging was chosen for survive: a failed install leaves `missing`, which has a
+working repair, rather than a half-built environment; and a failed *reinstall*
+leaves the previous working venv exactly where it was.
+
+**`litellmStatus` also has to test that the binary can run, not just that it
+exists.** It reported `ok` for the venv above — confidently wrong, which is
+worse than `missing`, because `missing` names its own repair. It now reads the
+shebang and checks the interpreter exists (a `#!/usr/bin/env` line names no
+literal path, so there is nothing to check and nothing is claimed).
+
+**`init` installs, `doctor` repairs, `serve` never installs**: `ensure-serve.mjs`
+runs it headless from a SessionStart hook, where a silent multi-minute install
+is indistinguishable from a hang.
 
 ## Testing
 
@@ -276,6 +294,28 @@ from a hang.
 
 Live, outside CI: one real dispatch through a direct-transport gateway, and
 one real install on a machine without `uv`.
+
+### What the live runs actually produced (2026-09-01)
+
+Every line below is output, not inference. The scratch runs used their own
+HOME and ports; the live :4100 daemon was not the subject of any of them.
+
+| check | result |
+|---|---|
+| `litellm status`, Anthropic-only config, empty HOME | `not-required — no gateway in this config routes through it`; **no venv directory ever created** |
+| request through the direct transport | `HTTP 200`, `minimax/minimax-m3:free`, model obeyed (`DIRECT-TRANSPORT-OK`) |
+| router log for it | `POST /v1/messages model=sonata-code-simple -> or-minimax -> direct` |
+| `cache_control` on the way out | upstream answered `cache_read_input_tokens: 128` — the caching the LiteLLM path discards |
+| ledger row, **streaming** request | `"upstream":"direct","status":200,"complete":true,"tokens":{"input":37,"output":4,"cacheRead":133}` |
+| ledger row, non-streaming request | `complete:false`, zero tokens — pre-existing on **both** transports (usage is read from the SSE stream), not a direct-path regression; every Claude Code request streams |
+| `litellm install`, uv hidden, real HOME | 29–36 s on the pip path; `litellm --version` → `LiteLLM: Current Version = 1.98.0`, `import litellm` succeeds |
+| what `serve` actually spawned | `/Users/…/.config/sonata/litellm/bin/litellm`, not the PATH one |
+| request through that managed child | `HTTP 200`, `-> or-minimax -> litellm` |
+
+Three defects were found this way, all of them invisible to the suite: the
+staging rename (above), `litellmStatus` reporting `ok` for the venv it broke,
+and a startup line that printed `litellm listening on 4188` for a config that
+started no child at all.
 
 ## Out of scope
 

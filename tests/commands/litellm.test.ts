@@ -44,12 +44,15 @@ function fakeInstaller(home: string, opts: { uv?: boolean } = {}): InstallerDeps
     pythonVersion: () => '3.12.0',
     run: async (cmd, args) => {
       calls.push([cmd, ...args].join(' '));
+      // At the final path, which is where the real installer builds: a venv's
+      // console scripts carry an absolute shebang, so one assembled elsewhere
+      // and renamed into place cannot run.
+      //
       // Including the binary: without it the post-install status is `broken`,
       // and the "Done —" assertion would pass only because the broken message
       // happens to contain the same path.
-      const staging = `${venvDir(home)}.installing`;
-      mkdirSync(join(staging, 'bin'), { recursive: true });
-      writeFileSync(join(staging, 'bin', 'litellm'), '#!/bin/sh\n', { mode: 0o755 });
+      mkdirSync(join(venvDir(home), 'bin'), { recursive: true });
+      writeFileSync(managedLitellmPath(home), '#!/bin/sh\n', { mode: 0o755 });
     },
   };
 }
