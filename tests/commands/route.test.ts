@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 
 import {
   planRouteOn,
@@ -26,6 +26,7 @@ import {
   diagnoseRouteAuto,
 } from '../../src/commands/route.js';
 import type { Settings, HookEntry } from '../../src/settings.js';
+import { readSettings } from '../../src/settings.js';
 
 const NATIVE_TOML = `
 [native.models."deepseek"]
@@ -840,5 +841,119 @@ describe('diagnoseRouteAuto — why routing is not detected', () => {
     const { settings } = planRouteAuto({}, PACKAGE_ROOT, 'global');
     expect(diagnoseRouteAuto(settings, PACKAGE_ROOT, 'global')).toEqual({ kind: 'installed' });
     expect(diagnoseRouteAuto(settings, PACKAGE_ROOT, 'project').kind).toBe('partial');
+  });
+});
+
+describe('Defect B — the registry that pins routing on', () => {
+  const deps = { probe: async () => true, startDaemon: async () => ({}) };
+  const base = () => {
+    writeMachineConfig(NATIVE_TOML);
+    return { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: [] as string[] };
+  };
+
+  it('the writer and the cleaner of route-subagents.json default to the same file', async () => {
+    // The latent trap: `cmdRouteSession('end')` cleared with `?? 'project'`
+    // while `cmdRouteSubagent` wrote with `?? 'global'`. Same kind of file,
+    // opposite defaults — so a caller omitting `scope` writes one registry and
+    // clears another, and ids accumulate permanently in the one never cleared.
+    //
+    // The existing suite always passes `scope: 'global'` explicitly, which is
+    // exactly why this was invisible to it. This test must omit `scope`.
+    const o = base();
+    await cmdRouteSubagent('start', 'a1', o);
+
+    const written = [routeSubagentsFile(cwd, 'project', home), routeSubagentsFile(cwd, 'global', home)]
+      .filter((f) => existsSync(f) && readSessions(f).includes('a1'));
+    expect(written).toHaveLength(1);
+
+    // Now the cleaner, also with no scope: it must clear the very file above.
+    await cmdRouteSession('start', 's1', o, deps);
+    await cmdRouteSession('end', 's1', o, deps);
+    expect(readSessions(written[0])).toEqual([]);
+  });
+
+  it('route off clears the subagent registry, not just the session one', async () => {
+    // The documented recovery. Measured on 2026-08-30 against a project with
+    // six leaked ids: the env was removed and route-sessions.json cleared, but
+    // route-subagents.json still held all six — so the pin survived its own
+    // fix, and the next SubagentStart took the count 6 -> 7, never 0.
+    const o = base();
+    const subagents = routeSubagentsFile(cwd, 'project', home);
+    writeSessions(subagents, ['leaked-1', 'leaked-2', 'leaked-3']);
+    writeSessions(routeSessionsFile(cwd, 'project', home), ['s-old']);
+
+    await cmdRoute('off', o);
+
+    expect(readSessions(subagents)).toEqual([]);
+    expect(readSessions(routeSessionsFile(cwd, 'project', home))).toEqual([]);
+  });
+
+  it('the final SessionEnd completes instead of deadlocking on its own lock', async () => {
+    // `cmdRouteSession('end')` holds the SESSION lock and, on the last session
+    // out, delegates to the clear path. `withSessionLock` is a non-reentrant
+    // mkdirSync mutex that throws at a 2000 ms deadline, so a clear that
+    // re-acquires the session lock deadlocks exactly here — and only here,
+    // which is why this drives the last session out specifically.
+    const o = base();
+    await cmdRouteSession('start', 'only', o, deps);
+    writeSessions(routeSubagentsFile(cwd, 'project', home), ['leaked']);
+
+    const started = Date.now();
+    const res = await cmdRouteSession('end', 'only', o, deps);
+
+    expect(res).toEqual({ sessions: 0, routing: 'off' });
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(readSessions(routeSubagentsFile(cwd, 'project', home))).toEqual([]);
+  });
+
+  it('applies route off to the settings as they are when the lock is taken, not as they were before', async () => {
+    // `cmdRoute` reads settings ~60 lines before this branch takes its lock,
+    // and `SubagentStart` writes settings while holding the subagent lock. A
+    // plan computed from that early copy is stale by the time it is applied:
+    // `planRouteOff` on already-off settings reports `changed: false`, nothing
+    // is written, and routing is left ON while both registries are cleared —
+    // routing on, count zero, and nothing left that could ever turn it off.
+    //
+    // Racing two promises does not reliably hit that window (measured: 0/10),
+    // so the interleaving is forced. Holding the subagent lock parks `route
+    // off` exactly between its settings read and its settings write, which is
+    // the whole window.
+    const o = base();
+    const subagents = routeSubagentsFile(cwd, 'project', home);
+    mkdirSync(dirname(subagents), { recursive: true });
+    mkdirSync(`${subagents}.lock`);
+
+    const off = cmdRoute('off', o);
+    await new Promise((r) => setTimeout(r, 50));
+    // What a concurrent SubagentStart does while `route off` is parked.
+    await cmdRoute('on', o);
+    rmSync(`${subagents}.lock`, { recursive: true, force: true });
+    await off;
+
+    // `route off` must act on the routing it found when it took the lock.
+    expect(routeEnv(readSettings(routeSettingsFile(cwd, 'project', home))).ANTHROPIC_BASE_URL)
+      .toBeUndefined();
+  });
+
+  it('a SubagentStart racing the clear cannot resurrect the cleared ids', async () => {
+    // The split-lock defect: SessionEnd wrote route-subagents.json under the
+    // SESSION lock while cmdRouteSubagent writes it under the SUBAGENT lock.
+    // Two locks on one file do not exclude each other, so SubagentStart could
+    // read the pre-clear list, pause, and write it back after the clear —
+    // restoring every id and re-pinning routing, from the cleanup path meant
+    // to prevent it.
+    const o = base();
+    writeSessions(routeSubagentsFile(cwd, 'project', home), ['leaked-1', 'leaked-2']);
+    await cmdRouteSession('start', 'only', o, deps);
+
+    await Promise.all([
+      cmdRouteSession('end', 'only', o, deps),
+      cmdRouteSubagent('start', 'fresh', o),
+    ]);
+
+    // Either order is legal; what is not legal is a leaked id coming back.
+    const left = readSessions(routeSubagentsFile(cwd, 'project', home));
+    expect(left).not.toContain('leaked-1');
+    expect(left).not.toContain('leaked-2');
   });
 });

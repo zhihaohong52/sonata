@@ -214,7 +214,7 @@ describe('cmdTail answered prompts', () => {
     await newSession({ session, cwd });
     await sendKeys(session, "printf 'Would you like to run the following command?\\n$ ls\\nPress Enter to confirm\\n'");
     await sendKeys(session, 'Enter');
-    await new Promise((r) => setTimeout(r, 500));
+    await waitForPane('Press Enter to confirm');
   });
 
   afterEach(async () => { await killSession(session); });
@@ -223,6 +223,34 @@ describe('cmdTail answered prompts', () => {
     const pane = cleanPane(await capturePane(session));
     writeFileSync(join(runDir(cwd, id), 'pane.snapshot'), pane.join('\n'));
     return codexAdapter.describePrompt(pane)!;
+  }
+
+  /**
+   * Waits until the pane actually shows the text, rather than assuming a fixed
+   * delay is long enough for tmux to render it.
+   *
+   * The `setTimeout(100)` calls this replaces blocked an `npm publish` on
+   * 2026-08-31: the test passed three times in isolation and failed inside the
+   * full suite, where the machine is loaded enough that 100 ms sometimes is not
+   * enough. A gate that fails on timing rather than on correctness is worse
+   * than no gate — it teaches you to re-run a red suite instead of read it —
+   * and this one sits in the release path, since `prepublishOnly` runs it.
+   */
+  async function waitForPane(text: string, timeoutMs = 5_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      // A whole line, not a substring. tmux echoes the command being typed, so
+      // `printf 'streamed output\n'` puts the expected text on screen *before*
+      // the command runs — a substring match returns on the echo and the test
+      // then asserts against output that has not been produced yet. That is
+      // the same race as the fixed sleep, just harder to see.
+      const lines = (await capturePane(session)).split('\n').map((l) => l.trim());
+      if (lines.includes(text)) return;
+      if (Date.now() > deadline) {
+        throw new Error(`pane never showed a line ${JSON.stringify(text)} within ${timeoutMs}ms`);
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
   }
 
   it('does not report a prompt that was already answered', async () => {
@@ -235,7 +263,7 @@ describe('cmdTail answered prompts', () => {
     writeAnsweredPrompt(cwd, id, await snapshotPrompt());
     await sendKeys(session, "printf 'working\\n'");
     await sendKeys(session, 'Enter');
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForPane('working');
     const result = await cmdTail({ cwd, id, waitSeconds: 0 });
     expect(result.state).toBe('PAUSED');
     expect(readAnsweredPrompt(cwd, id)).toBeNull();
@@ -251,7 +279,7 @@ describe('cmdTail answered prompts', () => {
     await snapshotPrompt();
     await sendKeys(session, "printf 'streamed output\\n'");
     await sendKeys(session, 'Enter');
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForPane('streamed output');
     let emitted: string[] = [];
 
     await cmdTail({
@@ -270,7 +298,7 @@ describe('cmdTail answered prompts', () => {
     await snapshotPrompt();
     await sendKeys(session, "printf 'streamed output\\n'");
     await sendKeys(session, 'Enter');
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForPane('streamed output');
 
     await expect(cmdTail({
       cwd, id, waitSeconds: 0,

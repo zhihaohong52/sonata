@@ -8,6 +8,41 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+- **A model that rejects every request no longer absorbs its whole tier.** A
+  400 was returned as the answer and never cooled the candidate down, so a
+  permanently-broken model stayed the first non-cooling candidate forever and
+  killed every agent that reached it — retry could not recover, because the
+  failure never earned a cooldown. Observed live: `gemini-3.7-flash` rejects
+  every multi-turn tool-use request (LiteLLM does not preserve Gemini 3's
+  `thought_signature`), and once the candidates ranked above it were cooling it
+  took four consecutive requests and two agents with it. The symptom read as
+  "the model is flaky".
+
+  A 400 is now told apart by *fingerprint*, not by status: a recognised
+  capability failure repeated three times consecutively cools the candidate,
+  and everything else is still returned to you with its body intact, because
+  only you can tell a genuine client error from a broken model.
+- **`sonata route off` now recovers a project whose routing is pinned on.** A
+  subagent killed before its `SubagentStop` hook leaves its id in
+  `.sonata/route-subagents.json`; the count never returns to zero, routing
+  stays on, and every session launched afterwards loses Remote Control. The
+  documented recovery did not recover — it cleared the session registry and the
+  env but left the subagent registry untouched, so the pin survived its own fix
+  and the next `SubagentStart` took the count 6 → 7, never 0.
+- **Two registry defects that produced that pin from ordinary use.** The writer
+  and the cleaner of `route-subagents.json` defaulted to *different scopes*, so
+  a caller omitting `scope` wrote one file and cleared another. And the two
+  guarded that one file with two *different* locks, which exclude nothing: a
+  `SubagentStart` could read the pre-clear list, pause, and write it back after
+  a cleanup, restoring every id the cleanup had just erased.
+
+### Changed
+- `tests/commands/tail.test.ts` waits for tmux to render rather than sleeping a
+  fixed 100 ms. The flake blocked an `npm publish`, and `prepublishOnly` runs
+  this suite — a release gate that fails on timing rather than on correctness
+  teaches you to re-run a red suite instead of read it.
+
 ## [0.4.0] - 2026-08-31
 
 ### Added
