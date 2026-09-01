@@ -168,12 +168,35 @@ third-party gateway is a credential leak. `auth_header` defaults to
 Tier ranking, cooldowns, item-13 fingerprinting, the 529 exhaustion message
 and usage recording are upstream-agnostic and reused unchanged.
 
+**A gap this design missed, found in implementation.** `forwardDirect` reads
+its credential from `RouterDeps.gatewayKeys`, and nothing populated it: the
+plan added the field and stopped there, so every direct forward would have gone
+out with an empty Authorization header. The transport was structurally dead in
+production, reachable only from tests, and only Task 12's live run would have
+caught it. `serve` now resolves each direct gateway's key into a record the
+router reads per request, refreshed in place whenever a config change rebuilds
+the child environment — including on the LiteLLM-restart path, which a first
+version of the fix missed and a rotated-key regression test now pins.
+
 ## LiteLLM becomes conditional
 
 ```
-litellmRequired(config) = any model reachable from [tiers] whose gateway
+litellmRequired(config) = any model this config can route whose gateway
                           resolves to the litellm transport
 ```
+
+**Corrected during implementation (2026-09-01).** This originally read
+"reachable from `[tiers]`", on the rationale that an unused `[models]` entry
+must not drag in a Python requirement. The codebase already disproved it:
+`tests/commands/serve.test.ts` drives a `[models]` entry that appears in no
+tier through the router **by name**, and `resolveTier` is never called — a bare
+model key is forwarded to LiteLLM like any other. Under the tier-only scope
+that config started no child and would have answered every request with a 502
+from an upstream that was never launched, and a pre-`[tiers]` config (which has
+no tiers to be reachable from at all) would have done the same. The reachable
+set is therefore every `[models]` entry and every legacy `[native.models]` one.
+A gateway declared with no models against it still costs nothing, which is as
+much of the original concern as survives contact with the router.
 
 When false, `serve` starts **no LiteLLM child** — no spawn, no crash-loop
 watcher, no port — and no venv, no Python. A user whose gateways are all
@@ -228,8 +251,10 @@ from a hang.
 ## Testing
 
 - `providerFor(gateway)` and `transportFor(gateway)` across all five rows.
-- `litellmRequired`: true when any tier model needs it; **false** for a config
-  mixing Anthropic-native gateways with a `claude-` model.
+- `litellmRequired`: true when any *routable* model needs it — including one no
+  tier lists, and one in a legacy `[native.models]` table; **false** only when
+  every routable model is on an Anthropic-native gateway, and for a gateway
+  with no models against it.
 - `serve` starts no LiteLLM child when not required — asserted on the spawn
   seam, not by absence of error.
 - Direct transport: headers carry the gateway key and **not** the caller's;
@@ -240,6 +265,11 @@ from a hang.
 - `migrateLegacyConfig`: `wire_format` → `provider`, both values.
 - The `google` gateway emits `gemini/<id>`, not `openai/<id>` — a change of
   dialect, not a bug fix; nothing is broken today.
+- `init` writes `provider`, never `wire_format`. Reading the old key stays
+  supported; continuing to write it would make every new config born legacy.
+- The direct transport carries a credential end to end: `serve` populates
+  `gatewayKeys`, and a rotated key reaches the next request on both the
+  no-child and the LiteLLM-restart paths.
 - Venv: installer selection, the range including a 3.15 rejection, `status()`
   for each of six states, both installers against the same assertions, and
   atomicity.

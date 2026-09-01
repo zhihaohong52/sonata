@@ -1619,7 +1619,7 @@ describe('cmdInit — custom provider wire format', () => {
     };
     await cmdInit({ cwd, home, packageRoot: '/pkg', yes: false, detect, scope: 'skip', routing: 'skip', write: () => {} });
     const written = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
-    expect(written).toMatch(/\[native\.gateways\."my-proxy"\][\s\S]*base_url = "https:\/\/my-proxy\.example\.com\/v1"[\s\S]*wire_format = "anthropic"/);
+    expect(written).toMatch(/\[native\.gateways\."my-proxy"\][\s\S]*base_url = "https:\/\/my-proxy\.example\.com\/v1"[\s\S]*provider = "anthropic"/);
     expect(written).toContain('id = "proxy-model"');
   });
 });

@@ -7,6 +7,8 @@ import { pruneAgents } from '../detect.js';
 import { cmdSync } from '../commands/sync.js';
 import { cmdRoute } from '../commands/route.js';
 import { writeSonataKey } from '../native/credentials.js';
+import { installLitellm as installLitellmVenv, litellmStatus } from '../native/litellm-venv.js';
+import { defaultInstallerDeps } from '../commands/litellm.js';
 import type { InitPlan } from './plan.js';
 import type { InitOptions } from './helpers.js';
 
@@ -14,6 +16,8 @@ export interface ApplyIo {
   out: (line: string) => void;
   /** Stale agents are only known after cmdSync runs, so prune cannot be pre-planned. */
   prune: boolean | ((stale: string[]) => Promise<boolean>);
+  /** Test seam: the real one builds a venv over the network. */
+  installLitellm?: (home: string) => Promise<void>;
 }
 
 export async function apply(
@@ -39,6 +43,27 @@ export async function apply(
   mkdirSync(dirname(plan.configPath), { recursive: true });
   writeFileSync(plan.configPath, plan.configToml);
   io.out(`  ✓ wrote ${plan.configPath}`);
+
+  // ---- litellm ----
+  // `init` is the interactive, foregrounded moment where a multi-minute
+  // install and its output make sense; `serve` refuses instead, because it is
+  // started headless from a SessionStart hook. A failure here is reported and
+  // survived: the config is already written, and `sonata litellm install`
+  // finishes the job.
+  if (plan.installLitellm) {
+    if (litellmStatus(home, true).state === 'ok') {
+      io.out('  · litellm already installed');
+    } else {
+      io.out(`  … installing litellm${defaultInstallerDeps.which('uv') !== undefined ? ' (uv: seconds)' : ' (pip: a few minutes)'}`);
+      try {
+        await (io.installLitellm ?? ((h: string) => installLitellmVenv(h, defaultInstallerDeps)))(home);
+        io.out('  ✓ installed litellm');
+      } catch (error) {
+        io.out(`  ! litellm install failed: ${error instanceof Error ? error.message : String(error)}`);
+        io.out('      ❯ run `sonata litellm install` to retry — the rest of this setup is unaffected');
+      }
+    }
+  }
 
   // ---- settings (hook + allow-list) ----
   let hookChanged = false;

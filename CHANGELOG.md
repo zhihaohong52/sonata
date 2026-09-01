@@ -8,6 +8,42 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+- **Sonata manages its own LiteLLM, and often needs none at all.** A gateway now
+  declares a `provider` (superseding `wire_format`), and the transport is
+  derived from it: a gateway that speaks the Anthropic Messages API natively is
+  reached **directly by sonata's own router, with no LiteLLM in the path** —
+  which also keeps `cache_control` that the LiteLLM path discards on every tier
+  request, and round-trips `redacted_thinking` byte-identical. A config whose
+  routable models all sit on such gateways needs no LiteLLM, no venv and no
+  Python whatsoever. `pip install 'litellm[proxy]'` is no longer a step anyone
+  performs by hand.
+- **`sonata litellm install|status`.** When LiteLLM *is* needed, sonata installs
+  its own venv at `~/.config/sonata/litellm`, pinned to exactly `1.98.0` — the
+  version every LiteLLM behaviour recorded in `CLAUDE.md` was measured against.
+  The install is atomic: it builds in a staging directory and moves into place
+  on success only, so a network failure leaves `missing` (which has a working
+  repair) rather than a half-built environment. `uv` is used when present
+  (seconds, and it can fetch a conforming interpreter); `python3 -m venv`
+  otherwise, and both run against one test suite. `sonata init` offers the
+  install, `sonata doctor` reports it, and **`sonata serve` never installs** —
+  it is started headless from a SessionStart hook, where a silent multi-minute
+  install is indistinguishable from a hang.
+- Each gateway's own LiteLLM provider prefix is emitted (`gemini/<id>` for a
+  Google gateway rather than `openai/<id>`), so a request reaches the vendor's
+  native API instead of a compatibility shim — which is where vendor-specific
+  state such as Gemini's `thought_signature` has nowhere to live.
+
+### Changed
+- `sonata doctor`'s LiteLLM check reports one of six states, each naming its own
+  repair. It previously printed `not found — pip install 'litellm[proxy]'` for
+  every cause, including the one where nothing needs LiteLLM at all — where the
+  correct answer is that its absence is fine, not that something is broken. A
+  LiteLLM on `PATH` is now reported as information and explicitly not used:
+  `which litellm` resolving says a script exists, not that an importable
+  LiteLLM does.
+
+
 ## [0.4.1] - 2026-09-01
 
 ### Fixed
