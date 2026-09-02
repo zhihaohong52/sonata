@@ -160,6 +160,36 @@ describe('proposeTiers', () => {
     const tiers = proposeTiers(['gpt-5.6-luna', 'deepseek-v4-flash', 'kimi-k3'], aa);
     expect(tiers.complex).toEqual(['kimi-k3', 'gpt-5.6-luna', 'deepseek-v4-flash']);
   });
+
+  it('breaks a near-tied capability gap by price rather than the marginal edge', () => {
+    // The measured case AA_CAPABILITY_TIE_MARGIN exists for: qwen3.8-max
+    // (58.4) outranked glm-5.3-flash (58.2) on a 0.2-point edge despite
+    // costing over 10x as much per task. A gap this small is noise, not
+    // signal, so price should decide it the same as an exact tie would.
+    const aa: AaCatalog = {
+      fetchedAt: '2026-08-25T00:00:00Z',
+      models: {
+        'qwen3.8-max': { codingIndex: 71.8, blendedPriceUsd: 3, agenticIndex: 58.4, costPerTask: 0.9133 },
+        'glm-5.3-flash': { codingIndex: 71.5, blendedPriceUsd: 0.2375, agenticIndex: 58.2, costPerTask: 0.0869 },
+      },
+    };
+    const tiers = proposeTiers(['qwen3.8-max', 'glm-5.3-flash'], aa);
+    expect(tiers.complex).toEqual(['glm-5.3-flash', 'qwen3.8-max']);
+  });
+
+  it('still lets a capability gap bigger than the margin win outright', () => {
+    const aa: AaCatalog = {
+      fetchedAt: '2026-08-25T00:00:00Z',
+      models: {
+        // 2-point gap, wider than AA_CAPABILITY_TIE_MARGIN (1.0) — a real
+        // edge, so the pricier-but-more-capable model still wins.
+        'pricier-and-better': { codingIndex: 60, blendedPriceUsd: 3, agenticIndex: 60, costPerTask: 1 },
+        'cheaper-and-close': { codingIndex: 58, blendedPriceUsd: 0.2, agenticIndex: 58, costPerTask: 0.1 },
+      },
+    };
+    const tiers = proposeTiers(['cheaper-and-close', 'pricier-and-better'], aa);
+    expect(tiers.complex[0]).toBe('pricier-and-better');
+  });
 });
 
 describe('loadAaCatalog', () => {

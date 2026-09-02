@@ -21,6 +21,24 @@ export const AA_CAPABLE_CODING_INDEX = 40;
 /** Blended $/1M tokens at or below this ⇒ cheap enough for the simple tier. */
 export const AA_CHEAP_BLENDED_PRICE_USD = 1.0;
 
+/**
+ * A capability gap this small or smaller is noise, not a real edge — so the
+ * complex tier breaks it on price the same way it breaks an exact tie.
+ *
+ * Measured case: `qwen3.8-max` (agentic index 58.4, $0.91/task) outranked
+ * `glm-5.3-flash` (58.2, $0.087/task) on a 0.2-point, 0.34% capability lead —
+ * over 10x the cost for a difference indistinguishable from benchmark noise.
+ * `glm-5.3-flash` is itself Pareto-undominated across the whole AA catalog
+ * (nothing beats it on both capability and cost); `qwen3.8-max` is not — a
+ * cheaper, *more* capable model exists (`glm-5.3`, 59.1 @ $0.68/task). That
+ * second case needed no fix: plain capability-descending order already put
+ * the higher-scoring, cheaper model first regardless of this margin. This
+ * constant exists only for the gap a raw capability sort can't resolve on its
+ * own — two models close enough that ranking them by score alone is noise,
+ * not signal, and cost should call it instead.
+ */
+export const AA_CAPABILITY_TIE_MARGIN = 1.0;
+
 export interface CatalogEntry {
   capable: boolean;
   cheap: boolean;
@@ -241,10 +259,14 @@ export function proposeTiers(
   // avoiding a gateway costs preference rather than the depth a ranked list
   // exists to provide.
   const avoidance = (a: string, b: string) => Number(avoided.has(a)) - Number(avoided.has(b));
-  // Complex work wants the most capable model, cost only breaking ties.
+  // Complex work wants the most capable model, cost breaking ties — including
+  // a near-tie: a capability gap within AA_CAPABILITY_TIE_MARGIN is treated as
+  // noise rather than a real edge, so price decides it the same as an exact
+  // tie would. A real edge (bigger than the margin) still wins outright.
   const byCapability = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
-    return avoidance(a, b) || rb.index - ra.index || ra.price - rb.price;
+    const gap = Math.abs(rb.index - ra.index) <= AA_CAPABILITY_TIE_MARGIN ? 0 : rb.index - ra.index;
+    return avoidance(a, b) || gap || ra.price - rb.price;
   };
   // Simple work wants the most capability per dollar, capability breaking ties.
   const byValue = (a: string, b: string) => {
