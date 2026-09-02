@@ -8,6 +8,21 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Upgrading
+
+**Existing native-path installs need one command after upgrading:**
+`sonata litellm install`. Sonata now runs its own pinned LiteLLM rather than
+whatever `litellm` happened to be on `PATH`, and `sonata serve` refuses to
+start — naming that command — rather than silently using a version its
+behaviour was never measured against. `sonata doctor` reports the same thing.
+
+Two configs need nothing at all: one whose gateways all speak the Anthropic
+Messages API natively (no LiteLLM is used, so none is required), and one that
+does not use the native path.
+
+`wire_format` is superseded by `provider` but still parses, so no config edit
+is required. `sonata init` writes the new key from now on.
+
 ### Added
 - **Sonata manages its own LiteLLM, and often needs none at all.** A gateway now
   declares a `provider` (superseding `wire_format`), and the transport is
