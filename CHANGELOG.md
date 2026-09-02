@@ -15,6 +15,15 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   output instead of scraping stdout.
 
 ### Fixed
+- **The complex tier no longer lets a noise-level capability edge override a
+  real cost difference.** `qwen3.8-max` (58.4 agentic index, $0.91/task)
+  outranked `glm-5.3-flash` (58.2, $0.087/task) — over 10x the cost for a
+  0.34%, almost certainly-noise capability lead — because price only broke an
+  *exact* tie. A gap within `AA_CAPABILITY_TIE_MARGIN` (1.0 points) is now
+  treated the same as an exact tie and broken on price; a real gap still wins
+  outright. `glm-5.3-flash` is Pareto-undominated across the whole AA
+  catalog — nothing beats it on both capability and cost — which is what
+  made the old ranking's outcome wrong rather than merely debatable.
 - **Adding a model to an existing config no longer skips ranking.**
   `reconcileTierList` (`sonata init`'s tier merge) always appended a
   newly-added model after every model already in `[tiers]`, regardless of how
