@@ -1,33 +1,48 @@
-# Handoff — sonata, after 0.5.0
+# Handoff — sonata, after 0.5.0 + doctor --json
 
-Written 2026-09-02, at the end of the session that executed the LiteLLM
-strategy plan and released 0.5.0. Read this before starting new work; it
-records what is done, what is deliberately *not* done, and the environment
-traps that cost this session real time.
+Written 2026-09-02 (afternoon session, after the 0.5.0 release). Read this
+before starting new work; it records what is done, what is deliberately *not*
+done, and the environment traps that cost previous sessions real time.
 
-## Current state — 0.5.0 is published, 0.4 milestone closed
+## Current state — 0.5.0 published, item 11 shipped unreleased
 
-- `main` at `03e04c9` (`chore(release): v0.5.0`), tag `v0.5.0` pushed.
-- **Published to npm**: `@zhihaohong52/sonata@0.5.0`, `latest`. Second fully
-  automated OIDC publish — no token, provenance attached, every workflow step
-  green including the tag/manifest guard.
-- **1408 tests across 79 files**, typecheck and build clean.
-- Only `main` exists, locally and remotely. Every merged branch was deleted
-  (`feat/tier-routing` was `51ee929`; `litellm-venv` was `13b1ebb` — both
-  recoverable from the reflog for ~90 days).
-- Roadmap item **09 shipped**, and the answer beat the item: rather than only
-  *managing* the Python dependency, sonata now often needs none at all.
+- `main` at `d54ae2d` (`feat: sonata doctor --json`), pushed. `03e04c9`
+  (`chore(release): v0.5.0`) is the last tagged release; nothing has been cut
+  since.
+- **Published to npm**: `@zhihaohong52/sonata@0.5.0`, `latest`.
+- **Roadmap item 11 (`sonata doctor --json`) is done**, unreleased. `cmdDoctor`
+  already returned a structured `{ ok, checks }`; the CLI only rendered it as
+  text. `--json` prints that structure verbatim — no new check logic, just the
+  flag and a CLI-wiring test (`tests/cli-doctor.test.ts`, following the
+  `cli-status.test.ts` pattern).
+- **1411 tests across 80 files**, typecheck and build clean. Full suite run
+  twice this session with no flakiness (matches the prior session's "13
+  consecutive runs green" note) — treat the "two unidentified test failures"
+  line from the previous handoff as resolved/unreproducible, not disproven.
+- **Gate check performed 2026-09-02, per the user's request to "get to
+  v1.0.0"**: the roadmap's own gate ("ship 1.0 only after 0.4 has been in
+  strangers' hands long enough") is still unmet — no new stars/issues/forks
+  since the last check. Decision (confirmed with the user): keep closing
+  remaining items (04, 07, 10, 12, plus the open follow-ups below) without
+  cutting v1.0.0 yet.
 
-## Immediate next step
+## A follow-up from the last handoff was investigated and should NOT be done as described
 
-**`npm run build` in the main checkout.** `sonata` on PATH runs `dist/`, and
-that `dist/` predates the merge — so the installed command still has pre-0.5.0
-behaviour (no direct transport, no conditional LiteLLM child). This trap has
-now bitten this project **three times**; CLAUDE.md's Conventions section warns
-about it and it still caught this session.
-
-The managed venv is already installed on this machine (`litellm --version` →
-`1.98.0`), so `serve` will not refuse after you rebuild.
+The previous handoff said the Codex `{"detail":"System messages are not
+allowed"}` 400 (9 lines in
+`~/.config/sonata/logs/serve-2026-08-30T14-39-39-137Z.log`) was "evidence-backed
+and ready" to add as a second `CAPABILITY_400_SIGNATURES` entry
+(`src/native/router.ts`). Checked before acting: the structural fix for exactly
+this error (`supports_system_message: false` in `src/native/litellm.ts`,
+commit `c0bbe6d`) landed **2026-08-28T17:26**, and the evidence log is from
+**2026-08-30T14:39** — two days later. If the fix is doing its job this error
+should not recur at all, so treating it as an ongoing capability gap and
+cooling candidates down for it would be reacting to stale evidence rather than
+a live defect — the far likelier explanation is this repo's own
+recurring "`sonata` on PATH runs stale `dist/`" trap. **Not added.** Whoever
+picks this up next should reproduce live against a freshly built `dist/`
+before adding anything to that allow-list — don't just copy the old log
+citation forward again.
 
 ## Design reference — do NOT re-derive, read these
 
@@ -46,10 +61,10 @@ is a retraction with the evidence that overturned it. Match that style.
 The roadmap's own gate is *"ship 1.0 only after 0.4 has been in strangers'
 hands long enough to know what you would regret freezing."* Measured that day:
 **83 npm downloads, all on publish day; 0 issues; 0 stars; 0 forks.** There are
-no strangers yet. Five items remain open — `04`, `07`, **`10` (P0, config
-schema freeze)**, `11`, `12` — and item 10 got harder, not easier: `provider`
-superseded `wire_format` *that morning*, and `litellmRequired`'s scope changed
-twice during implementation.
+no strangers yet. Four items remain open — `04`, `07`, **`10` (P0, config
+schema freeze)**, `12` (item `11` shipped this session, unreleased) — and item
+10 got harder, not easier: `provider` superseded `wire_format` *that
+morning*, and `litellmRequired`'s scope changed twice during implementation.
 
 Two things treated as 1.0-blocking that are not on the item list:
 
@@ -70,14 +85,12 @@ Two things treated as 1.0-blocking that are not on the item list:
 - **`deepseek`, `mistral`, `groq`** sit in `PROVIDER_FOR_GATEWAY` without live
   verification in this session. The table's own comment says only exercised
   endpoints belong there, so a wrong row is a real defect.
-- **Item 13's signature allow-list still has one entry.** The Codex
-  `{"detail":"System messages are not allowed"}` 400 appears on 9 lines of
-  `~/.config/sonata/logs/serve-2026-08-30T14-39-39-137Z.log` and was never
-  added — it is evidence-backed and ready.
-- **Two unidentified test failures.** Two full-suite runs failed with 2 tests
-  each; names were not captured (my error). Thirteen consecutive runs and two
-  CI runs green since. Treat the suite as "green with one unexplained
-  observation", not proven clean.
+- **Item 13's signature allow-list still has one entry** — see the correction
+  above; do not add the "System messages are not allowed" signature on the old
+  evidence, it needs fresh live reproduction first.
+- **Two unidentified test failures** from a prior session — not reproduced in
+  two full-suite runs this session (1411/1411 both times). Treat as resolved
+  unless it recurs.
 
 ## Environment quirks that bit this session
 
