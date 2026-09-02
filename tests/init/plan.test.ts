@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { parseConfig, tierAgentNames } from '../../src/config.js';
 import { plan, type CredentialProbe } from '../../src/init/plan.js';
+import { litellmRequired } from '../../src/native/providers.js';
 import type { InitEnvironment } from '../../src/init/discover.js';
 
 const noCredentials: CredentialProbe = {
@@ -137,5 +138,41 @@ describe('plan — paths', () => {
     const p = plan(env(), state, noCredentials, opts);
     expect(p.syncCwd).toBe('/repo');
     expect(p.skillPath).toBe('/repo/.claude/skills/sonata-loop/SKILL.md');
+  });
+});
+describe('plan — whether it installs litellm', () => {
+  it('plans an install when the config it writes routes through litellm', () => {
+    const p = plan(env(), state, noCredentials, opts);
+    expect(p.installLitellm).toBe(true);
+    expect(p.summary.join('\n')).toMatch(/litellm.*install/);
+  });
+
+  it('plans none when every gateway speaks anthropic natively', () => {
+    // The whole point of the exercise: such a user needs no Python at all.
+    const anthropic = candidate('an-fast', 'an-gw', 'fast');
+    const p = plan(
+      env({
+        allNativeCandidates: [{ ...anthropic, wireFormat: 'anthropic' as const }],
+        providerBaseUrls: { 'an-gw': 'https://an.example/v1' },
+        gatewayAuth: new Map([['an-gw', 'api-key' as const]]),
+        offered: [{ harness: 'opencode', provider: 'an-gw', key: 'opencode/an-gw', count: 1 }],
+      }),
+      {
+        ...state,
+        providerKeys: ['opencode/an-gw'],
+        nativeKeys: ['an-fast'],
+        tiers: { code: { simple: ['an-fast'], complex: ['an-fast'] } },
+      },
+      noCredentials, opts,
+    );
+    expect(p.installLitellm).toBe(false);
+    expect(p.summary.join('\n')).toMatch(/litellm.*not needed/);
+  });
+
+  it('derives the flag from the emitted TOML, not from the selections', () => {
+    // `serve` makes the same call against that same file, so the two can only
+    // agree if this one reads what was actually written.
+    const p = plan(env(), state, noCredentials, opts);
+    expect(p.installLitellm).toBe(litellmRequired(parseConfig(p.configToml)));
   });
 });

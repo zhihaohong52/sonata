@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdServe, priceRow, serveHealthUrl } from '../../src/commands/serve.js';
+import { managedLitellmPath, venvDir, LITELLM_VERSION } from '../../src/native/litellm-venv.js';
 import { parseConfig } from '../../src/config.js';
 import type { LedgerRow } from '../../src/ledger.js';
 
@@ -97,6 +98,11 @@ describe('cmdServe — ledger wiring', () => {
   const tempDir = () => join(cwd, 'litellm');
 
   async function start(recordUsage?: (row: LedgerRow) => void) {
+    // `serve` refuses to start when a config routes through litellm and no
+    // managed venv is installed; these tests are about the ledger.
+    mkdirSync(join(venvDir(home), 'bin'), { recursive: true });
+    writeFileSync(managedLitellmPath(home), '#!/bin/sh\n', { mode: 0o755 });
+    writeFileSync(join(venvDir(home), '.sonata-pin'), LITELLM_VERSION);
     const handle = await cmdServe({
       cwd, home, tempDir: tempDir(),
       waitForLitellm: async () => {},

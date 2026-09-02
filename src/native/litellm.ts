@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 
+import { providerForBaseUrl } from './providers.js';
 import type { NativeConfig, UnifiedModelConfig } from '../config.js';
 
 export interface LiteLLMModelConfig {
@@ -72,20 +73,23 @@ function litellmModelEntry(
       litellm_params: { model: `github_copilot/${id}` },
     };
   }
-  if (gateways[gateway].wireFormat === 'anthropic') {
-    return {
-      model_name: modelName,
-      litellm_params: {
-        model: `anthropic/${id}`,
-        api_base: gateways[gateway].baseUrl,
-        api_key: `os.environ/${envVarForGateway(gateway)}`,
-      },
-    };
-  }
+  // The gateway's declared provider, else the table, else `openai` as the
+  // fallback for an endpoint nobody has classified. A blanket `openai/` reaches
+  // a vendor's compatibility shim rather than its native API, and a shim is
+  // where vendor-specific state has nowhere to live — losing Gemini's
+  // `thought_signature` that way is what let one model absorb a whole tier.
+  // `wireFormat` is honoured here, not only where `parseConfig` maps it: a
+  // `NativeConfig` built in code (tests, and any future non-parse path) would
+  // otherwise silently lose the dialect it declared and fall through to the
+  // `openai` fallback — which is exactly the confident-wrong-dialect failure
+  // this table exists to prevent.
+  const provider = gateways[gateway].provider
+    ?? gateways[gateway].wireFormat
+    ?? providerForBaseUrl(gateway);
   return {
     model_name: modelName,
     litellm_params: {
-      model: `openai/${id}`,
+      model: `${provider}/${id}`,
       api_base: gateways[gateway].baseUrl,
       api_key: `os.environ/${envVarForGateway(gateway)}`,
     },

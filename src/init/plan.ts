@@ -5,7 +5,8 @@ import type { InitState } from '../tui-ink/types.js';
 import type { NativeCandidate } from './helpers.js';
 import type { CredentialSource } from '../config.js';
 import type { NativeGatewayAuth } from '../config.js';
-import { tierAgentNames } from '../config.js';
+import { tierAgentNames, parseConfig } from '../config.js';
+import { litellmRequired } from '../native/providers.js';
 import { loadAaCatalog, proposeTiers } from '../catalog.js';
 import { nativeTomlFor } from './toml.js';
 import { reconcilePerRoleModels, reconcileTierList, gatewayNamesOf, avoidedKeysOf } from './helpers.js';
@@ -41,6 +42,12 @@ export interface InitPlan {
   agentsDir: string;
   chosenNative: NativeCandidate[];
   roles: string[];
+  /**
+   * Whether the config this plan is about to write routes anything through
+   * LiteLLM. Computed from that exact TOML rather than from the selections, so
+   * it cannot disagree with what `serve` will decide when it reads the file.
+   */
+  installLitellm: boolean;
   nativeKeys: string[];
   notices: string[];
   summary: string[];
@@ -213,6 +220,12 @@ export function plan(
   // roles × models: a role whose `simple` and `complex` lists match collapses
   // to one file, so the old count promised 8 files and `sync` then wrote 4.
   const totalAgents = tierAgentNames(tiers).length;
+  // Parsed back out of the TOML about to be written: `serve` makes this same
+  // call against that same file, and a summary derived from the selections
+  // instead could promise something the written config does not say.
+  let installLitellmNeeded = false;
+  try { installLitellmNeeded = litellmRequired(parseConfig(configToml)); } catch { /* the config
+    is validated elsewhere; an unparseable one is not this line's error to raise */ }
   const summary: string[] = [
     '  Summary',
     `    models  ${chosenNative.map((c) => `${c.gateway}/${c.id}`).join(', ')}`,
@@ -220,6 +233,7 @@ export function plan(
     `    agents  ${totalAgents} file${totalAgents === 1 ? '' : 's'} in .claude/agents/`,
     `    hook    ${state.hookScope === 'skip' ? 'not installed' : `${state.hookScope} settings.json`}`,
     `    routing ${state.routing === 'skip' ? 'not configured' : `sonata route auto${state.routing === 'global' ? ' --global' : ''}`}`,
+    `    litellm ${installLitellmNeeded ? `install litellm[proxy] into ${'~/.config/sonata/litellm'}` : 'not needed — no gateway routes through it'}`,
     `    config  ${configPathResolved}`,
     '',
   ];
@@ -259,6 +273,7 @@ export function plan(
     agentsDir,
     chosenNative,
     roles,
+    installLitellm: installLitellmNeeded,
     nativeKeys,
     notices,
     summary,

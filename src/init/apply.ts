@@ -7,6 +7,7 @@ import { pruneAgents } from '../detect.js';
 import { cmdSync } from '../commands/sync.js';
 import { cmdRoute } from '../commands/route.js';
 import { writeSonataKey } from '../native/credentials.js';
+import { litellmStatus } from '../native/litellm-venv.js';
 import type { InitPlan } from './plan.js';
 import type { InitOptions } from './helpers.js';
 
@@ -14,6 +15,17 @@ export interface ApplyIo {
   out: (line: string) => void;
   /** Stale agents are only known after cmdSync runs, so prune cannot be pre-planned. */
   prune: boolean | ((stale: string[]) => Promise<boolean>);
+  /**
+   * How to install LiteLLM, when the planned config needs it.
+   *
+   * There is deliberately NO default here: an install is a multi-minute
+   * network operation, and a default would make it the behaviour of every
+   * caller that forgot to think about it — which is exactly what happened
+   * while this was internal, with 46 init tests silently running `uv pip
+   * install` against PyPI on any machine that had uv. `cmdInit` supplies the
+   * real one; absent it, `apply` names the command instead of running it.
+   */
+  installLitellm?: (home: string) => Promise<void>;
 }
 
 export async function apply(
@@ -39,6 +51,29 @@ export async function apply(
   mkdirSync(dirname(plan.configPath), { recursive: true });
   writeFileSync(plan.configPath, plan.configToml);
   io.out(`  ✓ wrote ${plan.configPath}`);
+
+  // ---- litellm ----
+  // `init` is the interactive, foregrounded moment where a multi-minute
+  // install and its output make sense; `serve` refuses instead, because it is
+  // started headless from a SessionStart hook. A failure here is reported and
+  // survived: the config is already written, and `sonata litellm install`
+  // finishes the job.
+  if (plan.installLitellm) {
+    if (litellmStatus(home, true).state === 'ok') {
+      io.out('  · litellm already installed');
+    } else if (io.installLitellm === undefined) {
+      io.out('  · litellm is needed by this config — run `sonata litellm install`');
+    } else {
+      io.out('  … installing litellm (uv: seconds; pip: a few minutes)');
+      try {
+        await io.installLitellm(home);
+        io.out('  ✓ installed litellm');
+      } catch (error) {
+        io.out(`  ! litellm install failed: ${error instanceof Error ? error.message : String(error)}`);
+        io.out('      ❯ run `sonata litellm install` to retry — the rest of this setup is unaffected');
+      }
+    }
+  }
 
   // ---- settings (hook + allow-list) ----
   let hookChanged = false;
