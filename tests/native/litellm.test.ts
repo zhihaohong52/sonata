@@ -213,3 +213,39 @@ describe('LiteLLM config — copilot-oauth gateways', () => {
     expect(cfg().model_list[0].model_info).toBeUndefined();
   });
 });
+
+describe('LiteLLM config — the provider prefix', () => {
+  const cfgFor = (gw: Record<string, unknown>, id: string) => litellmConfig({
+    models: { m: { gateway: 'gw', id } },
+    gateways: { gw: gw as never },
+    ports: { router: 4100, litellm: 4000 },
+    generate: {},
+  } as NativeConfig, 'sk');
+
+  it('emits the gateway provider prefix, not a blanket openai/', () => {
+    const e = cfgFor({ baseUrl: 'https://g/v1beta', auth: 'api-key', provider: 'gemini' }, 'gemini-2.5-flash');
+    expect(e.model_list[0].litellm_params.model).toBe('gemini/gemini-2.5-flash');
+  });
+
+  it('falls back to the provider table when the gateway declares none', () => {
+    // A known vendor should not get `openai/` just because nobody typed a
+    // provider — that reaches a compatibility shim rather than its native API.
+    const e = litellmConfig({
+      models: { m: { gateway: 'google', id: 'gemini-2.5-flash' } },
+      gateways: { google: { baseUrl: 'https://g/v1beta', auth: 'api-key' } },
+      ports: { router: 4100, litellm: 4000 },
+      generate: {},
+    } as NativeConfig, 'sk');
+    expect(e.model_list[0].litellm_params.model).toBe('gemini/gemini-2.5-flash');
+  });
+
+  it('still emits openai/ for an endpoint nobody has classified', () => {
+    const e = cfgFor({ baseUrl: 'https://acme/v1', auth: 'api-key' }, 'x');
+    expect(e.model_list[0].litellm_params.model).toBe('openai/x');
+  });
+
+  it('keeps emitting anthropic/ for an anthropic gateway', () => {
+    const e = cfgFor({ baseUrl: 'https://a/v1', auth: 'api-key', provider: 'anthropic' }, 'm-1');
+    expect(e.model_list[0].litellm_params.model).toBe('anthropic/m-1');
+  });
+});

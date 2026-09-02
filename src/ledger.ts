@@ -28,7 +28,7 @@ export interface LedgerRow {
   tier?: string;
   key?: string;
   gateway?: string;
-  upstream: 'litellm' | 'anthropic';
+  upstream: 'litellm' | 'anthropic' | 'direct';
   litellmModel?: string;
   callId?: string;
   status: number;

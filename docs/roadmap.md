@@ -48,7 +48,7 @@ Status legend: ✅ shipped · 🔸 in progress · ⏳ not started.
 | # | Item | Priority | Size | Status |
 |---|---|---|---|---|
 | 08 | Publish to npm, and automate the release | P0 | S | ✅ shipped in [0.4.0](https://www.npmjs.com/package/@zhihaohong52/sonata) — `npm run release -- <version>` promotes `[Unreleased]`, bumps the manifest and lock, and tags; `release.yml` publishes on the pushed tag via npm trusted publishing (OIDC) with provenance, storing no token. **Correction to what this entry previously said**: the bootstrap does *not* require publishing by hand first. `npm trust github <pkg> --file release.yml --repo <owner/repo> --allow-publish` (npm 11.10+) configures a trusted publisher for a package that does not exist yet — only the npmjs.com *web UI* has that limitation. 0.4.0 was in fact published manually before this was known. Remaining: run that `npm trust` command, or 0.4.1 reaches the publish step with no OIDC and fails after the tag is already pushed |
-| 09 | Own the LiteLLM dependency — manage it, don't replace it (pinned managed venv, doctor installs/repairs) | P0 | M | ⏳ not started |
+| 09 | Own the LiteLLM dependency — manage it, don't replace it (pinned managed venv, doctor installs/repairs) | P0 | M | ✅ fixed, unreleased — and the answer turned out to be better than managing it. A gateway declares its `provider`; an Anthropic-native one is reached **directly by sonata's own router with no LiteLLM in the path**, so a config whose gateways all speak Anthropic needs no LiteLLM, no venv and no Python at all. When one *is* needed, sonata installs its own venv pinned to `1.98.0` (`sonata litellm install`; `init` offers it, `doctor` reports six distinct states, `serve` refuses rather than installing because it runs headless from a SessionStart hook). `litellmRequired` counts every routable model, not just tier members — a bare model key never calls `resolveTier` |
 
 ### IV. Contract — the part where the number stops being decorative
 
@@ -79,13 +79,13 @@ to try any of it. Freeze last.
   users the very things that bit the existing ones. *Items 06 · 08 · 09 ·
   13 · 14.*
 
-  **0.4.0 shipped 2026-08-31 carrying 06 and 08 only.** A stranger can now
-  install sonata, which was the point of the release — but 09 · 13 · 14 are
-  still open, and the paragraph above is the argument for why that is
-  uncomfortable: 13 and 14 are defects that already bit existing users, and
-  the install path is now open to new ones. The version number describes the
-  code it ships, not the completeness of the milestone; the milestone closes
-  when those three land.
+  **0.4.0 shipped 2026-08-31 carrying 06 and 08 only**, and 13 · 14 followed
+  in 0.4.1. With 09 landed (unreleased), every item in this milestone is
+  done — the version number describes the code it ships, not the completeness
+  of the milestone, and the milestone is what closes here. Item 09's answer
+  turned out better than the one the milestone asked for: rather than only
+  managing the Python dependency, sonata now avoids needing it at all
+  whenever a gateway speaks Anthropic natively.
 - **1.0 — "Freeze the contract."** Schema version and load-time migration,
   structured doctor output, budget caps, the false-success check, and one
   report manifest. Ship 1.0 only after 0.4 has been in strangers' hands

@@ -152,6 +152,12 @@ export interface InitOptions {
   /** Repeatable gateway=source overrides for the scripted path. */
   credentialSource?: string[];
   prune?: boolean;
+  /**
+   * Test seam for the LiteLLM install. The suite must not reach PyPI: 46
+   * init tests were silently running `uv pip install` on any machine that
+   * had uv, which made the suite's behaviour a function of `which uv`.
+   */
+  installLitellm?: (home: string) => Promise<void>;
   write?: (line: string) => void;
   detect?: Detector;
   /** Injected by tests so a suite never writes into the real log directory. */

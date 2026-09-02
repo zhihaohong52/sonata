@@ -60,7 +60,13 @@ Read [Limitations](docs/guide/limitations.md) and
 - **Node 22+**
 - **tmux** — every harness runs inside a tmux session (`brew install tmux`,
   `apt install tmux`)
-- **LiteLLM (optional, native path only)** — install with `pip install 'litellm[proxy]'`
+- **LiteLLM — managed, and only when a gateway needs it.** Sonata installs its
+  own pinned copy into `~/.config/sonata/litellm` (`sonata litellm install`,
+  offered by `sonata init`), so `pip install` by hand is no longer a step. A
+  gateway that speaks the Anthropic Messages API natively is reached directly
+  with no LiteLLM in the path at all — such a config needs no Python whatsoever.
+  When one *is* needed, `uv` (fastest, and can fetch a conforming interpreter)
+  or a `python3` in `>=3.10,<3.15` is required.
 - **macOS or Linux.** Sonata launches bash scripts inside tmux and manages
   process groups directly; Windows is not supported. WSL should work but is
   untested.

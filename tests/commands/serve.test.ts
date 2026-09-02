@@ -9,6 +9,7 @@ import {
   serveStatePath, stopServe, cmdRestart, sonataRouterInstanceId,
 } from '../../src/commands/serve.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
+import { managedLitellmPath, venvDir, LITELLM_VERSION } from '../../src/native/litellm-venv.js';
 import { clearCooldowns } from '../../src/native/router.js';
 
 let cwd: string;
@@ -17,6 +18,21 @@ let handles: ServeHandle[];
 
 /** Every cmdServe call in this file writes here, never into the real tmpdir. */
 const tempDirFor = () => join(cwd, 'litellm');
+
+/**
+ * A managed venv that satisfies `cmdServe`'s start gate.
+ *
+ * `serve` refuses to run when a config routes through LiteLLM and no managed
+ * venv is installed — it never installs one itself, because
+ * `hooks/ensure-serve.mjs` starts it headless where a multi-minute install
+ * looks exactly like a hang. Every test in this file is about something else,
+ * so they all get one; the gate has its own tests.
+ */
+function installFakeVenv(at: string): void {
+  mkdirSync(join(venvDir(at), 'bin'), { recursive: true });
+  writeFileSync(managedLitellmPath(at), '#!/bin/sh\n', { mode: 0o755 });
+  writeFileSync(join(venvDir(at), '.sonata-pin'), LITELLM_VERSION);
+}
 
 beforeEach(() => {
   // Cooldowns are module-level state (see router.ts), so a candidate key
@@ -27,6 +43,7 @@ beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), 'sonata-serve-cwd-'));
   home = mkdtempSync(join(tmpdir(), 'sonata-serve-home-'));
   handles = [];
+  installFakeVenv(home);
   writeFileSync(join(cwd, 'sonata.toml'), `
 [native.models."deepseek-v4-flash"]
 gateway = "acme"
@@ -83,8 +100,13 @@ async function serveWith(
   const home = mkdtempSync(join(tmpdir(), 'serve-src-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'serve-src-cwd-'));
   const tempDir = mkdtempSync(join(tmpdir(), 'serve-src-temp-'));
+  installFakeVenv(home);
+  // A gateway with nothing routing to it needs no litellm child, so there
+  // would be no env to capture. These tests are about the credentials serve
+  // builds FOR that child, which presupposes a model reaching the gateway.
   writeFileSync(join(cwd, 'sonata.toml'),
-    `[native]\n[native.ports]\nrouter = 0\nlitellm = 4101\n${gatewayToml}`);
+    '[native]\n[native.ports]\nrouter = 0\nlitellm = 4101\n'
+    + `[native.models."m"]\ngateway = "codex"\nid = "m-1"\ncontext_window = 1\n${gatewayToml}`);
   if (o.withCodexAuth) {
     mkdirSync(join(home, '.codex'), { recursive: true });
     writeFileSync(join(home, '.codex/auth.json'), JSON.stringify({ tokens: { access_token: 'x' } }));
@@ -1627,5 +1649,226 @@ context_window = 128000
       spawn: spawnSpy, probe: async () => true,
     });
     expect(result.pid).toBe(777);
+  });
+});
+
+describe('cmdServe — litellm is conditional', () => {
+  /** Every routable model sits on an Anthropic-native gateway, so nothing needs translating. */
+  const ANTHROPIC_ONLY = `
+[models."or-flash"]
+gateway = "openrouter"
+id = "deepseek/deepseek-v4-flash"
+context_window = 128000
+
+[tiers.code]
+simple = ["or-flash"]
+complex = ["or-flash"]
+
+[native.gateways."openrouter"]
+base_url = "https://openrouter.ai/api/v1"
+provider = "anthropic"
+
+[native.ports]
+router = 0
+litellm = 4000
+`;
+
+  it('starts no litellm child when no gateway needs one', async () => {
+    // Asserted on the spawn seam, not by absence of an error: "it did not
+    // crash" is no evidence that nothing was spawned.
+    writeFileSync(join(cwd, 'sonata.toml'), ANTHROPIC_ONLY);
+    let spawned = 0;
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => { throw new Error('must not wait for a child that was never started'); },
+      spawnLitellm: () => { spawned += 1; return { pid: 1, kill() {} }; },
+    });
+    handles.push(handle);
+    expect(spawned).toBe(0);
+    expect(handle.routerPort).toBeGreaterThan(0);
+  });
+
+  it('needs no managed venv at all in that case', async () => {
+    // The point of the whole exercise: such a user runs sonata on Node and
+    // tmux, with no Python anywhere.
+    rmSync(venvDir(home), { force: true, recursive: true });
+    writeFileSync(join(cwd, 'sonata.toml'), ANTHROPIC_ONLY);
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+    expect(handle.routerPort).toBeGreaterThan(0);
+  });
+
+  it('refuses to start, naming the repair, when litellm is required but missing', async () => {
+    // It must never install here: `hooks/ensure-serve.mjs` starts serve
+    // headless from a SessionStart hook, where a silent multi-minute install
+    // is indistinguishable from a hang.
+    rmSync(venvDir(home), { force: true, recursive: true });
+    await expect(cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: () => ({ pid: 1, kill() {} }),
+    })).rejects.toThrow(/sonata litellm install/);
+  });
+
+  it('still starts on a stale pin rather than refusing to serve', async () => {
+    // An older pinned version is something for `doctor` to report, not a
+    // reason to take the router down.
+    writeFileSync(join(venvDir(home), '.sonata-pin'), '1.0.0');
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+    expect(handle.routerPort).toBeGreaterThan(0);
+  });
+
+  it('spawns the managed binary, never whatever `litellm` PATH resolves to', async () => {
+    let bin = '';
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: (_c, _e, _p, b) => { bin = b; return { pid: 1, kill() {} }; },
+    });
+    handles.push(handle);
+    expect(bin).toBe(managedLitellmPath(home));
+  });
+
+  it('hands the router each direct gateway’s own key', async () => {
+    // Without this the direct transport reaches the gateway with an empty
+    // credential: `forwardDirect` strips the caller's (it is Claude Code's
+    // own Anthropic credential, and forwarding it would be a leak) and has
+    // nothing to put in its place.
+    writeFileSync(join(cwd, 'sonata.toml'), ANTHROPIC_ONLY);
+    writeSonataKey(home, 'openrouter', 'OPENROUTER-KEY');
+    let seen: { url: string; auth?: string } | undefined;
+    // Captured before the stub, so the request that drives the router is a
+    // real one and only the router's own upstream call is intercepted.
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+      seen = { url, auth: (init.headers as Record<string, string>).authorization };
+      return new Response('{}', { status: 200 });
+    });
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+    await realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer CALLER-SECRET' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    // The gateway's own `/v1` is stripped before `/v1/messages` is appended,
+    // which is exactly OpenRouter's real Anthropic endpoint.
+    expect(seen?.url).toBe('https://openrouter.ai/api/v1/messages');
+    expect(seen?.auth).toBe('Bearer OPENROUTER-KEY');
+  });
+});
+
+describe('cmdServe — a config change refreshes direct credentials', () => {
+  it('picks up a rotated gateway key on the litellm-restart path too', async () => {
+    // A mixed config restarts litellm for its translated gateways, and that
+    // path rebuilds `childEnv`. The direct gateways' keys are read off that
+    // env, so missing the refresh there leaves them serving the old key
+    // indefinitely — the one branch where "stays current" was not true.
+    const mixed = (id: string) => `
+[models."or-flash"]
+gateway = "openrouter"
+id = "deepseek/deepseek-v4-flash"
+context_window = 128000
+
+[models."acme-${id}"]
+gateway = "acme"
+id = "${id}"
+context_window = 128000
+
+[tiers.code]
+simple = ["or-flash"]
+complex = ["or-flash"]
+
+[native.gateways."openrouter"]
+base_url = "https://openrouter.ai/api/v1"
+provider = "anthropic"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43991
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), mixed('first'));
+    writeSonataKey(home, 'openrouter', 'OLD-KEY');
+    const auths: (string | undefined)[] = [];
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+      auths.push((init.headers as Record<string, string>).authorization);
+      return new Response('{}', { status: 200 });
+    });
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      spawnLitellm: () => ({ pid: 1, kill() {}, onExit: (cb) => cb(null, 'SIGTERM') }),
+    });
+    handles.push(handle);
+    const send = () => realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    await send();
+    // Rotate the credential and change the model registry, which is what
+    // triggers the litellm restart branch.
+    writeSonataKey(home, 'openrouter', 'NEW-KEY');
+    writeFileSync(join(cwd, 'sonata.toml'), mixed('second'));
+    await send();
+    await send();
+    expect(auths[0]).toBe('Bearer OLD-KEY');
+    expect(auths.at(-1)).toBe('Bearer NEW-KEY');
+  });
+});
+
+describe('cmdServe — what the startup line may claim', () => {
+  it('reports no litellm port when no child was started', async () => {
+    // The line a user reads to find out what came up must not name a port
+    // nothing is listening on. Measured live 2026-09-01: an Anthropic-only
+    // config printed "litellm listening on 4178" with no child anywhere.
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."or-flash"]
+gateway = "openrouter"
+id = "deepseek/deepseek-v4-flash"
+context_window = 128000
+
+[tiers.code]
+simple = ["or-flash"]
+complex = ["or-flash"]
+
+[native.gateways."openrouter"]
+base_url = "https://openrouter.ai/api/v1"
+provider = "anthropic"
+
+[native.ports]
+router = 0
+litellm = 4000
+`);
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+    expect(handle.litellmPort).toBeUndefined();
+  });
+
+  it('still reports the port when a child is running', async () => {
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+    expect(handle.litellmPort).toBe(4000);
   });
 });

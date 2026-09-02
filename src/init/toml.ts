@@ -81,7 +81,10 @@ export function nativeTomlFor(
     else lines.push(`base_url = ${tomlKey(baseUrl)}`);
     const source = credentialSources[gateway];
     if (source !== undefined) lines.push(`credential_source = ${tomlKey(source)}`);
-    if (wireFormat === 'anthropic') lines.push(`wire_format = ${tomlKey(wireFormat)}`);
+    // `provider` supersedes `wire_format`, so the wizard writes the current
+    // key. Reading `wire_format` stays supported for configs already on disk;
+    // continuing to WRITE it would mean every new config is born legacy.
+    if (wireFormat === 'anthropic') lines.push(`provider = ${tomlKey(wireFormat)}`);
     lines.push('');
   }
 

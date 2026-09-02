@@ -27,6 +27,8 @@ const detect = async () => ({
 });
 
 const base = () => ({
+  // Never reach PyPI from the suite.
+  installLitellm: async (): Promise<void> => {},
   cwd, home, packageRoot: resolve('.'), detect, yes: true,
   providers: ['opencode/acme'], models: ['acme-fast'], roles: ['code'],
   configScope: 'project' as const, scope: 'skip' as const, routing: 'skip' as const,

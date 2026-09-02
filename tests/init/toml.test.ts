@@ -98,8 +98,8 @@ describe('nativeTomlFor', () => {
   });
 });
 
-describe('nativeTomlFor — wire_format', () => {
-  it('emits wire_format for an anthropic-wire-format candidate', () => {
+describe('nativeTomlFor — provider', () => {
+  it('emits provider for an anthropic-wire-format candidate', () => {
     const toml = nativeTomlFor({
       code: [{
         key: 'custom-claude-clone', gateway: 'custom', id: 'claude-clone',
@@ -107,10 +107,13 @@ describe('nativeTomlFor — wire_format', () => {
         wireFormat: 'anthropic',
       }],
     });
-    expect(toml).toMatch(/\[native\.gateways\."custom"\][\s\S]*wire_format = "anthropic"/);
+    // `provider` supersedes `wire_format`; a wizard still writing the old key
+    // would make every freshly created config a legacy one.
+    expect(toml).toMatch(/\[native\.gateways\."custom"\][\s\S]*provider = "anthropic"/);
+    expect(toml).not.toContain('wire_format');
   });
 
-  it('omits wire_format for an openai (default) candidate', () => {
+  it('omits the key entirely for an openai (default) candidate', () => {
     const toml = nativeTomlFor({
       code: [{
         key: 'custom-gpt', gateway: 'custom', id: 'gpt',
@@ -118,6 +121,7 @@ describe('nativeTomlFor — wire_format', () => {
       }],
     });
     expect(toml).not.toContain('wire_format');
+    expect(toml).not.toContain('provider =');
   });
 });
 

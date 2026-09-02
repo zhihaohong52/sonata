@@ -1,11 +1,12 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import type { LedgerRow } from '../ledger.js';
+import type { Transport } from './providers.js';
 import { createUsageCollector, type UsageTokens, usageFromJsonBody } from './usage.js';
 
 export interface TierRoute {
   key: string;
-  native?: { gateway: string; id: string };
+  native?: { gateway: string; id: string; transport?: Transport; baseUrl?: string };
   harness?: { harness: string; id: string };
 }
 
@@ -64,6 +65,13 @@ export interface RouterDeps {
    * accounting trouble can only lose its own row, never a client response.
    */
   recordUsage?: (row: LedgerRow) => void;
+  /**
+   * Resolved API key per native gateway, keyed by gateway name — how
+   * `forwardDirect` finds the credential to inject for a direct-transport
+   * candidate. Absent or unresolved means an empty bearer, same as any other
+   * unresolvable credential.
+   */
+  gatewayKeys?: Record<string, string>;
 }
 
 export interface RouterRequest {
@@ -154,7 +162,7 @@ interface RecordContext {
   tier?: string;
   key?: string;
   gateway?: string;
-  upstream: 'litellm' | 'anthropic';
+  upstream: 'litellm' | 'anthropic' | 'direct';
   attempts: { key: string; status: number }[];
   session?: string;
 }
@@ -450,6 +458,60 @@ function litellmHeaders(headers: Record<string, string>, litellmKey: string): Re
 }
 
 /**
+ * Forwards straight to an Anthropic-native gateway, no LiteLLM in the path.
+ *
+ * The body is passed through UNMODIFIED — no `flattenSystemBlocks`. An
+ * Anthropic upstream understands block arrays, so flattening would discard
+ * `cache_control` for nothing. Assistant blocks in particular must survive
+ * byte-identical: `redacted_thinking` carries opaque vendor state the
+ * upstream requires echoed back exactly.
+ *
+ * Auth is the security boundary, not hygiene: the caller's credential is
+ * Claude Code's own Anthropic credential, and forwarding it to a third-party
+ * gateway would be a leak. It is stripped and replaced with the gateway's own
+ * key, the same way `litellmHeaders` swaps in the litellm master key.
+ */
+async function forwardDirect(
+  body: Buffer,
+  gw: { baseUrl: string; key: string; authHeader?: string },
+  req: RouterRequest,
+  deps: RouterDeps,
+): Promise<RouterResponse> {
+  const headers = requestHeaders(req.headers);
+  for (const name of Object.keys(headers)) {
+    if (name.toLowerCase() === 'authorization' || name.toLowerCase() === 'x-api-key') delete headers[name];
+  }
+  if ((gw.authHeader ?? 'authorization').toLowerCase() === 'x-api-key') headers['x-api-key'] = gw.key;
+  else headers.authorization = `Bearer ${gw.key}`;
+
+  // A gateway's configured `base_url` already ends in `/v1` (the same
+  // convention `native/models.ts`'s `modelsUrl` relies on), while `req.url`
+  // is itself `/v1/messages` — joining both verbatim would send
+  // `.../v1/v1/messages`. Strip the trailing `/v1` sonata added so the
+  // request lands where the gateway actually is.
+  const base = gw.baseUrl.replace(/\/v1\/?$/, '');
+
+  try {
+    const response = await deps.fetch(
+      targetUrl(base, req.url),
+      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined },
+    );
+    return {
+      status: response.status,
+      headers: responseHeaders(response.headers),
+      body: response.body === null ? Buffer.alloc(0) : responseBody(response.body),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      status: 502,
+      headers: { 'content-type': 'application/json' },
+      body: anthropicErrorBody('router_error', message),
+    };
+  }
+}
+
+/**
  * Tries each native-routed candidate for a `sonata-<role>-<tier>` alias in
  * rank order, skipping any inside its post-failure cooldown window. The first
  * response that is neither ≥500, 429, nor a candidate-specific auth failure
@@ -490,8 +552,19 @@ async function routeTierRequest(
     const until = cooldowns.get(route.key);
     if (until !== undefined && until > now()) continue;
 
-    const body = withModel(flattened, route.key);
-    const response = await forwardToLitellm(body, headers, { ...req, body }, deps);
+    const direct = route.native?.transport === 'direct';
+    // Only the litellm path needs the string-flattened system form and the
+    // sonata alias key rewritten in — a direct gateway has never heard of
+    // that key and understands block arrays fine.
+    const body = direct ? withModel(req.body, route.native!.id) : withModel(flattened, route.key);
+    const response = direct
+      ? await forwardDirect(
+        body,
+        { baseUrl: route.native!.baseUrl ?? '', key: deps.gatewayKeys?.[route.native!.gateway] ?? '' },
+        req,
+        deps,
+      )
+      : await forwardToLitellm(body, headers, { ...req, body }, deps);
     // 429 is treated as a failure alongside 5xx (not as one of "our" 4xx
     // mistakes to return as-is): it's the upstream saying it's overloaded,
     // exactly the transient case ranked fallback exists for. 401/403 are also
@@ -558,7 +631,7 @@ async function routeTierRequest(
         tier: resolved.tier,
         key: route.key,
         gateway: route.native!.gateway,
-        upstream: 'litellm',
+        upstream: direct ? 'direct' : 'litellm',
         attempts,
       }, deps);
     }
@@ -566,7 +639,7 @@ async function routeTierRequest(
     for (const key of capability400Counts.keys()) {
       if (key.startsWith(`${route.key} `)) capability400Counts.delete(key);
     }
-    deps.log?.(`${req.method} ${req.url} model=${alias} -> ${route.key} -> litellm`);
+    deps.log?.(`${req.method} ${req.url} model=${alias} -> ${route.key} -> ${direct ? 'direct' : 'litellm'}`);
     return withUsageRecording(response, {
       startedAt,
       session,
@@ -575,7 +648,7 @@ async function routeTierRequest(
       tier: resolved.tier,
       key: route.key,
       gateway: route.native!.gateway,
-      upstream: 'litellm',
+      upstream: direct ? 'direct' : 'litellm',
       attempts,
     }, deps);
   }

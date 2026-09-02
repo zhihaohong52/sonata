@@ -710,7 +710,10 @@ base_url = "https://acme.example/v1"
     const config = parseConfig(TIERED);
     const resolved = resolveTierAlias(config, 'sonata-code-complex');
     expect(resolved?.routes.map((r) => r.key)).toEqual(['gpt-5.6-terra', 'deepseek-v4-flash']);
-    expect(resolved?.routes[1].native).toEqual({ gateway: 'vendorx', id: 'deepseek-v4-flash-0731' });
+    expect(resolved?.routes[1].native).toEqual({
+      gateway: 'vendorx', id: 'deepseek-v4-flash-0731',
+      transport: 'litellm', baseUrl: 'http://gateway.example/v1',
+    });
     expect(resolved?.routes[1].harness).toEqual({ harness: 'opencode', id: 'vendorx/deepseek-v4-flash-0731' });
   });
 
@@ -961,5 +964,51 @@ complex = ["m"]
   it('refuses a non-list value', () => {
     expect(() => parseConfig(base.replace('avoid_gateways = ["acme"]', 'avoid_gateways = "acme"')))
       .toThrow(/must be a list/);
+  });
+});
+
+describe('native gateway provider', () => {
+  const gw = (extra: string) => `
+[models."m"]
+gateway = "gw"
+id = "x"
+
+[native.gateways."gw"]
+base_url = "https://gw.example/v1"
+${extra}
+`;
+
+  it('parses provider on a gateway', () => {
+    expect(parseConfig(gw('provider = "gemini"')).native!.gateways.gw.provider).toBe('gemini');
+  });
+
+  it('refuses a provider LiteLLM does not have', () => {
+    expect(() => parseConfig(gw('provider = "not-a-provider"'))).toThrow(/provider/);
+  });
+
+  it('accepts wire_format as the older spelling of provider', () => {
+    // `wire_format` was a two-valued subset of the same idea and ships in
+    // configs today, so it maps rather than being refused. Migrating here in
+    // parseConfig covers every load path, not just the legacy-config one.
+    expect(parseConfig(gw('wire_format = "anthropic"')).native!.gateways.gw.provider).toBe('anthropic');
+  });
+
+  it('lets an explicit provider win over the older wire_format', () => {
+    expect(parseConfig(gw('wire_format = "openai"\nprovider = "gemini"')).native!.gateways.gw.provider)
+      .toBe('gemini');
+  });
+
+  it('refuses provider on an oauth gateway, as it already refuses wire_format', () => {
+    // Their dialect is fixed by their auth: chatgpt needs mode: responses,
+    // copilot needs a token exchange first.
+    expect(() => parseConfig(`
+[models."m"]
+gateway = "gw"
+id = "x"
+
+[native.gateways."gw"]
+auth = "codex-oauth"
+provider = "openai"
+`)).toThrow(/provider/);
   });
 });

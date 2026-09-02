@@ -153,6 +153,13 @@ function makeDetect(opts?: { authed?: string[]; extraRefs?: string; providerBase
   });
 }
 
+/**
+ * The suite never reaches PyPI. Without an explicit seam the real installer
+ * runs: 46 tests here were doing `uv pip install litellm[proxy]` on any
+ * machine that had uv, which made the suite's behaviour a function of PATH.
+ */
+const NO_INSTALL = async (): Promise<void> => {};
+
 describe('cmdInit (non-interactive)', () => {
   let cwd: string;
   let home: string;
@@ -169,6 +176,7 @@ describe('cmdInit (non-interactive)', () => {
 
   it('--yes installs the sonata loop skill and names the routing choice', async () => {
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: process.cwd(), yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'project', write,
@@ -181,6 +189,7 @@ describe('cmdInit (non-interactive)', () => {
 
   it('leaving routing disabled warns in doctor for a tiered config', async () => {
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: process.cwd(), yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'skip', routing: 'skip', write,
@@ -194,6 +203,7 @@ describe('cmdInit (non-interactive)', () => {
 
   it('refuses --routing global when the config is project-scoped', async () => {
     await expect(cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'skip', configScope: 'project', routing: 'global', write,
@@ -203,6 +213,7 @@ describe('cmdInit (non-interactive)', () => {
   it('refuses project-scoped routing when a local config would shadow a global init config', async () => {
     writeFileSync(join(cwd, 'sonata.toml'), '[run]\n');
     await expect(cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: process.cwd(), yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'skip', configScope: 'global', routing: 'project', write,
@@ -218,6 +229,7 @@ describe('cmdInit (non-interactive)', () => {
 
   it('allows project-scoped routing for a global config when no local config shadows it', async () => {
     await expect(cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: process.cwd(), yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'skip', configScope: 'global', routing: 'project', write,
@@ -226,6 +238,7 @@ describe('cmdInit (non-interactive)', () => {
 
   it('writes native config, installs the hook and generates agents', async () => {
     const res = await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'project', write,
@@ -250,6 +263,7 @@ describe('cmdInit (non-interactive)', () => {
 
   it('--yes writes catalog-ranked tiers for every selected role, round-tripping through parseConfig', async () => {
     const res = await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'],
       models: ['opencode-deepseek-v4-flash', 'opencode-kimi-k3'],
@@ -299,7 +313,8 @@ code = ["native-only"]
       extraRefs: 'openai/gpt-5.6-luna\nopenai/native-only\n',
       providerBaseUrls: { openai: 'https://openai.example/v1' },
     });
-    await cmdInit({ cwd, home, packageRoot: '/pkg', yes: true, detect: legacyDetect, scope: 'skip', write });
+    await cmdInit({
+      installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', yes: true, detect: legacyDetect, scope: 'skip', write });
 
     const cfg = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
     expect(cfg.tiers?.code.simple).toEqual(['native-only', 'gpt-5.6-luna']);
@@ -309,6 +324,7 @@ code = ["native-only"]
 
   it('is idempotent across repeated runs', async () => {
     const args = {
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'],
       models: ['opencode-deepseek-v4-flash'], roles: ['code'], scope: 'project' as const, write,
@@ -323,6 +339,7 @@ code = ["native-only"]
 
   it('can skip hook installation entirely', async () => {
     const res = await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-kimi-k3'],
       roles: ['review'], scope: 'skip', write,
@@ -333,6 +350,7 @@ code = ["native-only"]
 
   it('rejects a model the selected providers do not offer', async () => {
     await expect(cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'], models: ['gpt-9'], roles: ['code'], scope: 'skip', write,
     })).rejects.toThrow(/not offer gpt-9/);
@@ -340,6 +358,7 @@ code = ["native-only"]
 
   it('rejects an unknown role', async () => {
     await expect(cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-kimi-k3'],
       roles: ['dance'], scope: 'skip', write,
@@ -348,6 +367,7 @@ code = ["native-only"]
 
   it('writes a model id containing dots as one quoted key', async () => {
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-grok-4.5'],
       roles: ['code'], scope: 'skip', write,
@@ -361,6 +381,7 @@ code = ["native-only"]
   it('reports blocking problems and writes nothing when a provider is unauthed', async () => {
     const noAuth = makeDetect({ authed: [] });
     const res = await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect: noAuth,
       models: ['opencode-kimi-k3'], roles: ['code'], scope: 'skip', write,
     });
@@ -404,6 +425,7 @@ describe('cmdInit — provider selection', () => {
 
   it('enables the chosen provider and writes a native model', async () => {
     const res = await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/openrouter'], models: ['openrouter-grok-4.5'],
       roles: ['code'], scope: 'skip', write,
@@ -418,6 +440,7 @@ describe('cmdInit — provider selection', () => {
   it('deduplicates the same provider/model across harnesses for native', async () => {
     // opencode and pi both offer opencode-go/grok-4.5; native shows it once.
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode-go', 'pi/opencode-go'],
       models: ['opencode-go-grok-4.5'],
@@ -432,6 +455,7 @@ describe('cmdInit — provider selection', () => {
 
   it('rejects a model no offered provider serves', async () => {
     await expect(cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/openrouter'], models: ['nope'], roles: ['code'], scope: 'skip', write,
     })).rejects.toThrow(/not offer nope/);
@@ -596,7 +620,8 @@ describe('cmdInit — config scope', () => {
   };
 
   it('writes a global config and global agents, and nothing in the repo', async () => {
-    const res = await cmdInit({ ...args, cwd, home, configScope: 'global', write });
+    const res = await cmdInit({
+      installLitellm: NO_INSTALL, ...args, cwd, home, configScope: 'global', write });
 
     expect(res.configPath).toBe(join(home, '.config', 'sonata', 'sonata.toml'));
     expect(existsSync(join(home, '.config', 'sonata', 'sonata.toml'))).toBe(true);
@@ -614,7 +639,8 @@ harness = "opencode"
 id = "openrouter/other"
 `);
 
-    const res = await cmdInit({ ...args, cwd, home, configScope: 'global', routing: 'global', write });
+    const res = await cmdInit({
+      installLitellm: NO_INSTALL, ...args, cwd, home, configScope: 'global', routing: 'global', write });
 
     const globalAgents = join(home, '.claude', 'agents');
     // The global config has one model, so its [tiers.code] collapses to the
@@ -628,7 +654,8 @@ id = "openrouter/other"
   });
 
   it('installs the loop skill under home at global scope, not in the invoking repo', async () => {
-    await cmdInit({ ...args, cwd, home, configScope: 'global', write });
+    await cmdInit({
+      installLitellm: NO_INSTALL, ...args, cwd, home, configScope: 'global', write });
 
     const skillTarget = join(home, '.claude', 'skills', 'sonata-loop', 'SKILL.md');
     expect(readFileSync(skillTarget, 'utf8'))
@@ -637,13 +664,16 @@ id = "openrouter/other"
   });
 
   it('defaults to the project scope', async () => {
-    const res = await cmdInit({ ...args, cwd, home, write });
+    const res = await cmdInit({
+      installLitellm: NO_INSTALL, ...args, cwd, home, write });
     expect(res.configPath).toBe(join(cwd, 'sonata.toml'));
   });
 
   it('pre-ticks from the machine config when the repo has none', async () => {
-    await cmdInit({ ...args, cwd, home, configScope: 'global', write });
+    await cmdInit({
+      installLitellm: NO_INSTALL, ...args, cwd, home, configScope: 'global', write });
     const second = await cmdInit({
+      installLitellm: NO_INSTALL,
       packageRoot: '/pkg', yes: true, detect, cwd, home,
       roles: ['code'], scope: 'skip' as const, configScope: 'global' as const, write,
     });
@@ -665,6 +695,7 @@ code = ["openrouter-kimi-k3"]
 
     // No --models: selection comes from the config being edited (global = empty).
     await expect(cmdInit({
+      installLitellm: NO_INSTALL,
       packageRoot: '/pkg', yes: true, detect, cwd, home,
       providers: ['opencode/openrouter'], roles: ['code'],
       scope: 'skip' as const, configScope: 'global' as const, write,
@@ -697,6 +728,7 @@ describe('cmdInit — per-role models', () => {
 
   it('flags mean every listed role gets every listed model', async () => {
     const res = await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/openrouter'],
       models: ['openrouter-kimi-k3', 'openrouter-grok-4.5'],
@@ -735,6 +767,7 @@ describe('cmdInit — allow-list upgrade', () => {
     });
 
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/openrouter'], models: ['openrouter-kimi-k3'],
       roles: ['code'], write: () => {},
@@ -775,21 +808,25 @@ describe('cmdInit — pruning', () => {
   };
 
   it('does not delete stale agents unless asked', async () => {
-    await cmdInit({ ...args, cwd, home, write });
+    await cmdInit({
+      installLitellm: NO_INSTALL, ...args, cwd, home, write });
     const dir = join(cwd, '.claude', 'agents');
     writeFileSync(join(dir, 'code-gone.md'), 'forwarding wrapper around the sonata runtime');
 
-    const res = await cmdInit({ ...args, cwd, home, write });
+    const res = await cmdInit({
+      installLitellm: NO_INSTALL, ...args, cwd, home, write });
     expect(res.pruned).toEqual([]);
     expect(existsSync(join(dir, 'code-gone.md'))).toBe(true);
   });
 
   it('deletes stale agents when --prune is given', async () => {
-    await cmdInit({ ...args, cwd, home, write });
+    await cmdInit({
+      installLitellm: NO_INSTALL, ...args, cwd, home, write });
     const dir = join(cwd, '.claude', 'agents');
     writeFileSync(join(dir, 'code-gone.md'), 'forwarding wrapper around the sonata runtime');
 
-    const res = await cmdInit({ ...args, cwd, home, prune: true, write });
+    const res = await cmdInit({
+      installLitellm: NO_INSTALL, ...args, cwd, home, prune: true, write });
     expect(res.pruned).toEqual(['code-gone.md']);
     expect(existsSync(join(dir, 'code-gone.md'))).toBe(false);
   });
@@ -866,6 +903,7 @@ describe('cmdInit --credential-source', () => {
   });
 
   const init = (credentialSource?: string[]) => cmdInit({
+      installLitellm: NO_INSTALL,
     cwd, home, packageRoot: '/pkg', yes: true, detect,
     providers: ['codex/codex'], models: ['gpt-5'], roles: ['code'], scope: 'skip', write,
     credentialSource,
@@ -903,6 +941,7 @@ code = ["gpt-5"]
     tuiMocks.codexCredential = true;
     const lines: string[] = [];
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       scope: 'skip',
       write: (l: string) => { lines.push(l); },
@@ -916,6 +955,7 @@ code = ["gpt-5"]
     tuiMocks.codexCredential = false;
     const lines: string[] = [];
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       scope: 'skip',
       write: (l: string) => { lines.push(l); },
@@ -957,6 +997,7 @@ code = ["gpt-4o"]
     const lines: string[] = [];
     try {
       await cmdInit({
+      installLitellm: NO_INSTALL,
         cwd, home, packageRoot: '/pkg', yes: true, detect,
         scope: 'skip',
         write: (l: string) => { lines.push(l); },
@@ -993,6 +1034,7 @@ context_window = 128000
 code = ["gpt-5"]
 `);
     await expect(cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['codex/codex'], models: ['gpt-5'], roles: ['code'], scope: 'skip', write,
       credentialSource: ['codxe=sonata'],
@@ -1001,6 +1043,7 @@ code = ["gpt-5"]
 
   it('refuses codex as the source for an api-key gateway', async () => {
     const apiKeyInit = () => cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['codex/codex'], models: ['gpt-5'], roles: ['code'], scope: 'skip', write,
       credentialSource: ['codex=codex'],
@@ -1047,6 +1090,7 @@ describe('cmdInit — key check', () => {
 
   it('prints a key-source line for a chosen gateway with no discovered key', async () => {
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/acme'], models: ['acme-deepseek-v4-flash-0731'],
       roles: ['code'], scope: 'skip', write,
@@ -1059,6 +1103,7 @@ describe('cmdInit — key check', () => {
     writeFileSync(join(home, '.config', 'sonata', 'keys.json'), JSON.stringify({ acme: 'sk-test' }));
 
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/acme'], models: ['acme-deepseek-v4-flash-0731'],
       roles: ['code'], scope: 'skip', write,
@@ -1074,6 +1119,7 @@ describe('cmdInit — key check', () => {
     writeFileSync(join(home, '.config', 'sonata', 'keys.json'), JSON.stringify({ acme: 'sk-test' }));
 
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/acme'], models: ['acme-deepseek-v4-flash-0731'],
       roles: ['code'], scope: 'skip', write,
@@ -1099,17 +1145,20 @@ describe('cmdInit — re-init from existing config', () => {
 
   it('round-trips the selected config on a second run', async () => {
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'skip', write,
     });
     const toml1 = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
-    await cmdInit({ cwd, home, packageRoot: '/pkg', yes: true, detect, scope: 'skip', write });
+    await cmdInit({
+      installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', yes: true, detect, scope: 'skip', write });
     expect(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).toBe(toml1);
   });
 
   it('second run with the same flags produces identical config', async () => {
     const args = {
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'skip' as const, write,
@@ -1124,6 +1173,7 @@ describe('cmdInit — re-init from existing config', () => {
   it('second run without flags reads the TOML and preserves selections', async () => {
     // First run: explicit flags.
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'skip', write,
@@ -1132,6 +1182,7 @@ describe('cmdInit — re-init from existing config', () => {
 
     // Second run: no providers/models/roles flags — should read sonata.toml.
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       scope: 'skip', write,
     });
@@ -1149,12 +1200,14 @@ describe('cmdInit — re-init from existing config', () => {
 
   it('re-initializes a global config from its TOML', async () => {
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect, configScope: 'global',
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'skip', write,
     });
     const toml1 = readFileSync(join(home, '.config', 'sonata', 'sonata.toml'), 'utf8');
-    await cmdInit({ cwd, home, packageRoot: '/pkg', yes: true, detect, configScope: 'global', scope: 'skip', write });
+    await cmdInit({
+      installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', yes: true, detect, configScope: 'global', scope: 'skip', write });
     expect(readFileSync(join(home, '.config', 'sonata', 'sonata.toml'), 'utf8')).toBe(toml1);
   });
 
@@ -1176,7 +1229,8 @@ gateway = "solo-gateway"
 id = "solo-model"
 context_window = 128000
 `);
-    await cmdInit({ cwd, home, packageRoot: '/pkg', yes: true, detect, scope: 'skip', write });
+    await cmdInit({
+      installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', yes: true, detect, scope: 'skip', write });
     const cfg = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
     expect(Object.keys(cfg.tiers ?? {}).sort()).toEqual(['code', 'explore', 'plan', 'review']);
     expect(cfg.unifiedModels['solo-native']).toBeDefined();
@@ -1201,6 +1255,7 @@ simple = ["opencode-deepseek-v4-flash", "harness-only-thing"]
 complex = ["opencode-deepseek-v4-flash", "harness-only-thing"]
 `);
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       models: ['opencode-deepseek-v4-flash'], roles: ['code'], scope: 'skip', write,
     });
@@ -1211,6 +1266,7 @@ complex = ["opencode-deepseek-v4-flash", "harness-only-thing"]
 
   it('drops a deselected model from [tiers] rather than writing a dangling reference', async () => {
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'],
       models: ['opencode-deepseek-v4-flash', 'opencode-kimi-k3'],
@@ -1221,6 +1277,7 @@ complex = ["opencode-deepseek-v4-flash", "harness-only-thing"]
 
     // Re-init with only one of the two previously-selected models.
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'skip', write,
@@ -1259,7 +1316,8 @@ complex = ["opencode-deepseek-v4-flash"]
         byokKeys: {},
       },
     };
-    await cmdInit({ cwd, home, packageRoot: '/pkg', detect, scope: 'skip', routing: 'skip', write });
+    await cmdInit({
+      installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', detect, scope: 'skip', routing: 'skip', write });
     const toml = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
     expect(toml).toContain('[models."opencode-deepseek-v4-flash"]');
     expect(toml).toContain('[models."opencode-kimi-k3"]');
@@ -1267,6 +1325,7 @@ complex = ["opencode-deepseek-v4-flash"]
 
   it('appends a newly-added model to an existing [tiers] list on a scripted re-init', async () => {
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'skip', write,
@@ -1275,6 +1334,7 @@ complex = ["opencode-deepseek-v4-flash"]
     // the second run must append it to the existing non-empty list, not drop
     // it — `reconcileTierList` used to keep the saved list verbatim.
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'],
       models: ['opencode-deepseek-v4-flash', 'opencode-kimi-k3'],
@@ -1554,6 +1614,7 @@ context_window = 128000
     });
 
     await cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', detect, scope: 'skip', routing: 'skip', write: () => {},
     });
 
@@ -1591,6 +1652,7 @@ context_window = 128000
     });
 
     await expect(cmdInit({
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', detect, scope: 'skip', write: () => {},
     })).rejects.toThrow(/auth = "api-key".*cannot take its credential from codex/);
   });
@@ -1617,9 +1679,10 @@ describe('cmdInit — custom provider wire format', () => {
         customWireFormats: { 'my-proxy': 'anthropic' },
       },
     };
-    await cmdInit({ cwd, home, packageRoot: '/pkg', yes: false, detect, scope: 'skip', routing: 'skip', write: () => {} });
+    await cmdInit({
+      installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', yes: false, detect, scope: 'skip', routing: 'skip', write: () => {} });
     const written = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
-    expect(written).toMatch(/\[native\.gateways\."my-proxy"\][\s\S]*base_url = "https:\/\/my-proxy\.example\.com\/v1"[\s\S]*wire_format = "anthropic"/);
+    expect(written).toMatch(/\[native\.gateways\."my-proxy"\][\s\S]*base_url = "https:\/\/my-proxy\.example\.com\/v1"[\s\S]*provider = "anthropic"/);
     expect(written).toContain('id = "proxy-model"');
   });
 });
@@ -1685,7 +1748,8 @@ context_window = 128000
       }],
     });
 
-    await cmdInit({ cwd, home, packageRoot: '/pkg', detect, write: () => {} });
+    await cmdInit({
+      installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', detect, write: () => {} });
 
     expect(tuiMocks.data!.credentialAvailability.codex.codex).not.toBeNull();
     expect(tuiMocks.data!.credentialAvailability.codex.opencode).not.toBeNull();
@@ -1715,7 +1779,8 @@ context_window = 128000
       harnesses: [],
     });
 
-    await cmdInit({ cwd, home, packageRoot: '/pkg', detect, write: () => {} });
+    await cmdInit({
+      installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', detect, write: () => {} });
 
     expect(tuiMocks.data!.gatewayBaseUrls?.['removed-gw']).toBe('https://gateway.example/v1');
   });
@@ -1746,7 +1811,8 @@ context_window = 128000
       }],
     });
 
-    await cmdInit({ cwd, home, packageRoot: '/pkg', detect, write: () => {} });
+    await cmdInit({
+      installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', detect, write: () => {} });
 
     expect(tuiMocks.data!.gatewayBaseUrls?.acme).toBe('https://live.example/v1');
   });
@@ -1785,7 +1851,8 @@ context_window = 128000
       }],
     });
 
-    await cmdInit({ cwd, home, packageRoot: '/pkg', detect, scope: 'skip', routing: 'skip', write: () => {} });
+    await cmdInit({
+      installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', detect, scope: 'skip', routing: 'skip', write: () => {} });
 
     const written = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
     // The real failure was at load time, so assert the whole file parses.
@@ -1929,7 +1996,8 @@ describe('cmdInit — BYOK', () => {
 
   it('writes BYOK models to the native config with no harness installed', async () => {
     writeSonataKey(home, 'deepseek', 'sk-test');
-    const res = await cmdInit({ ...args, cwd, home, write });
+    const res = await cmdInit({
+      installLitellm: NO_INSTALL, ...args, cwd, home, write });
 
     const toml = readFileSync(res.configPath, 'utf8');
     expect(toml).toMatch(/\[native\.gateways\."deepseek"\]/);
@@ -1941,7 +2009,8 @@ describe('cmdInit — BYOK', () => {
   it('does not make a missing harness fatal', async () => {
     // Before BYOK this returned early with severity 'error' and wrote nothing.
     writeSonataKey(home, 'deepseek', 'sk-test');
-    const res = await cmdInit({ ...args, cwd, home, write });
+    const res = await cmdInit({
+      installLitellm: NO_INSTALL, ...args, cwd, home, write });
     expect(res.problems.some((p) => p.severity === 'error')).toBe(false);
     expect(res.problems.some((p) => p.severity === 'warn')).toBe(true);
     expect(existsSync(res.configPath)).toBe(true);
@@ -1961,6 +2030,7 @@ describe('cmdInit — BYOK', () => {
       }],
     });
     const res = await cmdInit({
+      installLitellm: NO_INSTALL,
       packageRoot: '/pkg', yes: true, detect: withOpenrouter, cwd, home, write,
       models: ['openrouter-kimi-k3'], roles: ['code'], scope: 'skip' as const,
     });
@@ -1968,7 +2038,8 @@ describe('cmdInit — BYOK', () => {
   });
 
   it('refuses a BYOK provider with no stored key', async () => {
-    await expect(cmdInit({ ...args, cwd, home, write }))
+    await expect(cmdInit({
+      installLitellm: NO_INSTALL, ...args, cwd, home, write }))
       .rejects.toThrow(/sonata auth add deepseek/);
   });
 
@@ -1986,12 +2057,14 @@ describe('cmdInit — BYOK', () => {
     // twice, once with a catalogue and once without, is the confusing outcome.
     // The unknown-provider error lists what is on offer, so it is the evidence.
     await expect(cmdInit({
+      installLitellm: NO_INSTALL,
       ...args, detect: withOpenrouter, cwd, home, write,
       providers: ['byok/openrouter'], models: ['openrouter-kimi-k3'],
     })).rejects.toThrow(/no harness offers byok\/openrouter/);
 
     // …while the harness row for the same provider still works.
     const res = await cmdInit({
+      installLitellm: NO_INSTALL,
       ...args, detect: withOpenrouter, cwd, home, write,
       providers: ['opencode/openrouter'], models: ['openrouter-kimi-k3'],
     });
@@ -2001,7 +2074,8 @@ describe('cmdInit — BYOK', () => {
   // The double-init bug, now for a gateway no harness can rediscover.
   it('re-derives a BYOK config on a second init', async () => {
     writeSonataKey(home, 'deepseek', 'sk-test');
-    const res = await cmdInit({ ...args, cwd, home, write });
+    const res = await cmdInit({
+      installLitellm: NO_INSTALL, ...args, cwd, home, write });
 
     const config = parseConfig(readFileSync(res.configPath, 'utf8'));
     const state = deriveInitState(config, 'project', []);
@@ -2013,12 +2087,14 @@ describe('cmdInit — BYOK', () => {
 
   it('carries a BYOK config through a second init unchanged', async () => {
     writeSonataKey(home, 'deepseek', 'sk-test');
-    const first = await cmdInit({ ...args, cwd, home, write });
+    const first = await cmdInit({
+      installLitellm: NO_INSTALL, ...args, cwd, home, write });
     const before = readFileSync(first.configPath, 'utf8');
     process.stderr.write('=== first config ===\n' + before + '\n');
 
     // No flags this time: everything must come back from the config on disk.
     const second = await cmdInit({
+      installLitellm: NO_INSTALL,
       packageRoot: '/pkg', yes: true, detect: noHarness, cwd, home, write,
       scope: 'skip' as const,
     });
