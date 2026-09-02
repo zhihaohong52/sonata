@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to AI assistants when working with this repository. For a human-readable overview, see `@README.md`. Design notes and the implementation plan (including defects found by running it) live in `docs/superpowers/`; lessons about dispatching work through sonata are in `docs/dispatching-work-through-sonata.md`.
+This file provides guidance to AI assistants when working with this repository. For a human-readable overview, see `@README.md`. **Starting a session? Read `docs/HANDOFF.md` first** — current state, open follow-ups, and the environment traps that have cost previous sessions real time. Design notes and the implementation plan (including defects found by running it) live in `docs/superpowers/`; lessons about dispatching work through sonata are in `docs/dispatching-work-through-sonata.md`.
 
 ## Project Overview
 
@@ -185,7 +185,7 @@ tests/                   vitest suite against a fake harness + captured fixtures
 roles/                   role definitions (code, review, explore, plan) — owned by sonata, not the harness
 skills/loop/SKILL.md     sonata-loop — the tier-routed feature loop skill sonata init installs
 hooks/                   capture-mode.mjs + hooks.json — the PreToolUse permission hook
-docs/                    dispatching-work-through-sonata.md + roadmap.md (1.0 roadmap, mirrors a claude.ai Artifact — update both when an item ships) + guide/ (user-facing reference, split out of README.md — README stays the front door and links here) + reviews/ (architecture review) + superpowers/ (plans + specs, permanent design-history record, indexed in docs/superpowers/README.md)
+docs/                    HANDOFF.md (read first: state, open follow-ups, environment traps) + dispatching-work-through-sonata.md + roadmap.md (1.0 roadmap, mirrors a claude.ai Artifact — update both when an item ships) + guide/ (user-facing reference, split out of README.md — README stays the front door and links here) + reviews/ (architecture review) + superpowers/ (plans + specs, permanent design-history record, indexed in docs/superpowers/README.md)
 ```
 
 ### Adding a harness
