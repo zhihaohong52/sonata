@@ -362,7 +362,7 @@ killed and the run is reported `DONE`, `degraded`, with a report beginning
 | Command | Purpose |
 |---|---|
 | `sonata init` | Set up sonata in this project (interactive); `--prune` removes stale generated agents |
-| `sonata doctor` | Check tmux, harnesses, auth and versions |
+| `sonata doctor [--json]` | Check tmux, harnesses, auth and versions; `--json` prints the same checks as structured output |
 | `sonata sync` | Regenerate agent files from `sonata.toml`; `--prune` removes stale generated agents |
 | `sonata run` | Launch a run, print its id |
 | `sonata dispatch (--tier <role>-<tier> \| --model <key>)` | Blocking harness dispatch with ranked fallback — the fallback lane a tier agent reaches for when every native route fails |
