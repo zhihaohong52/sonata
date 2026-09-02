@@ -367,6 +367,17 @@ export function reconcilePerRoleModels(
  * to a fresh proposal when nothing survives. Reusing a saved list verbatim
  * after a model was deselected would write a [tiers] entry `cmdSync` then
  * rejects as referencing a model with no matching [models] entry.
+ *
+ * A newly-added model is inserted at the rank `fallback` (the fresh
+ * capability-per-dollar proposal) gives it **relative to the models already
+ * kept**, not appended after them unconditionally. Always appending is what
+ * made adding a model to an existing config invisible to ranking: a model
+ * `proposeTiers` would put first landed last — tried only after every
+ * existing candidate had failed, which defeats the point of adding a
+ * stronger or cheaper one. This still never reorders `kept` itself, so a
+ * hand-tuned ranking survives untouched; only where the new arrival goes is
+ * computed. A model `fallback` has no opinion on (e.g. harness-only, absent
+ * from the catalog) still falls back to the end.
  */
 export function reconcileTierList(
   saved: string[] | undefined,
@@ -377,7 +388,16 @@ export function reconcileTierList(
   const kept = (saved ?? []).filter((key) => validKeys.has(key));
   if (kept.length === 0) return fallback;
   const extra = added.filter((key) => validKeys.has(key) && !kept.includes(key));
-  return [...kept, ...extra];
+  if (extra.length === 0) return kept;
+  const rank = new Map(fallback.map((key, i) => [key, i]));
+  const rankOf = (key: string): number => rank.get(key) ?? Infinity;
+  const result = [...kept];
+  for (const key of extra) {
+    const keyRank = rankOf(key);
+    const insertAt = result.findIndex((existing) => rankOf(existing) > keyRank);
+    result.splice(insertAt === -1 ? result.length : insertAt, 0, key);
+  }
+  return result;
 }
 
 export function deriveInitState(
