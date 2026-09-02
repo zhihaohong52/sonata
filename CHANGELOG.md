@@ -8,6 +8,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+- **`sonata init`'s tier ranking screen no longer opens a newly-added model
+  unranked.** Adding a model and re-running `sonata init` showed it as `·`
+  (unranked) on the simple/complex tier screens, and `[`/`]` — which only
+  reorder an already-ranked row — did nothing on it, reading as "the reorder
+  keys are broken." The screen (and the "accept all remaining" bulk path) now
+  seed a newly native-selected model at the rank the fresh proposal gives it,
+  the same insertion `reconcileTierList` already does at write time — so it
+  opens pre-ranked instead of needing a manual space-then-reorder to place.
+
 ## [0.5.1] - 2026-09-02
 
 ### Added

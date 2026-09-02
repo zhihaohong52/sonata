@@ -1,4 +1,5 @@
 import { byokCandidateKey } from '../native/models.js';
+import { reconcileTierList } from '../init/helpers.js';
 import type { CredentialSource } from '../config.js';
 import type { InitState } from './types.js';
 
@@ -185,9 +186,28 @@ export function importHint(harness: string, have: AvailableCredentials): string 
  * empty ranking, that screen renders with nothing ranked and cannot be
  * confirmed at all. Only a config with both tiers already saved hid it, which
  * is why it surfaces on a first run.
+ *
+ * `added` names keys newly native-selected this run (present in `proposal`
+ * because they're in the current native selection, absent from `saved`
+ * because no prior run ever ranked them). They're inserted at the rank
+ * `proposal` gives them relative to what's already saved, the same way
+ * `reconcileTierList` merges them at write time — otherwise a model added via
+ * "add a model, re-run init" opened the screen unranked (shown as `·`,
+ * `[`/`]` inert on it since those only reorder an already-ranked row) with no
+ * indication where it should go, even though its rank was already computed.
+ * A key merely *absent* from `saved` for some other reason (the user
+ * deliberately left it out of this tier last time) is not treated as new
+ * unless the caller actually names it in `added` — inferring novelty from
+ * `proposal minus saved` would silently re-add a deliberate exclusion.
  */
-export function initialRankedFor(saved: string[] | undefined, proposal: string[]): string[] {
-  return saved !== undefined && saved.length > 0 ? saved : proposal;
+export function initialRankedFor(
+  saved: string[] | undefined,
+  proposal: string[],
+  added: readonly string[] = [],
+): string[] {
+  if (saved === undefined || saved.length === 0) return proposal;
+  const validKeys = new Set([...saved, ...proposal]);
+  return reconcileTierList(saved, validKeys, proposal, added);
 }
 
 /**
@@ -208,6 +228,7 @@ export function acceptRemainingTiers(
   fromIndex: number,
   proposal: { simple: string[]; complex: string[] },
   allNativeKeys: string[] = state.nativeKeys ?? [],
+  added: readonly string[] = [],
 ): InitState {
   let next = state;
   for (let index = Math.max(0, fromIndex); index < roles.length * 2; index++) {
@@ -218,7 +239,7 @@ export function acceptRemainingTiers(
       role,
       tier,
       ranked: seededRankingFor(
-        next.tiers?.[role]?.[tier], proposal[tier], next.nativeKeys ?? [], allNativeKeys,
+        next.tiers?.[role]?.[tier], proposal[tier], next.nativeKeys ?? [], allNativeKeys, added,
       ),
     });
   }
@@ -240,8 +261,9 @@ export function seededRankingFor(
   proposal: string[],
   nativeKeys: string[],
   allNativeKeys: string[],
+  added: readonly string[] = [],
 ): string[] {
-  const initial = initialRankedFor(saved, proposal);
+  const initial = initialRankedFor(saved, proposal, added);
   const offered = new Set(tierPickerKeys(nativeKeys, initial, allNativeKeys));
   return initial.filter((key) => offered.has(key));
 }
