@@ -497,4 +497,20 @@ describe('initialRankedFor', () => {
     // A ranking the user actually chose must never be silently re-proposed.
     expect(initialRankedFor(['b'], ['a', 'b'])).toEqual(['b']);
   });
+
+  it('inserts a newly native-selected model at its proposed rank, not left unranked', () => {
+    // The bug this exists for: adding a model and re-running init opened the
+    // tier screen with the new model shown as unranked (`·`) — `[`/`]` are
+    // inert on an unranked row, so there was no way to place it without first
+    // toggling it with space, and even then it landed at the bottom
+    // regardless of how it actually ranks.
+    expect(initialRankedFor(['b'], ['a', 'b'], ['a'])).toEqual(['a', 'b']);
+  });
+
+  it('does not re-add a key merely absent from saved unless the caller names it added', () => {
+    // A key in `proposal` but missing from `saved` is not automatically
+    // "new" — it may have been deliberately left out of this tier on a prior
+    // run. Only `added` marks a key as newly native-selected this run.
+    expect(initialRankedFor(['b'], ['a', 'b'])).toEqual(['b']);
+  });
 });

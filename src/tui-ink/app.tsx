@@ -234,7 +234,15 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         data.candidates.filter((c) => avoid.has(c.gateway)).map((c) => c.key),
       );
       const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways, avoided);
-      const initialRanked = initialRankedFor(state.tiers?.[role]?.[tier], proposal[tier]);
+      // A model native-selected this run that no prior run ever ranked for
+      // this role/tier — the baseline is the wizard's own starting state for
+      // the active scope, not `state` itself, which has already picked up
+      // this session's model-step edits by the time a tier screen renders.
+      const baselineNativeKeys = (state.configScope !== undefined
+        ? data.initialStateByScope?.[state.configScope]
+        : undefined)?.nativeKeys ?? data.initialState?.nativeKeys ?? [];
+      const addedKeys = (state.nativeKeys ?? []).filter((key) => !baselineNativeKeys.includes(key));
+      const initialRanked = initialRankedFor(state.tiers?.[role]?.[tier], proposal[tier], addedKeys);
       const footer = catalog
         ? `rankings: Artificial Analysis (fetched ${catalog.fetchedAt}) — artificialanalysis.ai`
         : 'rankings: built-in defaults — refresh with sonata catalog update';
@@ -260,6 +268,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
                 // deselected-but-natively-routable key is withheld here exactly
                 // as it would be on the screen this is standing in for.
                 data.candidates.map((c) => c.key),
+                addedKeys,
               ));
               setStep(5);
             }
