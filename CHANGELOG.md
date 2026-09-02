@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-02
+
 ### Added
 - **`sonata doctor --json`** (roadmap item 11). `cmdDoctor` already returned a
   structured `{ ok, checks }`; the CLI only ever rendered it as text. `--json`
