@@ -2151,9 +2151,10 @@ describe('reconcilePerRoleModels', () => {
 });
 
 describe('reconcileTierList', () => {
-  it('appends a newly-added model to an existing non-empty tier list', () => {
+  it('includes a newly-added model the proposal has no opinion on, at the end', () => {
     // The bug this exists for: re-seeding only from the saved list dropped a
     // model the user had just added — `[tiers]` silently kept the old list.
+    // `fallback` here names only 'a', so 'b' has no rank to be inserted at.
     expect(reconcileTierList(['a'], new Set(['a', 'b']), ['a'], ['b']))
       .toEqual(['a', 'b']);
   });
@@ -2166,6 +2167,28 @@ describe('reconcileTierList', () => {
   it('does not duplicate an added model already in the saved list', () => {
     expect(reconcileTierList(['a', 'b'], new Set(['a', 'b']), ['a'], ['a', 'b']))
       .toEqual(['a', 'b']);
+  });
+
+  it('inserts a newly-added model at the rank the fresh proposal gives it, not just at the end', () => {
+    // The bug the user hit: adding a model that ranks first never changed
+    // ranking at all — it was always appended after the existing list,
+    // regardless of how it actually compares. `fallback` ranks 'a' ahead of
+    // the already-kept 'b', so 'a' has to land ahead of 'b', not behind it.
+    expect(reconcileTierList(['b'], new Set(['a', 'b']), ['a', 'b'], ['a']))
+      .toEqual(['a', 'b']);
+  });
+
+  it('inserts a newly-added model in the middle of the kept list when that is its rank', () => {
+    expect(reconcileTierList(['a', 'c'], new Set(['a', 'b', 'c']), ['a', 'b', 'c'], ['b']))
+      .toEqual(['a', 'b', 'c']);
+  });
+
+  it('never reorders the models the user already kept, only where the new one lands', () => {
+    // A hand-reordered saved list (worse model ranked first, deliberately)
+    // survives untouched — only the newly-added model's insertion point is
+    // computed from the fresh proposal.
+    expect(reconcileTierList(['b', 'a'], new Set(['a', 'b', 'c']), ['a', 'b', 'c'], ['c']))
+      .toEqual(['b', 'a', 'c']);
   });
 });
 

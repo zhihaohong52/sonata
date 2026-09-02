@@ -14,6 +14,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   prints that same structure verbatim, so scripts and CI can gate on doctor's
   output instead of scraping stdout.
 
+### Fixed
+- **Adding a model to an existing config no longer skips ranking.**
+  `reconcileTierList` (`sonata init`'s tier merge) always appended a
+  newly-added model after every model already in `[tiers]`, regardless of how
+  it actually compared — a model that `sonata catalog`'s capability-per-dollar
+  ranking would put first landed last, tried only after every existing
+  candidate had already failed. It now inserts the new model at the rank the
+  fresh proposal gives it relative to the models already kept, without
+  reordering anything the user (or a prior run) already ranked.
+
 ## [0.5.0] - 2026-09-02
 
 ### Upgrading
