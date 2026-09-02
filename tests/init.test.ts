@@ -324,6 +324,7 @@ code = ["native-only"]
 
   it('is idempotent across repeated runs', async () => {
     const args = {
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'],
       models: ['opencode-deepseek-v4-flash'], roles: ['code'], scope: 'project' as const, write,
@@ -1157,6 +1158,7 @@ describe('cmdInit — re-init from existing config', () => {
 
   it('second run with the same flags produces identical config', async () => {
     const args = {
+      installLitellm: NO_INSTALL,
       cwd, home, packageRoot: '/pkg', yes: true, detect,
       providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
       roles: ['code'], scope: 'skip' as const, write,
