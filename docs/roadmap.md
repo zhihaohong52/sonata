@@ -55,7 +55,7 @@ Status legend: ✅ shipped · 🔸 in progress · ⏳ not started.
 | # | Item | Priority | Size | Status |
 |---|---|---|---|---|
 | 10 | Config schema v1, with migration that runs on load | P0 | S–M | ⏳ not started |
-| 11 | `sonata doctor --json` | P1 | S | ⏳ not started |
+| 11 | `sonata doctor --json` | P1 | S | ✅ shipped, unreleased — `cmdDoctor` already returned a structured `{ ok, checks }`; the flag just exposes it, so it round-trips exactly what the text output was rendering |
 | 12 | One report-contract manifest | P2 | M | ⏳ not started |
 
 ## Three releases, in dependency order

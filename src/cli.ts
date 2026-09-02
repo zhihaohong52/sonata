@@ -34,7 +34,7 @@ import { readRows } from './ledger.js';
 const USAGE = `sonata — foreign-model subagents for Claude Code
 
   sonata init      set up sonata in this project (interactive)
-  sonata doctor    check tmux, harnesses, auth and versions
+  sonata doctor [--json]   check tmux, harnesses, auth and versions
   sonata sync      regenerate agent files from sonata.toml
   sonata run       launch a harness run, print its id
   sonata dispatch  run a ranked tier with harness fallback
@@ -343,14 +343,22 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   if (command === 'doctor') {
-    // doctor is read, not piped — but only decorate a real terminal, so
-    // `sonata doctor > report.txt` stays plain.
-    if (isInteractive()) console.log(`\n${banner()}\n`);
+    const { values } = parseArgs({
+      args: rest,
+      options: { json: { type: 'boolean', default: false } },
+    });
     const { ok, checks } = await cmdDoctor({
       cwd: process.cwd(),
       home: homedir(),
       packageRoot: packageRoot(),
     });
+    if (values.json) {
+      console.log(JSON.stringify({ ok, checks }));
+      return ok ? 0 : 1;
+    }
+    // doctor is read, not piped — but only decorate a real terminal, so
+    // `sonata doctor > report.txt` stays plain.
+    if (isInteractive()) console.log(`\n${banner()}\n`);
     for (const c of checks) console.log(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: ${c.detail}`);
     return ok ? 0 : 1;
   }
