@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-02
+
 ### Upgrading
 
 **Existing native-path installs need one command after upgrading:**
