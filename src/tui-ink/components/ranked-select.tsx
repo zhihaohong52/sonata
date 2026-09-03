@@ -1,6 +1,6 @@
 import React, { useReducer } from 'react';
 import { Box, Text, useInput } from 'ink';
-import { rsInitial, rsReduce } from './ranked-select-state.js';
+import { rsInitial, rsOrder, rsReduce } from './ranked-select-state.js';
 
 export interface RankedSelectItem<T> {
   value: T;
@@ -85,12 +85,17 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
   return (
     <Box flexDirection="column">
       <Text bold>{title}</Text>
-      {items.map((item, index) => {
+      {/*
+        Drawn in `rsOrder` — ranked first, in rank order — so `[`/`]` move the
+        highlighted row rather than swapping two numbers on rows that may be
+        nowhere near each other. See `rsOrder` for the report this fixes.
+      */}
+      {rsOrder(state, items.length).map((index, position) => {
         const rank = state.ranked.indexOf(index);
         const marker = rank >= 0 ? `${rank + 1}.` : '·';
         return (
-          <Text key={index} inverse={index === state.cursor}>
-            {marker} {item.label}
+          <Text key={index} inverse={position === state.cursor}>
+            {marker} {items[index].label}
           </Text>
         );
       })}
@@ -103,7 +108,7 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
         <Text color="yellow">Select at least one model — space toggles, and the order you pick is the fallback order.</Text>
       )}
       <Text dimColor>
-        {`↑↓ choose · space toggle · [ or ] to reorder · enter confirm${onAcceptRest ? ' · A accept all remaining' : ''}${onBack ? ' · ← back' : ''}${onCancel ? ' · esc cancel' : ''}`}
+        {`↑↓ choose · space toggle · [ or ] move a numbered row · enter confirm${onAcceptRest ? ' · A accept all remaining' : ''}${onBack ? ' · ← back' : ''}${onCancel ? ' · esc cancel' : ''}`}
       </Text>
       {footer !== undefined && <Text dimColor>{footer}</Text>}
     </Box>
