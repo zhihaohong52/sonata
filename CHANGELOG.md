@@ -8,7 +8,31 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+- **Config schema v1, with migration that runs on load** (roadmap item 10).
+  `sonata.toml` now carries a `schema_version` stamp, written by `sonata init`
+  above every table header. `parseConfig` reads it, walks the file forward
+  through an ordered migration chain (`src/migrations.ts`) before any
+  field-level validation, and **refuses** a file stamped newer than this
+  sonata understands rather than parsing it best-effort into something that
+  means something else. Migration is in-memory: an unstamped file — including
+  a pre-`[tiers]` one — keeps loading exactly as before, so no read-only
+  command rewrites your config. `sonata doctor` reports a file behind the
+  current schema as advisory, never a blocker.
+
+  The chain ships **empty**, which is the honest state for v1: version 1 names
+  the shape `parseConfig` already accepts, so nothing needs transforming yet.
+  What ships is the mechanism, the stamp and the refusal — so the next
+  breaking change appends one step and every file on disk walks forward on its
+  next load. Composition is proven by tests against a synthetic chain rather
+  than asserted about an empty one.
+
 ### Fixed
+- **`startServeDaemon`'s tests no longer read the developer's own config.**
+  They passed a temp `home` but inherited the real `process.cwd()`, so a
+  sonata checkout containing its own `sonata.toml` (any contributor who has
+  run `sonata init` there) failed five tests with "expected 4110 to be 4100" —
+  naming a port nothing in the test mentions.
 - **`sonata init`'s tier ranking screen no longer opens a newly-added model
   unranked.** Adding a model and re-running `sonata init` showed it as `·`
   (unranked) on the simple/complex tier screens, and `[`/`]` — which only

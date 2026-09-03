@@ -1312,6 +1312,13 @@ describe('sonataRouterInstanceId', () => {
 });
 
 describe('startServeDaemon', () => {
+  // Every call below passes `home` as the explicit cwd. `startServeDaemon`
+  // defaults that to `process.cwd()`, which is the sonata checkout — so a
+  // developer who has run `sonata init` in the repo gives the suite a project
+  // sonata.toml to resolve, and these tests then read *its* ports instead of
+  // the fixture written here. That failed with "expected 4110 to be 4100",
+  // naming a port nothing in the test mentions. Passing the cwd makes the
+  // fixture the only config these can see.
   let home: string;
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'sonata-daemon-home-'));
@@ -1363,7 +1370,7 @@ context_window = 128000
     const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
       spawn: spy,
       probe: async () => true,
-    });
+    }, home);
 
     expect(result.pid).toBe(4242);
     expect(result.port).toBe(4100);
@@ -1379,7 +1386,7 @@ context_window = 128000
       spawn: fakeSpawn(),
       probe: async () => ++attempts >= 3,
       sleep: async () => {},
-    });
+    }, home);
     expect(attempts).toBe(3);
     expect(result.port).toBe(4100);
   });
@@ -1401,7 +1408,7 @@ context_window = 128000
         return calls >= 3 ? true : false;
       },
       sleep: async () => {},
-    });
+    }, home);
     expect(calls).toBe(3);
     expect(result.port).toBe(4100);
   });
@@ -1416,7 +1423,7 @@ context_window = 128000
     await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
       spawn: spy,
       probe: async () => true,
-    });
+    }, home);
 
     expect(typeof envs[0]?.SONATA_SERVE_INSTANCE_ID).toBe('string');
     expect(envs[0]?.SONATA_SERVE_INSTANCE_ID?.length).toBeGreaterThan(0);
@@ -1444,7 +1451,7 @@ context_window = 128000
     const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
       spawn: spy,
       sleep: async () => {},
-    });
+    }, home);
     expect(calls).toBe(3);
     expect(result.port).toBe(4100);
   });
@@ -1457,13 +1464,13 @@ context_window = 128000
       sleep: async () => { clock += 500; },
       now: () => clock,
       timeoutMs: 2000,
-    })).rejects.toThrow(/did not answer on port 4100.*serve-/s);
+    }, home)).rejects.toThrow(/did not answer on port 4100.*serve-/s);
   });
 
   it('writes the daemon log into the shared log directory', async () => {
     const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
       spawn: fakeSpawn(), probe: async () => true,
-    });
+    }, home);
     expect(result.logPath).toContain(join('.config', 'sonata', 'logs'));
     expect(result.logPath).toMatch(/serve-.*\.log$/);
   });

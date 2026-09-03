@@ -157,6 +157,7 @@ src/
 ├── config.ts             config resolution (project → machine), sonata.toml parsing (unified [models], [tiers]), KNOWN_HARNESSES, isReadOnlyRole, resolveTierAlias, harnessModelFor
 ├── catalog.ts            model normalization (normalizeModelName), curated capability/cost table, proposeTiers, AA catalog cache (loadAaCatalog, aaCatalogPath, AA_ATTRIBUTION)
 ├── detect.ts             harness catalogues (`opencode models`, `pi --list-models`, reasonix doctor) → ModelRef, provider grouping; WELL_KNOWN_PROVIDER_URLS
+├── migrations.ts         schema_version stamp, the ordered migration chain, applyMigrations (runs inside parseConfig, before field validation)
 ├── normalize.ts          config/model normalization; migrateLegacyConfig ([generate.roles]/[generate.native] → [models]+[tiers])
 ├── roles.ts              role prompt composition
 ├── settings.ts           permission-hook scope settings, SONATA_TOOLS allow-list
@@ -230,6 +231,8 @@ A project config **replaces** the machine one; they are never merged, so it is a
 
 ```toml
 # sonata.toml
+schema_version = 1                  # which shape this file is in
+
 [models."flash"]
 gateway = "acme"                    # native route: resolves through the router
 id = "deepseek-v4-flash-0731"
@@ -259,6 +262,7 @@ run_timeout_seconds   = 1800   # hard cap; the run is killed at this point
 dispatch_window_seconds = 1500 # blocking window for sonata wait/dispatch
 ```
 
+- **`schema_version` stamps the shape, and migration runs on load** (`src/migrations.ts`). `parseConfig` reads the stamp off the raw TOML, walks the file forward through an ordered chain **before** any field-level validation, and records the pre-migration number as `SonataConfig.schemaVersion` — read after migrating, it would always answer "current", and `sonata doctor` could never report a file as behind. A stamp *newer* than `CURRENT_SCHEMA_VERSION` is **refused**: a best-effort parse of a future shape does not fail, it succeeds and means something else. Absent means version 0, which is a real version, not a malformed file; a present-but-nonsense value is an error, because reading it as 0 would migrate a file whose author believed it was stamped. Migration is **in-memory only** — `sonata init` is the sole writer of `sonata.toml` (`sonata sync` regenerates agents and never touches it), so no read-only command rewrites your config. The chain ships **empty on purpose**: v1 names the shape `parseConfig` already accepts, so a v0 file needs no transform to load, and inventing one would risk the path that already works. `applyMigrations` takes the list as a parameter so composition is proven against a synthetic chain rather than asserted about an empty one, and it advances past a version with no step rather than looping forever. The stamp is written **above every table header** for the same reason `avoid_gateways` must be — a bare key after one belongs to *that table*.
 - **`[models."<key>"]` is unified: a native route (`gateway`/`id`/`context_window`), a harness route (`harness`/`harness_id`), or both** (`UnifiedModelConfig`, `src/config.ts`) — one model can be reachable two ways: natively through the router, and as a `sonata dispatch` fallback candidate through its harness. `harnessModelFor(config, key)` maps a unified entry's harness half onto the shape `cmdRun` already consumes, so a unified-only key dispatches with no legacy `[models]` entry needed.
 - **`[tiers.<role>]` is `{ simple: string[], complex: string[] }`**, keys into `[models]`, ranked — position is priority, not a separate field. `resolveTierAlias(config, "sonata-<role>-<tier>")` resolves an alias to its ranked routes (`TierRoute[]`, each `{ key, native?, harness? }`); it collapses to the unsuffixed `sonata-<role>` alias only when a role's `simple` and `complex` lists are *element-wise* identical (same models, same order) — a role whose tiers differ even slightly keeps both aliases live.
 - **`parseConfig` refuses *mixing* `[tiers]` with legacy `[generate.roles]`/`[generate.native]`** in the same file — not refusing a legacy-only config outright, since that would brick every existing install the moment this shipped. A legacy config still parses (with a `sonata doctor` warning pointing at `sonata init`) until it's migrated; a migrated config cannot re-grow the old tables.

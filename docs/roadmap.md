@@ -54,7 +54,7 @@ Status legend: ✅ shipped · 🔸 in progress · ⏳ not started.
 
 | # | Item | Priority | Size | Status |
 |---|---|---|---|---|
-| 10 | Config schema v1, with migration that runs on load | P0 | S–M | ⏳ not started |
+| 10 | Config schema v1, with migration that runs on load | P0 | S–M | ✅ shipped, unreleased — `schema_version` stamped by `init`, read by `parseConfig`, which walks the file forward through an ordered chain (`src/migrations.ts`) before field-level validation and refuses a stamp newer than it understands. Migration is **in-memory**: an old file keeps loading, and no read-only command rewrites it. The chain ships empty on purpose — v1 names the shape `parseConfig` already accepts, so what ships is the mechanism, the stamp and the refusal, with composition proven against a synthetic chain |
 | 11 | `sonata doctor --json` | P1 | S | ✅ shipped, unreleased — `cmdDoctor` already returned a structured `{ ok, checks }`; the flag just exposes it, so it round-trips exactly what the text output was rendering |
 | 12 | One report-contract manifest | P2 | M | ⏳ not started |
 
