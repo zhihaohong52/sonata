@@ -399,17 +399,30 @@ export function proposeTiers(
   const preferred = modelKeys.filter((k) => !avoided.has(k));
   const leaders = preferred.length > 0 ? preferred : modelKeys;
   const best = Math.max(0, ...leaders.map((k) => rankOf(k).index));
-  // The cost bar is relative to the cheapest model that can actually lead the
-  // tier, for the same reason the capability floor is measured over
-  // `preferred`: an avoided model setting the bar would move it for models the
-  // user asked to demote, which is not what avoidance means.
+  // The cost bar is relative to the cheapest model that can actually *enter*
+  // the tier — not merely the cheapest one selected. `best` gets away with
+  // reading every leader because it is a `Math.max`, which a weak model cannot
+  // drag down; the ceiling is a `Math.min`, which one absolutely can. A very
+  // cheap, very weak model would set a bar so low that nothing eligible clears
+  // it, `simple` would come back empty, and the fallback would mirror the
+  // complex set — the tier silently ceasing to discriminate, which is the whole
+  // failure the floor exists to prevent. So the same two predicates that decide
+  // membership below also decide who is allowed to set the bar.
+  //
+  // Avoided models are already out (`leaders`), for the same reason the
+  // capability floor is measured over `preferred`: an avoided model setting the
+  // bar would move it for models the user asked to demote, which is not what
+  // avoidance means.
   //
   // Measured over per-task costs only. `rankOf().price` falls back to a per-1M
   // rate when AA has not costed a model, and the two are different units by
   // two orders of magnitude — a ratio that mixes them would read an uncosted
   // model as ~30x dearer than it is and refuse it on a unit error.
   const perTask = (k: string) => scoreFor(k, aa, providers)?.costPerTask;
+  const eligible = (k: string): boolean => lookupModel(k, aa, providers).capable
+    && rankOf(k).index >= best * SIMPLE_CAPABILITY_FLOOR;
   const costs = leaders
+    .filter(eligible)
     .map(perTask)
     .filter((c): c is number => c !== undefined && c > 0);
   const ceiling = costs.length > 0 ? Math.min(...costs) * SIMPLE_COST_CEILING : undefined;
@@ -422,11 +435,9 @@ export function proposeTiers(
     if (cost === undefined || ceiling === undefined) return lookupModel(k, aa, providers).cheap;
     return cost <= ceiling;
   };
-  const simple = modelKeys
-    .filter((k) => lookupModel(k, aa, providers).capable
-      && isCheap(k)
-      && rankOf(k).index >= best * SIMPLE_CAPABILITY_FLOOR)
-    .sort(byValue);
+  // Same `eligible` the ceiling is measured over, so who sets the bar and who
+  // is judged against it cannot drift apart.
+  const simple = modelKeys.filter((k) => eligible(k) && isCheap(k)).sort(byValue);
   // A tier must always resolve to something: with no capable model, everything
   // is complex-eligible; with no cheap-capable model, simple mirrors complex.
   // The fallback is sorted too — raw input order would break the documented
