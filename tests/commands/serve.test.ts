@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 
 import {
   cmdServe, serveHealthUrl, type ServeHandle, isSonataRouter, occupiedPortMessage, startServeDaemon,
-  serveStatePath, stopServe, cmdRestart, sonataRouterInstanceId,
+  serveStatePath, stopServe, cmdRestart, sonataRouterInstanceId, defaultWaitForLitellm,
 } from '../../src/commands/serve.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
 import { managedLitellmPath, venvDir, LITELLM_VERSION } from '../../src/native/litellm-venv.js';
@@ -326,6 +326,45 @@ litellm = 4000
     expect(state.litellmPid).toBe(4242);
   });
 
+  it('leaves the legacy unkeyed record alone when cleaning up its own orphan', async () => {
+    // killRecordedOrphan is scoped to this router's port on purpose. The
+    // legacy file names no port, so reading it here made that scoping
+    // nominal: a daemon coming up on a port with no record of its own would
+    // adopt a pre-upgrade record belonging to some other port's daemon and
+    // kill its litellm child — and delete the record that daemon's own
+    // `sonata restart` still needs.
+    const legacy = join(home, '.config', 'sonata', 'serve-state.json');
+    mkdirSync(dirname(legacy), { recursive: true });
+    // Pids far past any real one, so the kill this test proves does NOT happen
+    // could not have hit a live process even if the scoping were wrong.
+    writeFileSync(legacy, JSON.stringify({ routerPid: 2147483646, litellmPid: 2147483647 }));
+
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+
+    expect(existsSync(legacy)).toBe(true);
+    expect(JSON.parse(readFileSync(legacy, 'utf8')).litellmPid).toBe(2147483647);
+  });
+
+  it('starts even when a state file parses to something that is not a record', async () => {
+    // `JSON.parse('null')` returns null rather than throwing, so the cast to
+    // ServeState succeeded and `found.state.litellmPid` threw a TypeError out
+    // of the startup path — one malformed file stopped serve booting.
+    mkdirSync(dirname(serveStatePath(home, 0)), { recursive: true });
+    writeFileSync(serveStatePath(home, 0), 'null');
+
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 7, kill() {} }),
+    });
+    handles.push(handle);
+
+    expect(handle.routerPort).toBeGreaterThan(0);
+  });
+
   it('stop() resolves promptly even with an open idle keep-alive connection', async () => {
     // Plain server.close() waits for every open connection to end on its
     // own — an idle keep-alive socket that outlives the request it served
@@ -353,6 +392,69 @@ litellm = 4000
     expect(Date.now() - started).toBeLessThan(1500);
 
     socket.destroy();
+  });
+});
+
+describe('defaultWaitForLitellm', () => {
+  const ok = () => new Response('{}', { status: 200 });
+  const noDb = () => new Response(
+    JSON.stringify({ error: { message: 'No connected db.' } }), { status: 400 },
+  );
+
+  it('resolves once the instance answers with this router\'s own master key', async () => {
+    const seen: string[] = [];
+    const doFetch = (async (url: string) => {
+      seen.push(url);
+      return ok();
+    }) as unknown as typeof fetch;
+
+    await defaultWaitForLitellm(4010, 'sk-sonata-ours', { doFetch, sleep: async () => {} });
+
+    expect(seen).toEqual([
+      'http://localhost:4010/health/liveliness',
+      'http://localhost:4010/v1/models',
+    ]);
+  });
+
+  it('rejects, naming the port clash, when the live instance is another daemon\'s', async () => {
+    // Liveness needs no credential, so any litellm answers it. Two configs
+    // naming different `ports.router` but the same `ports.litellm` are not
+    // covered by killRecordedOrphan — correctly, since it is scoped to this
+    // router's own port — so our child loses the bind and this poll would
+    // otherwise accept the *other* daemon's child as ours. Serve then came up
+    // "successfully" forwarding a master key that instance has never seen, and
+    // every routed request failed authentication naming neither cause.
+    // Measured against litellm 1.98.0: a foreign key gets 400 'No connected
+    // db.' here, the configured one gets 200.
+    let clock = 0;
+    const doFetch = (async (url: string) => (
+      String(url).endsWith('/v1/models') ? noDb() : ok()
+    )) as unknown as typeof fetch;
+
+    const err = await defaultWaitForLitellm(4010, 'sk-sonata-ours', {
+      doFetch,
+      now: () => clock,
+      sleep: async () => { clock += 500; },
+      timeoutMs: 2000,
+    }).catch((e) => e as Error);
+
+    expect((err as Error).message).toMatch(/does not accept this router's master key/);
+    expect((err as Error).message).toMatch(/native\.ports/);
+  });
+
+  it('reports a plain startup failure when nothing answers at all', async () => {
+    let clock = 0;
+    const doFetch = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
+
+    const err = await defaultWaitForLitellm(4010, 'sk-sonata-ours', {
+      doFetch,
+      now: () => clock,
+      sleep: async () => { clock += 500; },
+      timeoutMs: 2000,
+    }).catch((e) => e as Error);
+
+    // Not the port-clash message: nothing was there to clash with.
+    expect((err as Error).message).toMatch(/did not come up/);
   });
 });
 
@@ -1625,12 +1727,57 @@ litellm = 4000
     const result = await stopServe({
       cwd, home, probeHealth: sonataHealth, kill: (pid) => killed.push(pid),
       sleep: async () => {}, isAlive: () => false,
+      // The ordinary upgrade case: the legacy record's router is the process
+      // actually holding the port its own config named. Stubbed rather than
+      // left to the real `lsof`, which answered with whatever unrelated
+      // process happened to hold 4100 on the developer's machine.
+      findPortPid: () => '111',
     });
 
     expect(result.killed).toBe(true);
     expect(killed).toEqual([111, 222]);
     // Cleared the file it actually read, not the port-keyed one it never wrote.
     expect(existsSync(legacy)).toBe(false);
+  });
+
+  it('refuses a legacy record whose router does not hold the port', async () => {
+    // The legacy file names no port, so it cannot say which router it
+    // describes. Trusting it unconditionally meant a pre-upgrade record left
+    // by a daemon on another port was read as this port's: `restart` killed
+    // that unrelated daemon and its litellm, reported success, and left the
+    // port it was actually asked about still held.
+    const legacy = join(home, '.config', 'sonata', 'serve-state.json');
+    mkdirSync(dirname(legacy), { recursive: true });
+    writeFileSync(legacy, JSON.stringify({ routerPid: 111, litellmPid: 222 }));
+
+    const killed: number[] = [];
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, kill: (pid) => killed.push(pid),
+      sleep: async () => {}, isAlive: () => false,
+      // Someone else holds 4100 — so the legacy record is not about it.
+      findPortPid: () => '777',
+    }).catch((e) => e as Error);
+
+    expect((result as Error).message).toMatch(/no recorded pid/);
+    expect(killed).toEqual([]);
+    expect(existsSync(legacy)).toBe(true);
+  });
+
+  it('ignores a state file that parses to something other than a record', async () => {
+    // `JSON.parse('null')` does not throw, so the old `catch` never saw this.
+    // The value was cast to ServeState and dereferenced, and the TypeError
+    // came out of the startup path — one stray file stopped serve booting.
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), 'null');
+
+    const killed: number[] = [];
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, kill: (pid) => killed.push(pid),
+      findPortPid: () => undefined,
+    }).catch((e) => e as Error);
+
+    expect((result as Error).message).toMatch(/no recorded pid/);
+    expect(killed).toEqual([]);
   });
 });
 
@@ -1671,6 +1818,8 @@ context_window = 128000
       // be a real, running process on at least one CI runner, which turned
       // this into a 10s timeout there while passing instantly on macOS.
       isAlive: () => false,
+      // The legacy record is only usable against proof it owns the port.
+      findPortPid: () => '111',
     });
 
     expect(killed).toEqual([111]);

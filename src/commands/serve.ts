@@ -48,8 +48,12 @@ export interface SpawnedLitellm {
 
 export interface ServeDeps {
   spawnLitellm?: (configPath: string, env: NodeJS.ProcessEnv, port: number, bin: string) => SpawnedLitellm;
-  /** Test seam: resolves when litellm answers on its port, rejects on timeout. */
-  waitForLitellm?: (port: number) => Promise<void>;
+  /**
+   * Test seam: resolves when litellm answers on its port *as this router's own
+   * instance*, rejects on timeout. The master key is what tells our child apart
+   * from another daemon's holding the same port.
+   */
+  waitForLitellm?: (port: number, masterKey: string) => Promise<void>;
   /**
    * Where the generated litellm config and any credential file are written.
    *
@@ -124,17 +128,73 @@ interface ServeState {
   recordedAt: string;
 }
 
-/** The state file that answered, so a caller clears the one it actually read. */
-function readServeStateFrom(home: string, routerPort: number): { path: string; state: ServeState } | undefined {
-  for (const path of [serveStatePath(home, routerPort), legacyServeStatePath(home)]) {
-    if (!existsSync(path)) continue;
-    try {
-      return { path, state: JSON.parse(readFileSync(path, 'utf8')) as ServeState };
-    } catch {
-      // A corrupt file is not a record; keep looking.
-    }
+/**
+ * A state file's contents, or `undefined` when it is absent or not a record.
+ *
+ * `JSON.parse` answers `null` for a file containing `null` without throwing,
+ * and a bare number or array parses just as happily. Casting any of those to
+ * `ServeState` and dereferencing `.litellmPid` throws a TypeError out of
+ * `killRecordedOrphan`, which runs on the startup path — so one malformed file
+ * stopped `sonata serve` from starting at all, rather than being ignored the
+ * way the `catch` below plainly intends.
+ */
+function readStateFile(path: string): ServeState | undefined {
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    return parsed as ServeState;
+  } catch {
+    // A corrupt file is not a record.
+    return undefined;
   }
-  return undefined;
+}
+
+/**
+ * This router port's own record — never the legacy unkeyed one.
+ *
+ * The legacy file records no port, so it cannot say which router it describes.
+ * Reading it here made every caller port-scoped in name only: a daemon coming
+ * up on 4110 with no `serve-state-4110.json` yet would read a pre-upgrade
+ * record left by a daemon on 4100 and treat that daemon's pids as its own —
+ * killing its litellm child in `killRecordedOrphan`, or copying its
+ * `routerPid` into 4110's fresh file through `recordLitellmPid`'s merge, from
+ * where `stopServe` would later kill a router it never started. Per-port state
+ * exists precisely to stop parallel daemons clobbering each other; a fallback
+ * that silently reintroduces the unkeyed record undoes it.
+ *
+ * `stopServe` is the one caller that may still use the legacy record, and only
+ * against proof of ownership — see `readLegacyServeStateFor`.
+ */
+function readServeStateFrom(home: string, routerPort: number): { path: string; state: ServeState } | undefined {
+  const path = serveStatePath(home, routerPort);
+  const state = readStateFile(path);
+  return state === undefined ? undefined : { path, state };
+}
+
+/**
+ * The pre-per-port record, but only when it provably describes `routerPort`:
+ * its `routerPid` must be the process currently listening there.
+ *
+ * That keeps the upgrade path the legacy file exists for — a daemon started by
+ * an older sonata is still stoppable, and in the ordinary case it *is* the
+ * process holding the port its own config named — while refusing the case the
+ * record cannot support, where it belongs to some other port's daemon.
+ * The OS scan only ever *validates* a pid sonata recorded; it never supplies
+ * one to kill, so the "never kill a pid we did not record" rule is intact.
+ */
+function readLegacyServeStateFor(
+  home: string,
+  routerPort: number,
+  findPortPid: (port: number) => string | undefined,
+): { path: string; state: ServeState } | undefined {
+  const path = legacyServeStatePath(home);
+  const state = readStateFile(path);
+  if (state?.routerPid === undefined) return undefined;
+  // `findPortPid` answers with the pid as text; an unparseable or absent one
+  // is `NaN`, which matches nothing, so the record goes unused.
+  const listening = Number.parseInt(findPortPid(routerPort) ?? '', 10);
+  return listening === state.routerPid ? { path, state } : undefined;
 }
 
 function readServeState(home: string, routerPort: number): ServeState | undefined {
@@ -155,8 +215,10 @@ function killPid(pid: number | undefined): void {
 function killRecordedOrphan(home: string, routerPort: number): void {
   const found = readServeStateFrom(home, routerPort);
   killPid(found?.state.litellmPid);
-  // Clear the file that was actually read — never both. Deleting the legacy
-  // path while reading a port-keyed one would discard another daemon's record.
+  // Only this port's own record is ever read here, so the file cleared is
+  // always this router's. The unkeyed legacy record is deliberately out of
+  // reach: it names no port, so it could just as easily describe another
+  // project's daemon, whose litellm is not ours to kill.
   if (found !== undefined) {
     try { unlinkSync(found.path); } catch { /* gone is the goal */ }
   }
@@ -170,22 +232,69 @@ function recordRouterPid(home: string, routerPort: number, pid: number): void {
   writeServeState(home, routerPort, { ...readServeState(home, routerPort), routerPid: pid });
 }
 
-/** Polls litellm until it answers, so a silent bind failure surfaces here. */
-async function defaultWaitForLitellm(port: number): Promise<void> {
-  const deadline = Date.now() + 30_000;
+/**
+ * Polls litellm until it answers *as ours*, so a silent bind failure surfaces
+ * here.
+ *
+ * Liveness alone is not enough, because `/health/liveliness` needs no
+ * credential and any litellm answers it. Two daemons whose configs name
+ * different `ports.router` but the same `ports.litellm` — one router port
+ * changed to dodge a clash, the other left at its default — are not covered by
+ * `killRecordedOrphan`, which is correctly scoped to this router's own port.
+ * The second child then fails to bind and exits, this poll sees the *first*
+ * child's liveness, and serve starts "successfully" while forwarding a master
+ * key that instance has never heard of. Every routed request then fails
+ * authentication, naming neither the port clash nor the key.
+ *
+ * So the probe authenticates. Measured against litellm 1.98.0 on a live
+ * instance: the configured master key gets 200 from `/v1/models`, a foreign
+ * key gets 400 `No connected db.` (a keyless proxy has no store to resolve a
+ * virtual key against), and no key at all gets 500. Only 200 proves the
+ * instance holding the port is the one this process configured.
+ */
+export async function defaultWaitForLitellm(
+  port: number,
+  masterKey?: string,
+  deps: {
+    doFetch?: typeof fetch;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+    timeoutMs?: number;
+  } = {},
+): Promise<void> {
+  const doFetch = deps.doFetch ?? fetch;
+  const now = deps.now ?? Date.now;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const deadline = now() + (deps.timeoutMs ?? 30_000);
+  let foreign = false;
   for (;;) {
     try {
-      const res = await fetch(`http://localhost:${port}/health/liveliness`);
-      if (res.ok) return;
+      const res = await doFetch(`http://localhost:${port}/health/liveliness`);
+      if (res.ok) {
+        if (masterKey === undefined) return;
+        const mine = await doFetch(`http://localhost:${port}/v1/models`, {
+          headers: { authorization: `Bearer ${masterKey}` },
+        });
+        if (mine.ok) return;
+        // Something is alive here and it is not ours. Keep polling anyway: our
+        // own child may still be binding, and if it wins the port the next
+        // pass sees 200.
+        foreign = true;
+      }
     } catch { /* not up yet */ }
-    if (Date.now() > deadline) {
+    if (now() > deadline) {
       throw new Error(
-        `sonata serve: litellm did not come up on port ${port} within 30s — ` +
-        'it may have failed to bind (another litellm running?) or failed to start. ' +
-        'Check `litellm --config` by hand.',
+        foreign
+          ? `sonata serve: port ${port} is held by a litellm that does not accept this router's ` +
+            'master key — it belongs to another sonata daemon, and every request routed through it ' +
+            'would fail authentication. Give this project its own `[native.ports] litellm` port, ' +
+            'or stop the other daemon with `sonata restart` in the project that owns it.'
+          : `sonata serve: litellm did not come up on port ${port} within 30s — ` +
+            'it may have failed to bind (another litellm running?) or failed to start. ' +
+            'Check `litellm --config` by hand.',
       );
     }
-    await new Promise((r) => setTimeout(r, 500));
+    await sleep(500);
   }
 }
 
@@ -602,7 +711,7 @@ export async function cmdServe(
           if (stopping) return;
           console.error('sonata serve: respawning litellm...');
           child = spawnLitellmChild();
-          await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
+          await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm, masterKey);
         })().catch((error) => {
           console.error(`sonata serve: respawned litellm never came up: ${String(error)}`);
         });
@@ -704,7 +813,7 @@ export async function cmdServe(
           }
           if (stopping) return;
           child = spawnLitellmChild();
-          await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
+          await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm, masterKey);
         })().catch((error) => {
           console.error(`sonata serve: restarted litellm never came up: ${String(error)}`);
         });
@@ -717,7 +826,7 @@ export async function cmdServe(
 
     if (needsLitellm) {
       child = spawnLitellmChild();
-      await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm);
+      await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm, masterKey);
     }
 
     // Retention is enforced where the writer starts, so a long-lived daemon
@@ -940,10 +1049,15 @@ export async function startServeDaemon(
 }
 
 /**
- * Finds the OS pid bound to a TCP port, purely so `stopServe` can print it —
- * sonata never acts on what this returns. `lsof -ti` prints one pid per line;
- * an empty or ambiguous (more than one) result means "don't know", which the
+ * Finds the OS pid bound to a TCP port. `lsof -ti` prints one pid per line; an
+ * empty or ambiguous (more than one) result means "don't know", which every
  * caller treats the same as a lookup failure.
+ *
+ * Sonata never kills what this returns. It is used to *print* the pid in the
+ * takeover message below, and — in `readLegacyServeStateFor` — to check that a
+ * pid sonata itself recorded is the one holding the port. Validating a
+ * recorded pid is not the same as adopting a scanned one: the kill list is
+ * still built exclusively from sonata's own state file.
  */
 function defaultFindPortPid(port: number): string | undefined {
   try {
@@ -1019,10 +1133,18 @@ export async function stopServe(
 
   if (!(await isSonataRouter(port, probeHealth))) return { killed: false };
 
-  const found = readServeStateFrom(opts.home, port);
+  const findPortPid = opts.findPortPid ?? defaultFindPortPid;
+  // Port-keyed state first; the unkeyed pre-upgrade record only as a fallback,
+  // and only when the pid it names is the one actually holding this port.
+  // Without that check a legacy record left by a daemon on another port would
+  // be read as this port's, and `sonata restart` would kill an unrelated
+  // router and its litellm while the port it was asked about kept answering —
+  // then report success, because the freshly started daemon loses the race for
+  // a port that was never freed.
+  const found = readServeStateFrom(opts.home, port)
+    ?? readLegacyServeStateFor(opts.home, port, findPortPid);
   const state = found?.state;
   if (state?.routerPid === undefined) {
-    const findPortPid = opts.findPortPid ?? defaultFindPortPid;
     const foundPid = findPortPid(port);
     const nextStep = foundPid !== undefined
       ? ` Kill it yourself, then run \`sonata serve --daemon\`:\n  kill ${foundPid}`
