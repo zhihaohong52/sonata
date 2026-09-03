@@ -88,6 +88,18 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   config key would send you looking for the wrong string.
 
 ### Fixed
+- **`[` and `]` now visibly reorder a tier ranking.** Reported as "[ and ]
+  does not work in sonata TUI". The keys were reaching the reducer and the
+  ranking really was changing — the *display* was what made it look dead. Rows
+  were drawn in item order with the rank as a marker, so a real 19-row screen
+  read `·  ·  ·  ·  1.  5.  ·  ·  ·  ·  ·  ·  2.  6.  ·  ·  3.  7.  ·`:
+  reordering swapped two numbers between rows that were nowhere near each
+  other, the highlight stayed where it was, and pressing `[` twice was a round
+  trip. Sixteen of those nineteen rows were unranked, where the keys correctly
+  do nothing and nothing said why. The list now draws the ranked models first,
+  in rank order, above the unranked ones, and the highlight follows the row it
+  moved — including through `space`, so `[` after picking a model reorders the
+  model just picked.
 - **The simple tier admitted models on dollars-per-token while ranking them on
   dollars-per-task, so a cheap model could be refused by the gate that was
   meant to let it in.** Admission tested `blendedPriceUsd <= 1.0` — a per-1M
