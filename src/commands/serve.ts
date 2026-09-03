@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { loadAiPricing } from '../aipricing.js';
+import { spentTodayUsd } from '../budget.js';
 import { configPath as resolveSonataConfigPath, loadConfig, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
@@ -760,6 +761,15 @@ export async function cmdServe(
       // `gateway` and can reach pricing's gateway step. Config is re-read here
       // too, for the same reason as `resolveTier` above.
       resolveGateway: (key) => loadConfig(opts.cwd, opts.home).unifiedModels[key]?.gateway,
+      // Both halves are read per request: the cap so raising it in sonata.toml
+      // frees the router immediately, and the spend so a request made moments
+      // ago counts against the next one. Returning undefined when no cap is
+      // configured is what keeps every existing config uncapped.
+      budget: () => {
+        const daily = loadConfig(opts.cwd, opts.home).budget?.dailyUsd;
+        if (daily === undefined) return undefined;
+        return { dailyUsd: daily, spentUsd: spentTodayUsd(opts.home) };
+      },
       // Read per request off the mutable record above, so a credential
       // refreshed by a config change reaches the very next direct forward.
       gatewayKeys,

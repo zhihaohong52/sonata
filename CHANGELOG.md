@@ -9,6 +9,53 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 ## [Unreleased]
 
 ### Added
+- **`[budget] daily_usd` — a daily spend ceiling the router enforces**
+  (roadmap item 04). Set it in `sonata.toml` and the router sums the usage
+  ledger's **priced** rows for the current UTC day before forwarding anything,
+  refusing at or past the cap with a 429 that names the cap, the spend to date,
+  and the file to edit. The check sits at the top of `routeRequest`, above
+  *both* the tier and direct branches — a cap enforced on one of two paths is
+  not a cap — and both halves are re-read per request, so raising the number
+  frees the router without `sonata restart`. Absent `[budget]`, nothing
+  changes; a non-numeric or non-positive `daily_usd` is refused at parse time,
+  because a cap's only visible effect is a refusal that has not happened yet,
+  so one silently dropped for being the wrong type reads exactly like one that
+  works.
+
+  The refusal states the two things the cap cannot see, rather than leaving you
+  to discover them from a bill: it counts **priced volume only** (unpriced rows
+  are excluded, never folded in as zero — counting unknown as zero would make
+  the cap quietly permissive in the case you are least able to notice), and it
+  covers the **native router path only** (`sonata dispatch` runs execute in the
+  foreign CLI's own process and never transit the router). Refusals are
+  deliberately not written to the ledger: a row records a request that was
+  forwarded, and putting avoided spend into the store that defines spend is how
+  the number stops meaning what it says.
+- **A finished run now reports whether it changed anything** (roadmap item 07).
+  `sonata` fingerprints the working tree at launch (`git rev-parse HEAD` plus
+  `git status --porcelain`) and compares at exit, so a run that finished
+  cleanly, un-degraded, reporting "fixed the bug" while touching no file says
+  so: the report is prefixed `[no worktree change: …]`. This is the one shape
+  of false success the report contract cannot catch, since a model that did
+  nothing writes the same `report.md` as one that did everything.
+
+  It **annotates rather than degrades**, on purpose — `degraded` means sonata
+  cannot mechanically trust a result, and a run that correctly concluded no
+  change was needed is a legitimate outcome; degrading it would trade this
+  check's false successes for false alarms instead of removing either. It is
+  **inert outside git**: no repository, no `git`, or any failure at all yields
+  *unknown*, never "unchanged", because a check for silent failures must not
+  invent one. Read-only roles (`review`, `explore`, `plan`) skip it entirely.
+- **One report-contract manifest** (roadmap item 12). `src/report-contract.ts`
+  is now the single definition of where a run's result lives. `report.md` had
+  been a bare literal in five executable places — the prompt in `run.ts`, the
+  read-back in `store.ts`, the existence check in `runs.ts`, and the watcher
+  loops in the codex and reasonix adapters — with nothing forcing them to
+  agree, and disagreement fails silently in the worst direction: the model
+  writes its report where it was told, nothing reads it there, and the run is
+  reported degraded despite having succeeded. A drift-guard test asserts no
+  other file under `src/` names the filename in code. The degraded *verdict*
+  deliberately stays in `tail.ts`'s `decide()`.
 - **Config schema v1, with migration that runs on load** (roadmap item 10).
   `sonata.toml` now carries a `schema_version` stamp, written by `sonata init`
   above every table header. `parseConfig` reads it, walks the file forward
@@ -28,6 +75,20 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   than asserted about an empty one.
 
 ### Fixed
+- **The Codex backend's "System messages are not allowed" 400 now cools its
+  candidate instead of killing the subagent.** Sonata already carries two
+  structural fixes for this refusal — `flattenSystemBlocks` in the router and
+  `supports_system_message: false` on the codex model — and they are still
+  correct and still necessary. They are not, however, sufficient: measured live
+  on 2026-09-03 against a verified-current `dist/`, a tier request the router
+  had already flattened came back
+  `litellm.BadRequestError: ChatgptException - {"detail":"System messages are
+  not allowed"}. Received Model Group=gpt-5.6-terra`. The remaining hole is
+  unidentified. Adding the string to `CAPABILITY_400_SIGNATURES` means three
+  consecutive identical failures cool the candidate and the tier falls through
+  to the next model, ending — if every candidate is exhausted — in a 529 naming
+  `sonata dispatch`, instead of a bare 400 that reads to the caller as a defect
+  in the agent's own work.
 - **Parallel daemons no longer corrupt each other's pid record.** Serve state
   moved from one global `serve-state.json` to `serve-state-<router port>.json`.
   A project with its own `sonata.toml` needs its own ports and therefore its

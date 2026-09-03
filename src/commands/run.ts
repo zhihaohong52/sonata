@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { configPath as resolveSonataConfigPath, loadConfig, harnessModelFor } from '../config.js';
+import { configPath as resolveSonataConfigPath, loadConfig, harnessModelFor, isReadOnlyRole } from '../config.js';
+import { worktreeFingerprint } from '../worktree.js';
 import { getAdapter } from '../adapters/index.js';
 import { createRun, runDir, writeMeta } from '../store.js';
 import { loadRole, composeInstructions } from '../roles.js';
@@ -234,6 +235,13 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     interactive: plan.interactive,
     canWriteReport: plan.canWriteReport ?? true,
     silentUntilExit: plan.silentUntilExit ?? false,
+    // Sampled here, not before `createRun`, so that sonata's own scaffolding —
+    // the run directory and the three files just written into it — is already
+    // on disk in this sample as it will be in the one tail takes at exit. A
+    // repository that does not ignore `.sonata/` would otherwise show it
+    // appearing between the two samples and every run would look changed,
+    // which fails in the useless direction: never flagging anything.
+    worktreeAtLaunch: isReadOnlyRole(opts.role) ? undefined : worktreeFingerprint(opts.cwd),
   });
 
   await newSession({ session: meta.session, cwd: opts.cwd });

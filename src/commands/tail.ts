@@ -9,6 +9,7 @@ import {
   appendEvents, readEvents, writeMeta, runDir, readAnsweredPrompt, clearAnsweredPrompt,
 } from '../store.js';
 import { cmdVerify } from './verify.js';
+import { worktreeUnchangedSince } from '../worktree.js';
 import type { TailState } from '../types.js';
 
 /**
@@ -52,6 +53,13 @@ export interface DecideInput {
    * started it — an exact string sonata wrote, not a guessed prompt pattern.
    */
   launchMarker?: string;
+  /**
+   * True when the working tree is exactly where it was at launch, false when it
+   * moved, `undefined` when the comparison could not be made (not a git
+   * repository, a read-only role, or a run predating the field). See
+   * `src/worktree.ts`.
+   */
+  worktreeUnchanged?: boolean;
 }
 
 /**
@@ -82,6 +90,8 @@ export interface TailResult {
   report?: string;
   exitCode?: number;
   degraded?: boolean;
+  /** Mirrors `DecideInput.worktreeUnchanged`; set only on a finished run. */
+  worktreeUnchanged?: boolean;
 }
 
 /** Pure state machine. Order matters: completion beats a stale prompt match. */
@@ -108,6 +118,21 @@ export function decide(input: DecideInput): TailResult {
     // A timed-out run is degraded even if a report file happens to exist: the
     // work was cut short, so the report cannot be trusted as complete.
     const degraded = input.timedOut || (input.report === null && !reportImpossible);
+
+    // An annotation, deliberately NOT a degraded verdict. `degraded` means
+    // sonata cannot mechanically trust the result, and a run that correctly
+    // concluded no change was needed is a legitimate outcome — degrading it
+    // would swap this check's false successes for false alarms, which is not a
+    // better failure mode, only a louder one. State the fact and let the reader
+    // weigh it against a report that claims work was done.
+    //
+    // Only the trusted branch carries it. Every other branch already opens with
+    // a bracketed note saying why the run cannot be believed, and "it also
+    // changed nothing" tells the reader nothing they do not already have.
+    const noChange = input.worktreeUnchanged === true
+      ? '[no worktree change: the run finished without modifying any file git tracks or reports]\n\n'
+      : '';
+
     const report = input.timedOut
       ? `[timed out: sonata killed the run after the configured run_timeout_seconds]\n\n${input.paneTail.join('\n')}`
       : reportImpossible
@@ -116,13 +141,14 @@ export function decide(input: DecideInput): TailResult {
           ? `[degraded: the harness exited ${input.exitCode} without producing any output — nothing ran]\n\n${input.paneTail.join('\n')}`
           : degraded
             ? `[degraded: harness exited ${input.exitCode} without writing a report]\n\n${input.paneTail.join('\n')}`
-            : input.report!;
+            : `${noChange}${input.report!}`;
     return {
       state: 'DONE',
       lines: input.newLines,
       exitCode: input.exitCode,
       degraded,
       report,
+      worktreeUnchanged: input.worktreeUnchanged,
     };
   }
 
@@ -263,6 +289,16 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
 
     const detectedPrompt = meta.interactive ? adapter.describePrompt(pane) : null;
     const answeredPrompt = readAnsweredPrompt(opts.cwd, opts.id);
+
+    // Only once the run has finished. This shells out to git twice, and the
+    // loop below polls every 500ms for the whole tail window — sampling a tree
+    // that is still being written would also be measuring a moving target.
+    // `worktreeAtLaunch` is absent for read-only roles, so those skip it here
+    // without a second role check.
+    const worktreeUnchanged = exitCode === null
+      ? undefined
+      : worktreeUnchangedSince(meta.worktreeAtLaunch, opts.cwd);
+
     const result = decide({
       newLines: fresh,
       exitCode,
@@ -275,6 +311,7 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       canWriteReport: meta.canWriteReport,
       silentUntilExit: meta.silentUntilExit,
       launchMarker: scriptPath,
+      worktreeUnchanged,
     });
 
     if (result.state === 'DONE') {
