@@ -98,9 +98,43 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   up naming the second router's pid beside the *first* router's litellm child,
   so `sonata restart` in either project would have killed one daemon's router
   and the other's litellm — surfacing as the untouched project suddenly 502ing
-  on every native request. The legacy unkeyed path is still read (never
-  written), so a daemon started before this change stays stoppable across the
-  upgrade.
+  on every native request. The legacy unkeyed record is still honoured (never
+  written) so a daemon started before this change stays stoppable across the
+  upgrade, but only against proof of ownership: it names no port, so it cannot
+  say which router it describes, and it is now used only when the pid it
+  records is the process actually listening on the port being asked about.
+  Reading it unconditionally left every caller port-scoped in name only — and
+  because `recordRouterPid`/`recordLitellmPid` merge the current state into
+  each write, it would also have copied a foreign daemon's `routerPid` forward
+  into a *fresh* port-keyed file, laundering the stale value into the new
+  scheme.
+- **A corrupt serve-state file no longer parses as a record.** `JSON.parse`
+  answers a bare `null`, `[]` or `"x"` without throwing, and the result was
+  cast straight to `ServeState`, so `state.routerPid` on a truncated or
+  hand-edited file read as `undefined` from a value that is not an object at
+  all. It is now rejected the same way unparseable JSON already was, which is
+  what keeps `sonata serve` starting rather than throwing on one.
+- **`sonata serve` no longer adopts somebody else's LiteLLM.**
+  `/health/liveliness` needs no credential — *any* LiteLLM on that port answers
+  it — so waiting on liveness alone proved only that something was listening,
+  and a port clash was adopted silently and then failed later as unexplained
+  502s. The wait now probes `/v1/models` with this router's own master key;
+  measured on 1.98.0, the correct key answers 200, a foreign key answers 400
+  `No connected db.`, and no key answers 500. A port held by a LiteLLM that
+  refuses this router's key now fails with a message naming the clash and
+  `[native.ports]`, instead of the generic "did not come up".
+- **The worktree check no longer measures edits made after the run exited.**
+  The closing fingerprint was sampled by `sonata tail`, but `sonata run`
+  returns immediately and the first tail can arrive much later — so anything
+  you touched in between counted as the run's work, and a run that genuinely
+  changed nothing stopped saying so. The launch wrapper now captures
+  `git status --porcelain` and `git rev-parse HEAD` into the run directory
+  *before* writing the exit sentinel, and tail hashes that capture. The shell
+  captures raw git output and Node still owns the single hash formula — a test
+  asserts the two agree byte-for-byte — because the fingerprint separates head
+  from status with a NUL byte, and a second implementation of that in bash is
+  exactly the drift worth not having. A run launched by an older sonata has no
+  capture and still falls back to the live sample.
 - **`startServeDaemon`'s tests no longer read the developer's own config.**
   They passed a temp `home` but inherited the real `process.cwd()`, so a
   sonata checkout containing its own `sonata.toml` (any contributor who has

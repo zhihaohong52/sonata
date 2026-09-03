@@ -295,9 +295,16 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
     // that is still being written would also be measuring a moving target.
     // `worktreeAtLaunch` is absent for read-only roles, so those skip it here
     // without a second role check.
+    //
+    // The run directory is passed so the closing sample is the one the launch
+    // wrapper captured as the harness exited, rather than a fresh reading of a
+    // tree that has been free to move ever since. Tail is not guaranteed to be
+    // watching at the moment a run finishes: `sonata run` returns immediately,
+    // and the first tail can arrive long afterwards. Falls back to sampling
+    // live for a run launched before the wrapper captured anything.
     const worktreeUnchanged = exitCode === null
       ? undefined
-      : worktreeUnchangedSince(meta.worktreeAtLaunch, opts.cwd);
+      : worktreeUnchangedSince(meta.worktreeAtLaunch, opts.cwd, runDir(opts.cwd, opts.id));
 
     const result = decide({
       newLines: fresh,
