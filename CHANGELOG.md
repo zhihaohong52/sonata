@@ -75,7 +75,50 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   next load. Composition is proven by tests against a synthetic chain rather
   than asserted about an empty one.
 
+- **`sonata doctor` reports ranking-catalog *coverage*, not just its age.**
+  Freshness is measured in days, which is the wrong instrument for the failure
+  it was standing in for: a catalog fetched yesterday is reported fresh and
+  still knows nothing about a model released today, so selecting that model
+  ranks it from the capable-not-cheap default with no warning anywhere. The
+  check now asks whether the catalog can score the models *this config
+  actually tiers* — `2 of 13 tiered models unscored (gemini-3.8-flash, …) —
+  ranked from built-in defaults; run \`sonata catalog update\`` — and only
+  falls back to the age line when coverage is complete. Models are named by
+  their upstream id, which is what the catalog is keyed by; reporting the
+  config key would send you looking for the wrong string.
+
 ### Fixed
+- **The simple tier admitted models on dollars-per-token while ranking them on
+  dollars-per-task, so a cheap model could be refused by the gate that was
+  meant to let it in.** Admission tested `blendedPriceUsd <= 1.0` — a per-1M
+  *token* rate — while ordering inside the tier used AA's `cost_per_task`,
+  which prices the work. Gemini 3.8 Flash is $1.50/1M and $0.577/task: refused
+  at any catalog freshness, on a threshold that was never measuring what the
+  tier optimises. So was Gemini 3.7 Flash, at the same rate; on a real
+  24-candidate config only three distinct models cleared the bar. Admission now
+  uses the same measure as ranking, and it is **relative** — a model is cheap
+  when its cost per task is within `SIMPLE_COST_CEILING` (12×) of the cheapest
+  model that can actually lead the tier — for the same reason
+  `SIMPLE_CAPABILITY_FLOOR` is: an absolute bar is wrong in both directions as
+  prices move. On that same config the simple tier went from 4 entries to 9.
+  A model AA has not costed per task keeps the absolute judgement it had
+  before, since the change has no better information about it; with nothing
+  costed there is no ceiling at all and behaviour is unchanged.
+- **A namespaced OpenRouter ref no longer falls through to the
+  capable-not-cheap default.** Two causes, both in `normalizeModelName`. A
+  serving-variant suffix (`:free`, `:nitro`) was kept, so
+  `nvidia-nemotron-3-super-120b-a12b:free` matched nothing while AA held that
+  exact row minus the suffix — the suffix picks a route for the same weights
+  and must not change the name a score is looked up under. And a sonata key
+  flattens `vendor/model` to `vendor-model`, leaving nothing to tell the vendor
+  from the model, so `z-ai/glm-5.2` looked up `z-ai-glm-5.2` while AA files it
+  as `glm-5.2`. `aaLookupNames` now offers up to two shortened spellings after
+  the full name. The guess is bounded so it can only ever add a score where
+  there was none: the full name is always tried first and wins, a shortened
+  name is accepted only on an exact catalog hit, and a candidate must still
+  carry a version digit — `gemini-2.5-flash-lite` never offers `flash-lite`,
+  which is a family another vendor might publish under. Three of five
+  OpenRouter models on a real config were mis-scored by this.
 - **The Codex backend's "System messages are not allowed" 400 now cools its
   candidate instead of killing the subagent.** Sonata already carries two
   structural fixes for this refusal — `flattenSystemBlocks` in the router and
