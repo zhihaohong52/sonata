@@ -1,25 +1,29 @@
-# Handoff — sonata, with all fourteen roadmap items closed
+# Handoff — sonata, with all fourteen roadmap items closed and released
 
-Written 2026-09-03. Read this before starting new work; it records what is
-done, what is deliberately *not* done, and the environment traps that cost
-previous sessions real time.
+Written 2026-09-03, updated 2026-09-04 after 0.6.0. Read this before starting
+new work; it records what is done, what is deliberately *not* done, and the
+environment traps that cost previous sessions real time.
 
-## Current state — every roadmap item shipped, 1.0 deliberately not tagged
+## Current state — every roadmap item shipped and released, 1.0 deliberately not tagged
 
-- `main` at `36c4440` (`feat: budget guardrails and the worktree-delta check`).
-  `18146cc` (`chore(release): v0.5.1`) is the last tagged release; five
-  commits of unreleased work sit on top of it.
-- **Published to npm**: `@zhihaohong52/sonata@0.5.1`, `latest`.
-- **All fourteen roadmap items are now ✅.** This session closed the last
-  four — `10` (config schema v1), `12` (report-contract manifest), `04`
-  (budget guardrails) and `07` (worktree delta) — plus a serve-state fix and
-  an init ranking fix. `docs/roadmap.md` carries the full status text for
-  each; every entry says *why* it is shaped the way it is, not just that it
-  landed.
-- **1475 tests across 84 files**, typecheck and build clean. One full-suite
-  run this session, green; no flakiness observed. The "two unidentified test
-  failures" line that persisted across several handoffs has now not
-  reproduced in many consecutive full runs — treat it as resolved.
+- `main` at `c50bc22` (`chore(release): v0.6.0`), clean, in sync with origin.
+  Nothing unreleased sits on top of it — `[Unreleased]` is empty.
+- **Published to npm**: `@zhihaohong52/sonata@0.6.0`, `latest`, 2026-09-03.
+  The release ran end to end from the pushed tag with every `release.yml` step
+  green. Note that the registry served `0.5.1` for roughly a minute *after* the
+  workflow went green — npm's own "your package is being processed" lag. Poll
+  the registry rather than trusting the workflow's exit code.
+- **All fourteen roadmap items are ✅ and every one is now in a published
+  release.** 0.6.0 carried the last four — `04` (budget guardrails), `07`
+  (worktree delta), `10` (config schema v1) and `12` (report-contract
+  manifest) — plus a serve-state fix and two init/TUI ranking fixes.
+  `docs/roadmap.md` names the release each item shipped in and carries the
+  full status text; every entry says *why* it is shaped the way it is, not
+  just that it landed.
+- **1523 tests across 85 files**, typecheck and build clean, verified on the
+  merged `main` before tagging. The "two unidentified test failures" line that
+  persisted across several handoffs has now not reproduced in many consecutive
+  full runs — treat it as resolved.
 - **1.0 is still not tagged, on purpose.** See the gate section below. This is
   the standing decision the user confirmed on 2026-09-02 ("close remaining
   items, don't tag 1.0 yet") and nothing since has changed it.
@@ -74,14 +78,22 @@ The roadmap's gate is not an item list. It is *"ship 1.0 only after 0.4 has
 been in strangers' hands long enough to know what you would regret
 freezing."*
 
-- 0.4.0 published 2026-08-31; 0.5.0 on 2026-09-02; 0.5.1 the same day.
-- Elapsed exposure: **days**. No external issue, no external bug report.
+- 0.4.0 published 2026-08-31; 0.5.0 on 2026-09-02; 0.5.1 the same day;
+  **0.6.0 on 2026-09-03**, which put the last four items into strangers'
+  hands.
+- Elapsed exposure: **days**. No external issue, no external bug report. The
+  GitHub repo has zero open issues and zero open PRs.
 
 So the work is finished and the waiting is not. Tagging 1.0 to celebrate an
 empty checklist would freeze a contract nobody outside this repository has
-tried to use — the exact mistake the milestone was written to prevent. **The
-next release should be an 0.6.0 carrying the unreleased work**, which gets it
-into strangers' hands, which is the only thing that moves the gate.
+tried to use — the exact mistake the milestone was written to prevent.
+
+**Do not read "nothing left to build" as "time to tag".** Everything the
+checklist could contribute is now spent: every item is shipped *and*
+released, so no future release can move this gate by closing work. Only two
+things can — an external bug report arriving and being answered, or the
+maintainer deciding the exposure so far is enough. Both are judgement calls
+for the user, not tasks a session should take on its own initiative.
 
 Two things treated as 1.0-relevant that are not on the item list:
 
@@ -95,8 +107,9 @@ Two things treated as 1.0-relevant that are not on the item list:
 
 ## Open follow-ups — none blocking, all cheap
 
-- **Cut 0.6.0.** Five commits of unreleased work, `[Unreleased]` is written
-  and accurate. `npm run release -- 0.6.0` then `git push --follow-tags`.
+*(0.6.0 is cut, published and verified; that follow-up is closed, not
+pending.)*
+
 - **The codex-oauth system-message hole** — see the correction section. Best
   open lead; a captured request body probably settles it.
 - **`openrouter` has no `provider` set**, so its 5 models still go through
@@ -132,6 +145,37 @@ follow-up is withdrawn, not pending.
   gateway-level failure exhausts the tier identically. Don't retry a dispatch
   into the same gateway and expect a different answer — implement directly, or
   pick a tier whose candidates span gateways.
+- **Deleting a base branch CLOSES the PR stacked on it — GitHub does not
+  retarget.** Merging PR #12 with `--delete-branch` closed PR #13 outright,
+  and a closed PR whose base is gone can be neither reopened nor retargeted
+  (`Cannot change the base branch of a closed pull request`). Recovery has a
+  required order: push the old base sha back to recreate the branch, `gh pr
+  reopen`, `gh pr edit --base main`, delete the temp branch, then rebase. If
+  the base merged with `--rebase`, the branch's commits are on `main` under
+  *new* shas, so it will also read `CONFLICTING` — `git rebase --onto
+  origin/main <old-base>` fixes that, and `git cherry -v` separates
+  already-landed commits from new ones. Retarget PR *before* deleting a base,
+  or merge the stack bottom-up in one pass.
+- **A CodeRabbit tick can belong to an older head.** After a force-push, check
+  `reviews.nodes[].commit.oid` against `headRefOid` before treating a review
+  as current. When a rebase is genuinely content-neutral you can prove the
+  review still applies: `git diff <old-base>..<old-head>` against
+  `git diff origin/main..<new-head>` came back byte-identical here.
+- **`gh pr merge` and `git push --force-with-lease` get blocked by the
+  permission classifier** in auto mode, repeatedly and unpredictably. Hand
+  them to the user rather than retrying — the same class of instability
+  documented for the dispatch tools in `CLAUDE.md`.
+- **`gh search issues` returned unparseable output** for every query tried;
+  `gh issue list --repo <owner/repo>` worked immediately. Don't burn calls on
+  the search subcommand.
+- **claude-mem can silently stop recording.** 13.24.0 ships the *unchanged*
+  13.23.1 bundle, so its hook reads a version mismatch, kills the worker,
+  respawns the same bundle, and loops — 2,674 kills in 11.5 hours here. It
+  reports itself as `OpenRouter network error: Unable to connect`, which is
+  Bun's generic string for a fetch killed with its process, not a network
+  fault. Upstream: thedotmack/claude-mem#3857. If session memory looks empty,
+  compare the plugin manifest version against `curl -s
+  localhost:37703/api/version` before believing any network diagnosis.
 - **Never `pkill -f` anything matching the CLI.** A `pkill -f "cli.js serve"`
   aimed at a scratch router also killed the live daemon. Kill only a pid
   something recorded — `serve-state-<port>.json`'s `routerPid`, or
