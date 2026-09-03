@@ -4,6 +4,7 @@ import { configPath as resolveSonataConfigPath, loadConfig, harnessModelFor } fr
 import { getAdapter } from '../adapters/index.js';
 import { createRun, runDir, writeMeta } from '../store.js';
 import { loadRole, composeInstructions } from '../roles.js';
+import { reportPathFor } from '../report-contract.js';
 import { readPermissionMode } from '../mode.js';
 import { newSession, runScript } from '../tmux.js';
 import { wrapWithTimeout } from '../watchdog.js';
@@ -212,7 +213,7 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     roleText: loadRole(opts.role, opts.rolesDir),
     repoContext: repoContext(opts.cwd),
     task,
-    reportPath: join(dir, 'report.md'),
+    reportPath: reportPathFor(dir),
     canWriteReport: plan.canWriteReport ?? true,
     inheritedSonataTools: exposesSonataTools(opts.cwd),
   }));

@@ -9,6 +9,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { listRuns, readMeta, readExit, readReport, runDir } from '../store.js';
+import { reportPathFor } from '../report-contract.js';
 
 export interface RunSummary {
   id: string;
@@ -36,7 +37,7 @@ export function summarizeRuns(cwd: string): RunSummary[] {
         role: meta.role,
         model: meta.model,
         started: (meta as { startedAt?: string }).startedAt,
-        report: existsSync(join(runDir(cwd, id), 'report.md')),
+        report: existsSync(reportPathFor(runDir(cwd, id))),
       });
     } catch {
       // A half-written or hand-edited run directory is skipped, not fatal.
