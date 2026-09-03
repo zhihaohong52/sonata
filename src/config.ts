@@ -204,6 +204,14 @@ export interface SonataConfig {
    * the depth a ranked tier exists to provide.
    */
   avoidGateways?: string[];
+  /**
+   * A ceiling on what the router forwards in a UTC day, in US dollars.
+   *
+   * Absent means no cap, which is every existing config. Enforcement, and the
+   * two limits it inherits — priced volume only, native path only — live in
+   * `src/budget.ts`.
+   */
+  budget?: { dailyUsd: number };
   generate: { roles: Record<string, string[]> };
   native?: NativeConfig;
   run: {
@@ -431,6 +439,22 @@ export function parseConfig(text: string): SonataConfig {
       }
     }
     avoidGateways = listed as string[];
+  }
+
+  let budget: { dailyUsd: number } | undefined;
+  if (raw.budget !== undefined) {
+    const daily = (raw.budget as { daily_usd?: unknown }).daily_usd;
+    // Refused rather than ignored. A cap is a safety setting whose only visible
+    // effect is a refusal that has not happened yet, so a value silently
+    // dropped for being the wrong type would read exactly like a cap that is
+    // working — right up until the bill.
+    if (typeof daily !== 'number' || !Number.isFinite(daily) || daily <= 0) {
+      throw new Error(
+        'sonata.toml: [budget] daily_usd must be a positive number of US dollars, ' +
+        `got ${JSON.stringify(daily)}. Remove the [budget] table to run without a cap.`,
+      );
+    }
+    budget = { dailyUsd: daily };
   }
 
   const gen = (raw.generate ?? {}) as Record<string, unknown>;
@@ -685,6 +709,7 @@ export function parseConfig(text: string): SonataConfig {
     unifiedModels,
     tiers,
     avoidGateways,
+    budget,
     generate: { roles },
     native,
     run: {

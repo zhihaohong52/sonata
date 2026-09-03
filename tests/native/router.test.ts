@@ -185,6 +185,40 @@ describe('tier alias routing', () => {
     expect(new Set(seen)).toEqual(new Set(['flash']));
   });
 
+  it('fingerprints the Codex backend refusing a system message', async () => {
+    // `flattenSystemBlocks` plus the codex-oauth model's
+    // `supports_system_message: false` were both meant to keep requests off
+    // this path, and both were verified present in the running daemon when a
+    // `code-complex` subagent still died with `Received Model Group=
+    // gpt-5.6-terra` and this body on 2026-09-03. Until the remaining hole is
+    // found the failure has to be survivable: cooled and fallen through, so
+    // the tier's later candidates get a turn and an exhausted tier ends at the
+    // 529 that names `sonata dispatch` — where a bare 400 killed the subagent
+    // outright, naming neither cause nor remedy.
+    const CODEX_SYSTEM_400 = JSON.stringify({
+      error: {
+        message: 'litellm.BadRequestError: ChatgptException - {"detail":"System messages are not allowed"}',
+      },
+    });
+    const seen: string[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return model === 'flash'
+          ? new Response(CODEX_SYSTEM_400, { status: 400 })
+          : new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    };
+    for (let i = 0; i < TIER_CAPABILITY_400_THRESHOLD - 1; i++) {
+      expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(400);
+    }
+    expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
+    expect(seen[seen.length - 1]).toBe('luna');
+  });
+
   it('cools the candidate and falls through once the same capability 400 repeats', async () => {
     const seen: string[] = [];
     const deps = {

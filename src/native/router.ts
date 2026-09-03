@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
+import { budgetRefusal, type BudgetStatus } from '../budget.js';
 import type { LedgerRow } from '../ledger.js';
 import type { Transport } from './providers.js';
 import { createUsageCollector, type UsageTokens, usageFromJsonBody } from './usage.js';
@@ -65,6 +66,16 @@ export interface RouterDeps {
    * accounting trouble can only lose its own row, never a client response.
    */
   recordUsage?: (row: LedgerRow) => void;
+  /**
+   * The daily cap and the spend against it, or `undefined` when no cap is
+   * configured. Called once per request rather than read at startup, so a cap
+   * raised in sonata.toml takes effect on the next request instead of needing
+   * `sonata restart` — the same per-request re-read `resolveTier` does, and for
+   * the same reason: the config is the user's live control surface, and a
+   * setting that only applies after a restart is one they will believe is
+   * broken.
+   */
+  budget?: () => BudgetStatus | undefined;
   /**
    * Resolved API key per native gateway, keyed by gateway name — how
    * `forwardDirect` finds the credential to inject for a direct-transport
@@ -281,12 +292,24 @@ export const TIER_CAPABILITY_400_THRESHOLD = 3;
  * 400 bodies that mean "this candidate cannot serve requests of this shape",
  * as opposed to "this request was malformed".
  *
- * Exactly one entry, because exactly one has been measured: Gemini 3 returns a
- * `thought_signature` on each function call and requires it echoed back, and
- * LiteLLM does not preserve it — so every multi-turn tool-use request 400s.
- * Probed directly on 2026-08-30: the identical two-turn exchange 400s on
- * `gemini-3.7-flash`, `gemini-3.5-flash` and `gemini-flash-latest`, and
- * returns 200 on `gemini-2.5-flash`.
+ * Two entries, because two have been measured.
+ *
+ * `thought_signature` — Gemini 3 returns one on each function call and requires
+ * it echoed back, and LiteLLM does not preserve it, so every multi-turn
+ * tool-use request 400s. Probed directly on 2026-08-30: the identical two-turn
+ * exchange 400s on `gemini-3.7-flash`, `gemini-3.5-flash` and
+ * `gemini-flash-latest`, and returns 200 on `gemini-2.5-flash`.
+ *
+ * `System messages are not allowed` — the Codex backend's answer to any
+ * `role: system` message. `flattenSystemBlocks` and the codex-oauth model's
+ * `supports_system_message: false` were both meant to keep requests off this
+ * path, and both were verified present in the running daemon; a `code-complex`
+ * subagent on 2026-09-03 still died with `Received Model Group=gpt-5.6-terra`
+ * and this body. So the pair is *not* sufficient, and until the remaining hole
+ * is found the failure has to be survivable rather than fatal. Listing it here
+ * costs a candidate that genuinely cannot serve the shape, and buys the ranked
+ * fallback plus the 529 that names `sonata dispatch` — where a bare 400 kills
+ * the subagent outright with a message naming neither cause nor remedy.
  *
  * Guessing at "equivalent" signatures would break this repo's evidence-over-
  * inference rule, and the cost of a wrong guess is asymmetric: a signature
@@ -296,6 +319,7 @@ export const TIER_CAPABILITY_400_THRESHOLD = 3;
  */
 const CAPABILITY_400_SIGNATURES = [
   'thought_signature',
+  'System messages are not allowed',
 ] as const;
 
 /** Module-level so a cooling-down key stays cool across requests. Test seam: `clearCooldowns()`. */
@@ -678,6 +702,28 @@ async function routeTierRequest(
 export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promise<RouterResponse> {
   const alias = requestedModel(req.body);
   const session = req.headers['x-claude-code-session-id'];
+
+  // Before anything is forwarded, and ahead of both the tier and direct paths:
+  // this is the one point every native request passes through, and a cap
+  // checked on only one of the two branches is not a cap. The health endpoint
+  // is answered by the server above and never reaches here, so a router at its
+  // limit still reports itself alive — `sonata restart` and the daemon-identity
+  // probes must keep working when the budget is spent.
+  //
+  // The refusal is deliberately not written to the ledger. A ledger row records
+  // a request the router actually forwarded; a refusal has no upstream, no
+  // tokens and no cost, and putting avoided spend into the store that defines
+  // spend is how the number stops meaning what it says.
+  const refusal = budgetRefusal(deps.budget?.());
+  if (refusal !== undefined) {
+    deps.log?.(`router: refused model=${alias ?? '?'} — ${refusal}`);
+    return {
+      status: 429,
+      headers: { 'content-type': 'application/json' },
+      body: anthropicErrorBody('rate_limit_error', refusal),
+    };
+  }
+
   let startedAt = 0;
   if (deps.recordUsage !== undefined) {
     try {

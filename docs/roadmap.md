@@ -31,7 +31,7 @@ Status legend: ✅ shipped · 🔸 in progress · ⏳ not started.
 | 01 | `sonata usage` — a token and cost ledger | P0 | M | ✅ shipped in [0.3.0](https://github.com/zhihaohong52/sonata/pull/3) |
 | 02 | Route ledger, and a `sonata status` that answers "who actually served this?" | P0 | S | ✅ shipped in [0.3.0](https://github.com/zhihaohong52/sonata/pull/3) |
 | 03 | `sonata runs` — surface the list that already exists | P1 | XS | ✅ shipped in [0.3.0](https://github.com/zhihaohong52/sonata/pull/3) |
-| 04 | Budget guardrails | P1 | S | ⏳ deferred to 1.0 — a consumer of the ledger; wait until real usage numbers exist before designing a cap around them |
+| 04 | Budget guardrails | P1 | S | ✅ shipped, unreleased — `[budget] daily_usd` (`src/budget.ts`), enforced at the top of `routeRequest` above **both** the tier and direct branches, since a cap on one of two paths is not a cap. It sums the ledger's priced rows for the current UTC day and refuses at or past the cap with a 429 naming the cap, the spend and the file to edit; both halves are re-read per request, so raising the cap frees the router without a restart. The two things it cannot see are stated in the refusal itself rather than papered over — **priced volume only** (unpriced is never folded in as zero, so real spend can exceed the cap) and the **native path only** (`sonata dispatch` never transits the router). The refusal is deliberately not ledgered: a row records a request that was forwarded, and putting avoided spend into the store that defines spend is how the number stops meaning what it says. What the deferral was waiting for — forecasting, per-role splits, auto-tuning — still has no usage data behind it and is still not built |
 
 ### II. Reliability — the two things that already bit, on record
 
@@ -39,8 +39,8 @@ Status legend: ✅ shipped · 🔸 in progress · ⏳ not started.
 |---|---|---|---|---|
 | 05 | A daemon lifecycle you can trust (instance-id handshake, actionable takeover) | P0 | S–M | ✅ shipped in [0.3.0](https://github.com/zhihaohong52/sonata/pull/4) |
 | 06 | `sonata init` hardening — the front door is the largest, least-tested file | P0 | L | ✅ shipped in [0.4.0](https://github.com/zhihaohong52/sonata/releases/tag/v0.4.0) — `init.ts` 1502 → 184 lines, decomposed into `src/init/` (discover / validate / plan / apply / interactive-state / scripted-state / toml) with end-to-end tests for the pipeline. The interactive TUI **has** now been hand-driven through `/cmux` (2026-08-31), which found two functional bugs no test had: a confirm summary promising 8 agent files where `sync` writes 4, and a gateway reported keyless one line above `✓ stored the key`. The Ink stdin-teardown class remains knowingly uncovered |
-| 07 | Close the last false-success gap (worktree delta captured at launch and exit) | P1 | S | ⏳ not started |
-| 13 | A repeating 400 must cool a candidate down — a permanently-broken model currently absorbs its whole tier ([spec](specs/2026-08-30-routing-reliability-defects.md)) | P0 | S | ✅ fixed, unreleased — a fingerprinted 400 repeated 3× consecutively now cools the candidate the way a 5xx does, while every other 400 is still returned to the caller with its body intact. The signature allow-list ships with exactly one entry — the measured `thought_signature` string — because exactly one has been captured |
+| 07 | Close the last false-success gap (worktree delta captured at launch and exit) | P1 | S | ✅ shipped, unreleased — `src/worktree.ts` hashes `git rev-parse HEAD` + `git status --porcelain` into `meta.worktreeAtLaunch`, and `tail` compares at exit. It **annotates rather than degrades** (`[no worktree change: …]` prefixed to the trusted report branch only): `degraded` means sonata cannot mechanically trust the result, and a run that correctly concluded no change was needed is a legitimate outcome — degrading it would trade this check's false successes for false alarms instead of removing either. **Inert outside git**: no repo, no git, any failure → `undefined`, read as *unknown*, never as "unchanged", because a check for silent failures must not invent one. Read-only roles skip it. Two traps the design avoids: the launch sample is taken *after* `createRun`, so sonata's own `.sonata/` scaffolding is in both samples and a repo that does not ignore it still compares usefully; and HEAD is in the hash, so a run whose only trace is a commit — leaving a clean tree — still registers |
+| 13 | A repeating 400 must cool a candidate down — a permanently-broken model currently absorbs its whole tier ([spec](specs/2026-08-30-routing-reliability-defects.md)) | P0 | S | ✅ fixed, unreleased — a fingerprinted 400 repeated 3× consecutively now cools the candidate the way a 5xx does, while every other 400 is still returned to the caller with its body intact. The signature allow-list carries only measured strings, and now carries **two**: `thought_signature`, and — added 2026-09-03 — `System messages are not allowed`, the Codex backend's refusal, captured live as `litellm.BadRequestError: ChatgptException … Received Model Group=gpt-5.6-terra` on a request the router had already flattened. That reverses a judgement made a session earlier, when the same addition was declined on the grounds its 2026-08-30 evidence predated the 2026-08-28 `flattenSystemBlocks` + `supports_system_message: false` fix; fresh evidence *after* that fix, on a verified-current `dist/`, says the pair is not sufficient and the remaining hole is unidentified. Cooling the candidate turns that into a survivable fallback ending in a 529 naming `sonata dispatch`, instead of a bare 400 that kills the subagent |
 | 14 | A killed subagent pins routing on for good, and `sonata route off` does not clear it ([spec](specs/2026-08-30-routing-reliability-defects.md)) | P0 | S | ✅ fixed, unreleased — `route off` now clears `route-subagents.json` too, so the documented recovery recovers. Two defects that produced the pin from ordinary use are fixed with it: the writer and cleaner defaulted to different scopes, and guarded one file with two different locks. The deadlock review found in the proposed fix is covered by a test that reproduces it in 2036 ms against `withSessionLock`'s 2000 ms deadline |
 
 ### III. Distribution — can a stranger actually run this?
@@ -56,7 +56,7 @@ Status legend: ✅ shipped · 🔸 in progress · ⏳ not started.
 |---|---|---|---|---|
 | 10 | Config schema v1, with migration that runs on load | P0 | S–M | ✅ shipped, unreleased — `schema_version` stamped by `init`, read by `parseConfig`, which walks the file forward through an ordered chain (`src/migrations.ts`) before field-level validation and refuses a stamp newer than it understands. Migration is **in-memory**: an old file keeps loading, and no read-only command rewrites it. The chain ships empty on purpose — v1 names the shape `parseConfig` already accepts, so what ships is the mechanism, the stamp and the refusal, with composition proven against a synthetic chain |
 | 11 | `sonata doctor --json` | P1 | S | ✅ shipped, unreleased — `cmdDoctor` already returned a structured `{ ok, checks }`; the flag just exposes it, so it round-trips exactly what the text output was rendering |
-| 12 | One report-contract manifest | P2 | M | ⏳ not started |
+| 12 | One report-contract manifest | P2 | M | ✅ shipped, unreleased — `src/report-contract.ts` owns `report.md`, referenced by the prompt, the watcher, the store, `sonata runs` and `tail`, where five bare copies of the string previously had nothing forcing them to agree. It owns the **file, not the verdict**: `decide()` in `tail.ts` keeps the degraded / report-impossible rules, because that predicate is a state machine over exit code, timeout and pane output whose every clause was written against an observed failure, and re-expressing it as a one-line helper would have to drop clauses to fit — the simplified version calls a *crashed* read-only run "report impossible", which is exactly the silent success those clauses exist to catch. `fallbackReportFile` stays per-adapter for the mirror-image reason: which file a harness writes is harness knowledge |
 
 ## Three releases, in dependency order
 
@@ -91,6 +91,17 @@ to try any of it. Freeze last.
   report manifest. Ship 1.0 only after 0.4 has been in strangers' hands
   long enough to know what you would regret freezing. *Items 04 · 07 · 10 ·
   11 · 12.*
+
+  **All five landed unreleased as of 2026-09-03, so every one of the
+  fourteen items is now done — and 1.0 is deliberately still not tagged.**
+  The milestone's own gate is not an item list: it is *"after 0.4 has been
+  in strangers' hands long enough to know what you would regret freezing."*
+  0.4 published to npm on 2026-08-31 and 0.5 on 2026-09-02; the elapsed
+  time is days, and no external bug report has arrived to be answered. What
+  the code can do is finished. What the gate asks for is exposure, and
+  tagging 1.0 to celebrate an empty checklist would freeze a contract
+  nobody outside this repository has tried to use — which is the one
+  mistake this milestone was written to prevent.
 
 ## Explicitly not in 1.0
 

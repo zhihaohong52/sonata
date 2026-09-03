@@ -34,6 +34,57 @@ const base = {
   timedOut: false,
 };
 
+describe('tail decide — worktree delta', () => {
+  const finished = { ...base, exitCode: 0, report: 'I fixed the bug.' };
+
+  it('annotates a trusted run that changed nothing', () => {
+    // The false success this check exists for: a confident report from a run
+    // that never touched the tree.
+    const r = decide({ ...finished, worktreeUnchanged: true });
+    expect(r.report).toMatch(/^\[no worktree change:/);
+    expect(r.report).toContain('I fixed the bug.');
+  });
+
+  it('does not degrade a run merely for changing nothing', () => {
+    // Annotation, not verdict. A run that correctly concluded no change was
+    // needed is a legitimate outcome; degrading it would trade false successes
+    // for false alarms rather than removing either.
+    const r = decide({ ...finished, worktreeUnchanged: true });
+    expect(r.state).toBe('DONE');
+    expect(r.degraded).toBe(false);
+    expect(r.worktreeUnchanged).toBe(true);
+  });
+
+  it('leaves a run that changed something unannotated', () => {
+    const r = decide({ ...finished, worktreeUnchanged: false });
+    expect(r.report).toBe('I fixed the bug.');
+    expect(r.worktreeUnchanged).toBe(false);
+  });
+
+  it('says nothing when the comparison was unavailable', () => {
+    // Not a git repository, a read-only role, or a run predating the field.
+    // Unknown must read as unknown, never as "changed nothing".
+    const r = decide(finished);
+    expect(r.report).toBe('I fixed the bug.');
+    expect(r.worktreeUnchanged).toBeUndefined();
+  });
+
+  it('does not stack the note onto a degraded run', () => {
+    // A degraded report already opens by saying why it cannot be believed;
+    // "it also changed nothing" adds nothing to that.
+    const r = decide({ ...base, exitCode: 1, worktreeUnchanged: true });
+    expect(r.degraded).toBe(true);
+    expect(r.report).toMatch(/^\[degraded:/);
+    expect(r.report).not.toContain('no worktree change');
+  });
+
+  it('does not stack the note onto a timed-out run', () => {
+    const r = decide({ ...finished, timedOut: true, worktreeUnchanged: true });
+    expect(r.report).toMatch(/^\[timed out:/);
+    expect(r.report).not.toContain('no worktree change');
+  });
+});
+
 describe('tail decide — runs that cannot write a report', () => {
   const readOnly = { ...base, canWriteReport: false };
 

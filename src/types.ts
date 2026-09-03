@@ -39,6 +39,15 @@ export interface RunMeta {
    * this field existed.
    */
   silentUntilExit?: boolean;
+  /**
+   * The working tree's fingerprint when the run launched (`src/worktree.ts`),
+   * against which tail compares at exit to tell a run that did nothing from one
+   * that did something. Absent means the comparison is unavailable, not that
+   * the tree was empty: `cwd` is not a git repository, or the run predates this
+   * field. Write-capable roles only — a read-only run is not expected to leave
+   * a mark, so flagging one would be noise rather than a finding.
+   */
+  worktreeAtLaunch?: string;
   session: string;
   cwd: string;
   startedAt: string;
