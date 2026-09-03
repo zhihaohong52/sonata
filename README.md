@@ -410,7 +410,7 @@ is in [`docs/dispatching-work-through-sonata.md`](docs/dispatching-work-through-
 
 ```bash
 npm install
-npm test          # 1177 tests; needs tmux
+npm test          # 1523 tests; needs tmux
 npm run typecheck
 npm run build
 ```
