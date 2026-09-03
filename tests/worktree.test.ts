@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -79,6 +79,77 @@ describe('worktreeFingerprint', () => {
     git(['init'], dir);
     writeFileSync(join(dir, 'only.txt'), 'x\n');
     expect(worktreeFingerprint(dir)).toBeTypeOf('string');
+  });
+
+  it('moves when a file that was already dirty at launch is edited again', () => {
+    // `git status --porcelain` names the path and its state, never its
+    // content: measured, a tracked file already ` M` reports the identical
+    // line no matter how many times it is rewritten. Dispatching into a dirty
+    // worktree is the ordinary mid-feature case, so without content hashing a
+    // run that edited exactly the file you were already working on would have
+    // been reported as having changed nothing.
+    initRepo(dir);
+    writeFileSync(join(dir, 'seed.txt'), 'edited by the user\n');
+    const before = worktreeFingerprint(dir);
+    writeFileSync(join(dir, 'seed.txt'), 'edited by the run\n');
+    expect(worktreeFingerprint(dir)).not.toBe(before);
+  });
+
+  it('moves when an untracked file that already existed changes content', () => {
+    // The same blind spot from the other direction: `?? notes.txt` is `??
+    // notes.txt` whatever the file now holds.
+    initRepo(dir);
+    writeFileSync(join(dir, 'notes.txt'), 'from the user\n');
+    const before = worktreeFingerprint(dir);
+    writeFileSync(join(dir, 'notes.txt'), 'from the run\n');
+    expect(worktreeFingerprint(dir)).not.toBe(before);
+  });
+
+  it('moves when an already-staged file is edited further', () => {
+    // Staged at launch, so it is not "modified" relative to the index and only
+    // `git diff --name-only HEAD` finds it. The content hash is taken from the
+    // working tree, which is what actually moved.
+    initRepo(dir);
+    writeFileSync(join(dir, 'seed.txt'), 'staged\n');
+    git(['add', 'seed.txt'], dir);
+    const before = worktreeFingerprint(dir);
+    writeFileSync(join(dir, 'seed.txt'), 'and then edited\n');
+    expect(worktreeFingerprint(dir)).not.toBe(before);
+  });
+
+  it('is stable across repeated samples of a dirty tree', () => {
+    // Content hashing must not make the fingerprint restless: hashing the same
+    // unchanged files twice has to produce the same answer, or every run would
+    // report a change.
+    initRepo(dir);
+    writeFileSync(join(dir, 'seed.txt'), 'dirty\n');
+    writeFileSync(join(dir, 'extra.txt'), 'untracked\n');
+    expect(worktreeFingerprint(dir)).toBe(worktreeFingerprint(dir));
+  });
+
+  it('moves when a binary file that was already dirty changes', () => {
+    // `git diff` renders a binary change as "Binary files differ" with no
+    // content, which is why the capture hashes blobs rather than a patch.
+    initRepo(dir);
+    writeFileSync(join(dir, 'blob.bin'), Buffer.from([0, 1, 2, 0, 255]));
+    const before = worktreeFingerprint(dir);
+    writeFileSync(join(dir, 'blob.bin'), Buffer.from([0, 1, 3, 0, 255]));
+    expect(worktreeFingerprint(dir)).not.toBe(before);
+  });
+
+  it('writes no git object while fingerprinting', () => {
+    // `git hash-object` is called without `-w` on purpose. This check runs on
+    // someone else's repository and must stay read-only; a fingerprint that
+    // grows the object store is not inert.
+    initRepo(dir);
+    writeFileSync(join(dir, 'seed.txt'), 'dirty\n');
+    writeFileSync(join(dir, 'fresh.txt'), 'untracked\n');
+    const objects = (): string[] =>
+      execFileSync('find', [join(dir, '.git', 'objects'), '-type', 'f'], { encoding: 'utf8' })
+        .split('\n').filter(Boolean).sort();
+    const before = objects();
+    worktreeFingerprint(dir);
+    expect(objects()).toEqual(before);
   });
 
   it('ignores files under an ignored directory', () => {
@@ -240,6 +311,38 @@ describe('the fingerprint captured at exit', () => {
     run();
 
     expect(worktreeUnchangedSince(atLaunch, dir, runDir)).toBe(false);
+  });
+
+  it('reports a run that only edited a file already dirty at launch', () => {
+    // End to end through the real wrapper, in the case `git status` alone is
+    // blind to: the user has `seed.txt` half-edited, dispatches, and the run
+    // edits that same file and nothing else. Status reads ` M seed.txt` at both
+    // ends; only the content hash moves.
+    initRepo(dir);
+    writeFileSync(join(dir, 'seed.txt'), 'edited by the user\n');
+    const run = stageWrapper(dir, `printf 'edited by the run\\n' > '${join(dir, 'seed.txt')}'`);
+    const atLaunch = worktreeFingerprint(dir);
+
+    run();
+
+    expect(worktreeUnchangedSince(atLaunch, dir, runDir)).toBe(false);
+  });
+
+  it('is not moved by the run\'s own scaffolding when .sonata is not ignored', () => {
+    // The exclusion that makes the above safe. `status` collapses an untracked
+    // directory to one entry, but `ls-files -o` enumerates it — and between the
+    // two samples this run writes `worktree-capture` and `exit` into its own
+    // run directory. Counting those would mark every run as having changed
+    // something, an annotation that is always present and therefore says
+    // nothing.
+    initRepo(dir);
+    const run = stageWrapper(dir);
+    const atLaunch = worktreeFingerprint(dir);
+
+    run();
+
+    expect(existsSync(join(runDir, 'exit'))).toBe(true);
+    expect(worktreeUnchangedSince(atLaunch, dir, runDir)).toBe(true);
   });
 
   it('falls back to the live tree for a run launched before captures existed', () => {
