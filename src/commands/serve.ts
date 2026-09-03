@@ -1200,10 +1200,14 @@ export async function cmdRestart(
   argv: string[],
   opts: { cwd: string } & StopDeps & DaemonDeps = { cwd: process.cwd() },
 ): Promise<DaemonResult> {
-  await stopServe({
-    cwd: opts.cwd, home,
-    probeHealth: opts.probeHealth, now: opts.now, sleep: opts.sleep, timeoutMs: opts.timeoutMs, kill: opts.kill,
-    findPortPid: opts.findPortPid,
-  });
+  // Forwarded by spread, not by enumeration. Listing the keys by hand meant
+  // `cmdRestart` and `StopDeps` were two lists that had to agree, and they
+  // stopped agreeing: `isAlive` was added to `StopDeps` and never added here,
+  // so every seam passed through `cmdRestart` silently fell back to probing
+  // the real OS. That is invisible on a developer machine — a fake pid is
+  // usually dead — and cost a 10s timeout and a red CI run on a runner where
+  // pid 111 happens to be a live process. `startServeDaemon` reads the same
+  // object, so a `DaemonDeps` key riding along here is inert.
+  await stopServe({ ...opts, home });
   return startServeDaemon(home, argv, opts);
 }

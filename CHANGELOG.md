@@ -118,9 +118,11 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   floor's `Math.max` — one very cheap, very weak model would otherwise drag the
   bar below everything eligible, empty the tier, and leave the fallback
   mirroring `complex`, which is the tier ceasing to discriminate at exactly its
-  strictest moment. A model AA has not costed per task keeps the absolute
-  judgement it had before, since the change has no better information about it;
-  with nothing costed there is no ceiling at all and behaviour is unchanged.
+  strictest moment. A model with no AA `cost_per_task` keeps the absolute
+  admission rule it had before — the curated table's `cheap` flag, else the
+  `AA_CHEAP_BLENDED_PRICE_USD` per-1M bar — since the change has no better
+  information about it; with nothing costed at all there is no ceiling and
+  behaviour is unchanged.
 - **A namespaced OpenRouter ref no longer falls through to the
   capable-not-cheap default.** Two causes, both in `normalizeModelName`. A
   serving-variant suffix (`:free`, `:nitro`) was kept, so
