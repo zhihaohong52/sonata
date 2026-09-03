@@ -9,11 +9,11 @@
  * see, because a model that did nothing and a model that did everything write
  * the same file.
  *
- * The check is a fingerprint, not a diff: `git rev-parse HEAD` plus
- * `git status --porcelain`, hashed. That covers a commit, a staged or unstaged
- * edit to a tracked file, and a newly created untracked one — every way a run
- * is supposed to leave a mark — while costing two cheap git calls at each end
- * of a run rather than reading content.
+ * The check is a fingerprint, not a diff: one hash over `git rev-parse HEAD`,
+ * `git status --porcelain`, and a blob hash for the content of every path git
+ * does not consider committed-clean. That covers a commit, a staged or unstaged
+ * edit, a newly created file, a deletion — every way a run is supposed to leave
+ * a mark.
  *
  * **It is inert outside git.** Sonata dispatches in whatever directory it is
  * pointed at, and plenty of them are not repositories. A missing repo, a
@@ -27,61 +27,101 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * The two raw git outputs, captured by the launch wrapper the moment the
- * harness exits and hashed here.
+ * The raw capture the launch wrapper writes the moment the harness exits, and
+ * hashes here.
  *
- * Split into the inputs rather than the finished hash on purpose: the wrapper
- * is bash, and a second implementation of the formula below — NUL separator
- * included — is precisely the kind of duplicate definition that drifts from
- * the original without anything failing loudly. The shell captures bytes; the
- * hash has exactly one implementation, in `fingerprintOf`.
+ * The bytes are stored rather than the finished hash because the wrapper is
+ * bash: a second implementation of the formula is precisely the kind of
+ * duplicate definition that drifts without anything failing loudly. Here there
+ * is nothing left to duplicate — the formula is "sha256 of this stream", and
+ * both ends run the same `WORKTREE_CAPTURE_SH` to produce it.
  */
-export const WORKTREE_HEAD_FILE = 'worktree-head';
-export const WORKTREE_STATUS_FILE = 'worktree-status';
+export const WORKTREE_CAPTURE_FILE = 'worktree-capture';
 
 /**
- * The separator is a NUL, which cannot occur in either input, so no pair of
- * different (head, status) readings can hash to the same fingerprint by
- * running together at the join.
+ * The one definition of what gets fingerprinted, run by both ends: directly by
+ * `worktreeFingerprint` for the launch sample, and embedded in the launch
+ * wrapper for the closing one. Two samples that disagree about what they
+ * measure are worse than no check at all, so there is exactly one script.
+ *
+ * It writes three NUL-separated sections to stdout — NUL because it cannot
+ * occur in any of them, so no two different readings can run together at a
+ * join and hash alike. Exiting non-zero (outside a repository) is how both
+ * callers learn to report *unknown*.
+ *
+ * **Section 3 is why this is not just status.** `git status --porcelain`
+ * records which paths are in what state and never their content: measured, a
+ * tracked file that is already ` M` at launch and edited again reports the
+ * identical line, and so does an existing `??` file whose content is replaced.
+ * A run that only touched work already in progress — the ordinary case when
+ * dispatching mid-feature — would have been reported as having changed
+ * nothing. So every path git does not consider committed-clean is content
+ * hashed with `git hash-object`, which is exact for binaries too, costs one
+ * process, and writes nothing (no `-w`, so no object enters the user's repo:
+ * this check must stay read-only).
+ *
+ * Three details are load-bearing:
+ *
+ * - **`.sonata` is excluded from the enumeration.** `status` collapses an
+ *   untracked directory to a single entry, but `ls-files -o` lists every file
+ *   under it — including the `report.md`, `exit` and capture files this very
+ *   run is about to write. In a repository that does not ignore `.sonata/`,
+ *   enumerating them would make *every* run look changed, which fails in the
+ *   useless direction: an annotation that is always present says nothing.
+ * - **`git diff --cached` is the fallback** for a repository with no commits,
+ *   where `HEAD` does not resolve and the first form is a fatal error.
+ * - **`[ -f "$p" ]` filters before hashing.** A path in the list may not exist
+ *   (a deletion, which section 2 already records) or may be git's quoted
+ *   rendering of a name containing a control character, which `--stdin-paths`
+ *   cannot resolve. Dropping those degrades that one path to status-only
+ *   rather than failing the whole capture into "unknown".
  */
-function fingerprintOf(head: string, status: string): string {
-  return createHash('sha256').update(`${head}\0${status}`).digest('hex');
+export const WORKTREE_CAPTURE_SH = [
+  'git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 1',
+  'git rev-parse HEAD 2>/dev/null || true',
+  "printf '\\0'",
+  'git -c core.quotePath=false status --porcelain',
+  "printf '\\0'",
+  'sonata_paths=$(',
+  "  { git -c core.quotePath=false ls-files -o --exclude-standard -- . ':!.sonata'",
+  "    git -c core.quotePath=false diff --name-only HEAD -- . ':!.sonata' 2>/dev/null \\",
+  "      || git -c core.quotePath=false diff --name-only --cached -- . ':!.sonata' 2>/dev/null",
+  '  } | sort -u',
+  ')',
+  'printf \'%s\\0\' "$sonata_paths"',
+  'if [ -n "$sonata_paths" ]; then',
+  '  printf \'%s\\n\' "$sonata_paths" \\',
+  '    | while IFS= read -r sonata_p; do [ -f "$sonata_p" ] && printf \'%s\\n\' "$sonata_p"; done \\',
+  '    | git hash-object --stdin-paths',
+  'fi',
+].join('\n');
+
+function fingerprintOf(capture: Buffer): string {
+  return createHash('sha256').update(capture).digest('hex');
 }
 
-function git(args: string[], cwd: string): string | undefined {
+/**
+ * A hash of the working tree's current state, or `undefined` when `cwd` is not
+ * a usable git repository.
+ *
+ * The capture is hashed as **bytes**, never as a decoded string: it carries
+ * path names straight from git, and a name that is not valid UTF-8 would
+ * otherwise be replaced character-for-character and stop distinguishing two
+ * different trees.
+ */
+export function worktreeFingerprint(cwd: string): string | undefined {
   try {
-    return execFileSync('git', args, {
+    return fingerprintOf(execFileSync('bash', ['-c', WORKTREE_CAPTURE_SH], {
       cwd,
-      encoding: 'utf8',
       // stderr is discarded rather than inherited: outside a repository git
       // writes "not a git repository" to it, and that is an expected answer
       // here, not something to put in front of the user mid-run.
       stdio: ['ignore', 'pipe', 'ignore'],
-    });
+      maxBuffer: 64 * 1024 * 1024,
+    }));
   } catch {
     return undefined;
   }
-}
-
-/**
- * A cheap hash of the working tree's current state, or `undefined` when `cwd`
- * is not a usable git repository.
- *
- * `git status --porcelain` is the load-bearing call — it is what fails outside
- * a repository, and it alone covers tracked edits and untracked additions. It
- * also lists an untracked *directory* as one entry without enumerating it,
- * which is why sonata's own `.sonata/runs/<id>` scaffolding does not move the
- * fingerprint on its own even in a repository that does not ignore it.
- *
- * `git rev-parse HEAD` is additive, so that a run whose only trace is a commit
- * (leaving a clean tree behind it) still registers. Its failure is tolerated
- * rather than fatal: a repository with no commits yet has no HEAD, and that is
- * a working tree worth fingerprinting, not a reason to go inert.
- */
-export function worktreeFingerprint(cwd: string): string | undefined {
-  const status = git(['status', '--porcelain'], cwd);
-  if (status === undefined) return undefined;
-  return fingerprintOf(git(['rev-parse', 'HEAD'], cwd) ?? '', status);
 }
 
 /**
@@ -90,21 +130,14 @@ export function worktreeFingerprint(cwd: string): string | undefined {
  *
  * Absence is the ordinary answer in three cases, all of them *unknown* rather
  * than "unchanged": a read-only role, for which no capture is requested; a
- * working directory that is not a git repository, where the wrapper removes
- * both files rather than leaving an empty status behind that would read as a
- * clean tree; and a run launched by a sonata predating the capture.
- *
- * An empty head file is not absence — a repository with no commits yet has no
- * HEAD, and `worktreeFingerprint` folds that in as `''` too.
+ * working directory that is not a git repository, where the wrapper removes the
+ * file rather than leaving the empty one the redirection created, since an
+ * empty capture would otherwise hash to a perfectly stable value; and a run
+ * launched by a sonata predating the capture.
  */
 export function worktreeFingerprintAtExit(runDir: string): string | undefined {
   try {
-    const status = readFileSync(join(runDir, WORKTREE_STATUS_FILE), 'utf8');
-    let head = '';
-    try {
-      head = readFileSync(join(runDir, WORKTREE_HEAD_FILE), 'utf8');
-    } catch { /* no HEAD to read; `''` matches the launch sample's own fallback */ }
-    return fingerprintOf(head, status);
+    return fingerprintOf(readFileSync(join(runDir, WORKTREE_CAPTURE_FILE)));
   } catch {
     return undefined;
   }

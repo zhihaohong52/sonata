@@ -32,8 +32,9 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   forwarded, and putting avoided spend into the store that defines spend is how
   the number stops meaning what it says.
 - **A finished run now reports whether it changed anything** (roadmap item 07).
-  `sonata` fingerprints the working tree at launch (`git rev-parse HEAD` plus
-  `git status --porcelain`) and compares at exit, so a run that finished
+  `sonata` fingerprints the working tree at launch (`git rev-parse HEAD`, `git
+  status --porcelain`, and a blob hash for the content of every path git does
+  not consider committed-clean) and compares at exit, so a run that finished
   cleanly, un-degraded, reporting "fixed the bug" while touching no file says
   so: the report is prefixed `[no worktree change: …]`. This is the one shape
   of false success the report contract cannot catch, since a model that did
@@ -127,14 +128,29 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   The closing fingerprint was sampled by `sonata tail`, but `sonata run`
   returns immediately and the first tail can arrive much later — so anything
   you touched in between counted as the run's work, and a run that genuinely
-  changed nothing stopped saying so. The launch wrapper now captures
-  `git status --porcelain` and `git rev-parse HEAD` into the run directory
-  *before* writing the exit sentinel, and tail hashes that capture. The shell
-  captures raw git output and Node still owns the single hash formula — a test
-  asserts the two agree byte-for-byte — because the fingerprint separates head
-  from status with a NUL byte, and a second implementation of that in bash is
-  exactly the drift worth not having. A run launched by an older sonata has no
-  capture and still falls back to the live sample.
+  changed nothing stopped saying so. The launch wrapper now writes the capture
+  into the run directory *before* writing the exit sentinel, and tail hashes
+  that rather than the tree. Both ends run one shared script
+  (`WORKTREE_CAPTURE_SH`) and the fingerprint is sha256 of its raw bytes, so
+  there is no formula left to reimplement in bash; a test asserts the two ends
+  agree byte-for-byte. A run launched by an older sonata has no capture and
+  still falls back to the live sample.
+- **The worktree check now sees content, not just which paths are dirty.**
+  `git status --porcelain` records a path's *state* and never its bytes: an
+  already-modified tracked file reports the identical ` M path` however many
+  times it is rewritten, and so does an existing `?? path`. Dispatching into a
+  dirty worktree is the ordinary mid-feature case, so a run that edited exactly
+  the file you were already working on — and nothing else — was reported as
+  having changed nothing. The capture now includes a `git hash-object` blob
+  hash for every path git does not consider committed-clean, which is exact for
+  binaries too (a diff renders those as "Binary files differ"), costs one
+  process, and writes nothing into the repository — no `-w`, because a check
+  that exists to be inert must not grow someone else's object store. `.sonata`
+  is excluded from that enumeration: `status` collapses an untracked directory
+  to a single entry, but `ls-files -o` lists every file under it — including
+  the `report.md`, `exit` and capture files the run is itself about to write —
+  and counting those would mark *every* run as changed, an annotation that is
+  always present and therefore says nothing.
 - **`startServeDaemon`'s tests no longer read the developer's own config.**
   They passed a temp `home` but inherited the real `process.cwd()`, so a
   sonata checkout containing its own `sonata.toml` (any contributor who has
