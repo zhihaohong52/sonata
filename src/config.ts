@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
+import { applyMigrations, readSchemaVersion } from './migrations.js';
 
 export const KNOWN_HARNESSES = ['opencode', 'codex', 'pi', 'reasonix', 'claude'] as const;
 export const KNOWN_ROLES = ['review', 'code', 'explore', 'plan'] as const;
@@ -175,6 +176,17 @@ export interface NativeConfig {
 }
 
 export interface SonataConfig {
+  /**
+   * The schema version the file carried **before** migration — 0 for a file
+   * written before the stamp existed.
+   *
+   * Recorded rather than discarded because migration is in-memory: the loaded
+   * config is always current-shape, so without this there is no way to tell a
+   * file that needs rewriting from one already at `CURRENT_SCHEMA_VERSION`,
+   * and `sonata doctor` could not say which. Optional so the many places that
+   * build a config literal in tests need not restate it.
+   */
+  schemaVersion?: number;
   models: Record<string, ModelConfig>;
   /**
    * Tier routing's unified registry. Legacy harness entries are mirrored here
@@ -259,7 +271,17 @@ function parsePrice(raw: unknown, where: string): PriceConfig | undefined {
 }
 
 export function parseConfig(text: string): SonataConfig {
-  const raw = parseToml(text) as Record<string, any>;
+  // Every field-level check below reads the *current* shape, so the chain runs
+  // first: an older file is walked forward here, and a file stamped newer than
+  // this sonata understands is refused rather than half-understood. Migration
+  // is in-memory — nothing is written back — so a read-only command never
+  // modifies the user's config. See src/migrations.ts.
+  const parsed = parseToml(text) as Record<string, unknown>;
+  // Read before migrating: `applyMigrations` stamps the result current, so
+  // asking afterwards always answers `CURRENT_SCHEMA_VERSION` and doctor could
+  // never report a file as behind.
+  const schemaVersion = readSchemaVersion(parsed);
+  const raw = applyMigrations(parsed) as Record<string, any>;
 
   const models: Record<string, ModelConfig> = {};
   const unifiedModels: Record<string, UnifiedModelConfig> = {};
@@ -658,6 +680,7 @@ export function parseConfig(text: string): SonataConfig {
   }
 
   return {
+    schemaVersion,
     models,
     unifiedModels,
     tiers,

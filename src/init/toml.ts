@@ -5,6 +5,7 @@ import type { SonataConfig } from '../config.js';
 import { isOauthGatewayAuth, oauthGatewayBaseUrl } from '../config.js';
 import { proposeTiers } from '../catalog.js';
 import { gatewayNamesOf, avoidedKeysOf, duplicateKeys } from './helpers.js';
+import { CURRENT_SCHEMA_VERSION, SCHEMA_VERSION_KEY } from '../migrations.js';
 
 const TOML_ESCAPES: Record<string, string> = {
   '\\': '\\\\', '"': '\\"', '\b': '\\b', '\t': '\\t',
@@ -64,6 +65,11 @@ export function nativeTomlFor(
   });
 
   const lines: string[] = [];
+  // Which shape this file is in. First, and above every table header, for the
+  // same reason `avoid_gateways` has to be — see below. Writing it is what
+  // lets a future sonata tell "old file" from "file this sonata wrote", so a
+  // migration can run exactly once instead of being re-guessed from shape.
+  lines.push(`${SCHEMA_VERSION_KEY} = ${CURRENT_SCHEMA_VERSION}`, '');
   // Top-level keys must precede every table header: a bare key written after
   // one belongs to *that table*, so emitting this beside [tiers] silently made
   // it a field of the last [models."…"] entry and parseConfig never saw it.
