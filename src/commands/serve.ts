@@ -101,7 +101,19 @@ export interface ServeDeps {
  * `sonata restart` reads it to kill a stale router without guessing a pid by
  * scanning the OS.
  */
-export function serveStatePath(home: string): string {
+export function serveStatePath(home: string, routerPort: number): string {
+  return join(home, '.config', 'sonata', `serve-state-${routerPort}.json`);
+}
+
+/**
+ * Where versions before per-port state recorded their pids.
+ *
+ * Read, never written. A daemon started by an older sonata recorded itself
+ * here, and dropping the path would make that process unstoppable by
+ * `sonata restart` — the exact "no recorded pid" dead end this file exists to
+ * avoid, handed to every user mid-upgrade.
+ */
+function legacyServeStatePath(home: string): string {
   return join(home, '.config', 'sonata', 'serve-state.json');
 }
 
@@ -111,18 +123,25 @@ interface ServeState {
   recordedAt: string;
 }
 
-function readServeState(home: string): ServeState | undefined {
-  const path = serveStatePath(home);
-  if (!existsSync(path)) return undefined;
-  try {
-    return JSON.parse(readFileSync(path, 'utf8')) as ServeState;
-  } catch {
-    return undefined;
+/** The state file that answered, so a caller clears the one it actually read. */
+function readServeStateFrom(home: string, routerPort: number): { path: string; state: ServeState } | undefined {
+  for (const path of [serveStatePath(home, routerPort), legacyServeStatePath(home)]) {
+    if (!existsSync(path)) continue;
+    try {
+      return { path, state: JSON.parse(readFileSync(path, 'utf8')) as ServeState };
+    } catch {
+      // A corrupt file is not a record; keep looking.
+    }
   }
+  return undefined;
 }
 
-function writeServeState(home: string, state: Omit<ServeState, 'recordedAt'>): void {
-  const path = serveStatePath(home);
+function readServeState(home: string, routerPort: number): ServeState | undefined {
+  return readServeStateFrom(home, routerPort)?.state;
+}
+
+function writeServeState(home: string, routerPort: number, state: Omit<ServeState, 'recordedAt'>): void {
+  const path = serveStatePath(home, routerPort);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify({ ...state, recordedAt: new Date().toISOString() }));
 }
@@ -132,18 +151,22 @@ function killPid(pid: number | undefined): void {
   try { process.kill(pid); } catch { /* already dead */ }
 }
 
-function killRecordedOrphan(home: string): void {
-  const state = readServeState(home);
-  killPid(state?.litellmPid);
-  try { unlinkSync(serveStatePath(home)); } catch { /* gone is the goal */ }
+function killRecordedOrphan(home: string, routerPort: number): void {
+  const found = readServeStateFrom(home, routerPort);
+  killPid(found?.state.litellmPid);
+  // Clear the file that was actually read — never both. Deleting the legacy
+  // path while reading a port-keyed one would discard another daemon's record.
+  if (found !== undefined) {
+    try { unlinkSync(found.path); } catch { /* gone is the goal */ }
+  }
 }
 
-function recordLitellmPid(home: string, pid: number): void {
-  writeServeState(home, { ...readServeState(home), litellmPid: pid });
+function recordLitellmPid(home: string, routerPort: number, pid: number): void {
+  writeServeState(home, routerPort, { ...readServeState(home, routerPort), litellmPid: pid });
 }
 
-function recordRouterPid(home: string, pid: number): void {
-  writeServeState(home, { ...readServeState(home), routerPid: pid });
+function recordRouterPid(home: string, routerPort: number, pid: number): void {
+  writeServeState(home, routerPort, { ...readServeState(home, routerPort), routerPid: pid });
 }
 
 /** Polls litellm until it answers, so a silent bind failure surfaces here. */
@@ -504,7 +527,9 @@ export async function cmdServe(
 
     // A predecessor's orphaned litellm would hold the port and answer with the
     // wrong master key; kill it (recorded pid only) before spawning our own.
-    killRecordedOrphan(opts.home);
+    // Scoped to this router's port: another project's daemon on a different
+    // port has its own litellm on its own port and is not our orphan to kill.
+    killRecordedOrphan(opts.home, native.ports.router);
 
     // The litellm child dying on its own (not via `stop()`) used to go
     // unnoticed until the next request 502'd and someone ran `sonata restart`
@@ -550,7 +575,7 @@ export async function cmdServe(
       const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(
         configPath, childEnv, native.ports.litellm, litellmBin,
       );
-      recordLitellmPid(opts.home, spawned.pid);
+      recordLitellmPid(opts.home, native.ports.router, spawned.pid);
       spawned.onExit?.((code, signal) => {
         if (stopping) return;
         if (expectingConfigRestart) {
@@ -784,7 +809,7 @@ export async function cmdServe(
       }
       throw error;
     }
-    recordRouterPid(opts.home, process.pid);
+    recordRouterPid(opts.home, native.ports.router, process.pid);
   } catch (error) {
     // Suppress the respawn watcher before killing the child — otherwise its
     // `exit` handler schedules a respawn against `configPath`, which the
@@ -813,7 +838,7 @@ export async function cmdServe(
       stopped = true;
       stopping = true;
       child?.kill();
-      try { unlinkSync(serveStatePath(opts.home)); } catch { /* already gone */ }
+      try { unlinkSync(serveStatePath(opts.home, native.ports.router)); } catch { /* already gone */ }
       try {
         await close(startedRouter);
       } finally {
@@ -984,7 +1009,8 @@ export async function stopServe(
 
   if (!(await isSonataRouter(port, probeHealth))) return { killed: false };
 
-  const state = readServeState(opts.home);
+  const found = readServeStateFrom(opts.home, port);
+  const state = found?.state;
   if (state?.routerPid === undefined) {
     const findPortPid = opts.findPortPid ?? defaultFindPortPid;
     const foundPid = findPortPid(port);
@@ -993,7 +1019,7 @@ export async function stopServe(
       : ' Kill it by hand, then run `sonata serve --daemon`.';
     throw new Error(
       `sonata restart: router port ${port} answers as a sonata router, but no recorded pid for it ` +
-      `was found in ${serveStatePath(opts.home)} — it may have been started by a different sonata ` +
+      `was found in ${serveStatePath(opts.home, port)} — it may have been started by a different sonata ` +
       `install or an older version.${nextStep}`,
     );
   }
@@ -1002,7 +1028,9 @@ export async function stopServe(
   const isAlive = opts.isAlive ?? defaultIsAlive;
   const pids = [state.routerPid, state.litellmPid].filter((pid): pid is number => pid !== undefined);
   for (const pid of pids) kill(pid);
-  try { unlinkSync(serveStatePath(opts.home)); } catch { /* already gone */ }
+  // The file the record actually came from, which may be the legacy path when
+  // the daemon being stopped predates per-port state.
+  try { unlinkSync(found!.path); } catch { /* already gone */ }
 
   // Wait for the pids we killed to actually exit — not for the port to go
   // quiet. Polling the port instead confused "still dying" with "already
