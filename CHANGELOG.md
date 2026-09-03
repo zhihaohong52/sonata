@@ -106,16 +106,21 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   *token* rate — while ordering inside the tier used AA's `cost_per_task`,
   which prices the work. Gemini 3.8 Flash is $1.50/1M and $0.577/task: refused
   at any catalog freshness, on a threshold that was never measuring what the
-  tier optimises. So was Gemini 3.7 Flash, at the same rate; on a real
-  24-candidate config only three distinct models cleared the bar. Admission now
+  tier optimises. So was Gemini 3.7 Flash, at the same rate. Admission now
   uses the same measure as ranking, and it is **relative** — a model is cheap
   when its cost per task is within `SIMPLE_COST_CEILING` (12×) of the cheapest
-  model that can actually lead the tier — for the same reason
+  model that can actually *enter* the tier — for the same reason
   `SIMPLE_CAPABILITY_FLOOR` is: an absolute bar is wrong in both directions as
-  prices move. On that same config the simple tier went from 4 entries to 9.
-  A model AA has not costed per task keeps the absolute judgement it had
-  before, since the change has no better information about it; with nothing
-  costed there is no ceiling at all and behaviour is unchanged.
+  prices move. Measured on two real configs, the simple tier went from three
+  admitted models to four (with Gemini 3.8 Flash ranked, previously absent
+  outright) and from three to five. Only models that clear the capability gate
+  and the floor may set the ceiling: it is a `Math.min`, so — unlike the
+  floor's `Math.max` — one very cheap, very weak model would otherwise drag the
+  bar below everything eligible, empty the tier, and leave the fallback
+  mirroring `complex`, which is the tier ceasing to discriminate at exactly its
+  strictest moment. A model AA has not costed per task keeps the absolute
+  judgement it had before, since the change has no better information about it;
+  with nothing costed there is no ceiling at all and behaviour is unchanged.
 - **A namespaced OpenRouter ref no longer falls through to the
   capable-not-cheap default.** Two causes, both in `normalizeModelName`. A
   serving-variant suffix (`:free`, `:nitro`) was kept, so

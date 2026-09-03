@@ -127,6 +127,30 @@ describe('proposeTiers', () => {
     expect(tiers.simple).not.toContain('junk');
   });
 
+  it('a model too weak to enter the simple tier cannot set its cost ceiling', () => {
+    // The ceiling is a `Math.min`, so unlike the capability floor's `Math.max`
+    // one very cheap model drags it down for everyone. Measured over every
+    // selected model, `junk` at $0.001/task set a $0.012 ceiling that nothing
+    // eligible could clear: `simple` came back empty and fell back to mirroring
+    // `complex`, so the tier stopped discriminating at exactly the moment its
+    // gate was strictest. `lavish` is the witness — capable and above the
+    // floor, but genuinely too dear for grunt work, so it belongs in `complex`
+    // and not in `simple`. The fallback would have carried it in.
+    const aa: AaCatalog = {
+      fetchedAt: '2026-08-25T00:00:00Z',
+      models: {
+        'strong': { codingIndex: 60, blendedPriceUsd: 1, agenticIndex: 60, costPerTask: 0.5 },
+        'value': { codingIndex: 55, blendedPriceUsd: 1, agenticIndex: 55, costPerTask: 0.1 },
+        'lavish': { codingIndex: 58, blendedPriceUsd: 1, agenticIndex: 58, costPerTask: 8 },
+        'junk': { codingIndex: 20, blendedPriceUsd: 1, agenticIndex: 20, costPerTask: 0.001 },
+      },
+    };
+    const tiers = proposeTiers(['strong', 'value', 'lavish', 'junk'], aa);
+    // Ceiling is min($0.50, $0.10, $8.00) x 12 = $1.20 — `junk` does not vote.
+    expect(tiers.simple).toEqual(['value', 'strong']);
+    expect(tiers.complex).toContain('lavish');
+  });
+
   it('never returns an empty complex list when any model exists', () => {
     const tiers = proposeTiers(['mystery-model-9000']);
     expect(tiers.complex).toEqual(['mystery-model-9000']);
