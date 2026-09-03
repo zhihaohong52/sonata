@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-03
+
 ### Added
 - **`[budget] daily_usd` — a daily spend ceiling the router enforces**
   (roadmap item 04). Set it in `sonata.toml` and the router sums the usage
