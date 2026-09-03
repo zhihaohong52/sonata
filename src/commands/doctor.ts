@@ -27,6 +27,7 @@ import { litellmRequired } from '../native/providers.js';
 import { litellmStatus, type InstallerDeps } from '../native/litellm-venv.js';
 import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm.js';
 import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, loadAaCatalog } from '../catalog.js';
+import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { keyReport, resolveKeyFromSource } from '../native/credentials.js';
 import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
@@ -197,6 +198,18 @@ export async function cmdDoctor(
         name: 'legacy config',
         ok: true,
         detail: 'config predates [tiers] — run `sonata init` to migrate',
+      });
+    }
+    // Advisory, never blocking: migration runs in memory on every load, so a
+    // file behind the current schema already works. What it does not have is
+    // the stamp — and `sonata init` is the only command that writes the config
+    // file; `sonata sync` regenerates agents and never touches sonata.toml.
+    if ((config.schemaVersion ?? 0) < CURRENT_SCHEMA_VERSION) {
+      checks.push({
+        name: 'config schema',
+        ok: true,
+        detail: `config is schema v${config.schemaVersion ?? 0}, current is v${CURRENT_SCHEMA_VERSION} — ` +
+          'it loads as-is; run `sonata init` to rewrite it stamped',
       });
     }
   } catch (err) {
