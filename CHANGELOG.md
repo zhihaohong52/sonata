@@ -137,20 +137,20 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   still falls back to the live sample.
 - **The worktree check now sees content, not just which paths are dirty.**
   `git status --porcelain` records a path's *state* and never its bytes: an
-  already-modified tracked file reports the identical ` M path` however many
-  times it is rewritten, and so does an existing `?? path`. Dispatching into a
-  dirty worktree is the ordinary mid-feature case, so a run that edited exactly
-  the file you were already working on — and nothing else — was reported as
-  having changed nothing. The capture now includes a `git hash-object` blob
-  hash for every path git does not consider committed-clean, which is exact for
-  binaries too (a diff renders those as "Binary files differ"), costs one
-  process, and writes nothing into the repository — no `-w`, because a check
-  that exists to be inert must not grow someone else's object store. `.sonata`
-  is excluded from that enumeration: `status` collapses an untracked directory
-  to a single entry, but `ls-files -o` lists every file under it — including
-  the `report.md`, `exit` and capture files the run is itself about to write —
-  and counting those would mark *every* run as changed, an annotation that is
-  always present and therefore says nothing.
+  already-modified tracked file reports the same modified-but-unstaged line
+  however many times it is rewritten, and so does an existing `?? path`.
+  Dispatching into a dirty worktree is the ordinary mid-feature case, so a run
+  that edited exactly the file you were already working on — and nothing else
+  — was reported as having changed nothing. The capture now includes a `git
+  hash-object` blob hash for every path git does not consider committed-clean,
+  which is exact for binaries too (a diff renders those as "Binary files
+  differ"), costs one process, and writes nothing into the repository — no
+  `-w`, because a check that exists to be inert must not grow someone else's
+  object store. `.sonata` is excluded from that enumeration: `status`
+  collapses an untracked directory to a single entry, but `ls-files -o` lists
+  every file under it — including the `report.md`, `exit` and capture files
+  the run is itself about to write — and counting those would mark *every* run
+  as changed, an annotation that is always present and therefore says nothing.
 - **`startServeDaemon`'s tests no longer read the developer's own config.**
   They passed a temp `home` but inherited the real `process.cwd()`, so a
   sonata checkout containing its own `sonata.toml` (any contributor who has
