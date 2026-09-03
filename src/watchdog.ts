@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 
-import { WORKTREE_HEAD_FILE, WORKTREE_STATUS_FILE } from './worktree.js';
+import { WORKTREE_CAPTURE_FILE, WORKTREE_CAPTURE_SH } from './worktree.js';
 
 export interface WatchdogInput {
   harnessScriptPath: string;
@@ -32,8 +32,7 @@ export function wrapWithTimeout(input: WatchdogInput): string {
   const harnessLog = join(input.runDir, 'harness.log');
   const timeoutMark = join(input.runDir, 'timeout');
   const exitPath = join(input.runDir, 'exit');
-  const headPath = join(input.runDir, WORKTREE_HEAD_FILE);
-  const statusPath = join(input.runDir, WORKTREE_STATUS_FILE);
+  const capturePath = join(input.runDir, WORKTREE_CAPTURE_FILE);
 
   return [
     '#!/bin/bash',
@@ -107,19 +106,24 @@ export function wrapWithTimeout(input: WatchdogInput): string {
     // this to say whether the run left a mark; sampling the tree when tail
     // happens to look measures whatever the repository holds by then, which
     // after a `sonata run` the user walked away from is their own subsequent
-    // editing. Raw git output is written here and hashed in Node
-    // (`worktreeFingerprintAtExit`) so the fingerprint formula is never
+    // editing. The script is `WORKTREE_CAPTURE_SH` verbatim — the same one the
+    // launch sample runs, because two samples that disagree about what they
+    // measure are worse than no check — and its raw output is hashed in Node
+    // (`worktreeFingerprintAtExit`), so nothing about the fingerprint is
     // reimplemented in bash. Nothing here touches $STATUS.
     ...(input.worktreeCwd === undefined
       ? []
       : [
-        `if ( cd '${input.worktreeCwd}' && git status --porcelain ) > '${statusPath}' 2>/dev/null; then`,
-        `  ( cd '${input.worktreeCwd}' && git rev-parse HEAD ) > '${headPath}' 2>/dev/null || : > '${headPath}'`,
+        `if ( cd '${input.worktreeCwd}' && {`,
+        WORKTREE_CAPTURE_SH.split('\n').map((l) => `  ${l}`).join('\n'),
+        `} ) > '${capturePath}' 2>/dev/null; then`,
+        '  :',
         'else',
-        '  # Not a usable repository. Remove both files rather than leaving the',
-        '  # empty one the redirection just created: an empty status reads as a',
-        '  # clean tree, and "unknown" must never be reported as "unchanged".',
-        `  rm -f '${statusPath}' '${headPath}'`,
+        '  # Not a usable repository. Remove the file rather than leaving the',
+        '  # empty one the redirection just created: an empty capture hashes to',
+        '  # a perfectly stable value, and "unknown" must never be reported as',
+        '  # "unchanged".',
+        `  rm -f '${capturePath}'`,
         'fi',
         '',
       ]),
