@@ -18,8 +18,42 @@ export const AA_ATTRIBUTION =
  * mid-tier coders (deepseek-v4-flash class) sit just above the line. */
 export const AA_CAPABLE_CODING_INDEX = 40;
 
-/** Blended $/1M tokens at or below this ⇒ cheap enough for the simple tier. */
+/**
+ * Blended $/1M tokens at or below this ⇒ cheap enough for the simple tier.
+ *
+ * Only reaches the simple tier for a model AA has **not** costed per task;
+ * `SIMPLE_COST_CEILING` decides the ones it has. Kept because a per-1M rate is
+ * the only price such a model has.
+ */
 export const AA_CHEAP_BLENDED_PRICE_USD = 1.0;
+
+/**
+ * A model may cost at most this multiple of the cheapest *selected* model's
+ * per-task cost and still be eligible for a simple tier.
+ *
+ * Relative and per-task, for two separate reasons.
+ *
+ * **Per-task**, because that is what the tier is already ordered by. Admission
+ * used to test `blendedPriceUsd <= AA_CHEAP_BLENDED_PRICE_USD` — dollars per
+ * million *tokens* — while `valueOf` ranked what got in by
+ * capability-per-task-dollar. So the gate and the ranking priced different
+ * things, and the gate priced the one AA's own docs call the weaker proxy: a
+ * per-1M rate says nothing about how many tokens a model burns reaching an
+ * answer. Measured on a real 24-model config, `gemini-3.8-flash` was refused
+ * at $1.50/1M while costing $0.577/task — less per unit of work than five
+ * models that got in, and a sixth of the way to the $1/1M bar it failed.
+ *
+ * **Relative**, for the reason `SIMPLE_CAPABILITY_FLOOR` is: an absolute bar
+ * is wrong in both directions. A user whose whole selection is expensive gets
+ * an empty simple tier and falls back to mirroring complex, which stops the
+ * tier discriminating at all; one whose selection is uniformly cheap gets
+ * everything admitted and no cost tier worth the name.
+ *
+ * Set where it is for depth. On that same config the cheapest selected model
+ * is $0.0487/task, so 12x admits six models — a real fallback chain — where
+ * the old absolute bar admitted three distinct ones and 4x would admit three.
+ */
+export const SIMPLE_COST_CEILING = 12;
 
 /**
  * A capability gap this small or smaller is noise, not a real edge — so the
@@ -177,7 +211,66 @@ export function normalizeModelName(raw: string, providers: readonly string[] = [
       break;
     }
   }
+  // OpenRouter addresses a serving variant with a `:suffix` (`:free`,
+  // `:nitro`, `:floor`) — a routing preference for the same weights, never a
+  // different model, so it must not change the name a score is looked up
+  // under. Unambiguous to strip: `:` appears in no model name AA publishes,
+  // which is why this is done here rather than guessed at lookup time.
+  // Measured: `openrouter-nvidia-nemotron-3-super-120b-a12b:free` matched
+  // nothing while AA held that exact row minus the suffix.
+  name = name.replace(/:[^:]+$/, '');
   return name.replace(/-\d{4}$/, '');
+}
+
+/**
+ * The names a score may be stored under, best first.
+ *
+ * A sonata key flattens `vendor/model` to `vendor-model`, so OpenRouter's
+ * namespaced refs (`z-ai/glm-5.2`) arrive as `z-ai-glm-5.2` with nothing left
+ * to tell the vendor from the model — the slash `normalizeModelName` strips on
+ * is long gone by then. AA publishes the bare model (`glm-5-2`), so the
+ * namespaced form joins nothing and falls through to the capable-not-cheap
+ * default.
+ *
+ * Dropping leading segments recovers it. Two properties keep the guess safe:
+ * candidates are tried in order and the **full name always wins**, so this can
+ * never move a model that already matches; and a shortened name is only
+ * accepted on an *exact* catalog hit. The worst case is therefore a wrong
+ * score where today there is no score at all — and "no score" is itself a
+ * guess, not an abstention.
+ *
+ * Bounded at two drops (a vendor namespace is one segment, occasionally a
+ * hyphenated one like `z-ai`) and stops before the remainder gets short enough
+ * to collide by accident. A candidate must also still carry a digit: a model
+ * name stripped to its bare form keeps its version (`glm-5.2`, `qwen3.8-max`),
+ * while the tail of a long undotted name does not (`gemini-2.5-flash-lite`
+ * would otherwise offer `flash-lite`, which is a family, not a model, and is
+ * exactly the sort of thing another vendor might publish under).
+ */
+export function aaLookupNames(normalized: string): string[] {
+  const names = [normalized];
+  let rest = normalized;
+  for (let drop = 0; drop < 2; drop++) {
+    const dash = rest.indexOf('-');
+    if (dash < 0) break;
+    rest = rest.slice(dash + 1);
+    // A one- or two-character tail is a fragment, not a model name.
+    if (rest.length < 3 || !rest.includes('-')) break;
+    if (!/\d/.test(rest)) continue;
+    names.push(rest);
+  }
+  return names;
+}
+
+/** The AA row for a normalized name, trying each spelling it may be filed
+ *  under. Dots-to-dashes is applied to every candidate, not only the first. */
+function aaEntryFor(normalized: string, aa?: AaCatalog): AaEntry | undefined {
+  if (aa === undefined) return undefined;
+  for (const name of aaLookupNames(normalized)) {
+    const hit = aa.models[name] ?? aa.models[aaMatchKey(name)];
+    if (hit !== undefined) return hit;
+  }
+  return undefined;
 }
 
 /** Our own judgement, not AA data. Kept deliberately small: the default for
@@ -200,7 +293,7 @@ const CURATED: Record<string, { capable: boolean; cheap: boolean }> = {
 
 export function lookupModel(name: string, aa?: AaCatalog, providers: readonly string[] = []): CatalogEntry {
   const normalized = normalizeModelName(name, providers);
-  const scored = aa?.models[normalized] ?? aa?.models[aaMatchKey(normalized)];
+  const scored = aaEntryFor(normalized, aa);
   if (scored !== undefined) {
     return {
       capable: scored.codingIndex >= AA_CAPABLE_CODING_INDEX,
@@ -217,8 +310,30 @@ export interface TierProposal { simple: string[]; complex: string[] }
 
 /** The AA row behind a model key, joined through the match key. */
 function scoreFor(key: string, aa?: AaCatalog, providers: readonly string[] = []): AaEntry | undefined {
-  const normalized = normalizeModelName(key, providers);
-  return aa?.models[normalized] ?? aa?.models[aaMatchKey(normalized)];
+  return aaEntryFor(normalizeModelName(key, providers), aa);
+}
+
+/**
+ * Which of `modelKeys` the ranking catalog can actually score.
+ *
+ * Freshness is measured in days, which is the wrong instrument for the failure
+ * it is meant to catch: a catalog fetched three days ago is reported fresh and
+ * still knows nothing about a model released two days ago, so selecting that
+ * model ranks it from the capable-not-cheap default with no warning anywhere.
+ * Coverage answers the question age was standing in for — does this catalog
+ * know the models *this user selected* — and it is free to compute.
+ */
+export function catalogCoverage(
+  modelKeys: readonly string[],
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+): { scored: string[]; unscored: string[] } {
+  const scored: string[] = [];
+  const unscored: string[] = [];
+  for (const key of modelKeys) {
+    (scoreFor(key, aa, providers) !== undefined ? scored : unscored).push(key);
+  }
+  return { scored, unscored };
 }
 
 /** Rank for ordering within a tier: the role's AA score when known, else a
@@ -282,12 +397,35 @@ export function proposeTiers(
   // avoided model here could raise the bar high enough to exclude everything
   // preferred, inverting the setting's intent.
   const preferred = modelKeys.filter((k) => !avoided.has(k));
-  const best = Math.max(0, ...(preferred.length > 0 ? preferred : modelKeys).map((k) => rankOf(k).index));
+  const leaders = preferred.length > 0 ? preferred : modelKeys;
+  const best = Math.max(0, ...leaders.map((k) => rankOf(k).index));
+  // The cost bar is relative to the cheapest model that can actually lead the
+  // tier, for the same reason the capability floor is measured over
+  // `preferred`: an avoided model setting the bar would move it for models the
+  // user asked to demote, which is not what avoidance means.
+  //
+  // Measured over per-task costs only. `rankOf().price` falls back to a per-1M
+  // rate when AA has not costed a model, and the two are different units by
+  // two orders of magnitude — a ratio that mixes them would read an uncosted
+  // model as ~30x dearer than it is and refuse it on a unit error.
+  const perTask = (k: string) => scoreFor(k, aa, providers)?.costPerTask;
+  const costs = leaders
+    .map(perTask)
+    .filter((c): c is number => c !== undefined && c > 0);
+  const ceiling = costs.length > 0 ? Math.min(...costs) * SIMPLE_COST_CEILING : undefined;
+  // A model AA has not costed per task has no place on that scale, so it keeps
+  // the absolute judgement it had before: the curated table's `cheap`, or the
+  // per-1M bar. That is the pre-existing behaviour for exactly the models this
+  // change has no better information about.
+  const isCheap = (k: string): boolean => {
+    const cost = perTask(k);
+    if (cost === undefined || ceiling === undefined) return lookupModel(k, aa, providers).cheap;
+    return cost <= ceiling;
+  };
   const simple = modelKeys
-    .filter((k) => {
-      const e = lookupModel(k, aa, providers);
-      return e.capable && e.cheap && rankOf(k).index >= best * SIMPLE_CAPABILITY_FLOOR;
-    })
+    .filter((k) => lookupModel(k, aa, providers).capable
+      && isCheap(k)
+      && rankOf(k).index >= best * SIMPLE_CAPABILITY_FLOOR)
     .sort(byValue);
   // A tier must always resolve to something: with no capable model, everything
   // is complex-eligible; with no cheap-capable model, simple mirrors complex.

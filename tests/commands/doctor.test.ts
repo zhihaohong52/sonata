@@ -602,6 +602,50 @@ complex = ["flash"]
     expect(c?.detail).toMatch(/built-in defaults/);
   });
 
+  it('names a tiered model the catalog cannot score, however fresh it is', async () => {
+    // Age is the wrong instrument for this failure: a catalog fetched
+    // yesterday is reported fresh and still knows nothing about a model
+    // released today, which then ranks from the capable-not-cheap default with
+    // no warning anywhere. Coverage asks the question age stood in for.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-cov-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-cov-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash-0731"
+
+[models."brand-new"]
+gateway = "acme"
+id = "gemini-3.9-flash"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["flash", "brand-new"]
+complex = ["brand-new"]
+`);
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    writeCatalog(home, '2026-08-27T00:00:00.000Z');
+    const c = await rankingCheck(cwd, home, new Date('2026-08-28T00:00:00.000Z'));
+    expect(c?.ok).toBe(true);
+    expect(c?.detail).toMatch(/1 of 2 tiered models unscored/);
+    // Reported by the upstream id, which is what the catalog is keyed by —
+    // naming the config key would send the user looking for the wrong string.
+    expect(c?.detail).toContain('gemini-3.9-flash');
+    expect(c?.detail).toMatch(/sonata catalog update/);
+  });
+
+  it('confirms coverage when every tiered model is scored', async () => {
+    // The config key is `flash`; the catalog is keyed by the upstream id. A
+    // check that compared keys would call every hand-named model unscored.
+    const { cwd, home } = tieredSetup();
+    writeCatalog(home, '2026-08-27T00:00:00.000Z');
+    const c = await rankingCheck(cwd, home, new Date('2026-08-28T00:00:00.000Z'));
+    expect(c?.detail).toMatch(/all 1 tiered models scored/);
+    expect(c?.detail).not.toMatch(/unscored/);
+  });
+
   it('does not count a stale routed port as satisfying tier routing', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-tier-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-tier-home-'));

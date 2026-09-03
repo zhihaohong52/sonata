@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import {
   normalizeModelName, lookupModel, proposeTiers, loadAaCatalog, aaCatalogPath,
-  aaCatalogAgeDays,
+  aaCatalogAgeDays, aaLookupNames, catalogCoverage, SIMPLE_COST_CEILING,
   type AaCatalog,
 } from '../src/catalog.js';
 
@@ -331,5 +331,156 @@ describe('proposeTiers — avoided gateways', () => {
     };
     const t = proposeTiers(['avoided-top', 'preferred'], wide, [], new Set(['avoided-top']));
     expect(t.simple[0]).toBe('preferred');
+  });
+});
+
+describe('proposeTiers — the simple tier admits on cost per task', () => {
+  // The bug this replaces: admission tested `blendedPriceUsd` (dollars per 1M
+  // tokens) while ranking *inside* the tier used `costPerTask` (dollars per
+  // unit of work). A model could be cheap to run and dear per token, and the
+  // gate would refuse the very model the ranking would have put first.
+  const aa: AaCatalog = {
+    fetchedAt: '2026-09-01T00:00:00Z',
+    models: {
+      // Cheapest per task — sets the ceiling at 0.05 * SIMPLE_COST_CEILING.
+      'cheapest': { codingIndex: 60, agenticIndex: 60, blendedPriceUsd: 0.2, costPerTask: 0.05 },
+      // Over the old $1.00/1M bar, well inside the per-task ceiling.
+      'dear-per-token': { codingIndex: 58, agenticIndex: 58, blendedPriceUsd: 1.5, costPerTask: 0.4 },
+      // Under the old bar, and far outside the per-task ceiling: verbose enough
+      // that cheap tokens still add up to expensive work.
+      'dear-per-task': { codingIndex: 62, agenticIndex: 62, blendedPriceUsd: 0.9, costPerTask: 5.0 },
+    },
+  };
+
+  it('admits a model the per-1M bar refused', () => {
+    // Pin what the old gate said, so this test fails loudly if the absolute
+    // bar ever comes back.
+    expect(lookupModel('dear-per-token', aa).cheap).toBe(false);
+    expect(0.4).toBeLessThanOrEqual(0.05 * SIMPLE_COST_CEILING);
+    expect(proposeTiers(['cheapest', 'dear-per-token', 'dear-per-task'], aa).simple)
+      .toEqual(['cheapest', 'dear-per-token']);
+  });
+
+  it('refuses a model the per-1M bar admitted', () => {
+    expect(lookupModel('dear-per-task', aa).cheap).toBe(true);
+    expect(proposeTiers(['cheapest', 'dear-per-task'], aa).simple).toEqual(['cheapest']);
+  });
+
+  it('measures the ceiling against the cheapest selected model, not an absolute', () => {
+    // Same three models minus the cheap one: the ceiling moves with the
+    // selection, so 0.4 now sets it and 5.0 is still outside.
+    const t = proposeTiers(['dear-per-token', 'dear-per-task'], aa);
+    expect(t.simple).toEqual(['dear-per-token']);
+  });
+
+  it('keeps the absolute judgement for a model AA has not costed per task', () => {
+    // The change has no better information about an uncosted model, so it must
+    // not move one: `cheap` still comes from the per-1M bar (or the curated
+    // table), exactly as before.
+    const mixed: AaCatalog = {
+      fetchedAt: '2026-09-01T00:00:00Z',
+      models: {
+        'costed': { codingIndex: 60, agenticIndex: 60, blendedPriceUsd: 0.2, costPerTask: 0.05 },
+        'uncosted-cheap': { codingIndex: 58, agenticIndex: 58, blendedPriceUsd: 0.5 },
+        'uncosted-dear': { codingIndex: 59, agenticIndex: 59, blendedPriceUsd: 4.0 },
+      },
+    };
+    const t = proposeTiers(['costed', 'uncosted-cheap', 'uncosted-dear'], mixed);
+    expect(t.simple).toContain('costed');
+    expect(t.simple).toContain('uncosted-cheap');
+    expect(t.simple).not.toContain('uncosted-dear');
+  });
+
+  it('falls back entirely to the absolute bar when nothing is costed per task', () => {
+    // No per-task cost anywhere means no scale to be relative on, so there is
+    // no ceiling at all and behaviour is the pre-change one.
+    const none: AaCatalog = {
+      fetchedAt: '2026-09-01T00:00:00Z',
+      models: {
+        'a': { codingIndex: 60, agenticIndex: 60, blendedPriceUsd: 0.3 },
+        'b': { codingIndex: 58, agenticIndex: 58, blendedPriceUsd: 3.0 },
+      },
+    };
+    expect(proposeTiers(['a', 'b'], none).simple).toEqual(['a']);
+  });
+});
+
+describe('aaLookupNames', () => {
+  it('always tries the full name first', () => {
+    expect(aaLookupNames('z-ai-glm-5.2')[0]).toBe('z-ai-glm-5.2');
+  });
+
+  it('drops up to two leading segments of a flattened vendor namespace', () => {
+    // `z-ai/glm-5.2` flattens to `z-ai-glm-5.2`; AA files it as `glm-5.2`.
+    expect(aaLookupNames('z-ai-glm-5.2')).toEqual(['z-ai-glm-5.2', 'ai-glm-5.2', 'glm-5.2']);
+  });
+
+  it('offers nothing beyond the full name when there is nothing to drop', () => {
+    expect(aaLookupNames('kimi')).toEqual(['kimi']);
+    // A single remaining segment is a fragment, not a model name.
+    expect(aaLookupNames('glm-5.2')).toEqual(['glm-5.2']);
+  });
+
+  it('refuses a candidate carrying no version digit', () => {
+    // `flash-lite` is a family another vendor might also publish under; a bare
+    // model name keeps its version, so requiring a digit is what separates them.
+    expect(aaLookupNames('gemini-2.5-flash-lite')).not.toContain('flash-lite');
+  });
+});
+
+describe('lookupModel — namespaced OpenRouter refs', () => {
+  it('matches a shortened name when the full one is absent', () => {
+    const aa: AaCatalog = {
+      fetchedAt: '2026-09-01T00:00:00Z',
+      models: { 'glm-5-2': { codingIndex: 55, blendedPriceUsd: 0.4 } },
+    };
+    expect(lookupModel('openrouter-z-ai-glm-5.2', aa).source).toBe('aa');
+  });
+
+  it('prefers the full name over any shortened one', () => {
+    // The full name winning is what makes the guess safe: it can never move a
+    // model that already matches.
+    const aa: AaCatalog = {
+      fetchedAt: '2026-09-01T00:00:00Z',
+      models: {
+        'z-ai-glm-5-2': { codingIndex: 55, blendedPriceUsd: 9.0 },
+        'glm-5-2': { codingIndex: 55, blendedPriceUsd: 0.1 },
+      },
+    };
+    expect(lookupModel('openrouter-z-ai-glm-5.2', aa).cheap).toBe(false);
+  });
+
+  it('strips an OpenRouter serving variant', () => {
+    // `:free`/`:nitro` picks a serving route for the same weights, so it must
+    // not change the name a score is looked up under.
+    expect(normalizeModelName('openrouter-nvidia-nemotron-3-super-120b-a12b:free'))
+      .toBe('nvidia-nemotron-3-super-120b-a12b');
+    expect(normalizeModelName('z-ai/glm-5.2:nitro')).toBe('glm-5.2');
+    // The date-suffix strip still runs after it.
+    expect(normalizeModelName('openrouter-deepseek-v4-flash-0731:free')).toBe('deepseek-v4-flash');
+  });
+});
+
+describe('catalogCoverage', () => {
+  const aa: AaCatalog = {
+    fetchedAt: '2026-09-01T00:00:00Z',
+    models: { 'deepseek-v4-flash': { codingIndex: 45, blendedPriceUsd: 0.3 } },
+  };
+
+  it('splits scored from unscored', () => {
+    expect(catalogCoverage(['deepseek-v4-flash', 'brand-new-3.9'], aa))
+      .toEqual({ scored: ['deepseek-v4-flash'], unscored: ['brand-new-3.9'] });
+  });
+
+  it('resolves a key through its configured gateway prefix', () => {
+    // Coverage must agree with ranking about what is scored, so it normalizes
+    // the same way — including the caller's own gateway names.
+    expect(catalogCoverage(['acme-deepseek-v4-flash-0731'], aa, ['acme']).unscored).toEqual([]);
+  });
+
+  it('reports everything unscored with no catalog at all', () => {
+    // The case age cannot describe: no catalog is not "0 days old".
+    expect(catalogCoverage(['deepseek-v4-flash'], undefined).unscored)
+      .toEqual(['deepseek-v4-flash']);
   });
 });
