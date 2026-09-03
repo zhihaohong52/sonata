@@ -28,6 +28,18 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   than asserted about an empty one.
 
 ### Fixed
+- **Parallel daemons no longer corrupt each other's pid record.** Serve state
+  moved from one global `serve-state.json` to `serve-state-<router port>.json`.
+  A project with its own `sonata.toml` needs its own ports and therefore its
+  own daemon — the router resolves tiers against the daemon's *own* cwd — and
+  with one shared file those daemons overwrote each other field by field.
+  Measured live with two routers up (:4100 and :4110): the single record ended
+  up naming the second router's pid beside the *first* router's litellm child,
+  so `sonata restart` in either project would have killed one daemon's router
+  and the other's litellm — surfacing as the untouched project suddenly 502ing
+  on every native request. The legacy unkeyed path is still read (never
+  written), so a daemon started before this change stays stoppable across the
+  upgrade.
 - **`startServeDaemon`'s tests no longer read the developer's own config.**
   They passed a temp `home` but inherited the real `process.cwd()`, so a
   sonata checkout containing its own `sonata.toml` (any contributor who has

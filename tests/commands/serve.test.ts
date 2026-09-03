@@ -321,7 +321,7 @@ litellm = 4000
     });
     handles.push(handle);
 
-    const state = JSON.parse(readFileSync(serveStatePath(home), 'utf8'));
+    const state = JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8'));
     expect(state.routerPid).toBe(process.pid);
     expect(state.litellmPid).toBe(4242);
   });
@@ -378,7 +378,7 @@ describe('cmdServe — litellm respawn', () => {
     await new Promise((r) => setTimeout(r, 10));
 
     expect(spawnCount).toBe(2);
-    const state = JSON.parse(readFileSync(serveStatePath(home), 'utf8'));
+    const state = JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8'));
     expect(state.litellmPid).toBe(2);
   });
 
@@ -1513,8 +1513,8 @@ litellm = 4000
   });
 
   it('kills the recorded router and litellm pids and clears the state file', async () => {
-    mkdirSync(dirname(serveStatePath(home)), { recursive: true });
-    writeFileSync(serveStatePath(home), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
     const killed: number[] = [];
 
     const result = await stopServe({
@@ -1524,12 +1524,12 @@ litellm = 4000
 
     expect(result.killed).toBe(true);
     expect(killed.sort()).toEqual([111, 222]);
-    expect(existsSync(serveStatePath(home))).toBe(false);
+    expect(existsSync(serveStatePath(home, 4100))).toBe(false);
   });
 
   it('refuses to kill when only litellm has a recorded pid', async () => {
-    mkdirSync(dirname(serveStatePath(home)), { recursive: true });
-    writeFileSync(serveStatePath(home), JSON.stringify({ litellmPid: 222 }));
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), JSON.stringify({ litellmPid: 222 }));
 
     const result = await stopServe({
       cwd, home, probeHealth: sonataHealth, findPortPid: () => '48213',
@@ -1537,7 +1537,7 @@ litellm = 4000
 
     expect((result as Error).message).toMatch(/no recorded pid/);
     expect((result as Error).message).toMatch(/kill 48213/);
-    expect(existsSync(serveStatePath(home))).toBe(true);
+    expect(existsSync(serveStatePath(home, 4100))).toBe(true);
   });
 
   it('refuses to kill when the port answers sonata but no pid was ever recorded', async () => {
@@ -1567,8 +1567,8 @@ litellm = 4000
   });
 
   it('throws if the killed pid is still alive, rather than reporting success', async () => {
-    mkdirSync(dirname(serveStatePath(home)), { recursive: true });
-    writeFileSync(serveStatePath(home), JSON.stringify({ routerPid: 111 }));
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111 }));
     const result = await stopServe({
       cwd, home, probeHealth: sonataHealth, kill: () => {}, sleep: async () => {},
       now: (() => { let t = 0; return () => (t += 1000); })(), timeoutMs: 2000,
@@ -1582,8 +1582,8 @@ litellm = 4000
     // port again within ~1s of it freeing — a brand-new, legitimate router.
     // The port never goes quiet, but the pids we killed are genuinely gone,
     // so this must report success rather than timing out.
-    mkdirSync(dirname(serveStatePath(home)), { recursive: true });
-    writeFileSync(serveStatePath(home), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
 
     const result = await stopServe({
       cwd, home, probeHealth: sonataHealth, kill: () => {}, sleep: async () => {},
@@ -1591,6 +1591,46 @@ litellm = 4000
     });
 
     expect(result.killed).toBe(true);
+  });
+
+  it('ignores another port\'s record rather than killing that daemon', async () => {
+    // The reason state is keyed by port at all. One global file meant the
+    // second project's daemon overwrote the first's pids, and a restart in
+    // either project then killed whichever process was recorded last — or
+    // refused, having lost the record it needed.
+    mkdirSync(dirname(serveStatePath(home, 4110)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4110), JSON.stringify({ routerPid: 999, litellmPid: 998 }));
+
+    const killed: number[] = [];
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, kill: (pid) => killed.push(pid),
+      findPortPid: () => undefined,
+    }).catch((e) => e as Error);
+
+    // cwd's config is on 4100, so 4110's record is not its own to act on.
+    expect((result as Error).message).toMatch(/no recorded pid/);
+    expect(killed).toEqual([]);
+    expect(existsSync(serveStatePath(home, 4110))).toBe(true);
+  });
+
+  it('still stops a daemon recorded by a version that predates per-port state', async () => {
+    // Upgrading sonata must not strand the daemon already running: it wrote
+    // the legacy path, and refusing to read it would hand the user the
+    // "no recorded pid" dead end this file exists to prevent.
+    const legacy = join(home, '.config', 'sonata', 'serve-state.json');
+    mkdirSync(dirname(legacy), { recursive: true });
+    writeFileSync(legacy, JSON.stringify({ routerPid: 111, litellmPid: 222 }));
+
+    const killed: number[] = [];
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, kill: (pid) => killed.push(pid),
+      sleep: async () => {}, isAlive: () => false,
+    });
+
+    expect(result.killed).toBe(true);
+    expect(killed).toEqual([111, 222]);
+    // Cleared the file it actually read, not the port-keyed one it never wrote.
+    expect(existsSync(legacy)).toBe(false);
   });
 });
 
