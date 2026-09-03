@@ -1826,6 +1826,32 @@ context_window = 128000
     expect(result.pid).toBe(999);
   });
 
+  it('forwards its liveness seam to stopServe', async () => {
+    // `cmdRestart` used to enumerate the deps it passed on, so `isAlive` —
+    // added to `StopDeps` later — was silently dropped and every caller fell
+    // back to probing the real OS. The test above could not catch that: a fake
+    // pid reads as dead on a developer machine either way, so it passed
+    // locally and timed out for 10s on a CI runner where pid 111 is a live
+    // process. Asserting the seam is *used* fails everywhere instead.
+    writeFileSync(join(home, '.config', 'sonata', 'serve-state.json'), JSON.stringify({ routerPid: 111 }));
+    const probed: number[] = [];
+    let healthCalls = 0;
+    await cmdRestart(home, ['node', 'cli.js', 'serve'], {
+      cwd: home,
+      probeHealth: (async () => {
+        healthCalls += 1;
+        return healthCalls === 1 ? new Response(JSON.stringify({ sonata: true })) : new Response('', { status: 500 });
+      }) as unknown as typeof fetch,
+      kill: () => {}, sleep: async () => {},
+      spawn: (() => ({ pid: 999, unref: () => {} })) as unknown as typeof spawnType,
+      probe: async () => true,
+      isAlive: (pid) => { probed.push(pid); return false; },
+      findPortPid: () => '111',
+    });
+
+    expect(probed).toContain(111);
+  });
+
   it('forwards findPortPid when the router pid is unrecorded', async () => {
     writeFileSync(join(home, '.config', 'sonata', 'serve-state.json'), JSON.stringify({ litellmPid: 222 }));
     const result = await cmdRestart(home, ['node', 'cli.js', 'serve'], {
