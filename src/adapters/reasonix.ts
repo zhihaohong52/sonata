@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput } from './types.js';
+import { reportPathFor } from '../report-contract.js';
 import type { ModelRef } from '../types.js';
 import { isReadOnlyRole } from '../config.js';
 
@@ -164,7 +165,7 @@ function interactiveScript(input: PlanInput): string {
   // Single line: send-keys types this literally, so an embedded newline would
   // submit the message halfway through.
   const prompt = `Follow the instructions in the attached file: ${input.instructionsPath}`;
-  const reportPath = `${input.runDir}/report.md`;
+  const reportPath = reportPathFor(input.runDir);
   const exitPath = `${input.runDir}/exit`;
 
   const flags = [

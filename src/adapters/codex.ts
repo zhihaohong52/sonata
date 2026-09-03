@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { connect } from 'node:net';
+import { reportPathFor } from '../report-contract.js';
 import { spawn } from 'node:child_process';
 import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput } from './types.js';
 import type { ModelRef } from '../types.js';
@@ -226,7 +227,7 @@ function buildScript(input: PlanInput): LaunchPlan {
 
 /** `default` mode needs Codex's interactive TUI to surface approvals. */
 function interactiveScript(input: PlanInput, invocation: string): string {
-  const reportPath = `${input.runDir}/report.md`;
+  const reportPath = reportPathFor(input.runDir);
   const exitPath = `${input.runDir}/exit`;
 
   return [
