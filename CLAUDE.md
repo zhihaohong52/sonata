@@ -412,9 +412,26 @@ listener", sending the user to hunt a foreign program that did not exist.
 `occupiedPortMessage` asks the health endpoint first, which costs one request
 and makes the message true.
 
+**Serve state is keyed by router port, because daemons run in parallel.**
+`serve-state-<port>.json` — one record per router, not one per machine. A
+project with its own `sonata.toml` gets its own ports and therefore its own
+daemon (the router resolves tiers with `loadConfig(<daemon cwd>, home)`, so a
+shared daemon would serve every project the config of whichever directory
+started it). With a single global `serve-state.json` those daemons overwrote
+each other field by field: measured live on 2026-09-03 with two routers up
+(:4100 pid 53992 and :4110 pid 72171, litellm children 73032 and 72298
+respectively, confirmed by ppid), the one record read
+`{routerPid: 72171, litellmPid: 73032}` — the *second* router paired with the
+*first* router's child. `sonata restart` in either project would have killed
+one daemon's router and the other's litellm, which reads as the surviving
+project suddenly 502ing on every native request. `readServeStateFrom` still
+falls back to the legacy unkeyed path, read-only, so a daemon started before
+this change stays stoppable across the upgrade, and clears whichever file it
+actually read rather than both.
+
 **`sonata restart` clears that occupant instead of just naming it.** `cmdServe`
-records `process.pid` as `routerPid` in `serve-state.json` once the router
-successfully binds. `stopServe` reads that file, kills only the pids sonata
+records `process.pid` as `routerPid` in `serve-state-<port>.json` once the
+router successfully binds. `stopServe` reads that file, kills only the pids sonata
 itself recorded (never a pid found by scanning the OS — the same discipline as
 the pre-existing litellm-orphan kill), and polls the health endpoint until the
 port actually frees before returning. `cmdRestart` runs that then
