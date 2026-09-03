@@ -26,7 +26,7 @@ import { findLitellm } from '../native/litellm.js';
 import { litellmRequired } from '../native/providers.js';
 import { litellmStatus, type InstallerDeps } from '../native/litellm-venv.js';
 import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm.js';
-import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, loadAaCatalog } from '../catalog.js';
+import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, loadAaCatalog } from '../catalog.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { keyReport, resolveKeyFromSource } from '../native/credentials.js';
 import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
@@ -234,7 +234,41 @@ export async function cmdDoctor(
     } else {
       const age = aaCatalogAgeDays(catalog.fetchedAt, now());
       const count = Object.keys(catalog.models).length;
-      checks.push(age !== undefined && age > AA_CATALOG_MAX_AGE_DAYS
+      // Coverage is checked before age because it is the direct measure of the
+      // thing age approximates. A catalog well inside the age limit still
+      // misses a model released since it was fetched, and that model then
+      // ranks from the capable-not-cheap default — a silently wrong ordering,
+      // which is the failure this check exists to name. Reporting "312 models
+      // · fetched <recent date>" beside a tier ranked on a guess is the
+      // reassuring half of the truth.
+      const tiered = [...new Set(Object.values(config.tiers)
+        .flatMap((byTier) => [...byTier.simple, ...byTier.complex]))];
+      // Score the *upstream* id, not the config key. A `[models]` key is
+      // whatever the user named it — `flash` is a perfectly ordinary key for
+      // `deepseek-v4-flash-0731` — and AA files scores under the model's own
+      // name, so looking up the key would report every hand-named model as
+      // unscored while ranking it perfectly well. `proposeTiers` never hits
+      // this because it runs over init's candidate keys, which embed the id.
+      // Both maps, because a unified `[models]` entry is projected into
+      // `native.models` when it carries a gateway and into `models` when it
+      // carries a harness — and a key routed only one of those ways is absent
+      // from the other map entirely.
+      const upstream = (key: string): string =>
+        config.native?.models?.[key]?.id ?? config.models?.[key]?.id ?? key;
+      // Gateway names are what `normalizeModelName` strips to recover the
+      // upstream id, so passing them is what makes a key like
+      // `<gateway>-<model>` resolvable at all.
+      const gateways = Object.keys(config.native?.gateways ?? {});
+      const { unscored } = catalogCoverage(tiered.map(upstream), catalog, gateways);
+      checks.push(unscored.length > 0
+        ? {
+            name: 'model rankings',
+            ok: true,
+            detail: `${unscored.length} of ${tiered.length} tiered models unscored `
+              + `(${unscored.slice(0, 3).join(', ')}${unscored.length > 3 ? ', …' : ''}) — `
+              + 'ranked from built-in defaults; run `sonata catalog update`',
+          }
+        : age !== undefined && age > AA_CATALOG_MAX_AGE_DAYS
         ? {
             name: 'model rankings',
             ok: true,
@@ -243,7 +277,7 @@ export async function cmdDoctor(
         : {
             name: 'model rankings',
             ok: true,
-            detail: `${count} models · fetched ${catalog.fetchedAt}`,
+            detail: `${count} models · all ${tiered.length} tiered models scored · fetched ${catalog.fetchedAt}`,
           });
     }
 
