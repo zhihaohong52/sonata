@@ -1,5 +1,7 @@
 import { join } from 'node:path';
 
+import { WORKTREE_HEAD_FILE, WORKTREE_STATUS_FILE } from './worktree.js';
+
 export interface WatchdogInput {
   harnessScriptPath: string;
   runDir: string;
@@ -9,6 +11,16 @@ export interface WatchdogInput {
    *  redirection (measured: `claude -p` with redirected stdout hangs under
    *  `fg` in a tmux pane but completes fine under `wait`). */
   interactive?: boolean;
+  /**
+   * Working directory to fingerprint as the harness exits, or `undefined` to
+   * capture nothing (a read-only role, which is not expected to leave a mark).
+   *
+   * The capture has to happen here rather than in `sonata tail` because the
+   * exit sentinel this wrapper writes is what makes the run readable as
+   * finished, and tail may not look for hours. Between those two moments the
+   * tree belongs to whoever is using the repository.
+   */
+  worktreeCwd?: string;
 }
 
 /**
@@ -20,6 +32,8 @@ export function wrapWithTimeout(input: WatchdogInput): string {
   const harnessLog = join(input.runDir, 'harness.log');
   const timeoutMark = join(input.runDir, 'timeout');
   const exitPath = join(input.runDir, 'exit');
+  const headPath = join(input.runDir, WORKTREE_HEAD_FILE);
+  const statusPath = join(input.runDir, WORKTREE_STATUS_FILE);
 
   return [
     '#!/bin/bash',
@@ -88,6 +102,27 @@ export function wrapWithTimeout(input: WatchdogInput): string {
     'pkill -P $WATCHDOG_PID 2>/dev/null',
     'wait $WATCHDOG_PID 2>/dev/null',
     '',
+    // Fingerprint the tree BEFORE the exit sentinel, because the sentinel is
+    // what makes the run readable as finished. `sonata tail` compares against
+    // this to say whether the run left a mark; sampling the tree when tail
+    // happens to look measures whatever the repository holds by then, which
+    // after a `sonata run` the user walked away from is their own subsequent
+    // editing. Raw git output is written here and hashed in Node
+    // (`worktreeFingerprintAtExit`) so the fingerprint formula is never
+    // reimplemented in bash. Nothing here touches $STATUS.
+    ...(input.worktreeCwd === undefined
+      ? []
+      : [
+        `if ( cd '${input.worktreeCwd}' && git status --porcelain ) > '${statusPath}' 2>/dev/null; then`,
+        `  ( cd '${input.worktreeCwd}' && git rev-parse HEAD ) > '${headPath}' 2>/dev/null || : > '${headPath}'`,
+        'else',
+        '  # Not a usable repository. Remove both files rather than leaving the',
+        '  # empty one the redirection just created: an empty status reads as a',
+        '  # clean tree, and "unknown" must never be reported as "unchanged".',
+        `  rm -f '${statusPath}' '${headPath}'`,
+        'fi',
+        '',
+      ]),
     `if [ ! -f '${exitPath}' ]; then`,
     `  echo $STATUS > '${exitPath}'`,
     'fi',

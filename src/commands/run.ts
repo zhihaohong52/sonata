@@ -228,6 +228,9 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     runDir: dir,
     timeoutSeconds: config.run.runTimeoutSeconds,
     interactive: plan.interactive,
+    // Same condition as `worktreeAtLaunch` below: a role with no launch sample
+    // has nothing to compare a closing one against.
+    worktreeCwd: isReadOnlyRole(opts.role) ? undefined : opts.cwd,
   }), { mode: 0o755 });
 
   writeMeta(opts.cwd, {
