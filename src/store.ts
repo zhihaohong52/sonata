@@ -4,6 +4,7 @@ import {
   appendFileSync, readdirSync, unlinkSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { reportPathFor } from './report-contract.js';
 import type { RunMeta } from './types.js';
 
 export function sonataDir(cwd: string): string {
@@ -48,7 +49,7 @@ export function readExit(cwd: string, id: string): number | null {
 }
 
 export function readReport(cwd: string, id: string): string | null {
-  return readIfExists(join(runDir(cwd, id), 'report.md'));
+  return readIfExists(reportPathFor(runDir(cwd, id)));
 }
 
 export function readAnsweredPrompt(cwd: string, id: string): string | null {
