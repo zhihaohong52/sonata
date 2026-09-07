@@ -118,6 +118,72 @@ describe('fetchModels', () => {
   });
 });
 
+describe('fetchModels (Google Generative Language)', () => {
+  const GOOGLE_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+
+  it('sends the key as x-goog-api-key, not a bearer', async () => {
+    let seenAuth: string | null | undefined;
+    let seenGoogKey: string | null | undefined;
+    const spy = (async (_url: string, init: RequestInit) => {
+      const headers = new Headers(init.headers);
+      seenAuth = headers.get('authorization');
+      seenGoogKey = headers.get('x-goog-api-key');
+      return new Response(JSON.stringify({ models: [] }));
+    }) as unknown as typeof fetch;
+
+    await fetchModels(GOOGLE_BASE, 'AIza-test', { fetch: spy });
+    expect(seenAuth).toBeNull();
+    expect(seenGoogKey).toBe('AIza-test');
+  });
+
+  it('parses the native { models: [{ name }] } shape, stripping the models/ prefix', async () => {
+    const result = await fetchModels(GOOGLE_BASE, 'AIza-test', {
+      fetch: json({ models: [{ name: 'models/gemini-2.5-flash', displayName: 'Gemini 2.5 Flash' }] }),
+    });
+    expect(result).toEqual({ outcome: 'ok', models: [{ id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' }] });
+  });
+
+  it('drops entries whose supportedGenerationMethods excludes generateContent', async () => {
+    const result = await fetchModels(GOOGLE_BASE, 'AIza-test', {
+      fetch: json({
+        models: [
+          { name: 'models/gemini-2.5-flash', supportedGenerationMethods: ['generateContent'] },
+          { name: 'models/text-embedding-004', supportedGenerationMethods: ['embedContent'] },
+        ],
+      }),
+    });
+    expect(result).toEqual({ outcome: 'ok', models: [{ id: 'gemini-2.5-flash' }] });
+  });
+
+  it('does not filter on a missing supportedGenerationMethods field', async () => {
+    const result = await fetchModels(GOOGLE_BASE, 'AIza-test', {
+      fetch: json({ models: [{ name: 'models/gemini-2.5-flash' }] }),
+    });
+    expect(result).toEqual({ outcome: 'ok', models: [{ id: 'gemini-2.5-flash' }] });
+  });
+
+  it('reports a flat 401 (Bearer-shaped rejection) as unauthorized', async () => {
+    const result = await fetchModels(GOOGLE_BASE, 'AIza-test', {
+      fetch: json({ error: { message: 'invalid authentication credentials' } }, 401),
+    });
+    expect(result).toEqual({ outcome: 'unauthorized', status: 401 });
+  });
+
+  it('reports a 400 INVALID_ARGUMENT/API key not valid as unauthorized', async () => {
+    const result = await fetchModels(GOOGLE_BASE, 'bad-key', {
+      fetch: json({ error: { status: 'INVALID_ARGUMENT', message: 'API key not valid. Please pass a valid API key.' } }, 400),
+    });
+    expect(result).toEqual({ outcome: 'unauthorized', status: 400 });
+  });
+
+  it('leaves an unrelated 400 as unreadable', async () => {
+    const result = await fetchModels(GOOGLE_BASE, 'AIza-test', {
+      fetch: json({ error: { status: 'INVALID_ARGUMENT', message: 'pageSize must be positive' } }, 400),
+    });
+    expect(result).toEqual({ outcome: 'unreadable' });
+  });
+});
+
 describe('wellKnownProviders', () => {
   const providers = wellKnownProviders();
 
