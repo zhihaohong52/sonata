@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-07
+
 ### Fixed
 - **A valid Google API key was rejected outright during `sonata init`'s BYOK
   flow, with `google rejected that key (HTTP 401)`.** `fetchModels` sends every
