@@ -8,6 +8,36 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+- **A valid Google API key was rejected outright during `sonata init`'s BYOK
+  flow, with `google rejected that key (HTTP 401)`.** `fetchModels` sends every
+  provider `Authorization: Bearer <key>` against `GET <base>/models`, the
+  OpenAI-compatible convention `WELL_KNOWN_PROVIDER_URLS` otherwise follows —
+  but Google's entry points at the *native* Generative Language API (needed so
+  LiteLLM's `gemini/` provider can reach it for real inference), not its
+  separate `v1beta/openai` compatibility shim. That endpoint authenticates with
+  `x-goog-api-key`, not Bearer — an API key is not an OAuth token, so Google
+  answers Bearer auth with a flat 401 regardless of whether the key is valid —
+  and lists models as `{ models: [{ name: "models/<id>", ... }] }`, not
+  OpenAI's `{ data: [{ id }] }`. `fetchModels` now detects the Google host and
+  switches both the auth header and the response parsing; a genuinely bad key
+  (Google's 400 `INVALID_ARGUMENT`/"API key not valid") is still reported as
+  `unauthorized` rather than falling through to "type ids by hand".
+- **`sonata init` could stall for however long `opencode models` felt like
+  taking, with no bound and no feedback.** `detectHarnesses` runs all four
+  harness checks in parallel, so the whole startup checklist waits on
+  whichever is slowest — and `detectOpenCode`'s `opencode models` call used
+  the unbounded `tryRun`, unlike `pi`'s equivalent (`tryRunLimited`, already
+  guarded with the comment "a hung provider must not stall init"). Measured
+  live: `opencode models` took 35 real seconds on a cold local catalogue cache
+  and 2 seconds once warm — a real, if intermittent, cost with no way for
+  `init` to bound or explain it. Both `opencode --version` and `opencode
+  models` are now bounded (10s and 45s) with `tryRunLimited`; a timeout reports
+  as its own warning ("opencode models timed out — its catalogue may be slow
+  or stalled on this machine") rather than the misleading "opencode reported
+  no models → opencode auth login", which was never the right fix for a
+  timeout.
+
 ## [0.6.0] - 2026-09-03
 
 ### Added

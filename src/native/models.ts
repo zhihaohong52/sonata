@@ -5,7 +5,16 @@
  * (`opencode models`, `pi --list-models`, `reasonix doctor --json`). A provider
  * the user names directly has no such catalogue, so the only place to ask is the
  * provider itself: `GET <base>/models`, the OpenAI-compatible convention that
- * every gateway in `WELL_KNOWN_PROVIDER_URLS` follows.
+ * every gateway in `WELL_KNOWN_PROVIDER_URLS` follows — except Google, whose
+ * entry points at the *native* Generative Language API (needed so LiteLLM's
+ * `gemini/` provider can reach it for real inference — see
+ * `PROVIDER_FOR_GATEWAY` in `native/providers.ts`), not its separate
+ * `v1beta/openai` compatibility shim. That endpoint takes a key via
+ * `x-goog-api-key`, not `Authorization: Bearer` — an API key is not an OAuth
+ * token, so Google answers Bearer auth with a flat 401 regardless of whether
+ * the key is valid — and lists models as `{ models: [{ name: "models/<id>",
+ * ... }] }`, not `{ data: [{ id }] }`. `isGoogleGenerativeLanguage` detects the
+ * host and switches both the header and the parse.
  *
  * It is a convention, not a guarantee. A provider may not implement it, may
  * shape the payload differently, or may simply be unreachable — so `fetchModels`
@@ -45,6 +54,70 @@ function modelsUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, '')}/models`;
 }
 
+/** Google's Generative Language API needs `x-goog-api-key` and a different list shape — see the module docstring. */
+function isGoogleGenerativeLanguage(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname === 'generativelanguage.googleapis.com';
+  } catch {
+    return false;
+  }
+}
+
+/** The OpenAI convention: `{ data: [{ id, name? }] }`. */
+function parseOpenAiModels(payload: unknown): FetchedModel[] | undefined {
+  const data = (payload as { data?: unknown })?.data;
+  if (!Array.isArray(data)) return undefined;
+
+  const seen = new Set<string>();
+  const models: FetchedModel[] = [];
+  for (const entry of data) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const { id, name } = entry as { id?: unknown; name?: unknown };
+    if (typeof id !== 'string' || id.trim() === '' || seen.has(id)) continue;
+    seen.add(id);
+    models.push(typeof name === 'string' && name.trim() !== '' ? { id, name } : { id });
+  }
+  return models;
+}
+
+/**
+ * Google's native shape: `{ models: [{ name: "models/<id>", displayName?,
+ * supportedGenerationMethods? }] }`. `supportedGenerationMethods` filters out
+ * embedding/AQA-only entries when the field is present, but never excludes on
+ * its absence — an unfamiliar response shape should fall through unfiltered
+ * rather than be read as "supports nothing".
+ */
+function parseGoogleModels(payload: unknown): FetchedModel[] | undefined {
+  const data = (payload as { models?: unknown })?.models;
+  if (!Array.isArray(data)) return undefined;
+
+  const seen = new Set<string>();
+  const models: FetchedModel[] = [];
+  for (const entry of data) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const { name, displayName, supportedGenerationMethods } =
+      entry as { name?: unknown; displayName?: unknown; supportedGenerationMethods?: unknown };
+    if (typeof name !== 'string') continue;
+    if (Array.isArray(supportedGenerationMethods) && !supportedGenerationMethods.includes('generateContent')) continue;
+    const id = name.replace(/^models\//, '');
+    if (id === '' || seen.has(id)) continue;
+    seen.add(id);
+    models.push(typeof displayName === 'string' && displayName.trim() !== '' ? { id, name: displayName } : { id });
+  }
+  return models;
+}
+
+/** Google answers a bad key with 400 INVALID_ARGUMENT, not 401/403 — named explicitly rather than folded into "unreadable". */
+async function isGoogleKeyRejection(response: Response): Promise<boolean> {
+  try {
+    const body = await response.json() as { error?: { message?: unknown; status?: unknown } };
+    const message = typeof body?.error?.message === 'string' ? body.error.message : '';
+    return body?.error?.status === 'INVALID_ARGUMENT' && /api key not valid/i.test(message);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The models a provider reports, or why it would not say.
  *
@@ -57,29 +130,25 @@ export async function fetchModels(
   opts: { fetch?: typeof fetch; timeoutMs?: number } = {},
 ): Promise<FetchModelsResult> {
   const doFetch = opts.fetch ?? fetch;
+  const google = isGoogleGenerativeLanguage(baseUrl);
   try {
     const response = await doFetch(modelsUrl(baseUrl), {
-      headers: { Authorization: `Bearer ${apiKey}` },
+      headers: google ? { 'x-goog-api-key': apiKey } : { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
     });
     if (response.status === 401 || response.status === 403) {
       return { outcome: 'unauthorized', status: response.status };
     }
-    if (!response.ok) return { outcome: 'unreadable' };
+    if (!response.ok) {
+      if (google && response.status === 400 && await isGoogleKeyRejection(response)) {
+        return { outcome: 'unauthorized', status: response.status };
+      }
+      return { outcome: 'unreadable' };
+    }
 
     const payload = await response.json() as unknown;
-    const data = (payload as { data?: unknown })?.data;
-    if (!Array.isArray(data)) return { outcome: 'unreadable' };
-
-    const seen = new Set<string>();
-    const models: FetchedModel[] = [];
-    for (const entry of data) {
-      if (entry === null || typeof entry !== 'object') continue;
-      const { id, name } = entry as { id?: unknown; name?: unknown };
-      if (typeof id !== 'string' || id.trim() === '' || seen.has(id)) continue;
-      seen.add(id);
-      models.push(typeof name === 'string' && name.trim() !== '' ? { id, name } : { id });
-    }
+    const models = google ? parseGoogleModels(payload) : parseOpenAiModels(payload);
+    if (models === undefined) return { outcome: 'unreadable' };
     return { outcome: 'ok', models };
   } catch {
     // Refused, timed out, DNS failure, or a body that would not parse.

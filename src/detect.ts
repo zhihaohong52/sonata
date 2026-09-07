@@ -310,7 +310,7 @@ export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
   const localBin = join(env.home, '.opencode', 'bin', 'opencode');
 
   const path = `${join(env.home, '.opencode', 'bin')}:${process.env.PATH ?? ''}`;
-  const version = await tryRun('opencode', ['--version'], { ...process.env, PATH: path });
+  const version = await tryRunLimited('opencode', ['--version'], { ...process.env, PATH: path }, 10_000);
 
   if (version === null) {
     return {
@@ -336,7 +336,13 @@ export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
     });
   }
 
-  const listing = await tryRun('opencode', ['models'], { ...process.env, PATH: path });
+  // `opencode models` can take tens of seconds on a real install (measured 35s
+  // live) — much slower than pi's equivalent, which is why it needs a longer
+  // bound than pi's 5s rather than pi's exact number. Unbounded, like every
+  // other `tryRun` call in this function, it silently turned into the one
+  // thing a hung provider must not do to `init`: block the whole wizard with
+  // no feedback, indistinguishable from a hang.
+  const listing = await tryRunLimited('opencode', ['models'], { ...process.env, PATH: path }, 45_000);
   const refs = listing === null ? [] : parseOpenCodeRefs(listing);
 
   // The CLI emits no display names; the config has them for custom providers.
@@ -354,11 +360,17 @@ export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
     : [];
 
   if (refs.length === 0) {
-    problems.push({
-      severity: 'error',
-      message: 'opencode reported no models',
-      fix: 'opencode auth login',
-    });
+    problems.push(listing === null
+      ? {
+        severity: 'warn',
+        message: 'opencode models timed out — its catalogue may be slow or stalled on this machine',
+        fix: 're-run `sonata doctor`, or `opencode models` directly, to see if it recovers',
+      }
+      : {
+        severity: 'error',
+        message: 'opencode reported no models',
+        fix: 'opencode auth login',
+      });
   }
 
   return {
