@@ -347,6 +347,17 @@ export async function cmdDoctor(
     });
   }
 
+  // One router per machine, on the machine config's ports. A project
+  // [native.ports] parses (an existing file keeps loading) but does nothing,
+  // and a table that does nothing while looking load-bearing is worth a line.
+  if (resolved !== null && resolved !== join(home, GLOBAL_CONFIG_RELATIVE) && /^\[native\.ports\]/m.test(readFileSync(resolved, 'utf8'))) {
+    checks.push({
+      name: 'project ports',
+      ok: true,
+      detail: `${resolved} sets [native.ports], which is ignored — one router serves every project on the machine ports; delete the table`,
+    });
+  }
+
   const agentsDir = join(opts.cwd, '.claude', 'agents');
   // Shared with `sync`, which writes these files. Computing the set separately
   // made sync write a native model's wrapper that doctor then called stale.
@@ -392,38 +403,14 @@ export async function cmdDoctor(
       } catch {
         body = undefined;
       }
-      const healthy = response.status === 200
-        && body !== null
-        && typeof body === 'object'
-        && (body as Record<string, unknown>).sonata === true;
-      // A router answering is not the same as *this project's* router
-      // answering. Daemons are per config, and two projects each holding their
-      // own sonata.toml on the default port collide: whichever started first
-      // owns the port, and the other's `route session-start` refuses to route
-      // through it — through a hook, so the refusal used to be invisible and
-      // the first sign was a native dispatch dying with `model_not_found`.
-      // Same two verdicts as that refusal: a different config, or none named.
-      const reported = healthy ? (body as { configPath?: unknown }).configPath : undefined;
+      const healthy = response.status === 200 && body !== null && typeof body === 'object' && (body as Record<string, unknown>).sonata === true;
       if (!healthy) {
         checks.push({ name: 'serve health', ok: true, detail: 'not running — start with `sonata serve`' });
-      } else if (typeof reported !== 'string') {
-        checks.push({
-          name: 'serve health',
-          ok: false,
-          detail: 'up, but does not report which sonata configuration it runs (too old, or its own ' +
-            'config resolution failed) — sessions here will refuse to route through it; `sonata restart` ' +
-            'once confirmed to be this project\'s own router',
-        });
-      } else if (resolved !== null && reported !== resolved) {
-        checks.push({
-          name: 'serve health',
-          ok: false,
-          detail: `up, but serving ${reported} rather than this project's ${resolved} — sessions here ` +
-            'will refuse to route through it. Two projects cannot share one router port: set a different ' +
-            '[native.ports].router in one of the two configs, then `sonata serve --daemon` here',
-        });
+      } else if ((body as { multiTenant?: unknown }).multiTenant !== true) {
+        checks.push({ name: 'serve health', ok: false, detail: `up, but predates multi-tenant routing — sessions here will refuse it; run \`sonata restart\`` });
       } else {
-        checks.push({ name: 'serve health', ok: true, detail: 'up' });
+        const tenants = ((body as { tenants?: { configPath: string | null }[] }).tenants ?? []).map((t) => t.configPath ?? '?');
+        checks.push({ name: 'serve health', ok: true, detail: `up · ${tenants.length} project(s)${tenants.length > 0 ? `: ${tenants.join(', ')}` : ''}` });
       }
     } catch {
       // `serve` is user-started, so an unavailable endpoint is advisory.
