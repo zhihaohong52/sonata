@@ -1,7 +1,9 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import { budgetRefusal, type BudgetStatus } from '../budget.js';
+import type { SonataConfig } from '../config.js';
 import type { LedgerRow } from '../ledger.js';
+import { SONATA_PROJECT_HEADER, TenantError } from './tenants.js';
 import type { Transport } from './providers.js';
 import { createUsageCollector, type UsageTokens, usageFromJsonBody } from './usage.js';
 
@@ -11,6 +13,20 @@ export interface TierRoute {
   harness?: { harness: string; id: string };
 }
 
+/** What the router knows about the project a request belongs to. `config` is present whenever `resolveTenant` supplied one; the default tenant has none. */
+export interface RouterTenant {
+  id: string;
+  project?: string;
+  configPath?: string;
+  config?: SonataConfig;
+}
+export const DEFAULT_TENANT: RouterTenant = { id: 'default' };
+
+/** The model name LiteLLM knows a tenant's key by. */
+export function litellmModelName(tenant: RouterTenant, key: string): string {
+  return `${tenant.id}/${key}`;
+}
+
 export interface RouterDeps {
   fetch: typeof fetch;
   anthropicBase?: string;
@@ -18,8 +34,7 @@ export interface RouterDeps {
   litellmKey: string;
   log?: (line: string) => void;
   health?: boolean;
-  /** The resolved sonata.toml path this router instance is running with, reported on /__sonata_health so a caller can tell two same-port routers apart by which config actually started them. */
-  configPath?: string;
+  tenants?: () => { id: string; configPath: string | null }[];
   /**
    * A random id generated once per `cmdServe` invocation, reported on
    * `/__sonata_health` so a caller that just spawned a daemon can tell its
@@ -27,8 +42,10 @@ export interface RouterDeps {
    * happens to still be answering the same port.
    */
   instanceId?: string;
+  /** Resolves the tenant a request belongs to; may throw `TenantError`, which becomes a 400. Absent means single-tenant: every request is `DEFAULT_TENANT`. */
+  resolveTenant?: (hint: { project?: string; session?: string }) => RouterTenant;
   /** Resolves a `sonata-<role>-<tier>` alias to its ranked routes, or undefined if unknown. */
-  resolveTier?: (alias: string) => { role: string; tier: string; routes: TierRoute[] } | undefined;
+  resolveTier?: (alias: string, tenant: RouterTenant) => { role: string; tier: string; routes: TierRoute[] } | undefined;
   /**
    * Resolves a direct `--model <key>` request's key to its gateway name, so a
    * direct-model row carries `gateway` and can be priced (pricing's step 2
@@ -36,7 +53,7 @@ export interface RouterDeps {
    * `resolveTier`, so their key/gateway are the model string and whatever this
    * returns.
    */
-  resolveGateway?: (key: string) => string | undefined;
+  resolveGateway?: (key: string, tenant: RouterTenant) => string | undefined;
   /**
    * Fire-and-forget: checks whether sonata.toml's model registry has changed
    * since litellm was last (re)started, restarting it if so. Called once per
@@ -75,14 +92,16 @@ export interface RouterDeps {
    * setting that only applies after a restart is one they will believe is
    * broken.
    */
-  budget?: () => BudgetStatus | undefined;
+  budget?: (tenant: RouterTenant) => BudgetStatus[] | undefined;
   /**
    * Resolved API key per native gateway, keyed by gateway name — how
    * `forwardDirect` finds the credential to inject for a direct-transport
    * candidate. Absent or unresolved means an empty bearer, same as any other
    * unresolvable credential.
    */
-  gatewayKeys?: Record<string, string>;
+  gatewayKeys?: (tenant: RouterTenant) => Record<string, string>;
+  /** Why LiteLLM cannot serve right now (venv missing, broken), or undefined when it can. A litellm-bound request is answered 502 with this text rather than forwarded. */
+  litellmUnavailable?: () => string | undefined;
 }
 
 export interface RouterRequest {
@@ -111,7 +130,7 @@ function targetUrl(base: string, url: string): string {
 
 function requestHeaders(headers: Record<string, string>): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(headers).filter(([name]) => !['host', 'content-length', 'x-sonata-project'].includes(name.toLowerCase())),
+    Object.entries(headers).filter(([name]) => !['host', 'content-length', SONATA_PROJECT_HEADER].includes(name.toLowerCase())),
   );
 }
 
@@ -176,6 +195,7 @@ interface RecordContext {
   upstream: 'litellm' | 'anthropic' | 'direct';
   attempts: { key: string; status: number }[];
   session?: string;
+  project?: string;
 }
 
 function headerNumber(headers: Record<string, string>, name: string): number | undefined {
@@ -204,6 +224,7 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
           ts: new Date(ctx.startedAt).toISOString(),
           ms: endedAt - ctx.startedAt,
           session: ctx.session,
+          project: ctx.project,
           alias: ctx.alias,
           role: ctx.role,
           tier: ctx.tier,
@@ -544,6 +565,10 @@ async function forwardToLitellm(
   deps: RouterDeps,
 ): Promise<RouterResponse> {
   try {
+    const unavailable = deps.litellmUnavailable?.();
+    if (unavailable !== undefined) {
+      return { status: 502, headers: { 'content-type': 'application/json' }, body: anthropicErrorBody('router_error', unavailable) };
+    }
     await deps.litellmReady?.();
     const response = await deps.fetch(
       targetUrl(deps.litellmBase, req.url),
@@ -664,13 +689,14 @@ async function routeTierRequest(
   alias: string,
   startedAt: number,
   session: string | undefined,
+  tenant: RouterTenant,
 ): Promise<RouterResponse> {
   // Once per request, not once per candidate: a candidate skipped for being
   // in its post-failure cooldown window would otherwise mean this never
   // fires at all, silently masking a real config change behind an unrelated
   // stale cooldown until it expires on its own.
   deps.checkModelChange?.();
-  const resolved = deps.resolveTier?.(alias);
+  const resolved = deps.resolveTier?.(alias, tenant);
   if (resolved === undefined) {
     return {
       status: 400,
@@ -689,18 +715,19 @@ async function routeTierRequest(
   const attempts: { key: string; status: number }[] = [];
 
   for (const route of candidates) {
-    const until = cooldowns.get(route.key);
+    const cool = litellmModelName(tenant, route.key);
+    const until = cooldowns.get(cool);
     if (until !== undefined && until > now()) continue;
 
     const direct = route.native?.transport === 'direct';
     // Only the litellm path needs the string-flattened system form and the
     // sonata alias key rewritten in — a direct gateway has never heard of
     // that key and understands block arrays fine.
-    const body = direct ? withModel(req.body, route.native!.id) : withModel(flattened, route.key);
+    const body = direct ? withModel(req.body, route.native!.id) : withModel(flattened, cool);
     const response = direct
       ? await forwardDirect(
         body,
-        { baseUrl: route.native!.baseUrl ?? '', key: deps.gatewayKeys?.[route.native!.gateway] ?? '' },
+        { baseUrl: route.native!.baseUrl ?? '', key: deps.gatewayKeys?.(tenant)[route.native!.gateway] ?? '' },
         req,
         deps,
       )
@@ -717,7 +744,7 @@ async function routeTierRequest(
     if (response.status >= 500 || response.status === 429 || response.status === 401 || response.status === 403) {
       await drainBody(response.body);
       attempts.push({ key: route.key, status: response.status });
-      cooldowns.set(route.key, now() + TIER_COOLDOWN_MS);
+      cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
       deps.log?.(`router: ${route.key} failed (${response.status}), trying next`);
       continue;
     }
@@ -737,7 +764,7 @@ async function routeTierRequest(
       // them an empty error. This mirrors the 500 path in `forwardToLitellm`.
       const bodyBuf = await bufferBody(response.body);
       const fingerprint = capability400Fingerprint(bodyBuf.toString());
-      const counterKey = fingerprint === undefined ? undefined : `${route.key} ${fingerprint}`;
+      const counterKey = fingerprint === undefined ? undefined : `${cool} ${fingerprint}`;
 
       if (counterKey !== undefined) {
         const seen = (capability400Counts.get(counterKey) ?? 0) + 1;
@@ -745,7 +772,7 @@ async function routeTierRequest(
         if (seen >= TIER_CAPABILITY_400_THRESHOLD) {
           capability400Counts.delete(counterKey);
           attempts.push({ key: route.key, status: response.status });
-          cooldowns.set(route.key, now() + TIER_COOLDOWN_MS);
+          cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
           deps.log?.(
             `router: ${route.key} cannot serve this request shape ` +
             `(${seen}× 400 "${fingerprint}"), cooling down and trying next`,
@@ -755,7 +782,7 @@ async function routeTierRequest(
       } else {
         // A different failure means the run of identical ones is broken.
         for (const key of capability400Counts.keys()) {
-          if (key.startsWith(`${route.key} `)) capability400Counts.delete(key);
+          if (key.startsWith(`${cool} `)) capability400Counts.delete(key);
         }
       }
 
@@ -766,6 +793,7 @@ async function routeTierRequest(
       }, {
         startedAt,
         session,
+        project: tenant.project,
         alias,
         role: resolved.role,
         tier: resolved.tier,
@@ -777,12 +805,13 @@ async function routeTierRequest(
     }
     // A candidate that served a request is not accumulating toward a cooldown.
     for (const key of capability400Counts.keys()) {
-      if (key.startsWith(`${route.key} `)) capability400Counts.delete(key);
+      if (key.startsWith(`${cool} `)) capability400Counts.delete(key);
     }
     deps.log?.(`${req.method} ${req.url} model=${alias} -> ${route.key} -> ${direct ? 'direct' : 'litellm'}`);
     return withUsageRecording(response, {
       startedAt,
       session,
+      project: tenant.project,
       alias,
       role: resolved.role,
       tier: resolved.tier,
@@ -802,11 +831,13 @@ async function routeTierRequest(
       'overloaded_error',
       `all native routes for ${label} failed; fall back with: ` +
       `sonata dispatch --tier ${label} --task-file <path> (or trailing task text) — ` +
-      'dispatch requires one of those; the router has no task text of its own to supply',
+      'dispatch requires one of those; the router has no task text of its own to supply' +
+      (deps.litellmUnavailable?.() ? `; litellm: ${deps.litellmUnavailable()}` : ''),
     ),
   }, {
     startedAt,
     session,
+    project: tenant.project,
     alias,
     role: resolved.role,
     tier: resolved.tier,
@@ -819,6 +850,15 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   const alias = requestedModel(req.body);
   const session = req.headers['x-claude-code-session-id'];
 
+  let tenant: RouterTenant;
+  try {
+    tenant = deps.resolveTenant?.({ project: req.headers[SONATA_PROJECT_HEADER], session }) ?? DEFAULT_TENANT;
+  } catch (error) {
+    if (!(error instanceof TenantError)) throw error;
+    deps.log?.(`router: refused model=${alias ?? '?'} — ${error.message}`);
+    return { status: 400, headers: { 'content-type': 'application/json' }, body: anthropicErrorBody('invalid_request_error', error.message) };
+  }
+
   // Before anything is forwarded, and ahead of both the tier and direct paths:
   // this is the one point every native request passes through, and a cap
   // checked on only one of the two branches is not a cap. The health endpoint
@@ -830,8 +870,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   // a request the router actually forwarded; a refusal has no upstream, no
   // tokens and no cost, and putting avoided spend into the store that defines
   // spend is how the number stops meaning what it says.
-  const status = deps.budget?.();
-  const refusal = budgetRefusal(status === undefined ? undefined : [status]);
+  const refusal = budgetRefusal(deps.budget?.(tenant));
   if (refusal !== undefined) {
     deps.log?.(`router: refused model=${alias ?? '?'} — ${refusal}`);
     return {
@@ -847,8 +886,8 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       startedAt = (deps.now ?? Date.now)();
     } catch { /* A broken accounting clock must not stop routing. */ }
   }
-  if (alias !== undefined && alias.startsWith('sonata-') && deps.resolveTier?.(alias) !== undefined) {
-    return routeTierRequest(req, deps, alias, startedAt, session);
+  if (alias !== undefined && alias.startsWith('sonata-') && deps.resolveTier?.(alias, tenant) !== undefined) {
+    return routeTierRequest(req, deps, alias, startedAt, session, tenant);
   }
 
   const anthropic = isClaudeRequest(req.body);
@@ -857,7 +896,11 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   // Anthropic understands its own block arrays and its own tool schemas; only
   // the foreign path needs the string form and the regex-dialect repair, so
   // the request Anthropic receives stays byte-identical.
-  const body = anthropic ? req.body : litellmBody(req.body);
+  const body = anthropic
+    ? req.body
+    : alias === undefined
+      ? litellmBody(req.body)
+      : withModel(litellmBody(req.body), litellmModelName(tenant, alias));
 
   deps.log?.(`${req.method} ${req.url} model=${requestedModel(req.body) ?? '?'} -> ${upstream}`);
 
@@ -871,6 +914,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       {
         startedAt,
         session,
+        project: tenant.project,
         alias: alias ?? '',
         // For a direct `--model <key>` request, `alias` IS the config key.
         // Recording it (and its gateway) is what lets `resolvePrice` price this
@@ -879,7 +923,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
         // `key` is only set when `alias` is defined, matching how optional
         // `RecordContext` fields are handled elsewhere — never an own property
         // with value `undefined`.
-        ...(alias !== undefined ? { key: alias, gateway: deps.resolveGateway?.(alias) } : {}),
+        ...(alias !== undefined ? { key: alias, gateway: deps.resolveGateway?.(alias, tenant) } : {}),
         upstream: 'litellm',
         attempts: [],
       },
@@ -896,14 +940,14 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       status: response.status,
       headers: responseHeaders(response.headers),
       body: response.body === null ? Buffer.alloc(0) : responseBody(response.body),
-    }, { startedAt, session, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
+    }, { startedAt, session, project: tenant.project, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return withUsageRecording({
       status: 502,
       headers: { 'content-type': 'application/json' },
       body: anthropicErrorBody('router_error', message),
-    }, { startedAt, session, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
+    }, { startedAt, session, project: tenant.project, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   }
 }
 
@@ -937,7 +981,7 @@ export function createRouterServer(deps: RouterDeps): Server {
       if (deps.health && new URL(req.url ?? '/', 'http://localhost').pathname === '/__sonata_health') {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
-          status: 'ok', sonata: true, configPath: deps.configPath ?? null, instanceId: deps.instanceId ?? null,
+          status: 'ok', sonata: true, multiTenant: true, instanceId: deps.instanceId ?? null, tenants: deps.tenants?.() ?? [],
         }));
         return;
       }
