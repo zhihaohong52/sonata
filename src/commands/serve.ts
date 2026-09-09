@@ -718,6 +718,9 @@ export async function cmdServe(
     // flight from that deliberate restart.
     let expectingConfigRestart = false;
     let litellmReady: Promise<void> = Promise.resolve();
+    // A lazy child that fails its readiness probe is deliberately terminated;
+    // identify that exact child so its exit cannot schedule crash recovery.
+    const abandonedChildren = new Set<SpawnedLitellm>();
 
     const spawnLitellmChild = (): SpawnedLitellm => {
       const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(
@@ -726,6 +729,7 @@ export async function cmdServe(
       recordLitellmPid(opts.home, ports.router, spawned.pid);
       spawned.onExit?.((code, signal) => {
         if (stopping) return;
+        if (abandonedChildren.delete(spawned)) return;
         if (expectingConfigRestart) {
           expectingConfigRestart = false;
           return;
@@ -801,11 +805,24 @@ export async function cmdServe(
         writeFileSync(configPath, litellmConfigYamlForTenants(registry.loadable(), masterKey), { mode: 0o600 });
         console.error('sonata serve: a project now routes through LiteLLM — starting it');
         litellmReady = (async () => {
-          child = spawnLitellmChild();
-          await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
+          const spawned = spawnLitellmChild();
+          child = spawned;
+          try {
+            await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
+          } catch (error) {
+            // A spawned process is not a usable child until its health probe
+            // passes. Suppress its exit watcher before terminating it so this
+            // failed lazy attempt has one owner and the next request retries.
+            if (child === spawned) {
+              child = undefined;
+              abandonedChildren.add(spawned);
+              spawned.kill();
+            }
+            throw error;
+          }
+          activeModelsJson = freshModelsJson;
         })().catch((error) => { console.error(`sonata serve: litellm never came up: ${String(error)}`); });
         await litellmReady;
-        if (child !== undefined) activeModelsJson = freshModelsJson;
         return;
       }
       // Only committed once the replacement config and credentials are
