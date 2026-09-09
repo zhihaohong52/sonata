@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 
 import { loadConfig, type SonataConfig } from '../config.js';
 import { SONATA_PROJECT_HEADER } from '../native/tenants.js';
+import { SONATA_TOKEN_HEADER } from '../native/router-token.js';
 import { routerPorts } from './ports.js';
 import { isSonataRouter, preMultiTenantMessage, sonataRouterMultiTenant, startServeDaemon } from './serve.js';
 
@@ -28,6 +29,8 @@ export function nativeSessionEnv(
   config: SonataConfig,
   routerPort: number,
   projectCwd?: string,
+  /** Authorises the project hint; omitted, the session simply resolves by session id. */
+  projectHintToken?: string,
 ): Record<string, string> {
   if (!config.native) return {};
   const env: Record<string, string> = {
@@ -36,7 +39,14 @@ export function nativeSessionEnv(
   // The router resolves the project's own sonata.toml from this header, so a
   // subagent's first request is already attributed. Only at project scope: a
   // global settings file serves every directory and has no one cwd to name.
-  if (projectCwd !== undefined) env.ANTHROPIC_CUSTOM_HEADERS = `${SONATA_PROJECT_HEADER}: ${projectCwd}`;
+  if (projectCwd !== undefined) {
+    // The token travels with the project it authorises: the router honours the
+    // hint only from a caller holding the 0600 secret, so a local process that
+    // cannot read it cannot pick which project's credentials serve it.
+    const lines = [`${SONATA_PROJECT_HEADER}: ${projectCwd}`];
+    if (projectHintToken !== undefined) lines.push(`${SONATA_TOKEN_HEADER}: ${projectHintToken}`);
+    env.ANTHROPIC_CUSTOM_HEADERS = lines.join('\n');
+  }
   const windows = [
     ...Object.values(config.native.models).map((model) => model.contextWindow),
     ...Object.values(config.unifiedModels)

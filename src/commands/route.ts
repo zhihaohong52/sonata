@@ -22,6 +22,7 @@ import { readSettings, writeSettings, installHook, uninstallHook, hookInstalled 
 import type { Settings } from '../settings.js';
 import { loadConfig, GLOBAL_CONFIG_RELATIVE, NoConfigError, parseConfig, type SonataConfig } from '../config.js';
 import { SONATA_PROJECT_HEADER } from '../native/tenants.js';
+import { SONATA_TOKEN_HEADER, ensureRouterToken } from '../native/router-token.js';
 import { nativeSessionEnv } from './code.js';
 import { routerPorts } from './ports.js';
 import { isSonataRouter, preMultiTenantMessage, sonataRouterMultiTenant, startServeDaemon } from './serve.js';
@@ -68,16 +69,29 @@ export function routeEnv(settings: Settings): Record<string, string> {
 }
 
 /** Adds (or replaces) the sonata project line, keeping every other header the user set. */
-export function mergeCustomHeaders(existing: string | undefined, cwd: string): string {
-  const kept = (existing ?? '').split('\n')
-    .filter((line) => line.trim() !== '' && !line.toLowerCase().startsWith(`${SONATA_PROJECT_HEADER}:`));
-  return [...kept, `${SONATA_PROJECT_HEADER}: ${cwd}`].join('\n');
+export function mergeCustomHeaders(existing: string | undefined, cwd: string, token?: string): string {
+  const added = [`${SONATA_PROJECT_HEADER}: ${cwd}`];
+  if (token !== undefined) added.push(`${SONATA_TOKEN_HEADER}: ${token}`);
+  return [...keptHeaderLines(existing ?? ''), ...added].join('\n');
+}
+
+/**
+ * Every header line that is not sonata's own.
+ *
+ * Both sonata lines are replaced together: a stale token beside a fresh project
+ * would leave the hint unauthorised and the session quietly resolving by
+ * session id instead of by its project.
+ */
+function keptHeaderLines(existing: string): string[] {
+  return existing.split('\n').filter((line) => {
+    const lower = line.trim().toLowerCase();
+    return lower !== '' && !lower.startsWith(`${SONATA_PROJECT_HEADER}:`) && !lower.startsWith(`${SONATA_TOKEN_HEADER}:`);
+  });
 }
 
 /** Removes only the sonata line; undefined when nothing else was there. */
 export function stripSonataHeader(existing: string): string | undefined {
-  const kept = existing.split('\n')
-    .filter((line) => line.trim() !== '' && !line.toLowerCase().startsWith(`${SONATA_PROJECT_HEADER}:`));
+  const kept = keptHeaderLines(existing);
   return kept.length === 0 ? undefined : kept.join('\n');
 }
 
@@ -95,15 +109,16 @@ export function planRouteOn(
   config: SonataConfig,
   packageRoot: string,
   scope: 'project' | 'global' = 'project',
-  target: { routerPort: number; projectCwd?: string },
+  target: { routerPort: number; projectCwd?: string; projectHintToken?: string },
 ): RouteOnPlan {
   if (!config.native) throw new Error('sonata route on: no [native] table in sonata.toml');
   const port = target.routerPort;
-  const envTarget = nativeSessionEnv(config, port, target.projectCwd);
+  const envTarget = nativeSessionEnv(config, port, target.projectCwd, target.projectHintToken);
   if (envTarget.ANTHROPIC_CUSTOM_HEADERS !== undefined) {
     envTarget.ANTHROPIC_CUSTOM_HEADERS = mergeCustomHeaders(
       routeEnv(settings).ANTHROPIC_CUSTOM_HEADERS,
       target.projectCwd!,
+      target.projectHintToken,
     );
   } else {
     const headers = stripSonataHeader(routeEnv(settings).ANTHROPIC_CUSTOM_HEADERS ?? '');
@@ -641,6 +656,9 @@ export async function cmdRoute(
     const plan = planRouteOn(settings, activeConfig, opts.packageRoot, scope, {
       routerPort: routerPorts(opts.home).router,
       projectCwd: scope === 'project' ? opts.cwd : undefined,
+      // Created here as well as by `serve`, so `route on` before a first
+      // `serve` still writes settings the router will later honour.
+      projectHintToken: scope === 'project' ? ensureRouterToken(opts.home) : undefined,
     });
     if (plan.changed) writeSettings(file, plan.settings);
     return status(plan.settings);

@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, createRouterServer, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
+import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
 
 function fakeFetch(record: any[]) {
   return async (url: string, init: any) => {
@@ -1012,6 +1013,9 @@ describe('routeRequest — tenants', () => {
   });
   const deps = {
     fetch: capture, litellmBase: 'http://litellm', litellmKey: 'k',
+    // These cases are about resolution, not authorisation; the hint is
+    // authorised so the header path under test is actually reached.
+    projectHintToken: 'test-token',
     resolveTenant: (hint: { project?: string; session?: string }) => {
       if (hint.project === '/p/a' || hint.session === 'sa') return tenantA;
       if (hint.project === '/p/b') return tenantB;
@@ -1022,7 +1026,7 @@ describe('routeRequest — tenants', () => {
   };
   const req = (headers: Record<string, string>, model = 'sonata-code-simple') => ({
     method: 'POST', url: '/v1/messages',
-    headers: { 'content-type': 'application/json', ...headers },
+    headers: { 'content-type': 'application/json', [SONATA_TOKEN_HEADER]: 'test-token', ...headers },
     body: Buffer.from(JSON.stringify({ model, messages: [] })),
   });
   beforeEach(() => { seen.length = 0; clearCooldowns(); });
@@ -1205,5 +1209,84 @@ describe('routeTierRequest — an unavailable litellm must not mask a real attem
     expect(res.status).toBe(502);
     expect(Buffer.from(res.body as Buffer).toString()).toContain('sonata litellm install');
     expect(rows).toEqual([]);
+  });
+});
+
+describe('routeRequest — the project hint is authorised, not merely trusted', () => {
+  // The router authenticates nobody on loopback. `x-sonata-project` chooses
+  // which config — and so which gateways, endpoints and stored credentials —
+  // serve a request, so an unauthorised caller must not get its pick.
+  const seen: string[] = [];
+  const capture: typeof fetch = (async (_url: string, init: RequestInit) => {
+    seen.push((JSON.parse(Buffer.from(init.body as Uint8Array).toString()) as { model: string }).model);
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+
+  const MINE = { id: 'mine', project: '/p/mine', configPath: '/p/mine/sonata.toml' };
+  const THEIRS = { id: 'theirs', project: '/p/theirs', configPath: '/p/theirs/sonata.toml' };
+  const deps = {
+    fetch: capture, litellmBase: 'http://litellm', litellmKey: 'k',
+    projectHintToken: 'sekret',
+    resolveTenant: (hint: { project?: string; session?: string }) =>
+      (hint.project === '/p/theirs' ? THEIRS : MINE),
+    resolveTier: () => ({ role: 'code', tier: 'simple', routes: [{ key: 'flash', native: { gateway: 'g', id: 'f-1' } }] }),
+  };
+  const req = (headers: Record<string, string>) => ({
+    method: 'POST', url: '/v1/messages',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [] })),
+  });
+
+  beforeEach(() => { seen.length = 0; clearCooldowns(); });
+
+  it('honours the hint when the token matches', async () => {
+    await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/theirs', [SONATA_TOKEN_HEADER]: 'sekret' }), deps);
+    expect(seen).toEqual(['theirs/flash']);
+  });
+
+  it('ignores the hint when the token is absent, wrong, or empty', async () => {
+    for (const headers of [
+      { [SONATA_PROJECT_HEADER]: '/p/theirs' },
+      { [SONATA_PROJECT_HEADER]: '/p/theirs', [SONATA_TOKEN_HEADER]: 'guessed' },
+      { [SONATA_PROJECT_HEADER]: '/p/theirs', [SONATA_TOKEN_HEADER]: '' },
+    ]) {
+      seen.length = 0;
+      clearCooldowns();
+      const res = await routeRequest(req(headers), deps);
+      // Served, not refused: an unauthorised caller falls back to the ordinary
+      // session/machine resolution, exactly as a request with no hint would.
+      expect(res.status).toBe(200);
+      expect(seen).toEqual(['mine/flash']);
+    }
+  });
+
+  it('ignores the hint when the router itself holds no token', async () => {
+    await routeRequest(
+      req({ [SONATA_PROJECT_HEADER]: '/p/theirs', [SONATA_TOKEN_HEADER]: 'sekret' }),
+      { ...deps, projectHintToken: undefined },
+    );
+    expect(seen).toEqual(['mine/flash']);
+  });
+
+  it('says so in the log rather than silently downgrading', async () => {
+    const lines: string[] = [];
+    await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/theirs' }), { ...deps, log: (l) => lines.push(l) });
+    expect(lines.join('\n')).toContain(SONATA_PROJECT_HEADER);
+  });
+
+  it('strips the token from every forwarded request', async () => {
+    const headersSeen: Record<string, string>[] = [];
+    const spy: typeof fetch = (async (_u: string, init: RequestInit) => {
+      headersSeen.push(init.headers as Record<string, string>);
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+    await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/mine', [SONATA_TOKEN_HEADER]: 'sekret' }), { ...deps, fetch: spy });
+    await routeRequest(
+      { ...req({ [SONATA_TOKEN_HEADER]: 'sekret' }), body: Buffer.from(JSON.stringify({ model: 'claude-sonnet-5', messages: [] })) },
+      { ...deps, fetch: spy, anthropicBase: 'http://anthropic' },
+    );
+    for (const h of headersSeen) {
+      expect(Object.keys(h).map((k) => k.toLowerCase())).not.toContain(SONATA_TOKEN_HEADER);
+    }
   });
 });
