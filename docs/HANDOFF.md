@@ -105,7 +105,9 @@ not:
    Code build.** They wrote the env by hand into a *running* session's settings
    file, confirmed `route status` reported routing on, and two native agents
    dispatched from that session still 404'd at `api.anthropic.com` with the
-   router logging nothing. Not a write race, not worktree-specific. **This
+   router logging nothing. The hooks themselves were confirmed firing in that
+   session (`routing on; 2 subagent(s) running`), so it is not a write race,
+   not a hook-wiring failure, and not worktree-specific. **This
    removes the measured fact `sonata route auto` is built on** — its design is
    "launch clean, route at SubagentStart" — so `sonata code`, or `route on`
    *before* launching, is the supported path today. Not fixed; see the
