@@ -114,6 +114,17 @@ not:
    `route auto` bullets in `CLAUDE.md` for the full history, including the
    reverted attempt that made it worse.
 
+   Settled the same day: a `sonata code` relaunch **from the same worktree**
+   routed correctly — 28 tier-alias requests in this repository's router log
+   served to foreign models, no `sonata-*` alias reaching Anthropic, a native
+   `code-simple` implementer completing and committing. A plain session
+   launched a minute *before* its env was written did not. So the process
+   environment works and the settings-file path does not, which is precisely
+   the path `route auto` is built on. **If you pick up one thing from this
+   handoff, pick up that**: `route auto` is currently a design without a
+   mechanism, and deciding what replaces it is the open question — not
+   re-probing whether it is broken.
+
 Routing settings and hooks are the one thing a worktree cannot borrow: Claude
 Code reads `.claude/settings.local.json` relative to its own cwd. Run
 `sonata route auto` in the worktree itself.
