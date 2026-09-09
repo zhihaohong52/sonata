@@ -690,6 +690,26 @@ describe('cmdRouteSession', () => {
     expect(existsSync(routeSettingsFile(cwd))).toBe(false);
   });
 
+  it('refuses a pre-multi-tenant router that answers after daemon start', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    let healthCalls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      healthCalls += 1;
+      return new Response(JSON.stringify(
+        healthCalls === 1
+          ? { status: 'ok', sonata: false }
+          : { status: 'ok', sonata: true, configPath: '/x' },
+      ));
+    }) as unknown as typeof fetch);
+
+    const startDaemon = vi.fn(async () => ({}));
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
+    await expect(cmdRouteSession('start', 's1', o, { startDaemon })).rejects.toThrow(/predates multi-tenant routing/);
+    expect(startDaemon).toHaveBeenCalledTimes(1);
+    expect(existsSync(routeSessionsFile(cwd))).toBe(false);
+    expect(existsSync(routeSettingsFile(cwd))).toBe(false);
+  });
+
 });
 describe('configless route sessions', () => {
   it('throws before writing a registry or settings file', async () => {
