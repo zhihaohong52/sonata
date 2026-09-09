@@ -2242,6 +2242,46 @@ litellm = 4000
     expect(spawns).toBe(1);
   });
 
+  it('retries lazy LiteLLM startup when its first health check fails', async () => {
+    writeMachineConfig(`
+[models."m"]
+gateway = "anth"
+id = "some-model"
+[native.gateways."anth"]
+base_url = "https://anth.example"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = 4000
+`);
+    writeSonataKey(home, 'anth', 'k');
+    const project = mkdtempSync(join(tmpdir(), 'serve-tenant-wait-recovery-'));
+    writeFileSync(join(project, 'sonata.toml'), TENANT('needs-litellm'));
+    let spawns = 0;
+    let waits = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      spawnLitellm: () => { spawns += 1; return { pid: spawns, kill: () => {} }; },
+      waitForLitellm: async () => {
+        waits += 1;
+        if (waits === 1) throw new Error('not ready');
+      },
+    });
+    handles.push(handle);
+    vi.unstubAllGlobals();
+    const request = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-sonata-project': project },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    await request();
+    expect(spawns).toBe(1);
+    const served = await request();
+    expect(served.status).toBe(200);
+    expect(spawns).toBe(2);
+  });
+
   it('leaves a tenant that will not parse out of the union and still serves the others', async () => {
     writeMachineConfig(TENANT('machine-model'));
     const broken = mkdtempSync(join(tmpdir(), 'serve-tenant-broken-'));
