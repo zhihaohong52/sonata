@@ -1,7 +1,10 @@
 import { spawn } from 'node:child_process';
 
-import { configPath as resolveSonataConfigPath, loadConfig, type SonataConfig } from '../config.js';
-import { isSonataRouter, sonataRouterConfigPath, startServeDaemon } from './serve.js';
+import { loadConfig, type SonataConfig } from '../config.js';
+import { SONATA_PROJECT_HEADER } from '../native/tenants.js';
+import { SONATA_TOKEN_HEADER } from '../native/router-token.js';
+import { routerPorts } from './ports.js';
+import { isSonataRouter, preMultiTenantMessage, sonataRouterMultiTenant, startServeDaemon } from './serve.js';
 
 export interface CodePlan {
   env: Record<string, string>;
@@ -22,11 +25,28 @@ export interface CodeOptions {
  * (which writes them into `.claude/settings.local.json`) so the two session
  * paths cannot drift.
  */
-export function nativeSessionEnv(config: SonataConfig): Record<string, string> {
+export function nativeSessionEnv(
+  config: SonataConfig,
+  routerPort: number,
+  projectCwd?: string,
+  /** Authorises the project hint; omitted, the session simply resolves by session id. */
+  projectHintToken?: string,
+): Record<string, string> {
   if (!config.native) return {};
   const env: Record<string, string> = {
-    ANTHROPIC_BASE_URL: `http://localhost:${config.native.ports.router}`,
+    ANTHROPIC_BASE_URL: `http://localhost:${routerPort}`,
   };
+  // The router resolves the project's own sonata.toml from this header, so a
+  // subagent's first request is already attributed. Only at project scope: a
+  // global settings file serves every directory and has no one cwd to name.
+  if (projectCwd !== undefined) {
+    // The token travels with the project it authorises: the router honours the
+    // hint only from a caller holding the 0600 secret, so a local process that
+    // cannot read it cannot pick which project's credentials serve it.
+    const lines = [`${SONATA_PROJECT_HEADER}: ${projectCwd}`];
+    if (projectHintToken !== undefined) lines.push(`${SONATA_TOKEN_HEADER}: ${projectHintToken}`);
+    env.ANTHROPIC_CUSTOM_HEADERS = lines.join('\n');
+  }
   const windows = [
     ...Object.values(config.native.models).map((model) => model.contextWindow),
     ...Object.values(config.unifiedModels)
@@ -44,7 +64,7 @@ export function planCode(opts: CodeOptions): CodePlan {
   if (!config.native) throw new Error('sonata code: no [native] table');
 
   return {
-    env: nativeSessionEnv(config),
+    env: nativeSessionEnv(config, routerPorts(opts.home).router, opts.cwd),
     argv: ['claude', ...opts.passthrough],
     banner: 'Native Claude session started. Remote Control unavailable in sonata code.',
   };
@@ -53,53 +73,13 @@ export function planCode(opts: CodeOptions): CodePlan {
 export async function defaultEnsureServe(cwd: string, home: string): Promise<number> {
   const config = loadConfig(cwd, home);
   if (!config.native) throw new Error('sonata code: no [native] table');
-  const port = config.native.ports.router;
-  const expectedConfigPath = resolveSonataConfigPath(cwd, home);
-  const running = await isSonataRouter(port);
-  if (running) {
-    // Two projects can share the same default router port; a router already
-    // answering here is not proof it is THIS project's — verify which
-    // sonata.toml actually started it before trusting it. A router that
-    // cannot or does not report its own configPath (an older sonata build,
-    // or one whose own resolution failed) is treated the same as a
-    // mismatch: unverifiable is not the same as compatible.
-    if (expectedConfigPath !== null) {
-      const actualConfigPath = await sonataRouterConfigPath(port);
-      if (actualConfigPath === null || actualConfigPath !== expectedConfigPath) {
-        throw new Error(
-          actualConfigPath === null
-            ? `sonata: router port ${port} answered but did not report which sonata configuration ` +
-              `it is running (too old, or its own config resolution failed) — refusing to trust it. ` +
-              `Restart it with \`sonata restart\` once confirmed to be this project's own router.`
-            : `sonata: router port ${port} is already serving a different sonata configuration ` +
-              `(${actualConfigPath}) than this project resolves to (${expectedConfigPath}). ` +
-              `Two projects cannot share one router port — set a different [native.ports].router ` +
-              `in one of the two configs.`,
-        );
-      }
-    }
+  const port = routerPorts(home).router;
+  if (await isSonataRouter(port)) {
+    if (await sonataRouterMultiTenant(port) !== true) throw new Error(preMultiTenantMessage(port));
     return port;
   }
   await startServeDaemon(home, ['sonata', 'serve', '--daemon'], {}, cwd);
-  // A concurrent launch in another project could have won the race to bind
-  // this same default port with ITS daemon between the probe above and this
-  // daemon spawn's poll completing — verify identity again now that
-  // something is confirmed to be listening.
-  if (expectedConfigPath !== null) {
-    const startedConfigPath = await sonataRouterConfigPath(port);
-    if (startedConfigPath === null || startedConfigPath !== expectedConfigPath) {
-      throw new Error(
-        startedConfigPath === null
-          ? `sonata: router port ${port} answered but did not report which sonata configuration ` +
-            `it is running (too old, or its own config resolution failed) — refusing to trust it. ` +
-            `Restart it with \`sonata restart\` once confirmed to be this project's own router.`
-          : `sonata: router port ${port} is already serving a different sonata configuration ` +
-            `(${startedConfigPath}) than this project resolves to (${expectedConfigPath}). ` +
-            `Two projects cannot share one router port — set a different [native.ports].router ` +
-            `in one of the two configs.`,
-      );
-    }
-  }
+  if (await sonataRouterMultiTenant(port) !== true) throw new Error(preMultiTenantMessage(port));
   return port;
 }
 

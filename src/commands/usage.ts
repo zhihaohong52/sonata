@@ -54,7 +54,7 @@ function labelOf(row: LedgerRow, by: UsageDimension, sessions: Record<string, Se
     case 'tier': return row.tier ?? '—';
     case 'gateway': return row.gateway ?? row.upstream;
     case 'session': return row.session ?? 'unknown';
-    case 'project': return row.session === undefined ? 'unknown' : (sessions[row.session]?.cwd ?? 'unknown');
+    case 'project': return row.project ?? (row.session === undefined ? 'unknown' : (sessions[row.session]?.cwd ?? 'unknown'));
   }
 }
 

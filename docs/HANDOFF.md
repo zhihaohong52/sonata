@@ -70,8 +70,9 @@ Claude Code 2.1.260), and both defects reproduced and are fixed on `main`
    Claude Code's Artifact tool schema carries a `\p{Cc}` regex Python's `re`
    cannot parse. `sanitizeToolSchemas` on the litellm path.
 2. **`route session-start`'s port-collision refusal was swallowed by the hook.**
-   The hooks now surface it as a `systemMessage`; doctor's `serve health` checks
-   router identity.
+   The hooks now surface any non-zero exit as a `systemMessage`. **The collision
+   itself was then designed away** — see the multi-tenant router below, after
+   which two projects sharing a router port is the supported case.
 
 Two of the reporter's suggestions were **not** taken, on purpose: an explicit
 `tools:` allowlist for write roles (drops fan-out; the next tool with the same
@@ -146,6 +147,40 @@ scratch daemon. Item 1 of "If you want work" is done. Also learned on the
 way: LiteLLM 1.98.0 reads `supports_system_message` from `litellm_params`,
 not `model_info`, so sonata's declaration never took effect — harmless now,
 worth cleaning up.
+
+## One router for every project — built 2026-09-09, on `feat/multi-tenant-router`
+
+The branch turns `sonata serve` into a single machine-wide router that resolves
+each request's own `sonata.toml`. Read
+`docs/superpowers/specs/2026-09-09-multi-tenant-router-design.md` (including its
+live-run section) and `docs/superpowers/plans/2026-09-09-multi-tenant-router.md`
+before touching it; `CLAUDE.md`'s "Tenancy" paragraph is the short version.
+Unreleased at the time of writing, full suite green.
+
+**Two defects were found by running it, not by reading it**, which is the
+argument for keeping the live check in any future plan of this shape:
+
+- One config registered as **two tenants** (`/var/…` and `/private/var/…`),
+  because macOS symlinks `/var` and the path string was the identity. Duplicate
+  LiteLLM entries, a needless restart, split cooldowns and budget. Tenant
+  identity is now the realpath.
+- `cmdRouteSubagent` wrote the routing env **without** the check every other
+  entry point makes, so a dispatch from this repository was served by a stale
+  2026-09-04 daemon running another project's config and failed against
+  gateways this repository must not use. It now refuses a pre-multi-tenant
+  router before writing anything.
+
+**Upgrading starts with `sonata restart`.** Routing targets the machine port
+now; a daemon predating this change still holding it answers with whatever
+single config started it. That is refused rather than trusted, but the refusal
+is a failure, not a fix — restart first.
+
+**A trap this branch also exposed:** `tsconfig.json` includes `src/**` only, so
+`npm run typecheck` never typechecks `tests/`. A changed dependency signature
+therefore breaks test call sites with a clean typecheck, and only the full
+`npx vitest run` catches it — two tasks here passed their targeted gates with
+latent breaks for exactly that reason. Run the full suite before believing a
+signature change is done.
 
 ## Standing constraints from the user — do not rediscover these
 

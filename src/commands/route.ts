@@ -20,9 +20,12 @@ import { homedir } from 'node:os';
 
 import { readSettings, writeSettings, installHook, uninstallHook, hookInstalled } from '../settings.js';
 import type { Settings } from '../settings.js';
-import { configPath as resolveSonataConfigPath, loadConfig, GLOBAL_CONFIG_RELATIVE, NoConfigError, parseConfig, type SonataConfig } from '../config.js';
+import { loadConfig, GLOBAL_CONFIG_RELATIVE, NoConfigError, parseConfig, type SonataConfig } from '../config.js';
+import { SONATA_PROJECT_HEADER } from '../native/tenants.js';
+import { SONATA_TOKEN_HEADER, ensureRouterToken } from '../native/router-token.js';
 import { nativeSessionEnv } from './code.js';
-import { isSonataRouter, sonataRouterConfigPath, startServeDaemon } from './serve.js';
+import { routerPorts } from './ports.js';
+import { isSonataRouter, preMultiTenantMessage, sonataRouterMultiTenant, startServeDaemon } from './serve.js';
 import { recordSession } from '../sessions.js';
 import { withSessionLock } from '../filelock.js';
 
@@ -52,7 +55,7 @@ export function ensureServeCommand(packageRoot: string, port: number, scope: 'pr
 }
 
 /** The two env keys a routed session needs. */
-export const ROUTE_ENV_KEYS = ['ANTHROPIC_BASE_URL', 'CLAUDE_CODE_MAX_CONTEXT_TOKENS'] as const;
+export const ROUTE_ENV_KEYS = ['ANTHROPIC_BASE_URL', 'CLAUDE_CODE_MAX_CONTEXT_TOKENS', 'ANTHROPIC_CUSTOM_HEADERS'] as const;
 
 /** `settings.env` as a string map. Claude Code settings put env as strings. */
 export function routeEnv(settings: Settings): Record<string, string> {
@@ -63,6 +66,33 @@ export function routeEnv(settings: Settings): Record<string, string> {
     if (typeof v === 'string') out[k] = v;
   }
   return out;
+}
+
+/** Adds (or replaces) the sonata project line, keeping every other header the user set. */
+export function mergeCustomHeaders(existing: string | undefined, cwd: string, token?: string): string {
+  const added = [`${SONATA_PROJECT_HEADER}: ${cwd}`];
+  if (token !== undefined) added.push(`${SONATA_TOKEN_HEADER}: ${token}`);
+  return [...keptHeaderLines(existing ?? ''), ...added].join('\n');
+}
+
+/**
+ * Every header line that is not sonata's own.
+ *
+ * Both sonata lines are replaced together: a stale token beside a fresh project
+ * would leave the hint unauthorised and the session quietly resolving by
+ * session id instead of by its project.
+ */
+function keptHeaderLines(existing: string): string[] {
+  return existing.split('\n').filter((line) => {
+    const lower = line.trim().toLowerCase();
+    return lower !== '' && !lower.startsWith(`${SONATA_PROJECT_HEADER}:`) && !lower.startsWith(`${SONATA_TOKEN_HEADER}:`);
+  });
+}
+
+/** Removes only the sonata line; undefined when nothing else was there. */
+export function stripSonataHeader(existing: string): string | undefined {
+  const kept = keptHeaderLines(existing);
+  return kept.length === 0 ? undefined : kept.join('\n');
 }
 
 export interface RouteOnPlan {
@@ -79,17 +109,28 @@ export function planRouteOn(
   config: SonataConfig,
   packageRoot: string,
   scope: 'project' | 'global' = 'project',
+  target: { routerPort: number; projectCwd?: string; projectHintToken?: string },
 ): RouteOnPlan {
   if (!config.native) throw new Error('sonata route on: no [native] table in sonata.toml');
-  const port = config.native.ports.router;
-  const target = nativeSessionEnv(config);
+  const port = target.routerPort;
+  const envTarget = nativeSessionEnv(config, port, target.projectCwd, target.projectHintToken);
+  if (envTarget.ANTHROPIC_CUSTOM_HEADERS !== undefined) {
+    envTarget.ANTHROPIC_CUSTOM_HEADERS = mergeCustomHeaders(
+      routeEnv(settings).ANTHROPIC_CUSTOM_HEADERS,
+      target.projectCwd!,
+      target.projectHintToken,
+    );
+  } else {
+    const headers = stripSonataHeader(routeEnv(settings).ANTHROPIC_CUSTOM_HEADERS ?? '');
+    if (headers !== undefined) envTarget.ANTHROPIC_CUSTOM_HEADERS = headers;
+  }
 
   // Never clobber a base URL sonata did not write. A stale sonata port
   // (`http://localhost:<other>`) is rewritten — that is the drift `sonata
   // doctor` sends people here to fix — but anything else (a corporate
   // gateway, a cloud proxy) was put there by someone with a reason.
   const existing = routeEnv(settings).ANTHROPIC_BASE_URL;
-  if (existing !== undefined && existing !== target.ANTHROPIC_BASE_URL && !isLocalhostUrl(existing)) {
+  if (existing !== undefined && existing !== envTarget.ANTHROPIC_BASE_URL && !isLocalhostUrl(existing)) {
     throw new Error(
       `sonata route on: ANTHROPIC_BASE_URL is already set to ${existing} in `
       + `.claude/settings.local.json — remove it yourself if sonata should take over`,
@@ -98,15 +139,19 @@ export function planRouteOn(
 
   // Merge the routing env in over whatever the user already has, preserving
   // every unrelated env var.
-  const env = { ...routeEnv(settings), ...target };
-  let next: Settings = envChanged(settings, target) ? { ...settings, env } : settings;
+  const env = { ...routeEnv(settings), ...envTarget };
+  if (scope === 'global' && envTarget.ANTHROPIC_CUSTOM_HEADERS === undefined) {
+    delete env.ANTHROPIC_CUSTOM_HEADERS;
+  }
+  const changed = envChanged(settings, env);
+  let next: Settings = changed ? { ...settings, env } : settings;
 
   // Simplest to always attempt the hook install; it is a no-op when present.
   const command = ensureServeCommand(packageRoot, port, scope);
   const hook = installHook(next, command, '', 'SessionStart');
   if (hook.changed) next = hook.settings;
 
-  return { settings: next, changed: hook.changed || envChanged(settings, target) };
+  return { settings: next, changed: hook.changed || changed };
 }
 
 /**
@@ -169,7 +214,15 @@ export function planRouteOff(settings: Settings, packageRoot: string): RouteOffP
   if (base !== undefined && env && typeof env === 'object' && !Array.isArray(env)
     && ROUTE_ENV_KEYS.some((k) => k in env)) {
     const pruned: Record<string, unknown> = { ...(env as Record<string, unknown>) };
-    for (const k of ROUTE_ENV_KEYS) delete pruned[k];
+    for (const k of ROUTE_ENV_KEYS) {
+      if (k === 'ANTHROPIC_CUSTOM_HEADERS') {
+        const rest = stripSonataHeader(routeEnv(settings).ANTHROPIC_CUSTOM_HEADERS ?? '');
+        if (rest === undefined) delete pruned[k];
+        else pruned[k] = rest;
+      } else {
+        delete pruned[k];
+      }
+    }
     // Drop the `env` block entirely when nothing is left in it, so the file
     // stays as close to untouched as the write allows.
     next = Object.keys(pruned).length === 0 ? omit(next, 'env') : { ...next, env: pruned };
@@ -490,9 +543,10 @@ function routeScopeStatus(
   config: SonataConfig,
   packageRoot: string,
   scope: 'project' | 'global' = 'project',
+  home: string = homedir(),
 ): RouteScopeStatus {
   const env = routeEnv(settings);
-  const port = config.native?.ports.router;
+  const port = config.native === undefined ? undefined : routerPorts(home).router;
   const base = env.ANTHROPIC_BASE_URL;
   const command = port !== undefined ? ensureServeCommand(packageRoot, port, scope) : '';
   const hook = command !== '' && hookInstalled(settings, command, 'SessionStart');
@@ -525,14 +579,14 @@ export function routeStatus(
   const project = scopedSettings?.project ?? settings;
   const global = scopedSettings?.global ?? {};
   const activeConfig = scope === 'global' ? globalConfig : config;
-  const current = routeScopeStatus(settings, activeConfig, packageRoot, scope);
-  const projectStatus = scopedSettings ? routeScopeStatus(project, config, packageRoot, 'project') : current;
-  const globalStatus = routeScopeStatus(global, globalConfig, packageRoot, 'global');
+  const current = routeScopeStatus(settings, activeConfig, packageRoot, scope, home);
+  const projectStatus = scopedSettings ? routeScopeStatus(project, config, packageRoot, 'project', home) : current;
+  const globalStatus = routeScopeStatus(global, globalConfig, packageRoot, 'global', home);
   const sessions = cwd === undefined ? 0 : readSessions(routeSessionsFile(cwd, scope, home)).length;
   return {
     ...current,
     sessions,
-    port: activeConfig.native?.ports.router,
+    port: activeConfig.native === undefined ? undefined : routerPorts(home).router,
     scopes: { project: projectStatus, global: globalStatus },
   };
 }
@@ -599,7 +653,13 @@ export async function cmdRoute(
   );
 
   if (action === 'on') {
-    const plan = planRouteOn(settings, activeConfig, opts.packageRoot, scope);
+    const plan = planRouteOn(settings, activeConfig, opts.packageRoot, scope, {
+      routerPort: routerPorts(opts.home).router,
+      projectCwd: scope === 'project' ? opts.cwd : undefined,
+      // Created here as well as by `serve`, so `route on` before a first
+      // `serve` still writes settings the router will later honour.
+      projectHintToken: scope === 'project' ? ensureRouterToken(opts.home) : undefined,
+    });
     if (plan.changed) writeSettings(file, plan.settings);
     return status(plan.settings);
   }
@@ -733,8 +793,8 @@ export async function cmdRouteSession(
   // This whole block runs BEFORE the session is registered or routing is
   // turned on: the SessionStart hook that calls this command ignores a
   // thrown/nonzero exit, so if this validation happened after those writes,
-  // a same-port-different-config collision would still leave the session
-  // registered and routed through the wrong router despite the error.
+  // a pre-multi-tenant router would still leave the session registered and
+  // routed despite the error.
   const probe = deps.probe ?? isSonataRouter;
   const startDaemon = deps.startDaemon ?? startServeDaemon;
   // Global routing is one shared router for every project — its config has
@@ -746,32 +806,17 @@ export async function cmdRouteSession(
   // start the daemon on) the wrong port entirely.
   //
   const config = loadConfig(configCwd, opts.home);
-  const port = config.native?.ports.router;
+  const port = config.native === undefined ? undefined : routerPorts(opts.home).router;
   if (port !== undefined) {
-    const expectedConfigPath = resolveSonataConfigPath(configCwd, opts.home);
     const running = await probe(port);
-    if (running && deps.probe === undefined) {
-      // Only verify identity against the real network probe — an injected
-      // test probe already encodes the scenario under test, and re-checking
-      // against the real network here would defeat it. A router that cannot
-      // or does not report its own configPath is treated the same as a
-      // mismatch, not silently trusted.
-      const actualConfigPath = await sonataRouterConfigPath(port);
-      if (expectedConfigPath !== null && (actualConfigPath === null || actualConfigPath !== expectedConfigPath)) {
-        throw new Error(
-          actualConfigPath === null
-            ? `sonata: router port ${port} answered but did not report which sonata configuration ` +
-              `it is running (too old, or its own config resolution failed) — refusing to trust it. ` +
-              `Restart it with \`sonata restart\` once confirmed to be this project's own router.`
-            : `sonata: router port ${port} is already serving a different sonata configuration ` +
-              `(${actualConfigPath}) than this project resolves to (${expectedConfigPath}). ` +
-              `Two projects cannot share one router port — set a different [native.ports].router ` +
-              `in one of the two configs.`,
-        );
-      }
+    if (running && deps.probe === undefined && await sonataRouterMultiTenant(port) !== true) {
+      throw new Error(preMultiTenantMessage(port));
     }
     if (!running) {
       await startDaemon(opts.home, opts.serveArgv, {}, configCwd);
+      if (deps.probe === undefined && await sonataRouterMultiTenant(port) !== true) {
+        throw new Error(preMultiTenantMessage(port));
+      }
     }
   }
 
@@ -901,12 +946,34 @@ export async function cmdRouteSubagent(
   phase: 'start' | 'stop',
   agentId: string,
   opts: { cwd: string; home: string; packageRoot: string; scope?: 'project' | 'global' },
+  /** Test seam: an injected probe means the caller is encoding the scenario, so the real router check is skipped — the same discipline `cmdRouteSession` follows. */
+  deps: { probe?: (port: number) => Promise<boolean> } = {},
 ): Promise<SubagentPhaseResult> {
   // 'project', matching `routeSubagentsFile`'s own default and every other
   // scope default in this file. This read `?? 'global'` — the lone outlier —
   // which is what made it disagree with the cleaner in `cmdRouteSession`.
   const scope = opts.scope ?? 'project';
   const registry = routeSubagentsFile(opts.cwd, scope, opts.home);
+
+  // Verified BEFORE the lock and before anything is written, and only on start:
+  // routing now targets the machine port, so a stale pre-multi-tenant daemon
+  // holding it would answer with whatever single config started it. Measured
+  // 2026-09-09: a dispatch from one project was served by another project's
+  // config and failed against gateways the first project never names. Every
+  // other entry point (`route session-start`, `sonata code`, `sonata run`,
+  // `ensure-serve.mjs`) already refuses such a router; this one wrote the
+  // routing env with no check at all, which is the hole that let it through.
+  //
+  // Only when something is actually listening: a router still coming up is the
+  // ensure-serve hook's business, and refusing here would turn a normal startup
+  // race into a failure. A stop is never blocked — cleanup that depended on the
+  // router could pin routing on for good.
+  if (phase === 'start' && deps.probe === undefined) {
+    const port = routerPorts(opts.home).router;
+    if (await isSonataRouter(port) && (await sonataRouterMultiTenant(port)) !== true) {
+      throw new Error(preMultiTenantMessage(port));
+    }
+  }
 
   // Read, decide and act inside one lock hold, for the same reason the session
   // registry does: deciding "none left" and acting on it as two acquisitions
