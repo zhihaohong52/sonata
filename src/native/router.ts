@@ -830,7 +830,12 @@ async function routeTierRequest(
   }
 
   const label = `${resolved.role}-${resolved.tier}`;
-  if (skippedUnavailableLitellm) {
+  // Only when nothing was actually tried. A mixed tier can reach here having
+  // forwarded to a direct gateway that failed on its own: answering 502 "run
+  // `sonata litellm install`" would misdiagnose that failure, and returning
+  // before `withUsageRecording` would drop the ledger row for a request the
+  // router really did send upstream.
+  if (skippedUnavailableLitellm && attempts.length === 0) {
     return {
       status: 502,
       headers: { 'content-type': 'application/json' },

@@ -241,9 +241,13 @@ port, it answers with whatever single config started it — during this session 
 dispatch from this repository was served by a 2026-09-04 daemon running another
 project's config, and failed against gateways this repository does not use.
 `route session-start`, `sonata code`, `sonata run` and `ensure-serve.mjs` all
-refuse such a router by design (Task 8), but `cmdRouteSubagent` writes the
-routing env without that check — worth closing before release, and the reason an
-upgrade should begin with `sonata restart`.
+refused such a router by design (Task 8), but `cmdRouteSubagent` wrote the
+routing env without that check. **That is pre-fix evidence**: the gap it names
+was closed in `4025c71`, and the subagent path now makes the same refusal
+before writing anything. The observation is kept because it is what the run
+found, and because the upgrade guidance it produced still stands — **begin an
+upgrade with `sonata restart`**, since a daemon predating this change still
+holding the machine port answers with whatever single config started it.
 
 ## What this deliberately does not do
 

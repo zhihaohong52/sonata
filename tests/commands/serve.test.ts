@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
-  cmdServe, serveHealthUrl, type ServeHandle, isSonataRouter, occupiedPortMessage, startServeDaemon,
+  cmdServe, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, occupiedPortMessage, startServeDaemon,
   serveStatePath, stopServe, cmdRestart, sonataRouterInstanceId, defaultWaitForLitellm, sonataRouterMultiTenant,
   budgetStatusesFor,
 } from '../../src/commands/serve.js';
@@ -2584,5 +2584,56 @@ describe('budgetStatusesFor', () => {
       { dailyUsd: 2, spentUsd: 3, configPath: '/canonical/sonata.toml' },
       { dailyUsd: 5, spentUsd: 1, configPath: '/canonical/machine/sonata.toml' },
     ]);
+  });
+});
+
+describe('mergeTenantGateways', () => {
+  const gw = (over: Record<string, unknown>) => ({ baseUrl: 'https://a.example/v1', auth: 'api-key', ...over } as never);
+
+  it('keeps one definition per name, and a differing base_url is not a conflict', () => {
+    // Deliberate and tested elsewhere: two projects may name one gateway and
+    // reach different endpoints, sharing the machine-wide credential.
+    const lines: string[] = [];
+    const merged = mergeTenantGateways([
+      { id: 'a', gateways: { acme: gw({ baseUrl: 'https://a.example/v1' }) } },
+      { id: 'b', gateways: { acme: gw({ baseUrl: 'https://b.example/v1' }) } },
+    ], (l) => lines.push(l));
+    expect(Object.keys(merged)).toEqual(['acme']);
+    expect(lines).toEqual([]);
+  });
+
+  it('drops a gateway whose tenants disagree about how it authenticates', () => {
+    // `buildChildEnv` resolves one credential per gateway NAME, so a name two
+    // projects define with different credential sources would send one
+    // project's credential to the other's endpoint. Neither gets a key: a
+    // visible failure beats a silent cross-project credential.
+    const lines: string[] = [];
+    const merged = mergeTenantGateways([
+      { id: 'a', gateways: { acme: gw({ credentialSource: 'sonata' }) } },
+      { id: 'b', gateways: { acme: gw({ credentialSource: 'opencode' }) } },
+    ], (l) => lines.push(l));
+    expect(merged.acme).toBeUndefined();
+    expect(lines.join('\n')).toContain('acme');
+    expect(lines.join('\n')).toContain('credential');
+  });
+
+  it('drops a gateway whose tenants disagree about its auth kind', () => {
+    const merged = mergeTenantGateways([
+      { id: 'a', gateways: { g: gw({ auth: 'api-key' }) } },
+      { id: 'b', gateways: { g: gw({ auth: 'codex-oauth' }) } },
+    ], () => {});
+    expect(merged.g).toBeUndefined();
+  });
+
+  it('logs a conflict once, not once per merge', () => {
+    const lines: string[] = [];
+    const tenants = [
+      { id: 'a', gateways: { acme: gw({ credentialSource: 'sonata' }) } },
+      { id: 'b', gateways: { acme: gw({ credentialSource: 'opencode' }) } },
+    ];
+    const log = (l: string) => lines.push(l);
+    mergeTenantGateways(tenants, log);
+    mergeTenantGateways(tenants, log);
+    expect(lines).toHaveLength(2);
   });
 });

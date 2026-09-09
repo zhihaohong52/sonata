@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, it, expect } from 'vitest';
-import { tenantId, SONATA_PROJECT_HEADER, TenantError, TenantRegistry } from '../../src/native/tenants.js';
+import { tenantId, SONATA_PROJECT_HEADER, TenantError, TenantRegistry, canonicalConfigPath, MAX_NOTED_PROJECTS } from '../../src/native/tenants.js';
 import { recordSession } from '../../src/sessions.js';
 
 describe('tenantId', () => {
@@ -159,5 +159,58 @@ describe('TenantRegistry — one project, whatever spelling its path has', () =>
     rmSync(gone, { recursive: true, force: true });
     expect(() => reg.known()).not.toThrow();
     expect(() => reg.unionSnapshot()).not.toThrow();
+  });
+});
+
+describe('canonicalConfigPath', () => {
+  it('falls back to the given path when it cannot be resolved', () => {
+    // The registry's own tests reach this only through `configPath`, which
+    // falls back to the machine config when a project's file is gone — so the
+    // missing-path branch needs asserting directly.
+    const missing = join(tmpdir(), 'sonata-canon-does-not-exist', 'sonata.toml');
+    expect(canonicalConfigPath(missing)).toBe(missing);
+  });
+
+  it('resolves a path that does exist', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sonata-canon-real-'));
+    writeFileSync(join(dir, 'sonata.toml'), '');
+    expect(canonicalConfigPath(join(dir, 'sonata.toml'))).toBe(realpathSync(join(dir, 'sonata.toml')));
+  });
+});
+
+describe('TenantRegistry — the noted set is fed by a request header', () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'tenants-noted-home-'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), NATIVE('machine-model'));
+  });
+
+  it('does not note a project whose config does not resolve', () => {
+    // `x-sonata-project` is client-supplied, and `known()` does filesystem work
+    // per noted path on the request path. A directory that resolves to nothing
+    // must not enlarge that set.
+    const reg = new TenantRegistry(home);
+    const nowhere = mkdtempSync(join(tmpdir(), 'tenants-noted-nowhere-'));
+    const before = reg.known().length;
+    // Resolves to the machine config (no project file), so nothing new is known.
+    reg.resolve({ project: nowhere });
+    expect(reg.known().length).toBe(before);
+  });
+
+  it('bounds the noted set rather than growing with every distinct header value', () => {
+    const reg = new TenantRegistry(home);
+    const made: string[] = [];
+    for (let i = 0; i < MAX_NOTED_PROJECTS + 5; i += 1) {
+      const dir = mkdtempSync(join(tmpdir(), `tenants-noted-${i}-`));
+      writeFileSync(join(dir, 'sonata.toml'), NATIVE(`m-${i}`));
+      made.push(dir);
+      reg.resolve({ project: dir });
+    }
+    // Machine config plus at most the cap, never one per header value seen.
+    expect(reg.known().length).toBeLessThanOrEqual(MAX_NOTED_PROJECTS + 1);
+    // The most recent project is still served.
+    expect(reg.resolve({ project: made[made.length - 1] }).config?.unifiedModels.flash.id)
+      .toBe(`m-${MAX_NOTED_PROJECTS + 4}`);
   });
 });

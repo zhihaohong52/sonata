@@ -610,6 +610,51 @@ export function budgetStatusesFor(args: {
   return out.length === 0 ? undefined : out;
 }
 
+/**
+ * One gateway definition per name, across every tenant — and no definition at
+ * all where two tenants disagree about how that name authenticates.
+ *
+ * Credentials are machine-wide **by gateway name**: `buildChildEnv` resolves
+ * one `SONATA_KEY_<NAME>` per name, and both transports then use it. Two
+ * projects naming one gateway with different `base_url`s is deliberate and
+ * supported — they share the credential and reach their own endpoints. Two
+ * projects disagreeing about the gateway's `auth` or `credential_source` is
+ * not: a last-one-wins merge would resolve one project's credential and hand
+ * it to the other project's endpoint. Dropping the name leaves neither with a
+ * key, so both fail visibly rather than one silently borrowing the other's.
+ */
+export function mergeTenantGateways(
+  tenants: { id: string; gateways: NativeConfig['gateways'] }[],
+  log: (line: string) => void,
+): NativeConfig['gateways'] {
+  const merged: NativeConfig['gateways'] = {};
+  const owner: Record<string, string> = {};
+  const conflicted = new Set<string>();
+  for (const { id, gateways } of tenants) {
+    for (const [name, gateway] of Object.entries(gateways)) {
+      if (conflicted.has(name)) continue;
+      const seen = merged[name];
+      if (seen === undefined) {
+        merged[name] = gateway;
+        owner[name] = id;
+        continue;
+      }
+      // Only the credential-bearing fields. A differing base_url is the
+      // supported per-project-endpoint case, not a conflict.
+      if (seen.auth === gateway.auth && seen.credentialSource === gateway.credentialSource) continue;
+      conflicted.add(name);
+      delete merged[name];
+      log(
+        `gateway "${name}" is defined by two projects with different credentials ` +
+        `(${owner[name]}: auth=${seen.auth} source=${seen.credentialSource ?? 'default'}; ` +
+        `${id}: auth=${gateway.auth} source=${gateway.credentialSource ?? 'default'}) — ` +
+        'serving neither, since one project\'s credential must not reach the other\'s endpoint',
+      );
+    }
+  }
+  return merged;
+}
+
 export async function cmdServe(
   opts: { cwd: string; home: string; daemon?: boolean } & ServeDeps,
 ): Promise<ServeHandle> {
@@ -641,11 +686,15 @@ export async function cmdServe(
   }
 
   /** Merged gateways across every loadable tenant — what credential resolution and the child env are built from. */
-  const mergedNative = (): NativeConfig => {
-    const gateways: NativeConfig['gateways'] = {};
-    for (const { config } of registry.loadable()) Object.assign(gateways, config.native?.gateways ?? {});
-    return { models: {}, gateways, ports, generate: {} };
-  };
+  const mergedNative = (): NativeConfig => ({
+    models: {},
+    gateways: mergeTenantGateways(
+      registry.loadable().map(({ id, config }) => ({ id, gateways: config.native?.gateways ?? {} })),
+      (line) => console.error(`sonata serve: ${line}`),
+    ),
+    ports,
+    generate: {},
+  });
   const unionNeedsLitellm = (): boolean => registry.loadable().some(({ config }) => litellmRequired(config));
 
   const litellmBin = managedLitellmPath(opts.home);
