@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { envVarForGateway, litellmConfig } from '../../src/native/litellm.js';
-import { CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL, type NativeConfig } from '../../src/config.js';
+import { envVarForGateway, litellmConfig, litellmConfigForTenants } from '../../src/native/litellm.js';
+import { CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL, parseConfig, type NativeConfig } from '../../src/config.js';
 
 describe('LiteLLM config', () => {
   it('emits one model_list entry per native model, keyed by env, never the key itself', () => {
@@ -247,5 +247,41 @@ describe('LiteLLM config — the provider prefix', () => {
   it('keeps emitting anthropic/ for an anthropic gateway', () => {
     const e = cfgFor({ baseUrl: 'https://a/v1', auth: 'api-key', provider: 'anthropic' }, 'm-1');
     expect(e.model_list[0].litellm_params.model).toBe('anthropic/m-1');
+  });
+});
+
+
+describe('litellmConfigForTenants', () => {
+  const a = parseConfig(`
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash"
+[native.gateways."acme"]
+base_url = "https://a.example/v1"
+`);
+  const b = parseConfig(`
+[models."flash"]
+gateway = "acme"
+id = "gemini-3.8-flash"
+[native.gateways."acme"]
+base_url = "https://b.example/v1"
+`);
+
+  it('namespaces every tenant, so the same key in two projects stays two models', () => {
+    const cfg = litellmConfigForTenants([{ id: 'aaaaaaaaaaaa', config: a }, { id: 'bbbbbbbbbbbb', config: b }], 'sk');
+    const names = cfg.model_list.map((m) => m.model_name);
+    expect(names).toEqual(['aaaaaaaaaaaa/flash', 'bbbbbbbbbbbb/flash']);
+    expect(cfg.model_list[0].litellm_params.model).toBe('openai/deepseek-v4-flash');
+    expect(cfg.model_list[0].litellm_params.api_base).toBe('https://a.example/v1');
+    expect(cfg.model_list[1].litellm_params.api_base).toBe('https://b.example/v1');
+    // Same gateway name, same env var: credentials are machine-wide by name.
+    expect(cfg.model_list[0].litellm_params.api_key).toBe('os.environ/SONATA_KEY_ACME');
+    expect(cfg.model_list[1].litellm_params.api_key).toBe('os.environ/SONATA_KEY_ACME');
+    expect(cfg.general_settings.master_key).toBe('sk');
+  });
+
+  it('skips a tenant with no [native] table', () => {
+    const none = parseConfig('[models."k"]\nharness = "codex"\nid = "gpt-5.6-sol"\n');
+    expect(litellmConfigForTenants([{ id: 'x', config: none }], 'sk').model_list).toEqual([]);
   });
 });

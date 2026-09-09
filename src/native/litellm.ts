@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 
 import { providerForBaseUrl } from './providers.js';
-import type { NativeConfig, UnifiedModelConfig } from '../config.js';
+import type { NativeConfig, UnifiedModelConfig, SonataConfig } from '../config.js';
 
 export interface LiteLLMModelConfig {
   model_name: string;
@@ -131,6 +131,41 @@ export function litellmConfig(
 }
 
 /** LiteLLM accepts JSON config files, so keep serialization dependency-free and stable. */
+/**
+ * The union of every known tenant's native models, each under
+ * `<tenantId>/<key>`. One LiteLLM child serves every project; the namespace is
+ * what lets two projects both call a model `flash` and mean different things.
+ * Credentials are deliberately not namespaced: the key store is machine-wide
+ * by gateway name, so two tenants naming `acme` already share one key, while
+ * `api_base` is per entry so they still each reach their own endpoint.
+ */
+export function litellmConfigForTenants(
+  tenants: { id: string; config: SonataConfig }[],
+  masterKey: string,
+): LiteLLMConfig {
+  const modelList: LiteLLMModelConfig[] = [];
+  for (const { id, config } of tenants) {
+    const native = config.native;
+    if (native === undefined) continue;
+    const single = litellmConfig(native, masterKey, config.unifiedModels);
+    for (const entry of single.model_list) {
+      modelList.push({ ...entry, model_name: `${id}/${entry.model_name}` });
+    }
+  }
+  return {
+    model_list: modelList,
+    litellm_settings: { drop_params: true, use_chat_completions_url_for_anthropic_messages: true },
+    general_settings: { master_key: masterKey },
+  };
+}
+
+export function litellmConfigYamlForTenants(
+  tenants: { id: string; config: SonataConfig }[],
+  masterKey: string,
+): string {
+  return `${JSON.stringify(litellmConfigForTenants(tenants, masterKey), null, 2)}\n`;
+}
+
 export function litellmConfigYaml(
   native: NativeConfig,
   masterKey: string,
