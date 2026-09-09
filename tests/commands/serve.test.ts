@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { spawn as spawnType } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -2132,7 +2132,9 @@ litellm = ${litellmPort}
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     expect(res.status).toBe(200);
-    const projectId = tenantId(join(project, 'sonata.toml'));
+    // Canonical: a tenant is identified by the realpath of its config, so two
+    // spellings of one project cannot become two tenants.
+    const projectId = tenantId(realpathSync(join(project, 'sonata.toml')));
     expect(forwarded).toEqual([`${projectId}/flash`]);
     await new Promise((r) => setTimeout(r, 0));
     expect(configs.at(-1)).toContain(`${projectId}/flash`);
