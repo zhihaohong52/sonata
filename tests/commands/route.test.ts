@@ -27,6 +27,7 @@ import {
   mergeCustomHeaders,
   stripSonataHeader,
 } from '../../src/commands/route.js';
+import { ensureRouterToken } from '../../src/native/router-token.js';
 import type { Settings, HookEntry } from '../../src/settings.js';
 import { readSettings } from '../../src/settings.js';
 import { loadConfig } from '../../src/config.js';
@@ -1062,5 +1063,38 @@ describe('cmdRouteSubagent — router identity', () => {
 
     const o = { cwd, home, packageRoot: PACKAGE_ROOT };
     await expect(cmdRouteSubagent('stop', 'ghost', o)).resolves.toEqual({ subagents: 0, routing: 'off' });
+  });
+});
+
+describe('route on — the project hint travels with its authorisation', () => {
+  it('writes both sonata header lines, and replaces them together', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    const token = ensureRouterToken(home);
+
+    const on = planRouteOn({ env: { ANTHROPIC_CUSTOM_HEADERS: 'X-Team: blue' } }, loadConfig(cwd, home), PACKAGE_ROOT, 'project',
+      { routerPort: 4100, projectCwd: cwd, projectHintToken: token });
+    const headers = on.settings.env!.ANTHROPIC_CUSTOM_HEADERS!;
+    expect(headers).toContain('X-Team: blue');
+    expect(headers).toContain(`x-sonata-project: ${cwd}`);
+    expect(headers).toContain(`x-sonata-token: ${token}`);
+
+    // A stale token beside a fresh project would leave the hint unauthorised,
+    // so both sonata lines are rewritten as a pair.
+    const again = planRouteOn(on.settings, loadConfig(cwd, home), PACKAGE_ROOT, 'project',
+      { routerPort: 4100, projectCwd: cwd, projectHintToken: 'rotated' });
+    const rewritten = again.settings.env!.ANTHROPIC_CUSTOM_HEADERS!;
+    expect(rewritten).toContain('x-sonata-token: rotated');
+    expect(rewritten).not.toContain(token);
+    expect(rewritten.match(/x-sonata-project:/g)).toHaveLength(1);
+
+    // `route off` removes both and keeps the user's own header.
+    const off = planRouteOff(again.settings, PACKAGE_ROOT);
+    expect(off.settings.env?.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: blue');
+  });
+
+  it('writes no token at global scope, where there is no one project to name', () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    const on = planRouteOn({}, loadConfig(cwd, home), PACKAGE_ROOT, 'global', { routerPort: 4100 });
+    expect(on.settings.env?.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
   });
 });

@@ -402,6 +402,10 @@ Its `[native]` config surface describes foreign `models`, `gateways`, and their 
 — a project's own, or the machine config — identified by the first 12 hex of
 sha256 over its **realpath**. `TenantRegistry` (`src/native/tenants.ts`)
 resolves a request in one order, first hit wins: the `x-sonata-project` header
+(honoured only beside `x-sonata-token`, matching the 0600
+`~/.config/sonata/router-token` — naming a project picks whose credentials
+serve the request, and the router authenticates nobody on loopback; an
+unauthorised hint is dropped and logged, never refused)
 (written into settings `env` as `ANTHROPIC_CUSTOM_HEADERS` at project scope by
 `nativeSessionEnv`, and picked up by a running session because Claude Code
 re-applies project `env` when the merged env changes); then `sessions.json`,

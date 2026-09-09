@@ -51,6 +51,15 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
     the routing env with no check at all and is how a dispatch in this
     repository was served by another project's config and failed against
     gateways this project never names.
+  - **The project header is authorised by a loopback token.** Naming a project
+    picks whose gateways and stored credentials serve a request, and the router
+    authenticates nobody on loopback, so the hint is honoured only alongside
+    `x-sonata-token` matching the 0600 `~/.config/sonata/router-token`. A
+    process that cannot read that file — a different local user, a sandbox —
+    reaches the port and gets ordinary session-then-machine resolution instead
+    of its pick; one that can could already read the credential store. An
+    unauthorised hint is dropped and logged, never refused, so a session whose
+    settings predate the token keeps working.
   - Design and the live-run evidence:
     `docs/superpowers/specs/2026-09-09-multi-tenant-router-design.md`.
 

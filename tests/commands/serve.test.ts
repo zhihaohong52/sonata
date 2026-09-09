@@ -14,6 +14,7 @@ import type { RouterTenant } from '../../src/native/router.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
 import { managedLitellmPath, venvDir, LITELLM_VERSION } from '../../src/native/litellm-venv.js';
 import { clearCooldowns } from '../../src/native/router.js';
+import { ensureRouterToken } from '../../src/native/router-token.js';
 import { tenantId } from '../../src/native/tenants.js';
 import { appendRow } from '../../src/ledger.js';
 
@@ -23,6 +24,16 @@ let handles: ServeHandle[];
 
 /** Every cmdServe call in this file writes here, never into the real tmpdir. */
 const tempDirFor = () => join(cwd, 'litellm');
+
+/**
+ * The headers that name a project AND authorise the naming.
+ *
+ * The router honours `x-sonata-project` only from a caller holding the 0600
+ * router token, so a test that omits it is testing the unauthorised path.
+ */
+function projectHeaders(project: string): Record<string, string> {
+  return { 'x-sonata-project': project, 'x-sonata-token': ensureRouterToken(home) };
+}
 
 /** The machine config — the only file `serve` reads its own ports from, and the default tenant for a request naming no project. */
 const machineConfigPath = () => join(home, '.config', 'sonata', 'sonata.toml');
@@ -2132,7 +2143,7 @@ litellm = ${litellmPort}
     vi.unstubAllGlobals();
     const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-sonata-project': project },
+      headers: { 'content-type': 'application/json', ...projectHeaders(project) },
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     expect(res.status).toBe(200);
@@ -2175,7 +2186,7 @@ litellm = 4000
     vi.unstubAllGlobals();
     await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-sonata-project': project },
+      headers: { 'content-type': 'application/json', ...projectHeaders(project) },
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     await new Promise((r) => setTimeout(r, 0));
@@ -2229,7 +2240,7 @@ litellm = 4000
     const call = () => new Promise<void>((resolve, reject) => {
       const request = httpRequest({
         host: 'localhost', port: handle.routerPort, path: '/v1/messages', method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-sonata-project': project },
+        headers: { 'content-type': 'application/json', ...projectHeaders(project) },
       }, (res) => { res.resume(); res.on('end', () => resolve()); });
       request.on('error', reject);
       request.end(JSON.stringify({ model: 'sonata-code-simple', messages: [] }));
@@ -2277,7 +2288,7 @@ litellm = 4000
     handles.push(handle);
     const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-sonata-project': project },
+      headers: { 'content-type': 'application/json', ...projectHeaders(project) },
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     const text = await res.text();
@@ -2311,7 +2322,7 @@ litellm = 4000
     vi.unstubAllGlobals();
     const request = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-sonata-project': project },
+      headers: { 'content-type': 'application/json', ...projectHeaders(project) },
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     const unavailable = await request();
@@ -2353,7 +2364,7 @@ litellm = 4000
     vi.unstubAllGlobals();
     const request = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-sonata-project': project },
+      headers: { 'content-type': 'application/json', ...projectHeaders(project) },
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     await request();
@@ -2405,7 +2416,7 @@ litellm = 4000
     vi.unstubAllGlobals();
     const request = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-sonata-project': project },
+      headers: { 'content-type': 'application/json', ...projectHeaders(project) },
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     await request();
@@ -2428,7 +2439,7 @@ litellm = 4000
     handles.push(handle);
     const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-sonata-project': broken },
+      headers: { 'content-type': 'application/json', ...projectHeaders(broken) },
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     expect(res.status).toBe(400);
@@ -2492,7 +2503,7 @@ litellm = 4000
     vi.unstubAllGlobals();
     const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-sonata-project': project },
+      headers: { 'content-type': 'application/json', ...projectHeaders(project) },
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     expect(res.status).toBe(200);

@@ -18,6 +18,7 @@ import { litellmRequired, transportFor } from '../native/providers.js';
 import { litellmStatus, managedLitellmPath } from '../native/litellm-venv.js';
 import { createRouterServer, type RouterTenant } from '../native/router.js';
 import { canonicalConfigPath, TenantRegistry } from '../native/tenants.js';
+import { ensureRouterToken } from '../native/router-token.js';
 import { resolvePrice } from '../pricing.js';
 import { timestampedLogPath } from './init-log.js';
 import { routerPorts } from './ports.js';
@@ -1041,6 +1042,9 @@ export async function cmdServe(
       log: (line) => console.log(line),
       tenants: () => registry.summary(),
       resolveTenant: (hint) => registry.resolve(hint),
+      // Created here, not per request: a settings file written once has to keep
+      // authorising its project hint across restarts.
+      projectHintToken: ensureRouterToken(opts.home),
       resolveTier: (alias, tenant) => tenant.config === undefined ? undefined : resolveTierAlias(tenant.config, alias),
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
       budget: (tenant) => budgetStatusesFor({

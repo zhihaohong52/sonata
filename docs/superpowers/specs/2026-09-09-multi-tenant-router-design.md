@@ -166,17 +166,26 @@ applied on the next request rather than immediately. `checkModelChange` fires
 per request, so the cost is one request's latency — the same fire-and-forget
 class the pre-existing design already had.
 
-**Threat note: the project header steers config resolution.** A crafted
-`x-sonata-project` makes the router read and parse an arbitrary directory's
-`sonata.toml`, and a config found there can name a `direct`-transport gateway
-with an arbitrary `base_url` while `forwardDirect` injects the machine's stored
-key for that gateway *name*. This is not a new privilege boundary — any local
-process that can reach the router port can already read
-`~/.config/sonata/credentials` — but it turns "can reach a local port" into
-"can steer a stored credential at a chosen URL", which is worth recording
-rather than discovering later.
+**The project header is authorised, not merely trusted.** Naming a project
+chooses whose gateways, endpoints and stored credentials serve the request, and
+the router authenticates nobody on loopback — so a caller could point the header
+at a directory it controls, declare a gateway reusing a name the machine holds a
+key for, and have that key sent to an endpoint of its choosing (on either
+transport: `forwardDirect` injects the stored key, and the LiteLLM config emits
+`api_base` from the tenant beside `api_key: os.environ/SONATA_KEY_<NAME>`).
 
-## Errors, in one place
+The hint is therefore honoured only when the request also carries
+`x-sonata-token`, matching the 0600 secret at `~/.config/sonata/router-token`
+(`src/native/router-token.ts`). That draws the boundary where it belongs: a
+process running as the user can read the token, but it can already read
+`~/.config/sonata/credentials` and needs no router to take a key; a process that
+cannot — a different local user, a sandbox — reaches the port and gets the
+ordinary session-then-machine resolution instead of its pick. An unauthorised
+hint is **dropped, not refused**, so the caller gets exactly what a request with
+no hint gets and a session whose settings predate the token keeps working; the
+router logs the downgrade rather than performing it silently. `route on` writes
+both lines together, and rewrites them as a pair, because a stale token beside a
+fresh project would leave the hint unauthorised.
 
 | Situation | Response | Ledger |
 |---|---|---|

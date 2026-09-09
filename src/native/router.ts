@@ -4,6 +4,7 @@ import { budgetRefusal, type BudgetStatus } from '../budget.js';
 import type { SonataConfig } from '../config.js';
 import type { LedgerRow } from '../ledger.js';
 import { SONATA_PROJECT_HEADER, TenantError } from './tenants.js';
+import { SONATA_TOKEN_HEADER, projectHintAuthorised } from './router-token.js';
 import type { Transport } from './providers.js';
 import { createUsageCollector, type UsageTokens, usageFromJsonBody } from './usage.js';
 
@@ -44,6 +45,13 @@ export interface RouterDeps {
   instanceId?: string;
   /** Resolves the tenant a request belongs to; may throw `TenantError`, which becomes a 400. Absent means single-tenant: every request is `DEFAULT_TENANT`. */
   resolveTenant?: (hint: { project?: string; session?: string }) => RouterTenant;
+  /**
+   * The secret a request must present to *choose* its own project. Absent means
+   * no request may: the hint is ignored and resolution falls back to the
+   * session registry, then the machine config. See `src/native/router-token.ts`
+   * for why the hint needs authorising at all.
+   */
+  projectHintToken?: string;
   /** Resolves a `sonata-<role>-<tier>` alias to its ranked routes, or undefined if unknown. */
   resolveTier?: (alias: string, tenant: RouterTenant) => { role: string; tier: string; routes: TierRoute[] } | undefined;
   /**
@@ -130,7 +138,7 @@ function targetUrl(base: string, url: string): string {
 
 function requestHeaders(headers: Record<string, string>): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(headers).filter(([name]) => !['host', 'content-length', SONATA_PROJECT_HEADER].includes(name.toLowerCase())),
+    Object.entries(headers).filter(([name]) => !['host', 'content-length', SONATA_PROJECT_HEADER, SONATA_TOKEN_HEADER].includes(name.toLowerCase())),
   );
 }
 
@@ -869,9 +877,24 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   const alias = requestedModel(req.body);
   const session = req.headers['x-claude-code-session-id'];
 
+  // A hint is honoured only from a caller that proves it is the user: naming a
+  // project chooses that project's gateways, endpoints and stored credentials,
+  // and the router authenticates nobody on loopback. Unauthorised, the hint is
+  // dropped rather than the request refused — the caller gets exactly what a
+  // request with no hint gets, which is the safe direction and keeps a session
+  // whose settings predate the token working.
+  let project: string | undefined = req.headers[SONATA_PROJECT_HEADER];
+  if (project !== undefined && !projectHintAuthorised(req.headers[SONATA_TOKEN_HEADER], deps.projectHintToken)) {
+    deps.log?.(
+      `router: ignoring ${SONATA_PROJECT_HEADER}=${project} — no valid ${SONATA_TOKEN_HEADER}; ` +
+      'resolving by session instead. Re-run `sonata route on` (or start a new session under `route auto`) to refresh it.',
+    );
+    project = undefined;
+  }
+
   let tenant: RouterTenant;
   try {
-    tenant = deps.resolveTenant?.({ project: req.headers[SONATA_PROJECT_HEADER], session }) ?? DEFAULT_TENANT;
+    tenant = deps.resolveTenant?.({ project, session }) ?? DEFAULT_TENANT;
   } catch (error) {
     if (!(error instanceof TenantError)) throw error;
     deps.log?.(`router: refused model=${alias ?? '?'} — ${error.message}`);
