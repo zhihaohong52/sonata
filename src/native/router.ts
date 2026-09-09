@@ -713,13 +713,20 @@ async function routeTierRequest(
   const flattened = litellmBody(req.body);
   const candidates = resolved.routes.filter((route) => route.native !== undefined);
   const attempts: { key: string; status: number }[] = [];
+  const unavailable = deps.litellmUnavailable?.();
+  let skippedUnavailableLitellm = false;
 
   for (const route of candidates) {
     const cool = litellmModelName(tenant, route.key);
+    const direct = route.native?.transport === 'direct';
+    if (!direct && unavailable !== undefined) {
+      // This is router state, not a candidate failure: leave its cooldown intact.
+      skippedUnavailableLitellm = true;
+      continue;
+    }
     const until = cooldowns.get(cool);
     if (until !== undefined && until > now()) continue;
 
-    const direct = route.native?.transport === 'direct';
     // Only the litellm path needs the string-flattened system form and the
     // sonata alias key rewritten in — a direct gateway has never heard of
     // that key and understands block arrays fine.
@@ -823,6 +830,13 @@ async function routeTierRequest(
   }
 
   const label = `${resolved.role}-${resolved.tier}`;
+  if (skippedUnavailableLitellm) {
+    return {
+      status: 502,
+      headers: { 'content-type': 'application/json' },
+      body: anthropicErrorBody('router_error', unavailable!),
+    };
+  }
   deps.log?.(`router: all native routes for ${label} failed`);
   return withUsageRecording({
     status: 529,
@@ -831,8 +845,7 @@ async function routeTierRequest(
       'overloaded_error',
       `all native routes for ${label} failed; fall back with: ` +
       `sonata dispatch --tier ${label} --task-file <path> (or trailing task text) — ` +
-      'dispatch requires one of those; the router has no task text of its own to supply' +
-      (deps.litellmUnavailable?.() ? `; litellm: ${deps.litellmUnavailable()}` : ''),
+      'dispatch requires one of those; the router has no task text of its own to supply',
     ),
   }, {
     startedAt,
@@ -905,6 +918,10 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   deps.log?.(`${req.method} ${req.url} model=${requestedModel(req.body) ?? '?'} -> ${upstream}`);
 
   if (!anthropic) {
+    const unavailable = deps.litellmUnavailable?.();
+    if (unavailable !== undefined) {
+      return { status: 502, headers: { 'content-type': 'application/json' }, body: anthropicErrorBody('router_error', unavailable) };
+    }
     // A direct `--model <key>` request never goes through `resolveTier` (the
     // key isn't a `sonata-*` alias), so this is the only place such a
     // request's config-change check can fire.

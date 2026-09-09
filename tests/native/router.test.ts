@@ -1078,10 +1078,34 @@ describe('routeRequest — tenants', () => {
     expect(res.status).toBe(429);
     expect(Buffer.from(res.body as Buffer).toString()).toContain('/p/a/sonata.toml');
   });
-  it('returns 502 naming the install when litellm is unavailable', async () => {
-    const res = await routeRequest(req({}, 'flash'), { ...deps, litellmUnavailable: () => 'LiteLLM is missing — run `sonata litellm install`' });
+  it('returns an unrecorded 502 for an unavailable LiteLLM bare-key request', async () => {
+    const rows: unknown[] = [];
+    const res = await routeRequest(req({}, 'flash'), {
+      ...deps,
+      litellmUnavailable: () => 'LiteLLM is missing — run `sonata litellm install`',
+      recordUsage: (row) => rows.push(row),
+    });
     expect(res.status).toBe(502);
     expect(Buffer.from(res.body as Buffer).toString()).toContain('sonata litellm install');
+    if (!Buffer.isBuffer(res.body)) for await (const _chunk of res.body) { /* Drain streaming bodies before checking accounting. */ }
+    expect(rows).toEqual([]);
+  });
+  it('returns an unrecorded 502 for unavailable tier LiteLLM without cooling the candidate', async () => {
+    let unavailable: string | undefined = 'LiteLLM is missing — run `sonata litellm install`';
+    const rows: unknown[] = [];
+    const res = await routeRequest(req({}), {
+      ...deps,
+      litellmUnavailable: () => unavailable,
+      recordUsage: (row) => rows.push(row),
+    });
+    expect(res.status).toBe(502);
+    expect(Buffer.from(res.body as Buffer).toString()).toContain('sonata litellm install');
+    if (!Buffer.isBuffer(res.body)) for await (const _chunk of res.body) { /* Drain streaming bodies before checking accounting. */ }
+    expect(rows).toEqual([]);
+
+    unavailable = undefined;
+    await routeRequest(req({}), { ...deps, litellmUnavailable: () => unavailable });
+    expect(seen.map((request) => request.model)).toEqual(['default/flash']);
   });
   it('litellmModelName is <id>/<key>', () => {
     expect(litellmModelName({ id: 'x' }, 'flash')).toBe('x/flash');
