@@ -910,6 +910,16 @@ describe('routingFailureDetail — naming the cause, not just the fix', () => {
       .toBe('tier agents need a routed session — run `sonata route auto`');
   });
 
+  // A fresh worktree has no hooks anywhere, so every diagnosis below reduces
+  // to "nothing is installed" and none of them says why `route auto` in the
+  // main checkout did not reach here.
+  it('names the worktree when the config is borrowed from a main checkout', () => {
+    const detail = routingFailureDetail({ ...base, borrowedFrom: '/repo-main' });
+    expect(detail).toContain('git worktree of /repo-main');
+    expect(detail).toContain('per checkout');
+    expect(detail).toContain('here, in the worktree');
+  });
+
   it('names the other install when the hooks belong to a different sonata', () => {
     const detail = routingFailureDetail({
       ...base, projectSettings: planRouteAuto({}, OTHER_ROOT).settings,

@@ -8,6 +8,30 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+- **A linked git worktree borrows its main checkout's `sonata.toml`.**
+  `sonata.toml` is untracked, so `git worktree add` produced a directory with
+  none of the project's sonata state: every command run there fell through to
+  the machine config, or to none, and a session launched in a worktree resolved
+  no project config at all — its native tier agents 404'd with
+  `model_not_found` against `api.anthropic.com` rather than reaching the router.
+  `configPath` now resolves a linked worktree to the main checkout's config,
+  below the worktree's *own* `sonata.toml` (one that has been given a config
+  means it) and above the machine one (a checkout of this repository is this
+  project). Borrowing also gives the worktree the main checkout's router tenant
+  id, so cooldowns and `[budget]` are shared rather than split. Detection is
+  pure filesystem — the `.git` pointer file and its gitdir's `commondir`, never
+  `git rev-parse` — because `configPath` is on the router's per-request tenant
+  resolution path, and every malformed shape answers "not a worktree" rather
+  than throwing.
+
+  Routing settings and hooks are the one thing a worktree cannot borrow: Claude
+  Code reads `.claude/settings.local.json` relative to its own cwd, so
+  `sonata route auto` must be run in the worktree itself. `sonata doctor` now
+  says exactly that, naming the main checkout, instead of repeating the bare
+  "run `sonata route auto`" that a user standing in a fresh worktree has no way
+  to act on.
+
 ## [0.7.0] - 2026-09-09
 
 ### Added
