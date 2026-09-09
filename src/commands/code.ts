@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
 
 import { configPath as resolveSonataConfigPath, loadConfig, type SonataConfig } from '../config.js';
+import { SONATA_PROJECT_HEADER } from '../native/tenants.js';
+import { routerPorts } from './ports.js';
 import { isSonataRouter, sonataRouterConfigPath, startServeDaemon } from './serve.js';
 
 export interface CodePlan {
@@ -22,11 +24,19 @@ export interface CodeOptions {
  * (which writes them into `.claude/settings.local.json`) so the two session
  * paths cannot drift.
  */
-export function nativeSessionEnv(config: SonataConfig): Record<string, string> {
+export function nativeSessionEnv(
+  config: SonataConfig,
+  routerPort: number,
+  projectCwd?: string,
+): Record<string, string> {
   if (!config.native) return {};
   const env: Record<string, string> = {
-    ANTHROPIC_BASE_URL: `http://localhost:${config.native.ports.router}`,
+    ANTHROPIC_BASE_URL: `http://localhost:${routerPort}`,
   };
+  // The router resolves the project's own sonata.toml from this header, so a
+  // subagent's first request is already attributed. Only at project scope: a
+  // global settings file serves every directory and has no one cwd to name.
+  if (projectCwd !== undefined) env.ANTHROPIC_CUSTOM_HEADERS = `${SONATA_PROJECT_HEADER}: ${projectCwd}`;
   const windows = [
     ...Object.values(config.native.models).map((model) => model.contextWindow),
     ...Object.values(config.unifiedModels)
@@ -44,7 +54,7 @@ export function planCode(opts: CodeOptions): CodePlan {
   if (!config.native) throw new Error('sonata code: no [native] table');
 
   return {
-    env: nativeSessionEnv(config),
+    env: nativeSessionEnv(config, routerPorts(opts.home).router, opts.cwd),
     argv: ['claude', ...opts.passthrough],
     banner: 'Native Claude session started. Remote Control unavailable in sonata code.',
   };
@@ -53,7 +63,7 @@ export function planCode(opts: CodeOptions): CodePlan {
 export async function defaultEnsureServe(cwd: string, home: string): Promise<number> {
   const config = loadConfig(cwd, home);
   if (!config.native) throw new Error('sonata code: no [native] table');
-  const port = config.native.ports.router;
+  const port = routerPorts(home).router;
   const expectedConfigPath = resolveSonataConfigPath(cwd, home);
   const running = await isSonataRouter(port);
   if (running) {

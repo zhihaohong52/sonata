@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { spawn as spawnType } from 'node:child_process';
 
-import { execClaude, planCode, defaultEnsureServe } from '../../src/commands/code.js';
+import { execClaude, planCode, defaultEnsureServe, nativeSessionEnv } from '../../src/commands/code.js';
 import { startServeDaemon } from '../../src/commands/serve.js';
 
 // `startServeDaemon` is stubbed — a real detached process would race the live
@@ -27,6 +27,23 @@ let home: string;
 beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), 'sonata-code-cwd-'));
   home = mkdtempSync(join(tmpdir(), 'sonata-code-home-'));
+});
+
+describe('nativeSessionEnv', () => {
+  const config = {
+    native: { models: {}, gateways: {}, ports: { router: 9999, litellm: 9998 } },
+    unifiedModels: {},
+  } as never;
+
+  it('names the project in a custom header so the router can resolve its config', () => {
+    const env = nativeSessionEnv(config, 4100, '/p/a');
+    expect(env.ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('x-sonata-project: /p/a');
+  });
+
+  it('writes no header without a project cwd (global scope has no single project)', () => {
+    expect(nativeSessionEnv(config, 4100).ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+  });
 });
 
 describe('planCode', () => {

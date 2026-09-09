@@ -33,6 +33,7 @@ import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { serveHealthUrl } from './serve.js';
+import { routerPorts } from './ports.js';
 import { nativeSessionEnv } from './code.js';
 import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile, diagnoseRouteAuto, isLocalhostUrl } from './route.js';
 
@@ -305,7 +306,7 @@ export async function cmdDoctor(
     // [native.ports].router points a session at a port nothing is listening
     // on, which reads as routed here and 502s on every native request.
     const routedAt = (settings: typeof projectSettings, cfg: typeof config, scope: 'project' | 'global'): boolean => {
-      const routerUrl = cfg.native !== undefined ? `http://localhost:${cfg.native.ports.router}` : undefined;
+      const routerUrl = cfg.native !== undefined ? `http://localhost:${routerPorts(home).router}` : undefined;
       return (routerUrl !== undefined && routeEnv(settings).ANTHROPIC_BASE_URL === routerUrl) ||
         (opts.packageRoot !== undefined && autoInstalled(settings, opts.packageRoot, scope));
     };
@@ -327,7 +328,7 @@ export async function cmdDoctor(
           projectSettings,
           globalSettings,
           configuredRouterUrl: config.native !== undefined
-            ? `http://localhost:${config.native.ports.router}`
+            ? `http://localhost:${routerPorts(home).router}`
             : undefined,
           projectResolvesToMachineConfig,
         }),
@@ -384,7 +385,7 @@ export async function cmdDoctor(
     }
 
     try {
-      const response = await fetch(serveHealthUrl(config.native.ports.router));
+      const response = await fetch(serveHealthUrl(routerPorts(home).router));
       let body: unknown;
       try {
         body = await response.json();
@@ -436,7 +437,7 @@ export async function cmdDoctor(
     // way `sonata code` does.
     {
       const settings = readSettings(routeSettingsFile(opts.cwd));
-      const target = nativeSessionEnv(config);
+      const target = nativeSessionEnv(config, routerPorts(home).router, opts.cwd);
       const expectedBase = target.ANTHROPIC_BASE_URL;
       const actualBase = routeEnv(settings).ANTHROPIC_BASE_URL;
       if (actualBase !== undefined && actualBase !== expectedBase) {
