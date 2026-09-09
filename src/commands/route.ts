@@ -105,6 +105,9 @@ export function planRouteOn(
       routeEnv(settings).ANTHROPIC_CUSTOM_HEADERS,
       target.projectCwd!,
     );
+  } else {
+    const headers = stripSonataHeader(routeEnv(settings).ANTHROPIC_CUSTOM_HEADERS ?? '');
+    if (headers !== undefined) envTarget.ANTHROPIC_CUSTOM_HEADERS = headers;
   }
 
   // Never clobber a base URL sonata did not write. A stale sonata port
@@ -122,14 +125,18 @@ export function planRouteOn(
   // Merge the routing env in over whatever the user already has, preserving
   // every unrelated env var.
   const env = { ...routeEnv(settings), ...envTarget };
-  let next: Settings = envChanged(settings, envTarget) ? { ...settings, env } : settings;
+  if (scope === 'global' && envTarget.ANTHROPIC_CUSTOM_HEADERS === undefined) {
+    delete env.ANTHROPIC_CUSTOM_HEADERS;
+  }
+  const changed = envChanged(settings, env);
+  let next: Settings = changed ? { ...settings, env } : settings;
 
   // Simplest to always attempt the hook install; it is a no-op when present.
   const command = ensureServeCommand(packageRoot, port, scope);
   const hook = installHook(next, command, '', 'SessionStart');
   if (hook.changed) next = hook.settings;
 
-  return { settings: next, changed: hook.changed || envChanged(settings, envTarget) };
+  return { settings: next, changed: hook.changed || changed };
 }
 
 /**
