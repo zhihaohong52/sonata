@@ -350,7 +350,7 @@ export async function cmdDoctor(
   // One router per machine, on the machine config's ports. A project
   // [native.ports] parses (an existing file keeps loading) but does nothing,
   // and a table that does nothing while looking load-bearing is worth a line.
-  if (resolved !== null && resolved !== join(home, GLOBAL_CONFIG_RELATIVE) && /^\[native\.ports\]/m.test(readFileSync(resolved, 'utf8'))) {
+  if (resolved !== null && resolved !== join(home, GLOBAL_CONFIG_RELATIVE) && /^[ \t]*\[\s*native\.ports\s*\]/m.test(readFileSync(resolved, 'utf8'))) {
     checks.push({
       name: 'project ports',
       ok: true,
@@ -409,8 +409,22 @@ export async function cmdDoctor(
       } else if ((body as { multiTenant?: unknown }).multiTenant !== true) {
         checks.push({ name: 'serve health', ok: false, detail: `up, but predates multi-tenant routing — sessions here will refuse it; run \`sonata restart\`` });
       } else {
-        const tenants = ((body as { tenants?: { configPath: string | null }[] }).tenants ?? []).map((t) => t.configPath ?? '?');
-        checks.push({ name: 'serve health', ok: true, detail: `up · ${tenants.length} project(s)${tenants.length > 0 ? `: ${tenants.join(', ')}` : ''}` });
+        const rawTenants = (body as { tenants?: unknown }).tenants;
+        const tenantsValid = Array.isArray(rawTenants)
+          && rawTenants.every((tenant) => tenant !== null && typeof tenant === 'object'
+            && ('configPath' in tenant)
+            && (typeof (tenant as { configPath?: unknown }).configPath === 'string'
+              || (tenant as { configPath?: unknown }).configPath === null));
+        if (!tenantsValid) {
+          checks.push({
+            name: 'serve health',
+            ok: false,
+            detail: 'up, but its health payload could not be read — sessions here may refuse to route; run `sonata restart`',
+          });
+        } else {
+          const tenants = (rawTenants as { configPath: string | null }[]).map((t) => t.configPath ?? '?');
+          checks.push({ name: 'serve health', ok: true, detail: `up · ${tenants.length} project(s)${tenants.length > 0 ? `: ${tenants.join(', ')}` : ''}` });
+        }
       }
     } catch {
       // `serve` is user-started, so an unavailable endpoint is advisory.
