@@ -146,6 +146,26 @@ rows written before this change.
 
 **Pricing** resolves against the tenant's config, as tier resolution does.
 
+**A project's spend is summed per tenant, not per cwd string.** The ledger row
+carries both: `project` is the cwd a human reads in `sonata usage --by
+project`, and `tenant` is the hash of the canonical `sonata.toml` path the
+budget filters on. One repository entered from two subdirectories, or through a
+symlinked path, resolves to one tenant and one config but writes two `project`
+values — keyed on the string, `daily_usd = 25` would have become 25 per
+directory spelling. For the same reason the machine config's own path is
+canonicalised before it is compared against a tenant's: raw, it looks like a
+project tenant and its machine-wide cap is pushed as a per-project one.
+
+**Threat note: the project header steers config resolution.** A crafted
+`x-sonata-project` makes the router read and parse an arbitrary directory's
+`sonata.toml`, and a config found there can name a `direct`-transport gateway
+with an arbitrary `base_url` while `forwardDirect` injects the machine's stored
+key for that gateway *name*. This is not a new privilege boundary — any local
+process that can reach the router port can already read
+`~/.config/sonata/credentials` — but it turns "can reach a local port" into
+"can steer a stored credential at a chosen URL", which is worth recording
+rather than discovering later.
+
 ## Errors, in one place
 
 | Situation | Response | Ledger |

@@ -43,10 +43,20 @@ export function startOfUtcDay(now: number): number {
  * identical on purpose so the number a user sees there is the number the cap
  * compares against.
  */
-export function spentTodayUsd(home: string, now: number = Date.now(), project?: string): number {
+export function spentTodayUsd(
+  home: string,
+  now: number = Date.now(),
+  filter?: { tenant?: string },
+): number {
   let total = 0;
   for (const row of readRows(home, startOfUtcDay(now), now)) {
-    if (project !== undefined && row.project !== project) continue;
+    // Summed per *tenant*, never per cwd string: one repository entered from
+    // two spellings (a subdirectory, a symlinked path) resolves to one
+    // `sonata.toml` but writes two `project` values, which would make
+    // `daily_usd` a cap per directory spelling rather than per project. Rows
+    // written before the tenant field existed carry no id and are therefore
+    // outside every project cap — the same way they carried no project.
+    if (filter?.tenant !== undefined && row.tenant !== filter.tenant) continue;
     if (row.price.source === 'none' || row.price.totalUsd === undefined) continue;
     total += row.price.totalUsd;
   }

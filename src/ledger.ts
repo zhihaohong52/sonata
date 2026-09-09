@@ -25,6 +25,17 @@ export interface LedgerRow {
   session?: string;
   /** The project directory the request was attributed to, written by the router from the resolved tenant. Absent on rows written before multi-tenant routing and on requests no project could be resolved for. */
   project?: string;
+  /**
+   * The tenant (project *identity*) the request was attributed to — the hash of
+   * the canonical `sonata.toml` path, from `tenantId`.
+   *
+   * `project` is a cwd string and two spellings of one repository (a
+   * subdirectory, a symlinked path) produce two of them, which split a
+   * project's spend into disjoint buckets and turned `daily_usd` into a cap per
+   * directory spelling. `project` stays because `sonata usage --by project`
+   * shows it to a human; the budget sums on this.
+   */
+  tenant?: string;
   alias: string;
   role?: string;
   tier?: string;

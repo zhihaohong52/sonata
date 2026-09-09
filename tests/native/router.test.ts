@@ -1043,6 +1043,20 @@ describe('routeRequest — tenants', () => {
     await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/a' }, 'claude-sonnet-5'), { ...deps, anthropicBase: 'http://anthropic' });
     expect(Object.keys(seen[1].headers).map((h) => h.toLowerCase())).not.toContain(SONATA_PROJECT_HEADER);
   });
+  it('strips the project header on the direct transport too', async () => {
+    // The spec says every path. `forwardDirect` builds its own header set, so
+    // this is a separate code path from the litellm/anthropic one above.
+    await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/a' }), {
+      ...deps,
+      resolveTier: () => ({
+        role: 'code', tier: 'simple',
+        routes: [{ key: 'flash', native: { gateway: 'g', id: 'direct-model', transport: 'direct' as const, baseUrl: 'http://direct/v1' } }],
+      }),
+      gatewayKeys: () => ({ g: 'secret' }),
+    });
+    expect(seen[0].url).toBe('http://direct/v1/messages');
+    expect(Object.keys(seen[0].headers).map((h) => h.toLowerCase())).not.toContain(SONATA_PROJECT_HEADER);
+  });
   it('answers a TenantError with a 400 naming the message, and records nothing', async () => {
     const rows: unknown[] = [];
     const res = await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/none' }), { ...deps, recordUsage: (r) => rows.push(r) });
@@ -1060,11 +1074,14 @@ describe('routeRequest — tenants', () => {
     await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/b' }), { ...deps, fetch: failing });
     expect(seen.map((s) => s.model)).toEqual(['aaaaaaaaaaaa/flash', 'bbbbbbbbbbbb/flash']);
   });
-  it('writes the project onto the ledger row', async () => {
-    const rows: { project?: string }[] = [];
+  it('writes the project and the tenant id onto the ledger row', async () => {
+    const rows: { project?: string; tenant?: string }[] = [];
     const response = await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/a' }), { ...deps, recordUsage: (r) => rows.push(r) });
     for await (const _chunk of response.body as AsyncIterable<Buffer>) { /* Complete the streamed response to emit usage. */ }
     expect(rows[0].project).toBe('/p/a');
+    // The budget sums on this, never on the cwd string: one repository entered
+    // under two spellings is one tenant but two `project` values.
+    expect(rows[0].tenant).toBe('aaaaaaaaaaaa');
   });
   it('namespaces a bare --model key request too', async () => {
     await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/b' }, 'flash'), deps);

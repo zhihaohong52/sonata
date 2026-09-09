@@ -196,6 +196,7 @@ interface RecordContext {
   attempts: { key: string; status: number }[];
   session?: string;
   project?: string;
+  tenant?: string;
 }
 
 function headerNumber(headers: Record<string, string>, name: string): number | undefined {
@@ -225,6 +226,7 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
           ms: endedAt - ctx.startedAt,
           session: ctx.session,
           project: ctx.project,
+          tenant: ctx.tenant,
           alias: ctx.alias,
           role: ctx.role,
           tier: ctx.tier,
@@ -797,6 +799,7 @@ async function routeTierRequest(
         startedAt,
         session,
         project: tenant.project,
+      tenant: tenant.id,
         alias,
         role: resolved.role,
         tier: resolved.tier,
@@ -815,6 +818,7 @@ async function routeTierRequest(
       startedAt,
       session,
       project: tenant.project,
+      tenant: tenant.id,
       alias,
       role: resolved.role,
       tier: resolved.tier,
@@ -847,6 +851,7 @@ async function routeTierRequest(
     startedAt,
     session,
     project: tenant.project,
+    tenant: tenant.id,
     alias,
     role: resolved.role,
     tier: resolved.tier,
@@ -929,6 +934,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
         startedAt,
         session,
         project: tenant.project,
+      tenant: tenant.id,
         alias: alias ?? '',
         // For a direct `--model <key>` request, `alias` IS the config key.
         // Recording it (and its gateway) is what lets `resolvePrice` price this
@@ -954,14 +960,14 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       status: response.status,
       headers: responseHeaders(response.headers),
       body: response.body === null ? Buffer.alloc(0) : responseBody(response.body),
-    }, { startedAt, session, project: tenant.project, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
+    }, { startedAt, session, project: tenant.project, tenant: tenant.id, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return withUsageRecording({
       status: 502,
       headers: { 'content-type': 'application/json' },
       body: anthropicErrorBody('router_error', message),
-    }, { startedAt, session, project: tenant.project, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
+    }, { startedAt, session, project: tenant.project, tenant: tenant.id, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   }
 }
 
