@@ -44,6 +44,17 @@ let cwd: string;
 let home: string;
 const PACKAGE_ROOT = '/repo/root';
 
+/**
+ * "Nothing is listening on the router port."
+ *
+ * `cmdRouteSubagent` verifies a running router is multi-tenant before it writes
+ * any routing env, which means a real network probe. An injected probe says the
+ * test is encoding the scenario itself — the same seam `cmdRouteSession` uses —
+ * and keeps these unit tests off the developer's own machine router, which they
+ * would otherwise reach and be judged by.
+ */
+const OFFLINE = { probe: async () => false };
+
 beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), 'sonata-route-cwd-'));
   home = mkdtempSync(join(tmpdir(), 'sonata-route-home-'));
@@ -734,47 +745,47 @@ describe('cmdRouteSubagent', () => {
 
   it('routes on for the first subagent and off when the last one stops', async () => {
     const o = opts();
-    const started = await cmdRouteSubagent('start', 'a1', o);
+    const started = await cmdRouteSubagent('start', 'a1', o, OFFLINE);
     expect(started).toEqual({ subagents: 1, routing: 'on' });
     expect((await cmdRoute('status', o))?.scopes.global.on).toBe(true);
 
-    const stopped = await cmdRouteSubagent('stop', 'a1', o);
+    const stopped = await cmdRouteSubagent('stop', 'a1', o, OFFLINE);
     expect(stopped).toEqual({ subagents: 0, routing: 'off' });
     expect((await cmdRoute('status', o))?.scopes.global.on).toBe(false);
   });
 
   it('keeps routing while a sibling subagent is still running', async () => {
     const o = opts();
-    await cmdRouteSubagent('start', 'a1', o);
-    await cmdRouteSubagent('start', 'a2', o);
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
+    await cmdRouteSubagent('start', 'a2', o, OFFLINE);
 
-    const first = await cmdRouteSubagent('stop', 'a1', o);
+    const first = await cmdRouteSubagent('stop', 'a1', o, OFFLINE);
     expect(first).toEqual({ subagents: 1, routing: 'on' });
     // Un-routing here would cut a2 off mid-task, and its sonata-* alias would
     // reach api.anthropic.com as an unknown model.
     expect((await cmdRoute('status', o))?.scopes.global.on).toBe(true);
 
-    const last = await cmdRouteSubagent('stop', 'a2', o);
+    const last = await cmdRouteSubagent('stop', 'a2', o, OFFLINE);
     expect(last).toEqual({ subagents: 0, routing: 'off' });
   });
 
   it('does not double-count a repeated agent id', async () => {
     const o = opts();
-    await cmdRouteSubagent('start', 'a1', o);
-    expect((await cmdRouteSubagent('start', 'a1', o)).subagents).toBe(1);
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
+    expect((await cmdRouteSubagent('start', 'a1', o, OFFLINE)).subagents).toBe(1);
   });
 
   it('tolerates a stop for an id it never saw', async () => {
     const o = opts();
-    await expect(cmdRouteSubagent('stop', 'ghost', o)).resolves.toEqual({ subagents: 0, routing: 'off' });
+    await expect(cmdRouteSubagent('stop', 'ghost', o, OFFLINE)).resolves.toEqual({ subagents: 0, routing: 'off' });
   });
 
   it('leaves the session registry alone when the last subagent stops', async () => {
     const o = opts();
     const sessionOpts = { ...o, serveArgv: ['node', 'cli.js', 'serve'] };
     await cmdRouteSession('start', 's1', sessionOpts, deps);
-    await cmdRouteSubagent('start', 'a1', o);
-    await cmdRouteSubagent('stop', 'a1', o);
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
+    await cmdRouteSubagent('stop', 'a1', o, OFFLINE);
 
     // A finishing subagent must not erase session liveness, or the next
     // SessionEnd believes it was the last one.
@@ -785,7 +796,7 @@ describe('cmdRouteSubagent', () => {
     const o = opts();
     const sessionOpts = { ...o, serveArgv: ['node', 'cli.js', 'serve'] };
     await cmdRouteSession('start', 's1', sessionOpts, deps);
-    await cmdRouteSubagent('start', 'a1', o);
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
     // a1 never stops — a killed subagent leaks its reference. Bounding that by
     // the session's lifetime is what stops it becoming permanent.
     await cmdRouteSession('end', 's1', sessionOpts, deps);
@@ -902,7 +913,7 @@ describe('Defect B — the registry that pins routing on', () => {
     // The existing suite always passes `scope: 'global'` explicitly, which is
     // exactly why this was invisible to it. This test must omit `scope`.
     const o = base();
-    await cmdRouteSubagent('start', 'a1', o);
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
 
     const written = [routeSubagentsFile(cwd, 'project', home), routeSubagentsFile(cwd, 'global', home)]
       .filter((f) => existsSync(f) && readSessions(f).includes('a1'));
@@ -990,12 +1001,66 @@ describe('Defect B — the registry that pins routing on', () => {
 
     await Promise.all([
       cmdRouteSession('end', 'only', o, deps),
-      cmdRouteSubagent('start', 'fresh', o),
+      cmdRouteSubagent('start', 'fresh', o, OFFLINE),
     ]);
 
     // Either order is legal; what is not legal is a leaked id coming back.
     const left = readSessions(routeSubagentsFile(cwd, 'project', home));
     expect(left).not.toContain('leaked-1');
     expect(left).not.toContain('leaked-2');
+  });
+});
+
+describe('cmdRouteSubagent — router identity', () => {
+  // The hole this design actually fell through on 2026-09-09: routing now
+  // targets the MACHINE port, and a stale pre-multi-tenant daemon on it answers
+  // with whatever single config started it. `route session-start`, `code`,
+  // `run` and `ensure-serve` all refuse such a router; the subagent path wrote
+  // the routing env with no check, so a dispatch was served by another
+  // project's config and failed against gateways this project never names.
+  it('refuses to route a subagent through a router that predates multi-tenant routing', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ status: 'ok', sonata: true, configPath: '/elsewhere/sonata.toml' })),
+    ) as unknown as typeof fetch);
+
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT };
+    await expect(cmdRouteSubagent('start', 'a1', o)).rejects.toThrow(/predates multi-tenant routing/);
+    // Nothing written: the subagent is better off unrouted and visibly failing
+    // than silently served another project's models and credentials.
+    expect(existsSync(routeSubagentsFile(cwd))).toBe(false);
+    expect(existsSync(routeSettingsFile(cwd))).toBe(false);
+  });
+
+  it('routes a subagent through a multi-tenant router', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ status: 'ok', sonata: true, multiTenant: true, tenants: [] })),
+    ) as unknown as typeof fetch);
+
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT };
+    await expect(cmdRouteSubagent('start', 'a1', o)).resolves.toEqual({ subagents: 1, routing: 'on' });
+  });
+
+  it('routes when nothing is listening yet — the ensure-serve hook owns startup', async () => {
+    // A probe that finds no router must not block the subagent: routing on with
+    // the daemon still coming up is the pre-existing behaviour, and the request
+    // waits on the router rather than being refused here.
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch);
+
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT };
+    await expect(cmdRouteSubagent('start', 'a1', o)).resolves.toEqual({ subagents: 1, routing: 'on' });
+  });
+
+  it('never blocks a stop, even against an old router', async () => {
+    // Cleanup must not depend on the router: refusing here would pin routing on.
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ status: 'ok', sonata: true, configPath: '/elsewhere/sonata.toml' })),
+    ) as unknown as typeof fetch);
+
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT };
+    await expect(cmdRouteSubagent('stop', 'ghost', o)).resolves.toEqual({ subagents: 0, routing: 'off' });
   });
 });

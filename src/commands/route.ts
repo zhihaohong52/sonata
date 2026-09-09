@@ -928,12 +928,34 @@ export async function cmdRouteSubagent(
   phase: 'start' | 'stop',
   agentId: string,
   opts: { cwd: string; home: string; packageRoot: string; scope?: 'project' | 'global' },
+  /** Test seam: an injected probe means the caller is encoding the scenario, so the real router check is skipped — the same discipline `cmdRouteSession` follows. */
+  deps: { probe?: (port: number) => Promise<boolean> } = {},
 ): Promise<SubagentPhaseResult> {
   // 'project', matching `routeSubagentsFile`'s own default and every other
   // scope default in this file. This read `?? 'global'` — the lone outlier —
   // which is what made it disagree with the cleaner in `cmdRouteSession`.
   const scope = opts.scope ?? 'project';
   const registry = routeSubagentsFile(opts.cwd, scope, opts.home);
+
+  // Verified BEFORE the lock and before anything is written, and only on start:
+  // routing now targets the machine port, so a stale pre-multi-tenant daemon
+  // holding it would answer with whatever single config started it. Measured
+  // 2026-09-09: a dispatch from one project was served by another project's
+  // config and failed against gateways the first project never names. Every
+  // other entry point (`route session-start`, `sonata code`, `sonata run`,
+  // `ensure-serve.mjs`) already refuses such a router; this one wrote the
+  // routing env with no check at all, which is the hole that let it through.
+  //
+  // Only when something is actually listening: a router still coming up is the
+  // ensure-serve hook's business, and refusing here would turn a normal startup
+  // race into a failure. A stop is never blocked — cleanup that depended on the
+  // router could pin routing on for good.
+  if (phase === 'start' && deps.probe === undefined) {
+    const port = routerPorts(opts.home).router;
+    if (await isSonataRouter(port) && (await sonataRouterMultiTenant(port)) !== true) {
+      throw new Error(preMultiTenantMessage(port));
+    }
+  }
 
   // Read, decide and act inside one lock hold, for the same reason the session
   // registry does: deciding "none left" and acting on it as two acquisitions
