@@ -21,12 +21,36 @@ export class TenantError extends Error {
   }
 }
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { GLOBAL_CONFIG_RELATIVE, configPath as resolveConfigPath, parseConfig, type SonataConfig } from '../config.js';
 import { loadSessions } from '../sessions.js';
 import type { RouterTenant } from './router.js';
+
+/**
+ * The canonical spelling of a config path, which is what a tenant is identified
+ * by.
+ *
+ * A path string is not an identity: macOS symlinks `/var` to `/private/var`, so
+ * one `sonata.toml` reached two ways hashed to two tenant ids. Measured on a
+ * live two-project run (2026-09-09): the same machine config appeared twice on
+ * `/__sonata_health`, LiteLLM carried duplicate entries for it, a needless
+ * restart fired, and cooldowns and budget attribution split across the two ids
+ * for what is one project. Any path traversing a symlink does this — a
+ * symlinked `~/Code`, a mounted path, a worktree — not only a temp directory.
+ *
+ * Best-effort by design: a path that cannot be resolved (deleted between calls,
+ * unreadable) keeps its original spelling rather than throwing. Canonicalising
+ * is an improvement to identity, never a new way for resolution to fail.
+ */
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
 
 export interface KnownTenant {
   id: string;
@@ -59,7 +83,7 @@ export class TenantRegistry {
 
   private machinePath(): string | null {
     const path = join(this.home, GLOBAL_CONFIG_RELATIVE);
-    return existsSync(path) ? path : null;
+    return existsSync(path) ? canonicalPath(path) : null;
   }
 
   noteProject(cwd: string): void {
@@ -75,7 +99,8 @@ export class TenantRegistry {
     let path: string | null;
     if (cwd !== undefined) {
       this.noteProject(cwd);
-      path = resolveConfigPath(cwd, this.home);
+      const found = resolveConfigPath(cwd, this.home);
+      path = found === null ? null : canonicalPath(found);
       if (path === null) {
         throw new TenantError(
           `No sonata.toml found for ${cwd}. Looked in ${join(cwd, 'sonata.toml')} and ` +
@@ -106,11 +131,11 @@ export class TenantRegistry {
     if (machine !== null) paths.add(machine);
     for (const record of Object.values(loadSessions(this.home))) {
       const path = resolveConfigPath(record.cwd, this.home);
-      if (path !== null) paths.add(path);
+      if (path !== null) paths.add(canonicalPath(path));
     }
     for (const cwd of this.noted) {
       const path = resolveConfigPath(cwd, this.home);
-      if (path !== null) paths.add(path);
+      if (path !== null) paths.add(canonicalPath(path));
     }
     const out: KnownTenant[] = [];
     for (const path of [...paths].sort()) {
