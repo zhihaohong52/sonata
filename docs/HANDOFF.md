@@ -86,6 +86,36 @@ project — is the documented shape and needs no undoing.
 The reporter runs the npm install, so nothing above reaches them until a
 release is cut. That is the user's call.
 
+## Second external report — 2026-09-10, from a git worktree
+
+Same reporter, same project, this time working in
+`teambuilding/.claude/worktrees/foundation-1b`. Two findings, one fixed and one
+not:
+
+1. **A worktree resolved no project config** — `sonata.toml` is untracked, so
+   `git worktree add` produces a directory with none of the project's sonata
+   state, and everything run there fell through to the machine config or to
+   none. Fixed: `configPath` now borrows the main checkout's config
+   (`src/git-worktree.ts`), and `sonata doctor` names the worktree instead of
+   repeating a bare "run `sonata route auto`". Confirmed live on a worktree of
+   this repository. Note the reporter's hand-copied `sonata.toml` is still
+   registered with the running router as its *own* tenant — that split is what
+   the borrow removes once the copy is deleted.
+2. **The settings `env` block is read at launch only, on the current Claude
+   Code build.** They wrote the env by hand into a *running* session's settings
+   file, confirmed `route status` reported routing on, and two native agents
+   dispatched from that session still 404'd at `api.anthropic.com` with the
+   router logging nothing. Not a write race, not worktree-specific. **This
+   removes the measured fact `sonata route auto` is built on** — its design is
+   "launch clean, route at SubagentStart" — so `sonata code`, or `route on`
+   *before* launching, is the supported path today. Not fixed; see the
+   `route auto` bullets in `CLAUDE.md` for the full history, including the
+   reverted attempt that made it worse.
+
+Routing settings and hooks are the one thing a worktree cannot borrow: Claude
+Code reads `.claude/settings.local.json` relative to its own cwd. Run
+`sonata route auto` in the worktree itself.
+
 ## If you want work, in the order I would take it
 
 All five are cheap and none blocks anything.

@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import { applyMigrations, readSchemaVersion } from './migrations.js';
+import { mainWorktreeDir } from './git-worktree.js';
 
 export const KNOWN_HARNESSES = ['opencode', 'codex', 'pi', 'reasonix', 'claude'] as const;
 export const KNOWN_ROLES = ['review', 'code', 'explore', 'plan'] as const;
@@ -790,10 +791,27 @@ export const GLOBAL_CONFIG_RELATIVE = join('.config', 'sonata', 'sonata.toml');
  * A project config wins outright — it is not merged with the machine one.
  * Exactly one file is ever in effect, so it is always possible to say which
  * file produced a run.
+ *
+ * A **linked git worktree** borrows its main checkout's config, between those
+ * two. `sonata.toml` is untracked, so `git worktree add` produces a directory
+ * with none of the project's sonata state, and every command run there
+ * silently fell through to the machine config — or to none, which is how a
+ * worktree session's native tier agents ended up 404ing against
+ * `api.anthropic.com` instead of the router. Below the worktree's *own*
+ * config, because a worktree that has been given one means it; above the
+ * machine config, because a checkout of this repository is this project.
+ * Borrowing also gives the worktree the same router tenant id as the main
+ * checkout, which is what shares its cooldowns and its budget rather than
+ * splitting them.
  */
 export function configPath(cwd: string, home: string): string | null {
   const local = join(cwd, 'sonata.toml');
   if (existsSync(local)) return local;
+  const main = mainWorktreeDir(cwd);
+  if (main !== null) {
+    const borrowed = join(main, 'sonata.toml');
+    if (existsSync(borrowed)) return borrowed;
+  }
   const global = join(home, GLOBAL_CONFIG_RELATIVE);
   if (existsSync(global)) return global;
   return null;

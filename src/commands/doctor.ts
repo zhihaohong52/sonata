@@ -28,6 +28,7 @@ import { litellmStatus, type InstallerDeps } from '../native/litellm-venv.js';
 import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm.js';
 import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, loadAaCatalog } from '../catalog.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
+import { mainWorktreeDir } from '../git-worktree.js';
 import { keyReport, resolveKeyFromSource } from '../native/credentials.js';
 import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
@@ -105,6 +106,21 @@ export function staleMcpRegistration(cwd: string, home: string): string | undefi
  *
  * Exported so the message is testable without standing up a doctor run.
  */
+/**
+ * The main checkout `cwd` is borrowing a `sonata.toml` from, or undefined when
+ * it is not a worktree, has its own config, or the borrow found nothing.
+ *
+ * Only the *borrowed* case is worth reporting: a worktree carrying its own
+ * `sonata.toml` is configured like any other project, and one falling through
+ * to the machine config is in the case doctor already describes.
+ */
+export function borrowedWorktreeConfigDir(cwd: string, home: string): string | undefined {
+  if (existsSync(join(cwd, 'sonata.toml'))) return undefined;
+  const main = mainWorktreeDir(cwd);
+  if (main === null) return undefined;
+  return configPath(cwd, home) === join(main, 'sonata.toml') ? main : undefined;
+}
+
 export function routingFailureDetail(input: {
   cwd: string;
   packageRoot?: string;
@@ -112,6 +128,13 @@ export function routingFailureDetail(input: {
   globalSettings: Settings;
   configuredRouterUrl?: string;
   projectResolvesToMachineConfig: boolean;
+  /**
+   * Set when `cwd` is a linked git worktree borrowing this main checkout's
+   * `sonata.toml`. Routing settings and hooks are untracked, so they are the
+   * one thing a worktree cannot borrow — Claude Code reads them relative to
+   * its own cwd — and `route auto` in the main checkout does not reach here.
+   */
+  borrowedFrom?: string;
 }): string {
   const need = 'tier agents need a routed session';
   const fix = 'run `sonata route auto`';
@@ -133,6 +156,15 @@ export function routingFailureDetail(input: {
   // request — so it has to be told apart from having no routing at all.
   if (current !== undefined && input.configuredRouterUrl !== undefined && current !== input.configuredRouterUrl) {
     return `${need} — settings route to ${current}, but this config's router is ${input.configuredRouterUrl}; ${fix}`;
+  }
+
+  // Checked before every hook diagnosis below, because in a fresh worktree all
+  // of them say the same thing — nothing is installed — and none of them says
+  // *why*, which is the only part the user cannot work out from the directory
+  // they are standing in.
+  if (input.borrowedFrom !== undefined) {
+    return `${need} — this is a git worktree of ${input.borrowedFrom}, whose config it borrows, but ` +
+      `routing settings and hooks are untracked and live per checkout; ${fix} here, in the worktree`;
   }
 
   if (input.packageRoot === undefined) return `${need} — ${fix}`;
@@ -331,6 +363,7 @@ export async function cmdDoctor(
             ? `http://localhost:${routerPorts(home).router}`
             : undefined,
           projectResolvesToMachineConfig,
+          borrowedFrom: borrowedWorktreeConfigDir(opts.cwd, home),
         }),
       });
     }
