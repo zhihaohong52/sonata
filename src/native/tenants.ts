@@ -44,7 +44,7 @@ import type { RouterTenant } from './router.js';
  * unreadable) keeps its original spelling rather than throwing. Canonicalising
  * is an improvement to identity, never a new way for resolution to fail.
  */
-function canonicalPath(path: string): string {
+export function canonicalConfigPath(path: string): string {
   try {
     return realpathSync(path);
   } catch {
@@ -83,7 +83,7 @@ export class TenantRegistry {
 
   private machinePath(): string | null {
     const path = join(this.home, GLOBAL_CONFIG_RELATIVE);
-    return existsSync(path) ? canonicalPath(path) : null;
+    return existsSync(path) ? canonicalConfigPath(path) : null;
   }
 
   noteProject(cwd: string): void {
@@ -100,7 +100,7 @@ export class TenantRegistry {
     if (cwd !== undefined) {
       this.noteProject(cwd);
       const found = resolveConfigPath(cwd, this.home);
-      path = found === null ? null : canonicalPath(found);
+      path = found === null ? null : canonicalConfigPath(found);
       if (path === null) {
         throw new TenantError(
           `No sonata.toml found for ${cwd}. Looked in ${join(cwd, 'sonata.toml')} and ` +
@@ -131,11 +131,11 @@ export class TenantRegistry {
     if (machine !== null) paths.add(machine);
     for (const record of Object.values(loadSessions(this.home))) {
       const path = resolveConfigPath(record.cwd, this.home);
-      if (path !== null) paths.add(canonicalPath(path));
+      if (path !== null) paths.add(canonicalConfigPath(path));
     }
     for (const cwd of this.noted) {
       const path = resolveConfigPath(cwd, this.home);
-      if (path !== null) paths.add(canonicalPath(path));
+      if (path !== null) paths.add(canonicalConfigPath(path));
     }
     const out: KnownTenant[] = [];
     for (const path of [...paths].sort()) {

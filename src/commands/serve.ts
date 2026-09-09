@@ -16,8 +16,8 @@ import { readCopilotToken } from '../native/copilot-auth.js';
 import { envVarForGateway, litellmConfigYamlForTenants } from '../native/litellm.js';
 import { litellmRequired, transportFor } from '../native/providers.js';
 import { litellmStatus, managedLitellmPath } from '../native/litellm-venv.js';
-import { createRouterServer } from '../native/router.js';
-import { TenantRegistry } from '../native/tenants.js';
+import { createRouterServer, type RouterTenant } from '../native/router.js';
+import { canonicalConfigPath, TenantRegistry } from '../native/tenants.js';
 import { resolvePrice } from '../pricing.js';
 import { timestampedLogPath } from './init-log.js';
 import { routerPorts } from './ports.js';
@@ -90,6 +90,14 @@ export interface ServeDeps {
    * one.
    */
   instanceId?: string;
+  /**
+   * Test seam: the ports the machine config would otherwise decide.
+   *
+   * `routerPorts` reads the machine config and nothing else, so a test of the
+   * no-machine-config case has no way to ask for an ephemeral port and would
+   * bind the real default 4100.
+   */
+  ports?: { router: number; litellm: number };
 }
 
 /**
@@ -575,6 +583,33 @@ export function priceRow(config: SonataConfig, home: string, row: LedgerRow): Le
   }
 }
 
+/**
+ * Which caps apply to one request: the tenant's own, and the machine's.
+ *
+ * Extracted because the whole subtlety is the comparison against
+ * `machineConfigPath` — both sides must be canonicalised, or the machine
+ * config is mistaken for a project tenant and its machine-wide cap is applied
+ * per project directory.
+ */
+export function budgetStatusesFor(args: {
+  tenant: RouterTenant;
+  /** Canonical — see `canonicalConfigPath`. */
+  machineConfigPath: string;
+  machineDailyUsd?: number;
+  projectSpend: () => number;
+  machineSpend: () => number;
+}): BudgetStatus[] | undefined {
+  const out: BudgetStatus[] = [];
+  const project = args.tenant.config?.budget?.dailyUsd;
+  if (project !== undefined && args.tenant.configPath !== undefined && args.tenant.configPath !== args.machineConfigPath) {
+    out.push({ dailyUsd: project, spentUsd: args.projectSpend(), configPath: args.tenant.configPath });
+  }
+  if (args.machineDailyUsd !== undefined) {
+    out.push({ dailyUsd: args.machineDailyUsd, spentUsd: args.machineSpend(), configPath: args.machineConfigPath });
+  }
+  return out.length === 0 ? undefined : out;
+}
+
 export async function cmdServe(
   opts: { cwd: string; home: string; daemon?: boolean } & ServeDeps,
 ): Promise<ServeHandle> {
@@ -585,12 +620,25 @@ export async function cmdServe(
   // the first request.
   const registry = new TenantRegistry(opts.home, { log: (line) => console.error(`sonata serve: ${line}`) });
   registry.noteProject(opts.cwd);
-  const ports = routerPorts(opts.home);
-  const machineConfigPath = join(opts.home, GLOBAL_CONFIG_RELATIVE);
+  const ports = opts.ports ?? routerPorts(opts.home);
+  // Canonicalised once, because `TenantRegistry` realpaths every config path it
+  // reports and a raw `join` does not: where $HOME or .config traverses a
+  // symlink the two spellings differ, the machine config then looks like a
+  // project tenant, and its machine-wide cap is applied per project directory.
+  // The same defect class `df12401` fixed for tenant identity.
+  const machineConfigPathRaw = join(opts.home, GLOBAL_CONFIG_RELATIVE);
+  const machineConfigPath = canonicalConfigPath(machineConfigPathRaw);
   const machineConfig = (): SonataConfig | undefined => {
-    try { return existsSync(machineConfigPath) ? loadConfig(dirname(machineConfigPath), opts.home) : undefined; } catch { return undefined; }
+    try { return existsSync(machineConfigPathRaw) ? loadConfig(dirname(machineConfigPathRaw), opts.home) : undefined; } catch { return undefined; }
   };
-  if (machineConfig()?.native === undefined) throw new Error('sonata serve: no [native] table');
+  // A router serves every project, so "is there anything to serve?" is a
+  // question about tenants, not about the machine config. `sonata init`
+  // defaults to project scope, so a fresh install has no machine config at
+  // all — asking only about that file killed the daemon at startup, and the
+  // user saw nothing but "the daemon did not answer".
+  if (!registry.loadable().some(({ config }) => config.native !== undefined)) {
+    throw new Error('sonata serve: no [native] table');
+  }
 
   /** Merged gateways across every loadable tenant — what credential resolution and the child env are built from. */
   const mergedNative = (): NativeConfig => {
@@ -691,11 +739,19 @@ export async function cmdServe(
     // a transitional config editing a legacy entry's id/gateway needs the
     // same restart a unified edit gets.
     let activeModelsJson = registry.unionSnapshot();
-    // Set right before a deliberate kill-for-config-change so the crash-exit
-    // handler below (which fires for ANY exit, deliberate or not) does not
-    // also schedule its own duplicate respawn on top of the one already in
-    // flight from that deliberate restart.
-    let expectingConfigRestart = false;
+    // The child a deliberate kill-for-config-change is about to terminate, so
+    // the crash-exit handler below (which fires for ANY exit, deliberate or
+    // not) does not also schedule its own duplicate respawn on top of the one
+    // already in flight from that deliberate restart.
+    //
+    // It names the *child*, not a bare boolean. A boolean is cleared by
+    // whichever exit happens to arrive first, and the abandoned-child branch
+    // returned before ever reading it — so a flag set for child A and consumed
+    // by an unrelated exit leaked, and from then on the next genuine crash of
+    // the live child was swallowed as "expected", no respawn fired, and the
+    // router answered every litellm request against a dead upstream until a
+    // manual `sonata restart`. Identity cannot leak on any ordering.
+    let expectedRestartChild: SpawnedLitellm | undefined;
     let litellmReady: Promise<void> = Promise.resolve();
     // A lazy child that fails its readiness probe is deliberately terminated;
     // identify that exact child so its exit cannot schedule crash recovery.
@@ -711,14 +767,13 @@ export async function cmdServe(
       recordLitellmPid(opts.home, ports.router, spawned.pid);
       spawned.onExit?.((code, signal) => {
         if (stopping) return;
+        const deliberate = expectedRestartChild === spawned;
+        if (expectedRestartChild === spawned) expectedRestartChild = undefined;
         if (abandonedChildren.delete(spawned)) {
           exitedChildren.add(spawned);
           return;
         }
-        if (expectingConfigRestart) {
-          expectingConfigRestart = false;
-          return;
-        }
+        if (deliberate) return;
         const nowMs = now();
         respawnTimestamps.push(nowMs);
         while (respawnTimestamps.length > 0 && nowMs - respawnTimestamps[0] > respawnWindowMs) {
@@ -754,7 +809,7 @@ export async function cmdServe(
     // whatever it was given at startup. Reuses the same respawn machinery
     // already proven for crash recovery, including the `litellmReady` gate
     // every request already awaits before reaching litellm.
-    const maybeRestartForModelChange = async (): Promise<void> => {
+    const runRestartForModelChange = async (): Promise<void> => {
       if (stopping) return;
       const freshModelsJson = registry.unionSnapshot();
       if (freshModelsJson === activeModelsJson) return;
@@ -833,7 +888,7 @@ export async function cmdServe(
         activeModelsJson = freshModelsJson;
         console.error('sonata serve: model registry changed — restarting litellm to pick it up...');
         const oldChild = child;
-        expectingConfigRestart = true;
+        expectedRestartChild = oldChild;
         litellmReady = (async () => {
           // Wait for the old child's actual exit before spawning its
           // replacement: kill() only requests termination, and racing a new
@@ -883,6 +938,29 @@ export async function cmdServe(
       }
     };
 
+    /**
+     * One model-change check at a time.
+     *
+     * Every request calls this, and two concurrent first requests from one
+     * project is the normal case a multi-tenant router creates (parallel
+     * subagents). Without a guard, request 1 took the lazy-start branch and
+     * request 2 — arriving before that child was ready — saw `child !== undefined`
+     * and took the *restart* branch, killing a child that was still coming up.
+     * The extra kill/respawn was the smaller half of the cost; the larger was
+     * that the deliberate-restart marker was then consumed by the wrong exit.
+     * Serialising the check removes both, and a second caller simply awaits the
+     * check already in flight, which is the same answer it would have computed.
+     */
+    let restartInFlight: Promise<void> | undefined;
+    const maybeRestartForModelChange = async (): Promise<void> => {
+      if (restartInFlight !== undefined) return restartInFlight;
+      const inFlight = runRestartForModelChange().finally(() => {
+        if (restartInFlight === inFlight) restartInFlight = undefined;
+      });
+      restartInFlight = inFlight;
+      return inFlight;
+    };
+
     if (needsLitellmAtStart) {
       child = spawnLitellmChild();
       await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
@@ -916,16 +994,13 @@ export async function cmdServe(
       resolveTenant: (hint) => registry.resolve(hint),
       resolveTier: (alias, tenant) => tenant.config === undefined ? undefined : resolveTierAlias(tenant.config, alias),
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
-      budget: (tenant) => {
-        const out: BudgetStatus[] = [];
-        const project = tenant.config?.budget?.dailyUsd;
-        if (project !== undefined && tenant.configPath !== undefined && tenant.configPath !== machineConfigPath) {
-          out.push({ dailyUsd: project, spentUsd: spentTodayUsd(opts.home, Date.now(), tenant.project), configPath: tenant.configPath });
-        }
-        const machine = machineConfig()?.budget?.dailyUsd;
-        if (machine !== undefined) out.push({ dailyUsd: machine, spentUsd: spentTodayUsd(opts.home), configPath: machineConfigPath });
-        return out.length === 0 ? undefined : out;
-      },
+      budget: (tenant) => budgetStatusesFor({
+        tenant,
+        machineConfigPath,
+        machineDailyUsd: machineConfig()?.budget?.dailyUsd,
+        projectSpend: () => spentTodayUsd(opts.home, Date.now(), { tenant: tenant.id }),
+        machineSpend: () => spentTodayUsd(opts.home),
+      }),
       gatewayKeys: (tenant) => {
         const out: Record<string, string> = {};
         for (const [name, gateway] of Object.entries(tenant.config?.native?.gateways ?? {})) {
@@ -936,10 +1011,13 @@ export async function cmdServe(
         return out;
       },
       litellmUnavailable: () => {
-        // Tenant resolution has just noted the request's project. Surface an
-        // unavailable lazy child on this same request instead of forwarding it
-        // to whatever might happen to occupy the LiteLLM port.
-        if (child === undefined && unionNeedsLitellm() && !litellmHealthy()) return litellmUnavailable;
+        // Tenant resolution has just noted the request's project, so re-probe
+        // for a lazily-needed child before answering: an unavailable venv is
+        // surfaced on this same request rather than forwarding it to whatever
+        // might happen to occupy the LiteLLM port. `litellmHealthy` is called
+        // for its effect on `litellmUnavailable`, which is the answer either
+        // way.
+        if (child === undefined && unionNeedsLitellm()) litellmHealthy();
         return litellmUnavailable;
       },
       checkModelChange: () => {

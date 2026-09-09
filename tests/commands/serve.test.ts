@@ -1,17 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { spawn as spawnType } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
   cmdServe, serveHealthUrl, type ServeHandle, isSonataRouter, occupiedPortMessage, startServeDaemon,
   serveStatePath, stopServe, cmdRestart, sonataRouterInstanceId, defaultWaitForLitellm, sonataRouterMultiTenant,
+  budgetStatusesFor,
 } from '../../src/commands/serve.js';
+import type { RouterTenant } from '../../src/native/router.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
 import { managedLitellmPath, venvDir, LITELLM_VERSION } from '../../src/native/litellm-venv.js';
 import { clearCooldowns } from '../../src/native/router.js';
 import { tenantId } from '../../src/native/tenants.js';
+import { appendRow } from '../../src/ledger.js';
 
 let cwd: string;
 let home: string;
@@ -2178,6 +2182,81 @@ litellm = 4000
     expect(spawns).toBe(1);
   });
 
+  it('serialises the model-change check, so two concurrent first requests spawn one child and a later crash still respawns', async () => {
+    // Without an in-flight guard, request 2 saw request 1's not-yet-ready child
+    // and took the *restart* branch: an extra kill/respawn, and a deliberate-
+    // restart marker consumed by the abandoned child's exit — after which the
+    // next genuine crash was swallowed and the router served a dead upstream.
+    writeMachineConfig(`
+[models."sonnet-like"]
+gateway = "anth"
+id = "some-model"
+[tiers.code]
+simple = ["sonnet-like"]
+complex = ["sonnet-like"]
+[native.gateways."anth"]
+base_url = "https://anth.example"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = 4000
+`);
+    writeSonataKey(home, 'anth', 'k');
+    const project = mkdtempSync(join(tmpdir(), 'serve-tenant-race-'));
+    writeFileSync(join(project, 'sonata.toml'), TENANT('needs-litellm'));
+    const kills: number[] = [];
+    const exitCbs: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
+    let spawns = 0;
+    let releaseReady: () => void = () => {};
+    const firstReady = new Promise<void>((r) => { releaseReady = r; });
+    let waits = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      respawnDelayMs: 0,
+      waitForLitellm: async () => { waits += 1; if (waits === 1) await firstReady; },
+      spawnLitellm: () => {
+        spawns += 1;
+        const pid = spawns;
+        return { pid, kill: () => kills.push(pid), onExit: (cb) => { exitCbs.push(cb); } };
+      },
+    });
+    handles.push(handle);
+    vi.unstubAllGlobals();
+    // Raw sockets, not `fetch`: undici pools by origin and dispatches two
+    // requests to one server one after the other, which would defeat the whole
+    // point of this test.
+    const call = () => new Promise<void>((resolve, reject) => {
+      const request = httpRequest({
+        host: 'localhost', port: handle.routerPort, path: '/v1/messages', method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-sonata-project': project },
+      }, (res) => { res.resume(); res.on('end', () => resolve()); });
+      request.on('error', reject);
+      request.end(JSON.stringify({ model: 'sonata-code-simple', messages: [] }));
+    });
+    // Request 1 first, held at its readiness probe with the child spawned but
+    // not yet ready — the exact window request 2 used to walk into.
+    const first = call();
+    for (let i = 0; i < 200 && spawns === 0; i += 1) await new Promise((r) => setTimeout(r, 5));
+    expect(spawns).toBe(1);
+    const second = call();
+    await new Promise((r) => setTimeout(r, 30));
+    // Without the guard, request 2 took the restart branch and killed a child
+    // that was still coming up.
+    expect(kills).toEqual([]);
+    expect(spawns).toBe(1);
+    releaseReady();
+    await Promise.all([first, second]);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(spawns).toBe(1);
+
+    // The live child now crashes on its own. The marker must not have leaked,
+    // so this is seen as a crash and respawned.
+    for (const cb of exitCbs.slice()) cb(1, null);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(spawns).toBe(2);
+  });
+
   it('answers 502 naming the install when a tenant needs litellm and the venv is missing', async () => {
     rmSync(venvDir(home), { recursive: true, force: true });
     writeMachineConfig(`
@@ -2375,5 +2454,135 @@ describe('sonataRouterMultiTenant', () => {
     expect(await sonataRouterMultiTenant(1, payload({ sonata: true, configPath: '/x' }))).toBe(false);
     expect(await sonataRouterMultiTenant(1, payload({ other: true }))).toBe(null);
     expect(await sonataRouterMultiTenant(1, payload({}, false))).toBe(null);
+  });
+});
+
+describe('cmdServe — a project-scoped install with no machine config', () => {
+  it('starts and serves that project, because the guard asks whether any tenant has [native]', async () => {
+    // `sonata init` defaults to project scope, so a fresh install writes no
+    // machine config at all. The router must still come up.
+    rmSync(machineConfigPath(), { force: true });
+    const project = mkdtempSync(join(tmpdir(), 'serve-project-only-'));
+    writeFileSync(join(project, 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "a-model"
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+[native.ports]
+router = 0
+litellm = 4000
+`);
+    const forwarded: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      forwarded.push((JSON.parse(init.body as string) as { model: string }).model);
+      return new Response('{}', { status: 200 });
+    }));
+    const handle = await cmdServe({
+      cwd: project, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+      // `routerPorts` reads the machine config, which this test deliberately
+      // does not have, so the port comes from the seam rather than 4100.
+      ports: { router: 0, litellm: 4000 },
+      spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+    });
+    handles.push(handle);
+    vi.unstubAllGlobals();
+    const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-sonata-project': project },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    expect(res.status).toBe(200);
+    expect(forwarded).toEqual([`${tenantId(realpathSync(join(project, 'sonata.toml')))}/flash`]);
+  });
+
+  it('still refuses when no tenant has a [native] table at all', async () => {
+    rmSync(machineConfigPath(), { force: true });
+    await expect(cmdServe({ cwd, home, tempDir: tempDirFor(), ports: { router: 0, litellm: 4000 } }))
+      .rejects.toThrow(/no \[native\] table/);
+  });
+});
+
+describe('cmdServe — the machine config is the machine, canonically', () => {
+  it('names the canonical machine config in a budget refusal', async () => {
+    // `TenantRegistry` realpaths every config path; `join(home, ...)` did not,
+    // and on a home that traverses a symlink the two spellings differ — the
+    // machine config was then treated as a project tenant and its machine-wide
+    // cap applied per project directory. The refusal's `configPath` is where
+    // that comparison is visible from outside.
+    writeMachineConfig(`
+[models."flash"]
+gateway = "acme"
+id = "a-model"
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+[native.ports]
+router = 0
+litellm = 4000
+[budget]
+daily_usd = 0.5
+`);
+    appendRow(home, {
+      ts: new Date().toISOString(), ms: 1, alias: 'sonata-code-simple', upstream: 'litellm',
+      status: 200, complete: true, tokens: { input: 1, output: 1 },
+      price: { source: 'model', totalUsd: 9 }, attempts: [],
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+      spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+    });
+    handles.push(handle);
+    vi.unstubAllGlobals();
+    const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    expect(res.status).toBe(429);
+    expect(await res.text()).toContain(realpathSync(machineConfigPath()));
+  });
+});
+
+describe('budgetStatusesFor', () => {
+  const tenant = (over: Partial<RouterTenant>): RouterTenant =>
+    ({ id: 't', configPath: '/canonical/sonata.toml', ...over } as RouterTenant);
+
+  it('treats the machine config as the machine, even spelled non-canonically', () => {
+    // `TenantRegistry` realpaths every config path; `join(home, ...)` does not.
+    // Comparing them raw made the machine config look like a project tenant,
+    // and its machine-wide cap was then applied per project directory.
+    const statuses = budgetStatusesFor({
+      tenant: tenant({
+        configPath: '/canonical/machine/sonata.toml',
+        project: '/some/project',
+        config: { budget: { dailyUsd: 5 } } as never,
+      }),
+      machineConfigPath: '/canonical/machine/sonata.toml',
+      machineDailyUsd: 5,
+      projectSpend: () => 99,
+      machineSpend: () => 1,
+    });
+    expect(statuses).toEqual([{ dailyUsd: 5, spentUsd: 1, configPath: '/canonical/machine/sonata.toml' }]);
+  });
+
+  it('applies a project cap alongside the machine one for a real project tenant', () => {
+    const statuses = budgetStatusesFor({
+      tenant: tenant({ config: { budget: { dailyUsd: 2 } } as never, project: '/p' }),
+      machineConfigPath: '/canonical/machine/sonata.toml',
+      machineDailyUsd: 5,
+      projectSpend: () => 3,
+      machineSpend: () => 1,
+    });
+    expect(statuses).toEqual([
+      { dailyUsd: 2, spentUsd: 3, configPath: '/canonical/sonata.toml' },
+      { dailyUsd: 5, spentUsd: 1, configPath: '/canonical/machine/sonata.toml' },
+    ]);
   });
 });

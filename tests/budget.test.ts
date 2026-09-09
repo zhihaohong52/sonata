@@ -71,11 +71,21 @@ describe('spentTodayUsd', () => {
     expect(startOfUtcDay(noon)).toBe(Date.parse('2026-09-03T00:00:00.000Z'));
   });
 
-  it('filters to one project when asked, and counts everything when not', () => {
-    appendRow(home, row('2026-09-03T03:00:00.000Z', { source: 'model', totalUsd: 1 }, { project: '/p/a' }));
-    appendRow(home, row('2026-09-03T04:00:00.000Z', { source: 'model', totalUsd: 2 }, { project: '/p/b' }));
-    expect(spentTodayUsd(home, noon, '/p/a')).toBe(1);
+  it('filters to one tenant when asked, and counts everything when not', () => {
+    appendRow(home, row('2026-09-03T03:00:00.000Z', { source: 'model', totalUsd: 1 }, { project: '/p/a', tenant: 't1' }));
+    appendRow(home, row('2026-09-03T04:00:00.000Z', { source: 'model', totalUsd: 2 }, { project: '/p/b', tenant: 't2' }));
+    expect(spentTodayUsd(home, noon, { tenant: 't1' })).toBe(1);
     expect(spentTodayUsd(home, noon)).toBe(3);
+  });
+
+  it('sums one project entered under two cwd spellings as one tenant', () => {
+    // The defect: a project cap keyed on the raw cwd string gave a repository
+    // one bucket per directory spelling — `daily_usd = 25` became 25 per
+    // spelling. One `sonata.toml` is one tenant however it was reached.
+    appendRow(home, row('2026-09-03T03:00:00.000Z', { source: 'model', totalUsd: 1 }, { project: '/repo', tenant: 't1' }));
+    appendRow(home, row('2026-09-03T04:00:00.000Z', { source: 'model', totalUsd: 2 }, { project: '/repo/sub', tenant: 't1' }));
+    appendRow(home, row('2026-09-03T05:00:00.000Z', { source: 'model', totalUsd: 4 }, { project: '/link/to/repo', tenant: 't1' }));
+    expect(spentTodayUsd(home, noon, { tenant: 't1' })).toBe(7);
   });
 });
 
