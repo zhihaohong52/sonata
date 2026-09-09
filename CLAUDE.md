@@ -492,6 +492,24 @@ cannot be sent. A non-text block (an image) has no string form, so the body is
 passed through unchanged rather than silently losing content. Verified live: the
 model obeys the flattened prompt, not just accepts it.
 
+**And mid-conversation system turns are demoted on that path — this was the
+hole.** Claude Code 2.1.266 sends "system turns" as a `role: "system"` entry
+inside `messages` (Anthropic accepts them). Neither `flattenSystemBlocks` nor
+`supports_system_message: false` looks at `messages`, which is why the pair
+was measured necessary but not sufficient on 2026-09-03. Captured 2026-09-09
+through a logging proxy (`messageRoles: ["user","system"]` on a session's
+first request) and probed directly against the live LiteLLM child: string
+`system`, no system turn → streams; same request plus a system turn → 400.
+`demoteSystemTurns` (`src/native/router.ts`) rewrites each such turn to
+`role: "user"` — the role LiteLLM's own `map_system_message_pt` demotes to —
+content and position untouched; `litellmBody` is now `demoteSystemTurns ∘
+sanitizeToolSchemas ∘ flattenSystemBlocks`. Verified live on a scratch daemon
+before the 4110 router was restarted onto it. Note LiteLLM 1.98.0 reads
+`supports_system_message` from `litellm_params`/kwargs (`main.py`), not from
+`model_info` where sonata writes it — so that declaration has never had an
+effect; it is left in place pending its own fix, since the demotion makes the
+question moot for the shape that actually failed.
+
 **Tool schemas are repaired for the regex dialect on the same path.** Claude Code
 sends a write-capable agent its full tool set, and the Artifact tool's `field`
 parameter constrains a string with `\p{Cc}`-style Unicode property classes.

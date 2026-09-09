@@ -9,6 +9,20 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 ## [Unreleased]
 
 ### Fixed
+- **The codex-oauth `System messages are not allowed` 400 is closed.** The
+  hole that survived `flattenSystemBlocks` + `supports_system_message: false`
+  was never in `system` at all: Claude Code 2.1.266 sends mid-conversation
+  system messages as a `role: "system"` turn inside `messages`, which
+  Anthropic accepts. Captured through a logging proxy on 2026-09-09
+  (`messageRoles: ["user","system"]` on the very first request), then probed
+  directly against the live LiteLLM child: a string `system` with no system
+  turn streams fine, the identical request plus a system turn 400s. LiteLLM's
+  Anthropic adapter forwards the turn as a system-role chat message, its
+  chat→responses bridge emits it as a system-role input item, and the Codex
+  backend refuses it. `demoteSystemTurns` (`src/native/router.ts`) rewrites
+  each such turn to `role: "user"`, content and position untouched, on the
+  litellm path only; verified live on a scratch daemon — the `claude -p`
+  session that 400'd a minute earlier returned 200 from `gpt-5.6-luna`.
 - **Native write-role agents (`code-simple`, `code-complex`) died on their first
   request to every OpenAI-compatible provider** with HTTP 400 `Invalid schema
   for function 'Artifact': '^(?!__.*__$)[^\p{Cc}…' is not a 'regex'`
