@@ -804,10 +804,23 @@ export function configPath(cwd: string, home: string): string | null {
  * keep working; it is always injected in tests, which must never read the
  * real home directory.
  */
+/**
+ * "There is no sonata.toml here" — typed so a hook body can tell it apart from
+ * a real refusal. A global `route auto` hook fires in every directory, and in
+ * a configless one this is the expected outcome and must stay silent; anything
+ * else `route session-start` throws is worth showing the user.
+ */
+export class NoConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NoConfigError';
+  }
+}
+
 export function loadConfig(cwd: string, home: string = homedir()): SonataConfig {
   const path = configPath(cwd, home);
   if (path === null) {
-    throw new Error(
+    throw new NoConfigError(
       `No sonata.toml found. Looked in ${join(cwd, 'sonata.toml')} and ` +
       `${join(home, GLOBAL_CONFIG_RELATIVE)}. Run \`sonata init\` or create one.`,
     );

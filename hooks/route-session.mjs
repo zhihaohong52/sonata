@@ -28,6 +28,24 @@ async function readSessionId() {
   }
 }
 
+/**
+ * A non-zero exit is shown to the user as a `systemMessage`, which Claude Code
+ * honours on this event. The CLI refused for a reason worth reading — most
+ * often "router port N is already serving a different sonata configuration",
+ * which used to be swallowed here: this script exited 0 with stdio ignored,
+ * the session stayed unrouted, and the first visible symptom was a native
+ * dispatch dying with `model_not_found` at api.anthropic.com. The CLI itself
+ * exits 0 for the one expected failure (no config in this directory), so a
+ * global hook stays silent where it has nothing to do.
+ */
+function surface(code, stderr) {
+  const text = stderr.trim();
+  if (code === 0 || text === '') return;
+  process.stdout.write(JSON.stringify({
+    systemMessage: `sonata route session-${phase} failed, so foreign-model tier agents will not route in this session:\n${text.slice(0, 2000)}`,
+  }) + '\n');
+}
+
 const sessionId = await readSessionId();
 if (sessionId === '') process.exit(0);
 
@@ -35,10 +53,13 @@ await new Promise((resolve) => {
   try {
     const args = [cli, 'route', `session-${phase}`, '--id', sessionId];
     if (global) args.push('--global');
-    const child = spawn(process.execPath, args, {
-      stdio: 'ignore',
-    });
-    child.on('exit', resolve);
+    // stdout ignored: on SessionStart, plain stdout becomes context for
+    // Claude, and the CLI's "routing off; 1 session(s) routed" is not an
+    // instruction. stderr is kept for the one case worth showing.
+    const child = spawn(process.execPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const stderr = [];
+    child.stderr.on('data', (chunk) => stderr.push(chunk));
+    child.on('exit', (code) => { surface(code, Buffer.concat(stderr).toString('utf8')); resolve(); });
     child.on('error', resolve);
   } catch {
     resolve();

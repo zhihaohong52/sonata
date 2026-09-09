@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents, expectedAgentNames, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL, resolveTierAlias, harnessModelFor } from '../src/config.js';
+import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents, expectedAgentNames, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL, resolveTierAlias, harnessModelFor, NoConfigError } from '../src/config.js';
 
 const VALID = `
 [models.deepseek-v4-flash]
@@ -261,6 +261,9 @@ code = ["m"]
 
   it('names both places it looked when neither exists', () => {
     expect(() => loadConfig(cwd, home)).toThrow(/sonata\.toml/);
+    // Typed, so a hook body can tell "no config here" (a global hook firing
+    // in an unrelated directory — expected, stay silent) from a real refusal.
+    expect(() => loadConfig(cwd, home)).toThrow(NoConfigError);
     expect(() => loadConfig(cwd, home)).toThrow(new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     expect(() => loadConfig(cwd, home)).toThrow(/\.config[/\\]sonata/);
   });

@@ -98,6 +98,7 @@ The CLI (after `npm link`):
   - **Two measured facts justify that shape.** **Adding** the routing env is picked up by an already-running session within seconds — verified live 2026-08-27 with routing off at dispatch, the `SubagentStart` hook turning it on, and the router logging `model=sonata-explore-simple -> gpt-5.6-luna -> litellm` moments later, which is why a subagent's very first request is already routed. **Removing** it is observed only eventually, on a timescale not yet measured.
   - **That first fact did not reproduce on 2026-09-01, and the failure is silent.** Two `code-simple` subagents dispatched from a session launched into a clean settings file both died with `model_not_found` for `sonata-code-simple` — the alias reached `api.anthropic.com`, not the router. The `SubagentStart` hook *had* fired both times (`.sonata/route-subagents.json` held the agent id and `.claude/settings.local.json` held `ANTHROPIC_BASE_URL`), and the second attempt started with the env already in place for minutes, so this is not a write race. `env | grep ANTHROPIC` in that session confirmed the variable was never in its process environment. Whether the per-request re-read regressed, or the 2026-08-27 session had been launched routed and only appeared to pick it up, is not established — but a session that will not route cannot be told apart from one that will, except by dispatching and watching it fail. A session launched *while* routing is already on works, which is why `/cmux` is the reliable way to get a routed session today.
   - **Do not "fix" Remote Control by cleaning the file on a timer after SessionStart.** That was tried (`bdf8e27`, reverted in `f5ca015`) on the theory that a routed session *latches* — that once it has read `ANTHROPIC_BASE_URL`, removing the key cannot un-route it. Two fresh sessions appeared to confirm it, each still routing across several turns after removal. **The latch is a cache with a lifetime, not a permanent state.** The session that developed the change kept working for tens of minutes and then began sending `sonata-*` aliases to `api.anthropic.com`, which answers "issue with the selected model … it may not exist". That is worse than the bug it replaced: losing Remote Control is visible at launch, whereas a foreign-model agent dying mid-task reads as a defect in the agent's own work.
+  - **A refusal inside either hook is shown to the user.** `route session-start` correctly refuses to route through a router port that another project's config already holds (two projects each with their own `sonata.toml` on the default port), but the hook ran it with stdio ignored and exited 0 — so the session silently stayed unrouted and tier aliases 404ed at `api.anthropic.com` (reported 2026-09-09). Both hooks now relay a non-zero CLI exit as a hook `systemMessage`, which Claude Code honours on SessionStart and SubagentStart; the CLI exits 0 for `NoConfigError` alone, since a global hook firing in a configless directory is expected and must stay quiet. `sonata doctor`'s `serve health` check makes the same collision legible before a dispatch dies: it compares the router's reported `configPath` with this project's and fails naming both.
   - **An install predating this carries only the session pair, and would never route.** `autoInstalled` therefore requires all four hooks, so `sonata doctor` reports a stale install rather than a working one; the fix is re-running `sonata route auto`
 - `sonata usage [--since 7d] [--by model|role|tier|gateway|session|project] [--session <id>] [--json]` — tokens and cost from the router's ledger. **Native path only**: a `sonata dispatch` run executes in the foreign CLI's own process and never transits the router, so its tokens are unobservable. Unpriced volume is reported beside the priced total, never folded into it — a total that treats unknown as zero under-reports silently
 - `sonata status [--session <id>|--all]` — whether the router is up and on which port, then the recent alias → candidate served → tokens → failed attempts decisions from the ledger (the last hour by default; `--session` narrows to one session, `--all` skips the narrowing). Reachability and routing-state live in `sonata route status`, which reports whether *settings* route this project's sessions
@@ -490,6 +491,25 @@ wrapper, costing prompt caching on this path; the alternative is a request that
 cannot be sent. A non-text block (an image) has no string form, so the body is
 passed through unchanged rather than silently losing content. Verified live: the
 model obeys the flattened prompt, not just accepts it.
+
+**Tool schemas are repaired for the regex dialect on the same path.** Claude Code
+sends a write-capable agent its full tool set, and the Artifact tool's `field`
+parameter constrains a string with `\p{Cc}`-style Unicode property classes.
+JavaScript and Anthropic accept those; an OpenAI-style endpoint validates each
+tool's parameters as JSON Schema with `format: regex`, and the reference
+validator runs that on Python's `re`, where `\p` is a *bad escape* — so Azure
+answered a `code-simple` request with 400 `'…' is not a 'regex'`
+(`tools[1].parameters`) and the agent died on its first request (reported
+2026-09-09 from another project; reproduced against `python3 -c
+"re.compile(...)"`). Read-only roles never hit it only because their agents
+carry an explicit `tools:` allowlist that omits Artifact. `sanitizeToolSchemas`
+(`src/native/router.ts`) strips exactly those patterns and nothing else, and
+`litellmBody` is the one transform both litellm forwarding paths take
+(`sanitizeToolSchemas ∘ flattenSystemBlocks`), so they cannot drift. An
+Anthropic request stays byte-identical; the direct path is a pass-through by
+contract. Giving write roles an allowlist instead was rejected: it would drop
+fan-out for the roles that use it, and any future tool with the same shape
+would break the same way.
 
 **Flattening alone is not enough: the codex model is also declared
 `supports_system_message: false`.** The Codex backend refuses *any* `role:

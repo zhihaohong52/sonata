@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, flattenSystemBlocks, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD } from '../../src/native/router.js';
+import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD } from '../../src/native/router.js';
 
 function fakeFetch(record: any[]) {
   return async (url: string, init: any) => {
@@ -803,5 +803,123 @@ describe('routeRequest — 529 rewrite for empty Codex completions', () => {
       log: (l) => lines.push(l),
     });
     expect(lines.some(l => l.includes('529') && l.includes('gpt-5.6-luna'))).toBe(true);
+  });
+});
+
+// Claude Code's Artifact tool, verbatim: its `field` parameter's pattern uses
+// Unicode property classes. Python's `re` has no `\p{..}`, and jsonschema's
+// `format: regex` check on OpenAI-style endpoints runs on Python's `re`, so
+// Azure answered a `code-simple` dispatch with 400 `'…' is not a 'regex'`
+// (tools[1].parameters) and LiteLLM killed the run (measured 2026-09-09).
+const ARTIFACT_FIELD_PATTERN = '^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}"\\\\./[\\]]{1,200}$';
+
+function toolsBody(model: string): Buffer {
+  return Buffer.from(JSON.stringify({
+    model,
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [
+      { name: 'Read', input_schema: { type: 'object', properties: { file_path: { type: 'string' } } } },
+      {
+        name: 'Artifact',
+        input_schema: {
+          type: 'object',
+          properties: {
+            field: { type: 'string', pattern: ARTIFACT_FIELD_PATTERN },
+            asset_id: { type: 'string', pattern: '^[0-9a-f]{32}$' },
+            writes: { type: 'array', items: { type: 'object', properties: { doc_id: { type: 'string', pattern: '^[^\\p{Cc}]+$' } } } },
+          },
+        },
+      },
+    ],
+  }));
+}
+
+describe('usesUnicodePropertyEscape', () => {
+  it('matches \\p{..} and \\P{..}', () => {
+    expect(usesUnicodePropertyEscape(ARTIFACT_FIELD_PATTERN)).toBe(true);
+    expect(usesUnicodePropertyEscape('^\\P{L}+$')).toBe(true);
+  });
+  it('does not match an escaped backslash followed by p', () => {
+    // `\\p` is a literal backslash then `p`, which Python's re accepts.
+    expect(usesUnicodePropertyEscape('^\\\\p$')).toBe(false);
+    expect(usesUnicodePropertyEscape('^[0-9a-f]{32}$')).toBe(false);
+    expect(usesUnicodePropertyEscape('^(?!\\.\\.?(?:\\/|$))[A-Za-z0-9_\\-.~:@+]{1,200}$')).toBe(false);
+  });
+});
+
+describe('sanitizeToolSchemas', () => {
+  const parse = (b: Buffer) => JSON.parse(b.toString());
+
+  it('drops only the patterns Python re cannot parse, wherever they sit in the schema', () => {
+    const out = parse(sanitizeToolSchemas(toolsBody('gpt-5.6-terra')));
+    const artifact = out.tools[1].input_schema.properties;
+    expect(artifact.field).toEqual({ type: 'string' });
+    expect(artifact.asset_id).toEqual({ type: 'string', pattern: '^[0-9a-f]{32}$' });
+    expect(artifact.writes.items.properties.doc_id).toEqual({ type: 'string' });
+    // Untouched tool, untouched everything else.
+    expect(out.tools[0]).toEqual(parse(toolsBody('x')).tools[0]);
+    expect(out.messages).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+
+  it('returns the body byte-identical when nothing needs stripping', () => {
+    const body = Buffer.from(JSON.stringify({
+      model: 'm',
+      tools: [{ name: 'Read', input_schema: { type: 'object', properties: { p: { type: 'string', pattern: '^[a-z]+$' } } } }],
+    }));
+    expect(sanitizeToolSchemas(body).equals(body)).toBe(true);
+  });
+
+  it('leaves a property that happens to be named "pattern" alone', () => {
+    // `pattern` as a *property name* is an object under `properties`, not a
+    // regex; only a string-valued `pattern` keyword is a regex.
+    const body = Buffer.from(JSON.stringify({
+      model: 'm',
+      tools: [{ name: 't', input_schema: { type: 'object', properties: { pattern: { type: 'string' } } } }],
+    }));
+    expect(sanitizeToolSchemas(body).equals(body)).toBe(true);
+  });
+
+  it('leaves a non-JSON body, and a body with no tools, alone', () => {
+    const raw = Buffer.from('not json');
+    expect(sanitizeToolSchemas(raw).equals(raw)).toBe(true);
+    const none = Buffer.from(JSON.stringify({ model: 'm', messages: [] }));
+    expect(sanitizeToolSchemas(none).equals(none)).toBe(true);
+  });
+});
+
+describe('routeRequest — tool schemas', () => {
+  const seen: string[] = [];
+  const capture: typeof fetch = (async (_url: string, init: RequestInit) => {
+    seen.push(Buffer.from(init.body as Uint8Array).toString());
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const deps = { fetch: capture, litellmBase: 'http://litellm', litellmKey: 'k' };
+  const request = (model: string) => ({
+    method: 'POST', url: '/v1/messages', headers: { 'content-type': 'application/json' }, body: toolsBody(model),
+  });
+
+  it('strips Unicode-property patterns on the litellm path', async () => {
+    seen.length = 0;
+    await routeRequest(request('gpt-5.6-terra'), deps);
+    const tools = JSON.parse(seen[0]).tools;
+    expect(tools[1].input_schema.properties.field).toEqual({ type: 'string' });
+    expect(tools[1].input_schema.properties.asset_id.pattern).toBe('^[0-9a-f]{32}$');
+  });
+
+  it('strips them on the tier path too', async () => {
+    seen.length = 0;
+    clearCooldowns();
+    await routeRequest(request('sonata-code-simple'), {
+      ...deps,
+      resolveTier: () => ({ role: 'code', tier: 'simple', routes: [{ key: 'terra', native: { gateway: 'g', id: 'gpt-5.6-terra' } }] }),
+    });
+    expect(JSON.parse(seen[0]).tools[1].input_schema.properties.field).toEqual({ type: 'string' });
+  });
+
+  it('leaves an Anthropic request byte-identical', async () => {
+    seen.length = 0;
+    const req = request('claude-sonnet-4');
+    await routeRequest(req, { ...deps, anthropicBase: 'http://anthropic' });
+    expect(seen[0]).toBe(req.body.toString());
   });
 });

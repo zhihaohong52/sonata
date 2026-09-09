@@ -5,7 +5,7 @@ import { cmdRun } from './commands/run.js';
 import { cmdDispatch } from './commands/dispatch.js';
 import { cmdTail } from './commands/tail.js';
 import { cmdWait } from './commands/wait.js';
-import { loadConfig } from './config.js';
+import { loadConfig, NoConfigError } from './config.js';
 import { cmdApprove } from './commands/approve.js';
 import { cmdSync } from './commands/sync.js';
 import { cmdDoctor } from './commands/doctor.js';
@@ -627,11 +627,20 @@ export async function main(argv: string[]): Promise<number> {
       const id = rest[rest.indexOf('--id') + 1];
       if (!rest.includes('--id') || !id) throw new Error(`sonata route ${action} requires --id <session-id>`);
       const self = fileURLToPath(import.meta.url);
-      const res = await cmdRouteSession(
-        action === 'session-start' ? 'start' : 'end',
-        id,
-        { ...opts, serveArgv: [process.execPath, self, 'serve'] },
-      );
+      let res;
+      try {
+        res = await cmdRouteSession(
+          action === 'session-start' ? 'start' : 'end',
+          id,
+          { ...opts, serveArgv: [process.execPath, self, 'serve'] },
+        );
+      } catch (err) {
+        // The hook that runs this now surfaces a non-zero exit to the user as
+        // a systemMessage. A global hook fires in every directory, and "no
+        // config here" is the expected answer in most of them — not a warning.
+        if (err instanceof NoConfigError) return 0;
+        throw err;
+      }
       console.log(`routing ${res.routing}; ${res.sessions} session(s) routed`);
       return 0;
     }
@@ -642,7 +651,13 @@ export async function main(argv: string[]): Promise<number> {
     if (action === 'subagent-start' || action === 'subagent-stop') {
       const id = rest[rest.indexOf('--id') + 1];
       if (!rest.includes('--id') || !id) throw new Error(`sonata route ${action} requires --id <agent-id>`);
-      const res = await cmdRouteSubagent(action === 'subagent-start' ? 'start' : 'stop', id, opts);
+      let res;
+      try {
+        res = await cmdRouteSubagent(action === 'subagent-start' ? 'start' : 'stop', id, opts);
+      } catch (err) {
+        if (err instanceof NoConfigError) return 0;
+        throw err;
+      }
       console.log(`routing ${res.routing}; ${res.subagents} subagent(s) running`);
       return 0;
     }

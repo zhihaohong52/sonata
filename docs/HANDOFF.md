@@ -59,6 +59,32 @@ Two things treated as 1.0-relevant that were never item-list rows:
 - **A session that will not route is indistinguishable from one that will**
   until a dispatch dies with `model_not_found`. See the traps section.
 
+## First external report — 2026-09-09
+
+The 1.0 gate waits on external bug reports. The first arrived, from a Claude
+session in the `teambuilding` project (gateway `anexto`, Azure `gpt-5.6-luna`,
+Claude Code 2.1.260), and both defects reproduced and are fixed on `main`
+(unreleased at the time of writing — see `[Unreleased]` in `CHANGELOG.md`):
+
+1. **Native write-role agents 400 on every OpenAI-compatible provider** —
+   Claude Code's Artifact tool schema carries a `\p{Cc}` regex Python's `re`
+   cannot parse. `sanitizeToolSchemas` on the litellm path.
+2. **`route session-start`'s port-collision refusal was swallowed by the hook.**
+   The hooks now surface it as a `systemMessage`; doctor's `serve health` checks
+   router identity.
+
+Two of the reporter's suggestions were **not** taken, on purpose: an explicit
+`tools:` allowlist for write roles (drops fan-out; the next tool with the same
+shape breaks the same way — the transport is the right layer), and treating a
+project `sonata.toml` that is byte-identical to the machine config as the same
+config for port sharing (true only until one file is edited, after which the
+daemon in the other project's cwd silently keeps serving the old one). Their
+local workaround — a second router on `[native.ports] router = 4101` for that
+project — is the documented shape and needs no undoing.
+
+The reporter runs the npm install, so nothing above reaches them until a
+release is cut. That is the user's call.
+
 ## If you want work, in the order I would take it
 
 All five are cheap and none blocks anything.
