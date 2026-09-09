@@ -156,6 +156,16 @@ directory spelling. For the same reason the machine config's own path is
 canonicalised before it is compared against a tenant's: raw, it looks like a
 project tenant and its machine-wide cap is pushed as a per-project one.
 
+Two limits of that shape, stated rather than discovered later. **Rows written
+before this change carry no `tenant`**, so they sit outside a *project* cap for
+the remainder of the upgrade day; the machine cap still counts them, which
+bounds the gap rather than leaving it open. And **the model-change check is
+coalesced**: a second config change arriving while a check runs gets the
+running check's answer, so a change that lands with no subsequent traffic is
+applied on the next request rather than immediately. `checkModelChange` fires
+per request, so the cost is one request's latency — the same fire-and-forget
+class the pre-existing design already had.
+
 **Threat note: the project header steers config resolution.** A crafted
 `x-sonata-project` makes the router read and parse an arbitrary directory's
 `sonata.toml`, and a config found there can name a `direct`-transport gateway
