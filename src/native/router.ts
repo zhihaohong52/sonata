@@ -482,11 +482,53 @@ export function sanitizeToolSchemas(body: Buffer): Buffer {
 }
 
 /**
+ * Rewrites every `role: "system"` turn inside `messages` to a `user` turn,
+ * content and position untouched.
+ *
+ * Claude Code 2.1.266 sends mid-conversation system messages ("the system may
+ * send updates, reminders, or modifications to rules via mid-conversation
+ * system turns") as a `role: "system"` entry in `messages`, which Anthropic
+ * accepts. Captured 2026-09-09 through a logging proxy: `messageRoles:
+ * ["user","system"]` on the very first request of a `claude -p` session.
+ * LiteLLM's Anthropic adapter forwards that turn as a system-role chat message,
+ * its chat→responses bridge turns a block-content system message into a
+ * system-role *input item*, and the Codex backend answers
+ * `{"detail":"System messages are not allowed"}`. Neither
+ * `flattenSystemBlocks` nor `supports_system_message: false` looks at
+ * `messages`, which is why the pair was measured necessary but not sufficient
+ * (HANDOFF, 2026-09-03). Probed directly against the live LiteLLM child: a
+ * string `system` with no system turn streams fine; the identical request plus
+ * a system turn 400s.
+ *
+ * `user` is the role LiteLLM's own `map_system_message_pt` demotes to, and a
+ * reminder addressed to the model reads the same from either. Litellm path
+ * only; Anthropic keeps its own shape byte-identical.
+ */
+export function demoteSystemTurns(body: Buffer): Buffer {
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(body.toString()) as Record<string, unknown>;
+  } catch {
+    return body;
+  }
+  const messages = payload.messages;
+  if (!Array.isArray(messages)) return body;
+  let changed = false;
+  const next = messages.map((message) => {
+    if (message === null || typeof message !== 'object' || (message as { role?: unknown }).role !== 'system') return message;
+    changed = true;
+    return { ...(message as Record<string, unknown>), role: 'user' };
+  });
+  if (!changed) return body;
+  return Buffer.from(JSON.stringify({ ...payload, messages: next }));
+}
+
+/**
  * The one definition of what a Claude Code request needs before LiteLLM may
  * see it — both litellm forwarding paths take this, so they cannot drift.
  */
 function litellmBody(body: Buffer): Buffer {
-  return sanitizeToolSchemas(flattenSystemBlocks(body));
+  return demoteSystemTurns(sanitizeToolSchemas(flattenSystemBlocks(body)));
 }
 
 /**

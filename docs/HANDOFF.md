@@ -134,6 +134,19 @@ cool the candidate and the tier falls through to a 529 naming `sonata
 dispatch`, instead of a bare 400 that reads as a defect in the agent's own
 work. The defect is *survivable*, not fixed.
 
+## The codex-oauth hole is found and closed (2026-09-09)
+
+The 2026-09-03 section above stands as history; here is the correction. The
+remaining hole was **not** in `system`: Claude Code 2.1.266 sends
+mid-conversation system messages as a `role: "system"` turn inside
+`messages`. Captured via a logging proxy in front of the router, probed
+directly against LiteLLM (string `system` alone streams; plus a system turn
+→ 400), fixed by `demoteSystemTurns` on the litellm path, verified live on a
+scratch daemon. Item 1 of "If you want work" is done. Also learned on the
+way: LiteLLM 1.98.0 reads `supports_system_message` from `litellm_params`,
+not `model_info`, so sonata's declaration never took effect — harmless now,
+worth cleaning up.
+
 ## Standing constraints from the user — do not rediscover these
 
 - **Never dispatch to `anexto` from this repository.** Route to `luna` and

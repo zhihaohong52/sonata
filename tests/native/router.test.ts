@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD } from '../../src/native/router.js';
+import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD } from '../../src/native/router.js';
 
 function fakeFetch(record: any[]) {
   return async (url: string, init: any) => {
@@ -919,6 +919,78 @@ describe('routeRequest — tool schemas', () => {
   it('leaves an Anthropic request byte-identical', async () => {
     seen.length = 0;
     const req = request('claude-sonnet-4');
+    await routeRequest(req, { ...deps, anthropicBase: 'http://anthropic' });
+    expect(seen[0]).toBe(req.body.toString());
+  });
+});
+
+// Captured 2026-09-09 from Claude Code 2.1.266 (`claude -p`, and a subagent
+// dispatch): `messages` carried a `role: "system"` turn after the user turn.
+// LiteLLM's Anthropic adapter forwards it as a system-role chat message, the
+// chat→responses bridge emits it as a system input item, and the Codex backend
+// answers `{"detail":"System messages are not allowed"}` — the hole that
+// survived `flattenSystemBlocks` + `supports_system_message: false`, since
+// neither looks at `messages`.
+describe('demoteSystemTurns', () => {
+  const parse = (b: Buffer) => JSON.parse(b.toString());
+  const body = (messages: unknown[]) => Buffer.from(JSON.stringify({ model: 'm', messages }));
+
+  it('turns a mid-conversation system turn into a user turn, keeping its content and position', () => {
+    const out = parse(demoteSystemTurns(body([
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      { role: 'system', content: [{ type: 'text', text: 'reminder', cache_control: { type: 'ephemeral' } }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+      { role: 'system', content: 'plain string reminder' },
+    ])));
+    expect(out.messages.map((m: { role: string }) => m.role)).toEqual(['user', 'user', 'assistant', 'user']);
+    expect(out.messages[1].content).toEqual([{ type: 'text', text: 'reminder', cache_control: { type: 'ephemeral' } }]);
+    expect(out.messages[3].content).toBe('plain string reminder');
+  });
+
+  it('returns the body byte-identical when no turn is a system turn', () => {
+    const b = body([{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'yo' }]);
+    expect(demoteSystemTurns(b).equals(b)).toBe(true);
+  });
+
+  it('leaves a non-JSON body, and one with no messages array, alone', () => {
+    const raw = Buffer.from('nope');
+    expect(demoteSystemTurns(raw).equals(raw)).toBe(true);
+    const none = Buffer.from(JSON.stringify({ model: 'm' }));
+    expect(demoteSystemTurns(none).equals(none)).toBe(true);
+  });
+});
+
+describe('routeRequest — system turns', () => {
+  const seen: string[] = [];
+  const capture: typeof fetch = (async (_url: string, init: RequestInit) => {
+    seen.push(Buffer.from(init.body as Uint8Array).toString());
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const deps = { fetch: capture, litellmBase: 'http://litellm', litellmKey: 'k' };
+  const request = (model: string) => ({
+    method: 'POST', url: '/v1/messages', headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({
+      model,
+      system: [{ type: 'text', text: 'sys' }],
+      messages: [{ role: 'user', content: 'hi' }, { role: 'system', content: [{ type: 'text', text: 'turn' }] }],
+    })),
+  });
+
+  it('demotes on the litellm path, and on the tier path', async () => {
+    seen.length = 0;
+    await routeRequest(request('gpt-5.6-terra'), deps);
+    expect(JSON.parse(seen[0]).messages.map((m: { role: string }) => m.role)).toEqual(['user', 'user']);
+    clearCooldowns();
+    await routeRequest(request('sonata-code-simple'), {
+      ...deps,
+      resolveTier: () => ({ role: 'code', tier: 'simple', routes: [{ key: 'terra', native: { gateway: 'g', id: 'gpt-5.6-terra' } }] }),
+    });
+    expect(JSON.parse(seen[1]).messages.map((m: { role: string }) => m.role)).toEqual(['user', 'user']);
+  });
+
+  it('leaves an Anthropic request byte-identical — Anthropic accepts its own system turns', async () => {
+    seen.length = 0;
+    const req = request('claude-sonnet-5');
     await routeRequest(req, { ...deps, anthropicBase: 'http://anthropic' });
     expect(seen[0]).toBe(req.body.toString());
   });
