@@ -1421,13 +1421,6 @@ describe('sonataRouterInstanceId', () => {
 });
 
 describe('startServeDaemon', () => {
-  // Every call below passes `home` as the explicit cwd. `startServeDaemon`
-  // defaults that to `process.cwd()`, which is the sonata checkout — so a
-  // developer who has run `sonata init` in the repo gives the suite a project
-  // sonata.toml to resolve, and these tests then read *its* ports instead of
-  // the fixture written here. That failed with "expected 4110 to be 4100",
-  // naming a port nothing in the test mentions. Passing the cwd makes the
-  // fixture the only config these can see.
   let home: string;
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'sonata-daemon-home-'));
@@ -1448,11 +1441,7 @@ context_window = 128000
     unref: () => {},
   })) as unknown as typeof spawnType;
 
-  it('spawns the daemon with the provided cwd, not the caller cwd', async () => {
-    // Global routing is one shared router for every project; the daemon must
-    // resolve the machine config regardless of which project's session
-    // triggered the start, which requires spawning from an explicit cwd
-    // rather than inheriting process.cwd().
+  it('spawns the daemon from the machine config directory', async () => {
     const opts: Parameters<typeof spawnType>[2][] = [];
     const spy = ((_cmd: string, _args: string[], o: never) => {
       opts.push(o);
@@ -1464,7 +1453,7 @@ context_window = 128000
       probe: async () => true,
     }, '/some/other/cwd');
 
-    expect(opts[0]).toMatchObject({ cwd: '/some/other/cwd' });
+    expect(opts[0]).toMatchObject({ cwd: join(home, '.config', 'sonata') });
   });
 
   it('detaches and returns once the router answers', async () => {
@@ -2213,6 +2202,44 @@ litellm = 4000
     const text = await res.text();
     expect(res.status).toBe(502);
     expect(text).toContain('sonata litellm install');
+  });
+
+  it('starts the lazy child after LiteLLM is installed following an unavailable response', async () => {
+    rmSync(venvDir(home), { recursive: true, force: true });
+    writeMachineConfig(`
+[models."m"]
+gateway = "anth"
+id = "some-model"
+[native.gateways."anth"]
+base_url = "https://anth.example"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = 4000
+`);
+    writeSonataKey(home, 'anth', 'k');
+    const project = mkdtempSync(join(tmpdir(), 'serve-tenant-install-recovery-'));
+    writeFileSync(join(project, 'sonata.toml'), TENANT('needs-litellm'));
+    let spawns = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+      spawnLitellm: () => { spawns += 1; return { pid: spawns, kill: () => {} }; },
+    });
+    handles.push(handle);
+    vi.unstubAllGlobals();
+    const request = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-sonata-project': project },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    const unavailable = await request();
+    expect(unavailable.status).toBe(502);
+    expect(await unavailable.text()).toContain('sonata litellm install');
+    installFakeVenv(home);
+    const served = await request();
+    expect(served.status).toBe(200);
+    expect(spawns).toBe(1);
   });
 
   it('leaves a tenant that will not parse out of the union and still serves the others', async () => {
