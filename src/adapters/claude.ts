@@ -1,6 +1,7 @@
 import type { HarnessAdapter, LaunchPlan, PlanInput } from './types.js';
 import { isReadOnlyRole, loadConfig } from '../config.js';
 import { homedir } from 'node:os';
+import { routerPorts } from '../commands/ports.js';
 
 const PROMPT_PATTERNS: RegExp[] = [];
 
@@ -32,7 +33,7 @@ function buildScript(input: PlanInput): LaunchPlan {
   try {
     const config = loadConfig(input.cwd, homedir());
     if (config.native) {
-      routerUrl = `http://localhost:${config.native.ports.router}`;
+      routerUrl = `http://localhost:${routerPorts(homedir()).router}`;
       const windows = Object.values(config.native.models).map(m => m.contextWindow);
       if (windows.length > 0) contextWindow = String(Math.min(...windows));
     }

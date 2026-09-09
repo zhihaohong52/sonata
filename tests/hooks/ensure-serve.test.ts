@@ -8,10 +8,7 @@ import { join, delimiter } from 'node:path';
 
 const run = promisify(execFile);
 
-// The hook is invoked with a relative path in the original test, relying on
-// the repo root as cwd. An identity-mismatch test needs a temp project cwd
-// (so the hook resolves a known config from its own directory), so the script
-// itself must be addressed absolutely.
+// Address the hook absolutely so tests can invoke it from temporary projects.
 const SCRIPT = join(process.cwd(), 'hooks', 'ensure-serve.mjs');
 
 async function invoke(
@@ -29,24 +26,16 @@ async function invoke(
 }
 
 describe('ensure-serve SessionStart hook', () => {
-  it('exits 0 when the router answers the health endpoint with a matching config', async () => {
-    // A project-scoped session resolves the config from its own cwd; report
-    // that same path so the identity check passes. The hook compares against
-    // `process.cwd()`, which is the realpath (macOS `getcwd` resolves the
-    // `/var` -> `/private/var` symlink), so the expected path must be the
-    // realpath too.
-    const cwd = mkdtempSync(join(tmpdir(), 'ensure-serve-ok-'));
-    writeFileSync(join(cwd, 'sonata.toml'), '');
-    const expectedConfig = realpathSync(join(cwd, 'sonata.toml'));
+  it('exits 0 when the router reports multi-tenant support', async () => {
     const server = createServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', sonata: true, configPath: expectedConfig }));
+      res.end(JSON.stringify({ status: 'ok', sonata: true, multiTenant: true }));
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const addr = server.address();
     const port = typeof addr === 'object' && addr ? addr.port : 0;
     try {
-      const { code, signal } = await invoke([String(port)], cwd);
+      const { code, signal } = await invoke([String(port)]);
       expect(code).toBe(0);
       expect(signal).toBe(null);
     } finally {
@@ -54,127 +43,43 @@ describe('ensure-serve SessionStart hook', () => {
     }
   });
 
-  it('exits 1 when the router answers but reports no configPath at all', async () => {
-    // "The router won't tell us who it is" is indistinguishable from a
-    // different project's router and must be rejected, not silently trusted.
-    const cwd = mkdtempSync(join(tmpdir(), 'ensure-serve-nocfg-'));
-    writeFileSync(join(cwd, 'sonata.toml'), '');
+  it('exits 1 when the router predates multi-tenant routing', async () => {
     const server = createServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', sonata: true }));
+      res.end(JSON.stringify({ status: 'ok', sonata: true, configPath: '/x' }));
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const addr = server.address();
     const port = typeof addr === 'object' && addr ? addr.port : 0;
     try {
-      const { code, signal, stderr } = await invoke([String(port)], cwd);
+      const { code, signal, stderr } = await invoke([String(port)]);
       expect(code).toBe(1);
       expect(signal).toBe(null);
-      expect(stderr).toContain('did not report which sonata configuration');
+      expect(stderr).toContain('predates multi-tenant routing');
     } finally {
       server.close();
     }
   });
 
-  it('exits 1 when the router serves a different config than the session resolves', async () => {
-    // The hook resolves the config a project-scoped session should route
-    // through from its own cwd. Here a temp project sonata.toml makes that
-    // deterministic (independent of the real homedir), and the router reports
-    // a different configPath — a cross-project misroute that must fail loud.
-    const cwd = mkdtempSync(join(tmpdir(), 'ensure-serve-cwd-'));
-    writeFileSync(join(cwd, 'sonata.toml'), '');
-    const server = createServer((_req, res) => {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', sonata: true, configPath: '/some/other/project/sonata.toml' }));
-    });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const addr = server.address();
-    const port = typeof addr === 'object' && addr ? addr.port : 0;
-    try {
-      const { code, signal, stderr } = await invoke([String(port)], cwd);
-      expect(code).toBe(1);
-      expect(signal).toBe(null);
-      expect(stderr).toContain('different sonata configuration');
-    } finally {
-      server.close();
-    }
-  });
-
-  it('exits 1 when its own post-spawn probe reports a different config', async () => {
-    // Simulates the race the pre-spawn check alone cannot catch: nothing is
-    // listening on the first probe (so the hook spawns its own daemon), but by
-    // the time the wait loop's first health probe goes out, another project's
-    // daemon has won the port — the hook must fail loud, not quietly adopt a
-    // router whose config it never checked.
-    const cwd = mkdtempSync(join(tmpdir(), 'ensure-serve-race-'));
-    writeFileSync(join(cwd, 'sonata.toml'), '');
-
-    // The spawned daemon is detached with stdio ignored, but `spawn('sonata', …)`
-    // still has to resolve a binary — put a no-op stub on PATH so the ENOENT
-    // uncaught 'error' event doesn't kill the hook before its wait loop runs.
+  it('exits 1 when its own post-spawn probe finds a router that predates multi-tenant routing', async () => {
     const binDir = mkdtempSync(join(tmpdir(), 'ensure-serve-bin-'));
     writeFileSync(join(binDir, 'sonata'), '#!/usr/bin/env node\nprocess.exit(0);\n', { mode: 0o755 });
-
     let probes = 0;
     const server = createServer((_req, res) => {
       probes += 1;
       res.writeHead(200, { 'content-type': 'application/json' });
-      if (probes === 1) {
-        // "Nothing running yet": the pre-spawn probe finds no router at all.
-        res.end('{}');
-      } else {
-        res.end(JSON.stringify({ status: 'ok', sonata: true, configPath: '/some/other/project/sonata.toml' }));
-      }
+      res.end(probes === 1 ? '{}' : JSON.stringify({ status: 'ok', sonata: true, configPath: '/x' }));
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const addr = server.address();
     const port = typeof addr === 'object' && addr ? addr.port : 0;
     try {
       const { code, signal, stderr } = await invoke(
-        [String(port)],
-        cwd,
-        { ...process.env, PATH: `${binDir}${delimiter}${process.env.PATH}` },
+        [String(port)], process.cwd(), { ...process.env, PATH: `${binDir}${delimiter}${process.env.PATH}` },
       );
       expect(code).toBe(1);
       expect(signal).toBe(null);
-      expect(stderr).toContain('different sonata configuration');
-    } finally {
-      server.close();
-    }
-  });
-
-  it('exits 1 when its own post-spawn probe reports no configPath', async () => {
-    // The race's losing side then finds a router that answers but reports no
-    // configPath — unverifiable, so it must be rejected rather than silently
-    // adopted.
-    const cwd = mkdtempSync(join(tmpdir(), 'ensure-serve-race-nocfg-'));
-    writeFileSync(join(cwd, 'sonata.toml'), '');
-
-    const binDir = mkdtempSync(join(tmpdir(), 'ensure-serve-bin-'));
-    writeFileSync(join(binDir, 'sonata'), '#!/usr/bin/env node\nprocess.exit(0);\n', { mode: 0o755 });
-
-    let probes = 0;
-    const server = createServer((_req, res) => {
-      probes += 1;
-      res.writeHead(200, { 'content-type': 'application/json' });
-      if (probes === 1) {
-        res.end('{}');
-      } else {
-        res.end(JSON.stringify({ status: 'ok', sonata: true }));
-      }
-    });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const addr = server.address();
-    const port = typeof addr === 'object' && addr ? addr.port : 0;
-    try {
-      const { code, signal, stderr } = await invoke(
-        [String(port)],
-        cwd,
-        { ...process.env, PATH: `${binDir}${delimiter}${process.env.PATH}` },
-      );
-      expect(code).toBe(1);
-      expect(signal).toBe(null);
-      expect(stderr).toContain('did not report which sonata configuration');
+      expect(stderr).toContain('predates multi-tenant routing');
     } finally {
       server.close();
     }
@@ -212,18 +117,17 @@ describe('ensure-serve SessionStart hook', () => {
       { mode: 0o755 });
 
     // First probe finds nothing (so the hook spawns its own daemon); the wait
-    // loop's probe then reports a healthy router whose configPath matches what a
-    // --global session resolves, so the hook exits 0 without spinning the full
+    // loop's probe then reports a healthy multi-tenant router, so the hook exits
+    // 0 without spinning the full
     // 10s wait. The sentinel captures the cwd the daemon was spawned with.
     let probes = 0;
-    const expectedConfig = join(cfgDir, 'sonata.toml');
     const server = createServer((_req, res) => {
       probes += 1;
       res.writeHead(200, { 'content-type': 'application/json' });
       if (probes === 1) {
         res.end(JSON.stringify({}));
       } else {
-        res.end(JSON.stringify({ status: 'ok', sonata: true, configPath: expectedConfig }));
+        res.end(JSON.stringify({ status: 'ok', sonata: true, multiTenant: true }));
       }
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

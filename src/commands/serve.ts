@@ -321,27 +321,6 @@ export async function isSonataRouter(
   }
 }
 
-/**
- * @deprecated Multi-tenant routers no longer identify with one config path.
- * Kept for callers migrating to sonataRouterMultiTenant.
- */
-export async function sonataRouterConfigPath(
-  port: number,
-  doFetch: typeof fetch = fetch,
-): Promise<string | null> {
-  try {
-    const response = await doFetch(serveHealthUrl(port), {
-      signal: AbortSignal.timeout(2000),
-    });
-    if (!response.ok) return null;
-    const body = await response.json() as { sonata?: unknown; configPath?: unknown };
-    if (body?.sonata !== true) return null;
-    return typeof body.configPath === 'string' ? body.configPath : null;
-  } catch {
-    return null;
-  }
-}
-
 /** Whether the sonata router on `port` is a multi-tenant one: true, false for an older single-config router, null when the port is not a sonata router. */
 export async function sonataRouterMultiTenant(
   port: number,

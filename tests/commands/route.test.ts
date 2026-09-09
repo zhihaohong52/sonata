@@ -664,44 +664,28 @@ describe('cmdRouteSession', () => {
     expect(seenCwds).toEqual([cwd]);
   });
 
-  it('refuses to share a router port already serving a different project\'s config', async () => {
-    // Two projects, each with a sonata.toml resolving to the same default port.
-    // With no injected probe/startDaemon, the real network path is exercised:
-    // `probe` is `isSonataRouter` (fetch), then the identity check calls
-    // `sonataRouterConfigPath` (also fetch). Stub global.fetch to answer like a
-    // router started by a *different* config dir is already running.
+  it('accepts a multi-tenant router regardless of which project started it', async () => {
     const otherCwd = mkdtempSync(join(tmpdir(), 'sonata-route-other-'));
     writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
     writeFileSync(join(otherCwd, 'sonata.toml'), NATIVE_TOML);
-    const otherConfigPath = join(otherCwd, 'sonata.toml');
 
     vi.stubGlobal('fetch', vi.fn(async () =>
-      // A real running sonata router's health payload, reporting the config
-      // that started it — a different project's sonata.toml.
-      new Response(JSON.stringify({ status: 'ok', sonata: true, configPath: otherConfigPath })),
+      new Response(JSON.stringify({ status: 'ok', sonata: true, multiTenant: true })),
     ) as unknown as typeof fetch);
 
     const o = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
-    await expect(cmdRouteSession('start', 's1', o)).rejects.toThrow(/different sonata configuration/);
-    // The identity collision is detected before any state is written: the
-    // session is not registered and routing is not turned on for a router that
-    // would serve the wrong config.
-    expect(existsSync(routeSessionsFile(cwd))).toBe(false);
-    expect(existsSync(routeSettingsFile(cwd))).toBe(false);
+    await expect(cmdRouteSession('start', 's1', o)).resolves.toEqual({ sessions: 1, routing: 'off' });
+    expect(existsSync(routeSessionsFile(cwd))).toBe(true);
   });
 
-  it('refuses a running router that reports no configPath at all', async () => {
+  it('refuses a running router that predates multi-tenant routing', async () => {
     writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
-
     vi.stubGlobal('fetch', vi.fn(async () =>
-      // A sonata router that answers but does not name its configPath is
-      // indistinguishable from a different project's router — reject it
-      // rather than silently trust it.
-      new Response(JSON.stringify({ status: 'ok', sonata: true })),
+      new Response(JSON.stringify({ status: 'ok', sonata: true, configPath: '/x' })),
     ) as unknown as typeof fetch);
 
     const o = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
-    await expect(cmdRouteSession('start', 's1', o)).rejects.toThrow(/did not report which sonata configuration/);
+    await expect(cmdRouteSession('start', 's1', o)).rejects.toThrow(/predates multi-tenant routing/);
     expect(existsSync(routeSessionsFile(cwd))).toBe(false);
     expect(existsSync(routeSettingsFile(cwd))).toBe(false);
   });
