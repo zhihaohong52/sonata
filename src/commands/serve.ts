@@ -784,24 +784,28 @@ export async function cmdServe(
         try {
           childEnv = buildChildEnv(mergedNative(), opts.home, tempDir);
           refreshGatewayKeys(mergedNative());
-          activeModelsJson = freshModelsJson;
         } catch (error) {
           console.error(`sonata serve: could not refresh gateway credentials: ${String(error)}`);
           return;
         }
-        if (unionNeedsLitellm()) {
-          if (!litellmHealthy()) {
-            console.error(`sonata serve: ${litellmUnavailable}`);
-            return;
-          }
-          writeFileSync(configPath, litellmConfigYamlForTenants(registry.loadable(), masterKey), { mode: 0o600 });
-          console.error('sonata serve: a project now routes through LiteLLM — starting it');
-          litellmReady = (async () => {
-            child = spawnLitellmChild();
-            await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
-          })().catch((error) => { console.error(`sonata serve: litellm never came up: ${String(error)}`); });
-          await litellmReady;
+        if (!unionNeedsLitellm()) {
+          activeModelsJson = freshModelsJson;
+          return;
         }
+        if (!litellmHealthy()) {
+          // Do not commit the snapshot: after `sonata litellm install`, the
+          // unchanged union must still retry lazy child startup.
+          console.error(`sonata serve: ${litellmUnavailable}`);
+          return;
+        }
+        writeFileSync(configPath, litellmConfigYamlForTenants(registry.loadable(), masterKey), { mode: 0o600 });
+        console.error('sonata serve: a project now routes through LiteLLM — starting it');
+        litellmReady = (async () => {
+          child = spawnLitellmChild();
+          await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
+        })().catch((error) => { console.error(`sonata serve: litellm never came up: ${String(error)}`); });
+        await litellmReady;
+        if (child !== undefined) activeModelsJson = freshModelsJson;
         return;
       }
       // Only committed once the replacement config and credentials are
@@ -1050,16 +1054,14 @@ export async function startServeDaemon(
   // against a leftover daemon (see the design doc for the reproduction).
   const instanceId = randomUUID();
 
-  // Explicit, not inherited: a daemon started to serve *every* project
-  // (`route on/auto --global`) must not bind itself to whichever project's
-  // session happened to trigger it first — the router is a single process,
-  // so its config has to be the one every routed project actually shares.
-  // The caller passes `home` here for that case (see route.ts); a plain
-  // `sonata serve --daemon` keeps inheriting the shell's own cwd.
+  // A machine-wide daemon must start where its machine config is visible;
+  // otherwise a project-local sonata.toml can still win config resolution.
+  const machineConfigDir = dirname(join(home, GLOBAL_CONFIG_RELATIVE));
+  const daemonCwd = existsSync(machineConfigDir) ? machineConfigDir : cwd;
   const child = spawnFn(argv[0], argv.slice(1), {
     detached: true,
     stdio: ['ignore', log, log],
-    cwd,
+    cwd: daemonCwd,
     env: { ...process.env, SONATA_SERVE_INSTANCE_ID: instanceId },
   });
   child.unref();
