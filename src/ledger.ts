@@ -23,6 +23,8 @@ export interface LedgerRow {
   ts: string;
   ms: number;
   session?: string;
+  /** The project directory the request was attributed to, written by the router from the resolved tenant. Absent on rows written before multi-tenant routing and on requests no project could be resolved for. */
+  project?: string;
   alias: string;
   role?: string;
   tier?: string;

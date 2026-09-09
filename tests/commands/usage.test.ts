@@ -64,6 +64,15 @@ describe('aggregate', () => {
     expect(aggregate([row()], 'project', sessions).buckets[0].label).toBe('/repo/a');
   });
 
+  it("groups by the row's own project before falling back to the session join", () => {
+    const rows = [
+      row({ project: '/p/a', session: 's1' }),
+      row({ session: 's2' }),
+    ];
+    const report = aggregate(rows, 'project', { s2: { session: 's2', cwd: '/p/b', started: '' } });
+    expect(report.buckets.map((b) => b.label).sort()).toEqual(['/p/a', '/p/b']);
+  });
+
   it('labels a session with no map entry as unknown rather than dropping it', () => {
     const report = aggregate([row({ session: 'ghost' })], 'project', {});
     expect(report.buckets[0].label).toBe('unknown');

@@ -1,7 +1,7 @@
 /**
  * A ceiling on what the router will spend in a day.
  *
- * Deliberately the smallest thing that works: one number the user writes down,
+ * Deliberately the smallest thing that works: one number per config file,
  * checked against what the ledger has already recorded. No forecasting, no
  * per-role split, no auto-tuning — those need real usage data to calibrate
  * against, and guessing a heuristic now would bake in numbers nobody has
@@ -43,9 +43,10 @@ export function startOfUtcDay(now: number): number {
  * identical on purpose so the number a user sees there is the number the cap
  * compares against.
  */
-export function spentTodayUsd(home: string, now: number = Date.now()): number {
+export function spentTodayUsd(home: string, now: number = Date.now(), project?: string): number {
   let total = 0;
   for (const row of readRows(home, startOfUtcDay(now), now)) {
+    if (project !== undefined && row.project !== project) continue;
     if (row.price.source === 'none' || row.price.totalUsd === undefined) continue;
     total += row.price.totalUsd;
   }
@@ -55,28 +56,25 @@ export function spentTodayUsd(home: string, now: number = Date.now()): number {
 export interface BudgetStatus {
   dailyUsd: number;
   spentUsd: number;
+  /** The sonata.toml that set this cap — named in the refusal, since a project and the machine can each set one. */
+  configPath: string;
 }
 
 /**
- * Whether this request should be refused, and what to tell the caller.
- *
- * At the cap, not merely over it: the next request's cost is unknown before it
- * runs, so the only moment a limit can be enforced is before forwarding one
- * that would cross it.
- *
- * The message names the cap, the spend, and the file to edit. A refusal whose
- * remedy the user has to go looking for reads as a malfunction — and this one
- * arrives as a 429, which every other source of 429 in this system means
- * "rate limited, retry later" rather than "you set this deliberately".
+ * Whether this request should be refused, and what to tell the caller. Several
+ * caps can apply to one request (the project's and the machine's); the first
+ * one reached refuses, naming its own file.
  */
-export function budgetRefusal(status: BudgetStatus | undefined): string | undefined {
-  if (status === undefined) return undefined;
-  if (status.spentUsd < status.dailyUsd) return undefined;
-  return (
-    `sonata daily budget reached: $${status.spentUsd.toFixed(4)} of ` +
-    `$${status.dailyUsd.toFixed(2)} priced spend used today (UTC). ` +
-    'Raise or remove [budget] daily_usd in sonata.toml to continue. ' +
-    'Note this counts priced requests only, and covers the native router path ' +
-    'alone — `sonata dispatch` runs never transit the router.'
-  );
+export function budgetRefusal(statuses: BudgetStatus[] | undefined): string | undefined {
+  for (const status of statuses ?? []) {
+    if (status.spentUsd < status.dailyUsd) continue;
+    return (
+      `sonata daily budget reached: $${status.spentUsd.toFixed(4)} of ` +
+      `$${status.dailyUsd.toFixed(2)} priced spend used today (UTC). ` +
+      `Raise or remove [budget] daily_usd in ${status.configPath} to continue. ` +
+      'Note this counts priced requests only, and covers the native router path ' +
+      'alone — `sonata dispatch` runs never transit the router.'
+    );
+  }
+  return undefined;
 }
