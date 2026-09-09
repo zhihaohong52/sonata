@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-09
+
 ### Added
 - **One router serves every project.** `sonata serve` is now a machine-wide
   daemon that resolves each request's own `sonata.toml` from the project the
