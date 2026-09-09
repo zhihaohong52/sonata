@@ -395,9 +395,35 @@ export async function cmdDoctor(
         && body !== null
         && typeof body === 'object'
         && (body as Record<string, unknown>).sonata === true;
-      checks.push(healthy
-        ? { name: 'serve health', ok: true, detail: 'up' }
-        : { name: 'serve health', ok: true, detail: 'not running — start with `sonata serve`' });
+      // A router answering is not the same as *this project's* router
+      // answering. Daemons are per config, and two projects each holding their
+      // own sonata.toml on the default port collide: whichever started first
+      // owns the port, and the other's `route session-start` refuses to route
+      // through it — through a hook, so the refusal used to be invisible and
+      // the first sign was a native dispatch dying with `model_not_found`.
+      // Same two verdicts as that refusal: a different config, or none named.
+      const reported = healthy ? (body as { configPath?: unknown }).configPath : undefined;
+      if (!healthy) {
+        checks.push({ name: 'serve health', ok: true, detail: 'not running — start with `sonata serve`' });
+      } else if (typeof reported !== 'string') {
+        checks.push({
+          name: 'serve health',
+          ok: false,
+          detail: 'up, but does not report which sonata configuration it runs (too old, or its own ' +
+            'config resolution failed) — sessions here will refuse to route through it; `sonata restart` ' +
+            'once confirmed to be this project\'s own router',
+        });
+      } else if (resolved !== null && reported !== resolved) {
+        checks.push({
+          name: 'serve health',
+          ok: false,
+          detail: `up, but serving ${reported} rather than this project's ${resolved} — sessions here ` +
+            'will refuse to route through it. Two projects cannot share one router port: set a different ' +
+            '[native.ports].router in one of the two configs, then `sonata serve --daemon` here',
+        });
+      } else {
+        checks.push({ name: 'serve health', ok: true, detail: 'up' });
+      }
     } catch {
       // `serve` is user-started, so an unavailable endpoint is advisory.
       checks.push({ name: 'serve health', ok: true, detail: 'not running — start with `sonata serve`' });

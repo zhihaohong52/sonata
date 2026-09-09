@@ -416,6 +416,80 @@ export function flattenSystemBlocks(body: Buffer): Buffer {
 }
 
 /**
+ * Whether a JSON-Schema `pattern` uses a Unicode property escape (`\p{..}` /
+ * `\P{..}`). Backslash parity is honoured: `\\p` is a literal backslash then
+ * `p`, which every dialect accepts.
+ */
+export function usesUnicodePropertyEscape(pattern: string): boolean {
+  return /(?<!\\)(?:\\\\)*\\[pP]/.test(pattern);
+}
+
+/**
+ * Strips, from every tool's `input_schema`, each `pattern` that Python's `re`
+ * cannot parse — and only those.
+ *
+ * Claude Code sends a write-capable agent its full tool set, and one of those
+ * tools (Artifact, its `field` parameter) constrains a string with `\p{Cc}`-
+ * style Unicode property classes. JavaScript and Anthropic accept them. An
+ * OpenAI-style endpoint validates each tool's parameters as JSON Schema with
+ * `format: regex`, and the reference validator runs that check on Python's
+ * `re`, which has no `\p{..}` at all — so Azure answered a `code-simple`
+ * request with 400 `'^(?!__.*__$)[^\p{Cc}…' is not a 'regex'`
+ * (`tools[1].parameters`), LiteLLM reported no fallback, and the agent died on
+ * its first request (measured 2026-09-09). Read-only roles never hit it only
+ * because their agents carry an explicit `tools:` allowlist that omits
+ * Artifact; the write roles inherit everything, on purpose.
+ *
+ * Dropping the constraint costs one server-side validation the model was never
+ * going to rely on; the alternative is a request that cannot be sent. Every
+ * other pattern is kept, so this cannot loosen a schema the upstream accepts.
+ * Applied on the litellm path only — an Anthropic request stays byte-identical,
+ * and the direct path is a pass-through by contract (see `forwardDirect`).
+ * Returns the body untouched, same bytes, when there is nothing to strip.
+ */
+export function sanitizeToolSchemas(body: Buffer): Buffer {
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(body.toString()) as Record<string, unknown>;
+  } catch {
+    return body;
+  }
+  const tools = payload.tools;
+  if (!Array.isArray(tools) || tools.length === 0) return body;
+
+  let changed = false;
+  const strip = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(strip);
+    if (node === null || typeof node !== 'object') return node;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      // Only a string-valued `pattern` is the regex keyword; a *property*
+      // named `pattern` is an object under `properties` and is left alone.
+      if (key === 'pattern' && typeof value === 'string' && usesUnicodePropertyEscape(value)) {
+        changed = true;
+        continue;
+      }
+      out[key] = strip(value);
+    }
+    return out;
+  };
+  const next = tools.map((tool) => {
+    if (tool === null || typeof tool !== 'object' || !('input_schema' in tool)) return tool;
+    return { ...(tool as Record<string, unknown>), input_schema: strip((tool as { input_schema: unknown }).input_schema) };
+  });
+  if (!changed) return body;
+  return Buffer.from(JSON.stringify({ ...payload, tools: next }));
+}
+
+/**
+ * The one definition of what a Claude Code request needs before LiteLLM may
+ * see it — both litellm forwarding paths take this, so they cannot drift.
+ */
+function litellmBody(body: Buffer): Buffer {
+  return sanitizeToolSchemas(flattenSystemBlocks(body));
+}
+
+/**
  * Forwards an already-litellm-shaped request (auth swapped, system flattened,
  * model rewritten if this is a tier candidate) and applies the 500->529
  * empty-completion rewrite. Shared by the plain litellm path and the tier
@@ -568,7 +642,7 @@ async function routeTierRequest(
 
   const now = deps.now ?? Date.now;
   const headers = litellmHeaders(requestHeaders(req.headers), deps.litellmKey);
-  const flattened = flattenSystemBlocks(req.body);
+  const flattened = litellmBody(req.body);
   const candidates = resolved.routes.filter((route) => route.native !== undefined);
   const attempts: { key: string; status: number }[] = [];
 
@@ -737,9 +811,10 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   const anthropic = isClaudeRequest(req.body);
   const headers = requestHeaders(req.headers);
   const upstream = anthropic ? 'anthropic' : 'litellm';
-  // Anthropic understands its own block arrays; only the foreign path needs the
-  // string form, so the request Anthropic receives stays byte-identical.
-  const body = anthropic ? req.body : flattenSystemBlocks(req.body);
+  // Anthropic understands its own block arrays and its own tool schemas; only
+  // the foreign path needs the string form and the regex-dialect repair, so
+  // the request Anthropic receives stays byte-identical.
+  const body = anthropic ? req.body : litellmBody(req.body);
 
   deps.log?.(`${req.method} ${req.url} model=${requestedModel(req.body) ?? '?'} -> ${upstream}`);
 

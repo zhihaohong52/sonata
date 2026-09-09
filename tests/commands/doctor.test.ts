@@ -282,6 +282,63 @@ code = ["deepseek-v4-flash"]
     return { cwd, home };
   };
 
+  it('reports a router on this config\'s port that is serving a different project\'s config', async () => {
+    // Two projects, each with its own sonata.toml on the default port: whichever
+    // started the daemon owns the port, and the other's `route session-start`
+    // refuses (correctly) — through a hook that used to swallow the refusal.
+    // Doctor is where the collision has to be legible before a dispatch dies.
+    const { cwd, home } = setup();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ status: 'ok', sonata: true, configPath: '/elsewhere/sonata.toml' }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )) as unknown as typeof fetch;
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      const health = checks.find((c) => c.name === 'serve health');
+      expect(health?.ok).toBe(false);
+      expect(health?.detail).toContain('/elsewhere/sonata.toml');
+      expect(health?.detail).toContain(join(cwd, 'sonata.toml'));
+      expect(health?.detail).toContain('[native.ports].router');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('reports a router that will not say which config it runs', async () => {
+    // `route session-start` refuses such a router rather than trusting it, so
+    // doctor must not call it healthy either.
+    const { cwd, home } = setup();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ status: 'ok', sonata: true }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )) as unknown as typeof fetch;
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      const health = checks.find((c) => c.name === 'serve health');
+      expect(health?.ok).toBe(false);
+      expect(health?.detail).toContain('sonata restart');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('calls a router serving this very config up', async () => {
+    const { cwd, home } = setup();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ status: 'ok', sonata: true, configPath: join(cwd, 'sonata.toml') }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )) as unknown as typeof fetch;
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      expect(checks.find((c) => c.name === 'serve health')).toEqual({ name: 'serve health', ok: true, detail: 'up' });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('checks LiteLLM, a down serve, missing key sources, and native stale agents', async () => {
     const { cwd, home } = setup();
     writeFileSync(join(cwd, '.claude', 'agents', 'native-code-old.md'), '---\nname: native-code-old\n---\nold');
@@ -808,7 +865,9 @@ router = 4200
     const { cwd, home } = setup();
     writeSonataKey(home, 'acme', 'super-secret-key');
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => new Response(JSON.stringify({ sonata: true }), { status: 200 });
+    // A real router names the config it runs; one that does not is refused
+    // by `route session-start` and is reported as such above.
+    globalThis.fetch = async () => new Response(JSON.stringify({ sonata: true, configPath: join(cwd, 'sonata.toml') }), { status: 200 });
     try {
       const { checks } = await cmdDoctor({ cwd, home });
       expect(checks.find((c) => c.name === 'serve health')).toEqual({

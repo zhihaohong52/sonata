@@ -8,6 +8,39 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+- **Native write-role agents (`code-simple`, `code-complex`) died on their first
+  request to every OpenAI-compatible provider** with HTTP 400 `Invalid schema
+  for function 'Artifact': '^(?!__.*__$)[^\p{Cc}…' is not a 'regex'`
+  (`tools[1].parameters`), and LiteLLM reported no fallback, so the agent
+  terminated. Claude Code sends a write-capable agent its full tool set, and
+  the Artifact tool's `field` parameter constrains a string with Unicode
+  property classes (`\p{Cc}`) that JavaScript and Anthropic accept but the
+  reference JSON Schema validator — which runs `format: regex` on Python's
+  `re`, where `\p` is a *bad escape* — refuses. Read-only roles never hit it
+  only because their agents carry an explicit `tools:` allowlist without
+  Artifact. `sanitizeToolSchemas` (`src/native/router.ts`) now strips, on the
+  litellm path only, each `pattern` that uses a Unicode property escape and
+  nothing else; both litellm forwarding paths share the one `litellmBody`
+  transform with `flattenSystemBlocks`, an Anthropic request stays
+  byte-identical, and the direct path stays a pass-through. First reported
+  from a project outside this repository (2026-09-09).
+- **`sonata route session-start` refused silently when the configured router
+  port was held by *another* project's daemon**, so the `route auto`
+  SessionStart hook never routed the session and pinned tier aliases went
+  straight to `api.anthropic.com` and 404ed. The refusal itself was correct —
+  two projects each holding their own `sonata.toml` on the default port cannot
+  share one router — but the hook ran the CLI with stdio ignored and always
+  exited 0, so nothing surfaced. Both `route auto` hooks now relay a non-zero
+  CLI exit to the user as a hook `systemMessage` (Claude Code honours it on
+  SessionStart and SubagentStart), while the CLI exits 0 for the one *expected*
+  failure — no config in this directory, now the typed `NoConfigError` — so a
+  global hook stays silent where it has nothing to do. `sonata doctor`'s
+  `serve health` check also compares the running router's reported
+  `configPath` against this project's, and fails naming both files and the
+  `[native.ports].router` repair; a router that names no config fails the
+  same way `route session-start` refuses it.
+
 ## [0.6.1] - 2026-09-07
 
 ### Fixed

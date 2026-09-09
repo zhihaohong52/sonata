@@ -20,7 +20,7 @@ import { homedir } from 'node:os';
 
 import { readSettings, writeSettings, installHook, uninstallHook, hookInstalled } from '../settings.js';
 import type { Settings } from '../settings.js';
-import { configPath as resolveSonataConfigPath, loadConfig, GLOBAL_CONFIG_RELATIVE, parseConfig, type SonataConfig } from '../config.js';
+import { configPath as resolveSonataConfigPath, loadConfig, GLOBAL_CONFIG_RELATIVE, NoConfigError, parseConfig, type SonataConfig } from '../config.js';
 import { nativeSessionEnv } from './code.js';
 import { isSonataRouter, sonataRouterConfigPath, startServeDaemon } from './serve.js';
 import { recordSession } from '../sessions.js';
@@ -558,7 +558,7 @@ export async function cmdRoute(
     const globalPath = join(opts.home, GLOBAL_CONFIG_RELATIVE);
     try {
       if (!existsSync(globalPath)) {
-        throw new Error(
+        throw new NoConfigError(
           `No sonata.toml found at ${globalPath}. Run \`sonata init\` or create one.`,
         );
       }
