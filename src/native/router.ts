@@ -176,6 +176,7 @@ interface RecordContext {
   upstream: 'litellm' | 'anthropic' | 'direct';
   attempts: { key: string; status: number }[];
   session?: string;
+  project?: string;
 }
 
 function headerNumber(headers: Record<string, string>, name: string): number | undefined {
@@ -204,6 +205,7 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
           ts: new Date(ctx.startedAt).toISOString(),
           ms: endedAt - ctx.startedAt,
           session: ctx.session,
+          project: ctx.project,
           alias: ctx.alias,
           role: ctx.role,
           tier: ctx.tier,
@@ -664,6 +666,7 @@ async function routeTierRequest(
   alias: string,
   startedAt: number,
   session: string | undefined,
+  project: string | undefined,
 ): Promise<RouterResponse> {
   // Once per request, not once per candidate: a candidate skipped for being
   // in its post-failure cooldown window would otherwise mean this never
@@ -766,6 +769,7 @@ async function routeTierRequest(
       }, {
         startedAt,
         session,
+        project,
         alias,
         role: resolved.role,
         tier: resolved.tier,
@@ -783,6 +787,7 @@ async function routeTierRequest(
     return withUsageRecording(response, {
       startedAt,
       session,
+      project,
       alias,
       role: resolved.role,
       tier: resolved.tier,
@@ -807,6 +812,7 @@ async function routeTierRequest(
   }, {
     startedAt,
     session,
+    project,
     alias,
     role: resolved.role,
     tier: resolved.tier,
@@ -818,6 +824,7 @@ async function routeTierRequest(
 export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promise<RouterResponse> {
   const alias = requestedModel(req.body);
   const session = req.headers['x-claude-code-session-id'];
+  const project = req.headers['x-sonata-project'];
 
   // Before anything is forwarded, and ahead of both the tier and direct paths:
   // this is the one point every native request passes through, and a cap
@@ -830,7 +837,8 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   // a request the router actually forwarded; a refusal has no upstream, no
   // tokens and no cost, and putting avoided spend into the store that defines
   // spend is how the number stops meaning what it says.
-  const refusal = budgetRefusal(deps.budget?.());
+  const status = deps.budget?.();
+  const refusal = budgetRefusal(status === undefined ? undefined : [status]);
   if (refusal !== undefined) {
     deps.log?.(`router: refused model=${alias ?? '?'} — ${refusal}`);
     return {
@@ -847,7 +855,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     } catch { /* A broken accounting clock must not stop routing. */ }
   }
   if (alias !== undefined && alias.startsWith('sonata-') && deps.resolveTier?.(alias) !== undefined) {
-    return routeTierRequest(req, deps, alias, startedAt, session);
+    return routeTierRequest(req, deps, alias, startedAt, session, project);
   }
 
   const anthropic = isClaudeRequest(req.body);
@@ -870,6 +878,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       {
         startedAt,
         session,
+        project,
         alias: alias ?? '',
         // For a direct `--model <key>` request, `alias` IS the config key.
         // Recording it (and its gateway) is what lets `resolvePrice` price this
@@ -895,14 +904,14 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       status: response.status,
       headers: responseHeaders(response.headers),
       body: response.body === null ? Buffer.alloc(0) : responseBody(response.body),
-    }, { startedAt, session, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
+    }, { startedAt, session, project, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return withUsageRecording({
       status: 502,
       headers: { 'content-type': 'application/json' },
       body: anthropicErrorBody('router_error', message),
-    }, { startedAt, session, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
+    }, { startedAt, session, project, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   }
 }
 

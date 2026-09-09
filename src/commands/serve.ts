@@ -877,7 +877,11 @@ export async function cmdServe(
       budget: () => {
         const daily = loadConfig(opts.cwd, opts.home).budget?.dailyUsd;
         if (daily === undefined) return undefined;
-        return { dailyUsd: daily, spentUsd: spentTodayUsd(opts.home) };
+        return {
+          dailyUsd: daily,
+          spentUsd: spentTodayUsd(opts.home, Date.now(), opts.cwd),
+          configPath: resolveSonataConfigPath(opts.cwd, opts.home) ?? join(opts.home, '.config', 'sonata', 'sonata.toml'),
+        };
       },
       // Read per request off the mutable record above, so a credential
       // refreshed by a config change reaches the very next direct forward.
