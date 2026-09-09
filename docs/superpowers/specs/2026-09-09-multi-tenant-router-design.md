@@ -179,6 +179,42 @@ configs and no `[native.ports]`, both routed through one daemon, verified by
 the router log naming each tenant id on its own requests and by
 `sonata usage --by project` splitting them.
 
+## What the live run produced (2026-09-09)
+
+Two projects (`A`, `B`), each with its own `sonata.toml` copied from this repo's,
+plus a machine config, all served by ONE router on a scratch port 4190 under a
+scratch `HOME`. The live `:4110` session router was untouched throughout, and the
+scratch daemon was stopped by the pids it recorded itself.
+
+- Both projects' requests returned **200** from `gpt-5.6-luna`; the router log
+  shows `model=sonata-explore-simple -> gpt-5.6-luna -> litellm` for each.
+- `/__sonata_health` reported `multiTenant: true` and **three tenants, three
+  distinct ids, three distinct paths** — no duplicates.
+- The LiteLLM union grew **lazily**: it started with the machine tenant alone and
+  gained `<id>/gpt-5.6-luna` and `<id>/gpt-5.6-terra` for each project on that
+  project's first request, restarting the child to pick them up.
+- `sonata usage --by project` split the two projects into separate rows.
+
+**The first run of this check found a real defect, since fixed** (`df12401`).
+The same machine config was registered as two tenants —
+`/private/var/.../sonata.toml` and `/var/.../sonata.toml` — because macOS
+symlinks `/var` to `/private/var` and the path string was the identity. That one
+project carried duplicate LiteLLM entries, fired a needless restart, and split
+its cooldowns and budget attribution across two ids. Tenant identity is now the
+**realpath** of the config, best-effort: a path that cannot be resolved keeps its
+original spelling rather than throwing. Any path traversing a symlink hit this —
+a symlinked `~/Code`, a mounted path, a worktree — not only a temp directory.
+
+**One transition hazard the run also exposed.** Routing now points every project
+at the *machine* port. If an **old, pre-multi-tenant** daemon already holds that
+port, it answers with whatever single config started it — during this session a
+dispatch from this repository was served by a 2026-09-04 daemon running another
+project's config, and failed against gateways this repository does not use.
+`route session-start`, `sonata code`, `sonata run` and `ensure-serve.mjs` all
+refuse such a router by design (Task 8), but `cmdRouteSubagent` writes the
+routing env without that check — worth closing before release, and the reason an
+upgrade should begin with `sonata restart`.
+
 ## What this deliberately does not do
 
 - No per-tenant LiteLLM process. One child, namespaced, was chosen over N
