@@ -879,7 +879,7 @@ export async function cmdServe(
         if (daily === undefined) return undefined;
         return {
           dailyUsd: daily,
-          spentUsd: spentTodayUsd(opts.home, Date.now(), opts.cwd),
+          spentUsd: spentTodayUsd(opts.home),
           configPath: resolveSonataConfigPath(opts.cwd, opts.home) ?? join(opts.home, '.config', 'sonata', 'sonata.toml'),
         };
       },

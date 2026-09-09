@@ -111,7 +111,7 @@ function targetUrl(base: string, url: string): string {
 
 function requestHeaders(headers: Record<string, string>): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(headers).filter(([name]) => !['host', 'content-length'].includes(name.toLowerCase())),
+    Object.entries(headers).filter(([name]) => !['host', 'content-length', 'x-sonata-project'].includes(name.toLowerCase())),
   );
 }
 
@@ -176,7 +176,6 @@ interface RecordContext {
   upstream: 'litellm' | 'anthropic' | 'direct';
   attempts: { key: string; status: number }[];
   session?: string;
-  project?: string;
 }
 
 function headerNumber(headers: Record<string, string>, name: string): number | undefined {
@@ -205,7 +204,6 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
           ts: new Date(ctx.startedAt).toISOString(),
           ms: endedAt - ctx.startedAt,
           session: ctx.session,
-          project: ctx.project,
           alias: ctx.alias,
           role: ctx.role,
           tier: ctx.tier,
@@ -666,7 +664,6 @@ async function routeTierRequest(
   alias: string,
   startedAt: number,
   session: string | undefined,
-  project: string | undefined,
 ): Promise<RouterResponse> {
   // Once per request, not once per candidate: a candidate skipped for being
   // in its post-failure cooldown window would otherwise mean this never
@@ -769,7 +766,6 @@ async function routeTierRequest(
       }, {
         startedAt,
         session,
-        project,
         alias,
         role: resolved.role,
         tier: resolved.tier,
@@ -787,7 +783,6 @@ async function routeTierRequest(
     return withUsageRecording(response, {
       startedAt,
       session,
-      project,
       alias,
       role: resolved.role,
       tier: resolved.tier,
@@ -812,7 +807,6 @@ async function routeTierRequest(
   }, {
     startedAt,
     session,
-    project,
     alias,
     role: resolved.role,
     tier: resolved.tier,
@@ -824,7 +818,6 @@ async function routeTierRequest(
 export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promise<RouterResponse> {
   const alias = requestedModel(req.body);
   const session = req.headers['x-claude-code-session-id'];
-  const project = req.headers['x-sonata-project'];
 
   // Before anything is forwarded, and ahead of both the tier and direct paths:
   // this is the one point every native request passes through, and a cap
@@ -855,7 +848,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     } catch { /* A broken accounting clock must not stop routing. */ }
   }
   if (alias !== undefined && alias.startsWith('sonata-') && deps.resolveTier?.(alias) !== undefined) {
-    return routeTierRequest(req, deps, alias, startedAt, session, project);
+    return routeTierRequest(req, deps, alias, startedAt, session);
   }
 
   const anthropic = isClaudeRequest(req.body);
@@ -878,7 +871,6 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       {
         startedAt,
         session,
-        project,
         alias: alias ?? '',
         // For a direct `--model <key>` request, `alias` IS the config key.
         // Recording it (and its gateway) is what lets `resolvePrice` price this
@@ -904,14 +896,14 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       status: response.status,
       headers: responseHeaders(response.headers),
       body: response.body === null ? Buffer.alloc(0) : responseBody(response.body),
-    }, { startedAt, session, project, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
+    }, { startedAt, session, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return withUsageRecording({
       status: 502,
       headers: { 'content-type': 'application/json' },
       body: anthropicErrorBody('router_error', message),
-    }, { startedAt, session, project, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
+    }, { startedAt, session, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   }
 }
 
