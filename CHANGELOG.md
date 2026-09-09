@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-09
+
 ### Fixed
 - **A linked git worktree borrows its main checkout's `sonata.toml`.**
   `sonata.toml` is untracked, so `git worktree add` produced a directory with
