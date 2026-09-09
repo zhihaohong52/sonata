@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD } from '../../src/native/router.js';
+import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, createRouterServer, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 
 function fakeFetch(record: any[]) {
   return async (url: string, init: any) => {
@@ -103,7 +104,7 @@ describe('tier alias routing', () => {
       resolveTier: () => ROUTES,
     });
     expect(res.status).toBe(200);
-    expect(seen).toEqual(['flash']);
+    expect(seen).toEqual(['default/flash']);
   });
 
   it('falls back to the next candidate on 5xx and cools the failure down', async () => {
@@ -112,16 +113,16 @@ describe('tier alias routing', () => {
       fetch: (async (_url: string, init: RequestInit) => {
         const model = (JSON.parse(init.body as string) as { model: string }).model;
         seen.push(model);
-        return new Response('{}', { status: model === 'flash' ? 503 : 200 });
+        return new Response('{}', { status: model === 'default/flash' ? 503 : 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
       resolveTier: () => ROUTES,
     };
     expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
-    expect(seen).toEqual(['flash', 'luna']);
+    expect(seen).toEqual(['default/flash', 'default/luna']);
     // second request inside the cooldown skips flash entirely
     await routeRequest(req('sonata-code-simple'), deps);
-    expect(seen).toEqual(['flash', 'luna', 'luna']);
+    expect(seen).toEqual(['default/flash', 'default/luna', 'default/luna']);
   });
 
   // ── Defect A: a repeating capability 400 must cool the candidate down ──
@@ -159,7 +160,7 @@ describe('tier alias routing', () => {
     });
     expect(res.status).toBe(400);
     expect(await bodyText(res.body)).toBe(THOUGHT_SIG_400);
-    expect(seen).toEqual(['flash']);
+    expect(seen).toEqual(['default/flash']);
   });
 
   it('returns a 400 the fingerprint does not match, and never counts it', async () => {
@@ -182,7 +183,7 @@ describe('tier alias routing', () => {
       expect(await bodyText(res.body)).toBe(other);
     }
     // every request still went to flash — no cooldown was ever recorded
-    expect(new Set(seen)).toEqual(new Set(['flash']));
+    expect(new Set(seen)).toEqual(new Set(['default/flash']));
   });
 
   it('fingerprints the Codex backend refusing a system message', async () => {
@@ -205,7 +206,7 @@ describe('tier alias routing', () => {
       fetch: (async (_url: string, init: RequestInit) => {
         const model = (JSON.parse(init.body as string) as { model: string }).model;
         seen.push(model);
-        return model === 'flash'
+        return model === 'default/flash'
           ? new Response(CODEX_SYSTEM_400, { status: 400 })
           : new Response('{}', { status: 200 });
       }) as unknown as typeof fetch,
@@ -216,7 +217,7 @@ describe('tier alias routing', () => {
       expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(400);
     }
     expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
-    expect(seen[seen.length - 1]).toBe('luna');
+    expect(seen[seen.length - 1]).toBe('default/luna');
   });
 
   it('cools the candidate and falls through once the same capability 400 repeats', async () => {
@@ -225,7 +226,7 @@ describe('tier alias routing', () => {
       fetch: (async (_url: string, init: RequestInit) => {
         const model = (JSON.parse(init.body as string) as { model: string }).model;
         seen.push(model);
-        return model === 'flash'
+        return model === 'default/flash'
           ? new Response(THOUGHT_SIG_400, { status: 400 })
           : new Response('{}', { status: 200 });
       }) as unknown as typeof fetch,
@@ -238,11 +239,11 @@ describe('tier alias routing', () => {
     }
     // At the threshold the candidate is cooled and the next one serves.
     expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
-    expect(seen[seen.length - 1]).toBe('luna');
+    expect(seen[seen.length - 1]).toBe('default/luna');
     // And it stays cooled: a later request skips flash entirely.
     seen.length = 0;
     expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
-    expect(seen).toEqual(['luna']);
+    expect(seen).toEqual(['default/luna']);
   });
 
   it('resets the count when the candidate serves a request successfully', async () => {
@@ -253,7 +254,7 @@ describe('tier alias routing', () => {
     const deps = {
       fetch: (async (_url: string, init: RequestInit) => {
         const model = (JSON.parse(init.body as string) as { model: string }).model;
-        if (model !== 'flash') return new Response('{}', { status: 200 });
+        if (model !== 'default/flash') return new Response('{}', { status: 200 });
         return fail
           ? new Response(THOUGHT_SIG_400, { status: 400 })
           : new Response('{}', { status: 200 });
@@ -278,14 +279,14 @@ describe('tier alias routing', () => {
       fetch: (async (_url: string, init: RequestInit) => {
         const model = (JSON.parse(init.body as string) as { model: string }).model;
         seen.push(model);
-        if (model === 'flash') throw new Error('ECONNREFUSED');
+        if (model === 'default/flash') throw new Error('ECONNREFUSED');
         return new Response('{}', { status: 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
       resolveTier: () => ROUTES,
     });
     expect(res.status).toBe(200);
-    expect(seen).toEqual(['flash', 'luna']);
+    expect(seen).toEqual(['default/flash', 'default/luna']);
   });
 
   it('returns 529 naming the CLI fallback when every native route fails', async () => {
@@ -333,7 +334,7 @@ describe('tier alias routing', () => {
       resolveTier: () => ROUTES,
     });
     expect(res.status).toBe(400);
-    expect(seen).toEqual(['flash']);
+    expect(seen).toEqual(['default/flash']);
   });
 
   it('429 (rate-limited) falls back to the next candidate, not returned as-is', async () => {
@@ -342,13 +343,13 @@ describe('tier alias routing', () => {
       fetch: (async (_url: string, init: RequestInit) => {
         const model = (JSON.parse(init.body as string) as { model: string }).model;
         seen.push(model);
-        return new Response('rate limited', { status: model === 'flash' ? 429 : 200 });
+        return new Response('rate limited', { status: model === 'default/flash' ? 429 : 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
       resolveTier: () => ROUTES,
     });
     expect(res.status).toBe(200);
-    expect(seen).toEqual(['flash', 'luna']);
+    expect(seen).toEqual(['default/flash', 'default/luna']);
   });
 
   it('401 (candidate auth failure) falls back to the next candidate and cools the failure down', async () => {
@@ -357,16 +358,16 @@ describe('tier alias routing', () => {
       fetch: (async (_url: string, init: RequestInit) => {
         const model = (JSON.parse(init.body as string) as { model: string }).model;
         seen.push(model);
-        return new Response('unauthorized', { status: model === 'flash' ? 401 : 200 });
+        return new Response('unauthorized', { status: model === 'default/flash' ? 401 : 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
       resolveTier: () => ROUTES,
     };
     expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
-    expect(seen).toEqual(['flash', 'luna']);
+    expect(seen).toEqual(['default/flash', 'default/luna']);
     // second request inside the cooldown skips flash entirely, same as a 5xx/429
     await routeRequest(req('sonata-code-simple'), deps);
-    expect(seen).toEqual(['flash', 'luna', 'luna']);
+    expect(seen).toEqual(['default/flash', 'default/luna', 'default/luna']);
   });
 
   it('403 (candidate auth failure) falls back to the next candidate, not returned as-is', async () => {
@@ -375,13 +376,13 @@ describe('tier alias routing', () => {
       fetch: (async (_url: string, init: RequestInit) => {
         const model = (JSON.parse(init.body as string) as { model: string }).model;
         seen.push(model);
-        return new Response('forbidden', { status: model === 'flash' ? 403 : 200 });
+        return new Response('forbidden', { status: model === 'default/flash' ? 403 : 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
       resolveTier: () => ROUTES,
     });
     expect(res.status).toBe(200);
-    expect(seen).toEqual(['flash', 'luna']);
+    expect(seen).toEqual(['default/flash', 'default/luna']);
   });
 
   it('logs the resolution step', async () => {
@@ -411,7 +412,7 @@ describe('tier alias routing', () => {
     const res = await routeRequest(req('sonata-code-simple'), {
       fetch: (async (url: string) => { seenUrl = url; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
-      gatewayKeys: { g: 'GATEWAY-KEY' },
+      gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
       resolveTier: () => DIRECT_ROUTES,
     });
     expect(res.status).toBe(200);
@@ -432,7 +433,7 @@ describe('tier alias routing', () => {
           return new Response('{}', { status: 200 });
         }) as unknown as typeof fetch,
         litellmBase: 'http://litellm', litellmKey: 'k',
-        gatewayKeys: { g: 'GATEWAY-KEY' },
+        gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
         resolveTier: () => DIRECT_ROUTES,
       },
     );
@@ -459,7 +460,7 @@ describe('tier alias routing', () => {
           return new Response('{}', { status: 200 });
         }) as unknown as typeof fetch,
         litellmBase: 'http://litellm', litellmKey: 'k',
-        gatewayKeys: { g: 'GATEWAY-KEY' },
+        gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
         resolveTier: () => DIRECT_ROUTES,
       },
     );
@@ -476,7 +477,7 @@ describe('tier alias routing', () => {
         return new Response('{}', { status: 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
-      gatewayKeys: { g: 'GATEWAY-KEY' },
+      gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
       resolveTier: () => DIRECT_ROUTES,
     });
     expect(sentModel).toBe('model-1');
@@ -502,7 +503,7 @@ describe('tier alias routing', () => {
       {
         fetch: (async (_u: string, init: RequestInit) => { sent = init.body as string; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
         litellmBase: 'http://litellm', litellmKey: 'k',
-        gatewayKeys: { g: 'GATEWAY-KEY' },
+        gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
         resolveTier: () => DIRECT_ROUTES,
       },
     );
@@ -563,7 +564,7 @@ describe('tier alias routing', () => {
         return new Response('{}', { status: url.startsWith('https://gw.example') ? 503 : 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
-      gatewayKeys: { g: 'GATEWAY-KEY' },
+      gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
       resolveTier: () => mixedRoutes,
     });
     expect(res.status).toBe(200);
@@ -993,5 +994,114 @@ describe('routeRequest — system turns', () => {
     const req = request('claude-sonnet-5');
     await routeRequest(req, { ...deps, anthropicBase: 'http://anthropic' });
     expect(seen[0]).toBe(req.body.toString());
+  });
+});
+
+describe('routeRequest — tenants', () => {
+  const seen: { url: string; model: string; headers: Record<string, string> }[] = [];
+  const capture: typeof fetch = (async (url: string, init: RequestInit) => {
+    const body = JSON.parse(Buffer.from(init.body as Uint8Array).toString()) as { model: string };
+    seen.push({ url, model: body.model, headers: init.headers as Record<string, string> });
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const tenantA = { id: 'aaaaaaaaaaaa', project: '/p/a', configPath: '/p/a/sonata.toml' };
+  const tenantB = { id: 'bbbbbbbbbbbb', project: '/p/b', configPath: '/p/b/sonata.toml' };
+  const routesFor = (t: { id: string }) => ({
+    role: 'code', tier: 'simple',
+    routes: [{ key: 'flash', native: { gateway: 'g', id: t.id === 'aaaaaaaaaaaa' ? 'deepseek' : 'gemini' } }],
+  });
+  const deps = {
+    fetch: capture, litellmBase: 'http://litellm', litellmKey: 'k',
+    resolveTenant: (hint: { project?: string; session?: string }) => {
+      if (hint.project === '/p/a' || hint.session === 'sa') return tenantA;
+      if (hint.project === '/p/b') return tenantB;
+      if (hint.project === '/none') throw new TenantError('No sonata.toml found for /none');
+      return DEFAULT_TENANT;
+    },
+    resolveTier: (_alias: string, t: { id: string }) => routesFor(t),
+  };
+  const req = (headers: Record<string, string>, model = 'sonata-code-simple') => ({
+    method: 'POST', url: '/v1/messages',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: Buffer.from(JSON.stringify({ model, messages: [] })),
+  });
+  beforeEach(() => { seen.length = 0; clearCooldowns(); });
+
+  it('resolves by the project header first and namespaces the litellm model', async () => {
+    await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/a', 'x-claude-code-session-id': 'zz' }), deps);
+    expect(seen[0].model).toBe('aaaaaaaaaaaa/flash');
+  });
+  it('falls back to the session, then to the default tenant', async () => {
+    await routeRequest(req({ 'x-claude-code-session-id': 'sa' }), deps);
+    expect(seen[0].model).toBe('aaaaaaaaaaaa/flash');
+    await routeRequest(req({}), deps);
+    expect(seen[1].model).toBe('default/flash');
+  });
+  it('strips the project header before forwarding, on the litellm and anthropic paths', async () => {
+    await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/a' }), deps);
+    expect(Object.keys(seen[0].headers).map((h) => h.toLowerCase())).not.toContain(SONATA_PROJECT_HEADER);
+    await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/a' }, 'claude-sonnet-5'), { ...deps, anthropicBase: 'http://anthropic' });
+    expect(Object.keys(seen[1].headers).map((h) => h.toLowerCase())).not.toContain(SONATA_PROJECT_HEADER);
+  });
+  it('answers a TenantError with a 400 naming the message, and records nothing', async () => {
+    const rows: unknown[] = [];
+    const res = await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/none' }), { ...deps, recordUsage: (r) => rows.push(r) });
+    expect(res.status).toBe(400);
+    expect(Buffer.from(res.body as Buffer).toString()).toContain('No sonata.toml found for /none');
+    expect(rows).toEqual([]);
+  });
+  it('cools one tenant\'s candidate without touching the other\'s', async () => {
+    const failing: typeof fetch = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(Buffer.from(init.body as Uint8Array).toString()) as { model: string };
+      seen.push({ url: '', model: body.model, headers: {} });
+      return new Response('{}', { status: body.model.startsWith('aaaa') ? 503 : 200 });
+    }) as unknown as typeof fetch;
+    await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/a' }), { ...deps, fetch: failing });
+    await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/b' }), { ...deps, fetch: failing });
+    expect(seen.map((s) => s.model)).toEqual(['aaaaaaaaaaaa/flash', 'bbbbbbbbbbbb/flash']);
+  });
+  it('writes the project onto the ledger row', async () => {
+    const rows: { project?: string }[] = [];
+    const response = await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/a' }), { ...deps, recordUsage: (r) => rows.push(r) });
+    for await (const _chunk of response.body as AsyncIterable<Buffer>) { /* Complete the streamed response to emit usage. */ }
+    expect(rows[0].project).toBe('/p/a');
+  });
+  it('namespaces a bare --model key request too', async () => {
+    await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/b' }, 'flash'), deps);
+    expect(seen[0].model).toBe('bbbbbbbbbbbb/flash');
+  });
+  it('refuses on the tenant\'s own cap, naming its file', async () => {
+    const res = await routeRequest(req({ [SONATA_PROJECT_HEADER]: '/p/a' }), {
+      ...deps,
+      budget: (t) => [{ dailyUsd: 1, spentUsd: 1, configPath: `${t.configPath}` }],
+    });
+    expect(res.status).toBe(429);
+    expect(Buffer.from(res.body as Buffer).toString()).toContain('/p/a/sonata.toml');
+  });
+  it('returns 502 naming the install when litellm is unavailable', async () => {
+    const res = await routeRequest(req({}, 'flash'), { ...deps, litellmUnavailable: () => 'LiteLLM is missing — run `sonata litellm install`' });
+    expect(res.status).toBe(502);
+    expect(Buffer.from(res.body as Buffer).toString()).toContain('sonata litellm install');
+  });
+  it('litellmModelName is <id>/<key>', () => {
+    expect(litellmModelName({ id: 'x' }, 'flash')).toBe('x/flash');
+  });
+});
+
+describe('createRouterServer — health', () => {
+  it('reports multiTenant and the known tenants, never a configPath', async () => {
+    const server = createRouterServer({
+      fetch, litellmBase: 'http://litellm', litellmKey: 'k', health: true, instanceId: 'i',
+      tenants: () => [{ id: 'aaaaaaaaaaaa', configPath: '/p/a/sonata.toml' }],
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const body = await (await fetch(`http://127.0.0.1:${port}/__sonata_health`)).json() as Record<string, unknown>;
+      expect(body).toMatchObject({ sonata: true, multiTenant: true, instanceId: 'i', tenants: [{ id: 'aaaaaaaaaaaa', configPath: '/p/a/sonata.toml' }] });
+      expect(body).not.toHaveProperty('configPath');
+    } finally {
+      server.close();
+    }
   });
 });
