@@ -84,13 +84,13 @@ describe('route-session hook — surfacing the CLI', () => {
   });
 
   it('surfaces a refusal as a systemMessage, and still exits 0', async () => {
-    const refusal = 'sonata: router port 4100 is already serving a different sonata configuration (/other/sonata.toml) than this project resolves to (/here/sonata.toml). Two projects cannot share one router port — set a different [native.ports].router in one of the two configs.\n';
+    const refusal = 'sonata: router on port 4100 predates multi-tenant routing — run `sonata restart`\n';
     const { code, stdout } = await invoke('route-session.mjs', ['start'], JSON.stringify({ session_id: 's1' }), { exit: 1, stderr: refusal });
     expect(code).toBe(0);
     const doc = JSON.parse(stdout) as { systemMessage: string };
     expect(doc.systemMessage).toContain('sonata route session-start failed');
     expect(doc.systemMessage).toContain('will not route');
-    expect(doc.systemMessage).toContain('already serving a different sonata configuration');
+    expect(doc.systemMessage).toContain('predates multi-tenant routing');
   });
 
   it('stays silent on a failure that says nothing', async () => {

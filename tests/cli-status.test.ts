@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { main } from '../src/cli.js';
-import { loadConfig } from '../src/config.js';
 import { isSonataRouter } from '../src/commands/serve.js';
 import { readRows } from '../src/ledger.js';
 import { summarizeRuns } from '../src/commands/runs.js';
 import { cmdRoute, type RouteStatus } from '../src/commands/route.js';
+import { routerPorts } from '../src/commands/ports.js';
 
 // `main` reaches its boundaries through these modules; mock each so the CLI
 // path can be exercised without a real config, router, ledger or run store.
-vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }));
+vi.mock('../src/commands/ports.js', () => ({ routerPorts: vi.fn() }));
 vi.mock('../src/commands/serve.js', () => ({
   cmdServe: vi.fn(),
   cmdRestart: vi.fn(),
@@ -23,7 +23,7 @@ vi.mock('../src/commands/route.js', () => ({
   cmdRouteSubagent: vi.fn(),
 }));
 
-const loadConfigMock = vi.mocked(loadConfig);
+const routerPortsMock = vi.mocked(routerPorts);
 const isSonataRouterMock = vi.mocked(isSonataRouter);
 const readRowsMock = vi.mocked(readRows);
 const summarizeRunsMock = vi.mocked(summarizeRuns);
@@ -49,7 +49,7 @@ describe('sonata status CLI wiring', () => {
     // fall through to the default-session path and exit 0. Any throw at all is
     // therefore the flag rejection itself, and asserting on the message proves
     // it returned the unknown-option error rather than a later crash.
-    loadConfigMock.mockReturnValue({ native: { ports: { router: 4100 } } } as never);
+    routerPortsMock.mockReturnValue({ router: 4100, litellm: 4000 });
     isSonataRouterMock.mockResolvedValue(false);
     readRowsMock.mockReturnValue([] as never);
 
@@ -59,7 +59,7 @@ describe('sonata status CLI wiring', () => {
   });
 
   it('defaults to the most recent session', async () => {
-    loadConfigMock.mockReturnValue({ native: { ports: { router: 4100 } } } as never);
+    routerPortsMock.mockReturnValue({ router: 4100, litellm: 4000 });
     isSonataRouterMock.mockResolvedValue(true);
     readRowsMock.mockReturnValue([
       cell({ ts: '2026-08-27T12:00:00.000Z', session: 'sess-a', key: 'flash' }),
@@ -77,7 +77,7 @@ describe('sonata status CLI wiring', () => {
   });
 
   it('--all keeps every session', async () => {
-    loadConfigMock.mockReturnValue({ native: { ports: { router: 4100 } } } as never);
+    routerPortsMock.mockReturnValue({ router: 4100, litellm: 4000 });
     isSonataRouterMock.mockResolvedValue(false);
     readRowsMock.mockReturnValue([
       cell({ session: 'sess-a', key: 'flash' }),
@@ -92,7 +92,7 @@ describe('sonata status CLI wiring', () => {
   });
 
   it('--session narrows to that session', async () => {
-    loadConfigMock.mockReturnValue({ native: { ports: { router: 4100 } } } as never);
+    routerPortsMock.mockReturnValue({ router: 4100, litellm: 4000 });
     isSonataRouterMock.mockResolvedValue(false);
     readRowsMock.mockReturnValue([
       cell({ session: 'sess-a', key: 'flash' }),
@@ -106,12 +106,10 @@ describe('sonata status CLI wiring', () => {
     expect(all).not.toContain('grok');
   });
 
-  it('reports the ledger even when no config resolves', async () => {
-    // No sonata.toml anywhere: loadConfig throws. Status still has ledger rows
-    // to show, so it must not crash — the router line degrades to "unknown".
-    loadConfigMock.mockImplementation(() => {
-      throw new Error('no config');
-    });
+  it('reports the default machine router and ledger when no machine config exists', async () => {
+    // routerPorts supplies defaults when the machine config is absent, so status
+    // always checks the machine-wide router rather than a project config.
+    routerPortsMock.mockReturnValue({ router: 4100, litellm: 4000 });
     isSonataRouterMock.mockResolvedValue(false);
     readRowsMock.mockReturnValue([
       cell({ session: 'sess-a', key: 'flash' }),
@@ -120,8 +118,22 @@ describe('sonata status CLI wiring', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     await main(['status']);
     const all = spy.mock.calls.map(([l]) => String(l)).join('\n');
-    expect(all).toContain('router: unknown (no sonata.toml here)');
+    expect(all).toContain('router: down');
     expect(all).toContain('flash');
+    expect(isSonataRouterMock).toHaveBeenCalledWith(4100);
+  });
+
+  it('reports an unparseable machine config without reading the router', async () => {
+    routerPortsMock.mockImplementation(() => {
+      throw new Error('invalid TOML');
+    });
+    readRowsMock.mockReturnValue([] as never);
+
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await main(['status']);
+    const all = spy.mock.calls.map(([l]) => String(l)).join('\n');
+    expect(all).toContain('router: unavailable (could not parse machine config');
+    expect(all).toContain('.config/sonata/sonata.toml)');
     expect(isSonataRouterMock).not.toHaveBeenCalled();
   });
 });

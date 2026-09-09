@@ -5,20 +5,23 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { loadAiPricing } from '../aipricing.js';
-import { spentTodayUsd } from '../budget.js';
-import { configPath as resolveSonataConfigPath, loadConfig, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
+import { spentTodayUsd, type BudgetStatus } from '../budget.js';
+import { GLOBAL_CONFIG_RELATIVE, loadConfig, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
 import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
 import { codexAuthPath, opencodeAuthPath, readChatGptOAuth } from '../native/codex-auth.js';
 import { credentialDir } from '../native/oauth-login.js';
 import { readCopilotToken } from '../native/copilot-auth.js';
-import { envVarForGateway, litellmConfigYaml } from '../native/litellm.js';
+import { envVarForGateway, litellmConfigYamlForTenants } from '../native/litellm.js';
 import { litellmRequired, transportFor } from '../native/providers.js';
 import { litellmStatus, managedLitellmPath } from '../native/litellm-venv.js';
-import { createRouterServer } from '../native/router.js';
+import { createRouterServer, type RouterTenant } from '../native/router.js';
+import { canonicalConfigPath, TenantRegistry } from '../native/tenants.js';
+import { ensureRouterToken } from '../native/router-token.js';
 import { resolvePrice } from '../pricing.js';
 import { timestampedLogPath } from './init-log.js';
+import { routerPorts } from './ports.js';
 
 export interface ServeHandle {
   routerPort: number;
@@ -88,6 +91,14 @@ export interface ServeDeps {
    * one.
    */
   instanceId?: string;
+  /**
+   * Test seam: the ports the machine config would otherwise decide.
+   *
+   * `routerPorts` reads the machine config and nothing else, so a test of the
+   * no-machine-config case has no way to ask for an ephemeral port and would
+   * bind the real default 4100.
+   */
+  ports?: { router: number; litellm: number };
 }
 
 /**
@@ -319,22 +330,25 @@ export async function isSonataRouter(
   }
 }
 
-/** The resolved sonata.toml path a running sonata router reports, or null if the port isn't a sonata router (or reports no configPath). */
-export async function sonataRouterConfigPath(
+/** Whether the sonata router on `port` is a multi-tenant one: true, false for an older single-config router, null when the port is not a sonata router. */
+export async function sonataRouterMultiTenant(
   port: number,
   doFetch: typeof fetch = fetch,
-): Promise<string | null> {
+): Promise<boolean | null> {
   try {
-    const response = await doFetch(serveHealthUrl(port), {
-      signal: AbortSignal.timeout(2000),
-    });
+    const response = await doFetch(serveHealthUrl(port), { signal: AbortSignal.timeout(2000) });
     if (!response.ok) return null;
-    const body = await response.json() as { sonata?: unknown; configPath?: unknown };
+    const body = await response.json() as { sonata?: unknown; multiTenant?: unknown };
     if (body?.sonata !== true) return null;
-    return typeof body.configPath === 'string' ? body.configPath : null;
+    return body.multiTenant === true;
   } catch {
     return null;
   }
+}
+
+/** The one refusal every caller gives a router that predates this design. */
+export function preMultiTenantMessage(port: number): string {
+  return `sonata: router on port ${port} predates multi-tenant routing — run \`sonata restart\``;
 }
 
 /** The instance id a running sonata router reports on /__sonata_health, or null if the port isn't a sonata router (or reports none). */
@@ -570,31 +584,134 @@ export function priceRow(config: SonataConfig, home: string, row: LedgerRow): Le
   }
 }
 
+/**
+ * Which caps apply to one request: the tenant's own, and the machine's.
+ *
+ * Extracted because the whole subtlety is the comparison against
+ * `machineConfigPath` — both sides must be canonicalised, or the machine
+ * config is mistaken for a project tenant and its machine-wide cap is applied
+ * per project directory.
+ */
+export function budgetStatusesFor(args: {
+  tenant: RouterTenant;
+  /** Canonical — see `canonicalConfigPath`. */
+  machineConfigPath: string;
+  machineDailyUsd?: number;
+  projectSpend: () => number;
+  machineSpend: () => number;
+}): BudgetStatus[] | undefined {
+  const out: BudgetStatus[] = [];
+  const project = args.tenant.config?.budget?.dailyUsd;
+  if (project !== undefined && args.tenant.configPath !== undefined && args.tenant.configPath !== args.machineConfigPath) {
+    out.push({ dailyUsd: project, spentUsd: args.projectSpend(), configPath: args.tenant.configPath });
+  }
+  if (args.machineDailyUsd !== undefined) {
+    out.push({ dailyUsd: args.machineDailyUsd, spentUsd: args.machineSpend(), configPath: args.machineConfigPath });
+  }
+  return out.length === 0 ? undefined : out;
+}
+
+/**
+ * One gateway definition per name, across every tenant — and no definition at
+ * all where two tenants disagree about how that name authenticates.
+ *
+ * Credentials are machine-wide **by gateway name**: `buildChildEnv` resolves
+ * one `SONATA_KEY_<NAME>` per name, and both transports then use it. Two
+ * projects naming one gateway with different `base_url`s is deliberate and
+ * supported — they share the credential and reach their own endpoints. Two
+ * projects disagreeing about the gateway's `auth` or `credential_source` is
+ * not: a last-one-wins merge would resolve one project's credential and hand
+ * it to the other project's endpoint. Dropping the name leaves neither with a
+ * key, so both fail visibly rather than one silently borrowing the other's.
+ */
+export function mergeTenantGateways(
+  tenants: { id: string; gateways: NativeConfig['gateways'] }[],
+  log: (line: string) => void,
+): NativeConfig['gateways'] {
+  const merged: NativeConfig['gateways'] = {};
+  const owner: Record<string, string> = {};
+  const conflicted = new Set<string>();
+  for (const { id, gateways } of tenants) {
+    for (const [name, gateway] of Object.entries(gateways)) {
+      if (conflicted.has(name)) continue;
+      const seen = merged[name];
+      if (seen === undefined) {
+        merged[name] = gateway;
+        owner[name] = id;
+        continue;
+      }
+      // Only the credential-bearing fields. A differing base_url is the
+      // supported per-project-endpoint case, not a conflict.
+      if (seen.auth === gateway.auth && seen.credentialSource === gateway.credentialSource) continue;
+      conflicted.add(name);
+      delete merged[name];
+      log(
+        `gateway "${name}" is defined by two projects with different credentials ` +
+        `(${owner[name]}: auth=${seen.auth} source=${seen.credentialSource ?? 'default'}; ` +
+        `${id}: auth=${gateway.auth} source=${gateway.credentialSource ?? 'default'}) — ` +
+        'serving neither, since one project\'s credential must not reach the other\'s endpoint',
+      );
+    }
+  }
+  return merged;
+}
+
 export async function cmdServe(
   opts: { cwd: string; home: string; daemon?: boolean } & ServeDeps,
 ): Promise<ServeHandle> {
-  const config = loadConfig(opts.cwd, opts.home);
-  if (!config.native) throw new Error('sonata serve: no [native] table');
+  // `opts.cwd` no longer chooses a config: there is one router per machine and
+  // it serves every project, resolving each request's own sonata.toml. It is
+  // kept on the options so callers compile, and noted as a tenant so a plain
+  // `sonata serve` run inside a project has that project in the union from
+  // the first request.
+  const registry = new TenantRegistry(opts.home, { log: (line) => console.error(`sonata serve: ${line}`) });
+  registry.noteProject(opts.cwd);
+  const ports = opts.ports ?? routerPorts(opts.home);
+  // Canonicalised once, because `TenantRegistry` realpaths every config path it
+  // reports and a raw `join` does not: where $HOME or .config traverses a
+  // symlink the two spellings differ, the machine config then looks like a
+  // project tenant, and its machine-wide cap is applied per project directory.
+  // The same defect class `df12401` fixed for tenant identity.
+  const machineConfigPathRaw = join(opts.home, GLOBAL_CONFIG_RELATIVE);
+  const machineConfigPath = canonicalConfigPath(machineConfigPathRaw);
+  const machineConfig = (): SonataConfig | undefined => {
+    try { return existsSync(machineConfigPathRaw) ? loadConfig(dirname(machineConfigPathRaw), opts.home) : undefined; } catch { return undefined; }
+  };
+  // A router serves every project, so "is there anything to serve?" is a
+  // question about tenants, not about the machine config. `sonata init`
+  // defaults to project scope, so a fresh install has no machine config at
+  // all — asking only about that file killed the daemon at startup, and the
+  // user saw nothing but "the daemon did not answer".
+  if (!registry.loadable().some(({ config }) => config.native !== undefined)) {
+    throw new Error('sonata serve: no [native] table');
+  }
 
-  const native = config.native;
+  /** Merged gateways across every loadable tenant — what credential resolution and the child env are built from. */
+  const mergedNative = (): NativeConfig => ({
+    models: {},
+    gateways: mergeTenantGateways(
+      registry.loadable().map(({ id, config }) => ({ id, gateways: config.native?.gateways ?? {} })),
+      (line) => console.error(`sonata serve: ${line}`),
+    ),
+    ports,
+    generate: {},
+  });
+  const unionNeedsLitellm = (): boolean => registry.loadable().some(({ config }) => litellmRequired(config));
 
-  // LiteLLM is conditional: a config whose every routable gateway speaks
-  // Anthropic natively needs no translation layer, so no child is started and
-  // the Python prerequisite disappears rather than being managed.
-  const needsLitellm = litellmRequired(config);
   const litellmBin = managedLitellmPath(opts.home);
-  if (needsLitellm) {
+  /** Why litellm cannot serve, or undefined. Set lazily; cleared when a later check finds the venv healthy. */
+  let litellmUnavailable: string | undefined;
+  const litellmHealthy = (): boolean => {
     const status = litellmStatus(opts.home, true);
-    // `serve` never installs. `hooks/ensure-serve.mjs` starts it headless from
-    // a SessionStart hook, where a silent multi-minute install is
-    // indistinguishable from a hang. `stale` still runs: an older pinned
-    // version is a warning for `doctor`, not a reason to refuse to serve.
-    if (status.state !== 'ok' && status.state !== 'stale') {
-      throw new Error(
-        `sonata serve: this config routes through LiteLLM, which is ${status.state} — `
-        + 'run `sonata litellm install`',
-      );
-    }
+    if (status.state === 'ok' || status.state === 'stale') { litellmUnavailable = undefined; return true; }
+    litellmUnavailable = `a project routes through LiteLLM, which is ${status.state} — run \`sonata litellm install\``;
+    return false;
+  };
+  const needsLitellmAtStart = unionNeedsLitellm();
+  if (needsLitellmAtStart && !litellmHealthy()) {
+    // Startup keeps the loud refusal: a router that comes up with its default
+    // tenant unservable is a router nobody asked for.
+    throw new Error(`sonata serve: this config routes through LiteLLM, which is ${litellmStatus(opts.home, true).state} — run \`sonata litellm install\``);
   }
 
   const masterKey = `sk-sonata-${randomBytes(32).toString('hex')}`;
@@ -616,9 +733,9 @@ export async function cmdServe(
   const respawnTimestamps: number[] = [];
   try {
     const configPath = join(tempDir, 'config.json');
-    writeFileSync(configPath, litellmConfigYaml(native, masterKey, config.unifiedModels), { mode: 0o600 });
+    writeFileSync(configPath, litellmConfigYamlForTenants(registry.loadable(), masterKey), { mode: 0o600 });
 
-    let childEnv = buildChildEnv(native, opts.home, tempDir);
+    let childEnv = buildChildEnv(mergedNative(), opts.home, tempDir);
 
     // The direct transport bypasses LiteLLM entirely, so the gateway's own
     // credential has to reach the router rather than the child's environment.
@@ -633,13 +750,13 @@ export async function cmdServe(
         if (key !== undefined && key !== '') gatewayKeys[name] = key;
       }
     };
-    refreshGatewayKeys(native);
+    refreshGatewayKeys(mergedNative());
 
     // A predecessor's orphaned litellm would hold the port and answer with the
     // wrong master key; kill it (recorded pid only) before spawning our own.
     // Scoped to this router's port: another project's daemon on a different
     // port has its own litellm on its own port and is not our orphan to kill.
-    killRecordedOrphan(opts.home, native.ports.router);
+    killRecordedOrphan(opts.home, ports.router);
 
     // The litellm child dying on its own (not via `stop()`) used to go
     // unnoticed until the next request 502'd and someone ran `sonata restart`
@@ -671,27 +788,42 @@ export async function cmdServe(
     // builds the model list from `native.models` first, unconditionally, so
     // a transitional config editing a legacy entry's id/gateway needs the
     // same restart a unified edit gets.
-    const activeNativeSnapshot = (cfg: SonataConfig): string =>
-      JSON.stringify({ legacyModels: cfg.native?.models, models: cfg.unifiedModels, gateways: cfg.native?.gateways });
-    let activeModelsJson = activeNativeSnapshot(config);
-    // Set right before a deliberate kill-for-config-change so the crash-exit
-    // handler below (which fires for ANY exit, deliberate or not) does not
-    // also schedule its own duplicate respawn on top of the one already in
-    // flight from that deliberate restart.
-    let expectingConfigRestart = false;
+    let activeModelsJson = registry.unionSnapshot();
+    // The child a deliberate kill-for-config-change is about to terminate, so
+    // the crash-exit handler below (which fires for ANY exit, deliberate or
+    // not) does not also schedule its own duplicate respawn on top of the one
+    // already in flight from that deliberate restart.
+    //
+    // It names the *child*, not a bare boolean. A boolean is cleared by
+    // whichever exit happens to arrive first, and the abandoned-child branch
+    // returned before ever reading it — so a flag set for child A and consumed
+    // by an unrelated exit leaked, and from then on the next genuine crash of
+    // the live child was swallowed as "expected", no respawn fired, and the
+    // router answered every litellm request against a dead upstream until a
+    // manual `sonata restart`. Identity cannot leak on any ordering.
+    let expectedRestartChild: SpawnedLitellm | undefined;
     let litellmReady: Promise<void> = Promise.resolve();
+    // A lazy child that fails its readiness probe is deliberately terminated;
+    // identify that exact child so its exit cannot schedule crash recovery.
+    const abandonedChildren = new Set<SpawnedLitellm>();
+    // Retain exit knowledge long enough for the readiness owner to avoid
+    // signalling a process whose exit callback already ran.
+    const exitedChildren = new Set<SpawnedLitellm>();
 
     const spawnLitellmChild = (): SpawnedLitellm => {
       const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(
-        configPath, childEnv, native.ports.litellm, litellmBin,
+        configPath, childEnv, ports.litellm, litellmBin,
       );
-      recordLitellmPid(opts.home, native.ports.router, spawned.pid);
+      recordLitellmPid(opts.home, ports.router, spawned.pid);
       spawned.onExit?.((code, signal) => {
         if (stopping) return;
-        if (expectingConfigRestart) {
-          expectingConfigRestart = false;
+        const deliberate = expectedRestartChild === spawned;
+        if (expectedRestartChild === spawned) expectedRestartChild = undefined;
+        if (abandonedChildren.delete(spawned)) {
+          exitedChildren.add(spawned);
           return;
         }
+        if (deliberate) return;
         const nowMs = now();
         respawnTimestamps.push(nowMs);
         while (respawnTimestamps.length > 0 && nowMs - respawnTimestamps[0] > respawnWindowMs) {
@@ -711,7 +843,7 @@ export async function cmdServe(
           if (stopping) return;
           console.error('sonata serve: respawning litellm...');
           child = spawnLitellmChild();
-          await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm, masterKey);
+          await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
         })().catch((error) => {
           console.error(`sonata serve: respawned litellm never came up: ${String(error)}`);
         });
@@ -727,11 +859,11 @@ export async function cmdServe(
     // whatever it was given at startup. Reuses the same respawn machinery
     // already proven for crash recovery, including the `litellmReady` gate
     // every request already awaits before reaching litellm.
-    const maybeRestartForModelChange = async (freshConfig: SonataConfig): Promise<void> => {
+    const runRestartForModelChange = async (): Promise<void> => {
       if (stopping) return;
-      const freshModelsJson = activeNativeSnapshot(freshConfig);
+      const freshModelsJson = registry.unionSnapshot();
       if (freshModelsJson === activeModelsJson) return;
-      if (!freshConfig.native) {
+      if (registry.loadable().length === 0) {
         activeModelsJson = freshModelsJson;
         return;
       }
@@ -739,21 +871,53 @@ export async function cmdServe(
       // path's credentials still have to follow the new registry. A config
       // that has newly grown a litellm-transport gateway needs a real
       // `sonata restart`, because `serve` must never install.
-      if (!needsLitellm) {
+      if (child === undefined) {
+        // No child yet: refresh direct credentials, and if the union now needs
+        // litellm, start it here — tenants appear after startup, and "run
+        // sonata restart" is not an answer a hook can act on.
         try {
-          childEnv = buildChildEnv(freshConfig.native, opts.home, tempDir);
-          refreshGatewayKeys(freshConfig.native);
-          activeModelsJson = freshModelsJson;
+          childEnv = buildChildEnv(mergedNative(), opts.home, tempDir);
+          refreshGatewayKeys(mergedNative());
         } catch (error) {
           console.error(`sonata serve: could not refresh gateway credentials: ${String(error)}`);
           return;
         }
-        if (litellmRequired(freshConfig)) {
-          console.error(
-            'sonata serve: this config now routes through LiteLLM, which this router started '
-            + 'without — run `sonata restart`.',
-          );
+        if (!unionNeedsLitellm()) {
+          activeModelsJson = freshModelsJson;
+          return;
         }
+        if (!litellmHealthy()) {
+          // Do not commit the snapshot: after `sonata litellm install`, the
+          // unchanged union must still retry lazy child startup.
+          console.error(`sonata serve: ${litellmUnavailable}`);
+          return;
+        }
+        writeFileSync(configPath, litellmConfigYamlForTenants(registry.loadable(), masterKey), { mode: 0o600 });
+        console.error('sonata serve: a project now routes through LiteLLM — starting it');
+        litellmReady = (async () => {
+          const spawned = spawnLitellmChild();
+          child = spawned;
+          // The readiness await owns this child. Its exit can race the failed
+          // probe, so the crash watcher must not respawn it until ready.
+          abandonedChildren.add(spawned);
+          try {
+            await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
+            if (exitedChildren.has(spawned)) throw new Error('litellm exited before becoming ready');
+          } catch (error) {
+            // A spawned process is not a usable child until its health probe
+            // passes. It remains abandoned while being terminated, so only
+            // the next request owns the retry.
+            if (child === spawned) {
+              child = undefined;
+              if (!exitedChildren.has(spawned)) spawned.kill();
+            }
+            exitedChildren.delete(spawned);
+            throw error;
+          }
+          abandonedChildren.delete(spawned);
+          activeModelsJson = freshModelsJson;
+        })().catch((error) => { console.error(`sonata serve: litellm never came up: ${String(error)}`); });
+        await litellmReady;
         return;
       }
       // Only committed once the replacement config and credentials are
@@ -765,16 +929,16 @@ export async function cmdServe(
       // restart` or another edit. Left unset here, the next request's
       // comparison still differs and tries the restart again.
       try {
-        writeFileSync(configPath, litellmConfigYaml(freshConfig.native, masterKey, freshConfig.unifiedModels), { mode: 0o600 });
-        childEnv = buildChildEnv(freshConfig.native, opts.home, tempDir);
+        writeFileSync(configPath, litellmConfigYamlForTenants(registry.loadable(), masterKey), { mode: 0o600 });
+        childEnv = buildChildEnv(mergedNative(), opts.home, tempDir);
         // A mixed config restarts litellm for its translated gateways while
         // its direct ones keep serving from `gatewayKeys` — which is read off
         // `childEnv` and would otherwise still hold the pre-change credential.
-        refreshGatewayKeys(freshConfig.native);
+        refreshGatewayKeys(mergedNative());
         activeModelsJson = freshModelsJson;
         console.error('sonata serve: model registry changed — restarting litellm to pick it up...');
         const oldChild = child;
-        expectingConfigRestart = true;
+        expectedRestartChild = oldChild;
         litellmReady = (async () => {
           // Wait for the old child's actual exit before spawning its
           // replacement: kill() only requests termination, and racing a new
@@ -813,7 +977,7 @@ export async function cmdServe(
           }
           if (stopping) return;
           child = spawnLitellmChild();
-          await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm, masterKey);
+          await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
         })().catch((error) => {
           console.error(`sonata serve: restarted litellm never came up: ${String(error)}`);
         });
@@ -824,9 +988,32 @@ export async function cmdServe(
       }
     };
 
-    if (needsLitellm) {
+    /**
+     * One model-change check at a time.
+     *
+     * Every request calls this, and two concurrent first requests from one
+     * project is the normal case a multi-tenant router creates (parallel
+     * subagents). Without a guard, request 1 took the lazy-start branch and
+     * request 2 — arriving before that child was ready — saw `child !== undefined`
+     * and took the *restart* branch, killing a child that was still coming up.
+     * The extra kill/respawn was the smaller half of the cost; the larger was
+     * that the deliberate-restart marker was then consumed by the wrong exit.
+     * Serialising the check removes both, and a second caller simply awaits the
+     * check already in flight, which is the same answer it would have computed.
+     */
+    let restartInFlight: Promise<void> | undefined;
+    const maybeRestartForModelChange = async (): Promise<void> => {
+      if (restartInFlight !== undefined) return restartInFlight;
+      const inFlight = runRestartForModelChange().finally(() => {
+        if (restartInFlight === inFlight) restartInFlight = undefined;
+      });
+      restartInFlight = inFlight;
+      return inFlight;
+    };
+
+    if (needsLitellmAtStart) {
       child = spawnLitellmChild();
-      await (opts.waitForLitellm ?? defaultWaitForLitellm)(native.ports.litellm, masterKey);
+      await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
     }
 
     // Retention is enforced where the writer starts, so a long-lived daemon
@@ -848,70 +1035,57 @@ export async function cmdServe(
 
     router = createRouterServer({
       fetch,
-      litellmBase: `http://localhost:${native.ports.litellm}`,
+      litellmBase: `http://localhost:${ports.litellm}`,
       litellmKey: masterKey,
       health: true,
-      // Which sonata.toml actually started this router, so a caller sharing the
-      // default port can tell this project's router apart from another
-      // project's on the same port.
-      configPath: resolveSonataConfigPath(opts.cwd, opts.home) ?? undefined,
       instanceId,
-      // Goes to serve's stdout, which --daemon captures to its log file. This
-      // is the only record of which upstream served a request: litellm's access
-      // log has the path and status but not the model, so without it "did that
-      // agent really run on the foreign model?" cannot be answered from
-      // evidence.
       log: (line) => console.log(line),
-      // Config is re-read per call (not the `config`/`native` closed over
-      // above) so a tier edit in sonata.toml takes effect without a restart.
-      resolveTier: (alias) => resolveTierAlias(loadConfig(opts.cwd, opts.home), alias),
-      // A direct `--model <key>` request's key maps to its gateway through the
-      // same unified-model table tier resolution uses, so such a row carries
-      // `gateway` and can reach pricing's gateway step. Config is re-read here
-      // too, for the same reason as `resolveTier` above.
-      resolveGateway: (key) => loadConfig(opts.cwd, opts.home).unifiedModels[key]?.gateway,
-      // Both halves are read per request: the cap so raising it in sonata.toml
-      // frees the router immediately, and the spend so a request made moments
-      // ago counts against the next one. Returning undefined when no cap is
-      // configured is what keeps every existing config uncapped.
-      budget: () => {
-        const daily = loadConfig(opts.cwd, opts.home).budget?.dailyUsd;
-        if (daily === undefined) return undefined;
-        return { dailyUsd: daily, spentUsd: spentTodayUsd(opts.home) };
+      tenants: () => registry.summary(),
+      resolveTenant: (hint) => registry.resolve(hint),
+      // Created here, not per request: a settings file written once has to keep
+      // authorising its project hint across restarts.
+      projectHintToken: ensureRouterToken(opts.home),
+      resolveTier: (alias, tenant) => tenant.config === undefined ? undefined : resolveTierAlias(tenant.config, alias),
+      resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
+      budget: (tenant) => budgetStatusesFor({
+        tenant,
+        machineConfigPath,
+        machineDailyUsd: machineConfig()?.budget?.dailyUsd,
+        projectSpend: () => spentTodayUsd(opts.home, Date.now(), { tenant: tenant.id }),
+        machineSpend: () => spentTodayUsd(opts.home),
+      }),
+      gatewayKeys: (tenant) => {
+        const out: Record<string, string> = {};
+        for (const [name, gateway] of Object.entries(tenant.config?.native?.gateways ?? {})) {
+          if (transportFor(gateway, name) !== 'direct') continue;
+          const key = childEnv[envVarForGateway(name)];
+          if (key !== undefined && key !== '') out[name] = key;
+        }
+        return out;
       },
-      // Read per request off the mutable record above, so a credential
-      // refreshed by a config change reaches the very next direct forward.
-      gatewayKeys,
-      // Fire-and-forget, called on every litellm-bound request (direct model
-      // calls and each tier candidate alike) — not just tier resolution,
-      // since a direct `--model <key>` request for a newly added native-only
-      // model never calls `resolveTier` at all. The request that triggers
-      // this still awaits the current readiness gate below before reaching
-      // litellm, so a config-triggered restart is awaited without making
-      // this check itself asynchronous.
+      litellmUnavailable: () => {
+        // Tenant resolution has just noted the request's project, so re-probe
+        // for a lazily-needed child before answering: an unavailable venv is
+        // surfaced on this same request rather than forwarding it to whatever
+        // might happen to occupy the LiteLLM port. `litellmHealthy` is called
+        // for its effect on `litellmUnavailable`, which is the answer either
+        // way.
+        if (child === undefined && unionNeedsLitellm()) litellmHealthy();
+        return litellmUnavailable;
+      },
       checkModelChange: () => {
-        const freshConfig = loadConfig(opts.cwd, opts.home);
-        void maybeRestartForModelChange(freshConfig).catch((error) => {
+        void maybeRestartForModelChange().catch((error) => {
           console.error(`sonata serve: model-registry restart check failed: ${String(error)}`);
         });
       },
       litellmReady: () => litellmReady,
-      // The injected seam (when present) receives the router's raw, unpriced
-      // row unchanged. The default below prices it against the config and
-      // writes it. Either way a ledger write is fire-and-forget.
       recordUsage: opts.recordUsage ?? ((row) => {
-        // Deferred past the current I/O cycle so the synchronous loadConfig,
-        // pricing, and appendFileSync below never sit on the request-response
-        // path: the response is handed back to the client first. `appendRow`
-        // stays synchronous by design (Task 2); this only moves WHEN it runs.
         setImmediate(() => {
           let priced = row;
           try {
-            priced = priceRow(loadConfig(opts.cwd, opts.home), opts.home, row);
+            priced = priceRow(registry.resolve({ project: row.project }).config!, opts.home, row);
           } catch {
-            // A config that will not load is still no reason to drop the row —
-            // priceRow's guarantee ("written either way, with source 'none'")
-            // must hold here too. `priced` stays the raw router row.
+            // A config that will not load is still no reason to drop the row.
           }
           try {
             appendRow(opts.home, priced);
@@ -919,16 +1093,15 @@ export async function cmdServe(
         });
       }),
     });
-
     try {
-      await listen(router, native.ports.router);
+      await listen(router, ports.router);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-        throw new Error(await occupiedPortMessage(native.ports.router, opts.probeHealth));
+        throw new Error(await occupiedPortMessage(ports.router, opts.probeHealth));
       }
       throw error;
     }
-    recordRouterPid(opts.home, native.ports.router, process.pid);
+    recordRouterPid(opts.home, ports.router, process.pid);
   } catch (error) {
     // Suppress the respawn watcher before killing the child — otherwise its
     // `exit` handler schedules a respawn against `configPath`, which the
@@ -946,18 +1119,18 @@ export async function cmdServe(
   const startedRouter = router as ReturnType<typeof createRouterServer>;
 
   const address = startedRouter.address();
-  const routerPort = typeof address === 'object' && address !== null ? address.port : native.ports.router;
+  const routerPort = typeof address === 'object' && address !== null ? address.port : ports.router;
   let stopped = false;
 
   return {
     routerPort,
-    litellmPort: needsLitellm ? native.ports.litellm : undefined,
+    litellmPort: child !== undefined ? ports.litellm : undefined,
     async stop(): Promise<void> {
       if (stopped) return;
       stopped = true;
       stopping = true;
       child?.kill();
-      try { unlinkSync(serveStatePath(opts.home, native.ports.router)); } catch { /* already gone */ }
+      try { unlinkSync(serveStatePath(opts.home, ports.router)); } catch { /* already gone */ }
       try {
         await close(startedRouter);
       } finally {
@@ -1006,9 +1179,7 @@ export async function startServeDaemon(
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const timeoutMs = deps.timeoutMs ?? 60_000;
 
-  const config = loadConfig(cwd, home);
-  if (!config.native) throw new Error('sonata serve: no [native] table');
-  const port = config.native.ports.router;
+  const port = routerPorts(home).router;
 
   const logPath = timestampedLogPath(home, 'serve');
   mkdirSync(dirname(logPath), { recursive: true });
@@ -1021,16 +1192,14 @@ export async function startServeDaemon(
   // against a leftover daemon (see the design doc for the reproduction).
   const instanceId = randomUUID();
 
-  // Explicit, not inherited: a daemon started to serve *every* project
-  // (`route on/auto --global`) must not bind itself to whichever project's
-  // session happened to trigger it first — the router is a single process,
-  // so its config has to be the one every routed project actually shares.
-  // The caller passes `home` here for that case (see route.ts); a plain
-  // `sonata serve --daemon` keeps inheriting the shell's own cwd.
+  // A machine-wide daemon must start where its machine config is visible;
+  // otherwise a project-local sonata.toml can still win config resolution.
+  const machineConfigDir = dirname(join(home, GLOBAL_CONFIG_RELATIVE));
+  const daemonCwd = existsSync(machineConfigDir) ? machineConfigDir : cwd;
   const child = spawnFn(argv[0], argv.slice(1), {
     detached: true,
     stdio: ['ignore', log, log],
-    cwd,
+    cwd: daemonCwd,
     env: { ...process.env, SONATA_SERVE_INSTANCE_ID: instanceId },
   });
   child.unref();
@@ -1123,9 +1292,7 @@ export interface StopResult {
 export async function stopServe(
   opts: { cwd: string; home: string } & StopDeps,
 ): Promise<StopResult> {
-  const config = loadConfig(opts.cwd, opts.home);
-  if (!config.native) throw new Error('sonata restart: no [native] table');
-  const port = config.native.ports.router;
+  const port = routerPorts(opts.home).router;
   const probeHealth = opts.probeHealth;
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));

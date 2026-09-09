@@ -146,7 +146,46 @@ rows written before this change.
 
 **Pricing** resolves against the tenant's config, as tier resolution does.
 
-## Errors, in one place
+**A project's spend is summed per tenant, not per cwd string.** The ledger row
+carries both: `project` is the cwd a human reads in `sonata usage --by
+project`, and `tenant` is the hash of the canonical `sonata.toml` path the
+budget filters on. One repository entered from two subdirectories, or through a
+symlinked path, resolves to one tenant and one config but writes two `project`
+values — keyed on the string, `daily_usd = 25` would have become 25 per
+directory spelling. For the same reason the machine config's own path is
+canonicalised before it is compared against a tenant's: raw, it looks like a
+project tenant and its machine-wide cap is pushed as a per-project one.
+
+Two limits of that shape, stated rather than discovered later. **Rows written
+before this change carry no `tenant`**, so they sit outside a *project* cap for
+the remainder of the upgrade day; the machine cap still counts them, which
+bounds the gap rather than leaving it open. And **the model-change check is
+coalesced**: a second config change arriving while a check runs gets the
+running check's answer, so a change that lands with no subsequent traffic is
+applied on the next request rather than immediately. `checkModelChange` fires
+per request, so the cost is one request's latency — the same fire-and-forget
+class the pre-existing design already had.
+
+**The project header is authorised, not merely trusted.** Naming a project
+chooses whose gateways, endpoints and stored credentials serve the request, and
+the router authenticates nobody on loopback — so a caller could point the header
+at a directory it controls, declare a gateway reusing a name the machine holds a
+key for, and have that key sent to an endpoint of its choosing (on either
+transport: `forwardDirect` injects the stored key, and the LiteLLM config emits
+`api_base` from the tenant beside `api_key: os.environ/SONATA_KEY_<NAME>`).
+
+The hint is therefore honoured only when the request also carries
+`x-sonata-token`, matching the 0600 secret at `~/.config/sonata/router-token`
+(`src/native/router-token.ts`). That draws the boundary where it belongs: a
+process running as the user can read the token, but it can already read
+`~/.config/sonata/credentials` and needs no router to take a key; a process that
+cannot — a different local user, a sandbox — reaches the port and gets the
+ordinary session-then-machine resolution instead of its pick. An unauthorised
+hint is **dropped, not refused**, so the caller gets exactly what a request with
+no hint gets and a session whose settings predate the token keeps working; the
+router logs the downgrade rather than performing it silently. `route on` writes
+both lines together, and rewrites them as a pair, because a stale token beside a
+fresh project would leave the hint unauthorised.
 
 | Situation | Response | Ledger |
 |---|---|---|
@@ -178,6 +217,46 @@ Live, before the changelog entry is written: two projects with identical
 configs and no `[native.ports]`, both routed through one daemon, verified by
 the router log naming each tenant id on its own requests and by
 `sonata usage --by project` splitting them.
+
+## What the live run produced (2026-09-09)
+
+Two projects (`A`, `B`), each with its own `sonata.toml` copied from this repo's,
+plus a machine config, all served by ONE router on a scratch port 4190 under a
+scratch `HOME`. The live `:4110` session router was untouched throughout, and the
+scratch daemon was stopped by the pids it recorded itself.
+
+- Both projects' requests returned **200** from `gpt-5.6-luna`; the router log
+  shows `model=sonata-explore-simple -> gpt-5.6-luna -> litellm` for each.
+- `/__sonata_health` reported `multiTenant: true` and **three tenants, three
+  distinct ids, three distinct paths** — no duplicates.
+- The LiteLLM union grew **lazily**: it started with the machine tenant alone and
+  gained `<id>/gpt-5.6-luna` and `<id>/gpt-5.6-terra` for each project on that
+  project's first request, restarting the child to pick them up.
+- `sonata usage --by project` split the two projects into separate rows.
+
+**The first run of this check found a real defect, since fixed** (`df12401`).
+The same machine config was registered as two tenants —
+`/private/var/.../sonata.toml` and `/var/.../sonata.toml` — because macOS
+symlinks `/var` to `/private/var` and the path string was the identity. That one
+project carried duplicate LiteLLM entries, fired a needless restart, and split
+its cooldowns and budget attribution across two ids. Tenant identity is now the
+**realpath** of the config, best-effort: a path that cannot be resolved keeps its
+original spelling rather than throwing. Any path traversing a symlink hit this —
+a symlinked `~/Code`, a mounted path, a worktree — not only a temp directory.
+
+**One transition hazard the run also exposed.** Routing now points every project
+at the *machine* port. If an **old, pre-multi-tenant** daemon already holds that
+port, it answers with whatever single config started it — during this session a
+dispatch from this repository was served by a 2026-09-04 daemon running another
+project's config, and failed against gateways this repository does not use.
+`route session-start`, `sonata code`, `sonata run` and `ensure-serve.mjs` all
+refused such a router by design (Task 8), but `cmdRouteSubagent` wrote the
+routing env without that check. **That is pre-fix evidence**: the gap it names
+was closed in `4025c71`, and the subagent path now makes the same refusal
+before writing anything. The observation is kept because it is what the run
+found, and because the upgrade guidance it produced still stands — **begin an
+upgrade with `sonata restart`**, since a daemon predating this change still
+holding the machine port answers with whatever single config started it.
 
 ## What this deliberately does not do
 

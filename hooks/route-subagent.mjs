@@ -40,7 +40,7 @@ async function readAgentId() {
 /**
  * A non-zero exit is shown to the user as a `systemMessage`, which Claude Code
  * honours on this event. The CLI refused for a reason worth reading — most
- * often "router port N is already serving a different sonata configuration",
+ * often "router on port N predates multi-tenant routing",
  * which used to be swallowed here: this script exited 0 with stdio ignored,
  * the session stayed unrouted, and the first visible symptom was a native
  * dispatch dying with `model_not_found` at api.anthropic.com. The CLI itself

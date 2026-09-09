@@ -9,6 +9,11 @@ import { parseConfig } from '../../src/config.js';
 import type { LedgerRow } from '../../src/ledger.js';
 
 let home: string;
+const machineConfigPath = () => join(home, '.config', 'sonata', 'sonata.toml');
+function writeMachineConfig(toml: string): void {
+  mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+  writeFileSync(machineConfigPath(), toml);
+}
 beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'sonata-serve-ledger-')); });
 afterEach(() => { rmSync(home, { recursive: true, force: true }); });
 
@@ -113,7 +118,7 @@ describe('cmdServe — ledger wiring', () => {
     return handle;
   }
 
-  const writeConfig = (litellmPort = 43123) => writeFileSync(join(cwd, 'sonata.toml'), `
+  const writeConfig = (litellmPort = 43123) => writeMachineConfig( `
 [models."flash"]
 gateway = "acme"
 id = "deepseek-v4-flash"

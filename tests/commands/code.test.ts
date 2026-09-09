@@ -6,11 +6,11 @@ import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { spawn as spawnType } from 'node:child_process';
 
-import { execClaude, planCode, defaultEnsureServe } from '../../src/commands/code.js';
+import { execClaude, planCode, defaultEnsureServe, nativeSessionEnv } from '../../src/commands/code.js';
 import { startServeDaemon } from '../../src/commands/serve.js';
 
 // `startServeDaemon` is stubbed — a real detached process would race the live
-// :4100 router. `isSonataRouter` and `sonataRouterConfigPath` are left real
+// :4100 router. `isSonataRouter` and `sonataRouterMultiTenant` are left real
 // (spread from the module) so `vi.stubGlobal('fetch', …)` drives their identity
 // checks, the same pattern run.test.ts uses.
 vi.mock('../../src/commands/serve.js', async (importOriginal) => {
@@ -27,6 +27,23 @@ let home: string;
 beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), 'sonata-code-cwd-'));
   home = mkdtempSync(join(tmpdir(), 'sonata-code-home-'));
+});
+
+describe('nativeSessionEnv', () => {
+  const config = {
+    native: { models: {}, gateways: {}, ports: { router: 9999, litellm: 9998 } },
+    unifiedModels: {},
+  } as never;
+
+  it('names the project in a custom header so the router can resolve its config', () => {
+    const env = nativeSessionEnv(config, 4100, '/p/a');
+    expect(env.ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('x-sonata-project: /p/a');
+  });
+
+  it('writes no header without a project cwd (global scope has no single project)', () => {
+    expect(nativeSessionEnv(config, 4100).ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+  });
 });
 
 describe('planCode', () => {
@@ -151,83 +168,37 @@ base_url = "http://gateway.example/v1"
     vi.unstubAllGlobals();
   });
 
-  /** Writes a project config and returns the path `defaultEnsureServe` should resolve to. */
-  function writeNativeConfig(dir: string): string {
-    const path = join(dir, 'sonata.toml');
-    writeFileSync(path, NATIVE_TOML);
-    return path;
+  /** Writes the native config required before probing the machine-wide router. */
+  function writeNativeConfig(dir: string): void {
+    writeFileSync(join(dir, 'sonata.toml'), NATIVE_TOML);
   }
 
-  function sonataHealthPayload(configPath?: string): Response {
+  function sonataHealthPayload(multiTenant = true): Response {
     return new Response(JSON.stringify(
-      configPath === undefined
-        ? { status: 'ok', sonata: true }
-        : { status: 'ok', sonata: true, configPath },
+      multiTenant
+        ? { status: 'ok', sonata: true, multiTenant: true }
+        : { status: 'ok', sonata: true, configPath: '/x' },
     ));
   }
 
-  it('proceeds when the running router reports a matching config', async () => {
-    const expectedConfigPath = writeNativeConfig(cwd);
-
-    vi.stubGlobal('fetch', vi.fn(async () => sonataHealthPayload(expectedConfigPath)) as unknown as typeof fetch);
-
-    await expect(defaultEnsureServe(cwd, home)).resolves.toBe(4100);
-    expect(vi.mocked(startServeDaemon)).not.toHaveBeenCalled();
-  });
-
-  it('refuses a running router already serving a different config', async () => {
+  it('accepts a running multi-tenant router without starting a daemon', async () => {
     writeNativeConfig(cwd);
-    const otherCwd = mkdtempSync(join(tmpdir(), 'sonata-code-other-'));
-    const otherConfigPath = writeNativeConfig(otherCwd);
-
-    vi.stubGlobal('fetch', vi.fn(async () => sonataHealthPayload(otherConfigPath)) as unknown as typeof fetch);
-
-    await expect(defaultEnsureServe(cwd, home)).rejects.toThrow(/different sonata configuration/);
-    expect(vi.mocked(startServeDaemon)).not.toHaveBeenCalled();
-  });
-
-  it('refuses a running router that reports no configPath at all', async () => {
-    writeNativeConfig(cwd);
-
     vi.stubGlobal('fetch', vi.fn(async () => sonataHealthPayload()) as unknown as typeof fetch);
 
-    await expect(defaultEnsureServe(cwd, home)).rejects.toThrow(/did not report which sonata configuration/);
+    await expect(defaultEnsureServe(cwd, home)).resolves.toBe(4100);
     expect(vi.mocked(startServeDaemon)).not.toHaveBeenCalled();
   });
 
-  it('starts the daemon when no router is running, then passes the matching post-start check', async () => {
-    const expectedConfigPath = writeNativeConfig(cwd);
+  it('refuses a running router that predates multi-tenant routing', async () => {
+    writeNativeConfig(cwd);
+    vi.stubGlobal('fetch', vi.fn(async () => sonataHealthPayload(false)) as unknown as typeof fetch);
 
-    let calls = 0;
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      calls += 1;
-      if (calls === 1) throw new Error('ECONNREFUSED');
-      return sonataHealthPayload(expectedConfigPath);
-    }) as unknown as typeof fetch);
-
-    await expect(defaultEnsureServe(cwd, home)).resolves.toBe(4100);
-    expect(vi.mocked(startServeDaemon)).toHaveBeenCalledTimes(1);
+    await expect(defaultEnsureServe(cwd, home)).rejects.toThrow(/predates multi-tenant routing/);
+    expect(vi.mocked(startServeDaemon)).not.toHaveBeenCalled();
   });
 
-  it('re-checks identity after the daemon starts, catching a racing project that won the port', async () => {
+  it('starts the daemon when no router is running, then passes the multi-tenant post-start check', async () => {
     writeNativeConfig(cwd);
-    const otherCwd = mkdtempSync(join(tmpdir(), 'sonata-code-other-'));
-    const otherConfigPath = writeNativeConfig(otherCwd);
-
-    let calls = 0;
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      calls += 1;
-      if (calls === 1) throw new Error('ECONNREFUSED');
-      return sonataHealthPayload(otherConfigPath);
-    }) as unknown as typeof fetch);
-
-    await expect(defaultEnsureServe(cwd, home)).rejects.toThrow(/different sonata configuration/);
-    expect(vi.mocked(startServeDaemon)).toHaveBeenCalledTimes(1);
-  });
-
-  it('re-checks identity after the daemon starts, refusing a router that reports no configPath', async () => {
-    writeNativeConfig(cwd);
-
     let calls = 0;
     vi.stubGlobal('fetch', vi.fn(async () => {
       calls += 1;
@@ -235,7 +206,20 @@ base_url = "http://gateway.example/v1"
       return sonataHealthPayload();
     }) as unknown as typeof fetch);
 
-    await expect(defaultEnsureServe(cwd, home)).rejects.toThrow(/did not report which sonata configuration/);
+    await expect(defaultEnsureServe(cwd, home)).resolves.toBe(4100);
+    expect(vi.mocked(startServeDaemon)).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-checks multi-tenant support after the daemon starts', async () => {
+    writeNativeConfig(cwd);
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('ECONNREFUSED');
+      return sonataHealthPayload(false);
+    }) as unknown as typeof fetch);
+
+    await expect(defaultEnsureServe(cwd, home)).rejects.toThrow(/predates multi-tenant routing/);
     expect(vi.mocked(startServeDaemon)).toHaveBeenCalledTimes(1);
   });
 });

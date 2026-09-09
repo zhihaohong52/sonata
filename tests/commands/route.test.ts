@@ -24,9 +24,13 @@ import {
   subagentHookCommand,
   SONATA_AGENT_MATCHER,
   diagnoseRouteAuto,
+  mergeCustomHeaders,
+  stripSonataHeader,
 } from '../../src/commands/route.js';
+import { ensureRouterToken } from '../../src/native/router-token.js';
 import type { Settings, HookEntry } from '../../src/settings.js';
 import { readSettings } from '../../src/settings.js';
+import { loadConfig } from '../../src/config.js';
 
 const NATIVE_TOML = `
 [native.models."deepseek"]
@@ -40,6 +44,17 @@ base_url = "http://gateway.example/v1"
 let cwd: string;
 let home: string;
 const PACKAGE_ROOT = '/repo/root';
+
+/**
+ * "Nothing is listening on the router port."
+ *
+ * `cmdRouteSubagent` verifies a running router is multi-tenant before it writes
+ * any routing env, which means a real network probe. An injected probe says the
+ * test is encoding the scenario itself — the same seam `cmdRouteSession` uses —
+ * and keeps these unit tests off the developer's own machine router, which they
+ * would otherwise reach and be judged by.
+ */
+const OFFLINE = { probe: async () => false };
 
 beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), 'sonata-route-cwd-'));
@@ -172,10 +187,45 @@ describe('routeEnv', () => {
   });
 });
 
+describe('custom headers', () => {
+  it('merges the sonata line into headers the user already has, and strips only that line', () => {
+    expect(mergeCustomHeaders(undefined, '/p/a')).toBe('x-sonata-project: /p/a');
+    expect(mergeCustomHeaders('X-Team: blue', '/p/a')).toBe('X-Team: blue\nx-sonata-project: /p/a');
+    expect(mergeCustomHeaders('X-Team: blue\nx-sonata-project: /old', '/p/a')).toBe('X-Team: blue\nx-sonata-project: /p/a');
+    expect(stripSonataHeader('X-Team: blue\nx-sonata-project: /p/a')).toBe('X-Team: blue');
+    expect(stripSonataHeader('x-sonata-project: /p/a')).toBeUndefined();
+  });
+
+  it('route on writes the header at project scope and route off removes only it', () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    const on = planRouteOn({ env: { ANTHROPIC_CUSTOM_HEADERS: 'X-Team: blue' } }, loadConfig(cwd, home), PACKAGE_ROOT, 'project', { routerPort: 4100, projectCwd: cwd });
+    expect(on.settings.env?.ANTHROPIC_CUSTOM_HEADERS).toBe(`X-Team: blue\nx-sonata-project: ${cwd}`);
+    const off = planRouteOff(on.settings, PACKAGE_ROOT);
+    expect(off.settings.env?.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: blue');
+    expect(off.settings.env?.ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+
+  it('route on at global scope strips a stale sonata header and is idempotent', () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    const on = planRouteOn(
+      { env: { ANTHROPIC_CUSTOM_HEADERS: 'X-Team: blue\nx-sonata-project: /p/old' } },
+      loadConfig(cwd, home),
+      PACKAGE_ROOT,
+      'global',
+      { routerPort: 4100 },
+    );
+    expect(on.settings.env?.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: blue');
+    expect(on.settings.env?.ANTHROPIC_CUSTOM_HEADERS).not.toContain('x-sonata-project:');
+
+    const twice = planRouteOn(on.settings, loadConfig(cwd, home), PACKAGE_ROOT, 'global', { routerPort: 4100 });
+    expect(twice.changed).toBe(false);
+  });
+});
+
 describe('planRouteOn', () => {
   it('adds the routing env and a SessionStart hook to an empty settings file', () => {
     const config = loadNativeConfig();
-    const plan = planRouteOn({}, config, PACKAGE_ROOT);
+    const plan = planRouteOn({}, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
 
     expect(plan.changed).toBe(true);
     expect(plan.settings.env?.ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
@@ -187,21 +237,21 @@ describe('planRouteOn', () => {
 
   it('is a no-op when already routed', () => {
     const config = loadNativeConfig();
-    const once = planRouteOn({}, config, PACKAGE_ROOT);
-    const twice = planRouteOn(once.settings, config, PACKAGE_ROOT);
+    const once = planRouteOn({}, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
+    const twice = planRouteOn(once.settings, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
     expect(twice.changed).toBe(false);
   });
 
   it('refuses to clobber a base URL sonata did not write', () => {
     const config = loadNativeConfig();
     const settings: Settings = { env: { ANTHROPIC_BASE_URL: 'https://gateway.corp.example/v1' } };
-    expect(() => planRouteOn(settings, config, PACKAGE_ROOT))
+    expect(() => planRouteOn(settings, config, PACKAGE_ROOT, 'project', { routerPort: 4100 }))
       .toThrow(/already set to https:\/\/gateway\.corp\.example\/v1/);
   });
 
   it('installs the --global marker in the hook command at global scope', () => {
     const config = loadNativeConfig();
-    const plan = planRouteOn({}, config, PACKAGE_ROOT, 'global');
+    const plan = planRouteOn({}, config, PACKAGE_ROOT, 'global', { routerPort: 4100 });
     const hook = (plan.settings.hooks!.SessionStart as HookEntry[]).flatMap((e) => e.hooks);
     expect(hook.map((h) => h.command)).toContain(ensureServeCommand(PACKAGE_ROOT, 4100, 'global'));
   });
@@ -209,19 +259,19 @@ describe('planRouteOn', () => {
   it('rewrites a stale localhost router port — the drift doctor sends people here for', () => {
     const config = loadNativeConfig();
     const settings: Settings = { env: { ANTHROPIC_BASE_URL: 'http://localhost:9999' } };
-    const plan = planRouteOn(settings, config, PACKAGE_ROOT);
+    const plan = planRouteOn(settings, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
     expect(plan.changed).toBe(true);
     expect(plan.settings.env?.ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
   });
 
   it('preserves unrelated env vars while routing', () => {
     const config = loadNativeConfig();
-    const plan = planRouteOn({ env: { CUSTOM: 'keep' } }, config, PACKAGE_ROOT);
+    const plan = planRouteOn({ env: { CUSTOM: 'keep' } }, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
     expect(plan.settings.env?.CUSTOM).toBe('keep');
   });
 
   it('throws when the config has no native table', () => {
-    expect(() => planRouteOn({}, { native: undefined } as never, PACKAGE_ROOT)).toThrow(/no \[native\] table/);
+    expect(() => planRouteOn({}, { native: undefined } as never, PACKAGE_ROOT, 'project', { routerPort: 4100 })).toThrow(/no \[native\] table/);
   });
 });
 
@@ -234,7 +284,7 @@ describe('planRouteOff', () => {
 
   it('removes the routing env and its hook, preserving other env and hooks', () => {
     const config = loadNativeConfig();
-    const on = planRouteOn({ env: { CUSTOM: 'keep' } }, config, PACKAGE_ROOT);
+    const on = planRouteOn({ env: { CUSTOM: 'keep' } }, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
     const off = planRouteOff(on.settings, PACKAGE_ROOT);
 
     expect(off.changed).toBe(true);
@@ -245,7 +295,7 @@ describe('planRouteOff', () => {
 
   it('drops the env block when routing leaves nothing else in it', () => {
     const config = loadNativeConfig();
-    const on = planRouteOn({}, config, PACKAGE_ROOT);
+    const on = planRouteOn({}, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
     const off = planRouteOff(on.settings, PACKAGE_ROOT);
     expect('env' in off.settings).toBe(false);
   });
@@ -259,7 +309,7 @@ describe('planRouteOff', () => {
 describe('routeStatus', () => {
   it('reports on when env and hook both match the router', () => {
     const config = loadNativeConfig();
-    const on = planRouteOn({}, config, PACKAGE_ROOT);
+    const on = planRouteOn({}, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
     const status = routeStatus(on.settings, config, PACKAGE_ROOT);
     expect(status.on).toBe(true);
     expect(status.port).toBe(4100);
@@ -387,7 +437,7 @@ describe('planRouteAuto / planRouteManual', () => {
   it('leaves auto mode installed when route off runs — that is how SessionEnd survives', () => {
     const config = loadNativeConfig();
     const auto = planRouteAuto({}, PACKAGE_ROOT);
-    const on = planRouteOn(auto.settings, config, PACKAGE_ROOT);
+    const on = planRouteOn(auto.settings, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
     const off = planRouteOff(on.settings, PACKAGE_ROOT);
     expect(autoInstalled(off.settings, PACKAGE_ROOT)).toBe(true);
     expect(off.settings.env?.ANTHROPIC_BASE_URL).toBeUndefined();
@@ -396,7 +446,7 @@ describe('planRouteAuto / planRouteManual', () => {
   it('clears persistent route-on state when switching to auto — sessions must launch clean', () => {
     const config = loadNativeConfig();
     // Simulate `route on` having left persistent routing + its ensure-serve hook.
-    const on = planRouteOn({}, config, PACKAGE_ROOT);
+    const on = planRouteOn({}, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
     expect(on.settings.env?.ANTHROPIC_BASE_URL).toBeDefined();
 
     const auto = planRouteAuto(on.settings, PACKAGE_ROOT);
@@ -413,7 +463,7 @@ describe('planRouteAuto / planRouteManual', () => {
 
   it('preserves persistent route-on state while registered auto sessions are live', () => {
     const config = loadNativeConfig();
-    const on = planRouteOn({}, config, PACKAGE_ROOT);
+    const on = planRouteOn({}, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
 
     const auto = planRouteAuto(on.settings, PACKAGE_ROOT, 'project', true);
 
@@ -626,44 +676,48 @@ describe('cmdRouteSession', () => {
     expect(seenCwds).toEqual([cwd]);
   });
 
-  it('refuses to share a router port already serving a different project\'s config', async () => {
-    // Two projects, each with a sonata.toml resolving to the same default port.
-    // With no injected probe/startDaemon, the real network path is exercised:
-    // `probe` is `isSonataRouter` (fetch), then the identity check calls
-    // `sonataRouterConfigPath` (also fetch). Stub global.fetch to answer like a
-    // router started by a *different* config dir is already running.
+  it('accepts a multi-tenant router regardless of which project started it', async () => {
     const otherCwd = mkdtempSync(join(tmpdir(), 'sonata-route-other-'));
     writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
     writeFileSync(join(otherCwd, 'sonata.toml'), NATIVE_TOML);
-    const otherConfigPath = join(otherCwd, 'sonata.toml');
 
     vi.stubGlobal('fetch', vi.fn(async () =>
-      // A real running sonata router's health payload, reporting the config
-      // that started it — a different project's sonata.toml.
-      new Response(JSON.stringify({ status: 'ok', sonata: true, configPath: otherConfigPath })),
+      new Response(JSON.stringify({ status: 'ok', sonata: true, multiTenant: true })),
     ) as unknown as typeof fetch);
 
     const o = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
-    await expect(cmdRouteSession('start', 's1', o)).rejects.toThrow(/different sonata configuration/);
-    // The identity collision is detected before any state is written: the
-    // session is not registered and routing is not turned on for a router that
-    // would serve the wrong config.
+    await expect(cmdRouteSession('start', 's1', o)).resolves.toEqual({ sessions: 1, routing: 'off' });
+    expect(existsSync(routeSessionsFile(cwd))).toBe(true);
+  });
+
+  it('refuses a running router that predates multi-tenant routing', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ status: 'ok', sonata: true, configPath: '/x' })),
+    ) as unknown as typeof fetch);
+
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
+    await expect(cmdRouteSession('start', 's1', o)).rejects.toThrow(/predates multi-tenant routing/);
     expect(existsSync(routeSessionsFile(cwd))).toBe(false);
     expect(existsSync(routeSettingsFile(cwd))).toBe(false);
   });
 
-  it('refuses a running router that reports no configPath at all', async () => {
+  it('refuses a pre-multi-tenant router that answers after daemon start', async () => {
     writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    let healthCalls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      healthCalls += 1;
+      return new Response(JSON.stringify(
+        healthCalls === 1
+          ? { status: 'ok', sonata: false }
+          : { status: 'ok', sonata: true, configPath: '/x' },
+      ));
+    }) as unknown as typeof fetch);
 
-    vi.stubGlobal('fetch', vi.fn(async () =>
-      // A sonata router that answers but does not name its configPath is
-      // indistinguishable from a different project's router — reject it
-      // rather than silently trust it.
-      new Response(JSON.stringify({ status: 'ok', sonata: true })),
-    ) as unknown as typeof fetch);
-
+    const startDaemon = vi.fn(async () => ({}));
     const o = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
-    await expect(cmdRouteSession('start', 's1', o)).rejects.toThrow(/did not report which sonata configuration/);
+    await expect(cmdRouteSession('start', 's1', o, { startDaemon })).rejects.toThrow(/predates multi-tenant routing/);
+    expect(startDaemon).toHaveBeenCalledTimes(1);
     expect(existsSync(routeSessionsFile(cwd))).toBe(false);
     expect(existsSync(routeSettingsFile(cwd))).toBe(false);
   });
@@ -692,47 +746,47 @@ describe('cmdRouteSubagent', () => {
 
   it('routes on for the first subagent and off when the last one stops', async () => {
     const o = opts();
-    const started = await cmdRouteSubagent('start', 'a1', o);
+    const started = await cmdRouteSubagent('start', 'a1', o, OFFLINE);
     expect(started).toEqual({ subagents: 1, routing: 'on' });
     expect((await cmdRoute('status', o))?.scopes.global.on).toBe(true);
 
-    const stopped = await cmdRouteSubagent('stop', 'a1', o);
+    const stopped = await cmdRouteSubagent('stop', 'a1', o, OFFLINE);
     expect(stopped).toEqual({ subagents: 0, routing: 'off' });
     expect((await cmdRoute('status', o))?.scopes.global.on).toBe(false);
   });
 
   it('keeps routing while a sibling subagent is still running', async () => {
     const o = opts();
-    await cmdRouteSubagent('start', 'a1', o);
-    await cmdRouteSubagent('start', 'a2', o);
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
+    await cmdRouteSubagent('start', 'a2', o, OFFLINE);
 
-    const first = await cmdRouteSubagent('stop', 'a1', o);
+    const first = await cmdRouteSubagent('stop', 'a1', o, OFFLINE);
     expect(first).toEqual({ subagents: 1, routing: 'on' });
     // Un-routing here would cut a2 off mid-task, and its sonata-* alias would
     // reach api.anthropic.com as an unknown model.
     expect((await cmdRoute('status', o))?.scopes.global.on).toBe(true);
 
-    const last = await cmdRouteSubagent('stop', 'a2', o);
+    const last = await cmdRouteSubagent('stop', 'a2', o, OFFLINE);
     expect(last).toEqual({ subagents: 0, routing: 'off' });
   });
 
   it('does not double-count a repeated agent id', async () => {
     const o = opts();
-    await cmdRouteSubagent('start', 'a1', o);
-    expect((await cmdRouteSubagent('start', 'a1', o)).subagents).toBe(1);
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
+    expect((await cmdRouteSubagent('start', 'a1', o, OFFLINE)).subagents).toBe(1);
   });
 
   it('tolerates a stop for an id it never saw', async () => {
     const o = opts();
-    await expect(cmdRouteSubagent('stop', 'ghost', o)).resolves.toEqual({ subagents: 0, routing: 'off' });
+    await expect(cmdRouteSubagent('stop', 'ghost', o, OFFLINE)).resolves.toEqual({ subagents: 0, routing: 'off' });
   });
 
   it('leaves the session registry alone when the last subagent stops', async () => {
     const o = opts();
     const sessionOpts = { ...o, serveArgv: ['node', 'cli.js', 'serve'] };
     await cmdRouteSession('start', 's1', sessionOpts, deps);
-    await cmdRouteSubagent('start', 'a1', o);
-    await cmdRouteSubagent('stop', 'a1', o);
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
+    await cmdRouteSubagent('stop', 'a1', o, OFFLINE);
 
     // A finishing subagent must not erase session liveness, or the next
     // SessionEnd believes it was the last one.
@@ -743,7 +797,7 @@ describe('cmdRouteSubagent', () => {
     const o = opts();
     const sessionOpts = { ...o, serveArgv: ['node', 'cli.js', 'serve'] };
     await cmdRouteSession('start', 's1', sessionOpts, deps);
-    await cmdRouteSubagent('start', 'a1', o);
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
     // a1 never stops — a killed subagent leaks its reference. Bounding that by
     // the session's lifetime is what stops it becoming permanent.
     await cmdRouteSession('end', 's1', sessionOpts, deps);
@@ -860,7 +914,7 @@ describe('Defect B — the registry that pins routing on', () => {
     // The existing suite always passes `scope: 'global'` explicitly, which is
     // exactly why this was invisible to it. This test must omit `scope`.
     const o = base();
-    await cmdRouteSubagent('start', 'a1', o);
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
 
     const written = [routeSubagentsFile(cwd, 'project', home), routeSubagentsFile(cwd, 'global', home)]
       .filter((f) => existsSync(f) && readSessions(f).includes('a1'));
@@ -948,12 +1002,99 @@ describe('Defect B — the registry that pins routing on', () => {
 
     await Promise.all([
       cmdRouteSession('end', 'only', o, deps),
-      cmdRouteSubagent('start', 'fresh', o),
+      cmdRouteSubagent('start', 'fresh', o, OFFLINE),
     ]);
 
     // Either order is legal; what is not legal is a leaked id coming back.
     const left = readSessions(routeSubagentsFile(cwd, 'project', home));
     expect(left).not.toContain('leaked-1');
     expect(left).not.toContain('leaked-2');
+  });
+});
+
+describe('cmdRouteSubagent — router identity', () => {
+  // The hole this design actually fell through on 2026-09-09: routing now
+  // targets the MACHINE port, and a stale pre-multi-tenant daemon on it answers
+  // with whatever single config started it. `route session-start`, `code`,
+  // `run` and `ensure-serve` all refuse such a router; the subagent path wrote
+  // the routing env with no check, so a dispatch was served by another
+  // project's config and failed against gateways this project never names.
+  it('refuses to route a subagent through a router that predates multi-tenant routing', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ status: 'ok', sonata: true, configPath: '/elsewhere/sonata.toml' })),
+    ) as unknown as typeof fetch);
+
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT };
+    await expect(cmdRouteSubagent('start', 'a1', o)).rejects.toThrow(/predates multi-tenant routing/);
+    // Nothing written: the subagent is better off unrouted and visibly failing
+    // than silently served another project's models and credentials.
+    expect(existsSync(routeSubagentsFile(cwd))).toBe(false);
+    expect(existsSync(routeSettingsFile(cwd))).toBe(false);
+  });
+
+  it('routes a subagent through a multi-tenant router', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ status: 'ok', sonata: true, multiTenant: true, tenants: [] })),
+    ) as unknown as typeof fetch);
+
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT };
+    await expect(cmdRouteSubagent('start', 'a1', o)).resolves.toEqual({ subagents: 1, routing: 'on' });
+  });
+
+  it('routes when nothing is listening yet — the ensure-serve hook owns startup', async () => {
+    // A probe that finds no router must not block the subagent: routing on with
+    // the daemon still coming up is the pre-existing behaviour, and the request
+    // waits on the router rather than being refused here.
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch);
+
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT };
+    await expect(cmdRouteSubagent('start', 'a1', o)).resolves.toEqual({ subagents: 1, routing: 'on' });
+  });
+
+  it('never blocks a stop, even against an old router', async () => {
+    // Cleanup must not depend on the router: refusing here would pin routing on.
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ status: 'ok', sonata: true, configPath: '/elsewhere/sonata.toml' })),
+    ) as unknown as typeof fetch);
+
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT };
+    await expect(cmdRouteSubagent('stop', 'ghost', o)).resolves.toEqual({ subagents: 0, routing: 'off' });
+  });
+});
+
+describe('route on — the project hint travels with its authorisation', () => {
+  it('writes both sonata header lines, and replaces them together', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    const token = ensureRouterToken(home);
+
+    const on = planRouteOn({ env: { ANTHROPIC_CUSTOM_HEADERS: 'X-Team: blue' } }, loadConfig(cwd, home), PACKAGE_ROOT, 'project',
+      { routerPort: 4100, projectCwd: cwd, projectHintToken: token });
+    const headers = on.settings.env!.ANTHROPIC_CUSTOM_HEADERS!;
+    expect(headers).toContain('X-Team: blue');
+    expect(headers).toContain(`x-sonata-project: ${cwd}`);
+    expect(headers).toContain(`x-sonata-token: ${token}`);
+
+    // A stale token beside a fresh project would leave the hint unauthorised,
+    // so both sonata lines are rewritten as a pair.
+    const again = planRouteOn(on.settings, loadConfig(cwd, home), PACKAGE_ROOT, 'project',
+      { routerPort: 4100, projectCwd: cwd, projectHintToken: 'rotated' });
+    const rewritten = again.settings.env!.ANTHROPIC_CUSTOM_HEADERS!;
+    expect(rewritten).toContain('x-sonata-token: rotated');
+    expect(rewritten).not.toContain(token);
+    expect(rewritten.match(/x-sonata-project:/g)).toHaveLength(1);
+
+    // `route off` removes both and keeps the user's own header.
+    const off = planRouteOff(again.settings, PACKAGE_ROOT);
+    expect(off.settings.env?.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: blue');
+  });
+
+  it('writes no token at global scope, where there is no one project to name', () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    const on = planRouteOn({}, loadConfig(cwd, home), PACKAGE_ROOT, 'global', { routerPort: 4100 });
+    expect(on.settings.env?.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
   });
 });

@@ -33,6 +33,7 @@ import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { serveHealthUrl } from './serve.js';
+import { routerPorts } from './ports.js';
 import { nativeSessionEnv } from './code.js';
 import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile, diagnoseRouteAuto, isLocalhostUrl } from './route.js';
 
@@ -305,7 +306,7 @@ export async function cmdDoctor(
     // [native.ports].router points a session at a port nothing is listening
     // on, which reads as routed here and 502s on every native request.
     const routedAt = (settings: typeof projectSettings, cfg: typeof config, scope: 'project' | 'global'): boolean => {
-      const routerUrl = cfg.native !== undefined ? `http://localhost:${cfg.native.ports.router}` : undefined;
+      const routerUrl = cfg.native !== undefined ? `http://localhost:${routerPorts(home).router}` : undefined;
       return (routerUrl !== undefined && routeEnv(settings).ANTHROPIC_BASE_URL === routerUrl) ||
         (opts.packageRoot !== undefined && autoInstalled(settings, opts.packageRoot, scope));
     };
@@ -327,7 +328,7 @@ export async function cmdDoctor(
           projectSettings,
           globalSettings,
           configuredRouterUrl: config.native !== undefined
-            ? `http://localhost:${config.native.ports.router}`
+            ? `http://localhost:${routerPorts(home).router}`
             : undefined,
           projectResolvesToMachineConfig,
         }),
@@ -343,6 +344,17 @@ export async function cmdDoctor(
       name: 'stray config',
       ok: false,
       detail: `${stray} is not read by sonata — mv it to ${join(home, GLOBAL_CONFIG_RELATIVE)}`,
+    });
+  }
+
+  // One router per machine, on the machine config's ports. A project
+  // [native.ports] parses (an existing file keeps loading) but does nothing,
+  // and a table that does nothing while looking load-bearing is worth a line.
+  if (resolved !== null && resolved !== join(home, GLOBAL_CONFIG_RELATIVE) && /^[ \t]*\[\s*native\.ports\s*\]/m.test(readFileSync(resolved, 'utf8'))) {
+    checks.push({
+      name: 'project ports',
+      ok: true,
+      detail: `${resolved} sets [native.ports], which is ignored — one router serves every project on the machine ports; delete the table`,
     });
   }
 
@@ -384,45 +396,35 @@ export async function cmdDoctor(
     }
 
     try {
-      const response = await fetch(serveHealthUrl(config.native.ports.router));
+      const response = await fetch(serveHealthUrl(routerPorts(home).router));
       let body: unknown;
       try {
         body = await response.json();
       } catch {
         body = undefined;
       }
-      const healthy = response.status === 200
-        && body !== null
-        && typeof body === 'object'
-        && (body as Record<string, unknown>).sonata === true;
-      // A router answering is not the same as *this project's* router
-      // answering. Daemons are per config, and two projects each holding their
-      // own sonata.toml on the default port collide: whichever started first
-      // owns the port, and the other's `route session-start` refuses to route
-      // through it — through a hook, so the refusal used to be invisible and
-      // the first sign was a native dispatch dying with `model_not_found`.
-      // Same two verdicts as that refusal: a different config, or none named.
-      const reported = healthy ? (body as { configPath?: unknown }).configPath : undefined;
+      const healthy = response.status === 200 && body !== null && typeof body === 'object' && (body as Record<string, unknown>).sonata === true;
       if (!healthy) {
         checks.push({ name: 'serve health', ok: true, detail: 'not running — start with `sonata serve`' });
-      } else if (typeof reported !== 'string') {
-        checks.push({
-          name: 'serve health',
-          ok: false,
-          detail: 'up, but does not report which sonata configuration it runs (too old, or its own ' +
-            'config resolution failed) — sessions here will refuse to route through it; `sonata restart` ' +
-            'once confirmed to be this project\'s own router',
-        });
-      } else if (resolved !== null && reported !== resolved) {
-        checks.push({
-          name: 'serve health',
-          ok: false,
-          detail: `up, but serving ${reported} rather than this project's ${resolved} — sessions here ` +
-            'will refuse to route through it. Two projects cannot share one router port: set a different ' +
-            '[native.ports].router in one of the two configs, then `sonata serve --daemon` here',
-        });
+      } else if ((body as { multiTenant?: unknown }).multiTenant !== true) {
+        checks.push({ name: 'serve health', ok: false, detail: `up, but predates multi-tenant routing — sessions here will refuse it; run \`sonata restart\`` });
       } else {
-        checks.push({ name: 'serve health', ok: true, detail: 'up' });
+        const rawTenants = (body as { tenants?: unknown }).tenants;
+        const tenantsValid = Array.isArray(rawTenants)
+          && rawTenants.every((tenant) => tenant !== null && typeof tenant === 'object'
+            && ('configPath' in tenant)
+            && (typeof (tenant as { configPath?: unknown }).configPath === 'string'
+              || (tenant as { configPath?: unknown }).configPath === null));
+        if (!tenantsValid) {
+          checks.push({
+            name: 'serve health',
+            ok: false,
+            detail: 'up, but its health payload could not be read — sessions here may refuse to route; run `sonata restart`',
+          });
+        } else {
+          const tenants = (rawTenants as { configPath: string | null }[]).map((t) => t.configPath ?? '?');
+          checks.push({ name: 'serve health', ok: true, detail: `up · ${tenants.length} project(s)${tenants.length > 0 ? `: ${tenants.join(', ')}` : ''}` });
+        }
       }
     } catch {
       // `serve` is user-started, so an unavailable endpoint is advisory.
@@ -436,7 +438,7 @@ export async function cmdDoctor(
     // way `sonata code` does.
     {
       const settings = readSettings(routeSettingsFile(opts.cwd));
-      const target = nativeSessionEnv(config);
+      const target = nativeSessionEnv(config, routerPorts(home).router, opts.cwd);
       const expectedBase = target.ANTHROPIC_BASE_URL;
       const actualBase = routeEnv(settings).ANTHROPIC_BASE_URL;
       if (actualBase !== undefined && actualBase !== expectedBase) {

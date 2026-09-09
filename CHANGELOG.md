@@ -8,6 +8,61 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+- **One router serves every project.** `sonata serve` is now a machine-wide
+  daemon that resolves each request's own `sonata.toml` from the project the
+  request came from, instead of one daemon per config. A routed session names
+  its project in an `x-sonata-project` header (written into settings `env` as
+  `ANTHROPIC_CUSTOM_HEADERS` at project scope, which Claude Code re-applies to a
+  running session); the router falls back to the session registry, then to the
+  machine config, and strips the header before forwarding on every path. One
+  LiteLLM child serves them all, its model list the union of every known
+  project's models under `<tenant>/<key>` — namespaced because two projects may
+  each call a model `flash` and mean different things, while credentials stay
+  machine-wide by gateway name. That child starts **lazily**, the first time any
+  project needs it, and its union snapshot is committed only once the child is
+  confirmed ready, so a `sonata litellm install` after a 502 is picked up by the
+  next request rather than needing a manual restart.
+  - **Ports come only from the machine config.** A project `[native.ports]`
+    still parses but is ignored, and `sonata doctor` says so and names the line
+    to delete. `/__sonata_health` reports `multiTenant: true` and the projects
+    it knows, and no longer reports a `configPath` — a router is no longer
+    identified by one config, so every caller that used to compare paths now
+    refuses only a router that *predates* this change, naming `sonata restart`.
+  - **A tenant is identified by the realpath of its config.** The first live
+    two-project run registered one config as two tenants,
+    `/private/var/…/sonata.toml` and `/var/…/sonata.toml`, because macOS
+    symlinks `/var` to `/private/var` and the path string was the identity. That
+    one project carried duplicate LiteLLM entries, fired a needless restart, and
+    split its cooldowns and budget attribution across two ids. Any path
+    traversing a symlink does this — a symlinked `~/Code`, a mounted path, a
+    worktree — not only a temp directory. Canonicalisation is best-effort: a
+    path that cannot be resolved keeps its original spelling rather than
+    throwing.
+  - **Spend is attributed per project.** Ledger rows carry `project`; a
+    `[budget] daily_usd` in a project's config caps that project's priced spend
+    for the UTC day while one in the machine config caps everything the router
+    forwards, and each refusal names the file that set the cap. `sonata usage
+    --by project` reads the row's own attribution.
+  - **Upgrading: run `sonata restart` first.** Routing now targets the machine
+    port, so a stale pre-multi-tenant daemon holding it would answer with
+    whatever single config started it. Every entry point refuses such a router
+    rather than trusting it — including `SubagentStart`, which previously wrote
+    the routing env with no check at all and is how a dispatch in this
+    repository was served by another project's config and failed against
+    gateways this project never names.
+  - **The project header is authorised by a loopback token.** Naming a project
+    picks whose gateways and stored credentials serve a request, and the router
+    authenticates nobody on loopback, so the hint is honoured only alongside
+    `x-sonata-token` matching the 0600 `~/.config/sonata/router-token`. A
+    process that cannot read that file — a different local user, a sandbox —
+    reaches the port and gets ordinary session-then-machine resolution instead
+    of its pick; one that can could already read the credential store. An
+    unauthorised hint is dropped and logged, never refused, so a session whose
+    settings predate the token keeps working.
+  - Design and the live-run evidence:
+    `docs/superpowers/specs/2026-09-09-multi-tenant-router-design.md`.
+
 ### Fixed
 - **The codex-oauth `System messages are not allowed` 400 is closed.** The
   hole that survived `flattenSystemBlocks` + `supports_system_message: false`
@@ -49,11 +104,13 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   CLI exit to the user as a hook `systemMessage` (Claude Code honours it on
   SessionStart and SubagentStart), while the CLI exits 0 for the one *expected*
   failure — no config in this directory, now the typed `NoConfigError` — so a
-  global hook stays silent where it has nothing to do. `sonata doctor`'s
-  `serve health` check also compares the running router's reported
-  `configPath` against this project's, and fails naming both files and the
-  `[native.ports].router` repair; a router that names no config fails the
-  same way `route session-start` refuses it.
+  global hook stays silent where it has nothing to do. **The refusal this
+  surfaced no longer exists**: the multi-tenant router added above serves every
+  project from one daemon, so two projects sharing a router port is the
+  supported case rather than a collision. What the hooks surface now is the one
+  refusal that remains — a router predating multi-tenant routing. The relaying
+  is what mattered and it stands; the check behind it was replaced within the
+  same release, which is why this entry names both.
 
 ## [0.6.1] - 2026-09-07
 
