@@ -775,8 +775,8 @@ export async function cmdRouteSession(
   // This whole block runs BEFORE the session is registered or routing is
   // turned on: the SessionStart hook that calls this command ignores a
   // thrown/nonzero exit, so if this validation happened after those writes,
-  // a same-port-different-config collision would still leave the session
-  // registered and routed through the wrong router despite the error.
+  // a pre-multi-tenant router would still leave the session registered and
+  // routed despite the error.
   const probe = deps.probe ?? isSonataRouter;
   const startDaemon = deps.startDaemon ?? startServeDaemon;
   // Global routing is one shared router for every project — its config has
