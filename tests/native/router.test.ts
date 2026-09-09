@@ -1107,6 +1107,16 @@ describe('routeRequest — tenants', () => {
     await routeRequest(req({}), { ...deps, litellmUnavailable: () => unavailable });
     expect(seen.map((request) => request.model)).toEqual(['default/flash']);
   });
+  it('reads LiteLLM availability once before tier forwarding', async () => {
+    let calls = 0;
+    const availability = () => ++calls === 1 ? undefined : 'LiteLLM is missing — run `sonata litellm install`';
+    const first = await routeRequest(req({}), { ...deps, litellmUnavailable: availability });
+    expect(first.status).toBe(200);
+    expect(seen.map((request) => request.model)).toEqual(['default/flash']);
+
+    await routeRequest(req({}), { ...deps, litellmUnavailable: () => undefined });
+    expect(seen.map((request) => request.model)).toEqual(['default/flash', 'default/flash']);
+  });
   it('litellmModelName is <id>/<key>', () => {
     expect(litellmModelName({ id: 'x' }, 'flash')).toBe('x/flash');
   });

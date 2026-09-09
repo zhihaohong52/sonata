@@ -565,10 +565,6 @@ async function forwardToLitellm(
   deps: RouterDeps,
 ): Promise<RouterResponse> {
   try {
-    const unavailable = deps.litellmUnavailable?.();
-    if (unavailable !== undefined) {
-      return { status: 502, headers: { 'content-type': 'application/json' }, body: anthropicErrorBody('router_error', unavailable) };
-    }
     await deps.litellmReady?.();
     const response = await deps.fetch(
       targetUrl(deps.litellmBase, req.url),
@@ -690,6 +686,7 @@ async function routeTierRequest(
   startedAt: number,
   session: string | undefined,
   tenant: RouterTenant,
+  unavailable: string | undefined,
 ): Promise<RouterResponse> {
   // Once per request, not once per candidate: a candidate skipped for being
   // in its post-failure cooldown window would otherwise mean this never
@@ -713,7 +710,6 @@ async function routeTierRequest(
   const flattened = litellmBody(req.body);
   const candidates = resolved.routes.filter((route) => route.native !== undefined);
   const attempts: { key: string; status: number }[] = [];
-  const unavailable = deps.litellmUnavailable?.();
   let skippedUnavailableLitellm = false;
 
   for (const route of candidates) {
@@ -872,6 +868,8 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     return { status: 400, headers: { 'content-type': 'application/json' }, body: anthropicErrorBody('invalid_request_error', error.message) };
   }
 
+  const unavailable = deps.litellmUnavailable?.();
+
   // Before anything is forwarded, and ahead of both the tier and direct paths:
   // this is the one point every native request passes through, and a cap
   // checked on only one of the two branches is not a cap. The health endpoint
@@ -900,7 +898,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     } catch { /* A broken accounting clock must not stop routing. */ }
   }
   if (alias !== undefined && alias.startsWith('sonata-') && deps.resolveTier?.(alias, tenant) !== undefined) {
-    return routeTierRequest(req, deps, alias, startedAt, session, tenant);
+    return routeTierRequest(req, deps, alias, startedAt, session, tenant, unavailable);
   }
 
   const anthropic = isClaudeRequest(req.body);
@@ -918,7 +916,6 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   deps.log?.(`${req.method} ${req.url} model=${requestedModel(req.body) ?? '?'} -> ${upstream}`);
 
   if (!anthropic) {
-    const unavailable = deps.litellmUnavailable?.();
     if (unavailable !== undefined) {
       return { status: 502, headers: { 'content-type': 'application/json' }, body: anthropicErrorBody('router_error', unavailable) };
     }
