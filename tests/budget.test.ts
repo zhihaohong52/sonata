@@ -173,14 +173,14 @@ describe('router budget enforcement', () => {
   });
 
   it('forwards under the cap', async () => {
-    const res = await routeRequest(req, deps({ budget: () => ({ dailyUsd: 10, spentUsd: 1, configPath: '/test/sonata.toml' }) }));
+    const res = await routeRequest(req, deps({ budget: () => [{ dailyUsd: 10, spentUsd: 1, configPath: '/test/sonata.toml' }] }));
     expect(res.status).toBe(200);
   });
 
   it('refuses over the cap with 429 and an Anthropic-shaped body', async () => {
     // Claude Code silently discards any error envelope but this one, which
     // would turn a deliberate cap into a generic unexplained failure.
-    const res = await routeRequest(req, deps({ budget: () => ({ dailyUsd: 1, spentUsd: 2, configPath: '/test/sonata.toml' }) }));
+    const res = await routeRequest(req, deps({ budget: () => [{ dailyUsd: 1, spentUsd: 2, configPath: '/test/sonata.toml' }] }));
     expect(res.status).toBe(429);
     const parsed = JSON.parse(res.body.toString());
     expect(parsed.type).toBe('error');
@@ -192,7 +192,7 @@ describe('router budget enforcement', () => {
     let called = 0;
     const res = await routeRequest(req, deps({
       fetch: (async () => { called += 1; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
-      budget: () => ({ dailyUsd: 1, spentUsd: 5, configPath: '/test/sonata.toml' }),
+      budget: () => [{ dailyUsd: 1, spentUsd: 5, configPath: '/test/sonata.toml' }],
     }));
     expect(res.status).toBe(429);
     expect(called).toBe(0);
@@ -203,7 +203,7 @@ describe('router budget enforcement', () => {
     // above both, so a tier alias cannot route around it.
     const tierReq = { ...req, body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple' })) };
     const res = await routeRequest(tierReq, deps({
-      budget: () => ({ dailyUsd: 1, spentUsd: 5, configPath: '/test/sonata.toml' }),
+      budget: () => [{ dailyUsd: 1, spentUsd: 5, configPath: '/test/sonata.toml' }],
       resolveTier: () => ({
         role: 'code',
         tier: 'simple',
@@ -217,7 +217,7 @@ describe('router budget enforcement', () => {
     // Without this a user who raised the cap would have to run `sonata
     // restart` to be believed, and would reasonably read that as a bug.
     let spent = 5;
-    const d = deps({ budget: () => ({ dailyUsd: 10, spentUsd: spent, configPath: '/test/sonata.toml' }) });
+    const d = deps({ budget: () => [{ dailyUsd: 10, spentUsd: spent, configPath: '/test/sonata.toml' }] });
     spent = 20;
     expect((await routeRequest(req, d)).status).toBe(429);
     spent = 1;

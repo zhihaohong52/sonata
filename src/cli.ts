@@ -5,7 +5,7 @@ import { cmdRun } from './commands/run.js';
 import { cmdDispatch } from './commands/dispatch.js';
 import { cmdTail } from './commands/tail.js';
 import { cmdWait } from './commands/wait.js';
-import { loadConfig, NoConfigError } from './config.js';
+import { GLOBAL_CONFIG_RELATIVE, loadConfig, NoConfigError } from './config.js';
 import { cmdApprove } from './commands/approve.js';
 import { cmdSync } from './commands/sync.js';
 import { cmdDoctor } from './commands/doctor.js';
@@ -473,9 +473,13 @@ export async function main(argv: string[]): Promise<number> {
     let port: number | undefined;
     try {
       port = routerPorts(home).router;
-    } catch { /* no config here — ledger rows below still report */ }
-    const up = port === undefined ? false : await isSonataRouter(port);
-    console.log(up ? `router: up on localhost:${port}` : port === undefined ? 'router: unknown (no sonata.toml here)' : 'router: down');
+    } catch {
+      console.log(`router: unavailable (could not parse machine config ${join(home, GLOBAL_CONFIG_RELATIVE)})`);
+    }
+    if (port !== undefined) {
+      const up = await isSonataRouter(port);
+      console.log(up ? `router: up on localhost:${port}` : 'router: down');
+    }
 
     // The last hour of routes by default, narrowed to the most recent session
     // — unless --all asks for every session or --session names one specifically.
