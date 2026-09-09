@@ -20,11 +20,11 @@ import { homedir } from 'node:os';
 
 import { readSettings, writeSettings, installHook, uninstallHook, hookInstalled } from '../settings.js';
 import type { Settings } from '../settings.js';
-import { configPath as resolveSonataConfigPath, loadConfig, GLOBAL_CONFIG_RELATIVE, NoConfigError, parseConfig, type SonataConfig } from '../config.js';
+import { loadConfig, GLOBAL_CONFIG_RELATIVE, NoConfigError, parseConfig, type SonataConfig } from '../config.js';
 import { SONATA_PROJECT_HEADER } from '../native/tenants.js';
 import { nativeSessionEnv } from './code.js';
 import { routerPorts } from './ports.js';
-import { isSonataRouter, sonataRouterConfigPath, startServeDaemon } from './serve.js';
+import { isSonataRouter, preMultiTenantMessage, sonataRouterMultiTenant, startServeDaemon } from './serve.js';
 import { recordSession } from '../sessions.js';
 import { withSessionLock } from '../filelock.js';
 
@@ -790,30 +790,15 @@ export async function cmdRouteSession(
   const config = loadConfig(configCwd, opts.home);
   const port = config.native === undefined ? undefined : routerPorts(opts.home).router;
   if (port !== undefined) {
-    const expectedConfigPath = resolveSonataConfigPath(configCwd, opts.home);
     const running = await probe(port);
-    if (running && deps.probe === undefined) {
-      // Only verify identity against the real network probe — an injected
-      // test probe already encodes the scenario under test, and re-checking
-      // against the real network here would defeat it. A router that cannot
-      // or does not report its own configPath is treated the same as a
-      // mismatch, not silently trusted.
-      const actualConfigPath = await sonataRouterConfigPath(port);
-      if (expectedConfigPath !== null && (actualConfigPath === null || actualConfigPath !== expectedConfigPath)) {
-        throw new Error(
-          actualConfigPath === null
-            ? `sonata: router port ${port} answered but did not report which sonata configuration ` +
-              `it is running (too old, or its own config resolution failed) — refusing to trust it. ` +
-              `Restart it with \`sonata restart\` once confirmed to be this project's own router.`
-            : `sonata: router port ${port} is already serving a different sonata configuration ` +
-              `(${actualConfigPath}) than this project resolves to (${expectedConfigPath}). ` +
-              `Two projects cannot share one router port — set a different [native.ports].router ` +
-              `in one of the two configs.`,
-        );
-      }
+    if (running && deps.probe === undefined && await sonataRouterMultiTenant(port) !== true) {
+      throw new Error(preMultiTenantMessage(port));
     }
     if (!running) {
       await startDaemon(opts.home, opts.serveArgv, {}, configCwd);
+      if (deps.probe === undefined && await sonataRouterMultiTenant(port) !== true) {
+        throw new Error(preMultiTenantMessage(port));
+      }
     }
   }
 

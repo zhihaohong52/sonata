@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove } from './commands/auth.js';
 import { cmdServe, cmdRestart, startServeDaemon, isSonataRouter } from './commands/serve.js';
+import { routerPorts } from './commands/ports.js';
 import { cmdCode } from './commands/code.js';
 import { recentRoutes } from './commands/status.js';
 import { summarizeRuns } from './commands/runs.js';
@@ -471,7 +472,7 @@ export async function main(argv: string[]): Promise<number> {
     const home = homedir();
     let port: number | undefined;
     try {
-      port = loadConfig(process.cwd(), home).native?.ports.router;
+      port = routerPorts(home).router;
     } catch { /* no config here — ledger rows below still report */ }
     const up = port === undefined ? false : await isSonataRouter(port);
     console.log(up ? `router: up on localhost:${port}` : port === undefined ? 'router: unknown (no sonata.toml here)' : 'router: down');
