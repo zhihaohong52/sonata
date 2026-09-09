@@ -193,10 +193,20 @@ describe('custom headers', () => {
     expect(off.settings.env?.ANTHROPIC_BASE_URL).toBeUndefined();
   });
 
-  it('route on at global scope writes no header', () => {
+  it('route on at global scope strips a stale sonata header and is idempotent', () => {
     writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
-    const on = planRouteOn({}, loadConfig(cwd, home), PACKAGE_ROOT, 'global', { routerPort: 4100 });
-    expect(on.settings.env?.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+    const on = planRouteOn(
+      { env: { ANTHROPIC_CUSTOM_HEADERS: 'X-Team: blue\nx-sonata-project: /p/old' } },
+      loadConfig(cwd, home),
+      PACKAGE_ROOT,
+      'global',
+      { routerPort: 4100 },
+    );
+    expect(on.settings.env?.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: blue');
+    expect(on.settings.env?.ANTHROPIC_CUSTOM_HEADERS).not.toContain('x-sonata-project:');
+
+    const twice = planRouteOn(on.settings, loadConfig(cwd, home), PACKAGE_ROOT, 'global', { routerPort: 4100 });
+    expect(twice.changed).toBe(false);
   });
 });
 
