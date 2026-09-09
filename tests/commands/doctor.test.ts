@@ -294,6 +294,35 @@ code = ["deepseek-v4-flash"]
     } finally { globalThis.fetch = originalFetch; }
   });
 
+  it('lists unknown tenant config paths as question marks', async () => {
+    const { cwd, home } = setup();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ sonata: true, multiTenant: true, tenants: [{ id: 'bbbbbbbbbbbb', configPath: null }] }), { status: 200 })) as unknown as typeof fetch;
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      expect(checks.find((c) => c.name === 'serve health')).toEqual({ name: 'serve health', ok: true, detail: 'up · 1 project(s): ?' });
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
+  it('reports malformed multi-tenant health payloads instead of stopped', async () => {
+    const { cwd, home } = setup();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ sonata: true, multiTenant: true, tenants: null }), { status: 200 })) as unknown as typeof fetch;
+    try {
+      const { checks } = await cmdDoctor({ cwd, home });
+      expect(checks.find((c) => c.name === 'serve health')).toMatchObject({ ok: false, detail: expect.stringContaining('health payload could not be read') });
+      expect(checks.find((c) => c.name === 'serve health')?.detail).toContain('sonata restart');
+      expect(checks.find((c) => c.name === 'serve health')?.detail).not.toContain('not running');
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
+  it('warns on whitespace around a project ports table header', async () => {
+    const { cwd, home } = setup();
+    writeFileSync(join(cwd, 'sonata.toml'), `${NATIVE}\n  [ native.ports ]\nrouter = 4101\n`);
+    const { checks } = await cmdDoctor({ cwd, home });
+    expect(checks.find((c) => c.name === 'project ports')?.ok).toBe(true);
+  });
+
   it('fails a router that predates multi-tenant routing', async () => {
     const { cwd, home } = setup();
     const originalFetch = globalThis.fetch;
