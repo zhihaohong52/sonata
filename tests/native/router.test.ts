@@ -1156,3 +1156,54 @@ describe('createRouterServer — health', () => {
     }
   });
 });
+
+describe('routeTierRequest — an unavailable litellm must not mask a real attempt', () => {
+  // A mixed tier: one direct candidate that genuinely fails, one litellm
+  // candidate skipped because the venv is unhealthy. Answering 502 "run sonata
+  // litellm install" would misdiagnose the direct gateway's own 503 — and,
+  // returning before `withUsageRecording`, would drop the ledger row for a
+  // request the router really did forward.
+  const req = (model: string) => ({
+    method: 'POST', url: '/v1/messages',
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model, messages: [] })),
+  });
+  const MIXED = {
+    role: 'code', tier: 'simple',
+    routes: [
+      { key: 'direct-one', native: { gateway: 'anth', id: 'm-1', transport: 'direct' as const, baseUrl: 'http://gw.example' } },
+      { key: 'litellm-one', native: { gateway: 'acme', id: 'm-2' } },
+    ],
+  };
+
+  beforeEach(() => clearCooldowns());
+
+  it('returns 529 with a ledger row when a direct candidate actually failed', async () => {
+    const rows: { attempts: { key: string; status: number }[] }[] = [];
+    const res = await routeRequest(req('sonata-code-simple'), {
+      fetch: (async () => new Response('{}', { status: 503 })) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      gatewayKeys: () => ({ anth: 'KEY' }),
+      resolveTier: () => MIXED,
+      litellmUnavailable: () => 'LiteLLM is missing — run `sonata litellm install`',
+      recordUsage: (r) => rows.push(r as never),
+    });
+    expect(res.status).toBe(529);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].attempts).toEqual([{ key: 'direct-one', status: 503 }]);
+  });
+
+  it('still returns the unrecorded 502 when nothing was attempted at all', async () => {
+    const rows: unknown[] = [];
+    const res = await routeRequest(req('sonata-code-simple'), {
+      fetch: (async () => { throw new Error('must not forward'); }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ({ role: 'code', tier: 'simple', routes: [{ key: 'litellm-one', native: { gateway: 'acme', id: 'm-2' } }] }),
+      litellmUnavailable: () => 'LiteLLM is missing — run `sonata litellm install`',
+      recordUsage: (r) => rows.push(r),
+    });
+    expect(res.status).toBe(502);
+    expect(Buffer.from(res.body as Buffer).toString()).toContain('sonata litellm install');
+    expect(rows).toEqual([]);
+  });
+});

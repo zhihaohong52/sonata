@@ -52,6 +52,9 @@ export function canonicalConfigPath(path: string): string {
   }
 }
 
+/** How many distinct projects the registry remembers; see `noteProject`. */
+export const MAX_NOTED_PROJECTS = 256;
+
 export interface KnownTenant {
   id: string;
   configPath: string;
@@ -86,7 +89,22 @@ export class TenantRegistry {
     return existsSync(path) ? canonicalConfigPath(path) : null;
   }
 
+  /**
+   * Remembers a project so `known()` includes it in the LiteLLM union.
+   *
+   * Bounded, because the value reaching this is `x-sonata-project` — supplied
+   * by the caller on every request — and `known()` does filesystem work per
+   * noted path *on the request path*. Unbounded, a long-lived machine daemon
+   * would grow memory and per-request I/O with the number of distinct header
+   * values it had ever seen. Insertion order is Set iteration order, so the
+   * oldest goes first; a project still in use is re-noted by its next request.
+   */
   noteProject(cwd: string): void {
+    if (this.noted.has(cwd)) return;
+    if (this.noted.size >= MAX_NOTED_PROJECTS) {
+      const oldest = this.noted.values().next();
+      if (!oldest.done) this.noted.delete(oldest.value);
+    }
     this.noted.add(cwd);
   }
 
@@ -98,9 +116,13 @@ export class TenantRegistry {
     const cwd = hint.project ?? (hint.session === undefined ? undefined : loadSessions(this.home)[hint.session]?.cwd);
     let path: string | null;
     if (cwd !== undefined) {
-      this.noteProject(cwd);
       const found = resolveConfigPath(cwd, this.home);
       path = found === null ? null : canonicalConfigPath(found);
+      // Noted only once the hint resolves to a real config, and only when it is
+      // that project's own: a directory with no `sonata.toml` resolves to the
+      // machine config, which `known()` already has. Noting before this point
+      // let any header value enlarge the set the request path walks.
+      if (path !== null && path !== this.machinePath()) this.noteProject(cwd);
       if (path === null) {
         throw new TenantError(
           `No sonata.toml found for ${cwd}. Looked in ${join(cwd, 'sonata.toml')} and ` +
