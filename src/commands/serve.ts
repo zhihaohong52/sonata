@@ -721,6 +721,9 @@ export async function cmdServe(
     // A lazy child that fails its readiness probe is deliberately terminated;
     // identify that exact child so its exit cannot schedule crash recovery.
     const abandonedChildren = new Set<SpawnedLitellm>();
+    // Retain exit knowledge long enough for the readiness owner to avoid
+    // signalling a process whose exit callback already ran.
+    const exitedChildren = new Set<SpawnedLitellm>();
 
     const spawnLitellmChild = (): SpawnedLitellm => {
       const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(
@@ -729,7 +732,10 @@ export async function cmdServe(
       recordLitellmPid(opts.home, ports.router, spawned.pid);
       spawned.onExit?.((code, signal) => {
         if (stopping) return;
-        if (abandonedChildren.delete(spawned)) return;
+        if (abandonedChildren.delete(spawned)) {
+          exitedChildren.add(spawned);
+          return;
+        }
         if (expectingConfigRestart) {
           expectingConfigRestart = false;
           return;
@@ -807,19 +813,24 @@ export async function cmdServe(
         litellmReady = (async () => {
           const spawned = spawnLitellmChild();
           child = spawned;
+          // The readiness await owns this child. Its exit can race the failed
+          // probe, so the crash watcher must not respawn it until ready.
+          abandonedChildren.add(spawned);
           try {
             await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
+            if (exitedChildren.has(spawned)) throw new Error('litellm exited before becoming ready');
           } catch (error) {
             // A spawned process is not a usable child until its health probe
-            // passes. Suppress its exit watcher before terminating it so this
-            // failed lazy attempt has one owner and the next request retries.
+            // passes. It remains abandoned while being terminated, so only
+            // the next request owns the retry.
             if (child === spawned) {
               child = undefined;
-              abandonedChildren.add(spawned);
-              spawned.kill();
+              if (!exitedChildren.has(spawned)) spawned.kill();
             }
+            exitedChildren.delete(spawned);
             throw error;
           }
+          abandonedChildren.delete(spawned);
           activeModelsJson = freshModelsJson;
         })().catch((error) => { console.error(`sonata serve: litellm never came up: ${String(error)}`); });
         await litellmReady;
