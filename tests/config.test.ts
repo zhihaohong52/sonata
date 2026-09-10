@@ -875,6 +875,18 @@ pricing_provider = ["vertex", "google"]
     expect(config.native!.gateways.google.pricingProvider).toEqual(['vertex', 'google']);
   });
 
+  // Padding is invisible in the file and fatal in the lookup: the value is
+  // used directly as a models.dev provider key, so an untrimmed " openai "
+  // silently prices nothing.
+  it('trims surrounding whitespace off each pricing_provider entry', () => {
+    const config = parseConfig(`
+[native.gateways."google"]
+base_url = "https://example.invalid/v1"
+pricing_provider = [" vertex", "google\t"]
+`);
+    expect(config.native!.gateways.google.pricingProvider).toEqual(['vertex', 'google']);
+  });
+
   it('refuses an empty pricing_provider list', () => {
     expect(() => parseConfig(`
 [native.gateways."google"]

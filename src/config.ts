@@ -609,6 +609,12 @@ export function parseConfig(text: string): SonataConfig {
             'name a models.dev provider (e.g. "openai"), or remove the key',
           );
         }
+        // Surrounding whitespace is invisible in a TOML string but not in the
+        // lookup: the value is used directly as a models.dev provider key, so
+        // `" openai "` matches nothing and every model on the gateway reports
+        // as unpriced — the same silent failure the blank check above refuses,
+        // arriving by a route the blank check cannot see.
+        pricingProvider = pricingProvider.map((provider) => provider.trim());
       }
       // An OAuth gateway is addressed by LiteLLM's own provider, which knows the
       // URL; accepting one here would only let a config claim a base URL that is
