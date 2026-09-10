@@ -37,6 +37,14 @@ export interface InitPlan {
   keysToStore: Array<{ gateway: string; key: string }>;
   hook: { scope: 'project' | 'global' | 'skip'; settingsPath?: string; allowListScope?: 'project' | 'global' | 'skip' };
   skillPath: string;
+  /**
+   * Where to write the "prefer tier agents" block, and into which CLAUDE.md.
+   *
+   * `skip` writes nothing at all — this is the one artifact that lands in a
+   * file sonata does not own, so declining must be a real no-op rather than a
+   * smaller edit.
+   */
+  guidance: { scope: 'project' | 'global' | 'skip'; path?: string };
   routing: 'project' | 'global' | 'skip';
   syncCwd: string;
   agentsDir: string;
@@ -226,6 +234,20 @@ export function plan(
   let installLitellmNeeded = false;
   try { installLitellmNeeded = litellmRequired(parseConfig(configToml)); } catch { /* the config
     is validated elsewhere; an unparseable one is not this line's error to raise */ }
+  // ---- guidance ----
+  // Project scope writes the repository's own CLAUDE.md, so the preference
+  // travels with the repo and applies to collaborators too; global scope
+  // writes the user's, applying everywhere they work.
+  const guidanceScope = state.guidance ?? 'project';
+  const guidance: InitPlan['guidance'] = guidanceScope === 'skip'
+    ? { scope: 'skip' }
+    : {
+      scope: guidanceScope,
+      path: guidanceScope === 'global'
+        ? join(opts.home, '.claude', 'CLAUDE.md')
+        : join(opts.cwd, 'CLAUDE.md'),
+    };
+
   const summary: string[] = [
     '  Summary',
     `    models  ${chosenNative.map((c) => `${c.gateway}/${c.id}`).join(', ')}`,
@@ -233,6 +255,7 @@ export function plan(
     `    agents  ${totalAgents} file${totalAgents === 1 ? '' : 's'} in .claude/agents/`,
     `    hook    ${state.hookScope === 'skip' ? 'not installed' : `${state.hookScope} settings.json`}`,
     `    routing ${state.routing === 'skip' ? 'not configured' : `sonata route auto${state.routing === 'global' ? ' --global' : ''}`}`,
+    `    guide   ${guidance.scope === 'skip' ? 'no CLAUDE.md block' : `prefer-tier-agents block in ${guidance.path}`}`,
     `    litellm ${installLitellmNeeded ? `install litellm[proxy] into ${'~/.config/sonata/litellm'}` : 'not needed — no gateway routes through it'}`,
     `    config  ${configPathResolved}`,
     '',
@@ -268,6 +291,7 @@ export function plan(
     keysToStore: Object.entries(state.byokKeys ?? {}).map(([gateway, key]) => ({ gateway, key })),
     hook,
     skillPath,
+    guidance,
     routing,
     syncCwd,
     agentsDir,

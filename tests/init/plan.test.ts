@@ -176,3 +176,36 @@ describe('plan — whether it installs litellm', () => {
     expect(p.installLitellm).toBe(litellmRequired(parseConfig(p.configToml)));
   });
 });
+
+describe('plan — the CLAUDE.md guidance block', () => {
+  it('defaults to the project CLAUDE.md', () => {
+    const p = plan(env(), state, noCredentials, opts);
+    expect(p.guidance).toEqual({ scope: 'project', path: '/repo/CLAUDE.md' });
+  });
+
+  it('writes into the user CLAUDE.md at global scope', () => {
+    const p = plan(env(), { ...state, guidance: 'global' as const }, noCredentials, opts);
+    expect(p.guidance.path).toBe('/home/u/.claude/CLAUDE.md');
+  });
+
+  // Declining must be a real no-op: this is the one artifact that lands in a
+  // file sonata does not own, so `skip` may not leave a path behind for apply
+  // to write to.
+  it('plans no path at all when skipped', () => {
+    const p = plan(env(), { ...state, guidance: 'skip' as const }, noCredentials, opts);
+    expect(p.guidance).toEqual({ scope: 'skip' });
+    expect(p.guidance.path).toBeUndefined();
+  });
+
+  // The single confirm gate is the consent step, so it has to name the foreign
+  // file it is about to edit — otherwise "Write these changes?" hides it.
+  it('names the file in the summary the confirm prompt shows', () => {
+    const p = plan(env(), state, noCredentials, opts);
+    expect(p.summary.join('\n')).toContain('/repo/CLAUDE.md');
+  });
+
+  it('says so in the summary when skipped', () => {
+    const p = plan(env(), { ...state, guidance: 'skip' as const }, noCredentials, opts);
+    expect(p.summary.join('\n')).toContain('no CLAUDE.md block');
+  });
+});

@@ -41,6 +41,7 @@ export async function interactiveState(
     packageRoot: string;
     scope?: 'project' | 'global' | 'skip';
     routing?: 'project' | 'global' | 'skip';
+    guidance?: 'project' | 'global' | 'skip';
   },
   log: InitLog,
 ): Promise<{ state: InitState; nativeByKey: Map<string, NativeCandidate>; cancelled: boolean }> {
@@ -133,6 +134,7 @@ export async function interactiveState(
     roles,
     credentialSources,
     routing: result.state.routing ?? 'project',
+    guidance: result.state.guidance ?? 'project',
     customProviders: result.state.customProviders,
   };
   const problems = validate(env, state, { nativeByKey });
@@ -146,6 +148,7 @@ export async function interactiveState(
     roles,
     credentialSources,
     routing: result.state.routing ?? 'project',
+    guidance: result.state.guidance ?? 'project',
     hookScope: result.state.hookScope ?? 'project',
     customProviders: result.state.customProviders,
     byokModels: result.state.byokModels,

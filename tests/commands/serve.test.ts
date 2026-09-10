@@ -638,7 +638,10 @@ litellm = 39217
 
     exitCb?.(1, null);
     // Let the respawnDelayMs:0 tick fire and the second waitForLitellm start.
-    await new Promise((r) => setTimeout(r, 10));
+    // Polled rather than slept for, same as the respawn assertions above: a
+    // fixed delay here is a guess about scheduling that a loaded CI runner
+    // makes wrong.
+    await waitFor(() => waitCalls === 2, 'the second waitForLitellm');
     expect(waitCalls).toBe(2);
 
     let settled = false;

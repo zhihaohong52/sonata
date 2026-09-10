@@ -77,7 +77,7 @@ is the same trust boundary as before; adding collaborators changes that, and
 how it narrows.
 
 The CLI (after `npm link`):
-- `sonata init` — set up sonata (interactive wizard; asks the config scope, then providers, models, roles, per-role models, then ranks each role's selected models into `simple`/`complex` tiers — pre-sorted from a cached Artificial Analysis catalog when one exists, else built-in defaults. Left goes back a screen, skipping any answered by a flag; `A` on a ranking screen confirms it **and every screen after it** with the ranking each would have opened on — a tier screen per role × tier means four roles cost eight near-identical confirmations, and `acceptRemainingTiers` (`src/tui-ink/app-state.ts`) applies `seededRankingFor` so the result is indistinguishable from pressing enter through the rest, verified by writing a byte-identical `sonata.toml`. **Seeding alone is not that answer**, which is what made the first version of this wrong: `tierPickerKeys` withholds a key that has a native route but whose provider is deselected this session, and `RankedSelect` drops any seeded value missing from its rows — so confirming a screen writes the tier *without* that key, while bulk acceptance skipped the component and kept it. `seededRankingFor` reproduces both steps; writes `[models]`+`[tiers]`, generates one agent per role × tier, offers the permission hook, installs the `sonata-loop` skill, offers `sonata route auto`). A config still in the older `[generate.roles]`/`[generate.native]` shape is migrated automatically (`migrateLegacyConfig`, `src/normalize.ts`). Unattended flags: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope project|global`, `--scope project|global|skip`, `--routing project|global|skip`, `--prune`
+- `sonata init` — set up sonata (interactive wizard; asks the config scope, then providers, models, roles, per-role models, then ranks each role's selected models into `simple`/`complex` tiers — pre-sorted from a cached Artificial Analysis catalog when one exists, else built-in defaults. Left goes back a screen, skipping any answered by a flag; `A` on a ranking screen confirms it **and every screen after it** with the ranking each would have opened on — a tier screen per role × tier means four roles cost eight near-identical confirmations, and `acceptRemainingTiers` (`src/tui-ink/app-state.ts`) applies `seededRankingFor` so the result is indistinguishable from pressing enter through the rest, verified by writing a byte-identical `sonata.toml`. **Seeding alone is not that answer**, which is what made the first version of this wrong: `tierPickerKeys` withholds a key that has a native route but whose provider is deselected this session, and `RankedSelect` drops any seeded value missing from its rows — so confirming a screen writes the tier *without* that key, while bulk acceptance skipped the component and kept it. `seededRankingFor` reproduces both steps; writes `[models]`+`[tiers]`, generates one agent per role × tier, offers the permission hook, installs the `sonata-loop` skill, offers `sonata route auto`, and offers the CLAUDE.md guidance block below). A config still in the older `[generate.roles]`/`[generate.native]` shape is migrated automatically (`migrateLegacyConfig`, `src/normalize.ts`). Unattended flags: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope project|global`, `--scope project|global|skip`, `--routing project|global|skip`, `--guidance project|global|skip`, `--prune`
 - `sonata doctor` — check tmux, harnesses, auth, versions, permission hook, tier routing (a tiered config with no routed session — and **which** of the five reasons it is not routed: nothing installed, hooks belonging to a *different* sonata install, an install carrying only the pre-subagent session pair, global routing that cannot serve a project holding its own `sonata.toml`, or a base URL left pointing at a since-changed router port; `diagnoseRouteAuto`/`routingFailureDetail`. All five printed one sentence naming only the fix, so a user who had just run `sonata route auto` was told to run it again), stale MCP registrations, legacy (pre-`[tiers]`) configs, ranking-catalog **coverage then freshness** (advisory: a catalog older than `AA_CATALOG_MAX_AGE_DAYS`, or none at all, still ranks — on superseded scores or the built-in table — so the failure is a silently-wrong ordering rather than an error. Coverage is checked *first* because age is the wrong instrument for the failure it was standing in for: a catalog fetched yesterday is "fresh" and still knows nothing about a model released today. `catalogCoverage` (`src/catalog.ts`) asks whether the catalog scores the models this config actually tiers, and names the ones it cannot. Tier lists hold config *keys* while the catalog is keyed by upstream *id*, so `cmdDoctor` resolves each key through `native.models` **and** `models` before asking — comparing keys would report every hand-named model as unscored)
 - `sonata sync` — regenerate agent files from `sonata.toml`; Claude Code picks them up automatically. When `[tiers]` is set, generates only tier agents (one per role × tier, or one collapsed agent when a role's `simple`/`complex` lists are element-wise identical) — legacy per-model generation is skipped entirely. Supports `--prune`
 - `sonata run` — launch a run, print its id
@@ -162,7 +162,7 @@ Key design points:
 src/
 ├── cli.ts                CLI entry point; arg parsing, then delegates to src/commands/*
 ├── commands/             command implementations (approve, auth, catalog, code, dispatch, doctor, gc, init, log, route, run, runs, serve, status, sync, tail, usage, verify, wait)
-├── init/                 init pipeline — discover.ts (machine state, gathered once), validate.ts (shared problem list, both paths), plan.ts (every write as one InitPlan value), apply.ts (I/O only), interactive-state.ts + scripted-state.ts (two front ends, one InitState), toml.ts (nativeTomlFor)
+├── init/                 init pipeline — discover.ts (machine state, gathered once), validate.ts (shared problem list, both paths), plan.ts (every write as one InitPlan value), apply.ts (I/O only), interactive-state.ts + scripted-state.ts (two front ends, one InitState), toml.ts (nativeTomlFor), guidance.ts (the managed CLAUDE.md block that makes tier agents the default subagent lane)
 ├── config.ts             config resolution (project → machine), sonata.toml parsing (unified [models], [tiers]), KNOWN_HARNESSES, isReadOnlyRole, resolveTierAlias, harnessModelFor
 ├── catalog.ts            model normalization (normalizeModelName), curated capability/cost table, proposeTiers, AA catalog cache (loadAaCatalog, aaCatalogPath, AA_ATTRIBUTION)
 ├── detect.ts             harness catalogues (`opencode models`, `pi --list-models`, reasonix doctor) → ModelRef, provider grouping; WELL_KNOWN_PROVIDER_URLS
@@ -360,6 +360,37 @@ dispatch_window_seconds = 1500 # blocking window for sonata wait/dispatch
   belong to, never as their value. `cli.ts` prints the directory when a run
   fails or cancels. Logging never throws: an unwritable home degrades to
   `nullInitLog` rather than failing the command it was meant to explain.
+- **Tier agents are discovered natively but not *preferred* natively, which is
+  what the CLAUDE.md guidance block exists to fix** (`src/init/guidance.ts`).
+  The generated agents are ordinary `.claude/agents/*.md` files, so Claude Code
+  lists them with no MCP or wrapper — but selection is the model matching a task
+  against each agent's `description`, and sonata's compete there with
+  `general-purpose`, `Explore` and `Plan`, every one of them broader and none
+  carrying a routing precondition. Nothing sonata already wrote could state a
+  preference: agent files describe what an agent *does*, and a skill is invoked
+  rather than always loaded. `CLAUDE.md` is the only file Claude Code reads in
+  every session unconditionally, so that is where the instruction has to live —
+  in a file sonata does not own, which is what shapes the rest of the design.
+  Sonata owns what is between `<!-- sonata:begin -->` and `<!-- sonata:end -->`
+  and nothing else: text either side is preserved byte-for-byte, and a file
+  whose markers do not pair up (or pair in the wrong order, **or repeat**) is
+  **refused** rather than repaired, because every available repair — inventing
+  an end, reading a stray marker as prose, rewriting the first of two blocks —
+  can eat a paragraph the user wrote or leave a stale block contradicting the
+  new one. Counting occurrences is load-bearing rather than fussy: `indexOf`
+  alone splices from the *first* begin to the *first* end, and in a file shaped
+  begin/…/begin/…/end that span swallows the user text between the two begins.
+  For the same reason only a file that does not exist is written whole — a
+  whitespace-only `CLAUDE.md` still has bytes, and replacing them is a change
+  outside the markers. The
+  refusal is surfaced as a warning and does not fail the init, since the config,
+  agents and hook are already written and useful by then. The block names the
+  routing caveat deliberately: with `route auto` upstream-blocked, an unrouted
+  session's tier agent dies with `model_not_found` at `api.anthropic.com`, which
+  reads as a broken agent rather than a missing `sonata code`. Scope follows the
+  hook's shape — project writes the repository's own `CLAUDE.md` so the
+  preference travels with the repo, global writes the user's — and `skip` is a
+  true no-op that plans no path at all.
 - Run `sonata sync` after editing the config; Claude Code picks up the generated agents automatically. There is no MCP server to reconnect.
 
 ## Security
