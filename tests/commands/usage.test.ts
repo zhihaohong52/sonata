@@ -51,7 +51,11 @@ describe('aggregate', () => {
     ], 'model', {});
     expect(report.pricedTotalUsd).toBe(0.5);
     expect(report.covered).toEqual({ requests: 1, totalUsd: 2 });
-    expect(report.buckets[0]).toMatchObject({ costUsd: 2.5, coveredRequests: 1 });
+    // costUsd is spend and excludes covered, so the cost column agrees with
+    // `priced total`. Blending them left ` ~` as the only signal, and a flag
+    // cannot say how much: $167.10 with $0.000000 covered rendered the same
+    // as $10.34 with all of it covered.
+    expect(report.buckets[0]).toMatchObject({ costUsd: 0.5, coveredUsd: 2, coveredRequests: 1 });
   });
 
   it('counts a known-zero rate as priced, not unpriced', () => {
@@ -109,5 +113,30 @@ describe('aggregate', () => {
 
   it('returns an empty report for no rows', () => {
     expect(aggregate([], 'model', {})).toMatchObject({ buckets: [], pricedTotalUsd: 0 });
+  });
+});
+describe('spend and covered are separate columns, and the cost column sums to the total', () => {
+  it('never folds covered work into costUsd', () => {
+    const report = aggregate([
+      row({ key: 'a', price: { source: 'models-dev', totalUsd: 1 } }),
+      row({ key: 'b', price: { source: 'covered', totalUsd: 100 } }),
+    ], 'model', {});
+    const summed = report.buckets.reduce((total, bucket) => total + bucket.costUsd, 0);
+    // The invariant that was broken: summing the cost column disagreed with
+    // the report's own `priced total` whenever any covered row existed.
+    expect(summed).toBeCloseTo(report.pricedTotalUsd, 10);
+    expect(report.covered.totalUsd).toBe(100);
+  });
+
+  it('keeps a covered-only bucket at the top rather than sinking it to zero cost', () => {
+    const report = aggregate([
+      row({ key: 'small-spend', price: { source: 'models-dev', totalUsd: 1 } }),
+      row({ key: 'big-covered', price: { source: 'covered', totalUsd: 100 } }),
+    ], 'model', {});
+    // Ordering is by total value; a bucket that is entirely subscription work
+    // is still the largest thing in the report.
+    expect(report.buckets[0].label).toBe('big-covered');
+    expect(report.buckets[0].costUsd).toBe(0);
+    expect(report.buckets[0].coveredUsd).toBe(100);
   });
 });
