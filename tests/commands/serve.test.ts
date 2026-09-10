@@ -480,6 +480,24 @@ describe('defaultWaitForLitellm', () => {
   });
 });
 
+/**
+ * Wait for a condition the respawn path reaches asynchronously.
+ *
+ * A fixed sleep is the wrong instrument for an assertion that a count *rises*:
+ * it encodes a guess about how long a timer chain takes, and a loaded CI runner
+ * makes that guess wrong (observed on run 34457294908 — `expected 1 to be 2`).
+ * Polling waits exactly as long as needed and no longer. Assertions that a
+ * count *stays* put keep their fixed sleep, since a poll would return
+ * immediately and prove nothing.
+ */
+async function waitFor(cond: () => boolean, what: string, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 describe('cmdServe — litellm respawn', () => {
   it('respawns litellm when it exits on its own, and updates the recorded pid', async () => {
     let spawnCount = 0;
@@ -499,7 +517,7 @@ describe('cmdServe — litellm respawn', () => {
 
     exitCb?.(1, null);
     // Respawn is scheduled via a microtask/timer chain (respawnDelayMs: 0 still awaits a tick).
-    await new Promise((r) => setTimeout(r, 10));
+    await waitFor(() => spawnCount === 2, 'the respawn');
 
     expect(spawnCount).toBe(2);
     const state = JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8'));
@@ -522,8 +540,12 @@ describe('cmdServe — litellm respawn', () => {
     handles.push(handle);
 
     for (let i = 0; i < 3; i++) {
+      const before = spawnCount;
       exitCb?.(1, null);
-      await new Promise((r) => setTimeout(r, 10));
+      // The third crash is deliberately not retried, so only the first two
+      // waits may expect a new spawn; the last one has nothing to wait for.
+      if (i < 2) await waitFor(() => spawnCount > before, `respawn ${i + 1}`);
+      else await new Promise((r) => setTimeout(r, 10));
     }
 
     // 1 initial + 2 tolerated respawns = 3 spawns; the 3rd crash is not retried.
