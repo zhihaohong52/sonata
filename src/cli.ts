@@ -441,11 +441,24 @@ export async function main(argv: string[]): Promise<number> {
     // `openrouter-nemotron-3.5-lightning` overruns that, and every number on
     // its row then shifts out of its column.
     const labelWidth = Math.max(0, ...report.buckets.map((bucket) => bucket.label.length));
+    // A covered column, not a ` ~` flag on the cost. The flag was binary and
+    // the two numbers shared one column, so a bucket that was 99.999% real
+    // spend and one that was 100% subscription rendered identically — measured
+    // on real data, $167.10 with $0.000000 covered beside $10.34 with all of
+    // it covered. The column is shown only when some bucket has covered work.
+    const anyCovered = report.buckets.some((bucket) => bucket.coveredRequests > 0);
+    const money = (usd: number) => `$${usd.toFixed(4)}`;
+    if (anyCovered) {
+      console.log(`${''.padEnd(labelWidth)} ${'requests'.padStart(8)} ${'input'.padStart(12)} ${'output'.padStart(10)}  ${'spent'.padStart(12)}  ${'covered'.padStart(12)}`);
+    }
     for (const bucket of report.buckets) {
-      const cost = bucket.costUsd === 0 && bucket.unpricedRequests === bucket.requests
+      const spent = bucket.costUsd === 0 && bucket.coveredUsd === 0 && bucket.unpricedRequests === bucket.requests
         ? '—'
-        : `$${bucket.costUsd.toFixed(4)}${bucket.coveredRequests > 0 ? ' ~' : ''}`;
-      console.log(`${bucket.label.padEnd(labelWidth)} ${String(bucket.requests).padStart(8)} ${String(bucket.input).padStart(12)} ${String(bucket.output).padStart(10)}  ${cost}`);
+        : bucket.costUsd === 0 && bucket.coveredRequests > 0 ? '—' : money(bucket.costUsd);
+      const covered = anyCovered
+        ? `  ${(bucket.coveredUsd === 0 && bucket.coveredRequests === 0 ? '—' : money(bucket.coveredUsd)).padStart(12)}`
+        : '';
+      console.log(`${bucket.label.padEnd(labelWidth)} ${String(bucket.requests).padStart(8)} ${String(bucket.input).padStart(12)} ${String(bucket.output).padStart(10)}  ${spent.padStart(12)}${covered}`);
     }
     console.log(`\npriced total   $${report.pricedTotalUsd.toFixed(4)}`);
     if (report.covered.requests > 0) {

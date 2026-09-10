@@ -52,6 +52,18 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   $0.34 of real spend, the budget saw $0.34.
 
 ### Fixed
+- **`sonata usage` blended covered work into the cost column.** A bucket's
+  `costUsd` included subscription-covered rows while `pricedTotalUsd` excluded
+  them, so summing the cost column disagreed with the report's own
+  `priced total`, and a trailing ` ~` was the only signal. A flag cannot say
+  *how much*: measured on real data, one project showed $167.10 of which
+  $0.000000 was covered, and another showed $10.34 of which all of it was —
+  rendered identically. `UsageBucket` gains `coveredUsd`, `costUsd` is spend
+  alone, and the two render as separate `spent` / `covered` columns (shown
+  only when some bucket carries covered work). Buckets are ordered by total
+  value so a wholly-subscription bucket does not sink to the bottom now that
+  its spend is 0.
+
 - **No OpenRouter model could ever be priced.** models.dev keys each provider
   the way that provider does: `openai` files a bare `gpt-5.6-terra`, but
   `openrouter` files `nvidia/nemotron-3.5-lightning:free` — vendor prefix and

@@ -19,7 +19,15 @@ export interface UsageBucket {
   requests: number;
   input: number;
   output: number;
+  /** Money spent. Never includes covered work — see `coveredUsd`. */
   costUsd: number;
+  /**
+   * Subscription-backed work, valued at list but never billed per token.
+   *
+   * Reported in its own column rather than added to `costUsd`, so a bucket's
+   * spend figure agrees with the report's `priced total`.
+   */
+  coveredUsd: number;
   unpricedRequests: number;
   coveredRequests: number;
 }
@@ -73,7 +81,7 @@ export function aggregate(
   for (const row of rows) {
     const label = labelOf(row, by, sessions);
     const bucket = buckets.get(label) ?? {
-      label, requests: 0, input: 0, output: 0, costUsd: 0, unpricedRequests: 0, coveredRequests: 0,
+      label, requests: 0, input: 0, output: 0, costUsd: 0, coveredUsd: 0, unpricedRequests: 0, coveredRequests: 0,
     };
     bucket.requests += 1;
     bucket.input += row.tokens.input;
@@ -86,7 +94,12 @@ export function aggregate(
       unpriced.input += row.tokens.input;
       unpriced.output += row.tokens.output;
     } else if (row.price.source === 'covered') {
-      bucket.costUsd += row.price.totalUsd;
+      // Kept out of `costUsd`, which is spend. Folding it in made the cost
+      // column disagree with its own `priced total`, and left a ` ~` flag as
+      // the only hint — a flag that cannot say *how much*: measured on real
+      // data, one project showed $167.10 of which $0.000000 was covered and
+      // another showed $10.34 of which all of it was, marked identically.
+      bucket.coveredUsd += row.price.totalUsd;
       bucket.coveredRequests += 1;
       covered.requests += 1;
       covered.totalUsd += row.price.totalUsd;
@@ -98,7 +111,12 @@ export function aggregate(
   }
 
   return {
-    buckets: [...buckets.values()].sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests),
+    // Ordered by total value (spend + covered), not spend alone: a bucket
+    // that is entirely subscription work is still the largest thing in the
+    // report and must not sink to the bottom now that its cost column is 0.
+    buckets: [...buckets.values()].sort(
+      (a, b) => (b.costUsd + b.coveredUsd) - (a.costUsd + a.coveredUsd) || b.requests - a.requests,
+    ),
     pricedTotalUsd,
     unpriced,
     covered,
