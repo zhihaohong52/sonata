@@ -185,7 +185,7 @@ async function updateAaCatalog(
   return { models: Object.keys(models).length, path, fetchedAt };
 }
 
-async function updateModelsDev(
+export async function updateModelsDev(
   home: string,
   fetchFn: typeof fetch,
   deps: { now?: () => Date },

@@ -51,7 +51,38 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   against real ledger data: on a day holding $14.36 of covered work beside
   $0.34 of real spend, the budget saw $0.34.
 
+### Added
+- **The router keeps the price cache fresh.** Nothing refreshed it before:
+  `sonata catalog update` is manual, so a machine that had not run it in
+  months priced every ledger row on stale rates and said so only in one line
+  of `sonata usage` output. `sonata serve` now checks on bind and every 6
+  hours, refreshing when the cache is missing, unreadable or older than 24
+  hours (`src/price-refresh.ts`). The daemon is deliberately the only host: it
+  is long-lived, already does network I/O, and is what writes prices into
+  ledger rows — putting a fetch into `usage` or `doctor` would make a
+  read-only command hang on a bad network, which is exactly when someone runs
+  `doctor`. Three properties keep it off the request path: it is never awaited
+  by a request, a failure is inert (the existing cache is kept and the next
+  tick retries — no tight loop, since the likeliest failure is "no network"),
+  and the timer is unref'd so it never holds the process open. A cache whose
+  `fetchedAt` will not parse counts as stale, because an unreadable timestamp
+  is not evidence of freshness and reading it as such would pin a broken cache
+  forever.
+- **`sonata usage --project <dir>`** restricts the report to one project. The
+  default stays machine-wide, so nothing already parsing the output changes.
+
 ### Fixed
+- **`sonata usage --by project` split a worktree from its main checkout** while
+  `[budget] daily_usd` pooled them — the cap counts a worktree against the
+  config it borrows, so a refusal could fire at a number appearing nowhere in
+  the report. Grouping now resolves each row's directory through `configPath`,
+  the same borrow the router uses. Computed at report time, not read from the
+  row's `tenant` id: only 2,871 of 24,774 rows on the development machine
+  carry one, so tenant grouping would bucket 88% of history as "unknown". A
+  directory that no longer exists keeps its recorded path rather than
+  resolving by fallthrough to the machine config, and a cwd resolving to the
+  machine config keeps its own label rather than collapsing every configless
+  directory into one bucket.
 - **`sonata usage` blended covered work into the cost column.** A bucket's
   `costUsd` included subscription-covered rows while `pricedTotalUsd` excluded
   them, so summing the cost column disagreed with the report's own
