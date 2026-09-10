@@ -646,6 +646,17 @@ The `claude` harness adapter is the simplest adapter: it runs headless `claude -
 
 ## Conventions
 
+- **Non-trivial work goes through a PR; docs and trivial fixes may go direct to
+  `main`.** "Non-trivial" means anything touching money (pricing, the ledger,
+  `[budget]`), security, routing, or config parsing — the paths where a plausible
+  wrong value is worse than an error, and where a second reader is the control
+  that catches it. CodeRabbit reviews PRs on this repository. Direct-to-`main`
+  stays fine for `CHANGELOG.md`, `docs/`, and one-line fixes. This is written
+  down because it was learned the expensive way: the models.dev pricing
+  overhaul (9 commits, +1302/-382, every one of them about how money is
+  counted) went straight to `main` unreviewed and had to be rewound onto a
+  branch afterwards to get a review at all.
+
 - **Harness-specific knowledge stays inside its adapter** — never in the CLI or `sonata dispatch`.
 - **Evidence over inference** for harness behaviour: a captured fixture in `tests/fixtures/panes/` beats a plausible regex.
 - **Tests need no API keys** — the suite runs against a fake harness (scripted binary replaying a normal run, a crash, a captured approval prompt, a hang the watchdog kills, a clean exit with no report, and a harness-written report).
