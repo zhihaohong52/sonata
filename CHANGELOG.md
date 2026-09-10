@@ -31,6 +31,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   silently.
 
 ### Fixed
+- **No OpenRouter model could ever be priced.** models.dev keys each provider
+  the way that provider does: `openai` files a bare `gpt-5.6-terra`, but
+  `openrouter` files `nvidia/nemotron-3.5-lightning:free` — vendor prefix and
+  serving-variant suffix included. `resolvePrice` looked up only
+  `normalizeModelName(id)`, which strips exactly those two things, so every
+  OpenRouter row resolved to unpriced (2,870 real rows on the development
+  machine). The raw upstream id is now tried before the normalized name, which
+  cannot mis-match: an exact hit under the named provider *is* that model.
+  Provider order remains the outer loop, so an earlier provider still outranks
+  an exact id match found in a later one.
 - **Cache-creation tokens were billed at the input rate.** models.dev
   publishes `cache_write` separately and it is materially higher —
   `gpt-5.6-terra` is $2.50 against $2.00 input — so every priced row
