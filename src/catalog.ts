@@ -170,13 +170,13 @@ export const SIMPLE_CAPABILITY_FLOOR = 0.75;
 /**
  * The key an AA score is stored and looked up under.
  *
- * AA writes versions with dashes (`glm-5-3`) where sonata, ai-pricing.fyi and
+ * AA writes versions with dashes (`glm-5-3`) where sonata and models.dev
  * every gateway write dots (`glm-5.3`), so a name that is otherwise identical
  * never joins — measured on a real 17-model config, only 3 matched, and the
  * other 14 fell back to a constant rank that made the sort a no-op. Going
  * dots-to-dashes is the safe direction: dashes are load-bearing inside real
  * names (`deepseek-v4-flash`), so the reverse would be ambiguous. Verified
- * collision-free across both catalogs (0 of 258 ai-pricing, 0 of 233 AA).
+ * collision-free across both catalogs.
  */
 export function aaMatchKey(name: string): string {
   return name.replace(/\./g, '-');

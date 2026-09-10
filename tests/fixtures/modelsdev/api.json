@@ -1,0 +1,36 @@
+{
+  "deepseek": {
+    "id": "deepseek",
+    "name": "Synthetic DeepSeek",
+    "models": {
+      "deepseek-v4-flash": {
+        "id": "deepseek-v4-flash",
+        "name": "Synthetic Flash",
+        "cost": {
+          "input": 0.44,
+          "output": 1.32,
+          "cache_read": 0.014,
+          "cache_write": 0.66,
+          "tiers": [{ "input": 0.5 }],
+          "context_over_200k": { "input": 0.88 }
+        }
+      },
+      "output-only": {
+        "id": "output-only",
+        "cost": { "output": 2 }
+      },
+      "no-cost": { "id": "no-cost" },
+      "bad-cost": { "id": "bad-cost", "cost": { "input": "wrong" } }
+    }
+  },
+  "fireworks": {
+    "id": "fireworks",
+    "models": {
+      "deepseek-v4-flash": {
+        "id": "deepseek-v4-flash",
+        "cost": { "input": 0.9, "output": 2.7 }
+      }
+    }
+  },
+  "malformed": { "models": [] }
+}

@@ -850,7 +850,7 @@ pricing_provider = "google"
 input = 0.1
 `);
     const gw = config.native!.gateways.google;
-    expect(gw.pricingProvider).toBe('google');
+    expect(gw.pricingProvider).toEqual(['google']);
     expect(gw.price).toMatchObject({ input: 0.1 });
   });
 
@@ -864,6 +864,31 @@ id = "gpt-5.6-terra"
 output = 2
 `);
     expect(config.unifiedModels.fallback.price).toEqual({ output: 2 });
+  });
+
+  it('parses an ordered pricing_provider list', () => {
+    const config = parseConfig(`
+[native.gateways."google"]
+base_url = "https://example.invalid/v1"
+pricing_provider = ["vertex", "google"]
+`);
+    expect(config.native!.gateways.google.pricingProvider).toEqual(['vertex', 'google']);
+  });
+
+  it('refuses an empty pricing_provider list', () => {
+    expect(() => parseConfig(`
+[native.gateways."google"]
+base_url = "https://example.invalid/v1"
+pricing_provider = []
+`)).toThrow(/empty "pricing_provider" list/);
+  });
+
+  it('refuses a pricing_provider list with a non-string entry', () => {
+    expect(() => parseConfig(`
+[native.gateways."google"]
+base_url = "https://example.invalid/v1"
+pricing_provider = ["google", 42]
+`)).toThrow(/non-string "pricing_provider" list entry/);
   });
 
   it('refuses a non-string pricing_provider', () => {

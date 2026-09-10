@@ -8,7 +8,7 @@
  * the router, so its tokens are unobservable and the output says so rather than
  * presenting a partial figure as complete.
  */
-import { loadAiPricing } from '../aipricing.js';
+import { loadModelsDev } from '../modelsdev.js';
 import { readRows, type LedgerRow } from '../ledger.js';
 import { loadSessions, type SessionRecord } from '../sessions.js';
 
@@ -105,7 +105,7 @@ export async function cmdUsage(opts: {
   let rows = readRows(opts.home, now - parseDuration(opts.since), now);
   if (opts.session !== undefined) rows = rows.filter((row) => row.session === opts.session);
   const report = aggregate(rows, opts.by, loadSessions(opts.home));
-  const cache = loadAiPricing(opts.home);
+  const cache = loadModelsDev(opts.home);
   if (cache !== undefined) {
     const fetched = Date.parse(cache.fetchedAt);
     if (Number.isFinite(fetched)) report.priceCacheAgeMs = now - fetched;

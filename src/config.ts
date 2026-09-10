@@ -49,6 +49,7 @@ export function tiersCollapse(lists: { simple: string[]; complex: string[] }): b
 export interface Rates {
   input?: number;
   cachedInput?: number;
+  cacheWrite?: number;
   output?: number;
 }
 
@@ -167,7 +168,7 @@ export interface NativeGatewayConfig {
   /** @deprecated Read at parse time and mapped onto `provider`. */
   wireFormat?: NativeGatewayWireFormat;
   price?: PriceConfig;
-  pricingProvider?: string;
+  pricingProvider?: string[];
 }
 export interface NativeConfig {
   models: Record<string, NativeModelConfig>;
@@ -250,6 +251,7 @@ function parseRates(raw: Record<string, unknown>, where: string): Rates {
   };
   take('input', 'input');
   take('cached_input', 'cachedInput');
+  take('cache_write', 'cacheWrite');
   take('output', 'output');
   return out;
 }
@@ -579,12 +581,22 @@ export function parseConfig(text: string): SonataConfig {
         provider = raw as LitellmProvider;
       }
       const price = parsePrice(d.price, `[native.gateways."${name}"]`);
-      let pricingProvider: string | undefined;
+      let pricingProvider: string[] | undefined;
       if (d.pricing_provider !== undefined) {
-        if (typeof d.pricing_provider !== 'string') {
+        const rawPricingProvider = d.pricing_provider;
+        if (typeof rawPricingProvider === 'string') {
+          pricingProvider = [rawPricingProvider];
+        } else if (Array.isArray(rawPricingProvider)) {
+          if (rawPricingProvider.length === 0) {
+            throw new Error(`sonata.toml: native gateway "${name}" has empty "pricing_provider" list`);
+          }
+          if (!rawPricingProvider.every((provider) => typeof provider === 'string')) {
+            throw new Error(`sonata.toml: native gateway "${name}" has non-string "pricing_provider" list entry`);
+          }
+          pricingProvider = rawPricingProvider;
+        } else {
           throw new Error(`sonata.toml: native gateway "${name}" has non-string "pricing_provider"`);
         }
-        pricingProvider = d.pricing_provider;
       }
       // An OAuth gateway is addressed by LiteLLM's own provider, which knows the
       // URL; accepting one here would only let a config claim a base URL that is

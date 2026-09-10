@@ -8,6 +8,51 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Changed
+- **Token prices now come from models.dev, not ai-pricing.fyi.** The old source
+  was wrong, not merely sparse: its OpenAI `output_token` values were that
+  model's *cache-write* price, so `gpt-5.6-terra` was published at $2.50/1M
+  output against OpenAI's real $12.00 — understating the expensive half of an
+  agentic workload roughly five-fold. Verified against OpenAI's published
+  pricing page, with models.dev, OpenRouter and LiteLLM's own table agreeing
+  against ai-pricing.fyi on every model checked; models.dev matched the
+  primary source exactly on all four, including the long-context tier.
+  `sonata catalog update` now fetches `https://models.dev/api.json` — public,
+  no key, one request — and caches `provider → model → rates` at
+  `~/.config/sonata/models-dev.json`. Coverage rises from 694 models to 7181
+  costed ones. The abandoned `ai-pricing.json` is neither read nor migrated.
+- **`pricing_provider` accepts an ordered list**, so a gateway reselling
+  several labs can be priced at each lab's own published rate:
+  `pricing_provider = ["openai", "deepseek", "google"]`. The first provider
+  that *lists the model* wins. A bare string keeps working unchanged. Deriving
+  the lab automatically was rejected: Artificial Analysis publishes a display
+  name (`"Z AI"`, `"Kimi"`) matching none of models.dev's provider ids, and
+  OpenRouter's prefixes are its own slugs — both need a curated map that rots
+  silently.
+
+### Fixed
+- **Cache-creation tokens were billed at the input rate.** models.dev
+  publishes `cache_write` separately and it is materially higher —
+  `gpt-5.6-terra` is $2.50 against $2.00 input — so every priced row
+  undercounted cache creation by 25%. `Rates` gains `cacheWrite` and `costOf`
+  charges `cacheWrite ?? input`, unchanged where no cache-write rate exists.
+- **A partial scraped rate table priced the gap at zero.** `costOf` charges an
+  absent dimension 0 by contract, so a models.dev entry carrying only an
+  output rate returned `{ source: 'models-dev', totalUsd: 0 }` for a request
+  that spent a million input tokens. That is worse than declining: a $0 row
+  counts as *priced*, so it disappears from the unpriced volume `sonata usage`
+  reports separately, and `[budget] daily_usd` treats the spend as free.
+  `resolvePrice` now declines unless the table covers every dimension the
+  request actually used. Latent rather than live — all 7181 costed models on
+  models.dev carry both input and output today — which is precisely why it
+  would have gone unnoticed had the feed changed. Hand-written `[price]`
+  blocks are unaffected: a partial one there is a deliberate statement.
+- `sonata catalog update` previously fetched only the first 1000 rows of the
+  ai-pricing.fyi feed, which paginates by offset and truncates silently — 441
+  of 694 models were missing. Fixed before the source was replaced; recorded
+  because the same shape of bug is what a single un-paged request always
+  produces.
+
 ## [0.7.1] - 2026-09-09
 
 ### Fixed

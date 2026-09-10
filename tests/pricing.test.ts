@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AiPricingCache } from '../src/aipricing.js';
+import type { ModelsDevCache } from '../src/modelsdev.js';
 import { parseConfig } from '../src/config.js';
 import { costOf, inWindow, ratesFor, resolvePrice } from '../src/pricing.js';
 
@@ -68,9 +68,23 @@ describe('costOf', () => {
   it('prices input, cached input and output per million tokens', () => {
     const cost = costOf(
       { input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cacheCreation: 0 },
-      { input: 0.44, cachedInput: 0.014, output: 1.32 },
+      { input: 0.44, cachedInput: 0.014, cacheWrite: 0.66, output: 1.32 },
     );
     expect(cost).toBeCloseTo(0.44 + 1.32 + 0.014, 10);
+  });
+
+  it('prices cache creation at cache_write rather than input', () => {
+    expect(costOf(
+      { input: 0, output: 0, cacheRead: 0, cacheCreation: 1_000_000 },
+      { input: 0.44, cacheWrite: 0.66 },
+    )).toBeCloseTo(0.66, 10);
+  });
+
+  it('falls back to input for cache creation when cache_write is absent', () => {
+    expect(costOf(
+      { input: 0, output: 0, cacheRead: 0, cacheCreation: 1_000_000 },
+      { input: 0.44 },
+    )).toBeCloseTo(0.44, 10);
   });
 
   it('treats a missing rate as zero for that dimension only', () => {
@@ -126,9 +140,9 @@ base_url = "https://example.invalid/v1"
 `;
   const config = parseConfig(TOML);
   const tokens = { input: 1_000_000, output: 0, cacheRead: 0, cacheCreation: 0 };
-  const cache: AiPricingCache = {
+  const cache: ModelsDevCache = {
     fetchedAt: '2026-08-26T15:31:30.637Z',
-    models: { 'deepseek-v4-flash': { deepseek: { input: 3, output: 9 } } },
+    providers: { deepseek: { 'deepseek-v4-flash': { input: 3, output: 9 } } },
   };
   const now = at('2026-08-27T12:00:00Z');
   const noGatewayPrice = parseConfig(TOML.replace('[native.gateways."acme".price]\ninput = 2\n', ''));
@@ -148,12 +162,30 @@ base_url = "https://example.invalid/v1"
     });
   });
 
-  it('falls back to ai-pricing when the gateway declares a provider', () => {
+  it('falls back to models.dev when the gateway declares a provider', () => {
     expect(resolvePrice(noGatewayPrice, 'scraped', tokens, now, cache)).toEqual({
-      source: 'ai-pricing',
+      source: 'models-dev',
       totalUsd: 3,
       observedAt: '2026-08-26T15:31:30.637Z',
     });
+  });
+
+  it('uses the first configured provider that lists the model', () => {
+    const providerConfig = parseConfig(TOML.replace(
+      'pricing_provider = "deepseek"',
+      'pricing_provider = ["missing", "fireworks", "deepseek"]',
+    ).replace('[native.gateways."acme".price]\ninput = 2\n', ''));
+    const providerCache: ModelsDevCache = {
+      fetchedAt: '2026-08-26T15:31:30.637Z',
+      providers: {
+        fireworks: { 'deepseek-v4-flash': { input: 7 } },
+        deepseek: { 'deepseek-v4-flash': { input: 3 } },
+      },
+    };
+    expect(resolvePrice(providerConfig, 'scraped', tokens, now, providerCache)).toEqual({
+      source: 'models-dev', totalUsd: 7, observedAt: '2026-08-26T15:31:30.637Z',
+    });
+    expect(providerConfig.native!.gateways.acme.pricingProvider).toEqual(['missing', 'fireworks', 'deepseek']);
   });
 
   it('reports none when the gateway declares no pricing_provider', () => {
@@ -165,22 +197,81 @@ base_url = "https://example.invalid/v1"
     expect(resolvePrice(config, undefined, tokens, now, cache)).toEqual({ source: 'none' });
   });
 
-  it('records observedAt for a scraped price', () => {
+  it('records observedAt for a models.dev price', () => {
     expect(resolvePrice(noGatewayPrice, 'scraped', tokens, now, cache)).toEqual({
-      source: 'ai-pricing',
+      source: 'models-dev',
       totalUsd: 3,
       observedAt: '2026-08-26T15:31:30.637Z',
     });
   });
 
   it('treats a non-finite computed price as unpriced, not a fabricated zero', () => {
-    // A malformed ai-pricing cache (e.g. a non-numeric scraped rate that JSON
+    // A malformed models.dev cache (e.g. a non-numeric scraped rate that JSON
     // loaded as Infinity) used to multiply out to Infinity silently, then
     // round-trip as a confident zero. It must instead decline to price.
-    const badCache: AiPricingCache = {
+    const badCache: ModelsDevCache = {
       fetchedAt: '2026-08-26T15:31:30.637Z',
-      models: { 'deepseek-v4-flash': { deepseek: { input: Infinity, output: 9 } } },
+      providers: { deepseek: { 'deepseek-v4-flash': { input: Infinity, output: 9 } } },
     };
     expect(resolvePrice(noGatewayPrice, 'scraped', tokens, now, badCache)).toEqual({ source: 'none' });
+  });
+});
+
+// A scraped table is not a statement of intent the way a hand-written [price]
+// block is, so a partial one declines rather than filling gaps with zero. A
+// row priced $0 is worse than an unpriced one: it counts as priced, vanishes
+// from the unpriced tally, and `[budget] daily_usd` treats the volume as free.
+describe('a partial models.dev rate table declines rather than pricing at zero', () => {
+  const at = new Date('2026-09-10T00:00:00Z');
+  const config = parseConfig(`
+[models."m"]
+gateway = "gw"
+id = "m"
+
+[native.gateways."gw"]
+base_url = "https://gw.example/v1"
+pricing_provider = "acme"
+`);
+  const cache = (rates: Record<string, number>) => ({
+    fetchedAt: '2026-09-10T00:00:00Z',
+    providers: { acme: { m: rates } },
+  });
+
+  it('declines when input tokens were used but no input rate exists', () => {
+    const price = resolvePrice(
+      config, 'm',
+      { input: 1_000_000, output: 0, cacheRead: 0, cacheCreation: 0 },
+      at, cache({ output: 2 }),
+    );
+    // The bug this pins: previously { source: 'models-dev', totalUsd: 0 }.
+    expect(price).toEqual({ source: 'none' });
+  });
+
+  it('declines when output tokens were used but no output rate exists', () => {
+    const price = resolvePrice(
+      config, 'm',
+      { input: 0, output: 1_000_000, cacheRead: 0, cacheCreation: 0 },
+      at, cache({ input: 2 }),
+    );
+    expect(price).toEqual({ source: 'none' });
+  });
+
+  it('still prices when the unrated dimensions carry no tokens', () => {
+    const price = resolvePrice(
+      config, 'm',
+      { input: 1_000_000, output: 0, cacheRead: 0, cacheCreation: 0 },
+      at, cache({ input: 2 }),
+    );
+    expect(price).toMatchObject({ source: 'models-dev', totalUsd: 2 });
+  });
+
+  // cacheCreation bills at cacheWrite ?? input, so input alone covers it.
+  it('accepts cache-creation tokens covered by the input rate alone', () => {
+    const price = resolvePrice(
+      config, 'm',
+      { input: 0, output: 0, cacheRead: 0, cacheCreation: 1_000_000 },
+      at, cache({ input: 2 }),
+    );
+    expect(price).toMatchObject({ source: 'models-dev', totalUsd: 2 });
   });
 });

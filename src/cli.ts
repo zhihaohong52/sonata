@@ -28,7 +28,7 @@ import { cmdRoute, cmdRouteSession, cmdRouteSubagent, type RouteAction } from '.
 import { cmdCatalogUpdate } from './commands/catalog.js';
 import { cmdLitellm } from './commands/litellm.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
-import { AI_PRICING_ATTRIBUTION } from './aipricing.js';
+import { MODELS_DEV_ATTRIBUTION } from './modelsdev.js';
 import { cmdUsage, type UsageDimension } from './commands/usage.js';
 import { readRows } from './ledger.js';
 
@@ -387,15 +387,15 @@ export async function main(argv: string[]): Promise<number> {
         console.log(`  fetched: ${result.aa.fetchedAt}`);
         console.log(AA_ATTRIBUTION);
       }
-      if ('error' in result.aiPricing) {
-        console.error(`ai-pricing catalog not updated: ${result.aiPricing.error.message}`);
+      if ('error' in result.modelsDev) {
+        console.error(`models.dev catalog not updated: ${result.modelsDev.error.message}`);
       } else {
-        console.log(`ai-pricing catalog updated: ${result.aiPricing.models} models`);
-        console.log(`  path: ${result.aiPricing.path}`);
-        console.log(`  fetched: ${result.aiPricing.fetchedAt}`);
-        console.log(AI_PRICING_ATTRIBUTION);
+        console.log(`models.dev catalog updated: ${result.modelsDev.models} models`);
+        console.log(`  path: ${result.modelsDev.path}`);
+        console.log(`  fetched: ${result.modelsDev.fetchedAt}`);
+        console.log(MODELS_DEV_ATTRIBUTION);
       }
-      return 'error' in result.aa || 'error' in result.aiPricing ? 1 : 0;
+      return 'error' in result.aa || 'error' in result.modelsDev ? 1 : 0;
     }
     const path = aaCatalogPath(homedir());
     const catalog = loadAaCatalog(homedir());
@@ -450,7 +450,7 @@ export async function main(argv: string[]): Promise<number> {
     }
     console.log('native path only — `sonata dispatch` runs bypass the router and cannot be measured');
     if (report.priceCacheAgeMs !== undefined) {
-      console.log(`prices: ai-pricing.fyi cache ${Math.floor(report.priceCacheAgeMs / 86_400_000)}d old`);
+      console.log(`prices: models.dev cache ${Math.floor(report.priceCacheAgeMs / 86_400_000)}d old`);
     }
     return 0;
   }
