@@ -54,6 +54,8 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata catalog   show or refresh the Artificial Analysis model catalog
   sonata litellm   install or report sonata's own pinned LiteLLM (install|status)
   sonata usage     report native-path token and cost usage from the ledger
+                   [--since 7d] [--by model|role|tier|gateway|session|project]
+                   [--project <dir>] [--session <id>] [--json]
   sonata status    router health and the last hour of routes
   sonata runs      list every run, with state and whether it wrote a report
 
@@ -419,6 +421,7 @@ export async function main(argv: string[]): Promise<number> {
         by: { type: 'string' },
         since: { type: 'string' },
         session: { type: 'string' },
+        project: { type: 'string' },
         json: { type: 'boolean', default: false },
       },
     });
@@ -431,6 +434,10 @@ export async function main(argv: string[]): Promise<number> {
       since: values.since ?? '7d',
       by,
       session: values.session,
+      // `--project` with no value means "this one". Resolution happens in
+      // cmdUsage, which pools a worktree with its main checkout the same way
+      // `[budget]` does.
+      project: values.project === '' ? process.cwd() : values.project,
       json: values.json,
     });
     if (values.json) {
