@@ -442,9 +442,15 @@ export async function main(argv: string[]): Promise<number> {
     // its row then shifts out of its column.
     const labelWidth = Math.max(0, ...report.buckets.map((bucket) => bucket.label.length));
     for (const bucket of report.buckets) {
-      console.log(`${bucket.label.padEnd(labelWidth)} ${String(bucket.requests).padStart(8)} ${String(bucket.input).padStart(12)} ${String(bucket.output).padStart(10)}  ${bucket.costUsd === 0 && bucket.unpricedRequests === bucket.requests ? '—' : `$${bucket.costUsd.toFixed(4)}`}`);
+      const cost = bucket.costUsd === 0 && bucket.unpricedRequests === bucket.requests
+        ? '—'
+        : `$${bucket.costUsd.toFixed(4)}${bucket.coveredRequests > 0 ? ' ~' : ''}`;
+      console.log(`${bucket.label.padEnd(labelWidth)} ${String(bucket.requests).padStart(8)} ${String(bucket.input).padStart(12)} ${String(bucket.output).padStart(10)}  ${cost}`);
     }
     console.log(`\npriced total   $${report.pricedTotalUsd.toFixed(4)}`);
+    if (report.covered.requests > 0) {
+      console.log(`covered        $${report.covered.totalUsd.toFixed(2)}  ~ subscription — work valued at list, not billed per token`);
+    }
     if (report.unpriced.requests > 0) {
       console.log(`unpriced       ${report.unpriced.requests} requests · ${report.unpriced.input} in · ${report.unpriced.output} out`);
     }

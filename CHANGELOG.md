@@ -30,6 +30,27 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   OpenRouter's prefixes are its own slugs — both need a curated map that rots
   silently.
 
+### Added
+- **Subscription-backed work is valued without being counted as spend.** A
+  gateway authenticated by an OAuth subscription (`codex-oauth`,
+  `copilot-oauth`) fits neither existing price state: the work has a knowable
+  list value, but no money changes hands per token. It used to collapse into
+  `source: 'none'`, so 829 real requests worth ~$25 were invisible and
+  indistinguishable from a genuinely unknown model. `LedgerPrice.source` gains
+  `'covered'`: `resolvePrice` resolves rates exactly as before and then
+  relabels when the gateway's auth is OAuth, so one resolution path serves
+  both and a subscription gateway cannot drift from a metered one. There is no
+  new config key — a gateway already declares its auth, and OAuth auth *is* a
+  subscription; only `pricing_provider` is needed, to say which rates value
+  the work.
+
+  `[budget] daily_usd` never sees it: `spentTodayUsd` skips covered rows, so
+  free-at-the-margin traffic can never trigger a refusal. `sonata usage`
+  reports it on its own line and marks a covered figure with ` ~`, so a
+  per-row number cannot be silently summed into a spend total. Verified
+  against real ledger data: on a day holding $14.36 of covered work beside
+  $0.34 of real spend, the budget saw $0.34.
+
 ### Fixed
 - **No OpenRouter model could ever be priced.** models.dev keys each provider
   the way that provider does: `openai` files a bare `gpt-5.6-terra`, but

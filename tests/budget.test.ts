@@ -51,6 +51,12 @@ describe('spentTodayUsd', () => {
     expect(spentTodayUsd(home, noon)).toBe(0);
   });
 
+  it('excludes covered work from spend and budget refusals', () => {
+    appendRow(home, row('2026-09-03T01:00:00.000Z', { source: 'covered', totalUsd: 999 }));
+    expect(spentTodayUsd(home, noon)).toBe(0);
+    expect(budgetRefusal([{ dailyUsd: 0.01, spentUsd: spentTodayUsd(home, noon), configPath: '/test/sonata.toml' }])).toBeUndefined();
+  });
+
   it('never folds unpriced rows in as zero-cost spend', () => {
     // The honesty constraint: unpriced is spend of unknown size, not spend of
     // no size. It is excluded from the total rather than counted as 0, which

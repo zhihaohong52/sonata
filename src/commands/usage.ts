@@ -21,12 +21,14 @@ export interface UsageBucket {
   output: number;
   costUsd: number;
   unpricedRequests: number;
+  coveredRequests: number;
 }
 
 export interface UsageReport {
   buckets: UsageBucket[];
   pricedTotalUsd: number;
   unpriced: { requests: number; input: number; output: number };
+  covered: { requests: number; totalUsd: number };
   priceCacheAgeMs?: number;
 }
 
@@ -65,11 +67,14 @@ export function aggregate(
 ): UsageReport {
   const buckets = new Map<string, UsageBucket>();
   const unpriced = { requests: 0, input: 0, output: 0 };
+  const covered = { requests: 0, totalUsd: 0 };
   let pricedTotalUsd = 0;
 
   for (const row of rows) {
     const label = labelOf(row, by, sessions);
-    const bucket = buckets.get(label) ?? { label, requests: 0, input: 0, output: 0, costUsd: 0, unpricedRequests: 0 };
+    const bucket = buckets.get(label) ?? {
+      label, requests: 0, input: 0, output: 0, costUsd: 0, unpricedRequests: 0, coveredRequests: 0,
+    };
     bucket.requests += 1;
     bucket.input += row.tokens.input;
     bucket.output += row.tokens.output;
@@ -80,6 +85,11 @@ export function aggregate(
       unpriced.requests += 1;
       unpriced.input += row.tokens.input;
       unpriced.output += row.tokens.output;
+    } else if (row.price.source === 'covered') {
+      bucket.costUsd += row.price.totalUsd;
+      bucket.coveredRequests += 1;
+      covered.requests += 1;
+      covered.totalUsd += row.price.totalUsd;
     } else {
       bucket.costUsd += row.price.totalUsd;
       pricedTotalUsd += row.price.totalUsd;
@@ -91,6 +101,7 @@ export function aggregate(
     buckets: [...buckets.values()].sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests),
     pricedTotalUsd,
     unpriced,
+    covered,
   };
 }
 
