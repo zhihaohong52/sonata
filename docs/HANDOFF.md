@@ -120,10 +120,25 @@ not:
    `code-simple` implementer completing and committing. A plain session
    launched a minute *before* its env was written did not. So the process
    environment works and the settings-file path does not, which is precisely
-   the path `route auto` is built on. **If you pick up one thing from this
-   handoff, pick up that**: `route auto` is currently a design without a
-   mechanism, and deciding what replaces it is the open question — not
-   re-probing whether it is broken.
+   the path `route auto` is built on.
+
+   **Do not go looking for a local replacement — there probably isn't one.**
+   `route auto`'s entire purpose was avoiding the Remote Control trade-off,
+   and it did that by launching from a clean settings file (the one moment
+   the gate reads the base URL) and routing afterwards via the per-request
+   re-read. With the re-read gone, every remaining route into the router is a
+   *launch-time* route: `sonata code` exports `ANTHROPIC_BASE_URL` into the
+   process, `route on` writes it where launch will read it, and both lose
+   Remote Control exactly as documented. `ANTHROPIC_BASE_URL` is process-wide
+   and `isFirstPartyAnthropicBaseUrl` gates Remote Control, so there is no
+   third position available to us.
+
+   That makes this **upstream-blocked, not undesigned**. Having both back
+   needs something from Claude Code — a per-subagent base URL, or a Remote
+   Control gate not keyed on the process-wide one. Worth reporting upstream;
+   not worth another local attempt, and specifically not worth re-trying the
+   timer trick (`bdf8e27`), which failed tens of minutes in. The honest
+   status to give a user today is: pick routing or pick Remote Control.
 
 Routing settings and hooks are the one thing a worktree cannot borrow: Claude
 Code reads `.claude/settings.local.json` relative to its own cwd. Run
