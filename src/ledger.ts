@@ -17,7 +17,7 @@ import type { UsageTokens } from './native/usage.js';
 
 export type LedgerPrice =
   | { source: 'none' }
-  | { source: 'model' | 'gateway' | 'ai-pricing'; totalUsd: number; observedAt?: string };
+  | { source: 'model' | 'gateway' | 'models-dev'; totalUsd: number; observedAt?: string };
 
 export interface LedgerRow {
   ts: string;
@@ -108,7 +108,7 @@ export function readRows(home: string, sinceMs: number, now: number = Date.now()
 function priceIsValid(price: LedgerRow['price']): boolean {
   if (price === null || typeof price !== 'object' || Array.isArray(price)) return false;
   if (price.source === 'none') return true;
-  if (price.source === 'model' || price.source === 'gateway' || price.source === 'ai-pricing') {
+  if (price.source === 'model' || price.source === 'gateway' || price.source === 'models-dev') {
     return typeof price.totalUsd === 'number' && Number.isFinite(price.totalUsd);
   }
   return false;

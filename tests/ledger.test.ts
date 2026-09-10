@@ -111,7 +111,7 @@ describe('appendRow / readRows', () => {
   });
 
   it('keeps rows whose price is a valid billed source', () => {
-    appendRow(home, row({ alias: 'ai', price: { source: 'ai-pricing', totalUsd: 0.0012 } }));
+    appendRow(home, row({ alias: 'ai', price: { source: 'models-dev', totalUsd: 0.0012 } }));
     appendRow(home, row({ alias: 'none', price: { source: 'none' } }));
     const back = readRows(home, 0, Date.parse('2026-08-27T06:00:00Z'));
     expect(back.map((r) => r.alias)).toEqual(['ai', 'none']);

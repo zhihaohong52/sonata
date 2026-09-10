@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unl
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { loadAiPricing } from '../aipricing.js';
+import { loadModelsDev } from '../modelsdev.js';
 import { spentTodayUsd, type BudgetStatus } from '../budget.js';
 import { GLOBAL_CONFIG_RELATIVE, loadConfig, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
@@ -577,7 +577,7 @@ function close(server: ReturnType<typeof createRouterServer>): Promise<void> {
  */
 export function priceRow(config: SonataConfig, home: string, row: LedgerRow): LedgerRow {
   try {
-    const price = resolvePrice(config, row.key, row.tokens, new Date(row.ts), loadAiPricing(home));
+    const price = resolvePrice(config, row.key, row.tokens, new Date(row.ts), loadModelsDev(home));
     return { ...row, price };
   } catch {
     return row; // an unpriceable row is still a row
