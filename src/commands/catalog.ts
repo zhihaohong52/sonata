@@ -6,7 +6,8 @@ import {
   type AaCatalog,
 } from '../catalog.js';
 import {
-  AI_PRICING_URL,
+  AI_PRICING_PAGE_SIZE,
+  aiPricingPageUrl,
   aiPricingPath,
   normalizeAiPricingRows,
   type AiPricingCache,
@@ -26,6 +27,9 @@ const AA_MODELS_URL = 'https://artificialanalysis.ai/api/v2/language/models/free
 
 /** Pages are 200 models; this bounds a malformed `total_pages` rather than looping forever. */
 const AA_MAX_PAGES = 20;
+
+/** Pages are 1000 rows; bounds a feed that never returns a short page. */
+const AI_PRICING_MAX_PAGES = 50;
 const AA_GATEWAY = 'artificialanalysis';
 
 interface AaModelResponse {
@@ -193,22 +197,31 @@ async function updateAiPricing(
   fetchFn: typeof fetch,
   deps: { now?: () => Date },
 ): Promise<CatalogUpdateSuccess> {
-  const response = await fetchFn(AI_PRICING_URL);
-  if (!response.ok) {
-    throw new Error(`sonata catalog update: ai-pricing request failed (HTTP ${response.status})`);
+  // Paged, because the endpoint truncates at `limit` and says nothing about
+  // it — see `aiPricingPageUrl`. A short page is the only end-of-data signal
+  // offered; AI_PRICING_MAX_PAGES bounds a feed that never returns one rather
+  // than looping forever.
+  const rows: unknown[] = [];
+  for (let page = 0; page < AI_PRICING_MAX_PAGES; page++) {
+    const response = await fetchFn(aiPricingPageUrl(page * AI_PRICING_PAGE_SIZE));
+    if (!response.ok) {
+      throw new Error(`sonata catalog update: ai-pricing request failed (HTTP ${response.status})`);
+    }
+
+    let body: unknown;
+    try {
+      body = await response.json() as AiPricingResponse;
+    } catch {
+      throw new Error('sonata catalog update: malformed ai-pricing response body');
+    }
+    if (!isRecord(body) || !Array.isArray(body.data)) {
+      throw new Error('sonata catalog update: malformed ai-pricing response body (expected data array)');
+    }
+    rows.push(...body.data);
+    if (body.data.length < AI_PRICING_PAGE_SIZE) break;
   }
 
-  let body: unknown;
-  try {
-    body = await response.json() as AiPricingResponse;
-  } catch {
-    throw new Error('sonata catalog update: malformed ai-pricing response body');
-  }
-  if (!isRecord(body) || !Array.isArray(body.data)) {
-    throw new Error('sonata catalog update: malformed ai-pricing response body (expected data array)');
-  }
-
-  const models = normalizeAiPricingRows(body.data);
+  const models = normalizeAiPricingRows(rows);
   // A schema change that rejects every row must preserve the last known prices
   // rather than silently turn every later ledger entry into an unpriced one.
   if (Object.keys(models).length === 0) {
