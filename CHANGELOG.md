@@ -9,6 +9,7 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 ## [Unreleased]
 
 ### Added
+
 - **`sonata init` can make tier agents the default subagent lane.** Claude Code
   already *discovers* the generated agents natively — they are ordinary
   `.claude/agents/*.md` files — but it does not *prefer* them: a subagent is
@@ -26,7 +27,47 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   is refused rather than repaired, and a refusal is reported as a warning
   instead of failing an init whose config, agents and hook are already written.
 
+- **Subscription-backed work is valued without being counted as spend.** A
+  gateway authenticated by an OAuth subscription (`codex-oauth`,
+  `copilot-oauth`) fits neither existing price state: the work has a knowable
+  list value, but no money changes hands per token. It used to collapse into
+  `source: 'none'`, so 829 real requests worth ~$25 were invisible and
+  indistinguishable from a genuinely unknown model. `LedgerPrice.source` gains
+  `'covered'`: `resolvePrice` resolves rates exactly as before and then
+  relabels when the gateway's auth is OAuth, so one resolution path serves
+  both and a subscription gateway cannot drift from a metered one. There is no
+  new config key — a gateway already declares its auth, and OAuth auth *is* a
+  subscription; only `pricing_provider` is needed, to say which rates value
+  the work.
+
+  `[budget] daily_usd` never sees it: `spentTodayUsd` skips covered rows, so
+  free-at-the-margin traffic can never trigger a refusal. `sonata usage`
+  reports it on its own line and marks a covered figure with ` ~`, so a
+  per-row number cannot be silently summed into a spend total. Verified
+  against real ledger data: on a day holding $14.36 of covered work beside
+  $0.34 of real spend, the budget saw $0.34.
+
+- **The router keeps the price cache fresh.** Nothing refreshed it before:
+  `sonata catalog update` is manual, so a machine that had not run it in
+  months priced every ledger row on stale rates and said so only in one line
+  of `sonata usage` output. `sonata serve` now checks on bind and every 6
+  hours, refreshing when the cache is missing, unreadable or older than 24
+  hours (`src/price-refresh.ts`). The daemon is deliberately the only host: it
+  is long-lived, already does network I/O, and is what writes prices into
+  ledger rows — putting a fetch into `usage` or `doctor` would make a
+  read-only command hang on a bad network, which is exactly when someone runs
+  `doctor`. Three properties keep it off the request path: it is never awaited
+  by a request, a failure is inert (the existing cache is kept and the next
+  tick retries — no tight loop, since the likeliest failure is "no network"),
+  and the timer is unref'd so it never holds the process open. A cache whose
+  `fetchedAt` will not parse counts as stale, because an unreadable timestamp
+  is not evidence of freshness and reading it as such would pin a broken cache
+  forever.
+- **`sonata usage --project <dir>`** restricts the report to one project. The
+  default stays machine-wide, so nothing already parsing the output changes.
+
 ### Changed
+
 - **Token prices now come from models.dev, not ai-pricing.fyi.** The old source
   was wrong, not merely sparse: its OpenAI `output_token` values were that
   model's *cache-write* price, so `gpt-5.6-terra` was published at $2.50/1M
@@ -48,48 +89,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   OpenRouter's prefixes are its own slugs — both need a curated map that rots
   silently.
 
-### Added
-- **Subscription-backed work is valued without being counted as spend.** A
-  gateway authenticated by an OAuth subscription (`codex-oauth`,
-  `copilot-oauth`) fits neither existing price state: the work has a knowable
-  list value, but no money changes hands per token. It used to collapse into
-  `source: 'none'`, so 829 real requests worth ~$25 were invisible and
-  indistinguishable from a genuinely unknown model. `LedgerPrice.source` gains
-  `'covered'`: `resolvePrice` resolves rates exactly as before and then
-  relabels when the gateway's auth is OAuth, so one resolution path serves
-  both and a subscription gateway cannot drift from a metered one. There is no
-  new config key — a gateway already declares its auth, and OAuth auth *is* a
-  subscription; only `pricing_provider` is needed, to say which rates value
-  the work.
-
-  `[budget] daily_usd` never sees it: `spentTodayUsd` skips covered rows, so
-  free-at-the-margin traffic can never trigger a refusal. `sonata usage`
-  reports it on its own line and marks a covered figure with ` ~`, so a
-  per-row number cannot be silently summed into a spend total. Verified
-  against real ledger data: on a day holding $14.36 of covered work beside
-  $0.34 of real spend, the budget saw $0.34.
-
-### Added
-- **The router keeps the price cache fresh.** Nothing refreshed it before:
-  `sonata catalog update` is manual, so a machine that had not run it in
-  months priced every ledger row on stale rates and said so only in one line
-  of `sonata usage` output. `sonata serve` now checks on bind and every 6
-  hours, refreshing when the cache is missing, unreadable or older than 24
-  hours (`src/price-refresh.ts`). The daemon is deliberately the only host: it
-  is long-lived, already does network I/O, and is what writes prices into
-  ledger rows — putting a fetch into `usage` or `doctor` would make a
-  read-only command hang on a bad network, which is exactly when someone runs
-  `doctor`. Three properties keep it off the request path: it is never awaited
-  by a request, a failure is inert (the existing cache is kept and the next
-  tick retries — no tight loop, since the likeliest failure is "no network"),
-  and the timer is unref'd so it never holds the process open. A cache whose
-  `fetchedAt` will not parse counts as stale, because an unreadable timestamp
-  is not evidence of freshness and reading it as such would pin a broken cache
-  forever.
-- **`sonata usage --project <dir>`** restricts the report to one project. The
-  default stays machine-wide, so nothing already parsing the output changes.
-
 ### Fixed
+
 - **`sonata usage --by project` split a worktree from its main checkout** while
   `[budget] daily_usd` pooled them — the cap counts a worktree against the
   config it borrows, so a refusal could fire at a number appearing nowhere in
