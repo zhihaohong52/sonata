@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { cmdCatalogUpdate } from '../../src/commands/catalog.js';
-import { aaCatalogPath } from '../../src/catalog.js';
+import { aaCatalogPath, loadAaCatalog } from '../../src/catalog.js';
 import { AI_PRICING_URL, aiPricingPath } from '../../src/aipricing.js';
 import { cmdAuthAdd } from '../../src/commands/auth.js';
 
@@ -49,6 +49,10 @@ describe('cmdCatalogUpdate', () => {
     expect(result.aiPricing).toEqual({ models: 1, path: aiPricingPath(home), fetchedAt: '2026-08-25T12:00:00.000Z' });
     expect(JSON.parse(readFileSync(aaCatalogPath(home), 'utf8'))).toEqual({
       fetchedAt: '2026-08-25T12:00:00.000Z',
+      // Recorded, not merely checked mid-fetch: two index versions are not
+      // comparable, and without this on disk a cache scored under one is
+      // indistinguishable from one scored under the next.
+      intelligenceIndexVersion: '4.1',
       models: {
         'gpt-5.6-luna': {
           codingIndex: 72.5, blendedPriceUsd: 0.42,
@@ -152,5 +156,39 @@ describe('cmdCatalogUpdate', () => {
     });
     expect(result.aa).toMatchObject({ error: expect.objectContaining({ message: expect.stringMatching(/malformed/i) }) });
     expect(result.aiPricing).not.toHaveProperty('error');
+  });
+});
+
+describe('the cached index version survives a round trip', () => {
+  it('loadAaCatalog reads back the version cmdCatalogUpdate wrote', async () => {
+    cmdAuthAdd({ home, gateway: 'artificialanalysis', key: 'synthetic-key' });
+    await cmdCatalogUpdate(home, {
+      fetch: async (input, init) => bothFixtures(input, init),
+      now: () => new Date('2026-08-25T12:00:00.000Z'),
+    });
+    expect(loadAaCatalog(home)?.intelligenceIndexVersion).toBe('4.1');
+  });
+
+  it('a cache written before the version existed still loads', () => {
+    mkdirSync(dirname(aaCatalogPath(home)), { recursive: true });
+    writeFileSync(aaCatalogPath(home), JSON.stringify({
+      fetchedAt: '2026-08-25T12:00:00.000Z',
+      models: { m: { codingIndex: 50, blendedPriceUsd: 1 } },
+    }));
+    const loaded = loadAaCatalog(home);
+    expect(loaded?.models.m.codingIndex).toBe(50);
+    expect(loaded?.intelligenceIndexVersion).toBeUndefined();
+  });
+
+  // A version that is not a string would read as a known scale while naming
+  // none, which is worse than admitting the cache does not record one.
+  it('drops a non-string version rather than trusting it', () => {
+    mkdirSync(dirname(aaCatalogPath(home)), { recursive: true });
+    writeFileSync(aaCatalogPath(home), JSON.stringify({
+      fetchedAt: '2026-08-25T12:00:00.000Z',
+      intelligenceIndexVersion: 4.1,
+      models: { m: { codingIndex: 50, blendedPriceUsd: 1 } },
+    }));
+    expect(loadAaCatalog(home)?.intelligenceIndexVersion).toBeUndefined();
   });
 });
