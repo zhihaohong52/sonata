@@ -147,6 +147,8 @@ export interface InitOptions {
   scope?: HookScope | 'skip';
   /** Whether to install route-auto hooks for tier agents. */
   routing?: 'project' | 'global' | 'skip';
+  /** Where to write the "prefer tier agents" block, or `skip` to write none. */
+  guidance?: 'project' | 'global' | 'skip';
   /** Where the config and its agents are written. Defaults to `project`. */
   configScope?: ConfigScope;
   /** Repeatable gateway=source overrides for the scripted path. */

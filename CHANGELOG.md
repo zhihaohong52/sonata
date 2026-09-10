@@ -8,6 +8,24 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+- **`sonata init` can make tier agents the default subagent lane.** Claude Code
+  already *discovers* the generated agents natively — they are ordinary
+  `.claude/agents/*.md` files — but it does not *prefer* them: a subagent is
+  chosen by matching the task against each agent's `description`, where
+  sonata's compete with `general-purpose`, `Explore` and `Plan`, all broader
+  and carrying no routing precondition. Nothing sonata wrote could express a
+  preference, so the default pull was toward Claude's own subagents, which is
+  the opposite of why sonata is installed. `init` now offers to write a
+  delimited block into `CLAUDE.md` — the one file Claude Code loads in every
+  session unconditionally — naming the tier agents, how to pick a tier, and
+  what `model_not_found` means (an unrouted session, not a broken agent).
+  `--guidance project|global|skip` serves the unattended path. Sonata owns only
+  what is between its `<!-- sonata:begin -->` / `<!-- sonata:end -->` markers:
+  text either side survives byte-for-byte, a file whose markers do not pair up
+  is refused rather than repaired, and a refusal is reported as a warning
+  instead of failing an init whose config, agents and hook are already written.
+
 ### Changed
 - **Token prices now come from models.dev, not ai-pricing.fyi.** The old source
   was wrong, not merely sparse: its OpenAI `output_token` values were that
