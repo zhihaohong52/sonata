@@ -81,6 +81,17 @@ export interface CatalogEntry {
 
 export interface AaCatalog {
   fetchedAt: string;
+  /**
+   * The `intelligence_index_version` the scores in `models` were published
+   * under, absent in a cache written before it was recorded.
+   *
+   * The fetch already refuses a response whose version changes mid-pagination,
+   * because two scales are not comparable — but that guarantee held only
+   * *within* one fetch while the number was discarded on write, so a cache
+   * scored under v4.2 was indistinguishable from one scored under v4.3 and
+   * nothing could ever notice the scale had moved underneath a ranking.
+   */
+  intelligenceIndexVersion?: string;
   models: Record<string, AaEntry>;
 }
 
@@ -497,7 +508,16 @@ export function loadAaCatalog(home: string): AaCatalog | undefined {
       }
     }
     if (Object.keys(models).length === 0) return undefined;
-    return { fetchedAt: doc.fetchedAt, models };
+    return {
+      fetchedAt: doc.fetchedAt,
+      // Only a string survives: the writer stringifies it, so anything else in
+      // the file is a hand-edit or a foreign writer, and a version that is not
+      // a version is worse than none — it would read as a known scale.
+      ...(typeof doc.intelligenceIndexVersion === 'string'
+        ? { intelligenceIndexVersion: doc.intelligenceIndexVersion }
+        : {}),
+      models,
+    };
   } catch {
     return undefined;
   }

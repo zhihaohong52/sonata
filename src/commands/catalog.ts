@@ -174,7 +174,14 @@ async function updateAaCatalog(
   }
 
   const fetchedAt = nowIso(deps);
-  const catalog: AaCatalog = { fetchedAt, models };
+  // Recorded, not merely checked mid-fetch: without it on disk, a cache scored
+  // under one index version is indistinguishable from one scored under the
+  // next, and a ranking silently mixes scales across successive updates.
+  const catalog: AaCatalog = {
+    fetchedAt,
+    ...(indexVersion === undefined ? {} : { intelligenceIndexVersion: indexVersion }),
+    models,
+  };
   const path = aaCatalogPath(home);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(catalog, null, 2)}\n`, { mode: 0o600 });
