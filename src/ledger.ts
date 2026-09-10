@@ -17,7 +17,13 @@ import type { UsageTokens } from './native/usage.js';
 
 export type LedgerPrice =
   | { source: 'none' }
-  | { source: 'model' | 'gateway' | 'models-dev' | 'covered'; totalUsd: number; observedAt?: string };
+  /**
+   * `ai-pricing` is **legacy, read-only**: it is never written any more, but
+   * ledger files written before the models.dev switch carry it. Rejecting it
+   * would drop that spend from `sonata usage` *and* from `spentTodayUsd`,
+   * silently lowering a budget cap's view of a day it should still count.
+   */
+  | { source: 'model' | 'gateway' | 'models-dev' | 'covered' | 'ai-pricing'; totalUsd: number; observedAt?: string };
 
 export interface LedgerRow {
   ts: string;
@@ -108,7 +114,12 @@ export function readRows(home: string, sinceMs: number, now: number = Date.now()
 function priceIsValid(price: LedgerRow['price']): boolean {
   if (price === null || typeof price !== 'object' || Array.isArray(price)) return false;
   if (price.source === 'none') return true;
-  if (price.source === 'model' || price.source === 'gateway' || price.source === 'models-dev' || price.source === 'covered') {
+  if (
+    price.source === 'model' || price.source === 'gateway' || price.source === 'models-dev'
+    || price.source === 'covered'
+    // Legacy, still readable — see LedgerPrice.
+    || price.source === 'ai-pricing'
+  ) {
     return typeof price.totalUsd === 'number' && Number.isFinite(price.totalUsd);
   }
   return false;

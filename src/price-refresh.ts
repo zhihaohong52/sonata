@@ -45,15 +45,22 @@ export interface PriceRefreshDeps {
 /**
  * Whether the cache warrants a fetch: absent, unreadable, or past its age.
  *
- * A cache whose `fetchedAt` will not parse is treated as stale rather than
- * fresh — an unreadable timestamp is not evidence of freshness, and reading it
- * as such would pin a broken cache in place forever.
+ * A cache whose `fetchedAt` will not parse, or names a moment in the future,
+ * is treated as stale rather than fresh — neither is evidence of freshness,
+ * and reading either as such would pin a broken cache in place.
  */
 export function priceCacheIsStale(home: string, now: number): boolean {
   const cache = loadModelsDev(home);
   if (cache === undefined) return true;
   const fetched = Date.parse(cache.fetchedAt);
   if (!Number.isFinite(fetched)) return true;
+  // A timestamp in the future is stale too. `fetchedAt` comes from the host
+  // clock, so a correction backwards leaves a cache dated ahead of now:
+  // `now - fetched` is then negative, the age check never fires, and the
+  // router serves outdated rates until real time catches up — up to the skew
+  // plus a full day. Same reasoning as the unparseable case above: a
+  // timestamp that cannot be true is not evidence of freshness.
+  if (fetched > now) return true;
   return now - fetched >= PRICE_MAX_AGE_MS;
 }
 

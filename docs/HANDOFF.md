@@ -141,8 +141,11 @@ not:
    status to give a user today is: pick routing or pick Remote Control.
 
 Routing settings and hooks are the one thing a worktree cannot borrow: Claude
-Code reads `.claude/settings.local.json` relative to its own cwd. Run
-`sonata route auto` in the worktree itself.
+Code reads `.claude/settings.local.json` relative to its own cwd, so they must
+exist in the worktree. Given finding 2 above, launch with `sonata code` from
+the worktree, or run `sonata route on` there *before* starting the session —
+`route auto` installs the hooks but cannot route a session that has already
+launched.
 
 ## If you want work, in the order I would take it
 
