@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { cmdCatalogUpdate } from '../../src/commands/catalog.js';
 import { aaCatalogPath, loadAaCatalog } from '../../src/catalog.js';
-import { AI_PRICING_URL, aiPricingPath } from '../../src/aipricing.js';
+import { AI_PRICING_PAGE_SIZE, aiPricingPageUrl, aiPricingPath } from '../../src/aipricing.js';
 import { cmdAuthAdd } from '../../src/commands/auth.js';
 
 // Both response fixtures are synthetic and hand-written, never API redistributions.
@@ -25,9 +25,14 @@ function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
+/** The fixture is one short page, which is what ends the offset walk. */
+const isPricing = (input: string | URL | Request) =>
+  String(input).startsWith('https://ai-pricing.fyi/');
+
 function bothFixtures(input: string | URL | Request, init?: RequestInit): Response {
-  if (String(input) === AI_PRICING_URL) {
+  if (isPricing(input)) {
     expect(init).toBeUndefined();
+    expect(String(input)).toBe(aiPricingPageUrl(0));
     return response(pricingFixture());
   }
   // Paginated: the page number is part of the request, and the fixture
@@ -76,7 +81,7 @@ describe('cmdCatalogUpdate', () => {
   it('writes AA when ai-pricing fails', async () => {
     cmdAuthAdd({ home, gateway: 'artificialanalysis', key: 'synthetic-key' });
     const result = await cmdCatalogUpdate(home, {
-      fetch: async (input, init) => String(input) === AI_PRICING_URL ? response({}, 503) : bothFixtures(input, init),
+      fetch: async (input, init) => isPricing(input) ? response({}, 503) : bothFixtures(input, init),
     });
 
     expect(result.aa).not.toHaveProperty('error');
@@ -94,7 +99,7 @@ describe('cmdCatalogUpdate', () => {
       },
     });
 
-    expect(calls).toEqual([AI_PRICING_URL]);
+    expect(calls).toEqual([aiPricingPageUrl(0)]);
     expect(result.aa).toHaveProperty('error');
     expect(result.aiPricing).not.toHaveProperty('error');
     expect(readFileSync(aiPricingPath(home), 'utf8')).toContain('deepseek-v4-flash');
@@ -103,7 +108,7 @@ describe('cmdCatalogUpdate', () => {
   it('reports a rejected AA key without preventing ai-pricing', async () => {
     cmdAuthAdd({ home, gateway: 'artificialanalysis', key: 'synthetic-key' });
     const result = await cmdCatalogUpdate(home, {
-      fetch: async (input) => String(input) === AI_PRICING_URL ? response(pricingFixture()) : response({ error: 'nope' }, 403),
+      fetch: async (input) => isPricing(input) ? response(pricingFixture()) : response({ error: 'nope' }, 403),
     });
     expect(result.aa).toMatchObject({ error: expect.objectContaining({ message: expect.stringMatching(/key rejected.*403/i) }) });
     expect(result.aiPricing).not.toHaveProperty('error');
@@ -115,7 +120,7 @@ describe('cmdCatalogUpdate', () => {
     const before = readFileSync(aaCatalogPath(home), 'utf8');
 
     const result = await cmdCatalogUpdate(home, {
-      fetch: async (input) => String(input) === AI_PRICING_URL ? response(pricingFixture()) : response({ data: [] }),
+      fetch: async (input) => isPricing(input) ? response(pricingFixture()) : response({ data: [] }),
     });
     expect(result.aa).toMatchObject({ error: expect.objectContaining({ message: expect.stringMatching(/no usable model/i) }) });
     expect(readFileSync(aaCatalogPath(home), 'utf8')).toBe(before);
@@ -127,7 +132,7 @@ describe('cmdCatalogUpdate', () => {
     const before = readFileSync(aiPricingPath(home), 'utf8');
 
     const result = await cmdCatalogUpdate(home, {
-      fetch: async (input, init) => String(input) === AI_PRICING_URL
+      fetch: async (input, init) => isPricing(input)
         ? response({ data: [{
           canonical_slug: 'deepseek-v4-flash',
           provider_slug: 'deepseek',
@@ -152,7 +157,7 @@ describe('cmdCatalogUpdate', () => {
   it('reports malformed AA responses without blocking ai-pricing', async () => {
     cmdAuthAdd({ home, gateway: 'artificialanalysis', key: 'synthetic-key' });
     const result = await cmdCatalogUpdate(home, {
-      fetch: async (input) => String(input) === AI_PRICING_URL ? response(pricingFixture()) : response({ models: [] }),
+      fetch: async (input) => isPricing(input) ? response(pricingFixture()) : response({ models: [] }),
     });
     expect(result.aa).toMatchObject({ error: expect.objectContaining({ message: expect.stringMatching(/malformed/i) }) });
     expect(result.aiPricing).not.toHaveProperty('error');
@@ -190,5 +195,57 @@ describe('the cached index version survives a round trip', () => {
       models: { m: { codingIndex: 50, blendedPriceUsd: 1 } },
     }));
     expect(loadAaCatalog(home)?.intelligenceIndexVersion).toBeUndefined();
+  });
+});
+
+// The bug this exists to prevent: the endpoint returns exactly `limit` rows
+// with no `has_more`, no total and a 200, so one un-paged request looks like a
+// complete fetch. Measured 2026-09-10, that dropped 441 of 694 models and
+// every ledger row for one of them resolved to `unpriced`.
+describe('ai-pricing pagination', () => {
+  const row = (slug: string) => ({
+    canonical_slug: slug,
+    provider_slug: 'acme',
+    metric: 'input_token',
+    unit: 'per_1m_tokens',
+    currency: 'USD',
+    price_numeric: 1,
+    tier_key: 'standard',
+    batch_flag: 0,
+  });
+
+  it('keeps requesting while a page comes back full, and stops on a short one', async () => {
+    const full = Array.from({ length: AI_PRICING_PAGE_SIZE }, (_, i) => row(`page1-model-${i}`));
+    const requested: string[] = [];
+
+    const result = await cmdCatalogUpdate(home, {
+      now: () => new Date('2026-08-25T12:00:00.000Z'),
+      fetch: async (input) => {
+        requested.push(String(input));
+        if (String(input) === aiPricingPageUrl(0)) return response({ data: full });
+        if (String(input) === aiPricingPageUrl(AI_PRICING_PAGE_SIZE)) {
+          return response({ data: [row('page2-only-model')] });
+        }
+        return response({ data: [] }, 500);
+      },
+    });
+
+    expect(requested).toEqual([aiPricingPageUrl(0), aiPricingPageUrl(AI_PRICING_PAGE_SIZE)]);
+    // The second page's model is the whole point: it is unreachable without
+    // the offset walk, and asserting only on the count would pass without it.
+    const cached = JSON.parse(readFileSync(aiPricingPath(home), 'utf8')) as { models: Record<string, unknown> };
+    expect(cached.models).toHaveProperty('page2-only-model');
+    expect(result).toMatchObject({ aiPricing: { models: AI_PRICING_PAGE_SIZE + 1 } });
+  });
+
+  it('stops at the first short page without asking for another', async () => {
+    const requested: string[] = [];
+    await cmdCatalogUpdate(home, {
+      fetch: async (input) => {
+        requested.push(String(input));
+        return response({ data: [row('only-model')] });
+      },
+    });
+    expect(requested.filter((u) => u.startsWith('https://ai-pricing.fyi/'))).toEqual([aiPricingPageUrl(0)]);
   });
 });

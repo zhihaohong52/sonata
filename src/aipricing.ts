@@ -16,7 +16,30 @@ import { join } from 'node:path';
 import { normalizeModelName } from './catalog.js';
 import type { Rates } from './config.js';
 
-export const AI_PRICING_URL = 'https://ai-pricing.fyi/v1/prices/current?limit=1000';
+/** Rows per request. The endpoint pages by `offset`; see `aiPricingPageUrl`. */
+export const AI_PRICING_PAGE_SIZE = 1000;
+
+/**
+ * One page of current prices.
+ *
+ * The endpoint is offset-paginated and *silently truncates* at `limit` — it
+ * returns exactly `limit` rows with no `has_more`, no total, and a 200. A
+ * single un-paged request therefore looks like a complete, successful fetch
+ * while dropping most of the catalog: measured 2026-09-10, the feed carried
+ * 5479 rows across 694 models and the first 1000 rows held 253 of them, so
+ * **64% of models were missing** and every ledger row for one of them
+ * resolved to `unpriced`. `kimi-k3`, `gpt-5.6-terra`, `gpt-5.6-sol` and
+ * `gpt-6-astra` were all priced upstream and absent locally.
+ *
+ * A short page ends the walk, which is the only end-of-data signal the
+ * response offers.
+ */
+export function aiPricingPageUrl(offset: number): string {
+  return `https://ai-pricing.fyi/v1/prices/current?limit=${AI_PRICING_PAGE_SIZE}&offset=${offset}`;
+}
+
+/** @deprecated The first page only; kept so an external caller still resolves. */
+export const AI_PRICING_URL = aiPricingPageUrl(0);
 export const AI_PRICING_ATTRIBUTION = 'Prices from ai-pricing.fyi — https://ai-pricing.fyi';
 
 export interface AiPricingCache {
