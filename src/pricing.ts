@@ -113,8 +113,26 @@ export function resolvePrice(
   if (provider === undefined || modelsDev === undefined || model.id === undefined) {
     return { source: 'none' };
   }
-  const modelId = normalizeModelName(model.id);
-  const scraped = provider.map((id) => modelsDev.providers[id]?.[modelId]).find((rates) => rates !== undefined);
+  // The raw upstream id is tried before the normalized name, because
+  // models.dev keys each provider the way that provider does: `openai` files
+  // `gpt-5.6-terra`, but `openrouter` files `nvidia/nemotron-3.5-lightning:free`
+  // — vendor prefix and serving-variant suffix included. `normalizeModelName`
+  // strips exactly those, so a normalized-only lookup could never match an
+  // OpenRouter model and every such row priced as unpriced. Raw-first cannot
+  // mis-match: an exact hit under the named provider *is* that model. The
+  // normalized name stays as the fallback for a config whose id is already
+  // bare, and the two collapse to one lookup when they are equal.
+  const names = [model.id, normalizeModelName(model.id)];
+  const lookup = names[0] === names[1] ? [names[0]] : names;
+  // Provider order is the user's stated preference, so it is the outer loop:
+  // an exact-but-later provider must not beat an earlier one.
+  let scraped: Rates | undefined;
+  outer: for (const id of provider) {
+    for (const name of lookup) {
+      const hit = modelsDev.providers[id]?.[name];
+      if (hit !== undefined) { scraped = hit; break outer; }
+    }
+  }
   if (scraped === undefined) return { source: 'none' };
   // A scraped rate table is not a statement of intent the way a hand-written
   // `[price]` block is, so a partial one must decline rather than fill the

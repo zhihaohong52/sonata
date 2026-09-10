@@ -275,3 +275,82 @@ pricing_provider = "acme"
     expect(price).toMatchObject({ source: 'models-dev', totalUsd: 2 });
   });
 });
+
+// models.dev keys each provider the way that provider does: `openai` files a
+// bare `gpt-5.6-terra`, `openrouter` files `nvidia/nemotron-3.5-lightning:free`.
+// normalizeModelName strips exactly the vendor prefix and `:free` suffix that
+// key depends on, so a normalized-only lookup priced every OpenRouter row as
+// unpriced — ~2,870 real ledger rows on this machine.
+describe('models.dev lookup tries the raw upstream id before the normalized name', () => {
+  const at = new Date('2026-09-10T00:00:00Z');
+  const config = parseConfig(`
+[models."or"]
+gateway = "gw"
+id = "nvidia/nemotron-3.5-lightning:free"
+
+[native.gateways."gw"]
+base_url = "https://gw.example/v1"
+pricing_provider = "openrouter"
+`);
+
+  it('matches a slug carrying a vendor prefix and a serving-variant suffix', () => {
+    const price = resolvePrice(
+      config, 'or',
+      { input: 1_000_000, output: 0, cacheRead: 0, cacheCreation: 0 },
+      at,
+      {
+        fetchedAt: '2026-09-10T00:00:00Z',
+        providers: { openrouter: { 'nvidia/nemotron-3.5-lightning:free': { input: 3, output: 9 } } },
+      },
+    );
+    expect(price).toMatchObject({ source: 'models-dev', totalUsd: 3 });
+  });
+
+  it('still matches a provider that files the model under its bare name', () => {
+    const bare = parseConfig(`
+[models."m"]
+gateway = "gw"
+id = "gpt-5.6-terra"
+
+[native.gateways."gw"]
+base_url = "https://gw.example/v1"
+pricing_provider = "openai"
+`);
+    const price = resolvePrice(
+      bare, 'm',
+      { input: 1_000_000, output: 0, cacheRead: 0, cacheCreation: 0 },
+      at,
+      { fetchedAt: '2026-09-10T00:00:00Z', providers: { openai: { 'gpt-5.6-terra': { input: 2, output: 12 } } } },
+    );
+    expect(price).toMatchObject({ source: 'models-dev', totalUsd: 2 });
+  });
+
+  // Provider order is the user's stated preference and must outrank an exact
+  // id match found under a later provider.
+  it('prefers an earlier provider over an exact match in a later one', () => {
+    const ordered = parseConfig(`
+[models."m"]
+gateway = "gw"
+id = "shared/model:free"
+
+[native.gateways."gw"]
+base_url = "https://gw.example/v1"
+pricing_provider = ["first", "second"]
+`);
+    const price = resolvePrice(
+      ordered, 'm',
+      { input: 1_000_000, output: 0, cacheRead: 0, cacheCreation: 0 },
+      at,
+      {
+        fetchedAt: '2026-09-10T00:00:00Z',
+        providers: {
+          // normalizeModelName('shared/model:free') is 'model' — it keeps the
+          // last path segment and drops the serving-variant suffix.
+          first: { model: { input: 1, output: 1 } },
+          second: { 'shared/model:free': { input: 99, output: 99 } },
+        },
+      },
+    );
+    expect(price).toMatchObject({ source: 'models-dev', totalUsd: 1 });
+  });
+});
