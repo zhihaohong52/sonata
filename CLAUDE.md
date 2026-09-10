@@ -373,9 +373,16 @@ dispatch_window_seconds = 1500 # blocking window for sonata wait/dispatch
   in a file sonata does not own, which is what shapes the rest of the design.
   Sonata owns what is between `<!-- sonata:begin -->` and `<!-- sonata:end -->`
   and nothing else: text either side is preserved byte-for-byte, and a file
-  whose markers do not pair up (or pair in the wrong order) is **refused**
-  rather than repaired, because both available repairs — inventing an end, or
-  reading a stray marker as prose — can eat a paragraph the user wrote. The
+  whose markers do not pair up (or pair in the wrong order, **or repeat**) is
+  **refused** rather than repaired, because every available repair — inventing
+  an end, reading a stray marker as prose, rewriting the first of two blocks —
+  can eat a paragraph the user wrote or leave a stale block contradicting the
+  new one. Counting occurrences is load-bearing rather than fussy: `indexOf`
+  alone splices from the *first* begin to the *first* end, and in a file shaped
+  begin/…/begin/…/end that span swallows the user text between the two begins.
+  For the same reason only a file that does not exist is written whole — a
+  whitespace-only `CLAUDE.md` still has bytes, and replacing them is a change
+  outside the markers. The
   refusal is surfaced as a warning and does not fail the init, since the config,
   agents and hook are already written and useful by then. The block names the
   routing caveat deliberately: with `route auto` upstream-blocked, an unrouted
