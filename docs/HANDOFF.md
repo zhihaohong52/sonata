@@ -114,9 +114,38 @@ not:
    `route auto` bullets in `CLAUDE.md` for the full history, including the
    reverted attempt that made it worse.
 
+   Settled the same day: a `sonata code` relaunch **from the same worktree**
+   routed correctly — 28 tier-alias requests in this repository's router log
+   served to foreign models, no `sonata-*` alias reaching Anthropic, a native
+   `code-simple` implementer completing and committing. A plain session
+   launched a minute *before* its env was written did not. So the process
+   environment works and the settings-file path does not, which is precisely
+   the path `route auto` is built on.
+
+   **Do not go looking for a local replacement — there probably isn't one.**
+   `route auto`'s entire purpose was avoiding the Remote Control trade-off,
+   and it did that by launching from a clean settings file (the one moment
+   the gate reads the base URL) and routing afterwards via the per-request
+   re-read. With the re-read gone, every remaining route into the router is a
+   *launch-time* route: `sonata code` exports `ANTHROPIC_BASE_URL` into the
+   process, `route on` writes it where launch will read it, and both lose
+   Remote Control exactly as documented. `ANTHROPIC_BASE_URL` is process-wide
+   and `isFirstPartyAnthropicBaseUrl` gates Remote Control, so there is no
+   third position available to us.
+
+   That makes this **upstream-blocked, not undesigned**. Having both back
+   needs something from Claude Code — a per-subagent base URL, or a Remote
+   Control gate not keyed on the process-wide one. Worth reporting upstream;
+   not worth another local attempt, and specifically not worth re-trying the
+   timer trick (`bdf8e27`), which failed tens of minutes in. The honest
+   status to give a user today is: pick routing or pick Remote Control.
+
 Routing settings and hooks are the one thing a worktree cannot borrow: Claude
-Code reads `.claude/settings.local.json` relative to its own cwd. Run
-`sonata route auto` in the worktree itself.
+Code reads `.claude/settings.local.json` relative to its own cwd, so they must
+exist in the worktree. Given finding 2 above, launch with `sonata code` from
+the worktree, or run `sonata route on` there *before* starting the session —
+`route auto` installs the hooks but cannot route a session that has already
+launched.
 
 ## If you want work, in the order I would take it
 

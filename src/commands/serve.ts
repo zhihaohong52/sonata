@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unl
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { loadAiPricing } from '../aipricing.js';
+import { loadModelsDev } from '../modelsdev.js';
 import { spentTodayUsd, type BudgetStatus } from '../budget.js';
 import { GLOBAL_CONFIG_RELATIVE, loadConfig, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
@@ -22,6 +22,8 @@ import { ensureRouterToken } from '../native/router-token.js';
 import { resolvePrice } from '../pricing.js';
 import { timestampedLogPath } from './init-log.js';
 import { routerPorts } from './ports.js';
+import { startPriceRefresh } from '../price-refresh.js';
+import { updateModelsDev } from './catalog.js';
 
 export interface ServeHandle {
   routerPort: number;
@@ -577,7 +579,7 @@ function close(server: ReturnType<typeof createRouterServer>): Promise<void> {
  */
 export function priceRow(config: SonataConfig, home: string, row: LedgerRow): LedgerRow {
   try {
-    const price = resolvePrice(config, row.key, row.tokens, new Date(row.ts), loadAiPricing(home));
+    const price = resolvePrice(config, row.key, row.tokens, new Date(row.ts), loadModelsDev(home));
     return { ...row, price };
   } catch {
     return row; // an unpriceable row is still a row
@@ -1120,6 +1122,16 @@ export async function cmdServe(
 
   const address = startedRouter.address();
   const routerPort = typeof address === 'object' && address !== null ? address.port : ports.router;
+
+  // Started only once the router is actually listening, so a daemon that
+  // failed to bind never reaches out to the network. Detached and unref'd: it
+  // can neither delay a request nor hold the process open, and a failed fetch
+  // leaves the previous cache in place rather than emptying it.
+  const stopPriceRefresh = startPriceRefresh(opts.home, {
+    update: async (home) => updateModelsDev(home, fetch, {}),
+    log: (line) => console.log(line),
+  });
+
   let stopped = false;
 
   return {
@@ -1128,6 +1140,9 @@ export async function cmdServe(
     async stop(): Promise<void> {
       if (stopped) return;
       stopped = true;
+      // Before anything else: an interval firing during teardown would fetch
+      // against a daemon that is going away.
+      stopPriceRefresh();
       stopping = true;
       child?.kill();
       try { unlinkSync(serveStatePath(opts.home, ports.router)); } catch { /* already gone */ }

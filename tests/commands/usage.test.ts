@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { aggregate, parseDuration } from '../../src/commands/usage.js';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { aggregate, parseDuration, projectResolver } from '../../src/commands/usage.js';
 import type { LedgerRow } from '../../src/ledger.js';
 
 function row(over: Partial<LedgerRow> = {}): LedgerRow {
@@ -42,6 +46,20 @@ describe('aggregate', () => {
     expect(report.pricedTotalUsd).toBe(0.5);
     expect(report.unpriced).toMatchObject({ requests: 1, input: 100, output: 10 });
     expect(report.buckets[0].unpricedRequests).toBe(1);
+  });
+
+  it('reports covered work separately from priced totals', () => {
+    const report = aggregate([
+      row(),
+      row({ price: { source: 'covered', totalUsd: 2 } }),
+    ], 'model', {});
+    expect(report.pricedTotalUsd).toBe(0.5);
+    expect(report.covered).toEqual({ requests: 1, totalUsd: 2 });
+    // costUsd is spend and excludes covered, so the cost column agrees with
+    // `priced total`. Blending them left ` ~` as the only signal, and a flag
+    // cannot say how much: $167.10 with $0.000000 covered rendered the same
+    // as $10.34 with all of it covered.
+    expect(report.buckets[0]).toMatchObject({ costUsd: 0.5, coveredUsd: 2, coveredRequests: 1 });
   });
 
   it('counts a known-zero rate as priced, not unpriced', () => {
@@ -99,5 +117,91 @@ describe('aggregate', () => {
 
   it('returns an empty report for no rows', () => {
     expect(aggregate([], 'model', {})).toMatchObject({ buckets: [], pricedTotalUsd: 0 });
+  });
+});
+describe('spend and covered are separate columns, and the cost column sums to the total', () => {
+  it('never folds covered work into costUsd', () => {
+    const report = aggregate([
+      row({ key: 'a', price: { source: 'models-dev', totalUsd: 1 } }),
+      row({ key: 'b', price: { source: 'covered', totalUsd: 100 } }),
+    ], 'model', {});
+    const summed = report.buckets.reduce((total, bucket) => total + bucket.costUsd, 0);
+    // The invariant that was broken: summing the cost column disagreed with
+    // the report's own `priced total` whenever any covered row existed.
+    expect(summed).toBeCloseTo(report.pricedTotalUsd, 10);
+    expect(report.covered.totalUsd).toBe(100);
+  });
+
+  it('keeps a covered-only bucket at the top rather than sinking it to zero cost', () => {
+    const report = aggregate([
+      row({ key: 'small-spend', price: { source: 'models-dev', totalUsd: 1 } }),
+      row({ key: 'big-covered', price: { source: 'covered', totalUsd: 100 } }),
+    ], 'model', {});
+    // Ordering is by total value; a bucket that is entirely subscription work
+    // is still the largest thing in the report.
+    expect(report.buckets[0].label).toBe('big-covered');
+    expect(report.buckets[0].costUsd).toBe(0);
+    expect(report.buckets[0].coveredUsd).toBe(100);
+  });
+});
+
+describe('project grouping resolves a worktree to its main checkout', () => {
+  // The mismatch this fixes: `[budget] daily_usd` pools a worktree with its
+  // main checkout (they share one resolved config), while the report listed
+  // them separately — so a cap could refuse at a number appearing nowhere on
+  // screen. Grouping is computed at report time via configPath, not read from
+  // the row's `tenant`: only 2,871 of 24,774 rows on the development machine
+  // carry a tenant id, so tenant grouping would bucket 88% as "unknown".
+  const MINIMAL = `
+[models."m"]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+[generate.roles]
+code = ["m"]
+`;
+  let home: string;
+  let main: string;
+  let worktree: string;
+
+  beforeEach(() => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'usage-wt-')));
+    home = join(root, 'home');
+    main = join(root, 'main');
+    mkdirSync(home, { recursive: true });
+    mkdirSync(main, { recursive: true });
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, {
+      cwd, stdio: 'pipe',
+      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+    });
+    git(main, 'init', '-q', '.');
+    git(main, 'config', 'user.email', 'a@b.test');
+    git(main, 'config', 'user.name', 'a');
+    writeFileSync(join(main, 'f'), 'x\n');
+    git(main, 'add', 'f');
+    git(main, 'commit', '-qm', 'x');
+    writeFileSync(join(main, 'sonata.toml'), MINIMAL);
+    worktree = join(root, 'wt');
+    git(main, 'worktree', 'add', '-q', worktree, '-b', 'wt');
+  });
+
+  it('labels a worktree row with the main checkout', () => {
+    expect(projectResolver(home)(worktree)).toBe(main);
+  });
+
+  it('pools worktree and main-checkout rows into one bucket', () => {
+    const report = aggregate([
+      row({ project: main, price: { source: 'models-dev', totalUsd: 1 } }),
+      row({ project: worktree, price: { source: 'models-dev', totalUsd: 2 } }),
+    ], 'project', {}, projectResolver(home));
+    expect(report.buckets).toHaveLength(1);
+    expect(report.buckets[0]).toMatchObject({ label: main, costUsd: 3, requests: 2 });
+  });
+
+  // A deleted worktree cannot be resolved, and inventing a parent from the
+  // path shape would be a guess. Keep what was recorded.
+  it('keeps the recorded path for a directory that no longer exists', () => {
+    const gone = join(main, 'never-existed');
+    expect(projectResolver(home)(gone)).toBe(gone);
   });
 });

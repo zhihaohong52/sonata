@@ -49,6 +49,7 @@ export function tiersCollapse(lists: { simple: string[]; complex: string[] }): b
 export interface Rates {
   input?: number;
   cachedInput?: number;
+  cacheWrite?: number;
   output?: number;
 }
 
@@ -167,7 +168,7 @@ export interface NativeGatewayConfig {
   /** @deprecated Read at parse time and mapped onto `provider`. */
   wireFormat?: NativeGatewayWireFormat;
   price?: PriceConfig;
-  pricingProvider?: string;
+  pricingProvider?: string[];
 }
 export interface NativeConfig {
   models: Record<string, NativeModelConfig>;
@@ -250,6 +251,7 @@ function parseRates(raw: Record<string, unknown>, where: string): Rates {
   };
   take('input', 'input');
   take('cached_input', 'cachedInput');
+  take('cache_write', 'cacheWrite');
   take('output', 'output');
   return out;
 }
@@ -579,12 +581,40 @@ export function parseConfig(text: string): SonataConfig {
         provider = raw as LitellmProvider;
       }
       const price = parsePrice(d.price, `[native.gateways."${name}"]`);
-      let pricingProvider: string | undefined;
+      let pricingProvider: string[] | undefined;
       if (d.pricing_provider !== undefined) {
-        if (typeof d.pricing_provider !== 'string') {
+        const rawPricingProvider = d.pricing_provider;
+        if (typeof rawPricingProvider === 'string') {
+          pricingProvider = [rawPricingProvider];
+        } else if (Array.isArray(rawPricingProvider)) {
+          if (rawPricingProvider.length === 0) {
+            throw new Error(`sonata.toml: native gateway "${name}" has empty "pricing_provider" list`);
+          }
+          if (!rawPricingProvider.every((provider) => typeof provider === 'string')) {
+            throw new Error(`sonata.toml: native gateway "${name}" has non-string "pricing_provider" list entry`);
+          }
+          pricingProvider = rawPricingProvider;
+        } else {
           throw new Error(`sonata.toml: native gateway "${name}" has non-string "pricing_provider"`);
         }
-        pricingProvider = d.pricing_provider;
+        // A blank id names no models.dev provider, so every model on this
+        // gateway would resolve to `source: 'none'` and report as unpriced —
+        // the same silent-failure shape as a mistyped gateway in
+        // `avoid_gateways`. The setting's only visible effect is a price that
+        // does not appear, so a value that cannot ever match must be refused
+        // where it is written rather than discovered in a cost report.
+        if (pricingProvider.some((provider) => provider.trim().length === 0)) {
+          throw new Error(
+            `sonata.toml: native gateway "${name}" has a blank "pricing_provider" entry — ` +
+            'name a models.dev provider (e.g. "openai"), or remove the key',
+          );
+        }
+        // Surrounding whitespace is invisible in a TOML string but not in the
+        // lookup: the value is used directly as a models.dev provider key, so
+        // `" openai "` matches nothing and every model on the gateway reports
+        // as unpriced — the same silent failure the blank check above refuses,
+        // arriving by a route the blank check cannot see.
+        pricingProvider = pricingProvider.map((provider) => provider.trim());
       }
       // An OAuth gateway is addressed by LiteLLM's own provider, which knows the
       // URL; accepting one here would only let a config claim a base URL that is

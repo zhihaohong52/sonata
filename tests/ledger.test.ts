@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   ledgerDir, ledgerPathFor, appendRow, readRows, pruneLedger,
   LEDGER_RETENTION_DAYS, type LedgerRow,
@@ -111,7 +111,7 @@ describe('appendRow / readRows', () => {
   });
 
   it('keeps rows whose price is a valid billed source', () => {
-    appendRow(home, row({ alias: 'ai', price: { source: 'ai-pricing', totalUsd: 0.0012 } }));
+    appendRow(home, row({ alias: 'ai', price: { source: 'models-dev', totalUsd: 0.0012 } }));
     appendRow(home, row({ alias: 'none', price: { source: 'none' } }));
     const back = readRows(home, 0, Date.parse('2026-08-27T06:00:00Z'));
     expect(back.map((r) => r.alias)).toEqual(['ai', 'none']);
@@ -149,5 +149,26 @@ describe('pruneLedger', () => {
 
   it('is a no-op on a missing directory', () => {
     expect(pruneLedger(home, 30, new Date())).toBe(0);
+  });
+});
+
+// Ledger files written before the models.dev switch carry `ai-pricing`.
+// Rejecting them would drop that spend from `sonata usage` *and* from
+// `spentTodayUsd`, silently lowering a budget cap's view of a day it should
+// still count. Reported by CodeRabbit on PR #15.
+describe('legacy ai-pricing rows stay readable', () => {
+  it('keeps a row whose source is the retired ai-pricing', () => {
+    const home = mkdtempSync(join(tmpdir(), 'ledger-legacy-'));
+    const row = {
+      ts: '2026-09-03T01:00:00.000Z', ms: 5, alias: 'sonata-code-simple',
+      key: 'flash', gateway: 'acme', upstream: 'litellm',
+      status: 200, complete: true,
+      tokens: { input: 10, output: 2, cacheRead: 0, cacheCreation: 0 },
+      price: { source: 'ai-pricing', totalUsd: 1.25 }, attempts: [],
+    };
+    appendRow(home, row as never);
+    const rows = readRows(home, Date.parse('2026-09-03T00:00:00Z'), Date.parse('2026-09-03T23:59:59Z'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].price).toEqual({ source: 'ai-pricing', totalUsd: 1.25 });
   });
 });
