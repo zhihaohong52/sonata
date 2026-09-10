@@ -38,10 +38,9 @@ export function startOfUtcDay(now: number): number {
 /**
  * Priced spend recorded so far in the current UTC day.
  *
- * A `totalUsd` of 0 is a real price (a free tier), so only `source: 'none'` and
- * a missing total are skipped — the same test `sonata usage` applies, kept
- * identical on purpose so the number a user sees there is the number the cap
- * compares against.
+ * A `totalUsd` of 0 is a real price (a free tier). Unpriced and subscription-
+ * covered rows are skipped — covered work has a list value but no per-token
+ * charge, so it can never move a budget refusal.
  */
 export function spentTodayUsd(
   home: string,
@@ -57,7 +56,7 @@ export function spentTodayUsd(
     // written before the tenant field existed carry no id and are therefore
     // outside every project cap — the same way they carried no project.
     if (filter?.tenant !== undefined && row.tenant !== filter.tenant) continue;
-    if (row.price.source === 'none' || row.price.totalUsd === undefined) continue;
+    if (row.price.source === 'none' || row.price.source === 'covered' || row.price.totalUsd === undefined) continue;
     total += row.price.totalUsd;
   }
   return total;

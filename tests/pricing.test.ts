@@ -205,6 +205,35 @@ base_url = "https://example.invalid/v1"
     });
   });
 
+  it('relabels models.dev prices as covered for OAuth subscriptions', () => {
+    const oauth = parseConfig(TOML.replace(
+      'base_url = "https://example.invalid/v1"',
+      'auth = "codex-oauth"',
+    ).replace('[native.gateways."acme".price]\ninput = 2\n', ''));
+    expect(resolvePrice(oauth, 'scraped', tokens, now, cache)).toEqual({
+      source: 'covered', totalUsd: 3, observedAt: '2026-08-26T15:31:30.637Z',
+    });
+    expect(resolvePrice(noGatewayPrice, 'scraped', tokens, now, cache)).toEqual({
+      source: 'models-dev', totalUsd: 3, observedAt: '2026-08-26T15:31:30.637Z',
+    });
+  });
+
+  it('keeps unknown subscription rates unpriced', () => {
+    const oauth = parseConfig(TOML.replace(
+      'base_url = "https://example.invalid/v1"',
+      'auth = "codex-oauth"',
+    ).replace('[native.gateways."acme".price]\ninput = 2\n', ''));
+    expect(resolvePrice(oauth, 'scraped', tokens, now)).toEqual({ source: 'none' });
+  });
+
+  it('relabels hand-written prices as covered for OAuth subscriptions', () => {
+    const oauth = parseConfig(TOML.replace(
+      'base_url = "https://example.invalid/v1"',
+      'auth = "codex-oauth"',
+    ));
+    expect(resolvePrice(oauth, 'plain', tokens, now, cache)).toEqual({ source: 'covered', totalUsd: 2 });
+  });
+
   it('treats a non-finite computed price as unpriced, not a fabricated zero', () => {
     // A malformed models.dev cache (e.g. a non-numeric scraped rate that JSON
     // loaded as Infinity) used to multiply out to Infinity silently, then

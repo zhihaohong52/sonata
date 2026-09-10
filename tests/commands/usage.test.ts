@@ -44,6 +44,16 @@ describe('aggregate', () => {
     expect(report.buckets[0].unpricedRequests).toBe(1);
   });
 
+  it('reports covered work separately from priced totals', () => {
+    const report = aggregate([
+      row(),
+      row({ price: { source: 'covered', totalUsd: 2 } }),
+    ], 'model', {});
+    expect(report.pricedTotalUsd).toBe(0.5);
+    expect(report.covered).toEqual({ requests: 1, totalUsd: 2 });
+    expect(report.buckets[0]).toMatchObject({ costUsd: 2.5, coveredRequests: 1 });
+  });
+
   it('counts a known-zero rate as priced, not unpriced', () => {
     const report = aggregate([row({ price: { source: 'gateway', totalUsd: 0 } })], 'model', {});
     // The row must be counted at all (a $0 charge that went missing read the

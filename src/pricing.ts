@@ -5,7 +5,7 @@
  * A scraped price applies only when the gateway identifies its serving provider:
  * the same model can cost materially different amounts across providers.
  */
-import type { PriceConfig, PriceWindow, Rates, SonataConfig } from './config.js';
+import { isOauthGatewayAuth, type NativeGatewayAuth, type PriceConfig, type PriceWindow, type Rates, type SonataConfig } from './config.js';
 import type { LedgerPrice } from './ledger.js';
 import type { UsageTokens } from './native/usage.js';
 import { normalizeModelName } from './catalog.js';
@@ -83,6 +83,12 @@ export function ratesCoverTokens(tokens: UsageTokens, rates: Rates): boolean {
   return true;
 }
 
+/** OAuth subscriptions value work at list rates but never bill per token. */
+function relabelCovered(auth: NativeGatewayAuth | undefined, price: LedgerPrice): LedgerPrice {
+  if (price.source === 'none' || auth === undefined || !isOauthGatewayAuth(auth)) return price;
+  return { ...price, source: 'covered' };
+}
+
 export function resolvePrice(
   config: SonataConfig,
   key: string | undefined,
@@ -94,19 +100,20 @@ export function resolvePrice(
   const model = config.unifiedModels[key];
   if (model === undefined) return { source: 'none' };
 
+  const gateway = model.gateway === undefined ? undefined : config.native?.gateways[model.gateway];
+
   const modelRates = ratesFor(model.price, at);
   if (modelRates !== undefined) {
     const totalUsd = costOf(tokens, modelRates);
     if (!Number.isFinite(totalUsd)) return { source: 'none' };
-    return { source: 'model', totalUsd };
+    return relabelCovered(gateway?.auth, { source: 'model', totalUsd });
   }
 
-  const gateway = model.gateway === undefined ? undefined : config.native?.gateways[model.gateway];
   const gatewayRates = ratesFor(gateway?.price, at);
   if (gatewayRates !== undefined) {
     const totalUsd = costOf(tokens, gatewayRates);
     if (!Number.isFinite(totalUsd)) return { source: 'none' };
-    return { source: 'gateway', totalUsd };
+    return relabelCovered(gateway?.auth, { source: 'gateway', totalUsd });
   }
 
   const provider = gateway?.pricingProvider;
@@ -146,9 +153,9 @@ export function resolvePrice(
 
   const totalUsd = costOf(tokens, scraped);
   if (!Number.isFinite(totalUsd)) return { source: 'none' };
-  return {
+  return relabelCovered(gateway?.auth, {
     source: 'models-dev',
     totalUsd,
     observedAt: modelsDev.fetchedAt,
-  };
+  });
 }
