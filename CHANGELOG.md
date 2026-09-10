@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-10
+
 ### Added
 
 - **`sonata init` can make tier agents the default subagent lane.** Claude Code
