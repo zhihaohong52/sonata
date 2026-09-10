@@ -81,6 +81,17 @@ export interface CatalogEntry {
 
 export interface AaCatalog {
   fetchedAt: string;
+  /**
+   * The `intelligence_index_version` the scores in `models` were published
+   * under, absent in a cache written before it was recorded.
+   *
+   * The fetch already refuses a response whose version changes mid-pagination,
+   * because two scales are not comparable — but that guarantee held only
+   * *within* one fetch while the number was discarded on write, so a cache
+   * scored under v4.2 was indistinguishable from one scored under v4.3 and
+   * nothing could ever notice the scale had moved underneath a ranking.
+   */
+  intelligenceIndexVersion?: string;
   models: Record<string, AaEntry>;
 }
 
@@ -159,13 +170,13 @@ export const SIMPLE_CAPABILITY_FLOOR = 0.75;
 /**
  * The key an AA score is stored and looked up under.
  *
- * AA writes versions with dashes (`glm-5-3`) where sonata, ai-pricing.fyi and
+ * AA writes versions with dashes (`glm-5-3`) where sonata and models.dev
  * every gateway write dots (`glm-5.3`), so a name that is otherwise identical
  * never joins — measured on a real 17-model config, only 3 matched, and the
  * other 14 fell back to a constant rank that made the sort a no-op. Going
  * dots-to-dashes is the safe direction: dashes are load-bearing inside real
  * names (`deepseek-v4-flash`), so the reverse would be ambiguous. Verified
- * collision-free across both catalogs (0 of 258 ai-pricing, 0 of 233 AA).
+ * collision-free across both catalogs.
  */
 export function aaMatchKey(name: string): string {
   return name.replace(/\./g, '-');
@@ -497,7 +508,16 @@ export function loadAaCatalog(home: string): AaCatalog | undefined {
       }
     }
     if (Object.keys(models).length === 0) return undefined;
-    return { fetchedAt: doc.fetchedAt, models };
+    return {
+      fetchedAt: doc.fetchedAt,
+      // Only a string survives: the writer stringifies it, so anything else in
+      // the file is a hand-edit or a foreign writer, and a version that is not
+      // a version is worse than none — it would read as a known scale.
+      ...(typeof doc.intelligenceIndexVersion === 'string'
+        ? { intelligenceIndexVersion: doc.intelligenceIndexVersion }
+        : {}),
+      models,
+    };
   } catch {
     return undefined;
   }

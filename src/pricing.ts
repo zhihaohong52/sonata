@@ -1,15 +1,15 @@
 /**
  * Turning token counts into money, or honestly declining to.
  *
- * Resolution order is model price, gateway price, scraped price, then nothing.
+ * Resolution order is model price, gateway price, models.dev price, then nothing.
  * A scraped price applies only when the gateway identifies its serving provider:
  * the same model can cost materially different amounts across providers.
  */
-import type { PriceConfig, PriceWindow, Rates, SonataConfig } from './config.js';
+import { isOauthGatewayAuth, type NativeGatewayAuth, type PriceConfig, type PriceWindow, type Rates, type SonataConfig } from './config.js';
 import type { LedgerPrice } from './ledger.js';
 import type { UsageTokens } from './native/usage.js';
 import { normalizeModelName } from './catalog.js';
-import type { AiPricingCache } from './aipricing.js';
+import type { ModelsDevCache } from './modelsdev.js';
 
 function minutes(hhmm: string): number {
   const [hours, minutesPart] = hhmm.split(':');
@@ -17,7 +17,7 @@ function minutes(hhmm: string): number {
 }
 
 function hasRates(rates: Rates): boolean {
-  return rates.input !== undefined || rates.cachedInput !== undefined || rates.output !== undefined;
+  return rates.input !== undefined || rates.cachedInput !== undefined || rates.cacheWrite !== undefined || rates.output !== undefined;
 }
 
 /**
@@ -39,6 +39,7 @@ export function ratesFor(price: PriceConfig | undefined, at: Date): Rates | unde
       const windowRates: Rates = {
         input: window.input,
         cachedInput: window.cachedInput,
+        cacheWrite: window.cacheWrite,
         output: window.output,
       };
       // An empty override must not turn unknown pricing into a confident zero.
@@ -49,6 +50,7 @@ export function ratesFor(price: PriceConfig | undefined, at: Date): Rates | unde
   const flat: Rates = {
     input: price.input,
     cachedInput: price.cachedInput,
+    cacheWrite: price.cacheWrite,
     output: price.output,
   };
   return hasRates(flat) ? flat : undefined;
@@ -60,10 +62,31 @@ export function costOf(tokens: UsageTokens, rates: Rates): number {
   return (
     (tokens.input * (rates.input ?? 0)
       + tokens.cacheRead * (rates.cachedInput ?? 0)
-      + tokens.cacheCreation * (rates.input ?? 0)
+      + tokens.cacheCreation * (rates.cacheWrite ?? rates.input ?? 0)
       + tokens.output * (rates.output ?? 0))
     / PER_MILLION
   );
+}
+
+/**
+ * Whether `rates` can price every dimension `tokens` actually uses.
+ *
+ * A dimension with no tokens needs no rate — pricing a request that created no
+ * cache entries must not fail for want of a cache-write rate. Cache creation
+ * is covered by `cacheWrite` *or* `input`, matching what `costOf` charges it.
+ */
+export function ratesCoverTokens(tokens: UsageTokens, rates: Rates): boolean {
+  if (tokens.input > 0 && rates.input === undefined) return false;
+  if (tokens.output > 0 && rates.output === undefined) return false;
+  if (tokens.cacheRead > 0 && rates.cachedInput === undefined) return false;
+  if (tokens.cacheCreation > 0 && rates.cacheWrite === undefined && rates.input === undefined) return false;
+  return true;
+}
+
+/** OAuth subscriptions value work at list rates but never bill per token. */
+function relabelCovered(auth: NativeGatewayAuth | undefined, price: LedgerPrice): LedgerPrice {
+  if (price.source === 'none' || auth === undefined || !isOauthGatewayAuth(auth)) return price;
+  return { ...price, source: 'covered' };
 }
 
 export function resolvePrice(
@@ -71,39 +94,68 @@ export function resolvePrice(
   key: string | undefined,
   tokens: UsageTokens,
   at: Date,
-  aiPricing?: AiPricingCache,
+  modelsDev?: ModelsDevCache,
 ): LedgerPrice {
   if (key === undefined) return { source: 'none' };
   const model = config.unifiedModels[key];
   if (model === undefined) return { source: 'none' };
 
+  const gateway = model.gateway === undefined ? undefined : config.native?.gateways[model.gateway];
+
   const modelRates = ratesFor(model.price, at);
   if (modelRates !== undefined) {
     const totalUsd = costOf(tokens, modelRates);
     if (!Number.isFinite(totalUsd)) return { source: 'none' };
-    return { source: 'model', totalUsd };
+    return relabelCovered(gateway?.auth, { source: 'model', totalUsd });
   }
 
-  const gateway = model.gateway === undefined ? undefined : config.native?.gateways[model.gateway];
   const gatewayRates = ratesFor(gateway?.price, at);
   if (gatewayRates !== undefined) {
     const totalUsd = costOf(tokens, gatewayRates);
     if (!Number.isFinite(totalUsd)) return { source: 'none' };
-    return { source: 'gateway', totalUsd };
+    return relabelCovered(gateway?.auth, { source: 'gateway', totalUsd });
   }
 
   const provider = gateway?.pricingProvider;
-  if (provider === undefined || aiPricing === undefined || model.id === undefined) {
+  if (provider === undefined || modelsDev === undefined || model.id === undefined) {
     return { source: 'none' };
   }
-  const scraped = aiPricing.models[normalizeModelName(model.id)]?.[provider];
+  // The raw upstream id is tried before the normalized name, because
+  // models.dev keys each provider the way that provider does: `openai` files
+  // `gpt-5.6-terra`, but `openrouter` files `nvidia/nemotron-3.5-lightning:free`
+  // — vendor prefix and serving-variant suffix included. `normalizeModelName`
+  // strips exactly those, so a normalized-only lookup could never match an
+  // OpenRouter model and every such row priced as unpriced. Raw-first cannot
+  // mis-match: an exact hit under the named provider *is* that model. The
+  // normalized name stays as the fallback for a config whose id is already
+  // bare, and the two collapse to one lookup when they are equal.
+  const names = [model.id, normalizeModelName(model.id)];
+  const lookup = names[0] === names[1] ? [names[0]] : names;
+  // Provider order is the user's stated preference, so it is the outer loop:
+  // an exact-but-later provider must not beat an earlier one.
+  let scraped: Rates | undefined;
+  outer: for (const id of provider) {
+    for (const name of lookup) {
+      const hit = modelsDev.providers[id]?.[name];
+      if (hit !== undefined) { scraped = hit; break outer; }
+    }
+  }
   if (scraped === undefined) return { source: 'none' };
+  // A scraped rate table is not a statement of intent the way a hand-written
+  // `[price]` block is, so a partial one must decline rather than fill the
+  // gaps with zero: `costOf` prices an absent dimension at 0 by contract, and
+  // a row priced $0 is *worse* than an unpriced one — it counts as priced, so
+  // it disappears from the unpriced tally that would otherwise show it, and
+  // `[budget] daily_usd` treats the volume as free. Latent today (every one of
+  // the 7181 costed models on models.dev carries both input and output), which
+  // is exactly why it would go unnoticed if the feed ever changed.
+  if (!ratesCoverTokens(tokens, scraped)) return { source: 'none' };
 
   const totalUsd = costOf(tokens, scraped);
   if (!Number.isFinite(totalUsd)) return { source: 'none' };
-  return {
-    source: 'ai-pricing',
+  return relabelCovered(gateway?.auth, {
+    source: 'models-dev',
     totalUsd,
-    observedAt: aiPricing.fetchedAt,
-  };
+    observedAt: modelsDev.fetchedAt,
+  });
 }

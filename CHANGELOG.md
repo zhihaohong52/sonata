@@ -8,6 +8,125 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Changed
+- **Token prices now come from models.dev, not ai-pricing.fyi.** The old source
+  was wrong, not merely sparse: its OpenAI `output_token` values were that
+  model's *cache-write* price, so `gpt-5.6-terra` was published at $2.50/1M
+  output against OpenAI's real $12.00 — understating the expensive half of an
+  agentic workload roughly five-fold. Verified against OpenAI's published
+  pricing page, with models.dev, OpenRouter and LiteLLM's own table agreeing
+  against ai-pricing.fyi on every model checked; models.dev matched the
+  primary source exactly on all four, including the long-context tier.
+  `sonata catalog update` now fetches `https://models.dev/api.json` — public,
+  no key, one request — and caches `provider → model → rates` at
+  `~/.config/sonata/models-dev.json`. Coverage rises from 694 models to 7181
+  costed ones. The abandoned `ai-pricing.json` is neither read nor migrated.
+- **`pricing_provider` accepts an ordered list**, so a gateway reselling
+  several labs can be priced at each lab's own published rate:
+  `pricing_provider = ["openai", "deepseek", "google"]`. The first provider
+  that *lists the model* wins. A bare string keeps working unchanged. Deriving
+  the lab automatically was rejected: Artificial Analysis publishes a display
+  name (`"Z AI"`, `"Kimi"`) matching none of models.dev's provider ids, and
+  OpenRouter's prefixes are its own slugs — both need a curated map that rots
+  silently.
+
+### Added
+- **Subscription-backed work is valued without being counted as spend.** A
+  gateway authenticated by an OAuth subscription (`codex-oauth`,
+  `copilot-oauth`) fits neither existing price state: the work has a knowable
+  list value, but no money changes hands per token. It used to collapse into
+  `source: 'none'`, so 829 real requests worth ~$25 were invisible and
+  indistinguishable from a genuinely unknown model. `LedgerPrice.source` gains
+  `'covered'`: `resolvePrice` resolves rates exactly as before and then
+  relabels when the gateway's auth is OAuth, so one resolution path serves
+  both and a subscription gateway cannot drift from a metered one. There is no
+  new config key — a gateway already declares its auth, and OAuth auth *is* a
+  subscription; only `pricing_provider` is needed, to say which rates value
+  the work.
+
+  `[budget] daily_usd` never sees it: `spentTodayUsd` skips covered rows, so
+  free-at-the-margin traffic can never trigger a refusal. `sonata usage`
+  reports it on its own line and marks a covered figure with ` ~`, so a
+  per-row number cannot be silently summed into a spend total. Verified
+  against real ledger data: on a day holding $14.36 of covered work beside
+  $0.34 of real spend, the budget saw $0.34.
+
+### Added
+- **The router keeps the price cache fresh.** Nothing refreshed it before:
+  `sonata catalog update` is manual, so a machine that had not run it in
+  months priced every ledger row on stale rates and said so only in one line
+  of `sonata usage` output. `sonata serve` now checks on bind and every 6
+  hours, refreshing when the cache is missing, unreadable or older than 24
+  hours (`src/price-refresh.ts`). The daemon is deliberately the only host: it
+  is long-lived, already does network I/O, and is what writes prices into
+  ledger rows — putting a fetch into `usage` or `doctor` would make a
+  read-only command hang on a bad network, which is exactly when someone runs
+  `doctor`. Three properties keep it off the request path: it is never awaited
+  by a request, a failure is inert (the existing cache is kept and the next
+  tick retries — no tight loop, since the likeliest failure is "no network"),
+  and the timer is unref'd so it never holds the process open. A cache whose
+  `fetchedAt` will not parse counts as stale, because an unreadable timestamp
+  is not evidence of freshness and reading it as such would pin a broken cache
+  forever.
+- **`sonata usage --project <dir>`** restricts the report to one project. The
+  default stays machine-wide, so nothing already parsing the output changes.
+
+### Fixed
+- **`sonata usage --by project` split a worktree from its main checkout** while
+  `[budget] daily_usd` pooled them — the cap counts a worktree against the
+  config it borrows, so a refusal could fire at a number appearing nowhere in
+  the report. Grouping now resolves each row's directory through `configPath`,
+  the same borrow the router uses. Computed at report time, not read from the
+  row's `tenant` id: only 2,871 of 24,774 rows on the development machine
+  carry one, so tenant grouping would bucket 88% of history as "unknown". A
+  directory that no longer exists keeps its recorded path rather than
+  resolving by fallthrough to the machine config, and a cwd resolving to the
+  machine config keeps its own label rather than collapsing every configless
+  directory into one bucket.
+- **`sonata usage` blended covered work into the cost column.** A bucket's
+  `costUsd` included subscription-covered rows while `pricedTotalUsd` excluded
+  them, so summing the cost column disagreed with the report's own
+  `priced total`, and a trailing ` ~` was the only signal. A flag cannot say
+  *how much*: measured on real data, one project showed $167.10 of which
+  $0.000000 was covered, and another showed $10.34 of which all of it was —
+  rendered identically. `UsageBucket` gains `coveredUsd`, `costUsd` is spend
+  alone, and the two render as separate `spent` / `covered` columns (shown
+  only when some bucket carries covered work). Buckets are ordered by total
+  value so a wholly-subscription bucket does not sink to the bottom now that
+  its spend is 0.
+
+- **No OpenRouter model could ever be priced.** models.dev keys each provider
+  the way that provider does: `openai` files a bare `gpt-5.6-terra`, but
+  `openrouter` files `nvidia/nemotron-3.5-lightning:free` — vendor prefix and
+  serving-variant suffix included. `resolvePrice` looked up only
+  `normalizeModelName(id)`, which strips exactly those two things, so every
+  OpenRouter row resolved to unpriced (2,870 real rows on the development
+  machine). The raw upstream id is now tried before the normalized name, which
+  cannot mis-match: an exact hit under the named provider *is* that model.
+  Provider order remains the outer loop, so an earlier provider still outranks
+  an exact id match found in a later one.
+- **Cache-creation tokens were billed at the input rate.** models.dev
+  publishes `cache_write` separately and it is materially higher —
+  `gpt-5.6-terra` is $2.50 against $2.00 input — so every priced row
+  undercounted cache creation by 25%. `Rates` gains `cacheWrite` and `costOf`
+  charges `cacheWrite ?? input`, unchanged where no cache-write rate exists.
+- **A partial scraped rate table priced the gap at zero.** `costOf` charges an
+  absent dimension 0 by contract, so a models.dev entry carrying only an
+  output rate returned `{ source: 'models-dev', totalUsd: 0 }` for a request
+  that spent a million input tokens. That is worse than declining: a $0 row
+  counts as *priced*, so it disappears from the unpriced volume `sonata usage`
+  reports separately, and `[budget] daily_usd` treats the spend as free.
+  `resolvePrice` now declines unless the table covers every dimension the
+  request actually used. Latent rather than live — all 7181 costed models on
+  models.dev carry both input and output today — which is precisely why it
+  would have gone unnoticed had the feed changed. Hand-written `[price]`
+  blocks are unaffected: a partial one there is a deliberate statement.
+- `sonata catalog update` previously fetched only the first 1000 rows of the
+  ai-pricing.fyi feed, which paginates by offset and truncates silently — 441
+  of 694 models were missing. Fixed before the source was replaced; recorded
+  because the same shape of bug is what a single un-paged request always
+  produces.
+
 ## [0.7.1] - 2026-09-09
 
 ### Fixed

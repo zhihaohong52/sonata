@@ -28,7 +28,7 @@ import { cmdRoute, cmdRouteSession, cmdRouteSubagent, type RouteAction } from '.
 import { cmdCatalogUpdate } from './commands/catalog.js';
 import { cmdLitellm } from './commands/litellm.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
-import { AI_PRICING_ATTRIBUTION } from './aipricing.js';
+import { MODELS_DEV_ATTRIBUTION } from './modelsdev.js';
 import { cmdUsage, type UsageDimension } from './commands/usage.js';
 import { readRows } from './ledger.js';
 
@@ -54,6 +54,8 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata catalog   show or refresh the Artificial Analysis model catalog
   sonata litellm   install or report sonata's own pinned LiteLLM (install|status)
   sonata usage     report native-path token and cost usage from the ledger
+                   [--since 7d] [--by model|role|tier|gateway|session|project]
+                   [--project <dir>] [--session <id>] [--json]
   sonata status    router health and the last hour of routes
   sonata runs      list every run, with state and whether it wrote a report
 
@@ -387,15 +389,15 @@ export async function main(argv: string[]): Promise<number> {
         console.log(`  fetched: ${result.aa.fetchedAt}`);
         console.log(AA_ATTRIBUTION);
       }
-      if ('error' in result.aiPricing) {
-        console.error(`ai-pricing catalog not updated: ${result.aiPricing.error.message}`);
+      if ('error' in result.modelsDev) {
+        console.error(`models.dev catalog not updated: ${result.modelsDev.error.message}`);
       } else {
-        console.log(`ai-pricing catalog updated: ${result.aiPricing.models} models`);
-        console.log(`  path: ${result.aiPricing.path}`);
-        console.log(`  fetched: ${result.aiPricing.fetchedAt}`);
-        console.log(AI_PRICING_ATTRIBUTION);
+        console.log(`models.dev catalog updated: ${result.modelsDev.models} models`);
+        console.log(`  path: ${result.modelsDev.path}`);
+        console.log(`  fetched: ${result.modelsDev.fetchedAt}`);
+        console.log(MODELS_DEV_ATTRIBUTION);
       }
-      return 'error' in result.aa || 'error' in result.aiPricing ? 1 : 0;
+      return 'error' in result.aa || 'error' in result.modelsDev ? 1 : 0;
     }
     const path = aaCatalogPath(homedir());
     const catalog = loadAaCatalog(homedir());
@@ -419,6 +421,7 @@ export async function main(argv: string[]): Promise<number> {
         by: { type: 'string' },
         since: { type: 'string' },
         session: { type: 'string' },
+        project: { type: 'string' },
         json: { type: 'boolean', default: false },
       },
     });
@@ -431,6 +434,11 @@ export async function main(argv: string[]): Promise<number> {
       since: values.since ?? '7d',
       by,
       session: values.session,
+      // `--project` always takes a value; `parseArgs` rejects a bare flag
+      // before this point, so there is no no-value case to handle. Use
+      // `--project .` for the current directory — cmdUsage resolves it, and
+      // pools a worktree with its main checkout the way `[budget]` does.
+      project: values.project,
       json: values.json,
     });
     if (values.json) {
@@ -441,16 +449,35 @@ export async function main(argv: string[]): Promise<number> {
     // `openrouter-nemotron-3.5-lightning` overruns that, and every number on
     // its row then shifts out of its column.
     const labelWidth = Math.max(0, ...report.buckets.map((bucket) => bucket.label.length));
+    // A covered column, not a ` ~` flag on the cost. The flag was binary and
+    // the two numbers shared one column, so a bucket that was 99.999% real
+    // spend and one that was 100% subscription rendered identically — measured
+    // on real data, $167.10 with $0.000000 covered beside $10.34 with all of
+    // it covered. The column is shown only when some bucket has covered work.
+    const anyCovered = report.buckets.some((bucket) => bucket.coveredRequests > 0);
+    const money = (usd: number) => `$${usd.toFixed(4)}`;
+    if (anyCovered) {
+      console.log(`${''.padEnd(labelWidth)} ${'requests'.padStart(8)} ${'input'.padStart(12)} ${'output'.padStart(10)}  ${'spent'.padStart(12)}  ${'covered'.padStart(12)}`);
+    }
     for (const bucket of report.buckets) {
-      console.log(`${bucket.label.padEnd(labelWidth)} ${String(bucket.requests).padStart(8)} ${String(bucket.input).padStart(12)} ${String(bucket.output).padStart(10)}  ${bucket.costUsd === 0 && bucket.unpricedRequests === bucket.requests ? '—' : `$${bucket.costUsd.toFixed(4)}`}`);
+      const spent = bucket.costUsd === 0 && bucket.coveredUsd === 0 && bucket.unpricedRequests === bucket.requests
+        ? '—'
+        : bucket.costUsd === 0 && bucket.coveredRequests > 0 ? '—' : money(bucket.costUsd);
+      const covered = anyCovered
+        ? `  ${(bucket.coveredUsd === 0 && bucket.coveredRequests === 0 ? '—' : money(bucket.coveredUsd)).padStart(12)}`
+        : '';
+      console.log(`${bucket.label.padEnd(labelWidth)} ${String(bucket.requests).padStart(8)} ${String(bucket.input).padStart(12)} ${String(bucket.output).padStart(10)}  ${spent.padStart(12)}${covered}`);
     }
     console.log(`\npriced total   $${report.pricedTotalUsd.toFixed(4)}`);
+    if (report.covered.requests > 0) {
+      console.log(`covered        $${report.covered.totalUsd.toFixed(2)}  ~ subscription — work valued at list, not billed per token`);
+    }
     if (report.unpriced.requests > 0) {
       console.log(`unpriced       ${report.unpriced.requests} requests · ${report.unpriced.input} in · ${report.unpriced.output} out`);
     }
     console.log('native path only — `sonata dispatch` runs bypass the router and cannot be measured');
     if (report.priceCacheAgeMs !== undefined) {
-      console.log(`prices: ai-pricing.fyi cache ${Math.floor(report.priceCacheAgeMs / 86_400_000)}d old`);
+      console.log(`prices: models.dev cache ${Math.floor(report.priceCacheAgeMs / 86_400_000)}d old`);
     }
     return 0;
   }

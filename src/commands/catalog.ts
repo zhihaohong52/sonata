@@ -6,11 +6,11 @@ import {
   type AaCatalog,
 } from '../catalog.js';
 import {
-  AI_PRICING_URL,
-  aiPricingPath,
-  normalizeAiPricingRows,
-  type AiPricingCache,
-} from '../aipricing.js';
+  MODELS_DEV_URL,
+  modelsDevPath,
+  normalizeModelsDev,
+  type ModelsDevCache,
+} from '../modelsdev.js';
 import { resolveKeyFromSource } from '../native/credentials.js';
 
 /**
@@ -26,13 +26,10 @@ const AA_MODELS_URL = 'https://artificialanalysis.ai/api/v2/language/models/free
 
 /** Pages are 200 models; this bounds a malformed `total_pages` rather than looping forever. */
 const AA_MAX_PAGES = 20;
+
 const AA_GATEWAY = 'artificialanalysis';
 
 interface AaModelResponse {
-  data?: unknown;
-}
-
-interface AiPricingResponse {
   data?: unknown;
 }
 
@@ -48,7 +45,7 @@ export interface CatalogUpdateFailure {
 
 export interface CatalogUpdateResult {
   aa: CatalogUpdateSuccess | CatalogUpdateFailure;
-  aiPricing: CatalogUpdateSuccess | CatalogUpdateFailure;
+  modelsDev: CatalogUpdateSuccess | CatalogUpdateFailure;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -174,48 +171,53 @@ async function updateAaCatalog(
   }
 
   const fetchedAt = nowIso(deps);
-  const catalog: AaCatalog = { fetchedAt, models };
+  // Recorded, not merely checked mid-fetch: without it on disk, a cache scored
+  // under one index version is indistinguishable from one scored under the
+  // next, and a ranking silently mixes scales across successive updates.
+  const catalog: AaCatalog = {
+    fetchedAt,
+    ...(indexVersion === undefined ? {} : { intelligenceIndexVersion: indexVersion }),
+    models,
+  };
   const path = aaCatalogPath(home);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(catalog, null, 2)}\n`, { mode: 0o600 });
   return { models: Object.keys(models).length, path, fetchedAt };
 }
 
-async function updateAiPricing(
+export async function updateModelsDev(
   home: string,
   fetchFn: typeof fetch,
   deps: { now?: () => Date },
 ): Promise<CatalogUpdateSuccess> {
-  const response = await fetchFn(AI_PRICING_URL);
+  const response = await fetchFn(MODELS_DEV_URL);
   if (!response.ok) {
-    throw new Error(`sonata catalog update: ai-pricing request failed (HTTP ${response.status})`);
+    throw new Error(`sonata catalog update: models.dev request failed (HTTP ${response.status})`);
   }
 
   let body: unknown;
   try {
-    body = await response.json() as AiPricingResponse;
+    body = await response.json();
   } catch {
-    throw new Error('sonata catalog update: malformed ai-pricing response body');
+    throw new Error('sonata catalog update: malformed models.dev response body');
   }
-  if (!isRecord(body) || !Array.isArray(body.data)) {
-    throw new Error('sonata catalog update: malformed ai-pricing response body (expected data array)');
+  if (!isRecord(body)) {
+    throw new Error('sonata catalog update: malformed models.dev response body');
   }
 
-  const models = normalizeAiPricingRows(body.data);
-  // A schema change that rejects every row must preserve the last known prices
-  // rather than silently turn every later ledger entry into an unpriced one.
-  if (Object.keys(models).length === 0) {
+  const providers = normalizeModelsDev(body);
+  if (Object.keys(providers).length === 0) {
     throw new Error(
-      'sonata catalog update: ai-pricing response contained no usable price rows; ' +
+      'sonata catalog update: models.dev response contained no usable model; ' +
       'leaving the existing cache untouched',
     );
   }
   const fetchedAt = nowIso(deps);
-  const catalog: AiPricingCache = { fetchedAt, models };
-  const path = aiPricingPath(home);
+  const catalog: ModelsDevCache = { fetchedAt, providers };
+  const path = modelsDevPath(home);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(catalog, null, 2)}\n`, { mode: 0o600 });
-  return { models: Object.keys(models).length, path, fetchedAt };
+  return { models: Object.values(providers).reduce((total, models) => total + Object.keys(models).length, 0), path, fetchedAt };
 }
 
 function outcome<T>(promise: Promise<T>): Promise<T | CatalogUpdateFailure> {
@@ -230,9 +232,9 @@ export async function cmdCatalogUpdate(
   deps: { fetch?: typeof fetch; now?: () => Date } = {},
 ): Promise<CatalogUpdateResult> {
   const fetchFn = deps.fetch ?? fetch;
-  const [aa, aiPricing] = await Promise.all([
+  const [aa, modelsDev] = await Promise.all([
     outcome(updateAaCatalog(home, fetchFn, deps)),
-    outcome(updateAiPricing(home, fetchFn, deps)),
+    outcome(updateModelsDev(home, fetchFn, deps)),
   ]);
-  return { aa, aiPricing };
+  return { aa, modelsDev };
 }

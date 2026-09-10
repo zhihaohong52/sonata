@@ -850,7 +850,7 @@ pricing_provider = "google"
 input = 0.1
 `);
     const gw = config.native!.gateways.google;
-    expect(gw.pricingProvider).toBe('google');
+    expect(gw.pricingProvider).toEqual(['google']);
     expect(gw.price).toMatchObject({ input: 0.1 });
   });
 
@@ -864,6 +864,43 @@ id = "gpt-5.6-terra"
 output = 2
 `);
     expect(config.unifiedModels.fallback.price).toEqual({ output: 2 });
+  });
+
+  it('parses an ordered pricing_provider list', () => {
+    const config = parseConfig(`
+[native.gateways."google"]
+base_url = "https://example.invalid/v1"
+pricing_provider = ["vertex", "google"]
+`);
+    expect(config.native!.gateways.google.pricingProvider).toEqual(['vertex', 'google']);
+  });
+
+  // Padding is invisible in the file and fatal in the lookup: the value is
+  // used directly as a models.dev provider key, so an untrimmed " openai "
+  // silently prices nothing.
+  it('trims surrounding whitespace off each pricing_provider entry', () => {
+    const config = parseConfig(`
+[native.gateways."google"]
+base_url = "https://example.invalid/v1"
+pricing_provider = [" vertex", "google\t"]
+`);
+    expect(config.native!.gateways.google.pricingProvider).toEqual(['vertex', 'google']);
+  });
+
+  it('refuses an empty pricing_provider list', () => {
+    expect(() => parseConfig(`
+[native.gateways."google"]
+base_url = "https://example.invalid/v1"
+pricing_provider = []
+`)).toThrow(/empty "pricing_provider" list/);
+  });
+
+  it('refuses a pricing_provider list with a non-string entry', () => {
+    expect(() => parseConfig(`
+[native.gateways."google"]
+base_url = "https://example.invalid/v1"
+pricing_provider = ["google", 42]
+`)).toThrow(/non-string "pricing_provider" list entry/);
   });
 
   it('refuses a non-string pricing_provider', () => {
@@ -1013,5 +1050,31 @@ id = "x"
 auth = "codex-oauth"
 provider = "openai"
 `)).toThrow(/provider/);
+  });
+});
+
+// A blank id names no models.dev provider, so every model on the gateway would
+// resolve to `source: 'none'` and report as unpriced. The setting's only
+// visible effect is a price that does not appear, so a value that can never
+// match is refused where it is written. Reported by CodeRabbit on PR #15.
+describe('pricing_provider rejects a blank entry', () => {
+  const gateway = (value: string) => `
+[models."m"]
+gateway = "g"
+id = "x"
+
+[native.gateways."g"]
+base_url = "https://example.invalid/v1"
+pricing_provider = ${value}
+`;
+
+  it.each(['""', '["" ]', '"   "', '["openai", ""]'])('refuses %s', (value) => {
+    expect(() => parseConfig(gateway(value))).toThrow(/blank "pricing_provider"/);
+  });
+
+  it('still accepts a real provider, as a string or a list', () => {
+    expect(parseConfig(gateway('"openai"')).native!.gateways.g.pricingProvider).toEqual(['openai']);
+    expect(parseConfig(gateway('["openai", "deepseek"]')).native!.gateways.g.pricingProvider)
+      .toEqual(['openai', 'deepseek']);
   });
 });
