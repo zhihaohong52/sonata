@@ -108,6 +108,7 @@ export function scriptedState(
     roles,
     credentialSources,
     routing: opts.routing ?? 'project',
+    guidance: opts.guidance ?? 'project',
   };
   const problems = validate(env, state, { nativeByKey });
   if (problems.length > 0) throw new Error(problems[0].message);
@@ -141,6 +142,7 @@ export function scriptedState(
       roles,
       credentialSources,
       routing: opts.routing ?? 'project',
+    guidance: opts.guidance ?? 'project',
       hookScope: opts.scope ?? (env.existingHookScope ? 'skip' : 'project'),
       customProviders: undefined,
       byokModels,

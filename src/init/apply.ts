@@ -8,6 +8,7 @@ import { cmdSync } from '../commands/sync.js';
 import { cmdRoute } from '../commands/route.js';
 import { writeSonataKey } from '../native/credentials.js';
 import { litellmStatus } from '../native/litellm-venv.js';
+import { guidanceBlock, mergeGuidance } from './guidance.js';
 import type { InitPlan } from './plan.js';
 import type { InitOptions } from './helpers.js';
 
@@ -107,6 +108,29 @@ export async function apply(
     : join(process.cwd(), 'skills', 'loop', 'SKILL.md');
   writeFileSync(plan.skillPath, readFileSync(skillSource));
   io.out(`  ✓ installed loop skill in ${plan.skillPath}`);
+
+  // ---- guidance ----
+  // Sonata owns only what is between its markers here; everything else in the
+  // file belongs to whoever wrote it. A merge that cannot tell the two apart
+  // throws, and the failure is reported without failing the whole init: the
+  // config, agents and hook are already written and useful, and a CLAUDE.md
+  // sonata declined to touch is a warning, not a broken install.
+  if (plan.guidance.scope !== 'skip' && plan.guidance.path !== undefined) {
+    const path = plan.guidance.path;
+    try {
+      const existing = existsSync(path) ? readFileSync(path, 'utf8') : undefined;
+      const merged = mergeGuidance(existing, guidanceBlock());
+      if (merged !== existing) {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, merged);
+        io.out(`  ✓ ${existing === undefined ? 'created' : 'updated'} the sonata block in ${path}`);
+      } else {
+        io.out(`  ✓ the sonata block in ${path} is already current`);
+      }
+    } catch (err) {
+      io.out(`  ! left ${path} unchanged: ${(err as Error).message}`);
+    }
+  }
 
   // ---- routing ----
   if (plan.routing !== 'skip') {
