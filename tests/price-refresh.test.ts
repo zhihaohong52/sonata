@@ -136,3 +136,25 @@ describe('startPriceRefresh', () => {
     expect(cleared).toBe(true);
   });
 });
+
+// `fetchedAt` comes from the host clock, so a correction backwards leaves a
+// cache dated ahead of now. `now - fetched` is then negative, the age check
+// never fires, and the router serves outdated rates until real time catches
+// up — the skew plus a full day. Reported by CodeRabbit on PR #15.
+describe('a cache dated in the future', () => {
+  it('is stale, not fresh', () => {
+    writeCache(new Date(NOW + 30 * 24 * 60 * 60 * 1000).toISOString());
+    expect(priceCacheIsStale(home, NOW)).toBe(true);
+  });
+
+  it('is refreshed rather than skipped', async () => {
+    writeCache(new Date(NOW + 60_000).toISOString());
+    let calls = 0;
+    const result = await refreshPricesIfStale(home, {
+      update: async () => { calls += 1; },
+      now: () => NOW,
+    });
+    expect(result).toBe('updated');
+    expect(calls).toBe(1);
+  });
+});

@@ -597,6 +597,18 @@ export function parseConfig(text: string): SonataConfig {
         } else {
           throw new Error(`sonata.toml: native gateway "${name}" has non-string "pricing_provider"`);
         }
+        // A blank id names no models.dev provider, so every model on this
+        // gateway would resolve to `source: 'none'` and report as unpriced —
+        // the same silent-failure shape as a mistyped gateway in
+        // `avoid_gateways`. The setting's only visible effect is a price that
+        // does not appear, so a value that cannot ever match must be refused
+        // where it is written rather than discovered in a cost report.
+        if (pricingProvider.some((provider) => provider.trim().length === 0)) {
+          throw new Error(
+            `sonata.toml: native gateway "${name}" has a blank "pricing_provider" entry — ` +
+            'name a models.dev provider (e.g. "openai"), or remove the key',
+          );
+        }
       }
       // An OAuth gateway is addressed by LiteLLM's own provider, which knows the
       // URL; accepting one here would only let a config claim a base URL that is

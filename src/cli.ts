@@ -434,10 +434,11 @@ export async function main(argv: string[]): Promise<number> {
       since: values.since ?? '7d',
       by,
       session: values.session,
-      // `--project` with no value means "this one". Resolution happens in
-      // cmdUsage, which pools a worktree with its main checkout the same way
-      // `[budget]` does.
-      project: values.project === '' ? process.cwd() : values.project,
+      // `--project` always takes a value; `parseArgs` rejects a bare flag
+      // before this point, so there is no no-value case to handle. Use
+      // `--project .` for the current directory — cmdUsage resolves it, and
+      // pools a worktree with its main checkout the way `[budget]` does.
+      project: values.project,
       json: values.json,
     });
     if (values.json) {
