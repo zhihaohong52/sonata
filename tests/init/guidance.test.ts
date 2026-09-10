@@ -38,6 +38,27 @@ describe('mergeGuidance', () => {
     expect(merged).not.toContain('stale guidance from an older sonata');
   });
 
+  // "The file exists" is the condition for appending, not "the file has
+  // content". Replacing a whitespace-only file wholesale still changes bytes
+  // outside the markers, which is the one thing this must never do.
+  it('preserves a whitespace-only CLAUDE.md rather than replacing it', () => {
+    const existing = '\n\n\n';
+    const merged = mergeGuidance(existing, block);
+    expect(merged.startsWith(existing)).toBe(true);
+    expect(merged).toContain(GUIDANCE_BEGIN);
+  });
+
+  it('preserves whitespace that is not a newline', () => {
+    const merged = mergeGuidance('   ', block);
+    expect(merged.startsWith('   ')).toBe(true);
+    expect(merged).toContain(GUIDANCE_BEGIN);
+  });
+
+  it('writes the block alone into an existing but empty file', () => {
+    // Nothing to preserve, so no leading blank lines invented either.
+    expect(mergeGuidance('', block)).toBe(block);
+  });
+
   it('is idempotent — merging twice produces identical bytes', () => {
     const existing = '# My project\n\nSome instructions.\n';
     const once = mergeGuidance(existing, block);
@@ -49,6 +70,36 @@ describe('mergeGuidance', () => {
     // would silently eat whatever the user wrote after it.
     const broken = `# My project\n\n${GUIDANCE_BEGIN}\nsomething\n`;
     expect(() => mergeGuidance(broken, block)).toThrow(/unterminated|marker/i);
+  });
+
+  // A second marker pair means the file has two blocks, or a hand-edit nested
+  // one inside another. Replacing first-begin..first-end spans whatever lies
+  // between them — including a user paragraph sitting between two begins — so
+  // every repeated shape is refused rather than partially rewritten.
+  it('refuses a file with two begin markers', () => {
+    const broken = [
+      '# Mine', '', GUIDANCE_BEGIN, 'first', '',
+      'user text between the two begins', '',
+      GUIDANCE_BEGIN, 'second', GUIDANCE_END, '',
+    ].join('\n');
+    expect(() => mergeGuidance(broken, block)).toThrow(/more than one|duplicate|repeated/i);
+  });
+
+  it('refuses a file with two end markers', () => {
+    const broken = [
+      '# Mine', '', GUIDANCE_BEGIN, 'body', GUIDANCE_END, '', 'text', '', GUIDANCE_END, '',
+    ].join('\n');
+    expect(() => mergeGuidance(broken, block)).toThrow(/more than one|duplicate|repeated/i);
+  });
+
+  it('refuses a file carrying two complete blocks', () => {
+    const broken = [
+      GUIDANCE_BEGIN, 'one', GUIDANCE_END, '', 'user text', '',
+      GUIDANCE_BEGIN, 'two', GUIDANCE_END, '',
+    ].join('\n');
+    // Rewriting only the first would leave a stale second block behind,
+    // silently contradicting it.
+    expect(() => mergeGuidance(broken, block)).toThrow(/more than one|duplicate|repeated/i);
   });
 
   it('refuses an end marker with no begin marker', () => {

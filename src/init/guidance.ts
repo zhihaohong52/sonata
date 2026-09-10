@@ -60,6 +60,14 @@ export function guidanceBlock(): string {
   ].join('\n');
 }
 
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + needle.length)) {
+    count += 1;
+  }
+  return count;
+}
+
 /**
  * Merge the managed block into an existing `CLAUDE.md`.
  *
@@ -68,8 +76,26 @@ export function guidanceBlock(): string {
  * the file does not exist yet.
  */
 export function mergeGuidance(existing: string | undefined, block: string): string {
-  if (existing === undefined || existing.trim().length === 0) {
+  // Only a file that does not exist is written whole. A file that exists but
+  // holds nothing but whitespace still has bytes, and replacing them outright
+  // would be a change outside the markers — the one thing this must never do.
+  if (existing === undefined) {
     return block.endsWith('\n') ? block : `${block}\n`;
+  }
+
+  const begins = countOccurrences(existing, GUIDANCE_BEGIN);
+  const ends = countOccurrences(existing, GUIDANCE_END);
+
+  // Repeated markers are refused before any replacement is attempted.
+  // `indexOf` alone would splice from the *first* begin to the *first* end,
+  // and in a file shaped begin/…/begin/…/end that span swallows the user text
+  // sitting between the two begins. Two complete blocks are equally malformed:
+  // rewriting one would leave the other behind to contradict it.
+  if (begins > 1 || ends > 1) {
+    throw new Error(
+      `CLAUDE.md contains more than one sonata block (${begins} "${GUIDANCE_BEGIN}", ` +
+      `${ends} "${GUIDANCE_END}"). Leave exactly one, and run sonata init again.`,
+    );
   }
 
   const begin = existing.indexOf(GUIDANCE_BEGIN);
@@ -103,8 +129,11 @@ export function mergeGuidance(existing: string | undefined, block: string): stri
     return `${before}${block.trimEnd()}${after}`;
   }
 
-  // No block yet: append, leaving every existing byte where it was.
-  const separator = existing.endsWith('\n\n') ? '' : existing.endsWith('\n') ? '\n' : '\n\n';
+  // No block yet: append, leaving every existing byte where it was. An empty
+  // file has nothing to separate from, so it gets no invented blank lines.
+  const separator = existing.length === 0
+    ? ''
+    : existing.endsWith('\n\n') ? '' : existing.endsWith('\n') ? '\n' : '\n\n';
   const merged = `${existing}${separator}${block}`;
   return merged.endsWith('\n') ? merged : `${merged}\n`;
 }
