@@ -45,6 +45,7 @@ export interface InitState {
   credentialSources?: Record<string, CredentialSource>;
   /** Routing mode for tier agents: project, global, or skip. */
   routing?: 'project' | 'global' | 'skip';
+  guidance?: 'project' | 'global' | 'skip';
 }
 
 // The JSON written by the Ink app, read by cmdInit

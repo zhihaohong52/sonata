@@ -67,6 +67,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
     --credential-source gateway=sonata|codex|opencode   record a gateway credential source
     --config-scope project|global   where the config and its agents go
     --scope project|global|skip   where to install the permission hook
+    --guidance project|global|skip   where to write the "prefer tier agents" CLAUDE.md block
     --prune                    delete stale sonata agent files
 `;
 
@@ -102,6 +103,7 @@ export async function main(argv: string[]): Promise<number> {
         'config-scope': { type: 'string' },
         scope: { type: 'string' },
         routing: { type: 'string' },
+        guidance: { type: 'string' },
         // No default: `undefined` means "unanswered", which lets cmdInit fall
         // through to the interactive prompt. `false` would suppress it.
         prune: { type: 'boolean' },
@@ -116,6 +118,11 @@ export async function main(argv: string[]): Promise<number> {
     const routing = values.routing as 'project' | 'global' | 'skip' | undefined;
     if (routing && !['project', 'global', 'skip'].includes(routing)) {
       throw new Error(`sonata init: --routing must be project, global or skip (got "${routing}")`);
+    }
+
+    const guidance = values.guidance as 'project' | 'global' | 'skip' | undefined;
+    if (guidance && !['project', 'global', 'skip'].includes(guidance)) {
+      throw new Error(`sonata init: --guidance must be project, global or skip (got "${guidance}")`);
     }
 
     const configScope = values['config-scope'] as 'project' | 'global' | undefined;
@@ -140,6 +147,7 @@ export async function main(argv: string[]): Promise<number> {
         credentialSource: values['credential-source'],
         scope,
         routing,
+        guidance,
         configScope,
         prune: values.prune,
       });

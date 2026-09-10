@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { apply } from '../../src/init/apply.js';
@@ -24,6 +24,7 @@ const planFor = (): InitPlan => ({
   keysToStore: [],
   hook: { scope: 'skip' },
   skillPath: join(cwd, '.claude', 'skills', 'sonata-loop', 'SKILL.md'),
+  guidance: { scope: 'skip' },
   routing: 'skip',
   syncCwd: cwd,
   agentsDir: join(cwd, '.claude', 'agents'),
@@ -97,5 +98,43 @@ describe('apply — the litellm install', () => {
       { out: () => {}, prune: false, installLitellm: async () => { called = true; } },
     );
     expect(called).toBe(false);
+  });
+});
+
+describe('apply — the CLAUDE.md guidance block', () => {
+  const withGuidance = (): InitPlan => ({
+    ...planFor(),
+    guidance: { scope: 'project', path: join(cwd, 'CLAUDE.md') },
+  });
+
+  it('creates CLAUDE.md when the project has none', async () => {
+    await apply(withGuidance(), { cwd, home, packageRoot: resolve('.') }, { out: () => {}, prune: false });
+    expect(readFileSync(join(cwd, 'CLAUDE.md'), 'utf8')).toContain('<!-- sonata:begin -->');
+  });
+
+  it('leaves an existing CLAUDE.md byte-identical outside the markers', async () => {
+    const existing = '# My project\n\nInstructions I wrote and care about.\n';
+    writeFileSync(join(cwd, 'CLAUDE.md'), existing);
+    await apply(withGuidance(), { cwd, home, packageRoot: resolve('.') }, { out: () => {}, prune: false });
+    const after = readFileSync(join(cwd, 'CLAUDE.md'), 'utf8');
+    expect(after.startsWith(existing)).toBe(true);
+    expect(after).toContain('<!-- sonata:end -->');
+  });
+
+  it('writes nothing at all when skipped', async () => {
+    await apply(planFor(), { cwd, home, packageRoot: resolve('.') }, { out: () => {}, prune: false });
+    expect(existsSync(join(cwd, 'CLAUDE.md'))).toBe(false);
+  });
+
+  // A CLAUDE.md sonata refuses to touch is a warning, not a broken install:
+  // the config, agents and hook are already written and useful.
+  it('reports an unterminated block without failing the whole init', async () => {
+    writeFileSync(join(cwd, 'CLAUDE.md'), '# Mine\n\n<!-- sonata:begin -->\nhalf a block\n');
+    const lines: string[] = [];
+    await apply(withGuidance(), { cwd, home, packageRoot: resolve('.') }, { out: (l) => lines.push(l), prune: false });
+    expect(lines.join('\n')).toMatch(/left .*CLAUDE\.md unchanged/);
+    expect(readFileSync(join(cwd, 'CLAUDE.md'), 'utf8')).toContain('half a block');
+    // The rest of init still happened.
+    expect(loadConfig(cwd, home).tiers?.code.simple).toEqual(['acme-fast']);
   });
 });
