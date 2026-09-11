@@ -376,7 +376,9 @@ export async function cmdDoctor(
       // credit check and lets the upstream decide.
       const advice = extendedContextAdvice({
         routed: true,
-        model: (projectSettings.model ?? globalSettings.model) as string | undefined,
+        // Deliberately unvalidated here: `extendedContextAdvice` owns the
+        // check, so every caller gets it rather than only this one.
+        model: projectSettings.model ?? globalSettings.model,
       });
       if (advice !== undefined) checks.push({ name: 'extended context', ok: true, detail: advice });
     }
