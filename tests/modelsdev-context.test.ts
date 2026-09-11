@@ -89,6 +89,17 @@ describe('contextWindowFor', () => {
     expect(contextWindowFor(c, 'glm-5.2:nitro')).toBe(1_048_576);
   });
 
+  // An id that is nothing but a serving-variant suffix leaves an empty name
+  // behind, which would then match any key with an empty model part
+  // (`vendor/`) and hand a real candidate that provider's window.
+  it('refuses an id that is only a serving-variant suffix', () => {
+    expect(contextWindowFor({ p: { 'vendor/': 262_144 } }, ':free')).toBeUndefined();
+  });
+
+  it('refuses a key whose model part is empty', () => {
+    expect(contextWindowFor({ p: { 'vendor/': 262_144 } }, 'vendor')).toBeUndefined();
+  });
+
   it('returns undefined for a model nobody lists', () => {
     expect(contextWindowFor(contexts, 'nobody-has-this')).toBeUndefined();
   });
