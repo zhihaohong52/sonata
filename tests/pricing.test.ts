@@ -466,6 +466,23 @@ pricing_provider = ["deepseek"]
     expect((price as { totalUsd: number }).totalUsd).toBeCloseTo(0.75, 10);
   });
 
+  // A key must actually be vendor-qualified. `/model` has no vendor and
+  // `vendor/` has no model, yet both used to satisfy the suffix match — the
+  // first pricing any model whose id follows a stray slash, the second pricing
+  // anything at all once the name was empty. Reproduced before the fix: a
+  // `/model` key priced the model at its rate.
+  it('refuses a key with no vendor before the slash', () => {
+    expect(resolvePrice(config, 'newish', tokens, now, cacheWith({
+      deepseek: { '/deepseek-v4.1-flash': { input: 99, output: 99 } },
+    }))).toEqual({ source: 'none' });
+  });
+
+  it('refuses a key with no model after the slash', () => {
+    expect(resolvePrice(config, 'newish', tokens, now, cacheWith({
+      deepseek: { 'deepseek/': { input: 99, output: 99 } },
+    }))).toEqual({ source: 'none' });
+  });
+
   it('still declines a partial OpenRouter table', () => {
     expect(resolvePrice(config, 'newish', tokens, now, cacheWith({
       openrouter: { 'deepseek/deepseek-v4.1-flash': { input: 0.15 } },

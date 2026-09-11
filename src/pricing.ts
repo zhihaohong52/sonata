@@ -117,9 +117,15 @@ export const PRICE_FALLBACK_PROVIDER = 'openrouter';
  */
 function qualifiedMatch(table: Record<string, Rates>, name: string): Rates | undefined {
   let found: Rates | undefined;
+  if (name === '') return undefined;
   for (const [key, rates] of Object.entries(table)) {
     const slash = key.indexOf('/');
-    if (slash === -1 || key.slice(slash + 1) !== name) continue;
+    // The key has to be genuinely vendor-qualified. `/model` carries no
+    // vendor and `vendor/` carries no model, and both satisfied a naive
+    // suffix test — the first pricing any id that happened to follow a stray
+    // slash, the second matching whatever an empty name was compared against.
+    if (slash <= 0 || slash === key.length - 1) continue;
+    if (key.slice(slash + 1) !== name) continue;
     if (found === undefined) { found = rates; continue; }
     if (!sameRates(found, rates)) return undefined;
   }
