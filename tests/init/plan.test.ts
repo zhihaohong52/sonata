@@ -209,3 +209,36 @@ describe('plan — the CLAUDE.md guidance block', () => {
     expect(p.summary.join('\n')).toContain('no CLAUDE.md block');
   });
 });
+
+describe('plan — preserves pricing settings across a rewrite', () => {
+  // The unit test on nativeTomlFor passes even when `plan` forgets to pass the
+  // existing config, which is exactly how this shipped broken: the writer had
+  // no way to know, and the caller had no test. Measured on a real config,
+  // one rewrite flipped a gateway from priced to unpriced between two requests
+  // a minute apart, and unpriced volume is excluded from `[budget] daily_usd`.
+  const existing = {
+    avoidGateways: [],
+    native: {
+      gateways: {
+        acme: { baseUrl: 'https://acme.example/v1', auth: 'api-key', pricingProvider: ['openai', 'deepseek'] },
+        'flaky-gw': { baseUrl: 'https://flaky.example/v1', auth: 'api-key', price: { input: 2, output: 8 } },
+      },
+    },
+    unifiedModels: { 'acme-fast': { price: { input: 1, output: 4 } } },
+  } as never;
+
+  it('keeps a gateway pricing_provider', () => {
+    const p = plan(env({ configsByScope: { project: existing } }), state, noCredentials, opts);
+    expect(parseConfig(p.configToml).native!.gateways.acme.pricingProvider).toEqual(['openai', 'deepseek']);
+  });
+
+  it('keeps a hand-written gateway price', () => {
+    const p = plan(env({ configsByScope: { project: existing } }), state, noCredentials, opts);
+    expect(parseConfig(p.configToml).native!.gateways['flaky-gw'].price).toMatchObject({ input: 2, output: 8 });
+  });
+
+  it('keeps a hand-written model price', () => {
+    const p = plan(env({ configsByScope: { project: existing } }), state, noCredentials, opts);
+    expect(parseConfig(p.configToml).unifiedModels['acme-fast'].price).toMatchObject({ input: 1, output: 4 });
+  });
+});
