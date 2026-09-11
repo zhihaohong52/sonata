@@ -209,3 +209,60 @@ describe('nativeTomlFor — avoid_gateways', () => {
     expect(parseConfig(toml).avoidGateways).toBeUndefined();
   });
 });
+describe('nativeTomlFor — settings init must not silently drop', () => {
+  const candidate = {
+    key: 'acme-m', gateway: 'acme', id: 'm', contextWindow: 128000,
+    baseUrl: 'https://acme.example/v1', auth: 'api-key' as const,
+  };
+  const write = (existing?: Parameters<typeof nativeTomlFor>[7]) => nativeTomlFor(
+    { code: [candidate] }, {}, undefined, {}, [candidate], undefined, [], existing,
+  );
+
+  // The defect this exists to prevent, measured on a real config: a gateway's
+  // `pricing_provider` was read by parseConfig, used by resolvePrice, and
+  // written back by nobody — so `sonata init` deleted it on every rewrite and
+  // every model on that gateway silently became unpriced. Unpriced volume is
+  // excluded from `[budget] daily_usd`, so the cap quietly stopped counting
+  // that spend too. Exactly the bug `avoid_gateways` is written back to avoid.
+  it('round-trips a gateway pricing_provider', () => {
+    const toml = write({
+      native: { gateways: { acme: { baseUrl: 'https://acme.example/v1', auth: 'api-key', pricingProvider: ['openai', 'deepseek'] } } },
+    } as never);
+    expect(parseConfig(toml).native!.gateways.acme.pricingProvider).toEqual(['openai', 'deepseek']);
+  });
+
+  it('round-trips a gateway price block', () => {
+    const toml = write({
+      native: { gateways: { acme: { baseUrl: 'https://acme.example/v1', auth: 'api-key', price: { input: 1.5, output: 6, cacheWrite: 2, cachedInput: 0.1 } } } },
+    } as never);
+    expect(parseConfig(toml).native!.gateways.acme.price).toMatchObject({ input: 1.5, output: 6, cacheWrite: 2, cachedInput: 0.1 });
+  });
+
+  // A window is the whole point of a hand-written price for a peak/off-peak
+  // gateway; preserving the rates but dropping the windows would charge peak
+  // rates around the clock.
+  it('round-trips price windows in declaration order', () => {
+    const toml = write({
+      native: { gateways: { acme: { baseUrl: 'https://acme.example/v1', auth: 'api-key', price: {
+        input: 1, output: 2,
+        windows: [{ from: '00:30', to: '08:30', input: 0.5, output: 1 }, { from: '08:30', to: '00:30', input: 1, output: 2 }],
+      } } } },
+    } as never);
+    const back = parseConfig(toml).native!.gateways.acme.price!;
+    expect(back.windows).toHaveLength(2);
+    expect(back.windows![0]).toMatchObject({ from: '00:30', to: '08:30', input: 0.5 });
+    expect(back.windows![1]).toMatchObject({ from: '08:30', to: '00:30', input: 1 });
+  });
+
+  it('round-trips a per-model price block', () => {
+    const toml = write({ unifiedModels: { 'acme-m': { price: { input: 3, output: 15 } } } } as never);
+    expect(parseConfig(toml).unifiedModels['acme-m'].price).toMatchObject({ input: 3, output: 15 });
+  });
+
+  it('writes nothing extra when there is nothing to preserve', () => {
+    const toml = write();
+    expect(toml).not.toContain('pricing_provider');
+    expect(toml).not.toContain('.price');
+    expect(parseConfig(toml).native!.gateways.acme.pricingProvider).toBeUndefined();
+  });
+});
