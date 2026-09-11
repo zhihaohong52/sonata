@@ -235,6 +235,28 @@ describe('planRouteOn', () => {
     expect(hook.map((h) => h.command)).toContain(ensureServeCommand(PACKAGE_ROOT, 4100));
   });
 
+  // Omitting the key from the computed env is not the same as removing it:
+  // planRouteOn merges over what is already in the file, so a floor written
+  // when the config still held a sub-1M model would survive a config that no
+  // longer has one — and keep constraining every bare alias in the session.
+  it('drops a stale context floor when the config no longer needs one', () => {
+    const small = planRouteOn({}, loadNativeConfig(), PACKAGE_ROOT, 'project', { routerPort: 4100 });
+    expect(small.settings.env?.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBe('64000');
+
+    const allLarge = {
+      native: {
+        ports: { router: 4100, litellm: 4000 },
+        models: { big: { gateway: 'g', id: 'big', contextWindow: 1_000_000 } },
+        gateways: {},
+      },
+      unifiedModels: {},
+    } as never;
+    const after = planRouteOn(small.settings, allLarge, PACKAGE_ROOT, 'project', { routerPort: 4100 });
+    expect(after.settings.env?.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBeUndefined();
+    // The rest of the routing env is untouched.
+    expect(after.settings.env?.ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
+  });
+
   it('is a no-op when already routed', () => {
     const config = loadNativeConfig();
     const once = planRouteOn({}, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });

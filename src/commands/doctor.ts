@@ -1,3 +1,4 @@
+import { extendedContextAdvice } from '../extended-context.js';
 import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
@@ -366,6 +367,20 @@ export async function cmdDoctor(
           borrowedFrom: borrowedWorktreeConfigDir(opts.cwd, home),
         }),
       });
+    } else {
+      // Routing is working — and it quietly costs the *main* session its
+      // window. Advisory, not blocking: the session runs fine at 200K, it is
+      // simply 80% smaller than the model can do, with nothing on screen to
+      // say sonata caused it. Sonata does not apply the fix: on Pro, Opus at
+      // 1M draws usage credits, and behind a gateway Claude Code skips the
+      // credit check and lets the upstream decide.
+      const advice = extendedContextAdvice({
+        routed: true,
+        // Deliberately unvalidated here: `extendedContextAdvice` owns the
+        // check, so every caller gets it rather than only this one.
+        model: projectSettings.model ?? globalSettings.model,
+      });
+      if (advice !== undefined) checks.push({ name: 'extended context', ok: true, detail: advice });
     }
   }
 
