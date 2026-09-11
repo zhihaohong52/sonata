@@ -121,12 +121,17 @@ export function contextWindowFor(
   // the row without it. `:` appears in no upstream model name, so cutting at
   // the first one is unambiguous. Same strip `normalizeModelName` performs.
   const wanted = id.includes(':') ? id.slice(0, id.indexOf(':')) : id;
+  // An id that is nothing but the suffix leaves no name to match. An empty
+  // name matches any key whose model part is empty (`vendor/`), which would
+  // hand a real candidate that provider's window.
+  if (wanted === '') return undefined;
   const bareWanted = wanted.includes('/') ? wanted.slice(wanted.indexOf('/') + 1) : wanted;
   const seen = new Map<number, number>();
   for (const models of Object.values(contexts)) {
     for (const [key, window] of Object.entries(models)) {
       const slash = key.indexOf('/');
       const bare = slash === -1 ? key : key.slice(slash + 1);
+      if (bare === '') continue;
       if (key !== wanted && bare !== wanted && bare !== bareWanted) continue;
       seen.set(window, (seen.get(window) ?? 0) + 1);
     }
