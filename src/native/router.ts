@@ -459,17 +459,29 @@ export function usesUnicodePropertyEscape(pattern: string): boolean {
  * Strips, from every tool's `input_schema`, each `pattern` that Python's `re`
  * cannot parse — and only those.
  *
- * Claude Code sends a write-capable agent its full tool set, and one of those
- * tools (Artifact, its `field` parameter) constrains a string with `\p{Cc}`-
- * style Unicode property classes. JavaScript and Anthropic accept them. An
- * OpenAI-style endpoint validates each tool's parameters as JSON Schema with
- * `format: regex`, and the reference validator runs that check on Python's
- * `re`, which has no `\p{..}` at all — so Azure answered a `code-simple`
- * request with 400 `'^(?!__.*__$)[^\p{Cc}…' is not a 'regex'`
- * (`tools[1].parameters`), LiteLLM reported no fallback, and the agent died on
- * its first request (measured 2026-09-09). Read-only roles never hit it only
- * because their agents carry an explicit `tools:` allowlist that omits
- * Artifact; the write roles inherit everything, on purpose.
+ * A tool schema may constrain a string with `\p{Cc}`-style Unicode property
+ * classes. JavaScript and Anthropic accept them. An OpenAI-style endpoint
+ * validates each tool's parameters as JSON Schema with `format: regex`, and
+ * the reference validator runs that check on Python's `re`, which has no
+ * `\p{..}` at all — so Azure answered a `code-simple` request with 400
+ * `'^(?!__.*__$)[^\p{Cc}…' is not a 'regex'` (`tools[1].parameters`), LiteLLM
+ * reported no fallback, and the agent died on its first request (measured
+ * 2026-09-09).
+ *
+ * **The instance that prompted this is fixed upstream, and the transform is
+ * still needed.** That 400 came from Claude Code's own Artifact tool, whose
+ * schema Claude Code 2.1.268 corrected. Two reasons this does not follow it
+ * into the bin. Claude Code fixed the tools *it* ships; a tool contributed by
+ * an **MCP server** can carry the same pattern, reaches the same validator,
+ * and fails the same way — and sonata forwards those schemas untouched
+ * otherwise. And sonata is installed from npm against whatever Claude Code
+ * the user already has, so a session on 2.1.265–2.1.267 still sends the old
+ * schema. Since this walks every tool rather than a named one, it covers both
+ * without knowing either.
+ *
+ * (Read-only roles never hit the original case, because their agents carry an
+ * explicit `tools:` allowlist that omitted Artifact; write roles inherit
+ * everything, on purpose.)
  *
  * Dropping the constraint costs one server-side validation the model was never
  * going to rely on; the alternative is a request that cannot be sent. Every
