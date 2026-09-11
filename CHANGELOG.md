@@ -29,6 +29,29 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   be a coin flip. This applies to any provider the config names, not only the
   fallback, so naming OpenRouter yourself behaves the same way.
 
+- **A tier whose candidates are all 1M now declares that window.** Claude Code
+  sizes a subagent from its model and cannot recognise a sonata alias, so every
+  foreign subagent shared one session-wide number — the smallest window in the
+  config — no matter which tier it belonged to. Two levers exist and were
+  measured on 2026-09-11: an unrecognized id carrying `[1m]` is assumed to have
+  a 1M window and the suffix is stripped before forwarding (verified live — an
+  agent declaring `model: sonata-explore-simple[1m]` produced the router line
+  `model=sonata-explore-simple -> gpt-5.6-luna -> litellm`, so routing is
+  untouched), while `CLAUDE_CODE_MAX_CONTEXT_TOKENS` applies to an
+  unrecognized id *without* it. `sonata sync` now suffixes a tier's alias when
+  every natively-routed candidate declares at least 1M, and the floor is
+  computed over the models still below that threshold — omitted entirely when
+  none remain. A tier qualifies only if **every** candidate does, since a tier
+  is a ranked fallback list and the claim must hold for whichever model
+  answers; an absent `context_window` disqualifies it, because unknown is not
+  1M and guessing upward turns a wasted window into a hard context-limit error.
+- **`sonata doctor` reports what routing costs the main session.** Behind a
+  gateway Claude Code cannot verify native 1M support, so Sonnet 5, the Fable
+  models and Opus 4.7+ are budgeted at 200K unless `[1m]` is explicit — an 80%
+  reduction sonata causes and nothing on screen mentions. Reported, not fixed:
+  on Pro, Opus at 1M draws usage credits, and behind a gateway the credit check
+  is skipped, so enabling it unasked could spend a user's money.
+
 ### Fixed
 - **`sonata init` wrote `context_window = 128000` for every model whose real
   window it did not know**, and a guess is indistinguishable from a decision
