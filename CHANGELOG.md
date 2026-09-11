@@ -8,6 +8,26 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+- **`sonata init` silently deleted `pricing_provider` and every `[price]`
+  block.** Both were read by `parseConfig` and used by `resolvePrice`, and
+  written back by nobody — and `sonata init` is the sole writer of
+  `sonata.toml`, so anything it does not emit is gone. Every rewrite therefore
+  un-priced the gateway: `resolvePrice` returns `source: 'none'` at its
+  `provider === undefined` guard, before models.dev is ever consulted. Measured
+  on a real config, one rewrite flipped a gateway from priced to unpriced
+  between two requests 64 seconds apart, and 429 later requests recorded no
+  cost at all. The second-order effect is worse than the missing report line:
+  unpriced volume is deliberately excluded from `[budget] daily_usd`, so a
+  dropped key also stops the cap counting that spend — a ceiling quietly
+  measuring less than it claims. This is the same defect `avoid_gateways` is
+  written back out to prevent; the lesson was recorded for one key and not
+  applied to the others. `nativeTomlFor` now receives the config being
+  rewritten and preserves all three, windows included in declaration order,
+  since the first matching window wins at read time. Harness-only models are
+  emitted by a second loop and are preserved there too — fixing only the
+  native loop left the identical deletion one block further down.
+
 ## [0.8.0] - 2026-09-10
 
 ### Added

@@ -149,6 +149,25 @@ Key design points:
 
 - **Simple-tier *admission* uses the same measure as simple-tier *ranking*, and it is relative.** It did not: admission tested `blendedPriceUsd <= AA_CHEAP_BLENDED_PRICE_USD` — dollars per 1M **tokens** — while ordering inside the tier used `costPerTask`, dollars per unit of **work**. A model can be dear per token and cheap per task, and the gate then refuses the very model the ranking would have led with: `gemini-3.8-flash` is $1.50/1M and $0.577/task, refused at *any* catalog freshness; so is `gemini-3.7-flash` at the same rate. `proposeTiers` now admits on `costPerTask <= min(costPerTask over eligible leaders) × SIMPLE_COST_CEILING` (12) — relative for the same reason `SIMPLE_CAPABILITY_FLOOR` is, and measured over `preferred` for the same reason the floor is. Measured on two real configs: three admitted models → four (Gemini 3.8 Flash ranked, previously absent outright) and three → five. **Only a model that could actually enter the tier may set the ceiling** — `eligible` (capable, and clear of the floor) gates both who sets the bar and who is judged against it, so the two cannot drift apart. The floor reads every leader safely because it is a `Math.max`, which a weak model cannot drag down; the ceiling is a `Math.min`, which one absolutely can. Measured on the existing `junk` fixture: at $0.001/task it set a $0.012 ceiling nothing eligible could clear, `simple` came back empty, and the fallback mirrored `complex` — carrying a model far too dear for grunt work into the cheap tier. Two further deliberate limits. Only *per-task* costs enter the ratio, never `rankOf().price`, which falls back to a per-1M rate — the two are different units two orders of magnitude apart, and a ratio mixing them would refuse an uncosted model on a unit error. And a model AA has not costed per task keeps the absolute judgement it had before (the curated table, or the per-1M bar), which is the pre-existing behaviour for exactly the models this has no better information about; with nothing costed at all there is no ceiling and nothing changes. `AA_CHEAP_BLENDED_PRICE_USD` therefore survives as the fallback bar, not the gate.
 
+- **Anything `sonata init` does not write back, it deletes.** It is the sole
+  writer of `sonata.toml`, so a setting that `parseConfig` reads and
+  `nativeTomlFor` does not emit survives exactly until the next rewrite. This
+  bit `pricing_provider` and every `[price]` block, which were read and used
+  but never written: a rewrite un-priced the gateway outright, since
+  `resolvePrice` returns `source: 'none'` at its `provider === undefined`
+  guard before models.dev is consulted at all. Measured on a real config, one
+  rewrite flipped a gateway from priced to unpriced between two requests 64
+  seconds apart. The damage does not stop at the report — unpriced volume is
+  deliberately excluded from `[budget] daily_usd`, so a dropped key also
+  narrows the cap without saying so. `nativeTomlFor` takes the config being
+  rewritten and preserves `pricing_provider`, gateway `[price]` and per-model
+  `[price]`, windows in declaration order because the first match wins at read
+  time. Price rates are written only when present: `costOf` charges an absent
+  dimension at 0, so emitting a zero would turn "unknown" into "free". **Add a
+  round-trip test through `parseConfig` for any new config key** — asserting on
+  the emitted text cannot catch the sibling failure where the key is written
+  but bound to the wrong table.
+
 - **`avoid_gateways` demotes a gateway, it does not exclude it.** Ranking optimises capability per task-dollar and knows nothing about whether a gateway is reliable, rate-limited, or simply one you would rather not send work to — a hand-reordered `[tiers]` fixes that until the next `sonata init` re-proposes it away. A top-level `avoid_gateways = ["<name>"]` (not inside `[tiers]`, whose keys must all be roles) sorts that gateway's models *after* every other one in both tiers, so they survive as fallback candidates and avoiding a gateway costs preference rather than the depth a ranked tier exists to provide. `parseConfig` refuses a name matching no gateway — the setting's failure mode is that its absence is invisible, so a typo would read as "not avoided". The simple tier's capability floor is measured over the models that can actually lead (`preferred`), since including an avoided model there could raise the bar until nothing preferred qualifies. `nativeTomlFor` writes the key back out: dropping it would be exactly the bug it exists to prevent.
 
 - **A tier is a rank, not a fixed model.** `RankedSelect` (`src/tui-ink/components/ranked-select*`) lets `sonata init` capture a *ranking* rather than a set: selection order **is** the ranking, so no separate up/down step is needed to express "try this one first, that one if it fails". `proposeTiers` (`src/catalog.ts`) seeds the initial order from a cached Artificial Analysis catalog (coding index for capability, blended price for cost) when one exists, falling back to a curated table otherwise.
