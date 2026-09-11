@@ -8,6 +8,27 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+- **models.dev pricing falls back to OpenRouter, and to nothing else.** A lab's
+  own models.dev entry lags its releases: `deepseek-v4.1-flash` is absent from
+  the first-party `deepseek` provider while eight resellers publish it, so a
+  gateway serving that model priced as unknown even though models.dev held a
+  rate for it all along. OpenRouter is now consulted after every provider the
+  config named — never ahead of one — and if it has nothing either the row
+  stays unpriced exactly as before. Nothing else is consulted, because the
+  resellers disagree: the same model is $0.15/1M input from OpenRouter and
+  $0.30 from two others, so picking among them would be a guess on a money
+  value.
+- **A bare model id now matches a provider that vendor-qualifies its keys.**
+  models.dev files each provider the way that provider does — OpenRouter uses
+  `deepseek/deepseek-v4.1-flash` where a sonata config carries the bare
+  upstream id — and `normalizeModelName` only ever *strips* prefixes, so such
+  an entry was unreachable. The match compares the part after the first slash
+  and is taken only when every candidate agrees on the rate: two vendors can
+  publish the same model name, and choosing between two different prices would
+  be a coin flip. This applies to any provider the config names, not only the
+  fallback, so naming OpenRouter yourself behaves the same way.
+
 ### Fixed
 - **`sonata init` wrote `context_window = 128000` for every model whose real
   window it did not know**, and a guess is indistinguishable from a decision
