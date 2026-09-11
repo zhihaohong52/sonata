@@ -24,7 +24,9 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   written back out to prevent; the lesson was recorded for one key and not
   applied to the others. `nativeTomlFor` now receives the config being
   rewritten and preserves all three, windows included in declaration order,
-  since the first matching window wins at read time.
+  since the first matching window wins at read time. Harness-only models are
+  emitted by a second loop and are preserved there too — fixing only the
+  native loop left the identical deletion one block further down.
 
 ## [0.8.0] - 2026-09-10
 

@@ -157,6 +157,12 @@ export function nativeTomlFor(
   for (const [key, model] of Object.entries(extraModels)) {
     if (allModels.has(key) || model.harness === undefined || model.harnessId === undefined) continue;
     lines.push(`[models.${tomlKey(key)}]`, `harness = ${tomlKey(model.harness)}`, `id = ${tomlKey(model.harnessId)}`, '');
+    // Harness-only models are emitted by this second loop, so preserving the
+    // price in the native loop alone left the same deletion one block further
+    // down. A harness-routed model is a `sonata dispatch` fallback candidate
+    // whose rates are hand-written exactly like a native one's.
+    const keptExtraPrice = existing?.unifiedModels?.[key]?.price;
+    if (keptExtraPrice !== undefined) lines.push(...priceLines(`models.${tomlKey(key)}`, keptExtraPrice));
   }
 
   for (const [role, lists] of Object.entries(tierLists)) {
