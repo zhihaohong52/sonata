@@ -1,3 +1,4 @@
+import { contextFloorFor } from '../extended-context.js';
 import { spawn } from 'node:child_process';
 
 import { loadConfig, type SonataConfig } from '../config.js';
@@ -53,8 +54,14 @@ export function nativeSessionEnv(
       .map((model) => model.contextWindow)
       .filter((window): window is number => window !== undefined),
   ];
-  if (windows.length > 0) {
-    env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(Math.min(...windows));
+  // One variable serves every alias Claude Code cannot recognise, so it must
+  // stay the smallest window that could answer. Models at or above the
+  // extended-context threshold are excluded: `sonata sync` gives their tier a
+  // `[1m]` alias, which no longer consults this variable, and leaving them in
+  // could only drag the floor down for the models that still do.
+  const floor = contextFloorFor(windows);
+  if (floor !== undefined) {
+    env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(floor);
   }
   return env;
 }
