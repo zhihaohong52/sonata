@@ -383,3 +383,109 @@ pricing_provider = ["first", "second"]
     expect(price).toMatchObject({ source: 'models-dev', totalUsd: 1 });
   });
 });
+
+describe('resolvePrice — the OpenRouter fallback', () => {
+  // models.dev keys each provider the way that provider does. A lab's
+  // first-party entry is bare (`deepseek-v4-flash`), while OpenRouter
+  // vendor-qualifies (`deepseek/deepseek-v4.1-flash`) — so a config carrying
+  // the bare upstream id could never match OpenRouter, and a model the lab has
+  // not yet listed itself priced as unknown even though models.dev held a rate
+  // for it. Measured: `deepseek-v4.1-flash` is absent from the first-party
+  // `deepseek` provider and published by eight resellers.
+  const TOML = `
+[models."newish"]
+gateway = "acme"
+id = "deepseek-v4.1-flash"
+
+[native.gateways."acme"]
+base_url = "https://acme.example/v1"
+pricing_provider = ["deepseek"]
+`;
+  const config = parseConfig(TOML);
+  const tokens = { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheCreation: 0 };
+  const now = at('2026-09-11T12:00:00Z');
+  const cacheWith = (providers: ModelsDevCache['providers']): ModelsDevCache => ({
+    fetchedAt: '2026-09-11T00:00:00Z', providers,
+  });
+
+  it('prices a bare id from OpenRouter’s vendor-qualified key', () => {
+    const price = resolvePrice(config, 'newish', tokens, now, cacheWith({
+      deepseek: { 'deepseek-v4-flash': { input: 99, output: 99 } },
+      openrouter: { 'deepseek/deepseek-v4.1-flash': { input: 0.15, output: 0.6 } },
+    }));
+    expect(price).toMatchObject({ source: 'models-dev' });
+    expect((price as { totalUsd: number }).totalUsd).toBeCloseTo(0.75, 10);
+  });
+
+  // The named list is the user's stated preference and must win outright; the
+  // fallback exists for what that list cannot answer, not to second-guess it.
+  it('never overrides a provider the config actually named', () => {
+    const price = resolvePrice(config, 'newish', tokens, now, cacheWith({
+      deepseek: { 'deepseek-v4.1-flash': { input: 1, output: 2 } },
+      openrouter: { 'deepseek/deepseek-v4.1-flash': { input: 99, output: 99 } },
+    }));
+    expect((price as { totalUsd: number }).totalUsd).toBeCloseTo(3, 10);
+  });
+
+  // Two vendors can publish the same model name. Picking one would be a coin
+  // flip on a money value, so it declines — the same discipline as the
+  // partial-rate refusal.
+  it('refuses an ambiguous suffix rather than guessing', () => {
+    expect(resolvePrice(config, 'newish', tokens, now, cacheWith({
+      openrouter: {
+        'deepseek/deepseek-v4.1-flash': { input: 0.15, output: 0.6 },
+        'someone-else/deepseek-v4.1-flash': { input: 5, output: 20 },
+      },
+    }))).toEqual({ source: 'none' });
+  });
+
+  it('accepts an ambiguous suffix when every match agrees on the rate', () => {
+    const price = resolvePrice(config, 'newish', tokens, now, cacheWith({
+      openrouter: {
+        'deepseek/deepseek-v4.1-flash': { input: 0.15, output: 0.6 },
+        'mirror/deepseek-v4.1-flash': { input: 0.15, output: 0.6 },
+      },
+    }));
+    expect((price as { totalUsd: number }).totalUsd).toBeCloseTo(0.75, 10);
+  });
+
+  it('stays unpriced when OpenRouter does not carry the model either', () => {
+    expect(resolvePrice(config, 'newish', tokens, now, cacheWith({
+      openrouter: { 'anthropic/claude-x': { input: 1, output: 2 } },
+    }))).toEqual({ source: 'none' });
+  });
+
+  // The suffix match belongs to the lookup, not to the fallback, so naming
+  // OpenRouter yourself behaves identically — otherwise a user who listed it
+  // explicitly would still get nothing, with nothing on screen to say why.
+  it('matches a vendor-qualified key for an explicitly named provider too', () => {
+    const named = parseConfig(TOML.replace('["deepseek"]', '["openrouter"]'));
+    const price = resolvePrice(named, 'newish', tokens, now, cacheWith({
+      openrouter: { 'deepseek/deepseek-v4.1-flash': { input: 0.15, output: 0.6 } },
+    }));
+    expect((price as { totalUsd: number }).totalUsd).toBeCloseTo(0.75, 10);
+  });
+
+  // A key must actually be vendor-qualified. `/model` has no vendor and
+  // `vendor/` has no model, yet both used to satisfy the suffix match — the
+  // first pricing any model whose id follows a stray slash, the second pricing
+  // anything at all once the name was empty. Reproduced before the fix: a
+  // `/model` key priced the model at its rate.
+  it('refuses a key with no vendor before the slash', () => {
+    expect(resolvePrice(config, 'newish', tokens, now, cacheWith({
+      deepseek: { '/deepseek-v4.1-flash': { input: 99, output: 99 } },
+    }))).toEqual({ source: 'none' });
+  });
+
+  it('refuses a key with no model after the slash', () => {
+    expect(resolvePrice(config, 'newish', tokens, now, cacheWith({
+      deepseek: { 'deepseek/': { input: 99, output: 99 } },
+    }))).toEqual({ source: 'none' });
+  });
+
+  it('still declines a partial OpenRouter table', () => {
+    expect(resolvePrice(config, 'newish', tokens, now, cacheWith({
+      openrouter: { 'deepseek/deepseek-v4.1-flash': { input: 0.15 } },
+    }))).toEqual({ source: 'none' });
+  });
+});
