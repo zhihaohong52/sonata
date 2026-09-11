@@ -594,9 +594,10 @@ before the 4110 router was restarted onto it. Note LiteLLM 1.98.0 reads
 effect; it is left in place pending its own fix, since the demotion makes the
 question moot for the shape that actually failed.
 
-**Tool schemas are repaired for the regex dialect on the same path.** Claude Code
-sends a write-capable agent its full tool set, and the Artifact tool's `field`
-parameter constrains a string with `\p{Cc}`-style Unicode property classes.
+**Tool schemas are repaired for the regex dialect on the same path.** A tool
+schema may constrain a string with `\p{Cc}`-style Unicode property classes —
+the case that surfaced this was the Artifact tool's `field` parameter, sent to
+every write-capable agent.
 JavaScript and Anthropic accept those; an OpenAI-style endpoint validates each
 tool's parameters as JSON Schema with `format: regex`, and the reference
 validator runs that on Python's `re`, where `\p` is a *bad escape* — so Azure
@@ -612,6 +613,17 @@ Anthropic request stays byte-identical; the direct path is a pass-through by
 contract. Giving write roles an allowlist instead was rejected: it would drop
 fan-out for the roles that use it, and any future tool with the same shape
 would break the same way.
+
+**Claude Code 2.1.268 fixed that Artifact schema, and the transform stays.**
+The upstream fix covers the tools Claude Code itself ships. A tool contributed
+by an **MCP server** can carry the same pattern, reach the same validator and
+fail identically — sonata forwards those schemas untouched otherwise — and
+sonata is installed from npm against whatever Claude Code the user already
+has, so a session on 2.1.265–2.1.267 still sends the old schema. Because
+`sanitizeToolSchemas` walks every tool rather than a named one, it covers both
+cases without knowing about either, and it returns the identical bytes when
+there is nothing to strip. Reverting it would trade a per-request JSON parse
+for a 400 that reads as a model or auth failure.
 
 **Flattening alone is not enough: the codex model is also declared
 `supports_system_message: false`.** The Codex backend refuses *any* `role:
