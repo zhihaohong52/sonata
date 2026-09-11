@@ -9,6 +9,7 @@ import {
   MODELS_DEV_URL,
   modelsDevPath,
   normalizeModelsDev,
+  normalizeModelsDevContexts,
   type ModelsDevCache,
 } from '../modelsdev.js';
 import { resolveKeyFromSource } from '../native/credentials.js';
@@ -213,7 +214,10 @@ export async function updateModelsDev(
     );
   }
   const fetchedAt = nowIso(deps);
-  const catalog: ModelsDevCache = { fetchedAt, providers };
+  // Contexts are gathered from the same response but kept in their own map:
+  // `normalizeModelsDev` requires a `cost` block, so an uncosted model would
+  // otherwise lose its window along with its missing price.
+  const catalog: ModelsDevCache = { fetchedAt, providers, contexts: normalizeModelsDevContexts(body) };
   const path = modelsDevPath(home);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(catalog, null, 2)}\n`, { mode: 0o600 });

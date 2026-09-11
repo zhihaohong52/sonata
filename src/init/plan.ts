@@ -1,3 +1,4 @@
+import { enrichContextWindows, loadModelsDev } from '../modelsdev.js';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { InitEnvironment } from './discover.js';
@@ -123,6 +124,13 @@ export function plan(
     rewriteOauthToApiKey(built, state.byokKeys ?? {});
     nativeByKey = built;
   }
+
+  // Replace sonata's 128000 placeholder with the window models.dev publishes,
+  // before anything reads a candidate's window. `sonata init` wrote that
+  // placeholder for every model whose real window it did not know, and it is
+  // indistinguishable from a decision once in the file — 19 of 24 models on
+  // the development machine carried it, several of them 1M models.
+  enrichContextWindows(nativeByKey, loadModelsDev(opts.home)?.contexts);
 
   const chosenNative = nativeKeys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined);
 
