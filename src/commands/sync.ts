@@ -1,3 +1,4 @@
+import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../extended-context.js';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generatedAgents, generatedNativeAgents, expectedAgentNames, isReadOnlyRole, loadConfig, TIER_NAMES, tiersCollapse } from '../config.js';
@@ -191,11 +192,21 @@ Focus on ${blurb}.${delegating}
 `;
 }
 
-export function tierAgentMarkdown(spec: { role: string; tier?: 'simple' | 'complex' }): string {
+export function tierAgentMarkdown(spec: {
+  role: string;
+  tier?: 'simple' | 'complex';
+  /**
+   * Declare a 1M window for this tier's alias. Claude Code reads the `[1m]`
+   * suffix as "assume 1M" and strips it before forwarding, so the router still
+   * resolves the bare alias — see `src/extended-context.ts`.
+   */
+  extendedContext?: boolean;
+}): string {
   const blurb = ROLE_BLURB[spec.role] ?? spec.role;
   const tier = spec.tier;
   const name = tier === undefined ? spec.role : `${spec.role}-${tier}`;
-  const model = tier === undefined ? `sonata-${spec.role}` : `sonata-${spec.role}-${tier}`;
+  const alias = tier === undefined ? `sonata-${spec.role}` : `sonata-${spec.role}-${tier}`;
+  const model = spec.extendedContext === true ? `${alias}${EXTENDED_CONTEXT_SUFFIX}` : alias;
   const tools = toolsForRole(spec.role);
   const delegating = delegatingForRole(spec.role);
   const description = tier === undefined
@@ -242,7 +253,16 @@ export function cmdSync(opts: SyncOptions): SyncResult {
           skipped.push(path);
           continue;
         }
-        writeFileSync(path, tierAgentMarkdown({ role, tier }));
+        writeFileSync(path, tierAgentMarkdown({
+          role,
+          tier,
+          // The collapsed alias serves both lists, so it may only claim the
+          // window both of them can honour.
+          extendedContext: tier === undefined
+            ? tierQualifiesForExtendedContext(config, lists.simple)
+              && tierQualifiesForExtendedContext(config, lists.complex)
+            : tierQualifiesForExtendedContext(config, lists[tier]),
+        }));
         written.push(path);
       }
     }
