@@ -173,6 +173,31 @@ Key design points:
 - **A tier is a rank, not a fixed model.** `RankedSelect` (`src/tui-ink/components/ranked-select*`) lets `sonata init` capture a *ranking* rather than a set: selection order **is** the ranking, so no separate up/down step is needed to express "try this one first, that one if it fails". `proposeTiers` (`src/catalog.ts`) seeds the initial order from a cached Artificial Analysis catalog (coding index for capability, blended price for cost) when one exists, falling back to a curated table otherwise.
   - **The list is drawn in rank order, and the cursor addresses a display position, not an item.** `rsOrder` puts ranked models first in rank order, then the rest; `RsState.cursor` indexes *that*. Rows used to be drawn in item order with the rank as a marker, which is what made `[`/`]` read as broken — reported as "[ and ] does not work in sonata TUI" against a real 19-row screen whose markers ran `· · · · 1. 5. · · · · · · 2. 6. · · 3. 7. ·`. Reordering swapped two *numbers* between rows that were nowhere near each other and left the highlight where it was, so one press was often invisible and two were a round trip; the sixteen unranked rows did nothing at all, correctly, with nothing on screen to say why. Drawing in rank order makes a ranked item's display position *be* its rank position, which is what lets `moveUp`/`moveDown` need no lookup and lets the cursor travel with the row. `toggle` follows the same rule — the highlight tracks the item across the block boundary — so `[` right after `space` reorders the model just picked rather than whichever row slid into the vacated slot.
 - **Usage is read from the SSE stream, not from LiteLLM's cost headers.** LiteLLM does emit `x-litellm-response-cost-*` with no database configured, but headers flush before the body, so on a streaming request no output token exists yet and the cost is structurally `0` — and every Claude Code request streams. Tokens come from `message_start` merged with the final `message_delta`; sonata computes cost itself. The headers still carry `x-litellm-model-name` (which ranked candidate served) and `x-litellm-call-id`, which the ledger records as `litellmModel` and `callId`.
+- **models.dev is consulted for one unnamed provider — OpenRouter — and never
+  for the rest** (`PRICE_FALLBACK_PROVIDER`, `src/pricing.ts`). A lab's
+  first-party entry lags its own releases: `deepseek-v4.1-flash` is absent from
+  models.dev's `deepseek` provider while eight resellers carry it, so a gateway
+  serving that model reported unpriced although a rate existed. OpenRouter is
+  appended *after* every provider the config named, so it can never override a
+  stated preference, and an empty result there leaves the row unpriced rather
+  than reaching for another reseller — measured, they disagree by 2× on this
+  very model ($0.15/1M input from OpenRouter, $0.30 from kilo and vercel), so
+  a broader search would trade "unknown" for "wrong". The rate is still a
+  **proxy**: it is right for a gateway reselling at the lab's list rate, which
+  is what `pricing_provider` already assumes, and wrong by the markup for one
+  that does not. Its volatility is real — OpenRouter's published rate for this
+  model halved within a day of observation — which is what the 24h price
+  refresh exists to track.
+- **A bare id matches a vendor-qualifying provider by its slash-suffix, and
+  only unambiguously.** models.dev keys each provider as that provider does, so
+  OpenRouter's `deepseek/deepseek-v4.1-flash` is unreachable from a config
+  carrying the bare upstream id — `normalizeModelName` only ever strips
+  prefixes, never adds one. `qualifiedMatch` compares the part after the first
+  slash and returns a rate only when every candidate agrees on it; two vendors
+  can publish the same model name, and picking between two different prices is
+  a coin flip on money. It runs for every named provider too, not just the
+  fallback, because a user who lists OpenRouter and still gets nothing has
+  nothing on screen to explain why.
 - **A scraped price is only applied where the gateway says which public provider it is.** models.dev prices public serving providers, and one model spans an 8× range across five of them, so inferring which one a gateway resells would produce a number wrong by most of its own magnitude. Absent `pricing_provider`, the row is `unpriced`. models.dev also does not model peak/off-peak pricing, hence the UTC `price.windows` overrides.
 
 ### Source layout
