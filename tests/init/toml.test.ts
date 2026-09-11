@@ -259,6 +259,30 @@ describe('nativeTomlFor — settings init must not silently drop', () => {
     expect(parseConfig(toml).unifiedModels['acme-m'].price).toMatchObject({ input: 3, output: 15 });
   });
 
+  // A harness-only model is written by a *different* loop from the native one,
+  // and the first fix for this bug patched only the native loop — so the same
+  // deletion survived one block further down. A harness-routed model is a
+  // `sonata dispatch` fallback candidate whose rates are just as hand-written.
+  it('round-trips a harness-only model price, partial rates and windows included', () => {
+    const toml = nativeTomlFor(
+      { code: [candidate] }, {}, undefined,
+      { 'kimi-k3': { harness: 'opencode', harnessId: 'openrouter/kimi-k3' } },
+      [candidate], undefined, [],
+      { unifiedModels: { 'kimi-k3': { price: {
+        // Output only: a partial table must stay partial rather than gaining
+        // an invented input rate of 0, which would read as "free".
+        output: 9,
+        windows: [{ from: '00:30', to: '08:30', output: 4.5 }],
+      } } } } as never,
+    );
+    const back = parseConfig(toml).unifiedModels['kimi-k3'];
+    expect(back.harness).toBe('opencode');
+    expect(back.price).toMatchObject({ output: 9 });
+    expect(back.price!.input).toBeUndefined();
+    expect(back.price!.windows).toHaveLength(1);
+    expect(back.price!.windows![0]).toMatchObject({ from: '00:30', to: '08:30', output: 4.5 });
+  });
+
   it('writes nothing extra when there is nothing to preserve', () => {
     const toml = write();
     expect(toml).not.toContain('pricing_provider');
