@@ -144,6 +144,17 @@ describe('extendedContextAdvice — what routing costs the main session', () => 
     expect(advice).toContain('[1m]');
   });
 
+  // `readSettings` returns an open record, so `model` is whatever JSON held.
+  // A non-string value used to reach `.toLowerCase()` and throw, which took
+  // down the whole of `sonata doctor` — the one command whose job is to report
+  // problems rather than become one.
+  it('treats a non-string model as unset instead of throwing', () => {
+    for (const model of [42, true, null, {}, ['sonnet']] as unknown[]) {
+      expect(() => extendedContextAdvice({ routed: true, model })).not.toThrow();
+      expect(extendedContextAdvice({ routed: true, model })).toMatch(/200K|200k/);
+    }
+  });
+
   it('is case-insensitive about the suffix', () => {
     expect(extendedContextAdvice({ routed: true, model: 'opus[1M]' })).toBeUndefined();
   });

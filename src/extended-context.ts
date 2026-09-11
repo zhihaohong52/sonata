@@ -90,9 +90,14 @@ export function contextFloorFor(windows: readonly number[]): number | undefined 
  * credit check and lets the upstream decide, so enabling it unasked could
  * spend a user's money.
  */
-export function extendedContextAdvice(input: { routed: boolean; model?: string }): string | undefined {
+export function extendedContextAdvice(input: { routed: boolean; model?: unknown }): string | undefined {
   if (!input.routed) return undefined;
-  const model = input.model;
+  // `model` arrives from a settings file, which is an open record: it can hold
+  // any JSON value. A non-string is not a model name, so it is treated as
+  // unset rather than coerced — and never reaches a string method, which is
+  // how it previously threw and took the whole of `sonata doctor` down with
+  // it. A diagnostic that crashes is worse than the problem it diagnoses.
+  const model = typeof input.model === 'string' ? input.model : undefined;
   if (model !== undefined && model.toLowerCase().includes(EXTENDED_CONTEXT_SUFFIX)) return undefined;
   const fix = model === undefined
     ? 'pin one with the suffix (e.g. `"model": "opus[1m]"`), or pick the "(1M context)" entry in `/model`'
