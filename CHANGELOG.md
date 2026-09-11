@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-11
+
 ### Fixed
 - **`sonata init` silently deleted `pricing_provider` and every `[price]`
   block.** Both were read by `parseConfig` and used by `resolvePrice`, and
