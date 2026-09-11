@@ -89,6 +89,48 @@ function relabelCovered(auth: NativeGatewayAuth | undefined, price: LedgerPrice)
   return { ...price, source: 'covered' };
 }
 
+/**
+ * The provider consulted when every named `pricing_provider` comes up empty.
+ *
+ * models.dev's first-party entries lag: `deepseek-v4.1-flash` is absent from
+ * its `deepseek` provider while eight resellers publish it. OpenRouter is the
+ * broadest of those and quotes this model at the lab's own list rate, which is
+ * what a gateway reselling at list actually charges. It is a *proxy* — a
+ * gateway that marks up is priced wrong by that markup — so it is consulted
+ * only after every provider the config named, never instead of one.
+ */
+export const PRICE_FALLBACK_PROVIDER = 'openrouter';
+
+/**
+ * Match a bare model id against a provider that vendor-qualifies its keys.
+ *
+ * A sonata config carries the upstream id its gateway serves (`
+ * deepseek-v4.1-flash`), while OpenRouter files the same model under
+ * `deepseek/deepseek-v4.1-flash`. `normalizeModelName` only ever *strips*
+ * prefixes, so nothing here could ever match without comparing the part after
+ * the first slash.
+ *
+ * Two vendors may publish the same model name, so a match is only taken when
+ * every candidate agrees on the rate. Choosing between two different prices
+ * would be a coin flip on a money value — the same refusal the partial-rate
+ * check makes just below.
+ */
+function qualifiedMatch(table: Record<string, Rates>, name: string): Rates | undefined {
+  let found: Rates | undefined;
+  for (const [key, rates] of Object.entries(table)) {
+    const slash = key.indexOf('/');
+    if (slash === -1 || key.slice(slash + 1) !== name) continue;
+    if (found === undefined) { found = rates; continue; }
+    if (!sameRates(found, rates)) return undefined;
+  }
+  return found;
+}
+
+function sameRates(a: Rates, b: Rates): boolean {
+  return a.input === b.input && a.output === b.output
+    && a.cachedInput === b.cachedInput && a.cacheWrite === b.cacheWrite;
+}
+
 export function resolvePrice(
   config: SonataConfig,
   key: string | undefined,
@@ -132,11 +174,16 @@ export function resolvePrice(
   const names = [model.id, normalizeModelName(model.id)];
   const lookup = names[0] === names[1] ? [names[0]] : names;
   // Provider order is the user's stated preference, so it is the outer loop:
-  // an exact-but-later provider must not beat an earlier one.
+  // an exact-but-later provider must not beat an earlier one. OpenRouter is
+  // appended as an implicit last resort — never ahead of anything named — so
+  // a model the lab itself has not listed can still be priced from the rate
+  // models.dev already holds for it. Naming it yourself simply moves it up.
   let scraped: Rates | undefined;
-  outer: for (const id of provider) {
+  outer: for (const id of provider.includes(PRICE_FALLBACK_PROVIDER) ? provider : [...provider, PRICE_FALLBACK_PROVIDER]) {
+    const table = modelsDev.providers[id];
+    if (table === undefined) continue;
     for (const name of lookup) {
-      const hit = modelsDev.providers[id]?.[name];
+      const hit = table[name] ?? qualifiedMatch(table, name);
       if (hit !== undefined) { scraped = hit; break outer; }
     }
   }
