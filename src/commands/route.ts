@@ -143,6 +143,16 @@ export function planRouteOn(
   if (scope === 'global' && envTarget.ANTHROPIC_CUSTOM_HEADERS === undefined) {
     delete env.ANTHROPIC_CUSTOM_HEADERS;
   }
+  // Omitting a key from the computed env is not the same as removing it: the
+  // merge above preserves whatever the file already had. A floor written when
+  // the config still held a sub-1M model would otherwise survive a config that
+  // no longer has one, and keep constraining every bare alias in the session.
+  // Safe to delete here for the same reason `route off` says it is *not* safe
+  // when the base URL is absent: sonata is writing its own base URL on this
+  // path, so a context key beside it is sonata's, not the user's.
+  if (envTarget.CLAUDE_CODE_MAX_CONTEXT_TOKENS === undefined) {
+    delete env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
+  }
   const changed = envChanged(settings, env);
   let next: Settings = changed ? { ...settings, env } : settings;
 
