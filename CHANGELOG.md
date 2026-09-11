@@ -8,6 +8,30 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+- **`sonata init` wrote `context_window = 128000` for every model whose real
+  window it did not know**, and a guess is indistinguishable from a decision
+  once it is in the file. Measured on the development machine: 18 of 24 models
+  carried the placeholder wrongly, including four at 1M
+  (`glm-5.3-flash`, `deepseek-v4-pro`, `gemini-3.7-flash`) and the GPT models
+  at 278528. Since Claude Code sizes a foreign subagent from one session-wide
+  number — the smallest window in the config — every subagent was capped at
+  128k. `init` now fills the window from models.dev's `limit.context`, which
+  sonata already fetches for pricing, and touches **only** models still
+  carrying the default: a different value came from somewhere, and models.dev
+  is a better guess than sonata's but not better than a decision. The floor
+  rose 128000 → 262144 on a real config.
+- **The context lookup reads a consensus, not an extreme.** models.dev files
+  each provider as that provider does, so the lookup strips a serving-variant
+  suffix (`:free`, `:nitro`) and matches a bare id against a vendor-qualified
+  key — without which `z-ai/glm-5.2:free` matched nothing and, sitting in all
+  eight tiers, held every one of them at the default. Where providers disagree
+  it takes the **most commonly published** window: a dozen providers list
+  `glm-5.2` between 202752 and 1048576, nearly all at ~1M, and taking the
+  minimum let one outlier understate it fivefold. A tie breaks toward the
+  smaller window, since an overstated window fails hard upstream while an
+  understated one only wastes context.
+
 ## [0.8.1] - 2026-09-11
 
 ### Fixed
