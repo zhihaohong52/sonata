@@ -182,6 +182,22 @@ export function hasModelsToPick(
   return candidates.length > 0 || addedGateways.length > 0;
 }
 
+/**
+ * Which step Back from the Roles screen returns to.
+ *
+ * Same question as `hasModelsToPick`, asked from the other direction, and kept
+ * beside it so the two cannot disagree: the wizard must not enter a step going
+ * forward that Back then steps over. It did — an added-only provider reached
+ * the models step and Back jumped past it to the providers screen, because
+ * this call site still compared `candidates.length` by hand.
+ */
+export function stepBeforeRoles(
+  candidates: CandidateOption[],
+  addedGateways: readonly string[],
+): number {
+  return hasModelsToPick(candidates, addedGateways) ? 2 : 1;
+}
+
 export function candidatesForProviders(candidates: CandidateOption[], providers: ProviderOption[], providerKeys: string[] | undefined): CandidateOption[] {
   const selectedKeys = new Set(providerKeys);
   const gateways = new Set(
