@@ -168,3 +168,30 @@ export function uninstallHook(
 export function hookCommand(packageRoot: string): string {
   return `node ${JSON.stringify(join(packageRoot, 'hooks', 'capture-mode.mjs'))}`;
 }
+
+/**
+ * Removes the sonata tools from `permissions.allow`, and nothing else.
+ *
+ * The inverse of `allowSonataTools`, for `sonata reset`. Entries the user (or
+ * another tool) added stay, and an `allow` list left empty is dropped along
+ * with a `permissions` object that then holds nothing — so a settings file
+ * sonata was the only writer of comes back as close to untouched as a rewrite
+ * allows. A legacy `mcp__sonata__*` entry is swept too: it names a server this
+ * release no longer ships, so leaving it behind would keep granting a tool
+ * surface that does not exist.
+ */
+export function revokeSonataTools(settings: Settings): { settings: Settings; changed: boolean } {
+  const allow = settings.permissions?.allow;
+  if (allow === undefined) return { settings, changed: false };
+
+  const kept = allow.filter((t) => !SONATA_TOOLS.includes(t) && !t.startsWith('mcp__sonata__'));
+  if (kept.length === allow.length) return { settings, changed: false };
+
+  const permissions: Record<string, unknown> = { ...(settings.permissions ?? {}) };
+  if (kept.length === 0) delete permissions.allow;
+  else permissions.allow = kept;
+
+  const next: Settings = { ...settings, permissions: permissions as Settings['permissions'] };
+  if (Object.keys(permissions).length === 0) delete next.permissions;
+  return { settings: next, changed: true };
+}

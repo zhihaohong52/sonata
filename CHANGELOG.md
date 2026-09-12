@@ -8,6 +8,26 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+- **`sonata reset [--global] [--yes]`** — remove sonata's configuration and
+  generated files at one scope. `sonata init` writes to five places (the
+  config, the tier agents, the loop skill, a block inside a `CLAUDE.md` sonata
+  does not own, and two settings files carrying the routing env, four
+  lifecycle hooks, the permission hook and the tool allow-list), so undoing it
+  by hand meant knowing all five. Reset removes **only what sonata wrote**: an
+  agent file without sonata's marker survives, `permissions.allow` keeps every
+  entry that is not sonata's, `CLAUDE.md` loses what is between the markers and
+  not one byte more (verified by a round trip — merge then remove returns the
+  original file exactly), and a settings file is rewritten rather than deleted,
+  since sonata is one writer of it among several. It **keeps** what is
+  expensive to recreate — gateway keys, the usage ledger, the ranking and
+  pricing caches, the `.sonata/` run store — and prints that list, because a
+  command called "reset" that says nothing about keys and spend history reads
+  as having destroyed both. Hooks are matched by the file they run rather than
+  by this install's own absolute path, so a setup installed from a different
+  checkout is still removable. The full plan is shown and confirmed before
+  anything is touched, so the set named is exactly the set removed.
+
 ### Fixed
 - **A provider added during `sonata init` had no models to select.** After
   adding a provider and typing its key, models could be chosen on that

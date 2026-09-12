@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GUIDANCE_BEGIN, GUIDANCE_END, guidanceBlock, mergeGuidance } from '../../src/init/guidance.js';
+import { GUIDANCE_BEGIN, GUIDANCE_END, guidanceBlock, mergeGuidance, removeGuidance } from '../../src/init/guidance.js';
 
 describe('mergeGuidance', () => {
   const block = guidanceBlock();
@@ -123,5 +123,53 @@ describe('guidanceBlock', () => {
     // that reads as a broken agent rather than a missing `sonata code`.
     expect(block).toContain('model_not_found');
     expect(block).toContain('sonata doctor');
+  });
+});
+
+describe('removeGuidance', () => {
+  const block = guidanceBlock();
+
+  it('is undefined when the file has no sonata block', () => {
+    // Nothing to remove is not the same as "remove nothing": the caller
+    // reports it rather than rewriting a file it did not change.
+    expect(removeGuidance('# My project\n\nMine.\n')).toBeUndefined();
+  });
+
+  it('removes the block and leaves every other byte where it was', () => {
+    const existing = [
+      '# My project', '', 'Text above.', '',
+      GUIDANCE_BEGIN, 'sonata guidance', GUIDANCE_END, '',
+      'Text below.', '',
+    ].join('\n');
+    const removed = removeGuidance(existing);
+    expect(removed).toContain('Text above.');
+    expect(removed).toContain('Text below.');
+    expect(removed).not.toContain(GUIDANCE_BEGIN);
+    expect(removed).not.toContain('sonata guidance');
+  });
+
+  // The round trip is the property that matters: `sonata init` then `sonata
+  // reset` must hand the file back as it found it, or repeated cycles leave a
+  // growing tail of blank lines where the block kept being appended.
+  it('undoes a merge exactly', () => {
+    const existing = '# My project\n\nSome instructions I wrote.\n';
+    expect(removeGuidance(mergeGuidance(existing, block))).toBe(existing);
+  });
+
+  it('undoes a merge into a file that did not exist', () => {
+    expect(removeGuidance(mergeGuidance(undefined, block))).toBe('');
+  });
+
+  it('refuses a malformed file rather than guessing where the block stops', () => {
+    const broken = `# Mine\n\n${GUIDANCE_BEGIN}\nsomething\n`;
+    expect(() => removeGuidance(broken)).toThrow(/unterminated|marker/i);
+  });
+
+  it('refuses a file carrying two blocks', () => {
+    const broken = [
+      GUIDANCE_BEGIN, 'one', GUIDANCE_END, '', 'user text', '',
+      GUIDANCE_BEGIN, 'two', GUIDANCE_END, '',
+    ].join('\n');
+    expect(() => removeGuidance(broken)).toThrow(/more than one|duplicate|repeated/i);
   });
 });
