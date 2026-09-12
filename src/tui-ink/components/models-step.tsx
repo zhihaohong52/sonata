@@ -7,6 +7,8 @@ import { fetchModels as defaultFetchModels } from '../../native/models.js';
 
 export interface ModelsStepProps {
   candidates: CandidateOption[];
+  /** Gateways added during this run; `candidates` predates them. */
+  addedGateways?: readonly string[];
   gatewayBaseUrls: Record<string, string>;
   gatewayAuth: Record<string, NativeGatewayAuth>;
   /** Keys already resolvable for a gateway, by gateway name. */
@@ -35,8 +37,21 @@ export function refreshableGateways(
   gatewayBaseUrls: Record<string, string>,
   gatewayAuth: Record<string, NativeGatewayAuth>,
   keys: Record<string, string>,
+  /**
+   * Gateways added during this run, which `candidates` cannot contain.
+   *
+   * `candidates` is `allNativeCandidates`, computed once at startup, so a
+   * provider the user adds in the wizard contributes no rows to it. Deriving
+   * the refreshable set from candidates alone therefore excluded exactly the
+   * provider whose key had just been typed: it was never asked what it serves,
+   * so the picker had nothing to show and the models chosen on that provider's
+   * own screen looked like they had been discarded. Named explicitly rather
+   * than inferred from `keys`, which also holds stored keys for gateways the
+   * user did not select this run.
+   */
+  addedGateways: readonly string[] = [],
 ): string[] {
-  const gateways = [...new Set(candidates.map((candidate) => candidate.gateway))];
+  const gateways = [...new Set([...candidates.map((candidate) => candidate.gateway), ...addedGateways])];
   return gateways.filter((gateway) => {
     const auth = gatewayAuth[gateway];
     if (auth !== undefined && isOauthGatewayAuth(auth)) return false;
@@ -55,10 +70,10 @@ export function refreshableGateways(
  */
 export function ModelsStep(props: ModelsStepProps): React.ReactElement {
   const {
-    candidates, gatewayBaseUrls, gatewayAuth, keys, initialSelected,
+    candidates, addedGateways = [], gatewayBaseUrls, gatewayAuth, keys, initialSelected,
     fetchModels = defaultFetchModels, onSubmit, onBack, onCancel,
   } = props;
-  const targets = refreshableGateways(candidates, gatewayBaseUrls, gatewayAuth, keys);
+  const targets = refreshableGateways(candidates, gatewayBaseUrls, gatewayAuth, keys, addedGateways);
   const [live, setLive] = useState<Record<string, string[]> | undefined>(
     targets.length === 0 ? {} : undefined,
   );

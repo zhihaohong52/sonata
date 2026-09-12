@@ -9,6 +9,9 @@ import {
   applyStep,
   candidatesForProviders,
   knownCandidates,
+  addedGatewayNames,
+  hasModelsToPick,
+  stepBeforeRoles,
   initialRankedFor,
   acceptRemainingTiers,
   tierPickerKeys,
@@ -174,7 +177,10 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         onChange={setState}
         onContinue={() => {
           const candidates = candidatesForProviders(data.candidates, providers, state.providerKeys);
-          setStep(candidates.length > 0 ? 2 : 3);
+          // A provider added this run has no rows in `data.candidates` by
+          // design, so deciding from that set alone skipped the models step
+          // for exactly the provider whose key was just typed.
+          setStep(hasModelsToPick(candidates, addedGatewayNames(state)) ? 2 : 3);
         }}
         onBack={back}
         onCancel={cancel}
@@ -182,11 +188,24 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     }
     case 2: {
       const candidates = candidatesForProviders(data.candidates, data.providers, state.providerKeys);
-      if (candidates.length === 0) return <Summary state={state} onDone={onDone} onBack={back} />;
+      // A provider added this run exists only in `state`: `data.candidates`
+      // and `data.gatewayBaseUrls` were both computed at startup. Without
+      // these two, the gateway whose key was just typed is never asked what it
+      // serves, and the models chosen on its own screen look discarded.
+      const addedGateways = addedGatewayNames(state);
+      // Computed *before* this guard, not after: deciding from `candidates`
+      // alone sent a BYOK-only run straight past the step.
+      if (!hasModelsToPick(candidates, addedGateways)) {
+        return <Summary state={state} onDone={onDone} onBack={back} />;
+      }
+      const addedBaseUrls = Object.fromEntries(
+        (state.customProviders ?? []).map((provider) => [provider.name, provider.url]),
+      );
       return <ModelsStep
         key="models"
         candidates={candidates}
-        gatewayBaseUrls={data.gatewayBaseUrls ?? {}}
+        addedGateways={addedGateways}
+        gatewayBaseUrls={{ ...data.gatewayBaseUrls, ...addedBaseUrls }}
         gatewayAuth={data.gatewayAuth ?? {}}
         keys={{ ...data.storedKeys, ...state.byokKeys }}
         fetchModels={data.fetchModels ?? defaultFetchModels}
@@ -216,7 +235,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     }
     case 3: {
       const candidates = candidatesForProviders(data.candidates, data.providers, state.providerKeys);
-      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role, hint: ROLE_BLURB[role] }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={() => setStep(candidates.length > 0 ? 2 : 1)} onCancel={cancel} filterable={false} />;
+      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role, hint: ROLE_BLURB[role] }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={() => setStep(stepBeforeRoles(candidates, addedGatewayNames(state)))} onCancel={cancel} filterable={false} />;
     }
     case 4: {
       const roles = state.roles ?? [];

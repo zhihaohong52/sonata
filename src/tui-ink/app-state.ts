@@ -148,6 +148,56 @@ export function providersForHarnesses(providers: ProviderOption[], harnesses: st
     PSEUDO_HARNESSES.includes(provider.harness) || selected.has(provider.harness));
 }
 
+/**
+ * Gateways added during this run, which `data.candidates` cannot contain.
+ *
+ * Named from state rather than inferred from the stored-key map, which also
+ * holds keys for gateways the user did not select this run. A gateway that is
+ * both a known BYOK provider and a custom one appears once.
+ */
+export function addedGatewayNames(
+  state: { byokKeys?: Record<string, string>; customProviders?: { name: string; url: string }[] },
+): string[] {
+  return [...new Set([
+    ...Object.keys(state.byokKeys ?? {}),
+    ...(state.customProviders ?? []).map((provider) => provider.name),
+  ])];
+}
+
+/**
+ * Whether the models step has anything to offer, and so whether it may be
+ * skipped.
+ *
+ * `candidates` alone is the wrong test. A custom or BYOK provider has no rows
+ * in `allNativeCandidates` *by design* — that set is computed at startup — so
+ * deciding from it meant the wizard skipped the models step entirely whenever
+ * such a provider was the only one selected. The gateway was then never asked
+ * what it serves, and no amount of wiring inside the step could help, because
+ * the step never ran.
+ */
+export function hasModelsToPick(
+  candidates: CandidateOption[],
+  addedGateways: readonly string[],
+): boolean {
+  return candidates.length > 0 || addedGateways.length > 0;
+}
+
+/**
+ * Which step Back from the Roles screen returns to.
+ *
+ * Same question as `hasModelsToPick`, asked from the other direction, and kept
+ * beside it so the two cannot disagree: the wizard must not enter a step going
+ * forward that Back then steps over. It did — an added-only provider reached
+ * the models step and Back jumped past it to the providers screen, because
+ * this call site still compared `candidates.length` by hand.
+ */
+export function stepBeforeRoles(
+  candidates: CandidateOption[],
+  addedGateways: readonly string[],
+): number {
+  return hasModelsToPick(candidates, addedGateways) ? 2 : 1;
+}
+
 export function candidatesForProviders(candidates: CandidateOption[], providers: ProviderOption[], providerKeys: string[] | undefined): CandidateOption[] {
   const selectedKeys = new Set(providerKeys);
   const gateways = new Set(

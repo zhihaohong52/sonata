@@ -8,6 +8,24 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+- **A provider added during `sonata init` had no models to select.** After
+  adding a provider and typing its key, models could be chosen on that
+  provider's own screen and were then absent from the models step — reported
+  as "I can select models, but when I click Continue the models are not
+  available for selection". `refreshableGateways` derived the set of gateways
+  it may ask what they serve from `candidates`, which is
+  `allNativeCandidates`, computed once at startup: a gateway that did not
+  exist then contributes no rows, so the one provider whose key had just been
+  typed was never queried. The models survived in `nativeKeys` and reached the
+  written config, which is why this looked like a display bug rather than a
+  lost selection. Gateways added during the run are now named explicitly —
+  from `byokKeys` and `customProviders` — rather than inferred from the key
+  store, which also holds keys for gateways the user did not select this run;
+  their base URLs are merged in for the same reason. Every existing exclusion
+  still applies: an added gateway with no key, no base URL, or an OAuth
+  credential is still not asked.
+
 ### Added
 - **`sonata --version`** prints the running version and the directory it
   resolved from (`-v` and a bare `version` work too). The path is not padding:
