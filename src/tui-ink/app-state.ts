@@ -295,6 +295,48 @@ function gatewayIdKey(gateway: string, id: string): string {
  * reconstructing it would silently deselect models the user had already
  * chosen. Only a genuinely new id mints a key.
  */
+/**
+ * Every model the wizard currently knows about, startup set plus this run's
+ * additions.
+ *
+ * `data.candidates` is `allNativeCandidates`, computed once before the wizard
+ * draws anything, so a provider added during the run contributes nothing to
+ * it. Anything derived from it alone is therefore blind to exactly the models
+ * the user just chose — and two separate defects came from that single stale
+ * source: a provider added this run was never asked what it serves, and its
+ * models were mis-ranked.
+ *
+ * The ranking half is the quieter one. A model key is `<gateway>-<id>`, so
+ * recovering the upstream id needs the gateway names; without them
+ * `normalizeModelName` cannot strip the prefix, the model misses its catalog
+ * entry, and it scores as the `default` table row — capable, *not* cheap.
+ * When nothing then clears the cheap bar, `proposeTiers` falls back to making
+ * `simple` mirror `complex`, so the tier stops discriminating at all. Measured:
+ * with the gateway name absent, `simple` and `complex` come back identical.
+ *
+ * Keys are resolved, never guessed from prefixes: `byokModels` and
+ * `liveModels` are both keyed by gateway, so each model's gateway is known
+ * exactly. A key that a live refresh and a BYOK screen both produced appears
+ * once — a duplicate would be written to the config twice.
+ */
+export function knownCandidates(
+  candidates: CandidateOption[],
+  state: { byokModels?: Record<string, string[]>; liveModels?: Record<string, string[]> },
+): CandidateOption[] {
+  const merged = mergeLiveCandidates(candidates, state.liveModels ?? {});
+  const seen = new Set(merged.map((candidate) => candidate.key));
+  const out = [...merged];
+  for (const [gateway, ids] of Object.entries(state.byokModels ?? {})) {
+    for (const id of ids) {
+      const key = byokCandidateKey(gateway, id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ key, gateway, id, label: `${gateway}/${id}` });
+    }
+  }
+  return out;
+}
+
 export function mergeLiveCandidates(
   candidates: CandidateOption[],
   liveByGateway: Record<string, string[]>,
