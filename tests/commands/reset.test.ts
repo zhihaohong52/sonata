@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdirSync, mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { apply } from '../../src/init/apply.js';
 import type { InitPlan } from '../../src/init/plan.js';
-import { applyReset, describeReset, planReset, planSettingsReset } from '../../src/commands/reset.js';
+import { applyReset, cmdReset, describeReset, planReset, planSettingsReset } from '../../src/commands/reset.js';
 import { guidanceBlock, GUIDANCE_BEGIN, mergeGuidance } from '../../src/init/guidance.js';
 import { readSettings } from '../../src/settings.js';
+import { TIER_AGENT_MARKER } from '../../src/agent-markers.js';
 
 let home: string;
 let cwd: string;
@@ -159,5 +160,71 @@ describe('planSettingsReset', () => {
     expect(out.changed).toBe(true);
     expect(out.settings.permissions).toBeUndefined();
     expect((out.settings.env as Record<string, string>).ANTHROPIC_BASE_URL).toBe('https://not-sonata.example');
+  });
+});
+
+describe('reset reports what it could not do', () => {
+  // The worst shape a cleanup can fail in: silent, and indistinguishable from
+  // having had nothing to do. A scan that flattened every error to `[]` built
+  // a plan with no agents in it, and the command reported success having left
+  // every agent installed.
+  it('warns rather than reporting an empty plan when the agents directory cannot be read', () => {
+    const agentsDir = join(cwd, '.claude', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(join(agentsDir, 'code.md'), `x\n${TIER_AGENT_MARKER}\n`);
+    chmodSync(agentsDir, 0o000);
+    try {
+      const plan = planReset({ cwd, home, packageRoot });
+      expect(plan.actions.some((a) => a.kind === 'delete-agents')).toBe(false);
+      expect(plan.warnings.join(' ')).toMatch(/could not read/);
+    } finally {
+      chmodSync(agentsDir, 0o755);
+    }
+  });
+
+  it('exits non-zero and names the path when a removal fails', async () => {
+    const lines: string[] = [];
+    const skillDir = join(cwd, '.claude', 'skills', 'sonata-loop');
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, 'SKILL.md'), 'x');
+    writeFileSync(join(cwd, 'sonata.toml'), 'schema_version = 1\n');
+    // Make the config undeletable by sealing its parent directory.
+    chmodSync(cwd, 0o500);
+    try {
+      const code = await cmdReset({ cwd, home, packageRoot, yes: true }, {
+        out: (l) => lines.push(l),
+        confirm: async () => true,
+      });
+      expect(code).toBe(1);
+      expect(lines.join('\n')).toMatch(/could not be removed/);
+    } finally {
+      chmodSync(cwd, 0o755);
+    }
+  });
+});
+
+describe('describeReset', () => {
+  // Elsewhere a "… and N more" is a courtesy. Here the list *is* what is being
+  // agreed to, and a confirmation that hides paths it then deletes is not one.
+  it('names every agent file, never a truncated sample', () => {
+    const agentsDir = join(cwd, '.claude', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    const names = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+    for (const n of names) writeFileSync(join(agentsDir, `${n}.md`), `x\n${TIER_AGENT_MARKER}\n`);
+
+    const text = describeReset(planReset({ cwd, home, packageRoot })).join('\n');
+    for (const n of names) expect(text).toContain(join(agentsDir, `${n}.md`));
+    expect(text).not.toContain('more');
+  });
+
+  // `writeSettings` copies the file aside before writing, so the reset touches
+  // a second path and would overwrite a backup already sitting there.
+  it('names the settings backup it will overwrite', () => {
+    const settings = join(cwd, '.claude', 'settings.json');
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    writeFileSync(settings, JSON.stringify({ permissions: { allow: ['Bash(sonata dispatch:*)'] } }));
+
+    const text = describeReset(planReset({ cwd, home, packageRoot })).join('\n');
+    expect(text).toContain(`${settings}.bak`);
   });
 });

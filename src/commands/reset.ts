@@ -27,7 +27,7 @@
 import { existsSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { GLOBAL_CONFIG_RELATIVE } from '../config.js';
-import { isSonataAgent } from '../detect.js';
+import { isSonataAgentText } from '../detect.js';
 import { agentsDirFor, configPathFor } from '../init/helpers.js';
 import { removeGuidance } from '../init/guidance.js';
 import {
@@ -60,17 +60,37 @@ export interface ResetOptions {
   scope?: ResetScope;
 }
 
-/** The agent files in this directory that sonata generated. */
-function sonataAgents(dir: string): string[] {
-  if (!existsSync(dir)) return [];
+/**
+ * The agent files in this directory that sonata generated.
+ *
+ * Only a missing directory is an empty answer. Every other failure — a
+ * permission error, a bad mount, an unreadable file — used to be flattened to
+ * `[]` or to `false`, which produced a plan with no agents in it and a command
+ * that reported success having left every agent installed. That is the worst
+ * shape a cleanup can fail in: silent, and indistinguishable from having had
+ * nothing to do. Unreadable files are named as warnings instead, and the
+ * ownership test is the same one `sync` and `prune` use.
+ */
+function sonataAgents(dir: string): { files: string[]; warnings: string[] } {
+  const warnings: string[] = [];
+  let entries: string[];
   try {
-    return readdirSync(dir)
-      .filter((f) => f.endsWith('.md'))
-      .filter((f) => isSonataAgent(join(dir, f)))
-      .sort();
-  } catch {
-    return [];
+    entries = readdirSync(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { files: [], warnings };
+    return { files: [], warnings: [`could not read ${dir}: ${(err as Error).message} — agent files left in place`] };
   }
+
+  const files: string[] = [];
+  for (const f of entries.filter((name) => name.endsWith('.md')).sort()) {
+    const path = join(dir, f);
+    try {
+      if (isSonataAgentText(readFileSync(path, 'utf8'))) files.push(f);
+    } catch (err) {
+      warnings.push(`could not read ${path}: ${(err as Error).message} — left in place`);
+    }
+  }
+  return { files, warnings };
 }
 
 /**
@@ -156,12 +176,13 @@ export function planReset(opts: ResetOptions): ResetPlan {
 
   const agentsDir = agentsDirFor(scope, cwd, home);
   const agents = sonataAgents(agentsDir);
-  if (agents.length > 0) {
+  warnings.push(...agents.warnings);
+  if (agents.files.length > 0) {
     actions.push({
       kind: 'delete-agents',
-      label: `${agents.length} generated agent${agents.length === 1 ? '' : 's'}`,
+      label: `${agents.files.length} generated agent${agents.files.length === 1 ? '' : 's'}`,
       dir: agentsDir,
-      files: agents,
+      files: agents.files,
     });
   }
 
@@ -240,10 +261,19 @@ export function describeReset(plan: ResetPlan): string[] {
     for (const action of plan.actions) {
       lines.push(`    ${action.kind === 'write-settings' || action.kind === 'write-file' ? '~' : '-'} ${action.label}`);
       if (action.kind === 'delete-agents') {
-        for (const f of action.files.slice(0, 5)) lines.push(`        ${join(action.dir, f)}`);
-        if (action.files.length > 5) lines.push(`        … and ${action.files.length - 5} more`);
+        // Every path, never a truncated sample. Elsewhere a "… and N more" is
+        // a courtesy; here the list *is* the thing being agreed to, and a
+        // confirmation that hides paths it then deletes is not a confirmation.
+        for (const f of action.files) lines.push(`        ${join(action.dir, f)}`);
       } else {
         lines.push(`        ${action.path}`);
+        // `writeSettings` copies the file aside before writing, so the reset
+        // touches a second path — and would overwrite a backup already there.
+        // Naming it keeps "the set shown is the set touched" literally true,
+        // and the copy is the undo for this command, so it is kept.
+        if (action.kind === 'write-settings') {
+          lines.push(`        ${action.path}.bak  (previous contents, overwritten if one exists)`);
+        }
       }
     }
     lines.push('');
@@ -254,35 +284,71 @@ export function describeReset(plan: ResetPlan): string[] {
   return lines;
 }
 
-/** Carry out a plan. Returns the paths actually changed. */
-export function applyReset(plan: ResetPlan): string[] {
+/**
+ * Delete one path, reporting anything that is not "it was already gone".
+ *
+ * `ENOENT` is the only benign failure: a concurrent `sonata sync` or a
+ * half-finished earlier reset is a race, not a fault. Every other errno —
+ * `EACCES`, `EPERM`, `EBUSY`, `EISDIR` — means the artifact is still there,
+ * and swallowing it let the command report success over a setup it had not
+ * removed.
+ */
+function removePath(path: string, touched: string[], failures: string[]): void {
+  try {
+    unlinkSync(path);
+    touched.push(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    failures.push(`${path}: ${(err as Error).message}`);
+  }
+}
+
+export interface ResetOutcome {
+  /** Paths actually changed. */
+  touched: string[];
+  /** Paths sonata tried and failed to remove, with the reason. */
+  failures: string[];
+}
+
+/** Carry out a plan. */
+export function applyReset(plan: ResetPlan): ResetOutcome {
   const touched: string[] = [];
+  const failures: string[] = [];
   for (const action of plan.actions) {
     switch (action.kind) {
       case 'delete-file':
-        try { unlinkSync(action.path); touched.push(action.path); } catch { /* already gone */ }
+        removePath(action.path, touched, failures);
         break;
       case 'delete-dir':
-        rmSync(action.path, { recursive: true, force: true });
-        touched.push(action.path);
-        break;
-      case 'delete-agents':
-        for (const f of action.files) {
-          const path = join(action.dir, f);
-          try { unlinkSync(path); touched.push(path); } catch { /* already gone */ }
+        try {
+          rmSync(action.path, { recursive: true, force: true });
+          touched.push(action.path);
+        } catch (err) {
+          failures.push(`${action.path}: ${(err as Error).message}`);
         }
         break;
+      case 'delete-agents':
+        for (const f of action.files) removePath(join(action.dir, f), touched, failures);
+        break;
       case 'write-file':
-        writeFileSync(action.path, action.content);
-        touched.push(action.path);
+        try {
+          writeFileSync(action.path, action.content);
+          touched.push(action.path);
+        } catch (err) {
+          failures.push(`${action.path}: ${(err as Error).message}`);
+        }
         break;
       case 'write-settings':
-        writeSettings(action.path, action.settings);
-        touched.push(action.path);
+        try {
+          writeSettings(action.path, action.settings);
+          touched.push(action.path);
+        } catch (err) {
+          failures.push(`${action.path}: ${(err as Error).message}`);
+        }
         break;
     }
   }
-  return touched;
+  return { touched, failures };
 }
 
 export interface ResetIo {
@@ -302,8 +368,15 @@ export async function cmdReset(opts: ResetOptions & { yes?: boolean }, io: Reset
     return 1;
   }
 
-  const touched = applyReset(plan);
+  const { touched, failures } = applyReset(plan);
   io.out(`  ✓ removed ${touched.length} path${touched.length === 1 ? '' : 's'}`);
+  if (failures.length > 0) {
+    // A partial reset that exits 0 is the failure this command exists to
+    // avoid: the user believes the setup is gone and it is not.
+    io.out(`  ! ${failures.length} path(s) could not be removed:`);
+    for (const f of failures) io.out(`      ${f}`);
+    return 1;
+  }
   io.out('    ❯ run `sonata init` to set up again');
   return 0;
 }

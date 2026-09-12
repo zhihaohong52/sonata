@@ -172,4 +172,29 @@ describe('removeGuidance', () => {
     ].join('\n');
     expect(() => removeGuidance(broken)).toThrow(/more than one|duplicate|repeated/i);
   });
+  // The collapse is deliberately narrow. A wider `/\n{2,}$/` rule ate user
+  // content: a whitespace-only CLAUDE.md of three newlines came back as one,
+  // which is bytes outside the markers — the one thing this must never change.
+  it('does not eat the blank lines of a whitespace-only file', () => {
+    const existing = '\n\n\n';
+    expect(removeGuidance(mergeGuidance(existing, block))).toBe(existing);
+  });
+
+  // Unrecoverable and documented: a file that ended without a trailing newline
+  // was separated by two, and so was one that ended with a single newline.
+  // Adding a byte is the safe side of that ambiguity; deleting one is not.
+  it('returns a file that had no trailing newline with exactly one', () => {
+    expect(removeGuidance(mergeGuidance('text', block))).toBe('text\n');
+  });
+
+  // Three different originals — `# Mine`, `# Mine\n` and `# Mine\n\n` — produce
+  // byte-identical text once the block is appended, because the separator
+  // merge inserts shrinks as the file's own trailing newlines grow. So the
+  // trailing blank line cannot be recovered, and all three come back with a
+  // single newline: the shape the overwhelming majority of files have.
+  it('normalises a trailing blank line to one newline, since the three cases are indistinguishable', () => {
+    for (const existing of ['# Mine', '# Mine\n', '# Mine\n\n']) {
+      expect(removeGuidance(mergeGuidance(existing, block))).toBe('# Mine\n');
+    }
+  });
 });

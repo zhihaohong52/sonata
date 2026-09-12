@@ -123,14 +123,27 @@ export function locateGuidance(existing: string): { begin: number; end: number }
  * Drop the managed block, leaving every other byte where it was.
  *
  * `undefined` means there was nothing to remove — the caller reports "no block
- * here" rather than rewriting a file it did not change. The one cosmetic
- * liberty taken is collapsing the blank lines the block was separated by: an
- * `append` followed by a `remove` otherwise leaves a growing tail of them.
+ * here" rather than rewriting a file it did not change.
+ *
+ * The one liberty taken is dropping the blank line an append separated the
+ * block by, and it is deliberately narrow: *exactly* two trailing newlines
+ * collapse to one, and nothing else is touched. A wider rule (`/\n{2,}$/`)
+ * ate user content — a whitespace-only `CLAUDE.md` of three newlines came back
+ * as one, which is bytes outside the markers, the one thing this must never
+ * change. Without any rule, every merge/remove cycle would leave another blank
+ * line behind.
+ *
+ * One case is genuinely unrecoverable: a file that ended *without* a trailing
+ * newline was separated by two, and two is also what a file ending in one
+ * newline produces. Those are indistinguishable after the fact, so such a file
+ * comes back with a single trailing newline it did not have. Adding one byte
+ * is the safe side of an ambiguity whose other side deletes one.
  */
 export function removeGuidance(existing: string): string | undefined {
   const at = locateGuidance(existing);
   if (at === undefined) return undefined;
-  const before = existing.slice(0, at.begin).replace(/\n{2,}$/, '\n');
+  const head = existing.slice(0, at.begin);
+  const before = /(^|[^\n])\n\n$/.test(head) ? head.slice(0, -1) : head;
   const after = existing.slice(at.end).replace(/^\n+/, '');
   if (before === '') return after;
   return after === '' ? before : `${before}\n${after}`;
