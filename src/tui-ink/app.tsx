@@ -9,6 +9,8 @@ import {
   applyStep,
   candidatesForProviders,
   knownCandidates,
+  addedGatewayNames,
+  hasModelsToPick,
   initialRankedFor,
   acceptRemainingTiers,
   tierPickerKeys,
@@ -174,7 +176,10 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         onChange={setState}
         onContinue={() => {
           const candidates = candidatesForProviders(data.candidates, providers, state.providerKeys);
-          setStep(candidates.length > 0 ? 2 : 3);
+          // A provider added this run has no rows in `data.candidates` by
+          // design, so deciding from that set alone skipped the models step
+          // for exactly the provider whose key was just typed.
+          setStep(hasModelsToPick(candidates, addedGatewayNames(state)) ? 2 : 3);
         }}
         onBack={back}
         onCancel={cancel}
@@ -182,15 +187,16 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     }
     case 2: {
       const candidates = candidatesForProviders(data.candidates, data.providers, state.providerKeys);
-      if (candidates.length === 0) return <Summary state={state} onDone={onDone} onBack={back} />;
       // A provider added this run exists only in `state`: `data.candidates`
       // and `data.gatewayBaseUrls` were both computed at startup. Without
       // these two, the gateway whose key was just typed is never asked what it
       // serves, and the models chosen on its own screen look discarded.
-      const addedGateways = [...new Set([
-        ...Object.keys(state.byokKeys ?? {}),
-        ...(state.customProviders ?? []).map((provider) => provider.name),
-      ])];
+      const addedGateways = addedGatewayNames(state);
+      // Computed *before* this guard, not after: deciding from `candidates`
+      // alone sent a BYOK-only run straight past the step.
+      if (!hasModelsToPick(candidates, addedGateways)) {
+        return <Summary state={state} onDone={onDone} onBack={back} />;
+      }
       const addedBaseUrls = Object.fromEntries(
         (state.customProviders ?? []).map((provider) => [provider.name, provider.url]),
       );
