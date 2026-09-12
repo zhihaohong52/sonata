@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseConfig, loadConfig } from '../../src/config.js';
@@ -201,6 +201,30 @@ describe('cmdAgents', () => {
       }),
     });
     expect(loadConfig(cwd, home).tiers?.code.simple).toEqual(['acme-big']);
+  });
+
+  // `sync` leaves a file it does not own alone — correctly, it is not
+  // sonata's to overwrite. Reporting the new ranking without saying so would
+  // claim an agent that still holds unrelated content.
+  it('reports an agent file it could not write because someone else owns it', async () => {
+    const agentsDir = join(cwd, '.claude', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    const mine = join(agentsDir, 'code.md');
+    writeFileSync(mine, '---\nname: code\n---\n\nMy own agent, not sonata generated.\n');
+
+    const lines: string[] = [];
+    await cmdAgents({ cwd, home }, {
+      out: (l) => lines.push(l),
+      edit: async () => ({
+        code: { simple: ['acme-big'], complex: ['acme-big'] },
+        review: { simple: ['acme-big'], complex: ['acme-big'] },
+      }),
+    });
+
+    expect(lines.join('\n')).toContain('NOT written');
+    expect(lines.join('\n')).toContain(mine);
+    // And the file really is untouched.
+    expect(readFileSync(mine, 'utf8')).toContain('My own agent');
   });
 
   it('offers every model as a ranking candidate, native routes first', () => {

@@ -209,6 +209,50 @@ export function nativeTomlFor(
  * Neither shape is one sonata writes, but this reads files people edit, and
  * both fail in a way that leaves the user unable to save at all.
  */
+/**
+ * The multiline-string delimiter this line leaves open, if any.
+ *
+ * Counting triple quotes was not enough: a comment such as
+ * `# TOML uses """ for multiline strings` opened a string that never closed,
+ * the scanner then read every real `[tiers.*]` header as content, and the new
+ * block was appended alongside the old ones — which `parseConfig` rejects as a
+ * redefined table, so the user simply could not save. A quoted value carrying
+ * the same characters is that trap from the other direction.
+ *
+ * So the line is walked rather than counted: a `#` reached outside a string
+ * ends it, single-line basic and literal strings are skipped whole (basic
+ * strings honour backslash escapes, literal ones do not — TOML has none inside
+ * single quotes), and only a triple quote met in value position toggles state.
+ */
+function openDelimiterAfter(line: string): '"""' | "'''" | undefined {
+  let open: '"""' | "'''" | undefined;
+  let i = 0;
+  while (i < line.length) {
+    if (open !== undefined) {
+      if (line.startsWith(open, i)) { open = undefined; i += 3; } else i += 1;
+      continue;
+    }
+    // A `#` reached in value position starts a comment: nothing after it is
+    // structure, and nothing in it can open a string.
+    if (line[i] === '#') return undefined;
+    if (line.startsWith('"""', i)) { open = '"""'; i += 3; continue; }
+    if (line.startsWith("'''", i)) { open = "'''"; i += 3; continue; }
+    if (line[i] === '"') {
+      i += 1;
+      while (i < line.length && line[i] !== '"') i += line[i] === '\\' ? 2 : 1;
+      i += 1;
+      continue;
+    }
+    if (line[i] === "'") {
+      const end = line.indexOf("'", i + 1);
+      i = end === -1 ? line.length : end + 1;
+      continue;
+    }
+    i += 1;
+  }
+  return open;
+}
+
 export function replaceTiersBlock(
   toml: string,
   tiers: Record<string, { simple: string[]; complex: string[] }>,
@@ -227,16 +271,15 @@ export function replaceTiersBlock(
   let inString: '\"\"\"' | "'''" | undefined;
   for (const line of lines) {
     if (inString !== undefined) {
-      if (line.includes(inString)) inString = undefined;
+      const closes = line.indexOf(inString);
+      // Content after the closing delimiter is ordinary TOML again, so the
+      // rest of the line is rescanned rather than assumed quiet.
+      inString = closes === -1 ? inString : openDelimiterAfter(line.slice(closes + inString.length));
       if (!dropping) kept.push(line);
       else insertAt ??= kept.length;
       continue;
     }
-    // A delimiter that opens and closes on the same line leaves no open
-    // string, so only an odd number of them enters one.
-    for (const delim of ['\"\"\"', "'''"] as const) {
-      if (line.split(delim).length % 2 === 0) { inString = delim; break; }
-    }
+    inString = openDelimiterAfter(line);
     if (isHeader(line)) dropping = isTierHeader(line);
     if (!dropping) {
       kept.push(line);

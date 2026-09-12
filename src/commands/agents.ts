@@ -156,7 +156,7 @@ export function writeTiers(
    * not be guessed at.
    */
   expect?: Record<string, { simple: string[]; complex: string[] }>,
-): { path: string; agentsWritten: string[]; pruned: string[] } {
+): { path: string; agentsWritten: string[]; pruned: string[]; skipped: string[] } {
   const path = configPath(opts.cwd, opts.home);
   if (path === undefined || path === null) throw new Error('no sonata.toml found — run `sonata init`');
   const text = readFileSync(path, 'utf8');
@@ -184,7 +184,11 @@ export function writeTiers(
   const agentsDir = agentsDirOf(opts);
   const sync = cmdSync({ cwd: opts.cwd, home: opts.home, agentsDir });
   const pruned = sync.stale.length > 0 ? pruneAgents(agentsDir, sync.stale) : [];
-  return { path, agentsWritten: sync.written, pruned };
+  // A file sonata does not own sitting on a target path is left untouched by
+  // `sync` — correctly, it is not sonata's to overwrite. But reporting the new
+  // ranking without saying so would claim an agent that still holds unrelated
+  // content, which is the one way this command can lie about what it did.
+  return { path, agentsWritten: sync.written, pruned, skipped: sync.skipped };
 }
 
 /** Where this project's agents live. Mirrors what `sonata sync` uses. */
@@ -262,6 +266,11 @@ export async function cmdAgents(
   io.out(`  ✓ wrote ${written.path}`);
   io.out(`  ✓ regenerated ${written.agentsWritten.length} agents`);
   for (const file of written.pruned) io.out(`  ✓ removed ${file} — its tier no longer generates that agent`);
+  if (written.skipped.length > 0) {
+    io.out(`  ! ${written.skipped.length} agent file(s) were NOT written — they exist and are not sonata-generated:`);
+    for (const file of written.skipped) io.out(`      ${file}`);
+    io.out('      ❯ the ranking below is what the config now says; those agents still hold their own content');
+  }
   for (const line of renderAgents(agentRows(loadConfig(opts.cwd, opts.home)))) io.out(line);
   return 0;
 }

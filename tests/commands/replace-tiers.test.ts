@@ -123,6 +123,44 @@ describe('replaceTiersBlock', () => {
     expect(parseConfig(next).tiers?.code.simple).toEqual(['acme-fast']);
   });
 
+  // A comment carrying triple quotes used to open a string that never closed:
+  // every real header after it was read as content, the new block was appended
+  // alongside the old tables, and `parseConfig` rejected the redefined table —
+  // so the visible symptom was being unable to save at all.
+  it('does not read triple quotes inside a comment as a string delimiter', () => {
+    const commented = config.replace('[tiers.code]', '# TOML uses """ for multiline strings\n[tiers.code]');
+    const next = replaceTiersBlock(commented, {
+      code: { simple: ['acme-slow'], complex: ['acme-slow'] },
+      review: { simple: ['acme-slow'], complex: ['acme-slow'] },
+    });
+    expect(parseConfig(next).tiers?.code.simple).toEqual(['acme-slow']);
+    // The comment is not part of any table, so it survives.
+    expect(next).toContain('# TOML uses """ for multiline strings');
+  });
+
+  it('does not read triple quotes inside a single-line value as a delimiter', () => {
+    const quoted = config.replace('base_url = "https://acme.example/v1"',
+      'base_url = "https://acme.example/v1"\nnotes = "quotes \\"\\"\\" inline"');
+    const next = replaceTiersBlock(quoted, { code: { simple: ['acme-slow'], complex: ['acme-slow'] } });
+    expect(parseConfig(next).tiers?.code.simple).toEqual(['acme-slow']);
+  });
+
+  it('resumes scanning after a multiline string closes mid-line', () => {
+    const withString = config.replace('[run]', [
+      '[models."acme-big"]',
+      'gateway = "acme"',
+      'id = "big"',
+      'notes = """',
+      'a note',
+      '""" ',
+      '',
+      '[run]',
+    ].join('\n'));
+    const next = replaceTiersBlock(withString, { code: { simple: ['acme-slow'], complex: ['acme-slow'] } });
+    expect(parseConfig(next).tiers?.code.simple).toEqual(['acme-slow']);
+    expect(parseConfig(next).run?.tailWindowSeconds).toBe(20);
+  });
+
   it('is idempotent — replacing with what is already there parses back the same', () => {
     const same = replaceTiersBlock(config, parseConfig(config).tiers!);
     expect(parseConfig(same).tiers).toEqual(parseConfig(config).tiers);
