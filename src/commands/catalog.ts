@@ -54,15 +54,29 @@ export interface AaKeyValidation {
   reason?: string;
 }
 
+/** Bounds how long a bad or unreachable AA endpoint can hold up `auth add`'s reported result. */
+const AA_VALIDATE_TIMEOUT_MS = 10_000;
+
 /**
  * A single, uncached request against page 1 — enough to tell a rejected key
  * from a working one without writing (or overwriting) the catalog file.
  * `sonata auth add artificialanalysis` uses this so a bad key is reported
  * immediately, rather than only surfacing later from `sonata catalog update`.
+ *
+ * `redirect: 'error'` keeps the `x-api-key` header from ever being sent to a
+ * different origin — fetch's default follows a redirect and carries the
+ * header with it. The timeout guards against Undici's 300s default; the
+ * body is cancelled either way so an unread response never holds a
+ * connection open (both matter for one request as much as many).
  */
 export async function validateAaKey(key: string, fetchFn: typeof fetch = fetch): Promise<AaKeyValidation> {
+  let response: Response | undefined;
   try {
-    const response = await fetchFn(`${AA_MODELS_URL}?page=1`, { headers: { 'x-api-key': key } });
+    response = await fetchFn(`${AA_MODELS_URL}?page=1`, {
+      headers: { 'x-api-key': key },
+      redirect: 'error',
+      signal: AbortSignal.timeout(AA_VALIDATE_TIMEOUT_MS),
+    });
     if (response.ok) return { ok: true };
     const reason = response.status === 401 || response.status === 403
       ? `key rejected (HTTP ${response.status})`
@@ -70,6 +84,8 @@ export async function validateAaKey(key: string, fetchFn: typeof fetch = fetch):
     return { ok: false, reason };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  } finally {
+    await response?.body?.cancel().catch(() => {});
   }
 }
 

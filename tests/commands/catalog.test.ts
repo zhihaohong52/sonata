@@ -135,9 +135,20 @@ describe('validateAaKey', () => {
     const result = await validateAaKey('synthetic-key', async (input, init) => {
       expect(String(input)).toBe('https://artificialanalysis.ai/api/v2/language/models/free?page=1');
       expect(new Headers(init?.headers).get('x-api-key')).toBe('synthetic-key');
+      // Never follows a redirect with the key attached, and never hangs past a bound.
+      expect(init?.redirect).toBe('error');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
       return response(aaFixture());
     });
     expect(result).toEqual({ ok: true });
+  });
+
+  it('reports a redirect as a validation failure rather than following it with the key attached', async () => {
+    const result = await validateAaKey('synthetic-key', async () => {
+      throw new TypeError('fetch failed: unexpected redirect');
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/redirect/i);
   });
 
   it('reports a rejected key by status', async () => {
