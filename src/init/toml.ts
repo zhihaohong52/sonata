@@ -179,3 +179,61 @@ export function nativeTomlFor(
   );
   return lines.join('\n');
 }
+
+/**
+ * Rewrite only the `[tiers]` tables of an existing config, byte-for-byte
+ * everywhere else.
+ *
+ * `sonata agents` re-ranks a tier, and that makes it the second writer of
+ * `sonata.toml`. The obvious route — round-trip the config back through
+ * `nativeTomlFor` — is the one to avoid: that function rebuilds the file from
+ * a reconstructed `NativeCandidate[]`, and anything the reconstruction cannot
+ * recover is deleted on write. That is exactly the shape of the bug that
+ * silently un-priced a gateway on every `sonata init`, and a *second* writer
+ * carrying the same hazard doubles the number of places it can recur.
+ *
+ * So this edits text instead. Preservation is not a list of fields that must
+ * be kept in step with `parseConfig` — it is the default, and the only thing
+ * that can be lost is a `[tiers.*]` table, which is what the caller is
+ * replacing. A table ends at the next line that opens one, which is the whole
+ * of TOML's block structure as this file uses it; the replacement lands where
+ * the first old table was, so a hand-ordered file keeps its shape.
+ */
+export function replaceTiersBlock(
+  toml: string,
+  tiers: Record<string, { simple: string[]; complex: string[] }>,
+): string {
+  const lines = toml.split('\n');
+  const isHeader = (line: string): boolean => /^\s*\[/.test(line);
+  const isTierHeader = (line: string): boolean => /^\s*\[\s*tiers\s*[.\]]/.test(line);
+
+  const kept: string[] = [];
+  let insertAt: number | undefined;
+  let dropping = false;
+  for (const line of lines) {
+    if (isHeader(line)) dropping = isTierHeader(line);
+    if (!dropping) {
+      kept.push(line);
+      continue;
+    }
+    // Remember where the first dropped table began, so the new block lands in
+    // the same place rather than at the end of a file someone has ordered.
+    insertAt ??= kept.length;
+  }
+
+  const block = Object.entries(tiers).flatMap(([role, lists]) => [
+    `[tiers.${tomlKey(role)}]`,
+    `simple = [${lists.simple.map(tomlKey).join(', ')}]`,
+    `complex = [${lists.complex.map(tomlKey).join(', ')}]`,
+    '',
+  ]);
+
+  if (insertAt === undefined) {
+    // No `[tiers]` at all. Appending is the only safe placement: these are
+    // table headers, so they cannot be inserted above one without capturing
+    // that table's keys.
+    const tail = kept.length > 0 && kept[kept.length - 1] !== '' ? [''] : [];
+    return [...kept, ...tail, ...block].join('\n');
+  }
+  return [...kept.slice(0, insertAt), ...block, ...kept.slice(insertAt)].join('\n');
+}

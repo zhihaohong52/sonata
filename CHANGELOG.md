@@ -29,6 +29,34 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   by this install's own absolute path, so a setup installed from a different
   checkout is still removable. The full plan is shown and confirmed before
   anything is touched, so the set named is exactly the set removed.
+- **`sonata agents [--list] [--json]`** — see what each generated tier agent
+  actually runs on, and re-rank it without walking the whole `sonata init`
+  wizard. A tier is a ranked fallback list, and the things that matter about
+  one were invisible in the config file: what each key resolves to, its context
+  window, whether every candidate clears 1M (and so whether the alias carries
+  `[1m]`), and whether a key still names a model at all. In a terminal the view
+  is also the editor — enter re-ranks one list through the same `RankedSelect`
+  the wizard uses, `w` writes and regenerates the agent files.
+
+  This makes it the **second writer of `sonata.toml`**, which is the risk it is
+  designed around. It writes through `replaceTiersBlock`, which removes the
+  `[tiers.*]` tables and emits new ones in their place, leaving every other
+  byte untouched. Round-tripping through `nativeTomlFor` was rejected: that
+  rebuilds the file from a reconstructed `NativeCandidate[]`, so anything the
+  reconstruction cannot recover is deleted on write — precisely the failure
+  that silently un-priced a gateway on every `sonata init`, and a second writer
+  carrying it would double the places it can recur. Here preservation is the
+  default rather than a list of fields kept in step with the parser. The result
+  is parsed back **before** it is written, since a rewrite that will not load
+  leaves no working config at all and would surface later from an unrelated
+  command.
+
+  The view is derived with the same predicates `sync` writes by
+  (`tiersCollapse`, `tierQualifiesForExtendedContext`) rather than re-deriving
+  either: a view that disagrees with the files on disk about what exists is
+  worse than no view. The editor lists role × tier rather than agent-shaped,
+  because a collapsed pair has to be openable separately or the tiers could
+  never be made to differ again; each row names the agent file it lands in.
 
 ### Fixed
 - **A provider added during `sonata init` had no models to select.** After
