@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-09-12
+
 ### Added
 - **models.dev pricing falls back to OpenRouter, and to nothing else.** A lab's
   own models.dev entry lags its releases: `deepseek-v4.1-flash` is absent from
