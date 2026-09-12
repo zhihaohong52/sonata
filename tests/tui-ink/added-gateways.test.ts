@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addedGatewayNames, hasModelsToPick } from '../../src/tui-ink/app-state.js';
+import { addedGatewayNames, hasModelsToPick, stepBeforeRoles } from '../../src/tui-ink/app-state.js';
 import type { CandidateOption } from '../../src/tui-ink/app-state.js';
 
 const startup: CandidateOption[] = [
@@ -44,5 +44,24 @@ describe('hasModelsToPick — whether the wizard may skip the models step', () =
 
   it('skips only when there is genuinely nothing to pick', () => {
     expect(hasModelsToPick([], [])).toBe(false);
+  });
+});
+
+describe('stepBeforeRoles — Back from the Roles screen', () => {
+  // Third place the same predicate was spelled out by hand, and the third to
+  // drift: the wizard correctly *entered* the models step for an added-only
+  // provider, but Back from Roles skipped over it to the providers screen,
+  // because this call site still asked `candidates.length > 0`. Naming the
+  // decision is what stops a fourth copy.
+  it('returns to the models step when an added gateway supplied the models', () => {
+    expect(stepBeforeRoles([], ['mylab'])).toBe(2);
+  });
+
+  it('returns to the models step for ordinary harness candidates', () => {
+    expect(stepBeforeRoles(startup, [])).toBe(2);
+  });
+
+  it('skips back to providers only when the models step was never shown', () => {
+    expect(stepBeforeRoles([], [])).toBe(1);
   });
 });

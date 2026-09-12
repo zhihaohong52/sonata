@@ -11,6 +11,7 @@ import {
   knownCandidates,
   addedGatewayNames,
   hasModelsToPick,
+  stepBeforeRoles,
   initialRankedFor,
   acceptRemainingTiers,
   tierPickerKeys,
@@ -234,7 +235,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     }
     case 3: {
       const candidates = candidatesForProviders(data.candidates, data.providers, state.providerKeys);
-      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role, hint: ROLE_BLURB[role] }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={() => setStep(candidates.length > 0 ? 2 : 1)} onCancel={cancel} filterable={false} />;
+      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role, hint: ROLE_BLURB[role] }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={() => setStep(stepBeforeRoles(candidates, addedGatewayNames(state)))} onCancel={cancel} filterable={false} />;
     }
     case 4: {
       const roles = state.roles ?? [];
