@@ -15,4 +15,8 @@ version and auth, and the permission hook.
 | A run never finishes | It is capped by `run_timeout_seconds`. Attach with `tmux attach -t sonata-<id>` to watch it. |
 | `sonata doctor` says "config predates [tiers]" | Run `sonata init` — it migrates the config to `[models]`+`[tiers]`, carrying through every previously selected model. |
 | `sonata doctor` says "tier agents need a routed session" | No session routes native traffic to the router. Run `sonata route auto` (or `--global`). |
+| A tier always picks the wrong model first | The tier is a *ranked* list and the order is the fallback order. Run `sonata agents` and re-rank it — no need to walk the whole `sonata init` wizard. |
+| A tier agent's window is smaller than the model's | The alias only claims 1M when **every** candidate in that tier has a 1M window, since any of them may answer. `sonata agents` shows each candidate's window and whether the alias carries `[1m]`. |
+| Setup is in a bad state and you want to start clean | `sonata reset` (add `--global` for the machine scope) removes the config, generated agents, loop skill, CLAUDE.md block and routing hooks, while keeping your keys and usage ledger. Then run `sonata init` again. |
+| Two installs disagree about a fixed bug | `sonata` on PATH runs `dist/`, not `src/`. `sonata --version` prints the version *and* the directory it ran from, which is how you tell which one answered. |
 | `sonata serve --daemon` times out with "the daemon did not answer" | Something already holds the router port — often a stale daemon or another native router. Run `sonata restart` instead; it kills the recorded occupant first. |

@@ -1,33 +1,61 @@
-# Handoff — sonata after 0.6.0
+# Handoff — sonata after 0.8.3
 
-Written 2026-09-04, at the end of the session that shipped 0.6.0. Read this
-before starting new work. It records what is done, what is deliberately *not*
-done, what to pick up if you want work, and the traps that have cost previous
-sessions real time.
+Originally written 2026-09-04 at the end of the 0.6.0 session; the state
+section was rewritten 2026-09-12 after 0.8.3. Read this before starting new
+work. It records what is done, what is deliberately *not* done, what to pick
+up if you want work, and the traps that have cost previous sessions real time.
 
-**The short version:** everything on the roadmap is built, shipped and
-released. There is no queued task. The next move is a judgement call that
-belongs to the user, not a checklist item — so read the 1.0 gate section
-before you go looking for something to do.
+**The short version:** every roadmap item is built, shipped and released, and
+the work since has been driven by use rather than by a list. There is no queued
+task. The next move is a judgement call that belongs to the user — read the 1.0
+gate section before you go looking for something to do.
 
 ## Where things stand
 
-- `main` at `9035218`, clean, in sync with origin. `[Unreleased]` is empty.
-- **npm**: `@zhihaohong52/sonata@0.6.0`, `latest`, published 2026-09-03 from
-  the pushed tag with every `release.yml` step green.
-- **All fourteen roadmap items are ✅ and every one is in a published
-  release.** `docs/roadmap.md` names the release each shipped in and explains
-  *why* each is shaped the way it is. 0.6.0 carried the last four — 04
-  (budget guardrails), 07 (worktree delta), 10 (config schema v1), 12
-  (report-contract manifest).
-- **1523 tests across 85 files**, typecheck and build clean, verified on the
-  merged `main` before tagging. The "two unidentified test failures" line that
-  haunted several handoffs has not reproduced in many consecutive full runs —
-  treat it as resolved.
-- **Zero open issues, zero open PRs** on GitHub.
-- **1.0 is still not tagged, on purpose.** Standing decision the user
-  confirmed on 2026-09-02 ("close remaining items, don't tag 1.0 yet"); nothing
-  since has changed it.
+- `main` at `3799c0f` (`chore(release): v0.8.3`), clean, in sync with origin.
+  `[Unreleased]` is empty.
+- **npm**: `@zhihaohong52/sonata@0.8.3`, `latest`, published 2026-09-12 from
+  the pushed tag with every `release.yml` step green and provenance signed.
+- **1846 tests across 100 files**, typecheck and `npm pack --dry-run` clean,
+  verified on the merged `main` before tagging.
+- **Zero open issues, zero open PRs.**
+- **All fourteen roadmap items remain ✅**, each named with the release it
+  shipped in. `docs/roadmap.md` explains *why* each is shaped as it is; nothing
+  since 0.6.0 has added or reopened a roadmap row, because everything after it
+  came from running the thing rather than from the plan.
+- **1.0 is still not tagged, on purpose.** Standing decision the user confirmed
+  on 2026-09-02 ("close remaining items, don't tag 1.0 yet"); nothing since has
+  changed it.
+
+### What 0.7.0 – 0.8.3 added, and why
+
+Read `CHANGELOG.md` for the detail. The shape of it:
+
+- **Multi-tenant routing** — one router per machine, each request resolved to
+  its own project's `sonata.toml` by a tenant id over the config's *realpath*.
+  Cooldowns, budget, pricing and credentials all key off that tenant.
+- **Pricing that admits what it does not know** — models.dev rates, an
+  OpenRouter fallback for one unnamed provider, vendor-qualified key matching
+  that refuses to pick between two disagreeing prices, and `pricing_provider` /
+  `[price]` blocks now *preserved* across an `init` rewrite. That last one was
+  a real data loss: read by `parseConfig`, written by nobody, so every `sonata
+  init` silently un-priced the gateway and narrowed `[budget]` with it.
+- **Real context windows** — windows come from models.dev instead of a 128000
+  placeholder that 19 of 24 models on the development machine were carrying,
+  and a tier whose every candidate clears 1M generates its alias with a `[1m]`
+  suffix that Claude Code reads as "assume 1M" and strips before routing.
+- **`sonata --version`**, which prints the version *and* the directory it ran
+  from, because `sonata` on PATH runs `dist/` and two bugs in this repo were
+  "fixed" while reproducing for exactly that reason.
+- **`sonata agents`** (0.8.3) — see and re-rank each tier agent's ranked
+  candidates without walking the wizard. It is the **second writer of
+  `sonata.toml`**, and writes through `replaceTiersBlock`, which replaces the
+  `[tiers]` tables alone and leaves every other byte alone. Round-tripping
+  through `nativeTomlFor` was rejected deliberately: that rebuilds the file
+  from a reconstructed `NativeCandidate[]`, which is the exact shape of the
+  `pricing_provider` loss above.
+- **`sonata reset`** (0.8.3) — undo what `init` wrote, at one scope, removing
+  only what sonata wrote and keeping keys, ledger and caches.
 
 ## There is no queued task — read this before inventing one
 
@@ -321,6 +349,30 @@ is worth more than a clean document.
   origin/main..<new-head>` came back byte-identical here.
 - **`reviewThreads(first: 50)` silently drops threads past 50.** Always use
   `first: 100`.
+- **Never merge on a thread count alone — run `node scripts/pr-status.mjs`.**
+  CodeRabbit posts some findings as plain *issue comments* rather than review
+  threads, so a PR can report "0 unresolved threads" while a P1 sits in a
+  comment body; that is how a blocking finding on #23 was nearly merged past.
+  The script reads mergeability, CI checks, threads *and* the latest bot
+  verdict, and exits non-zero unless all four are clean. Its first run caught a
+  failing CI check a manual sweep had missed, and later exposed an empty test
+  file committed by mistake (96/97 files collected while every test passed).
+- **This repository is under 10 stars, so CodeRabbit does not review
+  automatically.** It posts an "IMPORTANT: Trigger review" notice instead,
+  which `pr-status` reports as *no recognisable verdict* — correctly, since the
+  alternative is calling an unreviewed PR clean. Comment `@coderabbitai review`
+  to start one. Re-requests are **rate limited**, and the refusal ("Review rate
+  limited … does not re-review already reviewed commits") looks identical
+  whether the review has run or not; the reviews *do* land on their own
+  schedule, so hammering the command achieves nothing. The user asked
+  explicitly for that hammering to stop on 2026-09-12.
+- **Resolving a conflict by keeping both sides needs reading afterwards.**
+  Rebasing `feat/agents` onto a merged `feat/reset` this way produced a
+  `CLAUDE.md` paragraph spliced from two half-sentences and a `src/cli.ts` that
+  would not parse (the first command block lost its closing). Typecheck caught
+  the code; only re-reading caught the prose. A CHANGELOG merge in an earlier
+  session truncated six bullets to two the same way. Check a word count across
+  the splice, or read it.
 - **`gh pr merge` and `git push --force-with-lease` get blocked by the
   permission classifier** in auto mode, repeatedly and unpredictably. Hand them
   to the user rather than retrying — same instability documented for the

@@ -63,3 +63,47 @@ that shape parses fine in the meantime — `sonata doctor` just points at
 
 Run `sonata sync` after editing the config; Claude Code picks up the
 generated agents automatically.
+
+## Seeing and changing a ranking
+
+`sonata agents` prints every generated tier agent, what each of its ranked
+candidates resolves to, that model's context window, and whether the agent's
+alias carries `[1m]`:
+
+```text
+code-simple
+    1. flash                        acme/deepseek-v4-flash-0731  128K
+    2. kimi-k3                      opencode/openrouter/kimi-k3  window unknown  harness only
+```
+
+Three things there are invisible in the file itself: what a key actually
+resolves to, whether every candidate clears 1M (which is what decides the
+`[1m]` suffix, and it has to hold for *whichever* model answers, not the best
+one), and whether a key still names a model at all.
+
+Run it in a terminal and it is also the editor — `enter` re-ranks one list
+through the same picker `sonata init` uses, `w` writes and regenerates the
+agent files. `--list` prints without the editor, `--json` emits the same rows
+for a script.
+
+It is the only writer of `sonata.toml` besides `sonata init`, and it replaces
+the `[tiers]` tables alone: every other byte of your config, including
+hand-written `[price]` blocks and `pricing_provider`, is left exactly where it
+was. It refuses to write at all if the file changed while the editor was open,
+rather than reverting a tier you edited elsewhere.
+
+## Starting over
+
+`sonata reset` removes what `sonata init` wrote at one scope — the config, the
+generated agents, the loop skill, the managed `CLAUDE.md` block, and the
+routing env, lifecycle hooks, permission hook and tool allow-list from the
+settings files. Add `--global` for the machine scope, `--yes` to skip the
+confirmation.
+
+It removes **only what sonata wrote**: an agent file you wrote by hand survives,
+`permissions.allow` keeps every entry that is not sonata's, and `CLAUDE.md`
+loses what is between the sonata markers and nothing else. It **keeps** what is
+expensive to recreate — your gateway keys, the usage ledger, the ranking and
+pricing caches, and the `.sonata/` run store — and prints that list, so a
+reset never silently costs you your credentials or spend history. The full plan
+is shown, path by path, before anything is touched.
