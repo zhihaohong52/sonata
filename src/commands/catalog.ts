@@ -49,6 +49,30 @@ export interface CatalogUpdateResult {
   modelsDev: CatalogUpdateSuccess | CatalogUpdateFailure;
 }
 
+export interface AaKeyValidation {
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * A single, uncached request against page 1 — enough to tell a rejected key
+ * from a working one without writing (or overwriting) the catalog file.
+ * `sonata auth add artificialanalysis` uses this so a bad key is reported
+ * immediately, rather than only surfacing later from `sonata catalog update`.
+ */
+export async function validateAaKey(key: string, fetchFn: typeof fetch = fetch): Promise<AaKeyValidation> {
+  try {
+    const response = await fetchFn(`${AA_MODELS_URL}?page=1`, { headers: { 'x-api-key': key } });
+    if (response.ok) return { ok: true };
+    const reason = response.status === 401 || response.status === 403
+      ? `key rejected (HTTP ${response.status})`
+      : `request failed (HTTP ${response.status})`;
+    return { ok: false, reason };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

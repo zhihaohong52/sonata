@@ -27,7 +27,7 @@ import { cmdCode } from './commands/code.js';
 import { recentRoutes } from './commands/status.js';
 import { summarizeRuns } from './commands/runs.js';
 import { cmdRoute, cmdRouteSession, cmdRouteSubagent, type RouteAction } from './commands/route.js';
-import { cmdCatalogUpdate } from './commands/catalog.js';
+import { cmdCatalogUpdate, validateAaKey } from './commands/catalog.js';
 import { cmdLitellm } from './commands/litellm.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
 import { MODELS_DEV_ATTRIBUTION } from './modelsdev.js';
@@ -682,6 +682,16 @@ export async function main(argv: string[]): Promise<number> {
       const key = await readAuthKey();
       if (!key) throw new Error('sonata auth add requires a non-empty key');
       cmdAuthAdd({ home: homedir(), gateway, key });
+      // artificialanalysis is the one gateway sonata itself calls directly
+      // (never through LiteLLM), so it is the one case a plain, uncached
+      // request can confirm immediately — otherwise a bad key surfaces only
+      // later, from `sonata catalog update`.
+      if (gateway === 'artificialanalysis') {
+        const result = await validateAaKey(key);
+        console.log(result.ok
+          ? 'key stored and verified — ready for `sonata catalog update`'
+          : `key stored, but verification failed: ${result.reason}`);
+      }
       return 0;
     }
     throw new Error('sonata auth requires list, add <gateway>, remove <gateway> or login <gateway>');
@@ -872,8 +882,18 @@ async function readAuthKey(): Promise<string> {
       for (const char of text) {
         if (char === '\n' || char === '\r') return value.trim();
         if (char === '\u0003') throw new Error('sonata auth add cancelled');
-        if (char === '\u007f' || char === '\b') value = value.slice(0, -1);
-        else value += char;
+        if (char === '\u007f' || char === '\b') {
+          // Raw mode disables the terminal's own echo, and this loop never
+          // wrote anything back either -- typing produced no visible feedback
+          // at all, not even masked, which read as the keystrokes going nowhere.
+          if (value.length > 0) {
+            value = value.slice(0, -1);
+            stdout.write('\b \b');
+          }
+        } else {
+          value += char;
+          stdout.write('*');
+        }
       }
     }
   } finally {
