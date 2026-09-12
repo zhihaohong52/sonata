@@ -8,6 +8,7 @@ import { cmdWait } from './commands/wait.js';
 import { GLOBAL_CONFIG_RELATIVE, loadConfig, NoConfigError } from './config.js';
 import { cmdApprove } from './commands/approve.js';
 import { cmdSync } from './commands/sync.js';
+import { cmdReset } from './commands/reset.js';
 import { cmdDoctor } from './commands/doctor.js';
 import { cmdGc } from './commands/gc.js';
 import { cmdInit, isCancellation } from './commands/init.js';
@@ -38,6 +39,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata --version         print the running version and the install it ran from
   sonata doctor [--json]   check tmux, harnesses, auth and versions
   sonata sync      regenerate agent files from sonata.toml
+  sonata reset     remove sonata's configuration and generated files [--global] [--yes]
   sonata run       launch a harness run, print its id
   sonata dispatch  run a ranked tier with harness fallback
   sonata tail      poll a run for progress
@@ -383,6 +385,29 @@ export async function main(argv: string[]): Promise<number> {
       }
     }
     return 0;
+  }
+
+  if (command === 'reset') {
+    const { values } = parseArgs({
+      args: rest,
+      options: { global: { type: 'boolean', default: false }, yes: { type: 'boolean', default: false } },
+    });
+    // A non-interactive run with no `--yes` cannot be asked, and must not
+    // assume: removing a setup nobody confirmed is the one mistake here that
+    // costs real work to undo.
+    return cmdReset(
+      {
+        cwd: process.cwd(),
+        home: homedir(),
+        packageRoot: packageRoot(),
+        scope: values.global ? 'global' : 'project',
+        yes: values.yes,
+      },
+      {
+        out: (line) => console.log(line),
+        confirm: async (question) => isInteractive() && await confirm(question, false),
+      },
+    );
   }
 
   if (command === 'doctor') {
