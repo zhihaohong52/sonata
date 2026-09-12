@@ -8,6 +8,7 @@ import { loadAaCatalog, proposeTiers } from '../catalog.js';
 import {
   applyStep,
   candidatesForProviders,
+  knownCandidates,
   initialRankedFor,
   acceptRemainingTiers,
   tierPickerKeys,
@@ -223,15 +224,20 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const tier = tierIndex % 2 === 0 ? 'simple' : 'complex';
       if (!role) return <Summary state={state} onDone={onDone} onBack={back} />;
       const catalog = loadAaCatalog(data.home);
+      // Ranking runs over every model actually selected, not the startup set:
+      // `data.candidates` predates this run's additions, and a model whose
+      // gateway name is missing cannot have its id recovered, misses its
+      // catalog entry, and drops out of the simple tier — measured, `simple`
+      // and `complex` come back identical.
+      const known = knownCandidates(data.candidates, state);
       // Gateway names come from the candidate set: a model key is
-      // `<gateway>-<id>`, and without them the id cannot be recovered, so the
-      // model misses its catalog entry and drops out of the simple tier.
-      const gateways = [...new Set(data.candidates.map((candidate) => candidate.gateway))];
+      // `<gateway>-<id>`, and without them the id cannot be recovered.
+      const gateways = [...new Set(known.map((candidate) => candidate.gateway))];
       // Resolved from the candidate set, not by matching key prefixes: a key
       // only looks like `<gateway>-<id>`.
       const avoid = new Set(data.avoidGateways ?? []);
       const avoided = new Set(
-        data.candidates.filter((c) => avoid.has(c.gateway)).map((c) => c.key),
+        known.filter((c) => avoid.has(c.gateway)).map((c) => c.key),
       );
       const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways, avoided);
       // A model native-selected this run that no prior run ever ranked for
@@ -249,7 +255,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       return <RankedSelect
         key={`${role}-${tier}`}
         title={`${role}: ${tier} models`}
-        items={tierPickerKeys(state.nativeKeys ?? [], initialRanked, data.candidates.map((c) => c.key)).map((key) => ({ value: key, label: key }))}
+        items={tierPickerKeys(state.nativeKeys ?? [], initialRanked, known.map((c) => c.key)).map((key) => ({ value: key, label: key }))}
         initialRanked={initialRanked}
         footer={footer}
         onSubmit={(ranked) => {
@@ -266,8 +272,12 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
                 roles, tierIndex + 1, proposal,
                 // The same universe the picker builds its items from, so a
                 // deselected-but-natively-routable key is withheld here exactly
-                // as it would be on the screen this is standing in for.
-                data.candidates.map((c) => c.key),
+                // as it would be on the screen this is standing in for. It has
+                // to be `known` for the same reason the screen uses it: with
+                // the startup set, bulk acceptance would withhold different
+                // keys from the screens it stands in for, and the two paths are
+                // required to write a byte-identical config.
+                known.map((c) => c.key),
                 addedKeys,
               ));
               setStep(5);
