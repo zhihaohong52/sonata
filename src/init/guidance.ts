@@ -69,6 +69,97 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 /**
+ * Where the managed block sits, or `undefined` when there is none.
+ *
+ * Extracted so the merge and the removal cannot disagree about what counts as
+ * a well-formed file. Every malformed shape throws here rather than being
+ * repaired, for the reason the markers exist at all: each available repair —
+ * inventing an end, reading a stray marker as prose, rewriting the first of
+ * two blocks — can eat a paragraph the user wrote.
+ */
+export function locateGuidance(existing: string): { begin: number; end: number } | undefined {
+  const begins = countOccurrences(existing, GUIDANCE_BEGIN);
+  const ends = countOccurrences(existing, GUIDANCE_END);
+
+  // Repeated markers are refused before any splice is attempted. `indexOf`
+  // alone would span from the *first* begin to the *first* end, and in a file
+  // shaped begin/…/begin/…/end that swallows the user text sitting between the
+  // two begins. Two complete blocks are equally malformed: rewriting one would
+  // leave the other behind to contradict it.
+  if (begins > 1 || ends > 1) {
+    throw new Error(
+      `CLAUDE.md contains more than one sonata block (${begins} "${GUIDANCE_BEGIN}", `
+      + `${ends} "${GUIDANCE_END}"). Leave exactly one, and run the command again.`,
+    );
+  }
+
+  const begin = existing.indexOf(GUIDANCE_BEGIN);
+  const end = existing.indexOf(GUIDANCE_END);
+
+  // A marker without its partner means the file was hand-edited.
+  if (begin !== -1 && end === -1) {
+    throw new Error(
+      `CLAUDE.md has an unterminated sonata block: "${GUIDANCE_BEGIN}" with no matching `
+      + `"${GUIDANCE_END}". Restore the end marker, or delete the block, and run the command again.`,
+    );
+  }
+  if (begin === -1 && end !== -1) {
+    throw new Error(
+      `CLAUDE.md has a stray "${GUIDANCE_END}" marker with no matching "${GUIDANCE_BEGIN}". `
+      + 'Remove it, and run the command again.',
+    );
+  }
+  if (begin !== -1 && end !== -1 && end < begin) {
+    throw new Error(
+      `CLAUDE.md has sonata markers in the wrong order ("${GUIDANCE_END}" before `
+      + `"${GUIDANCE_BEGIN}"). Fix or delete the block, and run the command again.`,
+    );
+  }
+
+  return begin === -1 ? undefined : { begin, end: end + GUIDANCE_END.length };
+}
+
+/**
+ * Drop the managed block, leaving every other byte where it was.
+ *
+ * `undefined` means there was nothing to remove — the caller reports "no block
+ * here" rather than rewriting a file it did not change.
+ *
+ * The one liberty taken is dropping the blank line an append separated the
+ * block by, and it is deliberately narrow: *exactly* two trailing newlines
+ * collapse to one, and nothing else is touched. A wider rule (`/\n{2,}$/`)
+ * ate user content — a whitespace-only `CLAUDE.md` of three newlines came back
+ * as one, which is bytes outside the markers, the one thing this must never
+ * change. Without any rule, every merge/remove cycle would leave another blank
+ * line behind.
+ *
+ * One case is genuinely unrecoverable: a file that ended *without* a trailing
+ * newline was separated by two, and two is also what a file ending in one
+ * newline produces. Those are indistinguishable after the fact, so such a file
+ * comes back with a single trailing newline it did not have. Adding one byte
+ * is the safe side of an ambiguity whose other side deletes one.
+ */
+export function removeGuidance(existing: string): string | undefined {
+  const at = locateGuidance(existing);
+  if (at === undefined) return undefined;
+  const head = existing.slice(0, at.begin);
+  const tail = existing.slice(at.end);
+
+  // A block with real content after it was put there by the *replace* path,
+  // which preserves both surrounding spans byte-for-byte and inserts no
+  // separator of its own. So there is nothing of sonata's to take back:
+  // splicing out the markers and leaving every other byte alone is the exact
+  // inverse. Touching the whitespace here is how user-authored blank lines on
+  // either side got eaten.
+  if (tail.trim() !== '') return `${head}${tail}`;
+
+  // Otherwise the block sits at the end, where `mergeGuidance` appended it
+  // after a separator it chose from the file's own trailing newlines. That
+  // separator, and the block's trailing newline, are sonata's to remove.
+  return /(^|[^\n])\n\n$/.test(head) ? head.slice(0, -1) : head;
+}
+
+/**
  * Merge the managed block into an existing `CLAUDE.md`.
  *
  * Pure so the interesting behaviour — what survives, what is replaced, what is
@@ -83,49 +174,10 @@ export function mergeGuidance(existing: string | undefined, block: string): stri
     return block.endsWith('\n') ? block : `${block}\n`;
   }
 
-  const begins = countOccurrences(existing, GUIDANCE_BEGIN);
-  const ends = countOccurrences(existing, GUIDANCE_END);
-
-  // Repeated markers are refused before any replacement is attempted.
-  // `indexOf` alone would splice from the *first* begin to the *first* end,
-  // and in a file shaped begin/…/begin/…/end that span swallows the user text
-  // sitting between the two begins. Two complete blocks are equally malformed:
-  // rewriting one would leave the other behind to contradict it.
-  if (begins > 1 || ends > 1) {
-    throw new Error(
-      `CLAUDE.md contains more than one sonata block (${begins} "${GUIDANCE_BEGIN}", ` +
-      `${ends} "${GUIDANCE_END}"). Leave exactly one, and run sonata init again.`,
-    );
-  }
-
-  const begin = existing.indexOf(GUIDANCE_BEGIN);
-  const end = existing.indexOf(GUIDANCE_END);
-
-  // A marker without its partner means the file was hand-edited. Both repairs
-  // available here — inventing an end, or treating the stray marker as text —
-  // can destroy content, so neither is taken.
-  if (begin !== -1 && end === -1) {
-    throw new Error(
-      `CLAUDE.md has an unterminated sonata block: "${GUIDANCE_BEGIN}" with no matching ` +
-      `"${GUIDANCE_END}". Restore the end marker, or delete the block, and run sonata init again.`,
-    );
-  }
-  if (begin === -1 && end !== -1) {
-    throw new Error(
-      `CLAUDE.md has a stray "${GUIDANCE_END}" marker with no matching "${GUIDANCE_BEGIN}". ` +
-      'Remove it, and run sonata init again.',
-    );
-  }
-  if (begin !== -1 && end !== -1 && end < begin) {
-    throw new Error(
-      `CLAUDE.md has sonata markers in the wrong order ("${GUIDANCE_END}" before ` +
-      `"${GUIDANCE_BEGIN}"). Fix or delete the block, and run sonata init again.`,
-    );
-  }
-
-  if (begin !== -1 && end !== -1) {
-    const before = existing.slice(0, begin);
-    const after = existing.slice(end + GUIDANCE_END.length);
+  const at = locateGuidance(existing);
+  if (at !== undefined) {
+    const before = existing.slice(0, at.begin);
+    const after = existing.slice(at.end);
     return `${before}${block.trimEnd()}${after}`;
   }
 

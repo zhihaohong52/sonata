@@ -230,12 +230,23 @@ export function staleAgents(agentsDir: string, expected: string[]): string[] {
     .sort();
 }
 
+/**
+ * Whether this agent file's *content* is sonata's.
+ *
+ * Split out from `isSonataAgent` so a caller that must distinguish "not
+ * sonata's" from "could not be read" can apply the same ownership test without
+ * reimplementing it. `sonata reset` is that caller: a file it cannot read is
+ * one it cannot promise to have removed.
+ */
+export function isSonataAgentText(text: string): boolean {
+  return text.includes('forwarding wrapper around the sonata runtime')
+    || text.includes(TIER_AGENT_MARKER)
+    || /^name:\s+native-[^\s]+/m.test(text);
+}
+
 export function isSonataAgent(path: string): boolean {
   try {
-    const text = readFileSync(path, 'utf8');
-    return text.includes('forwarding wrapper around the sonata runtime')
-      || text.includes(TIER_AGENT_MARKER)
-      || /^name:\s+native-[^\s]+/m.test(text);
+    return isSonataAgentText(readFileSync(path, 'utf8'));
   } catch {
     return false;
   }
