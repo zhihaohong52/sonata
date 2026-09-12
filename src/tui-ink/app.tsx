@@ -183,10 +183,22 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     case 2: {
       const candidates = candidatesForProviders(data.candidates, data.providers, state.providerKeys);
       if (candidates.length === 0) return <Summary state={state} onDone={onDone} onBack={back} />;
+      // A provider added this run exists only in `state`: `data.candidates`
+      // and `data.gatewayBaseUrls` were both computed at startup. Without
+      // these two, the gateway whose key was just typed is never asked what it
+      // serves, and the models chosen on its own screen look discarded.
+      const addedGateways = [...new Set([
+        ...Object.keys(state.byokKeys ?? {}),
+        ...(state.customProviders ?? []).map((provider) => provider.name),
+      ])];
+      const addedBaseUrls = Object.fromEntries(
+        (state.customProviders ?? []).map((provider) => [provider.name, provider.url]),
+      );
       return <ModelsStep
         key="models"
         candidates={candidates}
-        gatewayBaseUrls={data.gatewayBaseUrls ?? {}}
+        addedGateways={addedGateways}
+        gatewayBaseUrls={{ ...data.gatewayBaseUrls, ...addedBaseUrls }}
         gatewayAuth={data.gatewayAuth ?? {}}
         keys={{ ...data.storedKeys, ...state.byokKeys }}
         fetchModels={data.fetchModels ?? defaultFetchModels}
