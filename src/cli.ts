@@ -35,6 +35,7 @@ import { readRows } from './ledger.js';
 const USAGE = `sonata — foreign-model subagents for Claude Code
 
   sonata init      set up sonata in this project (interactive)
+  sonata --version         print the running version and the install it ran from
   sonata doctor [--json]   check tmux, harnesses, auth and versions
   sonata sync      regenerate agent files from sonata.toml
   sonata run       launch a harness run, print its id
@@ -83,12 +84,43 @@ function packageRoot(): string {
   return join(fileURLToPath(new URL('.', import.meta.url)), '..');
 }
 
+/**
+ * The running build's version, and where it ran from.
+ *
+ * Read from the manifest beside the executing file rather than baked in at
+ * build time, so it can only ever describe the code that is actually running.
+ * The path is printed alongside because `sonata` on PATH runs `dist/`, not
+ * `src/` — two bugs in this repo's history were "fixed" and went on
+ * reproducing for exactly that reason, and the first question in that state is
+ * which install answered.
+ */
+function versionLines(): string[] {
+  const root = packageRoot();
+  let version = 'unknown';
+  try {
+    const raw = readFileSync(join(root, 'package.json'), 'utf8');
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    // A manifest without a usable version is reported as unknown rather than
+    // as whatever JSON held: a wrong version is worse than an absent one when
+    // the whole point is telling two installs apart.
+    if (typeof parsed.version === 'string' && parsed.version !== '') version = parsed.version;
+  } catch {
+    // An unreadable manifest still leaves the path worth printing.
+  }
+  return [version, root];
+}
+
 export async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
 
   if (!command || command === 'help' || command === '--help' || command === '-h') {
     console.log(USAGE);
     return command ? 0 : 2;
+  }
+
+  if (command === '--version' || command === '-v' || command === 'version') {
+    for (const line of versionLines()) console.log(line);
+    return 0;
   }
 
   if (command === 'init') {
