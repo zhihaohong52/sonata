@@ -198,6 +198,16 @@ export function nativeTomlFor(
  * replacing. A table ends at the next line that opens one, which is the whole
  * of TOML's block structure as this file uses it; the replacement lands where
  * the first old table was, so a hand-ordered file keeps its shape.
+ *
+ * Two things stop the line scan from being naive about TOML. A multiline
+ * string can *contain* a line that looks like a table header, so the scanner
+ * tracks triple-quote state and reads nothing inside one as structure —
+ * without that, a `[tiers.code]` sitting in a prose value starts a drop that
+ * splices the replacement into the middle of the string. And a header may
+ * quote the segment (`["tiers".code]`), which names the same table; missing it
+ * would emit a second definition of it, and TOML refuses a redefined table.
+ * Neither shape is one sonata writes, but this reads files people edit, and
+ * both fail in a way that leaves the user unable to save at all.
  */
 export function replaceTiersBlock(
   toml: string,
@@ -205,12 +215,28 @@ export function replaceTiersBlock(
 ): string {
   const lines = toml.split('\n');
   const isHeader = (line: string): boolean => /^\s*\[/.test(line);
-  const isTierHeader = (line: string): boolean => /^\s*\[\s*tiers\s*[.\]]/.test(line);
+  // The segment may be bare or quoted; `["tiers".code]` names the same table.
+  const isTierHeader = (line: string): boolean => /^\s*\[\s*(?:tiers|"tiers"|'tiers')\s*[.\]]/.test(line);
 
   const kept: string[] = [];
   let insertAt: number | undefined;
   let dropping = false;
+  // The open multiline-string delimiter, while inside one. A line within a
+  // string is content, never structure — it neither opens a table nor ends
+  // the one being dropped.
+  let inString: '\"\"\"' | "'''" | undefined;
   for (const line of lines) {
+    if (inString !== undefined) {
+      if (line.includes(inString)) inString = undefined;
+      if (!dropping) kept.push(line);
+      else insertAt ??= kept.length;
+      continue;
+    }
+    // A delimiter that opens and closes on the same line leaves no open
+    // string, so only an odd number of them enters one.
+    for (const delim of ['\"\"\"', "'''"] as const) {
+      if (line.split(delim).length % 2 === 0) { inString = delim; break; }
+    }
     if (isHeader(line)) dropping = isTierHeader(line);
     if (!dropping) {
       kept.push(line);

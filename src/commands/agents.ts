@@ -20,6 +20,7 @@ import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../ext
 import { configPath, loadConfig, parseConfig, TIER_NAMES, tiersCollapse, type SonataConfig } from '../config.js';
 import { replaceTiersBlock } from '../init/toml.js';
 import { cmdSync } from './sync.js';
+import { pruneAgents } from '../detect.js';
 
 export type Tier = 'simple' | 'complex';
 
@@ -142,14 +143,48 @@ export interface AgentsOptions {
 export function writeTiers(
   opts: AgentsOptions,
   tiers: Record<string, { simple: string[]; complex: string[] }>,
-): { path: string; agentsWritten: string[] } {
+  /**
+   * The `[tiers]` the editor opened on.
+   *
+   * The editor holds a whole-config snapshot and returns all of it, so the
+   * write replaces *every* tier table — including ones this session never
+   * opened. If something else edited the file meanwhile (another `sonata
+   * init`, a hand edit, a second terminal), those tables would be silently
+   * reverted to a snapshot taken before the change. Compared here rather than
+   * merged: merging means choosing between two rankings without being able to
+   * ask, and a ranking is exactly the kind of deliberate ordering that must
+   * not be guessed at.
+   */
+  expect?: Record<string, { simple: string[]; complex: string[] }>,
+): { path: string; agentsWritten: string[]; pruned: string[] } {
   const path = configPath(opts.cwd, opts.home);
   if (path === undefined || path === null) throw new Error('no sonata.toml found — run `sonata init`');
-  const next = replaceTiersBlock(readFileSync(path, 'utf8'), tiers);
+  const text = readFileSync(path, 'utf8');
+
+  if (expect !== undefined) {
+    const current = parseConfig(text).tiers ?? {};
+    if (JSON.stringify(current) !== JSON.stringify(expect)) {
+      throw new Error(
+        `${path} changed while the editor was open — nothing written. `
+        + 'Re-run `sonata agents` to re-rank against the current config.',
+      );
+    }
+  }
+
+  const next = replaceTiersBlock(text, tiers);
   parseConfig(next);
   writeFileSync(path, next);
-  const sync = cmdSync({ cwd: opts.cwd, home: opts.home, agentsDir: agentsDirOf(opts) });
-  return { path, agentsWritten: sync.written };
+
+  // A ranking change can move a role between one collapsed agent and two tier
+  // agents, and the files for the shape it left are sonata's own, now stale:
+  // Claude Code goes on offering `code-simple` as a subagent type whose alias
+  // no longer resolves, so a dispatch to it fails rather than falling back.
+  // `sync` reports them and deliberately does not delete them; here the
+  // command that just caused them removes them and says which.
+  const agentsDir = agentsDirOf(opts);
+  const sync = cmdSync({ cwd: opts.cwd, home: opts.home, agentsDir });
+  const pruned = sync.stale.length > 0 ? pruneAgents(agentsDir, sync.stale) : [];
+  return { path, agentsWritten: sync.written, pruned };
 }
 
 /** Where this project's agents live. Mirrors what `sonata sync` uses. */
@@ -223,9 +258,10 @@ export async function cmdAgents(
     return 0;
   }
 
-  const written = writeTiers(opts, next);
+  const written = writeTiers(opts, next, config.tiers);
   io.out(`  ✓ wrote ${written.path}`);
   io.out(`  ✓ regenerated ${written.agentsWritten.length} agents`);
+  for (const file of written.pruned) io.out(`  ✓ removed ${file} — its tier no longer generates that agent`);
   for (const line of renderAgents(agentRows(loadConfig(opts.cwd, opts.home)))) io.out(line);
   return 0;
 }

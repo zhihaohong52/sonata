@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseConfig, loadConfig } from '../../src/config.js';
@@ -114,6 +114,46 @@ describe('writeTiers', () => {
     const after = loadConfig(cwd, home);
     expect(after.native?.gateways?.acme.pricingProvider).toEqual(['openrouter']);
     expect(Object.keys(after.unifiedModels).sort()).toEqual(['acme-big', 'acme-small', 'kimi']);
+  });
+
+  // The editor returns a whole-config snapshot, so a write replaces every tier
+  // table — including ones this session never opened. Another writer's change
+  // to a different role would otherwise be reverted to a pre-edit snapshot.
+  it('refuses to write when the config changed while the editor was open', () => {
+    const opened = parseConfig(toml).tiers!;
+    // Something else re-ranks `review` while the editor sits on `code`.
+    writeFileSync(join(cwd, 'sonata.toml'), toml.replace(
+      'simple = ["acme-big"]\ncomplex = ["acme-big"]',
+      'simple = ["acme-small"]\ncomplex = ["acme-small"]',
+    ));
+    expect(() => writeTiers({ cwd, home }, {
+      code: { simple: ['acme-big'], complex: ['acme-big'] },
+      review: { simple: ['acme-big'], complex: ['acme-big'] },
+    }, opened)).toThrow(/changed while the editor was open/);
+    // And the other writer's change survives untouched.
+    expect(loadConfig(cwd, home).tiers?.review.simple).toEqual(['acme-small']);
+  });
+
+  // A ranking change can move a role between one collapsed agent and two tier
+  // agents. The files for the shape it left are sonata's own and now stale:
+  // Claude Code goes on offering `code-simple` as a subagent type whose alias
+  // no longer resolves, so a dispatch to it fails rather than falling back.
+  it('removes the agent files a collapse transition leaves behind', () => {
+    const first = writeTiers({ cwd, home }, {
+      code: { simple: ['acme-small'], complex: ['acme-big'] },
+      review: { simple: ['acme-big'], complex: ['acme-big'] },
+    });
+    expect(first.agentsWritten.map((f) => f.split('/').pop()).sort())
+      .toEqual(['code-complex.md', 'code-simple.md', 'review.md']);
+
+    // Now `code` collapses, so `code.md` replaces the pair.
+    const second = writeTiers({ cwd, home }, {
+      code: { simple: ['acme-big'], complex: ['acme-big'] },
+      review: { simple: ['acme-big'], complex: ['acme-big'] },
+    });
+    expect(second.pruned.sort()).toEqual(['code-complex.md', 'code-simple.md']);
+    expect(existsSync(join(cwd, '.claude', 'agents', 'code-simple.md'))).toBe(false);
+    expect(existsSync(join(cwd, '.claude', 'agents', 'code.md'))).toBe(true);
   });
 
   // A rewrite that will not load leaves the user with no working config at

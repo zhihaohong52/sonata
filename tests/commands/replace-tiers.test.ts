@@ -90,6 +90,39 @@ describe('replaceTiersBlock', () => {
     expect(parsed.native?.gateways?.acme.baseUrl).toBe('https://acme.example/v1');
   });
 
+  // A multiline string can hold a line that looks like a table header. Read as
+  // structure, it starts a drop and the replacement is spliced into the middle
+  // of the string — `parseConfig` then refuses the result, so the visible
+  // symptom is being unable to save at all.
+  it('does not read a table header inside a multiline string as structure', () => {
+    const withString = config.replace('[run]', [
+      '[models."acme-big"]',
+      'gateway = "acme"',
+      'id = "big"',
+      'notes = """',
+      '[tiers.code] used to list acme-fast first — kept here as a note',
+      '"""',
+      '',
+      '[run]',
+    ].join('\n'));
+    const next = replaceTiersBlock(withString, { code: { simple: ['acme-fast'], complex: ['acme-fast'] } });
+    expect(next).toContain('[tiers.code] used to list acme-fast first — kept here as a note');
+    expect(parseConfig(next).unifiedModels['acme-big'].id).toBe('big');
+    expect(parseConfig(next).tiers?.code.simple).toEqual(['acme-fast']);
+  });
+
+  // `["tiers".code]` names the same table as `[tiers.code]`. Missed, the new
+  // block defines it a second time and TOML refuses a redefined table.
+  it('replaces a tier table whose segment is quoted', () => {
+    const quoted = config.replace('[tiers.code]', '["tiers".code]');
+    const next = replaceTiersBlock(quoted, {
+      code: { simple: ['acme-fast'], complex: ['acme-fast'] },
+      review: { simple: ['acme-slow'], complex: ['acme-slow'] },
+    });
+    expect(next).not.toContain('["tiers".code]');
+    expect(parseConfig(next).tiers?.code.simple).toEqual(['acme-fast']);
+  });
+
   it('is idempotent — replacing with what is already there parses back the same', () => {
     const same = replaceTiersBlock(config, parseConfig(config).tiers!);
     expect(parseConfig(same).tiers).toEqual(parseConfig(config).tiers);
