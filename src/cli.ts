@@ -409,6 +409,9 @@ export async function main(argv: string[]): Promise<number> {
         out: (line) => console.log(line),
         confirm: async (question) => isInteractive() && await confirm(question, false),
       },
+    );
+  }
+
   if (command === 'agents') {
     const { values } = parseArgs({
       args: rest,
