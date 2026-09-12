@@ -361,9 +361,12 @@ killed and the run is reported `DONE`, `degraded`, with a report beginning
 
 | Command | Purpose |
 |---|---|
+| `sonata --version` (`-v`) | The running version and the directory it ran from. The path matters: `sonata` on PATH runs `dist/`, not `src/`, so this is how you tell which install answered |
 | `sonata init` | Set up sonata in this project (interactive); `--prune` removes stale generated agents |
+| `sonata reset [--global] [--yes]` | Remove sonata's configuration and generated files at one scope — the config, the generated agents, the loop skill, the CLAUDE.md block, and the routing env/hooks/allow-list. Keeps your gateway keys, the usage ledger and the caches, and shows the full plan before touching anything |
 | `sonata doctor [--json]` | Check tmux, harnesses, auth and versions; `--json` prints the same checks as structured output |
 | `sonata sync` | Regenerate agent files from `sonata.toml`; `--prune` removes stale generated agents |
+| `sonata agents [--list] [--json]` | Every generated tier agent, what each of its ranked candidates resolves to, its context window, and whether the alias carries `[1m]`. In a terminal it is also the editor: re-rank a tier without walking the whole wizard |
 | `sonata run` | Launch a run, print its id |
 | `sonata dispatch (--tier <role>-<tier> \| --model <key>)` | Blocking harness dispatch with ranked fallback — the fallback lane a tier agent reaches for when every native route fails |
 | `sonata tail` | Human/debugging view of a run |
@@ -372,6 +375,7 @@ killed and the run is reported `DONE`, `degraded`, with a report beginning
 | `sonata verify <id> [--model <key>]` | Verify a completed run |
 | `sonata auth` | Manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`, `login <gateway>`) |
 | `sonata catalog [update]` | Show the cached Artificial Analysis catalog's age, or refresh it (needs a stored `artificialanalysis` key). `sonata doctor` warns when it goes stale |
+| `sonata litellm install\|status` | Install or report sonata's own pinned LiteLLM venv. `status` answering `not-required` is healthy — it means no gateway in this config routes through it |
 | `sonata serve` | Run the native router and its managed LiteLLM child (`--daemon` detaches) |
 | `sonata restart` | Kill whatever sonata router currently holds the port and start a fresh daemon |
 | `sonata code` | Launch a Claude Code session routed through the local proxy (passes `claude` args through) |
