@@ -179,3 +179,130 @@ export function nativeTomlFor(
   );
   return lines.join('\n');
 }
+
+/**
+ * Rewrite only the `[tiers]` tables of an existing config, byte-for-byte
+ * everywhere else.
+ *
+ * `sonata agents` re-ranks a tier, and that makes it the second writer of
+ * `sonata.toml`. The obvious route — round-trip the config back through
+ * `nativeTomlFor` — is the one to avoid: that function rebuilds the file from
+ * a reconstructed `NativeCandidate[]`, and anything the reconstruction cannot
+ * recover is deleted on write. That is exactly the shape of the bug that
+ * silently un-priced a gateway on every `sonata init`, and a *second* writer
+ * carrying the same hazard doubles the number of places it can recur.
+ *
+ * So this edits text instead. Preservation is not a list of fields that must
+ * be kept in step with `parseConfig` — it is the default, and the only thing
+ * that can be lost is a `[tiers.*]` table, which is what the caller is
+ * replacing. A table ends at the next line that opens one, which is the whole
+ * of TOML's block structure as this file uses it; the replacement lands where
+ * the first old table was, so a hand-ordered file keeps its shape.
+ *
+ * Two things stop the line scan from being naive about TOML. A multiline
+ * string can *contain* a line that looks like a table header, so the scanner
+ * tracks triple-quote state and reads nothing inside one as structure —
+ * without that, a `[tiers.code]` sitting in a prose value starts a drop that
+ * splices the replacement into the middle of the string. And a header may
+ * quote the segment (`["tiers".code]`), which names the same table; missing it
+ * would emit a second definition of it, and TOML refuses a redefined table.
+ * Neither shape is one sonata writes, but this reads files people edit, and
+ * both fail in a way that leaves the user unable to save at all.
+ */
+/**
+ * The multiline-string delimiter this line leaves open, if any.
+ *
+ * Counting triple quotes was not enough: a comment such as
+ * `# TOML uses """ for multiline strings` opened a string that never closed,
+ * the scanner then read every real `[tiers.*]` header as content, and the new
+ * block was appended alongside the old ones — which `parseConfig` rejects as a
+ * redefined table, so the user simply could not save. A quoted value carrying
+ * the same characters is that trap from the other direction.
+ *
+ * So the line is walked rather than counted: a `#` reached outside a string
+ * ends it, single-line basic and literal strings are skipped whole (basic
+ * strings honour backslash escapes, literal ones do not — TOML has none inside
+ * single quotes), and only a triple quote met in value position toggles state.
+ */
+function openDelimiterAfter(line: string): '"""' | "'''" | undefined {
+  let open: '"""' | "'''" | undefined;
+  let i = 0;
+  while (i < line.length) {
+    if (open !== undefined) {
+      if (line.startsWith(open, i)) { open = undefined; i += 3; } else i += 1;
+      continue;
+    }
+    // A `#` reached in value position starts a comment: nothing after it is
+    // structure, and nothing in it can open a string.
+    if (line[i] === '#') return undefined;
+    if (line.startsWith('"""', i)) { open = '"""'; i += 3; continue; }
+    if (line.startsWith("'''", i)) { open = "'''"; i += 3; continue; }
+    if (line[i] === '"') {
+      i += 1;
+      while (i < line.length && line[i] !== '"') i += line[i] === '\\' ? 2 : 1;
+      i += 1;
+      continue;
+    }
+    if (line[i] === "'") {
+      const end = line.indexOf("'", i + 1);
+      i = end === -1 ? line.length : end + 1;
+      continue;
+    }
+    i += 1;
+  }
+  return open;
+}
+
+export function replaceTiersBlock(
+  toml: string,
+  tiers: Record<string, { simple: string[]; complex: string[] }>,
+): string {
+  const lines = toml.split('\n');
+  const isHeader = (line: string): boolean => /^\s*\[/.test(line);
+  // The segment may be bare or quoted; `["tiers".code]` names the same table.
+  const isTierHeader = (line: string): boolean => /^\s*\[\s*(?:tiers|"tiers"|'tiers')\s*[.\]]/.test(line);
+
+  const kept: string[] = [];
+  let insertAt: number | undefined;
+  let dropping = false;
+  // The open multiline-string delimiter, while inside one. A line within a
+  // string is content, never structure — it neither opens a table nor ends
+  // the one being dropped.
+  let inString: '\"\"\"' | "'''" | undefined;
+  for (const line of lines) {
+    if (inString !== undefined) {
+      const closes = line.indexOf(inString);
+      // Content after the closing delimiter is ordinary TOML again, so the
+      // rest of the line is rescanned rather than assumed quiet.
+      inString = closes === -1 ? inString : openDelimiterAfter(line.slice(closes + inString.length));
+      if (!dropping) kept.push(line);
+      else insertAt ??= kept.length;
+      continue;
+    }
+    inString = openDelimiterAfter(line);
+    if (isHeader(line)) dropping = isTierHeader(line);
+    if (!dropping) {
+      kept.push(line);
+      continue;
+    }
+    // Remember where the first dropped table began, so the new block lands in
+    // the same place rather than at the end of a file someone has ordered.
+    insertAt ??= kept.length;
+  }
+
+  const block = Object.entries(tiers).flatMap(([role, lists]) => [
+    `[tiers.${tomlKey(role)}]`,
+    `simple = [${lists.simple.map(tomlKey).join(', ')}]`,
+    `complex = [${lists.complex.map(tomlKey).join(', ')}]`,
+    '',
+  ]);
+
+  if (insertAt === undefined) {
+    // No `[tiers]` at all. Appending is the only safe placement: these are
+    // table headers, so they cannot be inserted above one without capturing
+    // that table's keys.
+    const tail = kept.length > 0 && kept[kept.length - 1] !== '' ? [''] : [];
+    return [...kept, ...tail, ...block].join('\n');
+  }
+  return [...kept.slice(0, insertAt), ...block, ...kept.slice(insertAt)].join('\n');
+}
