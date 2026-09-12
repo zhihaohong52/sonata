@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-09-12
+
 ### Added
 - **`sonata reset [--global] [--yes]`** — remove sonata's configuration and
   generated files at one scope. `sonata init` writes to five places (the
