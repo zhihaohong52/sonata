@@ -17,6 +17,24 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   version is read from the manifest beside the executing file rather than
   baked in at build time, so it can only describe the code that is running.
 
+### Fixed
+
+- **A model added by key was never ranked properly.** Reported as "adding
+  models by key doesn't get ranked automatically". The wizard's tier screens
+  derived their gateway names from `data.candidates` — `allNativeCandidates`,
+  computed once at startup — so a provider added during the run was invisible
+  to the ranker. A model key is `<gateway>-<id>`, so without the gateway name
+  `normalizeModelName` cannot strip the prefix, the model misses its catalog
+  entry and scores as the `default` row (capable, *not* cheap); with nothing
+  left clearing the cheap bar, `proposeTiers` falls back to making `simple`
+  mirror `complex` and the tier stops discriminating at all. Measured on a
+  two-model set: `simple` and `complex` came back identical before the fix and
+  differ after it. Ranking now runs over every model actually selected
+  (`knownCandidates`), which also covers a model only a gateway's own
+  `/models` answer knew about. The bulk "accept all remaining" path takes the
+  same universe, because the two are required to write a byte-identical
+  config and fixing only the screens would have broken that quietly.
+
 ## [0.8.2] - 2026-09-12
 
 ### Added
