@@ -8,6 +8,15 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+- **`sonata --version`** prints the running version and the directory it
+  resolved from (`-v` and a bare `version` work too). The path is not padding:
+  `sonata` on PATH runs `dist/`, not `src/`, and two bugs in this repo's
+  history were "fixed" and went on reproducing for exactly that reason — so
+  the first question in that state is which install actually answered. The
+  version is read from the manifest beside the executing file rather than
+  baked in at build time, so it can only describe the code that is running.
+
 ## [0.8.2] - 2026-09-12
 
 ### Added
