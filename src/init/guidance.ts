@@ -143,10 +143,20 @@ export function removeGuidance(existing: string): string | undefined {
   const at = locateGuidance(existing);
   if (at === undefined) return undefined;
   const head = existing.slice(0, at.begin);
-  const before = /(^|[^\n])\n\n$/.test(head) ? head.slice(0, -1) : head;
-  const after = existing.slice(at.end).replace(/^\n+/, '');
-  if (before === '') return after;
-  return after === '' ? before : `${before}\n${after}`;
+  const tail = existing.slice(at.end);
+
+  // A block with real content after it was put there by the *replace* path,
+  // which preserves both surrounding spans byte-for-byte and inserts no
+  // separator of its own. So there is nothing of sonata's to take back:
+  // splicing out the markers and leaving every other byte alone is the exact
+  // inverse. Touching the whitespace here is how user-authored blank lines on
+  // either side got eaten.
+  if (tail.trim() !== '') return `${head}${tail}`;
+
+  // Otherwise the block sits at the end, where `mergeGuidance` appended it
+  // after a separator it chose from the file's own trailing newlines. That
+  // separator, and the block's trailing newline, are sonata's to remove.
+  return /(^|[^\n])\n\n$/.test(head) ? head.slice(0, -1) : head;
 }
 
 /**

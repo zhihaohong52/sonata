@@ -187,6 +187,30 @@ describe('removeGuidance', () => {
     expect(removeGuidance(mergeGuidance('text', block))).toBe('text\n');
   });
 
+  // `mergeGuidance` replacing an existing block preserves both surrounding
+  // spans byte-for-byte and inserts no separator of its own, so removal has
+  // nothing of sonata's to take back. Stripping whitespace there ate
+  // user-authored blank lines outside the markers.
+  it('preserves user whitespace on both sides of a mid-file block, byte for byte', () => {
+    const existing = [
+      '# My project', '', '', 'Text above.', '', '',
+      GUIDANCE_BEGIN, 'sonata guidance', GUIDANCE_END, '', '', '',
+      'Text below.', '', '',
+    ].join('\n');
+    const removed = removeGuidance(existing);
+    const head = existing.slice(0, existing.indexOf(GUIDANCE_BEGIN));
+    const tail = existing.slice(existing.indexOf(GUIDANCE_END) + GUIDANCE_END.length);
+    expect(removed).toBe(`${head}${tail}`);
+    expect(removed).toContain('# My project\n\n\nText above.\n\n\n');
+    expect(removed).toContain('\n\n\nText below.\n\n');
+  });
+
+  it('round-trips a merge into a file with content on both sides', () => {
+    const original = '# My project\n\nText above.\n\n' + GUIDANCE_BEGIN + '\nold\n' + GUIDANCE_END + '\n\nText below.\n';
+    const merged = mergeGuidance(original, block);
+    expect(removeGuidance(merged)).toBe(removeGuidance(original));
+  });
+
   // Three different originals — `# Mine`, `# Mine\n` and `# Mine\n\n` — produce
   // byte-identical text once the block is appended, because the separator
   // merge inserts shrinks as the file's own trailing newlines grow. So the
