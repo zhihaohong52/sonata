@@ -9,6 +9,7 @@ import { GLOBAL_CONFIG_RELATIVE, loadConfig, NoConfigError } from './config.js';
 import { cmdApprove } from './commands/approve.js';
 import { cmdSync } from './commands/sync.js';
 import { cmdReset } from './commands/reset.js';
+import { cmdAgents } from './commands/agents.js';
 import { cmdDoctor } from './commands/doctor.js';
 import { cmdGc } from './commands/gc.js';
 import { cmdInit, isCancellation } from './commands/init.js';
@@ -40,6 +41,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata doctor [--json]   check tmux, harnesses, auth and versions
   sonata sync      regenerate agent files from sonata.toml
   sonata reset     remove sonata's configuration and generated files [--global] [--yes]
+  sonata agents    view the tier agents and re-rank their models [--list] [--json]
   sonata run       launch a harness run, print its id
   sonata dispatch  run a ranked tier with harness fallback
   sonata tail      poll a run for progress
@@ -407,6 +409,26 @@ export async function main(argv: string[]): Promise<number> {
         out: (line) => console.log(line),
         confirm: async (question) => isInteractive() && await confirm(question, false),
       },
+    );
+  }
+
+  if (command === 'agents') {
+    const { values } = parseArgs({
+      args: rest,
+      options: { json: { type: 'boolean', default: false }, list: { type: 'boolean', default: false } },
+    });
+    // The editor is offered only when there is a terminal to drive it. Without
+    // one the command still answers — read-only — rather than failing, since
+    // `sonata agents` is as useful in a script as it is at a prompt.
+    const edit = isInteractive() && !values.json && !values.list
+      ? async (input: Parameters<NonNullable<Parameters<typeof cmdAgents>[1]['edit']>>[0]) => {
+        const { runAgentsTui } = await import('./tui-ink/agents-run.js');
+        return runAgentsTui(input);
+      }
+      : undefined;
+    return cmdAgents(
+      { cwd: process.cwd(), home: homedir(), json: values.json, list: values.list },
+      { out: (line) => console.log(line), edit },
     );
   }
 
