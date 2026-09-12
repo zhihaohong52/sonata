@@ -45,3 +45,43 @@ describe('refreshableGateways', () => {
     expect(refreshableGateways(many, baseUrls, {}, keys)).toEqual(['acme']);
   });
 });
+
+describe('refreshableGateways — a provider added during this run', () => {
+  // The defect this exists to prevent, reported from a real wizard run: after
+  // adding a provider and typing its key, models could be chosen on that
+  // provider's own screen, and then were "not available for selection" on the
+  // models step. `candidates` is `allNativeCandidates`, computed at startup,
+  // so a gateway that did not exist then contributes no rows — and deriving
+  // the refreshable set from it excluded exactly the provider whose key the
+  // user had just typed. The gateway was never asked what it serves, so the
+  // picker had nothing to show.
+  const added = { ...baseUrls, mylab: 'https://mylab.example/v1' };
+  const withKey = { ...keys, mylab: 'sk-just-typed' };
+
+  it('queries a gateway that has a key and a base URL but no startup candidates', () => {
+    expect(refreshableGateways(candidates, added, {}, withKey, ['mylab'])).toContain('mylab');
+  });
+
+  it('still queries the gateways the harness listed', () => {
+    expect(refreshableGateways(candidates, added, {}, withKey, ['mylab'])).toContain('acme');
+  });
+
+  it('never lists a gateway twice when it is both listed and named', () => {
+    const out = refreshableGateways(candidates, added, {}, withKey, ['acme']);
+    expect(out.filter((g) => g === 'acme')).toHaveLength(1);
+  });
+
+  // The existing exclusions are not weakened: an added gateway still has to
+  // clear them, or the wizard asks an endpoint that cannot answer.
+  it('excludes an added gateway with no resolvable key', () => {
+    expect(refreshableGateways(candidates, added, {}, keys, ['mylab'])).not.toContain('mylab');
+  });
+
+  it('excludes an added gateway with no base URL', () => {
+    expect(refreshableGateways(candidates, baseUrls, {}, withKey, ['mylab'])).not.toContain('mylab');
+  });
+
+  it('excludes an added OAuth gateway, whose credential is not a bearer key', () => {
+    expect(refreshableGateways(candidates, added, { mylab: 'codex-oauth' }, withKey, ['mylab'])).not.toContain('mylab');
+  });
+});
