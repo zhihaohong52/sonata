@@ -8,7 +8,7 @@ import type { CredentialSource } from '../config.js';
 import type { NativeGatewayAuth } from '../config.js';
 import { tierAgentNames, parseConfig } from '../config.js';
 import { litellmRequired } from '../native/providers.js';
-import { loadAaCatalog, proposeTiers } from '../catalog.js';
+import { expandCandidates, loadAaCatalog, proposeTiers, unpinnedVariants } from '../catalog.js';
 import { nativeTomlFor } from './toml.js';
 import { reconcilePerRoleModels, reconcileTierList, gatewayNamesOf, avoidedKeysOf } from './helpers.js';
 import { configPathFor, agentsDirFor } from './helpers.js';
@@ -142,15 +142,26 @@ export function plan(
   const savedNativeKeys = configForScope?.unifiedModels
     ? Object.keys(configForScope.unifiedModels).filter((key) => configForScope.unifiedModels[key].gateway !== undefined)
     : [];
-  const validTierKeys = new Set([...nativeKeys, ...Object.keys(migratedModels)]);
   const catalog = loadAaCatalog(opts.home);
-  const addedKeys = nativeKeys.filter((key) => !savedNativeKeys.includes(key));
+  const gatewayNames = gatewayNamesOf(nativeByKey);
+  const expand = (keys: string[]) => expandCandidates(keys, catalog, gatewayNames);
+  // Valid candidates are the expanded keys: a bare key for a model the
+  // catalog scores by level is exactly what `loadConfig` refuses, so it must
+  // not survive as "kept" here either.
+  const validTierKeys = new Set(expand([...nativeKeys, ...Object.keys(migratedModels)]));
+  const addedKeys = expand(nativeKeys.filter((key) => !savedNativeKeys.includes(key)));
   const tiers = Object.fromEntries(roles.map((role) => {
-    const proposal = proposeTiers(nativeKeys, catalog, gatewayNamesOf(nativeByKey), avoidedKeysOf(nativeByKey, avoidGateways));
+    const proposal = proposeTiers(nativeKeys, catalog, gatewayNames, avoidedKeysOf(nativeByKey, avoidGateways));
     const saved = state.tiers?.[role] ?? configForScope?.tiers?.[role];
+    // A saved bare key with variants is re-proposed as its levels, at the
+    // rank the proposal gives each — the same treatment as a new model.
+    // Deduplicated, because `reconcileTierList` inserts each `added` entry
+    // it does not already hold and would insert a repeated one twice.
+    const added = (tier: 'simple' | 'complex') =>
+      [...new Set([...addedKeys, ...unpinnedVariants(saved?.[tier], catalog, gatewayNames)])];
     return [role, {
-      simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple, addedKeys),
-      complex: reconcileTierList(saved?.complex, validTierKeys, proposal.complex, addedKeys),
+      simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple, added('simple')),
+      complex: reconcileTierList(saved?.complex, validTierKeys, proposal.complex, added('complex')),
     }];
   }));
 

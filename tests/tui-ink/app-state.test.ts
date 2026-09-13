@@ -480,6 +480,18 @@ describe('acceptRemainingTiers', () => {
   });
 });
 
+
+describe('acceptRemainingTiers — effort variants', () => {
+  it('seeds each remaining screen with the expanded candidates, exactly as the screen would', () => {
+    const expand = (keys: string[]) => keys.flatMap((key) => (key === 'luna' ? ['luna@high', 'luna@max'] : [key]));
+    const proposal = { simple: ['luna@high', 'flash', 'luna@max'], complex: ['luna@max', 'flash', 'luna@high'] };
+    const state = { roles: ['code', 'review'], nativeKeys: ['luna', 'flash'] };
+    const next = acceptRemainingTiers(state, ['code', 'review'], 0, proposal, ['luna', 'flash'], [], expand);
+    expect(next.tiers?.code.simple).toEqual(['luna@high', 'flash', 'luna@max']);
+    expect(next.tiers?.review.complex).toEqual(['luna@max', 'flash', 'luna@high']);
+  });
+});
+
 describe('initialRankedFor', () => {
   it('falls back to the proposal for a tier saved as an empty list', () => {
     // Regression: applyStep seeds a role's other tier as [] the moment either

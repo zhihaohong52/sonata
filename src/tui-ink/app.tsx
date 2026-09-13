@@ -4,7 +4,7 @@ import { MultiSelect } from './components/multi-select.js';
 import { RankedSelect } from './components/ranked-select.js';
 import { ProvidersStep } from './components/providers-step.js';
 import { ModelsStep } from './components/models-step.js';
-import { loadAaCatalog, proposeTiers } from '../catalog.js';
+import { candidateLabel, expandCandidates, loadAaCatalog, proposeTiers, unpinnedVariants } from '../catalog.js';
 import {
   applyStep,
   candidatesForProviders,
@@ -259,6 +259,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         known.filter((c) => avoid.has(c.gateway)).map((c) => c.key),
       );
       const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways, avoided);
+      const expand = (keys: string[]) => expandCandidates(keys, catalog, gateways);
       // A model native-selected this run that no prior run ever ranked for
       // this role/tier — the baseline is the wizard's own starting state for
       // the active scope, not `state` itself, which has already picked up
@@ -266,15 +267,24 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const baselineNativeKeys = (state.configScope !== undefined
         ? data.initialStateByScope?.[state.configScope]
         : undefined)?.nativeKeys ?? data.initialState?.nativeKeys ?? [];
-      const addedKeys = (state.nativeKeys ?? []).filter((key) => !baselineNativeKeys.includes(key));
-      const initialRanked = initialRankedFor(state.tiers?.[role]?.[tier], proposal[tier], addedKeys);
+      const saved = state.tiers?.[role]?.[tier];
+      // Deduplicated: `reconcileTierList` inserts every `added` entry it does
+      // not already hold, so a level named twice would be inserted twice.
+      const addedKeys = [...new Set([
+        ...expand((state.nativeKeys ?? []).filter((key) => !baselineNativeKeys.includes(key))),
+        // A bare key saved before effort existed is about to be refused at
+        // load; re-propose its levels rather than let the screen drop it.
+        ...unpinnedVariants(saved, catalog, gateways),
+      ])];
+      const initialRanked = initialRankedFor(saved, proposal[tier], addedKeys);
       const footer = catalog
         ? `rankings: Artificial Analysis (fetched ${catalog.fetchedAt}) — artificialanalysis.ai`
         : 'rankings: built-in defaults — refresh with sonata catalog update';
       return <RankedSelect
         key={`${role}-${tier}`}
         title={`${role}: ${tier} models`}
-        items={tierPickerKeys(state.nativeKeys ?? [], initialRanked, known.map((c) => c.key)).map((key) => ({ value: key, label: key }))}
+        items={tierPickerKeys(expand(state.nativeKeys ?? []), initialRanked, expand(known.map((candidate) => candidate.key)))
+          .map((candidate) => ({ value: candidate, label: candidateLabel(candidate, catalog, gateways) }))}
         initialRanked={initialRanked}
         footer={footer}
         onSubmit={(ranked) => {
@@ -296,8 +306,9 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
                 // the startup set, bulk acceptance would withhold different
                 // keys from the screens it stands in for, and the two paths are
                 // required to write a byte-identical config.
-                known.map((c) => c.key),
+                known.map((candidate) => candidate.key),
                 addedKeys,
+                expand,
               ));
               setStep(5);
             }

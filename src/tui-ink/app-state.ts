@@ -279,6 +279,13 @@ export function acceptRemainingTiers(
   proposal: { simple: string[]; complex: string[] },
   allNativeKeys: string[] = state.nativeKeys ?? [],
   added: readonly string[] = [],
+  /**
+   * How a model key becomes the candidates a screen offers — one per scored
+   * effort level when the catalog has them. The screen applies it to its
+   * items; bulk acceptance must apply the same one, or `A` and enter write
+   * different configs from identical state.
+   */
+  expand: (keys: string[]) => string[] = (keys) => keys,
 ): InitState {
   let next = state;
   for (let index = Math.max(0, fromIndex); index < roles.length * 2; index++) {
@@ -289,7 +296,7 @@ export function acceptRemainingTiers(
       role,
       tier,
       ranked: seededRankingFor(
-        next.tiers?.[role]?.[tier], proposal[tier], next.nativeKeys ?? [], allNativeKeys, added,
+        next.tiers?.[role]?.[tier], proposal[tier], expand(next.nativeKeys ?? []), expand(allNativeKeys), added,
       ),
     });
   }

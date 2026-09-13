@@ -1393,6 +1393,25 @@ describe('deriveInitState', () => {
     expect(state.perRoleModels).toEqual({ review: ['m'] });
   });
 
+
+  it('lists each model once in perRoleModels, whatever effort levels the tiers pin', () => {
+    const tiered = parseConfig(`
+[native.gateways."g"]
+base_url = "https://g.example/v1"
+
+[models."big"]
+gateway = "g"
+id = "big"
+context_window = 128000
+
+[tiers.code]
+simple = ["big@high"]
+complex = ["big@max"]
+`);
+    const state = deriveInitState(tiered, 'project', []);
+    expect(state.perRoleModels?.code).toEqual(['big']);
+  });
+
   it('keeps an untiered unified native-only model selected', () => {
     const config = parseConfig(`
 [native.gateways."solo-gateway"]
