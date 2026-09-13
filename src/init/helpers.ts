@@ -7,6 +7,7 @@
  * `init.ts`; if a helper ever needs to, that one stays behind.
  */
 import { join } from 'node:path';
+import { splitCandidate } from '../effort.js';
 import {
   GLOBAL_CONFIG_RELATIVE, parseConfig,
   isOauthGatewayAuth, oauthGatewayBaseUrl, isAnthropicRoutedName,
@@ -469,7 +470,9 @@ export function deriveInitState(
     perRoleModels: Object.fromEntries(
       Object.entries(config.tiers ?? config.native?.generate ?? {}).map(([role, models]) => [
         role,
-        config.tiers ? [...new Set([...models.simple, ...models.complex])] : [...models],
+        config.tiers
+          ? [...new Set([...models.simple, ...models.complex].map((candidate) => splitCandidate(candidate).key))]
+          : [...models],
       ]),
     ),
     credentialSources: Object.fromEntries(

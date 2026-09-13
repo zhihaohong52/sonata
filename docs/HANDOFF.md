@@ -175,6 +175,89 @@ the worktree, or run `sonata route on` there *before* starting the session —
 `route auto` installs the hooks but cannot route a session that has already
 launched.
 
+## Effort-level tier candidates — built 2026-09-13, on `effort-tiers-pr1`
+
+A `[tiers]` candidate may pin a reasoning-effort level
+(`"gpt-5.6-luna@xhigh"`), the catalog records which level each Artificial
+Analysis row was scored at, and both writers of a tier list rank every scored
+level of a model as its own candidate. Read
+`docs/superpowers/specs/2026-09-13-effort-tiers-design.md` and its plan
+(`docs/superpowers/plans/2026-09-13-effort-tiers-pr1.md`) before touching it;
+the `CLAUDE.md` bullet is the short version. Unreleased, and not yet opened as
+a PR, at the time of writing.
+
+**Nothing in this change sends an effort level upstream.** A pinned level
+today changes the ranking, the candidate labels and `TierRoute.effort`, and
+nothing else — it is a way to *choose* a model, not yet a way to ask for more
+or less reasoning. Two follow-ups complete it, both named in the spec:
+
+1. **PR 2 — the router injects `reasoning_effort`, and the ledger records
+   it.** The router is the layer that knows a request's level, and a ledger
+   row should name it for the same reason it names the candidate that served
+   the request.
+2. **PR 3 — the harness adapters.** Gated on probing each real binary: every
+   adapter bug in this repository's history was invisible in documentation and
+   obvious on the first real run. `sonata dispatch --model <key>@<effort>`
+   belongs here too — accepting the grammar while ignoring the level is
+   exactly the silent mismatch the load-time refusal exists to prevent.
+
+**Two known gaps in the effort-tier work, recorded rather than fixed.**
+
+1. **The upstream-id resolver's *scoring* half is untested.** `upstreamFor` is
+   threaded through `expandCandidates` *and* through `proposeTiers`'
+   `rankOf`/`eligible`/`isCheap`, so expansion and ranking always resolve the
+   same name — but only the expansion half is asserted. Reverting
+   `proposeTiers`' fifth argument alone leaves the suite green at 1933:
+   `reconcileTierList` appends the pins at `rankOf === Infinity` instead of
+   interleaving them, so every assertion still passes and the only difference
+   is a tier ordered by the mid-score fallback. The masked failure is a
+   mis-*ordering*, not a refusal that cannot be cleared, which is why this is
+   recorded rather than blocking. Ten lines close it permanently: assert
+   `proposeTiers(['luna','flash'], FAMILY_AA, ['codex','deepseek'], new Set(),
+   upstreamFor)` places `luna@low` ahead of `luna@max` in `simple`.
+
+2. **Resolving through the id is a silent ranking change for a key that spells
+   one model and points at another.** An Azure-style deployment
+   (`[models."gpt-5.6-luna"]` with `id = "my-gpt5-deployment"`) now scores from
+   the curated/default table where it previously matched AA on its key. That is
+   the intended direction — it is what the refusal and `sonata doctor` already
+   treated as truth, and the ordinary case (`flash` for
+   `deepseek-v4-flash-0731`) gets better — but it is untested and worth knowing
+   before someone reports a tier that reordered itself.
+
+**`sonata init` never proposes `pricing_provider`, so a fresh config reports
+every request unpriced.** `nativeTomlFor` *preserves* the key on rewrite —
+that was itself a fix, since a rewrite used to un-price a gateway outright —
+but nothing has ever originated one, and `resolvePrice` returns
+`source: 'none'` at its `provider === undefined` guard before models.dev is
+consulted at all. The cost is larger than a missing report: unpriced volume is
+excluded from `[budget] daily_usd`, so a cap silently bounds nothing, and an
+OAuth gateway never reaches `relabelCovered` either, so subscription work is
+reported as unpriced rather than `covered`. Most of the knowledge already
+exists — `PROVIDER_FOR_GATEWAY` (`src/native/providers.ts`) knows a gateway
+named `deepseek` is DeepSeek. Two things stop it being a one-liner, and both
+need settling before anyone implements it: that table names **LiteLLM provider
+prefixes**, not **models.dev provider ids** (LiteLLM wants `gemini` where
+models.dev files `google`), so reusing it directly would produce lookups that
+silently miss; and a gateway's *name* is not always enough — a `codex` gateway
+serves OpenAI models, and the right answer comes from its `auth`. Init should
+*propose* the result, not assert it: this is pricing, where a plausible wrong
+value is worse than an error.
+
+**One asymmetry is known and deliberately left in place.** The init tier
+*screen* widens a scope's rankable gateway names with the selected candidates'
+gateways **and** the gateways that scope's config declares
+(`interactive-state.ts`'s `declaredGatewayNames`, read by `app.tsx`), while
+the init *writer* still derives them from candidates alone
+(`gatewayNamesOf(nativeByKey)`, `src/init/plan.ts:146`). The two can disagree
+only for a gateway declared in `[native.gateways]` that has **no** native
+model whose key prefixes a harness-only key — no config producing that could
+be constructed. If one arose, the screen would offer a row the writer's
+`validTierKeys` lacks, and `reconcileTierList` would drop that saved key.
+Widening the writer's universe changes init's write path for every user and
+deserves its own review; the failure direction is a visible dropped key fixed
+by re-ranking, not a wrong model.
+
 ## If you want work, in the order I would take it
 
 All five are cheap and none blocks anything.
@@ -328,6 +411,20 @@ is worth more than a clean document.
 - **Give a scratch `serve` a scratch `HOME`.** One started with the real HOME
   overwrites the live serve state and deletes it on stop, after which `sonata
   restart` refuses.
+- **A native tier agent that takes more than one turn can be moved to a
+  different model between requests, and die on the thinking blocks the first
+  one left behind.** The router picks a ranked candidate **per request**, so a
+  conversation whose earlier requests were served by one model — carrying that
+  model's extended-thinking blocks in its history — can have a later request
+  fall through to a candidate that rejects them: `400 — The
+  content[].thinking in the thinking mode must be passed back to the API`.
+  Observed twice on 2026-09-13, resuming a `sonata-code-simple` agent and a
+  fresh `sonata-review-simple` dispatch, both landing on
+  `deepseek-deepseek-flash` after `gpt-5.6-luna` had served the earlier
+  requests. The documented safety argument for tier fallback — retries happen
+  only before the first byte of a single request — does not extend to a
+  multi-turn conversation already committed to one model's extended-thinking
+  format. Not fixed, and no issue filed yet.
 
 ### Git, PRs and review
 
@@ -406,6 +503,14 @@ is worth more than a clean document.
   compare the plugin manifest version against `curl -s
   localhost:37703/api/version` before believing any network diagnosis. The
   local patch is four `sed`s and **reverts on any plugin update**.
+- **Claude Code's Bash-tool shell drops single-underscore zsh functions from
+  its snapshot.** A `~/.zshrc` stub like `node() { _nvm_lazy_load; node "$@"; }`
+  survives the snapshot but `_nvm_lazy_load` does not, so every `node`/`npm`
+  in a tool shell prints `command not found: _nvm_lazy_load` and recurses to
+  `FUNCNEST`. Fixed 2026-09-13 by renaming the helper to `nvm_lazy_load`;
+  keep the lazy loading itself (it saves ~650 ms per shell, which the tmux
+  panes `npm test` spawns pay). Within an already-broken session, prefix
+  commands with `unset -f node npm npx nvm corepack; . ~/.nvm/nvm.sh >/dev/null;`.
 
 ## Working agreements
 

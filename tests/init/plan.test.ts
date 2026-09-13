@@ -1,7 +1,11 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { parseConfig, tierAgentNames } from '../../src/config.js';
 import { plan, type CredentialProbe } from '../../src/init/plan.js';
 import { litellmRequired } from '../../src/native/providers.js';
+import { aaCatalogPath } from '../../src/catalog.js';
 import type { InitEnvironment } from '../../src/init/discover.js';
 
 const noCredentials: CredentialProbe = {
@@ -59,6 +63,20 @@ describe('plan — the config it emits', () => {
     for (const key of [...back.tiers!.code.simple, ...back.tiers!.code.complex]) {
       expect(defined).toContain(key);
     }
+  });
+
+  it('keeps a saved effort pin when no catalog is available', () => {
+    // The validation error tells users to hand-pin a model after catalog
+    // levels appear. A later init without that catalog must not erase it.
+    const existing = {
+      unifiedModels: { 'acme-fast': { gateway: 'acme', id: 'fast' } },
+      tiers: { code: { simple: ['acme-fast@high'], complex: ['acme-fast@high'] } },
+    } as never;
+    const p = plan(
+      env({ configsByScope: { project: existing } }),
+      { ...state, tiers: undefined }, noCredentials, opts,
+    );
+    expect(parseConfig(p.configToml).tiers!.code.simple).toContain('acme-fast@high');
   });
 
   it('never writes a model key twice', () => {
@@ -240,5 +258,44 @@ describe('plan — preserves pricing settings across a rewrite', () => {
   it('keeps a hand-written model price', () => {
     const p = plan(env({ configsByScope: { project: existing } }), state, noCredentials, opts);
     expect(parseConfig(p.configToml).unifiedModels['acme-fast'].price).toMatchObject({ input: 1, output: 4 });
+  });
+});
+
+
+describe('plan — effort variants', () => {
+  const homeWithFamilies = () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-plan-home-'));
+    const path = aaCatalogPath(home);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      fetchedAt: '2026-09-13T00:00:00Z',
+      models: {
+        fast: { codingIndex: 71, blendedPriceUsd: 0.45, agenticIndex: 42, costPerTask: 0.18, family: 'fast', effort: 'max' },
+        'fast-high': { codingIndex: 60, blendedPriceUsd: 0.45, agenticIndex: 36, costPerTask: 0.04, family: 'fast', effort: 'high' },
+        slow: { codingIndex: 50, blendedPriceUsd: 2, agenticIndex: 30, costPerTask: 0.5 },
+      },
+    }));
+    return home;
+  };
+
+  it('writes only pinned candidates for a model with variants, and the config loads', () => {
+    const home = homeWithFamilies();
+    const p = plan(env({ home }), { ...state, tiers: undefined }, noCredentials, { ...opts, home });
+    const back = parseConfig(p.configToml);
+    for (const candidate of [...back.tiers!.code.simple, ...back.tiers!.code.complex]) {
+      if (candidate.startsWith('acme-fast')) expect(candidate).toMatch(/^acme-fast@(high|max)$/);
+    }
+    expect(back.tiers!.code.simple[0]).toBe('acme-fast@high');
+    expect(back.tiers!.code.complex[0]).toBe('acme-fast@max');
+  });
+
+  it('re-proposes a saved bare candidate that now has variants instead of dropping it', () => {
+    const home = homeWithFamilies();
+    const saved = { code: { simple: ['flaky-slow', 'acme-fast'], complex: ['acme-fast', 'flaky-slow'] } };
+    const p = plan(env({ home }), { ...state, tiers: saved }, noCredentials, { ...opts, home });
+    const back = parseConfig(p.configToml);
+    expect(back.tiers!.code.simple).not.toContain('acme-fast');
+    expect(back.tiers!.code.simple).toEqual(expect.arrayContaining(['acme-fast@high', 'acme-fast@max', 'flaky-slow']));
+    expect(back.tiers!.code.complex).toEqual(expect.arrayContaining(['acme-fast@max', 'acme-fast@high', 'flaky-slow']));
   });
 });

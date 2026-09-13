@@ -8,6 +8,25 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+- **Effort-level tier candidates** (`"gpt-5.6-luna@xhigh"`). `sonata catalog
+  update` now records which reasoning-effort level each Artificial Analysis
+  row was scored at, `sonata init` and `sonata agents` rank every scored
+  level of a model as its own candidate, and `[tiers]` lists may pin one.
+  Measured on the current catalog, GPT-5.6 Luna at `max` out-scores GPT-5.6
+  Terra at every level below `max` at an eighth of the cost per task —
+  a comparison the ranking could not previously express.
+
+### Changed
+- **A bare tier candidate whose model the catalog scores at several levels
+  is refused when the config loads.** It was ranked at the model's default
+  (usually highest) level and dispatched at the gateway's own, so the
+  ranking and the dispatch described different models. The error names the
+  candidate and its levels; `sonata init` re-ranks with levels. The check
+  needs a catalog cache; without one it is skipped and `sonata doctor` says
+  so. The pinned level is not yet sent upstream — that lands with the router
+  and adapter follow-ups.
+
 ## [0.8.3] - 2026-09-12
 
 ### Added

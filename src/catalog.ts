@@ -10,6 +10,8 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { EFFORT_LEVELS, isEffort, joinCandidate, splitCandidate, type Effort } from './effort.js';
+import type { SonataConfig } from './config.js';
 
 export const AA_ATTRIBUTION =
   'Model rankings by Artificial Analysis — https://artificialanalysis.ai';
@@ -115,6 +117,17 @@ export interface AaEntry {
    * pricier-per-token terse one.
    */
   costPerTask?: number;
+  /**
+   * The model this row is one effort level of, and which level. Read from
+   * the parenthetical in AA's display name at `catalog update` — `GPT-5.6
+   * Luna (max)` is slug `gpt-5-6-luna`, `… (low)` is `gpt-5-6-luna-low` —
+   * so the unsuffixed default row is a member of its family too, and the
+   * family knows which level its default is. Absent on a row whose name
+   * carries no level, and on every row of a cache written before this was
+   * recorded, which is the "cannot check" state `loadConfig` skips on.
+   */
+  family?: string;
+  effort?: Effort;
 }
 
 /**
@@ -273,10 +286,145 @@ export function aaLookupNames(normalized: string): string[] {
   return names;
 }
 
-/** The AA row for a normalized name, trying each spelling it may be filed
- *  under. Dots-to-dashes is applied to every candidate, not only the first. */
-function aaEntryFor(normalized: string, aa?: AaCatalog): AaEntry | undefined {
+export interface CatalogFamily {
+  /** The family's catalog name (the default row's key). */
+  name: string;
+  /** The level AA evaluated the unsuffixed row at — absent if every row is suffixed. */
+  default?: Effort;
+  /** Every scored level, in `EFFORT_LEVELS` order. */
+  variants: Map<Effort, AaEntry>;
+}
+
+/**
+ * Rows grouped by family, built once per catalog object. A `WeakMap` keyed on
+ * the catalog rather than a field on it, so a cache loaded from disk and a
+ * catalog literal in a test are indexed the same way and neither is mutated.
+ */
+const familyIndex = new WeakMap<AaCatalog, Map<string, CatalogFamily>>();
+
+function familiesOf(aa: AaCatalog): Map<string, CatalogFamily> {
+  let index = familyIndex.get(aa);
+  if (index !== undefined) return index;
+  index = new Map();
+  for (const [key, entry] of Object.entries(aa.models)) {
+    if (entry.family === undefined || entry.effort === undefined) continue;
+    let fam = index.get(entry.family);
+    if (fam === undefined) {
+      fam = { name: entry.family, variants: new Map() };
+      index.set(entry.family, fam);
+    }
+    fam.variants.set(entry.effort, entry);
+    if (key === entry.family) fam.default = entry.effort;
+  }
+  // Order every family's variants weakest-first so callers can rely on it.
+  for (const fam of index.values()) {
+    const ordered = new Map<Effort, AaEntry>();
+    for (const level of EFFORT_LEVELS) {
+      const entry = fam.variants.get(level);
+      if (entry !== undefined) ordered.set(level, entry);
+    }
+    fam.variants = ordered;
+  }
+  familyIndex.set(aa, index);
+  return index;
+}
+
+/**
+ * The effort family a normalized model name belongs to, if the catalog scores
+ * it at two or more levels. One scored level is a model, not a choice.
+ *
+ * Resolved through the same spellings `aaEntryFor` tries, so a name that finds
+ * its score also finds its family.
+ */
+export function catalogFamily(normalized: string, aa?: AaCatalog): CatalogFamily | undefined {
   if (aa === undefined) return undefined;
+  const families = familiesOf(aa);
+  for (const name of aaLookupNames(normalized)) {
+    for (const spelling of [name, aaMatchKey(name)]) {
+      const entry = aa.models[spelling];
+      const fam = entry?.family !== undefined ? families.get(entry.family) : families.get(spelling);
+      // The first spelling that identifies a model wins, even if it has no variants.
+      if (entry !== undefined || fam !== undefined) {
+        return fam !== undefined && fam.variants.size >= 2 ? fam : undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+export interface UnpinnedCandidate {
+  role: string;
+  tier: 'simple' | 'complex';
+  /** The bare config key as written in the tier list. */
+  key: string;
+  family: CatalogFamily;
+}
+
+export function unpinnedCandidates(
+  config: Pick<SonataConfig, 'tiers' | 'unifiedModels' | 'native'>,
+  aa?: AaCatalog,
+): UnpinnedCandidate[] {
+  if (aa === undefined || config.tiers === undefined) return [];
+  const gateways = Object.keys(config.native?.gateways ?? {});
+  const out: UnpinnedCandidate[] = [];
+  for (const [role, lists] of Object.entries(config.tiers)) {
+    for (const tier of ['simple', 'complex'] as const) {
+      for (const candidate of lists[tier]) {
+        const { key, effort } = splitCandidate(candidate);
+        if (effort !== undefined) continue;
+        const model = config.unifiedModels[key];
+        const upstream = model?.id ?? model?.harnessId ?? key;
+        const family = catalogFamily(normalizeModelName(upstream, gateways), aa);
+        if (family !== undefined) out.push({ role, tier, key, family });
+      }
+    }
+  }
+  return out;
+}
+
+export function assertEffortsPinned(
+  config: Pick<SonataConfig, 'tiers' | 'unifiedModels' | 'native'>,
+  aa?: AaCatalog,
+): void {
+  const unpinned = unpinnedCandidates(config, aa);
+  if (unpinned.length === 0) return;
+  const lines = unpinned.map(({ role, tier, key, family }) => {
+    const levels = [...family.variants.keys()].join(', ');
+    const fallback = family.default ?? [...family.variants.keys()].at(-1)!;
+    return `tiers.${role}.${tier} "${key}" names a model the catalog scores at levels ${levels}`
+      + ` (its default is ${family.default ?? 'unstated'}) but pins none — it would be ranked at that default`
+      + ` and run at the gateway's own. Write "${key}@${fallback}" (or another level).`;
+  });
+  throw new Error(`sonata.toml: ${lines.join('\n')}\nRun \`sonata init\` to re-rank every tier with effort levels.`);
+}
+
+/**
+ * How a config *key* becomes the upstream *id* a catalog lookup needs.
+ *
+ * Tier lists hold config keys while the catalog is keyed by upstream id, and
+ * a key is only *usually* `<gateway>-<id>`: a hand-named key
+ * (`[models."luna"]` with `id = "gpt-5.6-luna"`) has no prefix to strip, so
+ * normalizing the key itself finds nothing. Every candidate-facing helper
+ * takes one, defaulting to identity — which is what leaves a catalog-less run
+ * and a caller that supplies no resolver behaving exactly as before.
+ */
+export type UpstreamFor = (key: string) => string;
+
+const identityUpstream: UpstreamFor = (key) => key;
+
+/** A key as the name the catalog is asked about. */
+function normalizedFor(key: string, providers: readonly string[], upstreamFor: UpstreamFor): string {
+  return normalizeModelName(upstreamFor(key), providers);
+}
+
+/**
+ * The AA row for a normalized name, trying each spelling it may be filed
+ * under. With an effort, the family's row at that level — and nothing else:
+ * a level on a model the catalog does not score by level is unscored, never
+ * silently the bare row. */
+function aaEntryFor(normalized: string, aa?: AaCatalog, effort?: Effort): AaEntry | undefined {
+  if (aa === undefined) return undefined;
+  if (effort !== undefined) return catalogFamily(normalized, aa)?.variants.get(effort);
   for (const name of aaLookupNames(normalized)) {
     const hit = aa.models[name] ?? aa.models[aaMatchKey(name)];
     if (hit !== undefined) return hit;
@@ -302,9 +450,15 @@ const CURATED: Record<string, { capable: boolean; cheap: boolean }> = {
   'ox-alpha-free': { capable: false, cheap: true },
 };
 
-export function lookupModel(name: string, aa?: AaCatalog, providers: readonly string[] = []): CatalogEntry {
-  const normalized = normalizeModelName(name, providers);
-  const scored = aaEntryFor(normalized, aa);
+export function lookupModel(
+  name: string,
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
+): CatalogEntry {
+  const { key, effort } = splitCandidate(name);
+  const normalized = normalizedFor(key, providers, upstreamFor);
+  const scored = aaEntryFor(normalized, aa, effort);
   if (scored !== undefined) {
     return {
       capable: scored.codingIndex >= AA_CAPABLE_CODING_INDEX,
@@ -312,6 +466,7 @@ export function lookupModel(name: string, aa?: AaCatalog, providers: readonly st
       source: 'aa',
     };
   }
+  // A curated judgement is about the model, whichever level it runs at.
   const curated = CURATED[normalized];
   if (curated !== undefined) return { ...curated, source: 'curated' };
   return { capable: true, cheap: false, source: 'default' };
@@ -319,9 +474,91 @@ export function lookupModel(name: string, aa?: AaCatalog, providers: readonly st
 
 export interface TierProposal { simple: string[]; complex: string[] }
 
-/** The AA row behind a model key, joined through the match key. */
-function scoreFor(key: string, aa?: AaCatalog, providers: readonly string[] = []): AaEntry | undefined {
-  return aaEntryFor(normalizeModelName(key, providers), aa);
+/** The AA row behind a candidate (`key` or `key@effort`), joined through the match key. */
+function scoreFor(
+  candidate: string,
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
+): AaEntry | undefined {
+  const { key, effort } = splitCandidate(candidate);
+  return aaEntryFor(normalizedFor(key, providers, upstreamFor), aa, effort);
+}
+
+/**
+ * Each key as the candidates a ranking may choose between: one per scored
+ * level for a model the catalog knows by level, the bare key otherwise. A
+ * candidate that already names a level is passed through — the caller has
+ * decided. Identity without a catalog, which is what keeps every existing
+ * caller's behaviour unchanged until a catalog with families is present.
+ */
+export function expandCandidates(
+  keys: readonly string[],
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
+): string[] {
+  return keys.flatMap((candidate) => {
+    const { key, effort } = splitCandidate(candidate);
+    if (effort !== undefined) return [candidate];
+    const fam = catalogFamily(normalizedFor(key, providers, upstreamFor), aa);
+    return fam === undefined ? [candidate] : [...fam.variants.keys()].map((level) => joinCandidate(key, level));
+  });
+}
+
+export function hasEffortVariants(
+  key: string,
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
+): boolean {
+  return expandCandidates([key], aa, providers, upstreamFor).length > 1;
+}
+
+/**
+ * The variants of every *bare* saved candidate whose model has effort levels.
+ *
+ * A config written before effort existed, or a legacy migration, holds bare
+ * keys; once a catalog with families is present those keys are refused at
+ * load, so the wizard must re-propose them rather than drop them. They are
+ * handed to `reconcileTierList` as `added`, which inserts each at the rank
+ * the proposal gives it — the same treatment as a model selected for the
+ * first time, which is what a never-ranked level is.
+ */
+export function unpinnedVariants(
+  saved: readonly string[] | undefined,
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
+): string[] {
+  return (saved ?? []).flatMap((candidate) => {
+    const { effort } = splitCandidate(candidate);
+    if (effort !== undefined) return [];
+    const expanded = expandCandidates([candidate], aa, providers, upstreamFor);
+    return expanded.length > 1 ? expanded : [];
+  });
+}
+
+/**
+ * A ranking row: `<key> @<effort>`, then the capability and the cost the
+ * ranking actually sorts on, so a user comparing two rows sees the numbers
+ * that ordered them. Per-task cost where AA costed the model, else the
+ * per-1M blend — labelled, because the two are different units.
+ */
+export function candidateLabel(
+  candidate: string,
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
+): string {
+  const { key, effort } = splitCandidate(candidate);
+  const head = effort === undefined ? key : `${key} @${effort}`;
+  const entry = scoreFor(candidate, aa, providers, upstreamFor);
+  if (entry === undefined) return head;
+  const cost = entry.costPerTask !== undefined
+    ? `$${entry.costPerTask.toFixed(3)}/task`
+    : `$${entry.blendedPriceUsd.toFixed(2)}/1M`;
+  return `${head.padEnd(32)} ${capabilityOf(entry).toFixed(1).padStart(4)}  ${cost}`;
 }
 
 /**
@@ -353,8 +590,9 @@ function rank(
   key: string,
   aa?: AaCatalog,
   providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
 ): { index: number; price: number } {
-  const scored = scoreFor(key, aa, providers);
+  const scored = scoreFor(key, aa, providers, upstreamFor);
   return scored !== undefined
     ? { index: capabilityOf(scored), price: costOfEntry(scored) }
     : { index: AA_CAPABLE_CODING_INDEX, price: AA_CHEAP_BLENDED_PRICE_USD };
@@ -378,13 +616,21 @@ export function proposeTiers(
   aa?: AaCatalog,
   providers: readonly string[] = [],
   avoided: ReadonlySet<string> = new Set(),
+  upstreamFor: UpstreamFor = identityUpstream,
 ): TierProposal {
-  const rankOf = (k: string) => rank(k, aa, providers);
+  // Rank over every scored level of every selected model. A model AA scores
+  // at several efforts is several candidates here - luna@high and luna@max
+  // are different capability/cost points, and which one a tier wants is the
+  // whole question. Identity without families, so a catalog-less run (and
+  // every existing caller) sees exactly the keys it passed.
+  const candidates = expandCandidates(modelKeys, aa, providers, upstreamFor);
+  const bareKey = (candidate: string): string => splitCandidate(candidate).key;
+  const rankOf = (k: string) => rank(k, aa, providers, upstreamFor);
   // An avoided model sorts after every non-avoided one, whatever it scores.
   // Demotion, not exclusion: the tier keeps it as a fallback candidate, so
   // avoiding a gateway costs preference rather than the depth a ranked list
   // exists to provide.
-  const avoidance = (a: string, b: string) => Number(avoided.has(a)) - Number(avoided.has(b));
+  const avoidance = (a: string, b: string) => Number(avoided.has(bareKey(a))) - Number(avoided.has(bareKey(b)));
   // Complex work wants the most capable model, cost breaking ties — including
   // a near-tie: a capability gap within AA_CAPABILITY_TIE_MARGIN is treated as
   // noise rather than a real edge, so price decides it the same as an exact
@@ -400,15 +646,15 @@ export function proposeTiers(
     return avoidance(a, b) || valueOf(rb) - valueOf(ra) || rb.index - ra.index;
   };
 
-  const complex = modelKeys.filter((k) => lookupModel(k, aa, providers).capable).sort(byCapability);
+  const complex = candidates.filter((k) => lookupModel(k, aa, providers, upstreamFor).capable).sort(byCapability);
   // The floor is relative to the best model actually selected, so it adapts to
   // the user's own set rather than to an absolute score that is wrong whenever
   // their selection is uniformly strong or uniformly modest.
   // Measured over the models that can actually lead the tier: including an
   // avoided model here could raise the bar high enough to exclude everything
   // preferred, inverting the setting's intent.
-  const preferred = modelKeys.filter((k) => !avoided.has(k));
-  const leaders = preferred.length > 0 ? preferred : modelKeys;
+  const preferred = candidates.filter((k) => !avoided.has(bareKey(k)));
+  const leaders = preferred.length > 0 ? preferred : candidates;
   const best = Math.max(0, ...leaders.map((k) => rankOf(k).index));
   // The cost bar is relative to the cheapest model that can actually *enter*
   // the tier — not merely the cheapest one selected. `best` gets away with
@@ -429,8 +675,8 @@ export function proposeTiers(
   // rate when AA has not costed a model, and the two are different units by
   // two orders of magnitude — a ratio that mixes them would read an uncosted
   // model as ~30x dearer than it is and refuse it on a unit error.
-  const perTask = (k: string) => scoreFor(k, aa, providers)?.costPerTask;
-  const eligible = (k: string): boolean => lookupModel(k, aa, providers).capable
+  const perTask = (k: string) => scoreFor(k, aa, providers, upstreamFor)?.costPerTask;
+  const eligible = (k: string): boolean => lookupModel(k, aa, providers, upstreamFor).capable
     && rankOf(k).index >= best * SIMPLE_CAPABILITY_FLOOR;
   const costs = leaders
     .filter(eligible)
@@ -443,18 +689,18 @@ export function proposeTiers(
   // change has no better information about.
   const isCheap = (k: string): boolean => {
     const cost = perTask(k);
-    if (cost === undefined || ceiling === undefined) return lookupModel(k, aa, providers).cheap;
+    if (cost === undefined || ceiling === undefined) return lookupModel(k, aa, providers, upstreamFor).cheap;
     return cost <= ceiling;
   };
   // Same `eligible` the ceiling is measured over, so who sets the bar and who
   // is judged against it cannot drift apart.
-  const simple = modelKeys.filter((k) => eligible(k) && isCheap(k)).sort(byValue);
+  const simple = candidates.filter((k) => eligible(k) && isCheap(k)).sort(byValue);
   // A tier must always resolve to something: with no capable model, everything
   // is complex-eligible; with no cheap-capable model, simple mirrors complex.
   // The fallback is sorted too — raw input order would break the documented
   // "index descending, price ascending" ordering on exactly the path where no
   // model cleared the threshold.
-  const complexFinal = complex.length > 0 ? complex : [...modelKeys].sort(byCapability);
+  const complexFinal = complex.length > 0 ? complex : [...candidates].sort(byCapability);
   // Falls back to the complex set, but re-sorted by value: the reason to
   // fall back is that nothing cleared the cheap bar, not that cost stopped
   // mattering for grunt work.
@@ -496,7 +742,7 @@ export function loadAaCatalog(home: string): AaCatalog | undefined {
     // (`undefined >= 40` is `false`, silently "not capable"). A partially-
     // corrupt cache is still useful, so drop the bad entries and keep the good;
     // degrade to no cache only when nothing survives.
-    const models: Record<string, { codingIndex: number; blendedPriceUsd: number }> = {};
+    const models: Record<string, AaEntry> = {};
     for (const [name, entry] of Object.entries(doc.models)) {
       if (
         entry !== null &&
@@ -504,7 +750,10 @@ export function loadAaCatalog(home: string): AaCatalog | undefined {
         Number.isFinite(entry.codingIndex) &&
         Number.isFinite(entry.blendedPriceUsd)
       ) {
-        models[name] = entry;
+        // An unknown level is a hand-edit or a foreign writer; the score is
+        // still good, so keep the row and drop only the field.
+        const { effort, ...rest } = entry as AaEntry;
+        models[name] = effort !== undefined && isEffort(effort) ? { ...rest, effort } : rest;
       }
     }
     if (Object.keys(models).length === 0) return undefined;

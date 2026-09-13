@@ -17,6 +17,7 @@ import {
   providersForHarnesses,
   reduceInit,
   tierPickerKeys,
+  withoutExpandedBareCandidates,
   type CandidateOption,
   type ProviderOption,
 } from '../../src/tui-ink/app-state.js';
@@ -338,6 +339,16 @@ describe('tierPickerKeys', () => {
     // back just because an old saved tier list still names it.
     expect(tierPickerKeys(['a'], ['a', 'removed-model'], ['a', 'removed-model'])).toEqual(['a']);
   });
+
+  it('does not offer a legacy bare key beside its effort variants', () => {
+    const variants = ['luna@high', 'luna@max'];
+    const saved = withoutExpandedBareCandidates(['luna'], variants);
+    const initial = initialRankedFor(saved, ['luna@high', 'flash', 'luna@max'], variants);
+    const rows = tierPickerKeys(['luna@high', 'flash', 'luna@max'], initial);
+
+    expect(rows).toEqual(['luna@high', 'flash', 'luna@max']);
+    expect(rows).not.toContain('luna');
+  });
 });
 
 describe('mergeLiveCandidates', () => {
@@ -477,6 +488,70 @@ describe('acceptRemainingTiers', () => {
       });
     }
     expect(acceptRemainingTiers(start, roles, 0, proposal, universe)).toEqual(stepped);
+  });
+});
+
+
+describe('acceptRemainingTiers — effort variants', () => {
+  const roles = ['code'];
+  const expand = (keys: string[]) => keys.flatMap(
+    (key) => (key === 'luna' ? ['luna@high', 'luna@max'] : [key]),
+  );
+  const proposal = {
+    simple: ['luna@high', 'flash', 'luna@max'],
+    complex: ['luna@max', 'flash', 'luna@high'],
+  };
+  const unpinned = (saved: string[] | undefined) =>
+    (saved ?? []).includes('luna') ? ['luna@high', 'luna@max'] : [];
+
+  it('migrates legacy bare candidates only on the tier where they were saved', () => {
+    const state = {
+      roles,
+      nativeKeys: ['luna', 'flash'],
+      tiers: { code: { simple: ['luna'], complex: ['flash'] } },
+    };
+
+    const next = acceptRemainingTiers(state, roles, 0, proposal, ['luna', 'flash'], [], expand, unpinned);
+
+    expect(next.tiers).toEqual({
+      code: {
+        simple: ['luna@high', 'flash', 'luna@max'],
+        complex: ['flash'],
+      },
+    });
+  });
+
+  it('is indistinguishable from confirming every screen when effort expansion withholds a deselected variant', () => {
+    const state = {
+      roles,
+      nativeKeys: ['flash'],
+      tiers: { code: { simple: ['luna@high'], complex: ['flash'] } },
+    };
+    const allNativeKeys = ['luna', 'flash'];
+
+    // This deliberately restates the screen path. With identity expansion,
+    // `luna@high` is a fallback row; with real expansion it is known native
+    // and therefore withheld after the user deselects luna's provider.
+    let stepped = state;
+    for (let index = 0; index < roles.length * 2; index++) {
+      const role = roles[Math.floor(index / 2)]!;
+      const tier = index % 2 === 0 ? 'simple' : 'complex';
+      const saved = stepped.tiers?.[role]?.[tier];
+      const seeded = initialRankedFor(saved, proposal[tier]);
+      const rows = tierPickerKeys(
+        expand(stepped.nativeKeys ?? []),
+        seeded,
+        expand(allNativeKeys),
+      );
+      stepped = applyStep(stepped, 4, {
+        role,
+        tier,
+        ranked: seeded.filter((key) => rows.includes(key)),
+      });
+    }
+
+    expect(acceptRemainingTiers(state, roles, 0, proposal, allNativeKeys, [], expand)).toEqual(stepped);
+    expect(stepped.tiers?.code.simple).toEqual([]);
   });
 });
 

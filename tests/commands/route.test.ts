@@ -143,6 +143,43 @@ describe('global route scope', () => {
     });
   });
 
+  it('refuses a machine config whose tier holds an unpinned effort candidate', async () => {
+    // The project branch resolves through `loadConfig`, which refuses; this one
+    // parsed the machine file's text directly, so `route on --global` wrote
+    // routing env and hooks that send every session on the machine to a router
+    // answering 400 to each request — and reported success. The hook `auto`
+    // installs swallows the router's refusal by design, so this is the only
+    // place the breakage can be reported.
+    writeMachineConfig(`
+[models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+
+[native.gateways."codex"]
+auth = "codex-oauth"
+
+[tiers.code]
+simple = ["luna"]
+complex = ["luna@max"]
+`);
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'catalog.json'), JSON.stringify({
+      fetchedAt: '2026-09-13T00:00:00Z',
+      models: {
+        'gpt-5-6-luna': { codingIndex: 71, blendedPriceUsd: 0.45, family: 'gpt-5-6-luna', effort: 'max' },
+        'gpt-5-6-luna-xhigh': { codingIndex: 68, blendedPriceUsd: 0.45, family: 'gpt-5-6-luna', effort: 'xhigh' },
+        'gpt-5-6-luna-high': { codingIndex: 60, blendedPriceUsd: 0.45, family: 'gpt-5-6-luna', effort: 'high' },
+        'gpt-5-6-luna-low': { codingIndex: 44, blendedPriceUsd: 0.45, family: 'gpt-5-6-luna', effort: 'low' },
+      },
+    }));
+
+    const opts = { cwd, home, packageRoot: PACKAGE_ROOT, scope: 'global' as const };
+    await expect(cmdRoute('on', opts)).rejects.toThrow(
+      /tiers\.code\.simple "luna".*levels low, high, xhigh, max.*"luna@max"/s);
+    // And nothing was written on the way to the refusal.
+    expect(existsSync(routeSettingsFile(cwd, 'global', home))).toBe(false);
+  });
+
   it('global routing still reads the machine config when a stray ~/sonata.toml exists', async () => {
     // A stray `~/sonata.toml` is config-looking but governs nothing; the
     // global router resolves `~/.config/sonata/sonata.toml`. Loading the

@@ -61,6 +61,23 @@ migrated automatically the next time you run `sonata init` (a config still in
 that shape parses fine in the meantime — `sonata doctor` just points at
 `init` to migrate it).
 
+A tier candidate may pin a reasoning-effort level: `"gpt-5.6-luna@xhigh"`.
+The level is one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+`max`, and it belongs to the *slot*, not the model — the same model may sit
+in `simple` at `high` and in `complex` at `max`. `sonata init` ranks every
+level Artificial Analysis has scored for a model as its own row, because for
+the current generation the level is often the larger lever: GPT-5.6 Luna at
+`max` out-scores GPT-5.6 Terra at every level below `max`, at an eighth of
+the cost per task.
+
+**A bare candidate whose model the catalog scores at several levels is
+refused when the config loads.** Ranked bare, it is scored at the model's
+default row (usually its highest level) and dispatched with no level at all,
+so what the ranking promised and what runs are different models. The error
+names the candidate, its levels and its default; `sonata init` re-ranks
+every tier with levels. With no catalog cache the check cannot run, and
+`sonata doctor` says so.
+
 Run `sonata sync` after editing the config; Claude Code picks up the
 generated agents automatically.
 
@@ -85,6 +102,12 @@ Run it in a terminal and it is also the editor — `enter` re-ranks one list
 through the same picker `sonata init` uses, `w` writes and regenerates the
 agent files. `--list` prints without the editor, `--json` emits the same rows
 for a script.
+
+**The `--json` shape changed when effort levels landed.** A row's `key` now
+holds the whole candidate, `@effort` included (`acme-big@high`), rather than a
+bare key into `[models]`, and a sibling `effort` field carries the level on its
+own. A script that fed `key` straight back into a `[models]` lookup needs to
+split it — `key` is the candidate, not the model.
 
 It is the only writer of `sonata.toml` besides `sonata init`, and it replaces
 the `[tiers]` tables alone: every other byte of your config, including

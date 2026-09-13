@@ -2,11 +2,18 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { parseConfig } from '../src/config.js';
 import {
   normalizeModelName, lookupModel, proposeTiers, loadAaCatalog, aaCatalogPath,
   aaCatalogAgeDays, aaLookupNames, catalogCoverage, SIMPLE_COST_CEILING,
+  catalogFamily, expandCandidates, hasEffortVariants, unpinnedVariants, candidateLabel,
+  unpinnedCandidates, assertEffortsPinned,
   type AaCatalog,
 } from '../src/catalog.js';
+import { plan, type CredentialProbe } from '../src/init/plan.js';
+import { rankableCandidates } from '../src/commands/agents.js';
+import { splitCandidate } from '../src/effort.js';
+import type { InitEnvironment } from '../src/init/discover.js';
 
 describe('normalizeModelName', () => {
   it('strips harness/provider prefixes and date suffixes', () => {
@@ -246,6 +253,22 @@ describe('loadAaCatalog', () => {
     expect(loaded).toBeDefined();
     expect(Object.keys(loaded!.models)).toEqual(['good']);
     expect(loaded!.models.good.codingIndex).toBe(60);
+  });
+
+  it('keeps family and effort, and drops an effort that is not a known level', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-aa-'));
+    const path = aaCatalogPath(home);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      fetchedAt: '2026-09-13T00:00:00Z',
+      models: {
+        'sprinter': { codingIndex: 70, blendedPriceUsd: 0.45, family: 'sprinter', effort: 'max' },
+        'sprinter-turbo': { codingIndex: 10, blendedPriceUsd: 0.45, family: 'sprinter', effort: 'turbo' },
+      },
+    }));
+    const aa = loadAaCatalog(home)!;
+    expect(aa.models['sprinter']).toMatchObject({ family: 'sprinter', effort: 'max' });
+    expect(aa.models['sprinter-turbo']).toEqual({ codingIndex: 10, blendedPriceUsd: 0.45, family: 'sprinter' });
   });
 
   it('returns undefined when every entry is invalid', () => {
@@ -506,5 +529,274 @@ describe('catalogCoverage', () => {
     // The case age cannot describe: no catalog is not "0 days old".
     expect(catalogCoverage(['deepseek-v4-flash'], undefined).unscored)
       .toEqual(['deepseek-v4-flash']);
+  });
+});
+
+
+const FAMILY_AA: AaCatalog = {
+  fetchedAt: '2026-09-13T00:00:00Z',
+  models: {
+    'gpt-5-6-luna': { codingIndex: 71, blendedPriceUsd: 0.45, agenticIndex: 42.7, costPerTask: 0.178, family: 'gpt-5-6-luna', effort: 'max' },
+    'gpt-5-6-luna-xhigh': { codingIndex: 68, blendedPriceUsd: 0.45, agenticIndex: 39.5, costPerTask: 0.085, family: 'gpt-5-6-luna', effort: 'xhigh' },
+    'gpt-5-6-luna-high': { codingIndex: 60, blendedPriceUsd: 0.45, agenticIndex: 35.6, costPerTask: 0.044, family: 'gpt-5-6-luna', effort: 'high' },
+    'gpt-5-6-luna-low': { codingIndex: 44, blendedPriceUsd: 0.45, agenticIndex: 17.9, costPerTask: 0.0098, family: 'gpt-5-6-luna', effort: 'low' },
+    'gpt-5-6-terra': { codingIndex: 78, blendedPriceUsd: 4.5, agenticIndex: 43.7, costPerTask: 1.399, family: 'gpt-5-6-terra', effort: 'max' },
+    'gpt-5-6-terra-high': { codingIndex: 70, blendedPriceUsd: 4.5, agenticIndex: 37.6, costPerTask: 0.338, family: 'gpt-5-6-terra', effort: 'high' },
+    'deepseek-v4-flash': { codingIndex: 65, blendedPriceUsd: 0.66, agenticIndex: 41.7, costPerTask: 0.22 },
+    // A family of one: AA scored it at one level and named it. Not variants.
+    'lonely': { codingIndex: 50, blendedPriceUsd: 1, family: 'lonely', effort: 'high' },
+  },
+};
+
+const FAMILY_COLLISION_AA: AaCatalog = {
+  fetchedAt: '2026-09-13T00:00:00Z',
+  models: {
+    // This exact spelling identifies a singleton family.
+    'vendor-gpt-5.6-luna': { codingIndex: 50, blendedPriceUsd: 1, family: 'vendor-gpt-5.6-luna', effort: 'high' },
+    // The shortened spelling identifies a different model with variants.
+    'gpt-5-6-luna': { codingIndex: 71, blendedPriceUsd: 0.45, family: 'gpt-5-6-luna', effort: 'max' },
+    'gpt-5-6-luna-high': { codingIndex: 60, blendedPriceUsd: 0.45, family: 'gpt-5-6-luna', effort: 'high' },
+  },
+};
+
+describe('catalogFamily', () => {
+  it('groups rows by family and knows the default level', () => {
+    const fam = catalogFamily('gpt-5.6-luna', FAMILY_AA)!;
+    expect(fam.name).toBe('gpt-5-6-luna');
+    expect(fam.default).toBe('max');
+    expect([...fam.variants.keys()]).toEqual(['low', 'high', 'xhigh', 'max']);
+    expect(fam.variants.get('high')?.costPerTask).toBe(0.044);
+  });
+  it('is undefined for a model with fewer than two scored levels', () => {
+    expect(catalogFamily('deepseek-v4-flash', FAMILY_AA)).toBeUndefined();
+    expect(catalogFamily('lonely', FAMILY_AA)).toBeUndefined();
+    expect(catalogFamily('gpt-5.6-luna', undefined)).toBeUndefined();
+  });
+  it('finds a family through the same spellings a score is found through', () => {
+    // An OpenRouter-flattened ref still reaches its family.
+    expect(catalogFamily('openai-gpt-5.6-luna', FAMILY_AA)?.name).toBe('gpt-5-6-luna');
+  });
+  it('guards against a shortened-spelling family collision', () => {
+    expect(catalogFamily('vendor-gpt-5.6-luna', FAMILY_COLLISION_AA)).toBeUndefined();
+    expect(lookupModel('vendor-gpt-5.6-luna@high', FAMILY_COLLISION_AA).source).not.toBe('aa');
+  });
+});
+
+describe('expandCandidates', () => {
+  it('expands a key with variants into one candidate per level, weakest first', () => {
+    expect(expandCandidates(['gpt-5.6-luna', 'deepseek-v4-flash'], FAMILY_AA)).toEqual([
+      'gpt-5.6-luna@low', 'gpt-5.6-luna@high', 'gpt-5.6-luna@xhigh', 'gpt-5.6-luna@max',
+      'deepseek-v4-flash',
+    ]);
+  });
+  it('is the identity without a catalog', () => {
+    expect(expandCandidates(['gpt-5.6-luna'], undefined)).toEqual(['gpt-5.6-luna']);
+  });
+  it('leaves an already-pinned candidate alone', () => {
+    expect(expandCandidates(['gpt-5.6-luna@high'], FAMILY_AA)).toEqual(['gpt-5.6-luna@high']);
+  });
+  it('recovers the id through configured gateway names', () => {
+    expect(hasEffortVariants('codex-gpt-5.6-luna', FAMILY_AA, ['codex'])).toBe(true);
+    expect(hasEffortVariants('deepseek-v4-flash', FAMILY_AA)).toBe(false);
+  });
+});
+
+describe('unpinnedVariants', () => {
+  it('expands only the bare saved keys that have variants', () => {
+    expect(unpinnedVariants(['gpt-5.6-luna', 'deepseek-v4-flash', 'gpt-5.6-terra@high'], FAMILY_AA)).toEqual([
+      'gpt-5.6-luna@low', 'gpt-5.6-luna@high', 'gpt-5.6-luna@xhigh', 'gpt-5.6-luna@max',
+    ]);
+    expect(unpinnedVariants(undefined, FAMILY_AA)).toEqual([]);
+  });
+});
+
+const PINNABLE = `
+[models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+[models."flash"]
+gateway = "deepseek"
+id = "deepseek-v4-flash"
+[native.gateways."codex"]
+auth = "codex-oauth"
+[native.gateways."deepseek"]
+base_url = "https://api.deepseek.example/v1"
+[tiers.code]
+simple = ["luna", "flash"]
+complex = ["luna@max", "flash"]
+`;
+
+describe('unpinnedCandidates / assertEffortsPinned', () => {
+  it('names a bare candidate whose model the catalog scores at several levels', () => {
+    const config = parseConfig(PINNABLE);
+    const found = unpinnedCandidates(config, FAMILY_AA);
+    expect(found.map((u) => [u.role, u.tier, u.key])).toEqual([['code', 'simple', 'luna']]);
+    expect(found[0].family.default).toBe('max');
+    expect(() => assertEffortsPinned(config, FAMILY_AA)).toThrow(
+      /tiers\.code\.simple "luna".*levels low, high, xhigh, max.*default is max.*"luna@max".*sonata init/s,
+    );
+  });
+
+  it('is silent with no catalog, and for a fully pinned config', () => {
+    const config = parseConfig(PINNABLE);
+    expect(() => assertEffortsPinned(config, undefined)).not.toThrow();
+    const pinned = parseConfig(PINNABLE.replace('simple = ["luna", "flash"]', 'simple = ["luna@high", "flash"]'));
+    expect(() => assertEffortsPinned(pinned, FAMILY_AA)).not.toThrow();
+  });
+
+  it('resolves the upstream id through the gateway name, not the config key', () => {
+    // `[models."codex-gpt-5.6-luna"]` with id `gpt-5.6-luna` is the same model.
+    const config = parseConfig(PINNABLE.replace(/"luna"/g, '"codex-gpt-5.6-luna"').replace(/"luna@max"/, '"codex-gpt-5.6-luna@max"'));
+    expect(unpinnedCandidates(config, FAMILY_AA).map((u) => u.key)).toEqual(['codex-gpt-5.6-luna']);
+  });
+});
+
+/**
+ * The invariant the two editors exist to satisfy: for anything
+ * `assertEffortsPinned` refuses, both a re-run of `sonata init` and
+ * `sonata agents` must produce a pin that clears it.
+ *
+ * This was violated by resolving the catalog family through two different
+ * names. The refusal resolves a candidate through its model's upstream *id*
+ * (the rule `cmdDoctor` follows), while expansion resolved through the config
+ * *key* — so for a hand-named key the two disagreed, the refusal fired, and no
+ * editor could offer the level that would clear it. `sonata init` re-wrote the
+ * same bare candidate and aborted in `loadConfig`; `sonata agents` could not
+ * even open, since it loads the config first. The only way out was hand-editing
+ * `sonata.toml`, which is what makes this a merge blocker rather than a wart.
+ *
+ * Asserted as a property of the refused set, not of `PINNABLE`: a fixture
+ * added later is covered without touching the assertion.
+ */
+describe('effort pinning — every editor can repair what loadConfig refuses', () => {
+  const noCredentials: CredentialProbe = {
+    hasKey: () => false,
+    hasOauthCredential: () => false,
+    autoSource: () => null,
+    copilotUsable: false,
+  };
+
+  const nativeCandidate = (key: string, gateway: string, id: string) => ({
+    key, gateway, id, contextWindow: 128000,
+    baseUrl: `https://${gateway}.example/v1`, auth: 'api-key' as const,
+  });
+
+  const pinned = (list: readonly string[], key: string): boolean => list.some((candidate) => {
+    const parts = splitCandidate(candidate);
+    return parts.key === key && parts.effort !== undefined;
+  });
+
+  it('offers a pin for every refused candidate, in plan() and in the agents editor', () => {
+    const config = parseConfig(PINNABLE);
+    const refused = unpinnedCandidates(config, FAMILY_AA);
+    // If the fixture ever stops being refusable this test would pass vacuously.
+    expect(refused.map((u) => [u.role, u.tier, u.key])).toEqual([['code', 'simple', 'luna']]);
+
+    // `plan` reads the catalog off disk, as `cmdInit` does.
+    const home = mkdtempSync(join(tmpdir(), 'sonata-pin-'));
+    const catalogPath = aaCatalogPath(home);
+    mkdirSync(dirname(catalogPath), { recursive: true });
+    writeFileSync(catalogPath, JSON.stringify(FAMILY_AA));
+
+    const env: InitEnvironment = {
+      cwd: '/repo',
+      home,
+      tmux: { installed: true, version: '3.4', problems: [] },
+      harnesses: [], problems: [], offered: [],
+      allNativeCandidates: [
+        nativeCandidate('luna', 'codex', 'gpt-5.6-luna'),
+        nativeCandidate('flash', 'deepseek', 'deepseek-v4-flash'),
+      ],
+      providerBaseUrls: {},
+      gatewayAuth: new Map(),
+      oauthProviders: new Map(), byokProviders: [], configsByScope: { project: config },
+      existingHookScope: undefined, copilotUsable: false,
+    };
+    // No `tiers` in state: the saved lists come from the config being repaired,
+    // which is what `sonata init` reads when it opens on a refused config.
+    const state = {
+      configScope: 'project' as const,
+      providerKeys: [],
+      nativeKeys: ['luna', 'flash'],
+      roles: ['code'],
+      hookScope: 'project' as const,
+      routing: 'project' as const,
+    };
+    const planned = plan(env, state, noCredentials, { cwd: '/repo', home, packageRoot: '/pkg' });
+    const emitted = parseConfig(planned.configToml).tiers!;
+
+    for (const { role, tier, key } of refused) {
+      expect(pinned(emitted[role]![tier], key)).toBe(true);
+      expect(pinned(rankableCandidates(config, FAMILY_AA), key)).toBe(true);
+    }
+    // The point of the pin: what `plan` emits loads. A pin that clears the
+    // message but not `loadConfig` would satisfy the two lines above and none
+    // of the invariant.
+    const emittedConfig = parseConfig(planned.configToml);
+    expect(() => assertEffortsPinned(emittedConfig, FAMILY_AA)).not.toThrow();
+  });
+});
+
+describe('lookupModel / scoreFor with an effort', () => {
+  it('scores a candidate at its own level', () => {
+    expect(lookupModel('gpt-5.6-luna@low', FAMILY_AA)).toEqual({ capable: true, cheap: true, source: 'aa' });
+    // 44 >= 40 keeps it capable; the bare row is the max row.
+    expect(lookupModel('gpt-5.6-luna', FAMILY_AA).source).toBe('aa');
+  });
+  it('treats an effort on a model with no family as unscored', () => {
+    // `lonely` is scored at one level only, so `@high` finds no family — and
+    // it is not in the curated table, so it falls through to the default.
+    expect(lookupModel('lonely@high', FAMILY_AA).source).toBe('default');
+  });
+});
+
+describe('candidateLabel', () => {
+  it('shows the level, the capability and the per-task cost', () => {
+    expect(candidateLabel('gpt-5.6-luna@xhigh', FAMILY_AA)).toMatch(/^gpt-5\.6-luna @xhigh\s+39\.5\s+\$0\.085\/task$/);
+    expect(candidateLabel('deepseek-v4-flash', FAMILY_AA)).toMatch(/^deepseek-v4-flash\s+41\.7\s+\$0\.220\/task$/);
+  });
+  it('aligns the numbers across rows', () => {
+    const a = candidateLabel('gpt-5.6-luna@xhigh', FAMILY_AA);
+    const b = candidateLabel('deepseek-v4-flash', FAMILY_AA);
+    expect(a.indexOf('39.5')).toBe(b.indexOf('41.7'));
+  });
+  it('falls back to the per-1M rate, and to the bare key with no catalog', () => {
+    expect(candidateLabel('lonely', FAMILY_AA)).toMatch(/^lonely\s+50\.0\s+\$1\.00\/1M$/);
+    expect(candidateLabel('gpt-5.6-luna@max', undefined)).toBe('gpt-5.6-luna @max');
+  });
+});
+
+
+describe('proposeTiers — effort variants', () => {
+  it('ranks variants as candidates: complex by capability, simple by value above the floor', () => {
+    const tiers = proposeTiers(['gpt-5.6-luna', 'gpt-5.6-terra', 'deepseek-v4-flash'], FAMILY_AA);
+    // terra@max 43.7 edges luna@max 42.7 — within the 1.0 tie margin, so
+    // price decides: luna@max ($0.178) beats terra@max ($1.399).
+    expect(tiers.complex.slice(0, 3)).toEqual(['gpt-5.6-luna@max', 'gpt-5.6-terra@max', 'deepseek-v4-flash']);
+    // Floor = 0.75 × 43.7 = 32.8: luna@high (35.6) clears it and leads on
+    // value; luna@low (17.9) does not, whatever its cost.
+    expect(tiers.simple[0]).toBe('gpt-5.6-luna@high');
+    expect(tiers.simple).not.toContain('gpt-5.6-luna@low');
+    expect(tiers.simple).toContain('gpt-5.6-luna@xhigh');
+  });
+
+  it('demotes every variant of an avoided model, by bare key', () => {
+    const tiers = proposeTiers(['gpt-5.6-luna', 'deepseek-v4-flash'], FAMILY_AA, [], new Set(['gpt-5.6-luna']));
+    expect(tiers.complex[0]).toBe('deepseek-v4-flash');
+    expect(tiers.simple[0]).toBe('deepseek-v4-flash');
+  });
+
+  it('is unchanged for a catalog without families', () => {
+    const aa: AaCatalog = {
+      fetchedAt: '2026-08-25T00:00:00Z',
+      models: {
+        'cheap-and-good': { codingIndex: 58, blendedPriceUsd: 1, agenticIndex: 58, costPerTask: 0.09 },
+        'top-and-dear': { codingIndex: 60, blendedPriceUsd: 1, agenticIndex: 60, costPerTask: 0.95 },
+      },
+    };
+    expect(proposeTiers(['top-and-dear', 'cheap-and-good'], aa)).toEqual({
+      complex: ['top-and-dear', 'cheap-and-good'],
+      simple: ['cheap-and-good', 'top-and-dear'],
+    });
   });
 });

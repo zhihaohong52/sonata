@@ -4,7 +4,7 @@ import { MultiSelect } from './components/multi-select.js';
 import { RankedSelect } from './components/ranked-select.js';
 import { ProvidersStep } from './components/providers-step.js';
 import { ModelsStep } from './components/models-step.js';
-import { loadAaCatalog, proposeTiers } from '../catalog.js';
+import { candidateLabel, expandCandidates, loadAaCatalog, proposeTiers, unpinnedVariants } from '../catalog.js';
 import {
   applyStep,
   candidatesForProviders,
@@ -15,6 +15,7 @@ import {
   initialRankedFor,
   acceptRemainingTiers,
   tierPickerKeys,
+  withoutExpandedBareCandidates,
   type AvailableCredentials,
   type CandidateOption,
   type ProviderOption,
@@ -53,6 +54,26 @@ export interface WizardData {
   gatewayBaseUrls?: Record<string, string>;
   /** Gateways the config asks to rank last; see SonataConfig.avoidGateways. */
   avoidGateways?: string[];
+  /**
+   * The gateway names the config on disk declares, by scope — the keys of its
+   * `[native.gateways]` table.
+   *
+   * A tier screen recovers a model's upstream id from a key by stripping a
+   * configured gateway prefix, and a saved key can name a gateway no candidate
+   * in this session belongs to (the harness that used to discover it is gone,
+   * or this run never offered it). `sonata agents` reads this same table, so a
+   * name missing here is exactly what makes the two writers of a tier list
+   * offer different rows for one config. By scope, not resolved here, because
+   * the scope answer is re-read when the user walks back to it.
+   */
+  declaredGatewayNames?: Partial<Record<'project' | 'global', string[]>>;
+  /**
+   * Harness-only config entries are rankable even though they have no native
+   * gateway and therefore never appear in the wizard's selected native keys.
+   * Each value is resolved with `id ?? harnessId ?? key` before this data is
+   * built, matching the tier editor and effort-pin validation.
+   */
+  harnessOnlyUpstreams?: Partial<Record<'project' | 'global', Record<string, string>>>;
   /** Injected so tests never reach the network. */
   fetchModels?: typeof defaultFetchModels;
   initialState?: InitState;
@@ -251,14 +272,58 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const known = knownCandidates(data.candidates, state);
       // Gateway names come from the candidate set: a model key is
       // `<gateway>-<id>`, and without them the id cannot be recovered.
-      const gateways = [...new Set(known.map((candidate) => candidate.gateway))];
+      //
+      // Unioned with the names the config declares for the scope being edited,
+      // because a saved key can outlive the candidate that explained it — the
+      // harness that discovered the gateway is uninstalled, or this run simply
+      // never offered it. Then no candidate yields its name, the id is never
+      // recovered, and a model AA scores at several efforts loses every variant
+      // but the bare key. `sonata agents` expands the same key through
+      // `[native.gateways]`, so a name missing here is what makes the wizard
+      // and the editor offer different rows for one config. The union can only
+      // add a name, so nothing the candidate set already normalized is
+      // withdrawn — a candidate-derived name always keeps its place.
+      const declaredGatewayNames = state.configScope !== undefined
+        ? data.declaredGatewayNames?.[state.configScope] ?? []
+        : [];
+      const gateways = [...new Set([
+        ...known.map((candidate) => candidate.gateway),
+        ...declaredGatewayNames,
+      ])];
       // Resolved from the candidate set, not by matching key prefixes: a key
       // only looks like `<gateway>-<id>`.
       const avoid = new Set(data.avoidGateways ?? []);
       const avoided = new Set(
         known.filter((c) => avoid.has(c.gateway)).map((c) => c.key),
       );
-      const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways, avoided);
+      // A config key as the upstream id a catalog lookup needs. Tier lists
+      // hold config keys while the catalog is keyed by upstream id, and a key
+      // is only *usually* `<gateway>-<id>` — a hand-named key has no prefix to
+      // strip, so normalizing the key itself finds nothing and this screen
+      // would offer no pin for a candidate `loadConfig` refuses.
+      const harnessOnlyUpstreams = state.configScope !== undefined
+        ? data.harnessOnlyUpstreams?.[state.configScope] ?? {}
+        : {};
+      // The tier editor ranks every config entry, including harness-only
+      // routes. They cannot enter nativeKeys, but must be offered so a saved
+      // pin remains repairable in this writer too.
+      const rankableKeys = [...new Set([
+        ...(state.nativeKeys ?? []),
+        ...Object.keys(harnessOnlyUpstreams),
+      ])];
+      // Preserve the native universe that withholds temporarily deselected
+      // routes, then add harness-only config entries to it.
+      const pickerUniverseKeys = [...new Set([
+        ...known.map((candidate) => candidate.key),
+        ...Object.keys(harnessOnlyUpstreams),
+      ])];
+      const idsByKey = new Map([
+        ...known.map((candidate) => [candidate.key, candidate.id] as const),
+        ...Object.entries(harnessOnlyUpstreams),
+      ]);
+      const upstreamFor = (key: string): string => idsByKey.get(key) ?? key;
+      const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways, avoided, upstreamFor);
+      const expand = (keys: string[]) => expandCandidates(keys, catalog, gateways, upstreamFor);
       // A model native-selected this run that no prior run ever ranked for
       // this role/tier — the baseline is the wizard's own starting state for
       // the active scope, not `state` itself, which has already picked up
@@ -266,15 +331,26 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const baselineNativeKeys = (state.configScope !== undefined
         ? data.initialStateByScope?.[state.configScope]
         : undefined)?.nativeKeys ?? data.initialState?.nativeKeys ?? [];
-      const addedKeys = (state.nativeKeys ?? []).filter((key) => !baselineNativeKeys.includes(key));
-      const initialRanked = initialRankedFor(state.tiers?.[role]?.[tier], proposal[tier], addedKeys);
+      const saved = state.tiers?.[role]?.[tier];
+      const globalAddedKeys = expand(
+        (state.nativeKeys ?? []).filter((key) => !baselineNativeKeys.includes(key)),
+      );
+      const tierVariants = unpinnedVariants(saved, catalog, gateways, upstreamFor);
+      // A legacy bare key has no valid row beside its effort variants. Drop it
+      // before seeding so confirming this screen cannot preserve an invalid key.
+      const savedForScreen = withoutExpandedBareCandidates(saved, tierVariants);
+      // Deduplicated: `reconcileTierList` inserts every `added` entry it does
+      // not already hold, so a level named twice would be inserted twice.
+      const addedKeys = [...new Set([...globalAddedKeys, ...tierVariants])];
+      const initialRanked = initialRankedFor(savedForScreen, proposal[tier], addedKeys);
       const footer = catalog
         ? `rankings: Artificial Analysis (fetched ${catalog.fetchedAt}) — artificialanalysis.ai`
         : 'rankings: built-in defaults — refresh with sonata catalog update';
       return <RankedSelect
         key={`${role}-${tier}`}
         title={`${role}: ${tier} models`}
-        items={tierPickerKeys(state.nativeKeys ?? [], initialRanked, known.map((c) => c.key)).map((key) => ({ value: key, label: key }))}
+        items={tierPickerKeys(expand(rankableKeys), initialRanked, expand(pickerUniverseKeys))
+          .map((candidate) => ({ value: candidate, label: candidateLabel(candidate, catalog, gateways, upstreamFor) }))}
         initialRanked={initialRanked}
         footer={footer}
         onSubmit={(ranked) => {
@@ -296,8 +372,11 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
                 // the startup set, bulk acceptance would withhold different
                 // keys from the screens it stands in for, and the two paths are
                 // required to write a byte-identical config.
-                known.map((c) => c.key),
-                addedKeys,
+                pickerUniverseKeys,
+                globalAddedKeys,
+                expand,
+                (savedTier) => unpinnedVariants(savedTier, catalog, gateways, upstreamFor),
+                rankableKeys,
               ));
               setStep(5);
             }

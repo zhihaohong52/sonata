@@ -1,9 +1,10 @@
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { beforeEach, describe, it, expect } from 'vitest';
 import { tenantId, SONATA_PROJECT_HEADER, TenantError, TenantRegistry, canonicalConfigPath, MAX_NOTED_PROJECTS } from '../../src/native/tenants.js';
 import { recordSession } from '../../src/sessions.js';
+import { aaCatalogPath } from '../../src/catalog.js';
 
 describe('tenantId', () => {
   it('is 12 lowercase hex chars, stable for the same path', () => {
@@ -75,6 +76,29 @@ describe('TenantRegistry', () => {
   it('throws TenantError naming the file and the parse error for a broken config', () => {
     writeFileSync(join(a, 'sonata.toml'), '[native.gateways\n');
     expect(() => new TenantRegistry(home).resolve({ project: a })).toThrow(/sonata\.toml/);
+  });
+
+  it('refuses a project bare candidate whose model has effort variants', () => {
+    writeFileSync(join(a, 'sonata.toml'), `
+[models."luna"]
+gateway = "acme"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["luna"]
+complex = ["luna"]
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+`);
+    const catalog = aaCatalogPath(home);
+    mkdirSync(dirname(catalog), { recursive: true });
+    writeFileSync(catalog, JSON.stringify({
+      fetchedAt: '2026-09-13T00:00:00Z',
+      models: {
+        'gpt-5-6-luna': { codingIndex: 71, blendedPriceUsd: 0.45, family: 'gpt-5-6-luna', effort: 'max' },
+        'gpt-5-6-luna-high': { codingIndex: 60, blendedPriceUsd: 0.45, family: 'gpt-5-6-luna', effort: 'high' },
+      },
+    }));
+    expect(() => new TenantRegistry(home).resolve({ project: a })).toThrow(/tiers\.code\.simple "luna"/);
   });
 
   it('known() is machine + registered sessions + noted projects, deduplicated, and skips a broken one with one log line', async () => {
