@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput } from './types.js';
 import type { ModelRef } from '../types.js';
 import { isReadOnlyRole } from '../config.js';
+import type { Effort } from '../effort.js';
 
 const run = promisify(execFile);
 
@@ -34,6 +35,11 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+/** Pi spells "no thinking" as `off`; every other level matches sonata's enum. */
+export function piThinkingLevel(effort: Effort): string {
+  return effort === 'none' ? 'off' : effort;
+}
+
 function buildScript(input: PlanInput): LaunchPlan {
   const readOnly = isReadOnlyRole(input.role) || input.mode === 'plan';
 
@@ -57,6 +63,14 @@ function buildScript(input: PlanInput): LaunchPlan {
   // composes its own instructions and injects repo context, so pi would just
   // duplicate it.
   const flags = ['-p', `--model ${shellQuote(input.modelId)}`, '--no-context-files'];
+  // Probed 2026-09-14 against pi 0.85.1: `--thinking <level>` takes off,
+  // minimal, low, medium, high, xhigh, max. Note `off`, where sonata's enum
+  // says `none` — the one name that differs, mapped here. It is mapped rather
+  // than passed through because pi does NOT fail on a level it does not know:
+  // it prints `Warning: Invalid thinking level "none"` and continues at its
+  // own default, so an unmapped `none` would silently run WITH thinking, the
+  // opposite of what was asked for, with nothing downstream able to see it.
+  if (input.effort !== undefined) flags.push(`--thinking ${piThinkingLevel(input.effort)}`);
   // `--tools` is an allowlist, genuinely enforced: a read-only role gets only
   // the read-side tools and cannot write even in bypassPermissions.
   if (readOnly) flags.push('--tools read,grep,find,ls');
@@ -79,7 +93,7 @@ function buildScript(input: PlanInput): LaunchPlan {
   // A read-only allowlist removes the write tool outright, so the model cannot
   // write report.md either. That is the cost of pi's enforcement being real
   // rather than advisory, and sonata must not report such a run as degraded.
-  return { script, interactive: false, canWriteReport: !readOnly };
+  return { script, interactive: false, canWriteReport: !readOnly, effortHonoured: true };
 }
 
 const NO_PROVIDER: HarnessProblem = {

@@ -6,11 +6,12 @@ work. It records what is done, what is deliberately *not* done, what to pick
 up if you want work, and the traps that have cost previous sessions real time.
 
 **The short version:** every roadmap item is built, shipped and released. For
-most of this file's life there was no queued task; **there is one now.** The
-user deferred **PR 2 and PR 3 of the effort-tier spec** to the next session on
-2026-09-14 — that is the work to pick up, and the Effort-level tier candidates
-section below is the brief. Everything else remains a judgement call that
-belongs to the user; read the 1.0 gate section before going looking.
+most of this file's life there was no queued task. The one that existed —
+**PR 2 and PR 3 of the effort-tier spec** — was written on 2026-09-14 and sits
+**unpushed on `feat/effort-router`**; see the Effort-level tier candidates
+section below for what landed and what is still open on it. Everything else
+remains a judgement call that belongs to the user; read the 1.0 gate section
+before going looking.
 
 ## Where things stand
 
@@ -247,7 +248,7 @@ Anthropic — indistinguishable from a broken agent. The boundary is now `(-|$)`
 This had been live for as long as `tiersCollapse` and the matcher have
 coexisted, and no test compared them.
 
-## Effort-level tier candidates — PR 1 of 3 merged; **PR 2 and PR 3 are the queued work**
+## Effort-level tier candidates — all three PRs written; **2 and 3 are open as #34 (`feat/effort-router`)**
 
 A `[tiers]` candidate may pin a reasoning-effort level
 (`"gpt-5.6-luna@xhigh"`), the catalog records which level each Artificial
@@ -258,13 +259,13 @@ level of a model as its own candidate. Read
 the `CLAUDE.md` bullet is the short version. Merged 2026-09-13 as PR #28
 (`2c4549f`); unreleased, sitting in `[Unreleased]`.
 
-**Nothing in this change sends an effort level upstream.** A pinned level
-today changes the ranking, the candidate labels and `TierRoute.effort`, and
-nothing else — it is a way to *choose* a model, not yet a way to ask for more
-or less reasoning.
+**A pinned level now reaches the model on both lanes** — that was PR 2
+(`75e144d`, the router and the ledger) and PR 3 (the harness adapters), both
+committed on `feat/effort-router` and neither pushed. What each one settled is
+recorded under its own heading below.
 
-**Verified on `ed34902`, so you can start from facts rather than re-deriving
-them:**
+**The facts below were verified on `ed34902`, before PR 2 and PR 3 — they are
+kept as the "before" picture and every one of them is now out of date:**
 
 - `reasoning_effort` appears in `src/` exactly once, as a *comment* in
   `src/effort.ts`. It is never constructed and never sent.
@@ -278,9 +279,9 @@ them:**
   `--model luna@xhigh` today looks up a literal key named `luna@xhigh` and
   fails to find it.
 
-### PR 2 — router injects `reasoning_effort`, ledger records it
+### PR 2 — router injects `reasoning_effort`, ledger records it — **done, `75e144d`**
 
-Spec §4. The router is the layer that knows a request's level, and a ledger row
+Spec §4, built as specified below. The router is the layer that knows a request's level, and a ledger row
 should name it for the same reason it names the candidate that served the
 request. The shape the spec settles:
 
@@ -313,23 +314,114 @@ stickiness in PR #32, so the per-candidate body is now built as
 applied before the strip, since both touch `thinking`-adjacent fields for
 different reasons.
 
-### PR 3 — harness adapters
+### PR 3 — harness adapters — **done, on `feat/effort-router`**
 
-Spec §5. **Gated on probing each real binary** — every adapter bug in this
-repository's history was invisible in documentation and obvious on the first
-real run, and the spec deliberately states nothing about opencode, pi or
-reasonix until a captured fixture in `tests/fixtures/panes/` says otherwise.
-Only codex's mapping is known (`-c model_reasoning_effort=<level>`, on both
-`exec` and the TUI launch).
+Spec §5. Every mapping was probed against the real binary on 2026-09-14, per
+the repo rule; the probe results, not documentation, are what each adapter
+comment records.
 
-`LaunchPlan` gains `effort?: Effort` and the plan reports
-`effortHonoured: boolean`; a harness with no control annotates rather than
-degrades (`[effort xhigh not honoured: <harness> has no effort control]`),
-matching how the worktree-unchanged check behaves.
+- **codex** 0.153.4 — `-c model_reasoning_effort=<level>`, on `codex exec`
+  *and* the interactive TUI. The run header prints `reasoning effort: xhigh`,
+  so it demonstrably takes. An invalid level is refused by the *upstream*,
+  naming exactly sonata's own `EFFORT_LEVELS`, so no mapping is needed.
+- **opencode** 1.18.29 — `--variant <level>` on `opencode run`. Applied:
+  reasoning tokens moved with it on an identical prompt (132 at `low`, 230 at
+  `xhigh`) and the stored message records the variant. `--help` declares it
+  `[string]`, not `[array]` like `-f`, so it is safe before the positional
+  message. The level is passed through **unmapped** — models.dev publishes the
+  legal set per *model* and `opencode run` drops an unknown variant silently,
+  but substituting a nearby level would run at a setting the user never chose
+  while still reporting it honoured.
+- **pi** 0.85.1 — `--thinking <level>`, where sonata's `none` is **mapped** to
+  pi's own `off`. Mapped rather than passed through because pi warns and
+  continues at its default on a level it does not know, so an unmapped `none`
+  would silently run *with* thinking.
+- **reasonix** — **not installed on the probing machine**, so `effortHonoured`
+  is `false` and the report is annotated. That is "unprobed", not "probed and
+  found absent"; if you install it and find a control, set the flag true and
+  capture the evidence under `tests/fixtures/panes/` like every other reasonix
+  behaviour.
+- **claude** — the level travels in the model name (`--model <key>@<effort>`),
+  which `routeRequest` already splits. A flag here would be a second mechanism
+  for something PR 2 already wired.
 
-`sonata dispatch --model <key>@<effort>` belongs here too. Accepting the
-grammar while ignoring the level is exactly the silent mismatch the load-time
-refusal exists to prevent — so either parse it and honour it, or refuse it.
+`LaunchPlan.effortHonoured` is **required, not optional**, so a new adapter
+must answer rather than inherit a default. It claims the level reached the
+command line, never that the model has that level — same unknowable as the
+router's `drop_params`.
+
+**The annotation wording deviates from the spec's literal string**, deliberately:
+`[effort xhigh not honoured: sonata has no effort control for reasonix]`,
+not `… reasonix has no effort control`. The spec's own instruction for reasonix
+is to record it as unprobed rather than untested-but-assumed-absent, and the
+original wording asserts an absence nobody measured.
+
+**Two regressions PR 3 introduced and fixed before landing**, both found by a
+`review-complex` pass over the diff and both verified in the tree first:
+
+1. **An Anthropic-routed model name must not carry a level.** `routeRequest`
+   skips the `<key>@<effort>` split for a `claude-` model, because such a
+   request is forwarded byte-identical by contract — so appending a level does
+   not reach the splitter, it reaches Anthropic as part of the model name and
+   is rejected. A `[models]` entry with `harness = "claude"` and a `claude-…`
+   id would have turned a working dispatch into a 404. `claude.ts` now leaves
+   such a name bare and returns `effortHonoured: false`.
+2. **The annotation belongs on *both* trusted branches.** It was on the
+   report-present branch only, which dropped it on the `reportImpossible`
+   (`[read-only run: …]`) path — un-degraded, trusted, and exactly where a
+   read-only **reasonix** run lands, the one harness with no effort control.
+   The note now rides both.
+
+**Findings from that review left unfixed, in rough severity order.** None is
+caused by PR 3; each is recorded here rather than folded in, because each
+wants its own change.
+
+1. **`src/adapters/claude.ts:71` + `:94` — the claude lane reports a crash as a
+   success.** The script redirects stderr into `last-message.txt`, and that file
+   is the adapter's `fallbackReportFile`. `decide` deliberately does not consult
+   `exitCode` when a report exists, so a bad key, an unknown model id or any 4xx
+   writes an error message that becomes the "report": the run is `DONE`,
+   un-degraded, and `cmdDispatch` stops instead of trying the next ranked
+   candidate. The contrast is real — opencode and pi send `2>&1` to the pane,
+   and codex's fallback is written by codex itself via `-o`, so it can only hold
+   the model's final message. Fixing it means deciding what belongs in that file
+   at all; the `no tee` comment above it explains why the redirect exists.
+2. **`src/commands/tail.ts:81-95` — `spoke` can be satisfied by a bare shell
+   prompt.** `harnessOutput` filters blank lines, the launch marker and the
+   `bash '…/harness.sh'` echo, and nothing else. On the claude read-only lane
+   stdout goes to a file, so the prompt line tmux prints *after* the command
+   survives the filter and `reportImpossible` yields `DONE` with a prompt line
+   as the report. Latent: it needs `claude -p` to exit 0 with empty stdout,
+   which was not confirmed. A `decide({canWriteReport: false, report: null,
+   exitCode: 0, paneTail: ['…$']})` unit test would pin it.
+3. **`sonata doctor` has no advisory for a candidate whose only route is a
+   harness with no effort control** (spec §6's third line). PR 3 is what makes
+   it derivable; it was not in PR 3's brief.
+4. **`sonata runs` and `sonata status` show the bare key, not the variant.**
+   `meta.effort` and the ledger row's `effort` both exist, so two runs of one
+   model at different levels are distinguishable in the store and not in either
+   view. `status` is PR 2's scope.
+5. **Version gates admit builds the flags were never probed against**
+   (`opencode.ts`, `pi.ts`, `codex.ts`). The probes were 1.18.29 / 0.85.1 /
+   0.153.4; an older supported build that ignores an unknown flag rather than
+   erroring would make `effortHonoured: true` a false claim. This is how every
+   other flag in these adapters already works, which is why it is a note and
+   not a change.
+
+**Declined, with the reason, so nobody re-raises it:** the review asked for
+captured fixtures under `tests/fixtures/panes/` for the probe output quoted in
+the adapter comments (codex's `reasoning effort: xhigh` header, pi's `Warning:
+Invalid thinking level`, opencode's token counts). Nothing in sonata *parses*
+any of those strings — the repo rule exists for behaviour sonata detects, and
+PR 3 added no pane assertion. Capturing them would mean manufacturing fixtures
+for runs this session did not perform, which is worse than citing the probe.
+
+**Known gap, recorded rather than fixed:** `sonata run --model` does *not*
+accept the `<key>@<effort>` grammar — only `sonata dispatch` does, which is
+what the spec asks for. Typing it on `run` fails loudly with `unknown model
+"luna@xhigh"` and a list of defined models, so it is a papercut rather than a
+silent mismatch; fix it by splitting in `cli.ts`'s `run` block the way the
+dispatch block does.
 
 **Two known gaps in the effort-tier work, recorded rather than fixed.**
 

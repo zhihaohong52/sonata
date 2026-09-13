@@ -1,3 +1,5 @@
+import type { Effort } from './effort.js';
+
 export type PermissionMode = 'plan' | 'default' | 'acceptEdits' | 'bypassPermissions';
 
 export type TailState = 'PROGRESS' | 'PAUSED' | 'DONE' | 'STALLED';
@@ -48,6 +50,15 @@ export interface RunMeta {
    * a mark, so flagging one would be noise rather than a finding.
    */
   worktreeAtLaunch?: string;
+  /**
+   * The reasoning-effort level this run's tier candidate pinned, if any, and
+   * whether the harness plan actually sent it. Both absent on a run launched
+   * before these existed, and `effort` is absent for a bare candidate — which
+   * is why `cmdTail` annotates only when `effort` is present AND
+   * `effortHonoured` is explicitly false: unknown must not read as unhonoured.
+   */
+  effort?: Effort;
+  effortHonoured?: boolean;
   session: string;
   cwd: string;
   startedAt: string;
