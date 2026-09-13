@@ -13,3 +13,6 @@ sonata.toml
 # file Claude Code or sonata starts writing there does not silently become a
 # candidate for commit.
 .claude/
+
+# Isolated worktrees for subagent-driven plan execution (git-ignored scratch).
+.worktrees/
