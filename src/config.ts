@@ -735,7 +735,9 @@ export function parseConfig(text: string): SonataConfig {
     }
     const projectedGenerate: Record<string, string[]> = {};
     for (const [role, lists] of Object.entries(tiers)) {
-      projectedGenerate[role] = [...new Set([...lists.simple, ...lists.complex])];
+      projectedGenerate[role] = [...new Set(
+        [...lists.simple, ...lists.complex].map((candidate) => splitCandidate(candidate).key),
+      )];
     }
     native = {
       models: projectedModels,

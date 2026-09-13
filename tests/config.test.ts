@@ -664,6 +664,19 @@ base_url = "http://openai.example/v1"
     expect(routes[0].native).toMatchObject({ gateway: 'openai', id: 'gpt-5.6-terra' });
   });
 
+  it('projects pinned tier candidates to deduplicated bare native model keys', () => {
+    const config = parseConfig(TIERED.replace(
+      'simple = ["deepseek-v4-flash"]\ncomplex = ["gpt-5.6-terra", "deepseek-v4-flash"]',
+      'simple = ["gpt-5.6-terra@high"]\ncomplex = ["gpt-5.6-terra@xhigh", "deepseek-v4-flash"]',
+    ));
+
+    expect(config.tiers?.code).toEqual({
+      simple: ['gpt-5.6-terra@high'],
+      complex: ['gpt-5.6-terra@xhigh', 'deepseek-v4-flash'],
+    });
+    expect(config.native?.generate.code).toEqual(['gpt-5.6-terra', 'deepseek-v4-flash']);
+  });
+
   it('refuses an unknown or empty effort level, naming the list', () => {
     expect(() => parseConfig(TIERED.replace('simple = ["deepseek-v4-flash"]', 'simple = ["deepseek-v4-flash@turbo"]')))
       .toThrow(/tiers\.code\.simple.*"turbo"/);
