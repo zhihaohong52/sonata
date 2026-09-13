@@ -103,6 +103,12 @@ through the same picker `sonata init` uses, `w` writes and regenerates the
 agent files. `--list` prints without the editor, `--json` emits the same rows
 for a script.
 
+**The `--json` shape changed when effort levels landed.** A row's `key` now
+holds the whole candidate, `@effort` included (`acme-big@high`), rather than a
+bare key into `[models]`, and a sibling `effort` field carries the level on its
+own. A script that fed `key` straight back into a `[models]` lookup needs to
+split it — `key` is the candidate, not the model.
+
 It is the only writer of `sonata.toml` besides `sonata init`, and it replaces
 the `[tiers]` tables alone: every other byte of your config, including
 hand-written `[price]` blocks and `pricing_provider`, is left exactly where it
