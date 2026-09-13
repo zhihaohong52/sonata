@@ -18,6 +18,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
+import { spawn } from 'node:child_process';
+
 import { readSettings, writeSettings, installHook, uninstallHook, hookInstalled } from '../settings.js';
 import type { Settings } from '../settings.js';
 import { loadConfig, GLOBAL_CONFIG_RELATIVE, NoConfigError, parseConfig, type SonataConfig } from '../config.js';
@@ -342,14 +344,22 @@ export function sessionHookCommand(
 /**
  * Which subagents are worth turning routing on for.
  *
- * Every agent `sonata sync` generates is `<role>-…` or `native-<role>-…`, and
- * the four roles are fixed. Matching those rather than every subagent keeps
- * the window — the only period in which a launching session loses Remote
- * Control — as short as the work actually requires. Claude Code's own
- * built-ins (`general-purpose`, `Explore`, `Plan`) do not match: the regex is
- * case-sensitive and requires the trailing hyphen.
+ * Every agent `sonata sync` generates is `<role>-<tier>`, `native-<role>-…`,
+ * or — when a role's two tier lists are element-wise identical and
+ * `tiersCollapse` folds them — the bare `<role>`. The four roles are fixed.
+ *
+ * The role may therefore be the WHOLE name, which is why the boundary is
+ * `(-|$)` and not a bare hyphen. Requiring the hyphen silently excluded every
+ * collapsed agent: an `explore` dispatch fired no hook, wrote no routing env,
+ * and died with `model_not_found` at api.anthropic.com, indistinguishable from
+ * a broken agent (measured 2026-09-14). A matcher and a filename rule that
+ * disagree about what sonata generates is the failure this shape prevents.
+ *
+ * Claude Code's own built-ins still do not match: the regex is case-sensitive,
+ * so `Explore` and `Plan` are excluded by their capital, and the boundary
+ * keeps a longer name like `planner` out rather than matching on its prefix.
  */
-export const SONATA_AGENT_MATCHER = '^(native-)?(code|review|explore|plan)-';
+export const SONATA_AGENT_MATCHER = '^(native-)?(code|review|explore|plan)(-|$)';
 
 /**
  * The SubagentStart/SubagentStop command auto mode installs, alongside the
@@ -723,6 +733,58 @@ export interface SessionDeps {
   /** Resolves true when the router already answers on `port`. */
   probe?: (port: number) => Promise<boolean>;
   startDaemon?: (home: string, argv: string[], deps?: unknown, cwd?: string) => Promise<unknown>;
+  /**
+   * Schedules the settle — taking the routing env back out once this session
+   * has read it. Injected so a test can observe the scheduling without
+   * spawning anything; the default detaches a child, because the hook that
+   * calls this blocks the session's own start and must not wait out the delay.
+   */
+  settle?: (sessionId: string) => void;
+}
+
+/**
+ * How long the routing env stays in the settings file before the settle takes
+ * it out again.
+ *
+ * It only has to outlast this session's own read of the file, which was
+ * measured as effectively immediate — a session's first routed request landed
+ * in the same second as the hook's write. The margin is for a loaded machine,
+ * not for a slow mechanism.
+ */
+export const ROUTE_SETTLE_MS = 5_000;
+
+/**
+ * Takes the routing env back out of the settings file, leaving the session
+ * registered and still routing.
+ *
+ * This is the half of the design that buys Remote Control back. A session
+ * keeps routing on the value it has already read — measured 2026-09-14 at 54
+ * minutes and still routing, confirmed per session id in the ledger rather
+ * than by log line — so what the removal changes is not this session but the
+ * NEXT one, which then launches into a clean file and keeps Remote Control.
+ *
+ * The registries are deliberately left alone: clearing this session's
+ * registration would make the next SessionEnd believe it was the last one out
+ * and tear routing down under a session that is still working.
+ *
+ * The honest limit: the earlier `bdf8e27` experiment saw a session keep
+ * routing for tens of minutes after a removal and then stop, so the value a
+ * session holds is known to be long-lived and NOT known to be permanent.
+ */
+export async function cmdRouteSettle(
+  sessionId: string,
+  opts: { cwd: string; home: string; packageRoot: string; scope?: 'project' | 'global' },
+  deps: { delay?: (ms: number) => Promise<void> } = {},
+): Promise<void> {
+  const scope = opts.scope ?? 'project';
+  const wait = deps.delay ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  await wait(ROUTE_SETTLE_MS);
+  // Only while this session is still live. A session that ended during the
+  // delay has already had `route off` run for it if it was the last one, and
+  // re-running the removal here would race that cleanup.
+  const registered = readSessions(routeSessionsFile(opts.cwd, scope, opts.home));
+  if (!registered.includes(sessionId)) return;
+  routeOffKeepingRegistries(opts, scope);
 }
 
 export async function cmdRouteSession(
@@ -851,14 +913,54 @@ export async function cmdRouteSession(
     await recordSession(opts.home, { session: sessionId, cwd: opts.cwd, started: new Date().toISOString() });
   } catch { /* attribution is a nicety; starting the session is not */ }
 
-  // Deliberately does NOT route. Routing on here is what made `route auto`
-  // degrade into `route on`: it stayed on while any registered session lived,
-  // which with overlapping sessions is forever, so every session after the
-  // first launched into a dirty file and lost Remote Control. Routing is now
-  // turned on per foreign-model subagent instead — see cmdRouteSubagent. This
-  // phase only ensures the router daemon is up and records liveness.
+  // Routes, and then schedules the settle that takes the env back out.
+  //
+  // Routing here once made `route auto` degrade into `route on` — the env
+  // stayed for as long as any session lived, so every later session read it at
+  // startup and lost Remote Control. The answer then was to route at
+  // SubagentStart instead, which routes nothing: the subagent that FIRES that
+  // hook has already resolved its endpoint, so it reaches api.anthropic.com
+  // and dies with `model_not_found`, which reads as a broken agent.
+  //
+  // Writing it HERE happens before any subagent exists, so nothing races it;
+  // taking it out again a moment later is what keeps the next session's launch
+  // clean. Both halves were measured on 2026-09-14 (Claude Code 2.1.270) — see
+  // `cmdRouteSettle` and the tests.
+  await cmdRoute('on', opts);
+  (deps.settle ?? ((id: string) => spawnSettle(id, opts, scope)))(sessionId);
+
   const after = readSessions(registry);
-  return { sessions: after.length, routing: 'off' };
+  return { sessions: after.length, routing: 'on' };
+}
+
+/**
+ * Runs the settle in a detached child, so the hook that started this session
+ * returns immediately.
+ *
+ * The delay must not be waited out in-process: Claude Code blocks on a
+ * SessionStart hook, so every session would pay it before showing a prompt.
+ */
+function spawnSettle(
+  sessionId: string,
+  opts: { cwd: string; home: string; packageRoot: string },
+  scope: 'project' | 'global',
+): void {
+  try {
+    // The installed CLI, resolved the same way the hook commands are, rather
+    // than `process.argv[1]`: that is whatever binary happens to be running
+    // this code — a test runner, an editor integration — and re-invoking it
+    // with sonata's arguments is not a thing to do blind. A package root with
+    // no built CLI simply schedules nothing.
+    const cli = join(opts.packageRoot, 'dist', 'cli.js');
+    if (!existsSync(cli)) return;
+    const args = [cli, 'route', 'session-settle', '--id', sessionId];
+    if (scope === 'global') args.push('--global');
+    spawn(process.execPath, args, { cwd: opts.cwd, detached: true, stdio: 'ignore' }).unref();
+  } catch {
+    // A settle that cannot be scheduled costs the NEXT session's Remote
+    // Control, never this session's routing. Failing the hook over it would
+    // trade a small loss for the whole feature.
+  }
 }
 
 /**
