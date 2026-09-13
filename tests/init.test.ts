@@ -1393,6 +1393,25 @@ describe('deriveInitState', () => {
     expect(state.perRoleModels).toEqual({ review: ['m'] });
   });
 
+
+  it('lists each model once in perRoleModels, whatever effort levels the tiers pin', () => {
+    const tiered = parseConfig(`
+[native.gateways."g"]
+base_url = "https://g.example/v1"
+
+[models."big"]
+gateway = "g"
+id = "big"
+context_window = 128000
+
+[tiers.code]
+simple = ["big@high"]
+complex = ["big@max"]
+`);
+    const state = deriveInitState(tiered, 'project', []);
+    expect(state.perRoleModels?.code).toEqual(['big']);
+  });
+
   it('keeps an untiered unified native-only model selected', () => {
     const config = parseConfig(`
 [native.gateways."solo-gateway"]
@@ -1815,6 +1834,70 @@ context_window = 128000
       installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', detect, write: () => {} });
 
     expect(tuiMocks.data!.gatewayBaseUrls?.acme).toBe('https://live.example/v1');
+  });
+
+  it('keys the declared gateway names by scope, so each scope reads its own config', async () => {
+    // The tier screens widen a scope's rankable gateway names with the ones
+    // *that scope's* config declares, so a gateway no harness discovers any
+    // more still contributes its effort variants. Both spellings of the
+    // lookup typecheck as `string[]`, and one scope's names read as any
+    // scope's — so only a config declaring a different gateway per scope
+    // tells a scoped read from a transposed one.
+    const cwd = mkdtempSync(join(tmpdir(), 'init-declared-scope-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'init-declared-scope-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways."project-gw"]
+base_url = "https://project.example/v1"
+
+[models."project-model"]
+gateway = "project-gw"
+id = "some-model"
+context_window = 128000
+
+[models."project-alias"]
+harness = "codex"
+id = "project-reasoning-model"
+
+[tiers.code]
+simple = ["project-model"]
+complex = ["project-model"]
+`);
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), `
+[native.gateways."global-gw"]
+base_url = "https://global.example/v1"
+
+[models."global-model"]
+gateway = "global-gw"
+id = "some-model"
+context_window = 128000
+
+[models."global-alias"]
+harness = "codex"
+id = "global-reasoning-model"
+
+[tiers.code]
+simple = ["global-model"]
+complex = ["global-model"]
+`);
+    tuiMocks.interactive = true;
+    tuiMocks.result = { cancelled: true, state: { configScope: 'project' } };
+    const detect = async () => ({
+      tmux: { installed: true, version: '3.7b', problems: [] },
+      harnesses: [],
+    });
+
+    await cmdInit({
+      installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', detect, write: () => {} });
+
+    expect(tuiMocks.data!.declaredGatewayNames).toEqual({
+      project: ['project-gw'],
+      global: ['global-gw'],
+    });
+    expect(tuiMocks.data!.harnessOnlyUpstreams).toEqual({
+      project: { 'project-alias': 'project-reasoning-model' },
+      global: { 'global-alias': 'global-reasoning-model' },
+    });
   });
 
   it('defines [models] for a model only the gateway reported, so the config parses', async () => {

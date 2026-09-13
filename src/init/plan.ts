@@ -8,7 +8,7 @@ import type { CredentialSource } from '../config.js';
 import type { NativeGatewayAuth } from '../config.js';
 import { tierAgentNames, parseConfig } from '../config.js';
 import { litellmRequired } from '../native/providers.js';
-import { loadAaCatalog, proposeTiers } from '../catalog.js';
+import { expandCandidates, loadAaCatalog, proposeTiers, unpinnedVariants } from '../catalog.js';
 import { nativeTomlFor } from './toml.js';
 import { reconcilePerRoleModels, reconcileTierList, gatewayNamesOf, avoidedKeysOf } from './helpers.js';
 import { configPathFor, agentsDirFor } from './helpers.js';
@@ -17,6 +17,7 @@ import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { readChatGptOAuth } from '../native/codex-auth.js';
 import { GLOBAL_CONFIG_RELATIVE } from '../config.js';
 import { isOauthGatewayAuth } from '../config.js';
+import { splitCandidate } from '../effort.js';
 import { addByokCandidates, addLiveCandidates, rewriteOauthToApiKey } from './candidates.js';
 
 /** A resolvable bearer key for this gateway from this source. */
@@ -142,15 +143,46 @@ export function plan(
   const savedNativeKeys = configForScope?.unifiedModels
     ? Object.keys(configForScope.unifiedModels).filter((key) => configForScope.unifiedModels[key].gateway !== undefined)
     : [];
-  const validTierKeys = new Set([...nativeKeys, ...Object.keys(migratedModels)]);
   const catalog = loadAaCatalog(opts.home);
-  const addedKeys = nativeKeys.filter((key) => !savedNativeKeys.includes(key));
+  const gatewayNames = gatewayNamesOf(nativeByKey);
+  // A config key as the upstream id a catalog lookup needs. Tier lists hold
+  // config keys while the catalog is keyed by upstream id, and a key is only
+  // *usually* `<gateway>-<id>` — a hand-named key has no prefix to strip, so
+  // normalizing the key itself finds nothing. Without this the wizard re-writes
+  // the very bare candidate `loadConfig` refuses, which is exactly the state
+  // `sonata init` was being told to repair.
+  const upstreamFor = (key: string): string =>
+    nativeByKey.get(key)?.id
+    ?? configForScope?.unifiedModels?.[key]?.id
+    ?? configForScope?.unifiedModels?.[key]?.harnessId
+    ?? key;
+  const expand = (keys: string[]) => expandCandidates(keys, catalog, gatewayNames, upstreamFor);
+  const rankableKeys = [...nativeKeys, ...Object.keys(migratedModels)];
+  const expandedTierKeys = expand(rankableKeys);
+  // A hand-pinned level remains valid when its bare model is still selected,
+  // even when the catalog is absent or no longer publishes that exact level.
+  // Do not admit bare saved keys here: catalog-scored bare keys are invalid.
+  const validTierKeys = (saved: readonly string[] | undefined): Set<string> => new Set([
+    ...expandedTierKeys,
+    ...(saved ?? []).filter((candidate) => {
+      const { key, effort } = splitCandidate(candidate);
+      return effort !== undefined && rankableKeys.includes(key);
+    }),
+  ]);
+  const addedKeys = expand(nativeKeys.filter((key) => !savedNativeKeys.includes(key)));
   const tiers = Object.fromEntries(roles.map((role) => {
-    const proposal = proposeTiers(nativeKeys, catalog, gatewayNamesOf(nativeByKey), avoidedKeysOf(nativeByKey, avoidGateways));
+    const proposal = proposeTiers(
+      nativeKeys, catalog, gatewayNames, avoidedKeysOf(nativeByKey, avoidGateways), upstreamFor);
     const saved = state.tiers?.[role] ?? configForScope?.tiers?.[role];
+    // A saved bare key with variants is re-proposed as its levels, at the
+    // rank the proposal gives each — the same treatment as a new model.
+    // Deduplicated, because `reconcileTierList` inserts each `added` entry
+    // it does not already hold and would insert a repeated one twice.
+    const added = (tier: 'simple' | 'complex') =>
+      [...new Set([...addedKeys, ...unpinnedVariants(saved?.[tier], catalog, gatewayNames, upstreamFor)])];
     return [role, {
-      simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple, addedKeys),
-      complex: reconcileTierList(saved?.complex, validTierKeys, proposal.complex, addedKeys),
+      simple: reconcileTierList(saved?.simple, validTierKeys(saved?.simple), proposal.simple, added('simple')),
+      complex: reconcileTierList(saved?.complex, validTierKeys(saved?.complex), proposal.complex, added('complex')),
     }];
   }));
 

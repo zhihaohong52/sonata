@@ -35,6 +35,14 @@ describe('nativeTomlFor', () => {
     key: `${gw}-${id}`, gateway: gw, id, contextWindow: 128000, baseUrl: `https://${gw}.example/v1`,
   });
 
+  it('writes an effort-pinned tier candidate back verbatim', () => {
+    const c = cand('acme', 'sprinter');
+    const out = nativeTomlFor({ code: [c] }, {}, { code: { simple: ['acme-sprinter@high'], complex: ['acme-sprinter@max', 'acme-sprinter@high'] } });
+    const cfg = parseConfig(out);
+    expect(cfg.tiers?.code.simple).toEqual(['acme-sprinter@high']);
+    expect(cfg.tiers?.code.complex).toEqual(['acme-sprinter@max', 'acme-sprinter@high']);
+  });
+
   it('writes native gateways, unified models, and tiers', () => {
     const out = nativeTomlFor({ code: [cand('opencode', 'deepseek-v4-flash')] });
     expect(out).toContain('[native.gateways."opencode"]');

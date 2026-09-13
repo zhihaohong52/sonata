@@ -18,14 +18,18 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../extended-context.js';
 import { configPath, loadConfig, parseConfig, TIER_NAMES, tiersCollapse, type SonataConfig } from '../config.js';
+import { assertEffortsPinned, candidateLabel, expandCandidates, loadAaCatalog, type AaCatalog } from '../catalog.js';
 import { replaceTiersBlock } from '../init/toml.js';
 import { cmdSync } from './sync.js';
 import { pruneAgents } from '../detect.js';
+import { splitCandidate, type Effort } from '../effort.js';
 
 export type Tier = 'simple' | 'complex';
 
 export interface AgentModelRow {
+  /** The candidate as ranked — `<key>` or `<key>@<effort>` — not a key into `[models]`. */
   key: string;
+  effort?: Effort;
   /** How the router can reach it. `missing` means the key names no model. */
   route: 'native' | 'harness' | 'both' | 'missing';
   gateway?: string;
@@ -44,13 +48,15 @@ export interface AgentRow {
   extendedContext: boolean;
 }
 
-function modelRow(config: SonataConfig, key: string): AgentModelRow {
+function modelRow(config: SonataConfig, candidate: string): AgentModelRow {
+  const { key, effort } = splitCandidate(candidate);
   const model = config.unifiedModels[key];
-  if (model === undefined) return { key, route: 'missing' };
+  const base = effort === undefined ? { key: candidate } : { key: candidate, effort };
+  if (model === undefined) return { ...base, route: 'missing' };
   const native = model.gateway !== undefined;
   const harness = model.harness !== undefined;
   return {
-    key,
+    ...base,
     route: native && harness ? 'both' : native ? 'native' : harness ? 'harness' : 'missing',
     gateway: model.gateway ?? model.harness,
     id: model.id ?? model.harnessId,
@@ -172,7 +178,8 @@ export function writeTiers(
   }
 
   const next = replaceTiersBlock(text, tiers);
-  parseConfig(next);
+  // Reject an unsafe ranking before it can replace the working file.
+  assertEffortsPinned(parseConfig(next), loadAaCatalog(opts.home));
   writeFileSync(path, next);
 
   // A ranking change can move a role between one collapsed agent and two tier
@@ -205,6 +212,29 @@ export function rankableKeys(config: SonataConfig): string[] {
   ];
 }
 
+/**
+ * A config key as the upstream id a catalog lookup needs.
+ *
+ * Tier lists hold config *keys* while the catalog is keyed by upstream *id*
+ * (the rule `cmdDoctor` already resolves by), and a key is only *usually*
+ * `<gateway>-<id>`: `[models."luna"]` with `id = "gpt-5.6-luna"` has no
+ * gateway prefix to strip, so normalizing the key itself finds nothing and
+ * this editor would offer no pin for a candidate `loadConfig` refuses.
+ */
+function upstreamOf(config: SonataConfig): (key: string) => string {
+  return (key) => config.unifiedModels[key]?.id ?? config.unifiedModels[key]?.harnessId ?? key;
+}
+
+/**
+ * Every candidate the editor may rank: each rankable key, expanded into its
+ * scored effort levels where the catalog has them. The same expansion the
+ * wizard's tier screens apply, so the two editors offer the same rows.
+ */
+export function rankableCandidates(config: SonataConfig, aa?: AaCatalog): string[] {
+  return expandCandidates(
+    rankableKeys(config), aa, Object.keys(config.native?.gateways ?? {}), upstreamOf(config));
+}
+
 export function loadAgentsView(opts: AgentsOptions): { config: SonataConfig; rows: AgentRow[] } {
   const config = loadConfig(opts.cwd, opts.home);
   return { config, rows: agentRows(config) };
@@ -221,11 +251,12 @@ export interface AgentsIo {
 }
 
 /** A ranking row's label: the key, what it resolves to, and its window. */
-export function itemLabel(config: SonataConfig, key: string): string {
-  const row = modelRow(config, key);
+export function itemLabel(config: SonataConfig, candidate: string, aa?: AaCatalog): string {
+  const row = modelRow(config, candidate);
+  const scored = candidateLabel(candidate, aa, Object.keys(config.native?.gateways ?? {}), upstreamOf(config));
   return row.route === 'missing'
-    ? `${key}  (names no model)`
-    : `${key.padEnd(28)} ${row.gateway}/${row.id}  ${windowLabel(row.contextWindow)}`;
+    ? `${scored}  (names no model)`
+    : `${scored.padEnd(50)} ${row.gateway}/${row.id}  ${windowLabel(row.contextWindow)}`;
 }
 
 export async function cmdAgents(
@@ -250,10 +281,11 @@ export async function cmdAgents(
     return 0;
   }
 
+  const catalog = loadAaCatalog(opts.home);
   const next = await io.edit({
     config,
     initialTiers: config.tiers,
-    items: rankableKeys(config).map((key) => ({ value: key, label: itemLabel(config, key) })),
+    items: rankableCandidates(config, catalog).map((candidate) => ({ value: candidate, label: itemLabel(config, candidate, catalog) })),
   });
   if (next === undefined) {
     for (const line of renderAgents(rows)) io.out(line);

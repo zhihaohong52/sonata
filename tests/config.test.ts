@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { aaCatalogPath } from '../src/catalog.js';
 import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents, expectedAgentNames, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL, resolveTierAlias, harnessModelFor, NoConfigError } from '../src/config.js';
 
 const VALID = `
@@ -649,6 +650,53 @@ base_url = "http://gateway.example/v1"
 base_url = "http://openai.example/v1"
 `;
 
+  it('accepts <key>@<effort> and exposes the level on the resolved route', () => {
+    const config = parseConfig(TIERED.replace(
+      'complex = ["gpt-5.6-terra", "deepseek-v4-flash"]',
+      'complex = ["gpt-5.6-terra@xhigh", "deepseek-v4-flash", "gpt-5.6-terra@high"]',
+    ));
+    expect(config.tiers?.code.complex).toEqual(['gpt-5.6-terra@xhigh', 'deepseek-v4-flash', 'gpt-5.6-terra@high']);
+    const routes = resolveTierAlias(config, 'sonata-code-complex')!.routes;
+    expect(routes.map((r) => [r.key, r.effort])).toEqual([
+      ['gpt-5.6-terra', 'xhigh'], ['deepseek-v4-flash', undefined], ['gpt-5.6-terra', 'high'],
+    ]);
+    // The route resolves the bare key, so the model's native half is found.
+    expect(routes[0].native).toMatchObject({ gateway: 'openai', id: 'gpt-5.6-terra' });
+  });
+
+  it('projects pinned tier candidates to deduplicated bare native model keys', () => {
+    const config = parseConfig(TIERED.replace(
+      'simple = ["deepseek-v4-flash"]\ncomplex = ["gpt-5.6-terra", "deepseek-v4-flash"]',
+      'simple = ["gpt-5.6-terra@high"]\ncomplex = ["gpt-5.6-terra@xhigh", "deepseek-v4-flash"]',
+    ));
+
+    expect(config.tiers?.code).toEqual({
+      simple: ['gpt-5.6-terra@high'],
+      complex: ['gpt-5.6-terra@xhigh', 'deepseek-v4-flash'],
+    });
+    expect(config.native?.generate.code).toEqual(['gpt-5.6-terra', 'deepseek-v4-flash']);
+  });
+
+  it('refuses an unknown or empty effort level, naming the list', () => {
+    expect(() => parseConfig(TIERED.replace('simple = ["deepseek-v4-flash"]', 'simple = ["deepseek-v4-flash@turbo"]')))
+      .toThrow(/tiers\.code\.simple.*"turbo"/);
+    expect(() => parseConfig(TIERED.replace('simple = ["deepseek-v4-flash"]', 'simple = ["deepseek-v4-flash@"]')))
+      .toThrow(/tiers\.code\.simple/);
+  });
+
+  it('still refuses a level on a key that names no model', () => {
+    expect(() => parseConfig(TIERED.replace('simple = ["deepseek-v4-flash"]', 'simple = ["ghost@high"]')))
+      .toThrow(/unknown model "ghost"/);
+  });
+
+  it('does not collapse a role whose tiers differ only by effort', () => {
+    const config = parseConfig(TIERED.replace(
+      'complex = ["deepseek-v4-flash"]\n', 'complex = ["deepseek-v4-flash@high"]\n',
+    ));
+    expect(resolveTierAlias(config, 'sonata-explore')).toBeUndefined();
+    expect(resolveTierAlias(config, 'sonata-explore-complex')!.routes[0].effort).toBe('high');
+  });
+
   it('parses unified models with native and harness routes', () => {
     const config = parseConfig(TIERED);
     expect(config.models['deepseek-v4-flash']).toEqual({
@@ -1076,5 +1124,28 @@ pricing_provider = ${value}
     expect(parseConfig(gateway('"openai"')).native!.gateways.g.pricingProvider).toEqual(['openai']);
     expect(parseConfig(gateway('["openai", "deepseek"]')).native!.gateways.g.pricingProvider)
       .toEqual(['openai', 'deepseek']);
+  });
+});
+
+describe('loadConfig — effort pinning', () => {
+  it('refuses a bare candidate with variants when a catalog is cached, and loads without one', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sonata-cfg-'));
+    const home = mkdtempSync(join(tmpdir(), 'sonata-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), [
+      '[models."luna"]', 'gateway = "acme"', 'id = "gpt-5.6-luna"',
+      '[native.gateways."acme"]', 'base_url = "https://acme.example/v1"',
+      '[tiers.code]', 'simple = ["luna"]', 'complex = ["luna"]', '',
+    ].join('\n'));
+    expect(() => loadConfig(cwd, home)).not.toThrow();
+    const catalog = aaCatalogPath(home);
+    mkdirSync(dirname(catalog), { recursive: true });
+    writeFileSync(catalog, JSON.stringify({
+      fetchedAt: '2026-09-13T00:00:00Z',
+      models: {
+        'gpt-5-6-luna': { codingIndex: 71, blendedPriceUsd: 0.45, family: 'gpt-5-6-luna', effort: 'max' },
+        'gpt-5-6-luna-high': { codingIndex: 60, blendedPriceUsd: 0.45, family: 'gpt-5-6-luna', effort: 'high' },
+      },
+    }));
+    expect(() => loadConfig(cwd, home)).toThrow(/tiers\.code\.simple "luna"/);
   });
 });

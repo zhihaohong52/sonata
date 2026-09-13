@@ -25,6 +25,7 @@
  * has to stay the smallest window that could answer.
  */
 import type { SonataConfig } from './config.js';
+import { splitCandidate } from './effort.js';
 
 /** The window Claude Code assumes for an id carrying `[1m]`. */
 export const EXTENDED_CONTEXT_TOKENS = 1_000_000;
@@ -50,8 +51,8 @@ export const EXTENDED_CONTEXT_SUFFIX = '[1m]';
  */
 export function tierQualifiesForExtendedContext(config: SonataConfig, keys: readonly string[]): boolean {
   let native = 0;
-  for (const key of keys) {
-    const model = config.unifiedModels[key];
+  for (const candidate of keys) {
+    const model = config.unifiedModels[splitCandidate(candidate).key];
     if (model === undefined || model.gateway === undefined) continue;
     native += 1;
     if (model.contextWindow === undefined || model.contextWindow < EXTENDED_CONTEXT_TOKENS) return false;

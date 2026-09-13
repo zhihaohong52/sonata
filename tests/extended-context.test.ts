@@ -60,6 +60,12 @@ id = "openrouter/x"
     expect(tierQualifiesForExtendedContext(config, ['big', 'viahar'])).toBe(true);
   });
 
+  it('resolves an effort-pinned candidate to its model', () => {
+    const config = toml(native('big', 1_000_000));
+    expect(tierQualifiesForExtendedContext(config, ['big@xhigh'])).toBe(true);
+    expect(tierQualifiesForExtendedContext(config, ['ghost@xhigh'])).toBe(false);
+  });
+
   it('refuses a tier with no native candidate at all', () => {
     const config = parseConfig(`
 [models."viahar"]
