@@ -201,7 +201,7 @@ or less reasoning. Two follow-ups complete it, both named in the spec:
    belongs here too — accepting the grammar while ignoring the level is
    exactly the silent mismatch the load-time refusal exists to prevent.
 
-**Three known gaps in the effort-tier work, recorded rather than fixed.**
+**Two known gaps in the effort-tier work, recorded rather than fixed.**
 
 1. **The upstream-id resolver's *scoring* half is untested.** `upstreamFor` is
    threaded through `expandCandidates` *and* through `proposeTiers`'
@@ -216,15 +216,7 @@ or less reasoning. Two follow-ups complete it, both named in the spec:
    `proposeTiers(['luna','flash'], FAMILY_AA, ['codex','deepseek'], new Set(),
    upstreamFor)` places `luna@low` ahead of `luna@max` in `simple`.
 
-2. **The wizard's tier screen cannot offer a pin for a harness-only key.** A
-   `[models."k3"] harness = "opencode"` entry with no `gateway` never enters
-   the wizard's candidate set, so `app.tsx`'s resolver falls back to the key
-   and the screen shows only the bare row. The refusal *does* fire for that
-   shape (`unpinnedCandidates` reaches `harnessId`), and both `src/init/plan.ts`
-   and `rankableCandidates` write the pin, so such a config is still
-   repairable — the screen is simply narrower than the writer.
-
-3. **Resolving through the id is a silent ranking change for a key that spells
+2. **Resolving through the id is a silent ranking change for a key that spells
    one model and points at another.** An Azure-style deployment
    (`[models."gpt-5.6-luna"]` with `id = "my-gpt5-deployment"`) now scores from
    the curated/default table where it previously matched AA on its key. That is
