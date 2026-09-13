@@ -10,6 +10,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { isEffort, type Effort } from './effort.js';
 
 export const AA_ATTRIBUTION =
   'Model rankings by Artificial Analysis — https://artificialanalysis.ai';
@@ -115,6 +116,17 @@ export interface AaEntry {
    * pricier-per-token terse one.
    */
   costPerTask?: number;
+  /**
+   * The model this row is one effort level of, and which level. Read from
+   * the parenthetical in AA's display name at `catalog update` — `GPT-5.6
+   * Luna (max)` is slug `gpt-5-6-luna`, `… (low)` is `gpt-5-6-luna-low` —
+   * so the unsuffixed default row is a member of its family too, and the
+   * family knows which level its default is. Absent on a row whose name
+   * carries no level, and on every row of a cache written before this was
+   * recorded, which is the "cannot check" state `loadConfig` skips on.
+   */
+  family?: string;
+  effort?: Effort;
 }
 
 /**
@@ -496,7 +508,7 @@ export function loadAaCatalog(home: string): AaCatalog | undefined {
     // (`undefined >= 40` is `false`, silently "not capable"). A partially-
     // corrupt cache is still useful, so drop the bad entries and keep the good;
     // degrade to no cache only when nothing survives.
-    const models: Record<string, { codingIndex: number; blendedPriceUsd: number }> = {};
+    const models: Record<string, AaEntry> = {};
     for (const [name, entry] of Object.entries(doc.models)) {
       if (
         entry !== null &&
@@ -504,7 +516,10 @@ export function loadAaCatalog(home: string): AaCatalog | undefined {
         Number.isFinite(entry.codingIndex) &&
         Number.isFinite(entry.blendedPriceUsd)
       ) {
-        models[name] = entry;
+        // An unknown level is a hand-edit or a foreign writer; the score is
+        // still good, so keep the row and drop only the field.
+        const { effort, ...rest } = entry as AaEntry;
+        models[name] = effort !== undefined && isEffort(effort) ? { ...rest, effort } : rest;
       }
     }
     if (Object.keys(models).length === 0) return undefined;

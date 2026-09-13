@@ -13,6 +13,7 @@ import {
   type ModelsDevCache,
 } from '../modelsdev.js';
 import { resolveKeyFromSource } from '../native/credentials.js';
+import { parseAaEffort, aaEffortSuffix, type Effort } from '../effort.js';
 
 /**
  * The free language-models endpoint, not `/data/llms/models`.
@@ -102,14 +103,28 @@ function numberAt(value: unknown, ...path: string[]): number | undefined {
   return typeof current === 'number' && Number.isFinite(current) ? current : undefined;
 }
 
-function modelName(entry: Record<string, unknown>): string | undefined {
-  // Slugs are the stable provider/model spelling; display names are the fallback.
-  for (const field of ['slug', 'name']) {
-    if (typeof entry[field] === 'string' && entry[field].trim() !== '') {
-      return normalizeModelName(entry[field]);
-    }
-  }
-  return undefined;
+/**
+ * The cache key for a row, plus which effort family it belongs to.
+ *
+ * The key is the normalized slug, as before. The family is the normalized
+ * slug *with the effort suffix removed first*: `deepseek-v4-pro-0424-high`
+ * loses `-high` and then `normalizeModelName` finds its trailing `-0424`,
+ * so both it and the default row land in `deepseek-v4-pro`. Stripping after
+ * normalizing would leave the date in the middle and split the family.
+ * The level itself comes from the display name, which is the only place AA
+ * states the *default* row's level.
+ */
+function modelIdentity(entry: Record<string, unknown>): { name: string; family?: string; effort?: Effort } | undefined {
+  const slug = typeof entry.slug === 'string' && entry.slug.trim() !== '' ? entry.slug : undefined;
+  const display = typeof entry.name === 'string' && entry.name.trim() !== '' ? entry.name : undefined;
+  const source = slug ?? display;
+  if (source === undefined) return undefined;
+  const name = normalizeModelName(source);
+  const effort = display === undefined ? undefined : parseAaEffort(display);
+  if (effort === undefined) return { name };
+  const suffix = `-${aaEffortSuffix(effort)}`;
+  const base = source.endsWith(suffix) ? source.slice(0, -suffix.length) : source;
+  return { name, family: normalizeModelName(base), effort };
 }
 
 function nowIso(deps: { now?: () => Date }): string {
@@ -171,7 +186,8 @@ async function updateAaCatalog(
   const models: AaCatalog['models'] = {};
   for (const value of entries) {
     if (!isRecord(value)) continue;
-    const name = modelName(value);
+    const identity = modelIdentity(value);
+    const name = identity?.name;
     const codingIndex = numberAt(value, 'evaluations', 'artificial_analysis_coding_index');
     const intelligenceIndex = numberAt(value, 'evaluations', 'artificial_analysis_intelligence_index');
     const agenticIndex = numberAt(value, 'evaluations', 'artificial_analysis_agentic_index');
@@ -199,6 +215,7 @@ async function updateAaCatalog(
       ...(intelligenceIndex === undefined ? {} : { intelligenceIndex }),
       ...(agenticIndex === undefined ? {} : { agenticIndex }),
       ...(costPerTask === undefined ? {} : { costPerTask }),
+      ...(identity?.family === undefined ? {} : { family: identity.family, effort: identity.effort }),
     };
   }
 

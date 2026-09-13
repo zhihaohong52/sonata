@@ -130,6 +130,31 @@ describe('cmdCatalogUpdate', () => {
   });
 });
 
+const familyFixture = () => JSON.parse(readFileSync(join(process.cwd(), 'tests/fixtures/aa/effort-family.json'), 'utf8'));
+
+describe('cmdCatalogUpdate — effort variants', () => {
+  it('records the family and effort of every row whose name carries a level', async () => {
+    cmdAuthAdd({ home, gateway: 'artificialanalysis', key: 'synthetic-key' });
+    await cmdCatalogUpdate(home, {
+      fetch: async (input, init) => isModelsDev(input) ? response({}, 503) : response(familyFixture()),
+    });
+    const models = JSON.parse(readFileSync(aaCatalogPath(home), 'utf8')).models;
+    // The default row: no suffix in the slug, level from the name.
+    expect(models['sprinter']).toMatchObject({ family: 'sprinter', effort: 'max' });
+    expect(models['sprinter-high']).toMatchObject({ family: 'sprinter', effort: 'high' });
+    expect(models['sprinter-low']).toMatchObject({ family: 'sprinter', effort: 'low' });
+    expect(models['sprinter-non-reasoning']).toMatchObject({ family: 'sprinter', effort: 'none' });
+    // The suffix is removed from the slug *before* normalization, so the
+    // trailing date is still trailing when normalizeModelName looks for it.
+    expect(models['heavy']).toMatchObject({ family: 'heavy', effort: 'max' });
+    expect(models['heavy-0424-high']).toMatchObject({ family: 'heavy', effort: 'high' });
+    // A parenthetical that is not a level records nothing.
+    expect(models['plodder']).not.toHaveProperty('family');
+    expect(models['plodder']).not.toHaveProperty('effort');
+  });
+});
+
+
 describe('validateAaKey', () => {
   it('reports a working key without writing anything', async () => {
     const result = await validateAaKey('synthetic-key', async (input, init) => {

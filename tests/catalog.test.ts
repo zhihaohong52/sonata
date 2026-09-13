@@ -248,6 +248,22 @@ describe('loadAaCatalog', () => {
     expect(loaded!.models.good.codingIndex).toBe(60);
   });
 
+  it('keeps family and effort, and drops an effort that is not a known level', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-aa-'));
+    const path = aaCatalogPath(home);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      fetchedAt: '2026-09-13T00:00:00Z',
+      models: {
+        'sprinter': { codingIndex: 70, blendedPriceUsd: 0.45, family: 'sprinter', effort: 'max' },
+        'sprinter-turbo': { codingIndex: 10, blendedPriceUsd: 0.45, family: 'sprinter', effort: 'turbo' },
+      },
+    }));
+    const aa = loadAaCatalog(home)!;
+    expect(aa.models['sprinter']).toMatchObject({ family: 'sprinter', effort: 'max' });
+    expect(aa.models['sprinter-turbo']).toEqual({ codingIndex: 10, blendedPriceUsd: 0.45, family: 'sprinter' });
+  });
+
   it('returns undefined when every entry is invalid', () => {
     const home = mkdtempSync(join(tmpdir(), 'sonata-catalog-'));
     const path = aaCatalogPath(home);

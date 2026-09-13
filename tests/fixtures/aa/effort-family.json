@@ -1,0 +1,54 @@
+{
+  "tier": "free",
+  "intelligence_index_version": 4.1,
+  "pagination": {"page": 1, "page_size": 200, "total_pages": 1, "has_more": false},
+  "data": [
+    {
+      "name": "Acme Sprinter (max)",
+      "slug": "acme/sprinter",
+      "evaluations": {"artificial_analysis_coding_index": 70, "artificial_analysis_agentic_index": 42},
+      "artificial_analysis_intelligence_index_cost": {"cost_per_task": {"total_cost": 0.18}},
+      "pricing": {"price_1m_input_tokens": 0.3, "price_1m_output_tokens": 0.9}
+    },
+    {
+      "name": "Acme Sprinter (high)",
+      "slug": "acme/sprinter-high",
+      "evaluations": {"artificial_analysis_coding_index": 60, "artificial_analysis_agentic_index": 35},
+      "artificial_analysis_intelligence_index_cost": {"cost_per_task": {"total_cost": 0.044}},
+      "pricing": {"price_1m_input_tokens": 0.3, "price_1m_output_tokens": 0.9}
+    },
+    {
+      "name": "Acme Sprinter (low)",
+      "slug": "acme/sprinter-low",
+      "evaluations": {"artificial_analysis_coding_index": 40, "artificial_analysis_agentic_index": 18},
+      "artificial_analysis_intelligence_index_cost": {"cost_per_task": {"total_cost": 0.01}},
+      "pricing": {"price_1m_input_tokens": 0.3, "price_1m_output_tokens": 0.9}
+    },
+    {
+      "name": "Acme Sprinter (Non-reasoning)",
+      "slug": "acme/sprinter-non-reasoning",
+      "evaluations": {"artificial_analysis_coding_index": 30, "artificial_analysis_agentic_index": 15},
+      "pricing": {"price_1m_input_tokens": 0.3, "price_1m_output_tokens": 0.9}
+    },
+    {
+      "name": "Acme Heavy (Reasoning, Max Effort)",
+      "slug": "acme/heavy-0424",
+      "evaluations": {"artificial_analysis_coding_index": 80, "artificial_analysis_agentic_index": 44},
+      "artificial_analysis_intelligence_index_cost": {"cost_per_task": {"total_cost": 1.4}},
+      "pricing": {"price_1m_input_tokens": 2, "price_1m_output_tokens": 8}
+    },
+    {
+      "name": "Acme Heavy (Reasoning, High Effort)",
+      "slug": "acme/heavy-0424-high",
+      "evaluations": {"artificial_analysis_coding_index": 72, "artificial_analysis_agentic_index": 38},
+      "artificial_analysis_intelligence_index_cost": {"cost_per_task": {"total_cost": 0.34}},
+      "pricing": {"price_1m_input_tokens": 2, "price_1m_output_tokens": 8}
+    },
+    {
+      "name": "Acme Plodder (Dec '24)",
+      "slug": "acme/plodder",
+      "evaluations": {"artificial_analysis_coding_index": 20},
+      "pricing": {"price_1m_input_tokens": 0.1, "price_1m_output_tokens": 0.2}
+    }
+  ]
+}
