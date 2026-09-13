@@ -413,9 +413,31 @@ export async function cmdDoctor(
   // `ok: true` because an unpriced gateway routes perfectly well. This costs
   // observability and a budget cap, not the ability to run.
   const gatewayEntries = Object.entries(config.native?.gateways ?? {});
-  const unpricedGateways = gatewayEntries.filter(
-    ([, gw]) => gw.pricingProvider === undefined || gw.pricingProvider.length === 0,
-  );
+  // `pricing_provider` is the THIRD thing `resolvePrice` consults, not the
+  // first: a model `[price]`, then a gateway `[price]`, then the provider. So
+  // a gateway priced by hand needs no provider at all, and reporting it as
+  // pricing nothing would be a false statement about the user's own config —
+  // worse than saying nothing, since the message goes on to claim the budget
+  // does not bound it.
+  //
+  // A legacy `[native.models]` entry carries no `price` of its own, so it is
+  // always "not hand-priced" — which is the honest answer, not an oversight.
+  const handPricedOn = (gateway: string): boolean[] => [
+    ...Object.values(config.unifiedModels)
+      .filter((model) => model.gateway === gateway)
+      .map((model) => model.price !== undefined),
+    ...Object.values(config.native?.models ?? {})
+      .filter((model) => model.gateway === gateway)
+      .map(() => false),
+  ];
+  const unpricedGateways = gatewayEntries.filter(([name, gw]) => {
+    if (gw.pricingProvider !== undefined && gw.pricingProvider.length > 0) return false;
+    if (gw.price !== undefined) return false;
+    const priced = handPricedOn(name);
+    // A gateway serving nothing cannot generate spend, so naming it is noise.
+    // Otherwise it is unpriced only if some model on it is not hand-priced.
+    return priced.length > 0 && priced.some((isPriced) => !isPriced);
+  });
   if (unpricedGateways.length > 0) {
     const named = unpricedGateways.slice(0, 3).map(([name, gw]) => {
       const proposal = proposePricingProvider(name, gw.auth);

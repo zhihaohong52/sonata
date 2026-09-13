@@ -56,7 +56,9 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   reached `relabelCovered` and read as unpriced rather than covered. Only a
   gateway sonata is writing for the *first* time gets a proposal, so deleting
   the key declines it permanently. `sonata doctor` names each gateway that
-  prices nothing, and the exact line that would fix it.
+  prices nothing, and the exact line that would fix it — skipping one priced by
+  a hand-written `[price]` block, since `pricing_provider` is only the third
+  thing `resolvePrice` consults.
 
 ## [0.8.3] - 2026-09-12
 

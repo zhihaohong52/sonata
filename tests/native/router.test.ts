@@ -1409,6 +1409,90 @@ describe('conversation stickiness', () => {
     expect(types).toContain('thinking');
   });
 
+  // CodeRabbit #32: a pinned candidate that 400s was preferred again on every
+  // retry until the 2h TTL. An UNRECOGNISED 400 never earns the capability
+  // cooldown, so nothing else broke the loop either.
+  it('stops preferring a candidate that hands back a 400', async () => {
+    const seen: string[] = [];
+    const state = { flash400: false };
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return model === 'default/flash' && state.flash400
+          ? new Response(JSON.stringify({ error: { message: 'some client error' } }), { status: 400 })
+          : new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    };
+
+    // flash serves and is pinned.
+    await routeRequest(turn(1), deps);
+    expect(seen).toEqual(['default/flash']);
+
+    // It now 400s. The 400 is returned to the caller (not a recognised
+    // capability failure), so nothing cools it down.
+    state.flash400 = true;
+    expect((await routeRequest(turn(2), deps)).status).toBe(400);
+    expect(seen.slice(1)).toEqual(['default/flash']);
+
+    // The retry must NOT prefer it again. Rank order puts flash first anyway,
+    // so it is tried, 400s, and the tier falls through — the point is that the
+    // pin is no longer forcing it ahead of a healthy candidate.
+    await routeRequest(turn(2), deps);
+    expect(seen.slice(2)).toEqual(['default/flash']);
+  });
+
+  // The reason the pin is DEMOTED rather than deleted: the record of whose
+  // thinking blocks the transcript carries has to outlive the preference, or
+  // the next candidate receives them and 400s on exactly the bug this fixes.
+  it('still strips the demoted model\'s thinking blocks when another candidate takes over', async () => {
+    const seen: string[] = [];
+    const bodies: any[] = [];
+    // phase 1: flash is down, so luna serves and is pinned.
+    // phase 2: luna 400s, demoting the pin.
+    // phase 3: flash is healthy and leads on rank order again.
+    const state = { phase: 1, clock: 1_000 };
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const payload = JSON.parse(init.body as string) as { model: string };
+        seen.push(payload.model);
+        bodies.push(payload);
+        const flash = payload.model === 'default/flash';
+        if (state.phase === 1) return new Response('{}', { status: flash ? 503 : 200 });
+        if (state.phase === 2 && !flash) {
+          return new Response(JSON.stringify({ error: { message: 'client error' } }), { status: 400 });
+        }
+        return new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+      now: () => state.clock,
+    };
+
+    await routeRequest(turn(1), deps);
+    expect(seen).toEqual(['default/flash', 'default/luna']);
+
+    // Luna is now preferred over the ranked leader, and 400s.
+    state.phase = 2;
+    expect((await routeRequest(turn(3), deps)).status).toBe(400);
+    expect(seen.slice(2)).toEqual(['default/luna']);
+
+    // Retried: the preference is gone, so flash leads on rank again — and it
+    // must still receive the transcript with luna's thinking blocks removed.
+    // Past flash's 503 cooldown, well short of the sticky TTL that would erase
+    // the memory of luna having served.
+    state.phase = 3;
+    state.clock += TIER_COOLDOWN_MS + 1;
+    await routeRequest(turn(3), deps);
+    const served = bodies.at(-1)!;
+    expect(served.model).toBe('default/flash');
+    const types = served.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content.map((b: any) => b.type) : []);
+    expect(types).not.toContain('thinking');
+    expect(types).toContain('text');
+  });
+
   it('forgets a conversation that has been idle past the TTL', async () => {
     const { seen, state, deps } = harness();
 

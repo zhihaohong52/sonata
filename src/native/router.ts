@@ -393,27 +393,47 @@ export const STICKY_MAX_CONVERSATIONS = 1000;
  * its own work. Remembering who served a conversation lets the router prefer
  * that candidate, and lets it know when it is about to switch.
  */
-const stickyCandidates = new Map<string, { key: string; at: number }>();
+const stickyCandidates = new Map<string, { key: string; at: number; prefer: boolean }>();
 
-function stickyGet(conversation: string, at: number): string | undefined {
+function stickyGet(conversation: string, at: number): { key: string; prefer: boolean } | undefined {
   const hit = stickyCandidates.get(conversation);
   if (hit === undefined) return undefined;
   if (at - hit.at > STICKY_TTL_MS) {
     stickyCandidates.delete(conversation);
     return undefined;
   }
-  return hit.key;
+  return hit;
 }
 
 function stickySet(conversation: string, key: string, at: number): void {
   // Delete-then-set moves the entry to the end of the insertion order, so a
   // conversation still in use is never the eviction victim.
   stickyCandidates.delete(conversation);
-  stickyCandidates.set(conversation, { key, at });
+  stickyCandidates.set(conversation, { key, at, prefer: true });
   if (stickyCandidates.size > STICKY_MAX_CONVERSATIONS) {
     const oldest = stickyCandidates.keys().next();
     if (!oldest.done) stickyCandidates.delete(oldest.value);
   }
+}
+
+/**
+ * Stop *preferring* a candidate that just 400d, without forgetting that it
+ * served this conversation.
+ *
+ * The two are different facts and the entry has to keep both. Dropping the
+ * record outright — the obvious fix — reopens the hole this whole mechanism
+ * exists to close: the next request would find no entry, so `foreign` would be
+ * false, so the transcript would reach a different model with the 400ing
+ * model's thinking blocks still in it. Preference is what must lapse; the
+ * memory of whose reasoning is in the history must not.
+ *
+ * Only the candidate that actually holds the pin may drop it, so an older
+ * concurrent request cannot clear a pin a newer one has since set.
+ */
+function stickyDemote(conversation: string, key: string): void {
+  const hit = stickyCandidates.get(conversation);
+  if (hit === undefined || hit.key !== key) return;
+  hit.prefer = false;
 }
 
 /**
@@ -880,7 +900,13 @@ async function routeTierRequest(
   // keeps a multi-turn agent on one model, which is what stops its transcript
   // growing extended-thinking blocks the next candidate would reject.
   const conversation = conversationKey(req.body, tenant.id, alias);
-  const sticky = conversation === undefined ? undefined : stickyGet(conversation, now());
+  const pinned = conversation === undefined ? undefined : stickyGet(conversation, now());
+  // Two different questions, deliberately read from two fields. `lastServed`
+  // is whose extended-thinking blocks the transcript carries, and stays true
+  // until another candidate actually serves. `sticky` is who to TRY first, and
+  // lapses the moment that candidate hands back a 400.
+  const lastServed = pinned?.key;
+  const sticky = pinned?.prefer === true ? pinned.key : undefined;
   // Preference, not a pin: the sticky candidate moves to the front and every
   // other keeps its rank behind it. Its cooldown still applies, so a candidate
   // that has genuinely failed is still skipped — the fallback's whole point —
@@ -909,10 +935,10 @@ async function routeTierRequest(
     // the candidate that is no longer serving, and the direct path's usual
     // byte-identical contract exists to echo vendor state back to the vendor
     // that issued it — which is exactly what has stopped being true here.
-    const foreign = sticky !== undefined && sticky !== route.key;
+    const foreign = lastServed !== undefined && lastServed !== route.key;
     if (foreign) {
       deps.log?.(
-        `router: ${alias} conversation moving ${sticky} -> ${route.key}, ` +
+        `router: ${alias} conversation moving ${lastServed} -> ${route.key}, ` +
         "dropping the previous model's thinking blocks",
       );
     }
@@ -981,6 +1007,13 @@ async function routeTierRequest(
         }
       }
 
+      // The candidate handed back a 400, so it stops being the one to try
+      // first — otherwise a pinned candidate that 400s is preferred again on
+      // every retry until the 2h TTL, and an UNRECOGNISED 400 never earns the
+      // capability cooldown that would otherwise break the loop. Preference
+      // lapses; the record of whose thinking blocks are in the transcript does
+      // not, so the next candidate still gets them stripped.
+      if (conversation !== undefined) stickyDemote(conversation, route.key);
       return withUsageRecording({
         status: response.status,
         headers: response.headers,
