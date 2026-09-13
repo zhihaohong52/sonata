@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { cmdCatalogUpdate } from '../../src/commands/catalog.js';
+import { cmdCatalogUpdate, validateAaKey } from '../../src/commands/catalog.js';
 import { aaCatalogPath, loadAaCatalog } from '../../src/catalog.js';
 import { MODELS_DEV_URL, modelsDevPath } from '../../src/modelsdev.js';
 import { cmdAuthAdd } from '../../src/commands/auth.js';
@@ -127,6 +127,43 @@ describe('cmdCatalogUpdate', () => {
     const result = await cmdCatalogUpdate(home, { fetch: async () => response([]) });
     expect(result.modelsDev).toHaveProperty('error');
     expect(readFileSync(modelsDevPath(home), 'utf8')).toBe(before);
+  });
+});
+
+describe('validateAaKey', () => {
+  it('reports a working key without writing anything', async () => {
+    const result = await validateAaKey('synthetic-key', async (input, init) => {
+      expect(String(input)).toBe('https://artificialanalysis.ai/api/v2/language/models/free?page=1');
+      expect(new Headers(init?.headers).get('x-api-key')).toBe('synthetic-key');
+      // Never follows a redirect with the key attached, and never hangs past a bound.
+      expect(init?.redirect).toBe('error');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return response(aaFixture());
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('reports a redirect as a validation failure rather than following it with the key attached', async () => {
+    const result = await validateAaKey('synthetic-key', async () => {
+      throw new TypeError('fetch failed: unexpected redirect');
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/redirect/i);
+  });
+
+  it('reports a rejected key by status', async () => {
+    const result = await validateAaKey('bad-key', async () => response({ error: 'nope' }, 401));
+    expect(result).toEqual({ ok: false, reason: 'key rejected (HTTP 401)' });
+  });
+
+  it('reports a non-auth failure distinctly from a rejected key', async () => {
+    const result = await validateAaKey('synthetic-key', async () => response({}, 503));
+    expect(result).toEqual({ ok: false, reason: 'request failed (HTTP 503)' });
+  });
+
+  it('reports a network failure', async () => {
+    const result = await validateAaKey('synthetic-key', async () => { throw new Error('fetch failed'); });
+    expect(result).toEqual({ ok: false, reason: 'fetch failed' });
   });
 });
 
