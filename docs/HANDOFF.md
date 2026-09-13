@@ -5,20 +5,25 @@ section was rewritten 2026-09-12 after 0.8.3. Read this before starting new
 work. It records what is done, what is deliberately *not* done, what to pick
 up if you want work, and the traps that have cost previous sessions real time.
 
-**The short version:** every roadmap item is built, shipped and released, and
-the work since has been driven by use rather than by a list. There is no queued
-task. The next move is a judgement call that belongs to the user — read the 1.0
-gate section before you go looking for something to do.
+**The short version:** every roadmap item is built, shipped and released. For
+most of this file's life there was no queued task; **there is one now.** The
+user deferred **PR 2 and PR 3 of the effort-tier spec** to the next session on
+2026-09-14 — that is the work to pick up, and the Effort-level tier candidates
+section below is the brief. Everything else remains a judgement call that
+belongs to the user; read the 1.0 gate section before going looking.
 
 ## Where things stand
 
-- `main` at `3799c0f` (`chore(release): v0.8.3`), clean, in sync with origin.
-  `[Unreleased]` is empty.
+- `main` at `ed34902`, clean, in sync with origin. **`[Unreleased]` is not
+  empty** — it carries the effort-level tier candidates (PR #28) and the three
+  fixes from PR #32, so a release can be cut whenever the user wants one.
 - **npm**: `@zhihaohong52/sonata@0.8.3`, `latest`, published 2026-09-12 from
   the pushed tag with every `release.yml` step green and provenance signed.
-- **1846 tests across 100 files**, typecheck and `npm pack --dry-run` clean,
-  verified on the merged `main` before tagging.
-- **Zero open issues, zero open PRs.**
+- **1975 tests across 101 files**, typecheck and build clean, verified on the
+  merged tree.
+- **Zero open issues, zero open PRs.** #29, #30 and #31 were opened and closed
+  on 2026-09-14 by PR #32; see the sections below for what each one turned out
+  to be.
 - **All fourteen roadmap items remain ✅**, each named with the release it
   shipped in. `docs/roadmap.md` explains *why* each is shaped as it is; nothing
   since 0.6.0 has added or reopened a roadmap row, because everything after it
@@ -57,7 +62,13 @@ Read `CHANGELOG.md` for the detail. The shape of it:
 - **`sonata reset`** (0.8.3) — undo what `init` wrote, at one scope, removing
   only what sonata wrote and keeping keys, ledger and caches.
 
-## There is no queued task — read this before inventing one
+## The 1.0 gate is not an item list — read this before inventing work
+
+**One task is queued** — PR 2 and PR 3 of the effort-tier spec, deferred to a
+later session by the user on 2026-09-14. That section is above. Everything in
+*this* section is about why "nothing left to build" still does not mean "time
+to tag", which is a separate question and was true before the effort-tier work
+existed.
 
 The roadmap's 1.0 gate is not an item list. It is *"ship 1.0 only after 0.4
 has been in strangers' hands long enough to know what you would regret
@@ -175,7 +186,7 @@ the worktree, or run `sonata route on` there *before* starting the session —
 `route auto` installs the hooks but cannot route a session that has already
 launched.
 
-## Effort-level tier candidates — built 2026-09-13, on `effort-tiers-pr1`
+## Effort-level tier candidates — PR 1 of 3 merged; **PR 2 and PR 3 are the queued work**
 
 A `[tiers]` candidate may pin a reasoning-effort level
 (`"gpt-5.6-luna@xhigh"`), the catalog records which level each Artificial
@@ -183,23 +194,81 @@ Analysis row was scored at, and both writers of a tier list rank every scored
 level of a model as its own candidate. Read
 `docs/superpowers/specs/2026-09-13-effort-tiers-design.md` and its plan
 (`docs/superpowers/plans/2026-09-13-effort-tiers-pr1.md`) before touching it;
-the `CLAUDE.md` bullet is the short version. Unreleased, and not yet opened as
-a PR, at the time of writing.
+the `CLAUDE.md` bullet is the short version. Merged 2026-09-13 as PR #28
+(`2c4549f`); unreleased, sitting in `[Unreleased]`.
 
 **Nothing in this change sends an effort level upstream.** A pinned level
 today changes the ranking, the candidate labels and `TierRoute.effort`, and
 nothing else — it is a way to *choose* a model, not yet a way to ask for more
-or less reasoning. Two follow-ups complete it, both named in the spec:
+or less reasoning.
 
-1. **PR 2 — the router injects `reasoning_effort`, and the ledger records
-   it.** The router is the layer that knows a request's level, and a ledger
-   row should name it for the same reason it names the candidate that served
-   the request.
-2. **PR 3 — the harness adapters.** Gated on probing each real binary: every
-   adapter bug in this repository's history was invisible in documentation and
-   obvious on the first real run. `sonata dispatch --model <key>@<effort>`
-   belongs here too — accepting the grammar while ignoring the level is
-   exactly the silent mismatch the load-time refusal exists to prevent.
+**Verified on `ed34902`, so you can start from facts rather than re-deriving
+them:**
+
+- `reasoning_effort` appears in `src/` exactly once, as a *comment* in
+  `src/effort.ts`. It is never constructed and never sent.
+- `TierRoute.effort` is populated at `src/config.ts:802` and **read by
+  nobody**. The only other `.effort` reads in the tree are catalog-internal
+  (`src/catalog.ts:310-317`, `src/commands/catalog.ts:221`), which parse AA
+  rows and have nothing to do with dispatch.
+- `src/native/router.ts` contains no reference to effort at all.
+- `src/ledger.ts` has no `effort` field.
+- `src/commands/dispatch.ts` does not parse the `<key>@<effort>` grammar, so
+  `--model luna@xhigh` today looks up a literal key named `luna@xhigh` and
+  fails to find it.
+
+### PR 2 — router injects `reasoning_effort`, ledger records it
+
+Spec §4. The router is the layer that knows a request's level, and a ledger row
+should name it for the same reason it names the candidate that served the
+request. The shape the spec settles:
+
+- `withEffort(body, effort)` sets top-level `reasoning_effort` **and deletes
+  `thinking` and `output_config.effort`**. This is the load-bearing detail:
+  LiteLLM translates `thinking` into `reasoning_effort` when present, so
+  leaving both in is how an explicit `xhigh` gets silently overwritten by
+  `adaptive → medium`. A bare candidate leaves the body untouched.
+- Both transports, for the reason `litellmBody` is one function. On `direct`
+  the body is otherwise byte-identical because assistant blocks carry opaque
+  vendor state; adding one top-level key leaves those alone. **What a direct
+  upstream does with the key is an implementation-time probe** against
+  OpenRouter's `/v1/messages` — ignored is fine, rejected means send unchanged
+  and log `effort not sent`.
+- Cooldowns and the capability-400 fingerprint stay keyed by **model, not
+  variant**, so a 5xx from `luna@xhigh` also skips `luna@high` rather than
+  retrying the same dead upstream. Already true today; do not "fix" it.
+- Ledger row gains `effort`; `sonata usage --by effort` is one more entry in
+  the existing dimension table.
+- A stated limit worth keeping in the code: `drop_params: true` means a
+  provider with no effort control drops the field silently, and the router
+  cannot tell "honoured" from "dropped". Same class as unpriced volume —
+  report unknown, never assume. The only evidence a level applied is per-task
+  cost moving with it, which is why recording `effort` on the row is worth it.
+
+**Note for whoever writes it:** `routeTierRequest` gained conversation
+stickiness in PR #32, so the per-candidate body is now built as
+`withModel(prepared, …)` where `prepared` may already have been through
+`stripForeignThinking`. `withEffort` composes into that chain; it must not be
+applied before the strip, since both touch `thinking`-adjacent fields for
+different reasons.
+
+### PR 3 — harness adapters
+
+Spec §5. **Gated on probing each real binary** — every adapter bug in this
+repository's history was invisible in documentation and obvious on the first
+real run, and the spec deliberately states nothing about opencode, pi or
+reasonix until a captured fixture in `tests/fixtures/panes/` says otherwise.
+Only codex's mapping is known (`-c model_reasoning_effort=<level>`, on both
+`exec` and the TUI launch).
+
+`LaunchPlan` gains `effort?: Effort` and the plan reports
+`effortHonoured: boolean`; a harness with no control annotates rather than
+degrades (`[effort xhigh not honoured: <harness> has no effort control]`),
+matching how the worktree-unchanged check behaves.
+
+`sonata dispatch --model <key>@<effort>` belongs here too. Accepting the
+grammar while ignoring the level is exactly the silent mismatch the load-time
+refusal exists to prevent — so either parse it and honour it, or refuse it.
 
 **Two known gaps in the effort-tier work, recorded rather than fixed.**
 
@@ -224,6 +293,20 @@ or less reasoning. Two follow-ups complete it, both named in the spec:
    treated as truth, and the ordinary case (`flash` for
    `deepseek-v4-flash-0731`) gets better — but it is untested and worth knowing
    before someone reports a tier that reordered itself.
+
+**`sonata init` used to corrupt a `CLAUDE.md` that documents the markers**
+(#29, fixed in PR #32). Markers were counted wherever they appeared, so a file
+merely *quoting* `<!-- sonata:begin -->` and `<!-- sonata:end -->` in prose
+looked like a well-formed pair and the managed block was spliced into the
+middle of the sentence joining them — destroying the one paragraph that
+explains the contract, in this repository's own `CLAUDE.md`. `standaloneMarkers`
+(`src/init/guidance.ts`) now counts a marker only when it is the entire trimmed
+content of its line. **If you find a `CLAUDE.md` in a checkout predating
+2026-09-14 with `## Subagent lane` spliced mid-sentence, that is this bug and
+the surrounding prose has to be restored by hand** — the splice is not
+reversible from the file alone. Copies of the damage were kept in that
+session's scratchpad and are gone now; `git show 2c4549f:CLAUDE.md` is the last
+good version before the fix.
 
 **`sonata init` now originates a `pricing_provider` for a gateway it writes
 for the first time** (#31, fixed). Before this, nothing ever originated one and
@@ -255,6 +338,10 @@ deserves its own review; the failure direction is a visible dropped key fixed
 by re-ranking, not a wrong model.
 
 ## If you want work, in the order I would take it
+
+**Do PR 2 of the effort-tier spec first** — it is the queued task, it is what
+turns PR 1 from ranking metadata into behaviour, and it is self-contained. The
+list below is what remains after it.
 
 All five are cheap and none blocks anything.
 
@@ -430,6 +517,32 @@ is worth more than a clean document.
 
 ### Git, PRs and review
 
+- **CodeRabbit no longer auto-reviews this repository, and `pr-status.mjs`
+  reports a clean PR as unclean because of it.** As of 2026-09-14 CodeRabbit
+  posts a standing comment saying *"This repository does not receive automatic
+  reviews because it has fewer than 10 stars"* (the repo has 1; PR #28 was
+  reviewed automatically two days earlier, so this is a policy change, not a
+  repo change). Two consequences, both of which cost time on PR #32:
+  - **A review must be triggered by hand**, via the `🔍 Trigger review`
+    checkbox in that comment. The user ticks it — do **not** post
+    `@coderabbitai review`; that is an explicit standing instruction. One tick
+    does cover subsequent pushes: CodeRabbit re-reviewed a follow-up commit on
+    #32 unprompted and answered both threads within minutes.
+  - **`node scripts/pr-status.mjs <n>` then exits 1 on a genuinely clean PR.**
+    It reads the *latest bot comment* for a verdict, and the only bot comment
+    is now that banner, which contains no verdict — so it prints `no
+    recognisable verdict — findings outstanding` forever. The thread count is
+    the signal that still works. On #32 the true state was `2 total, 0
+    unresolved`, both resolved by CodeRabbit itself with an explicit
+    confirmation on each thread, while the script still said findings were
+    outstanding. **Read the threads and who resolved them; do not trust the
+    exit code on this repo until the script is taught about the banner.**
+- **The `CodeRabbit` status check reports SUCCESS for a review that never
+  ran.** It went green on #32 while the only bot comment was the "fewer than 10
+  stars" notice. Combined with `0 unresolved threads` — also true, because
+  nothing had been reviewed — the PR looked fully green and was not reviewed at
+  all. Two green ticks and an empty thread count are not evidence of a review;
+  a CodeRabbit *review* object or a thread it resolved is.
 - **Deleting a base branch CLOSES the PR stacked on it — GitHub does not
   retarget.** Merging PR #12 with `--delete-branch` closed PR #13 outright,
   and a closed PR whose base is gone can be neither reopened nor retargeted
