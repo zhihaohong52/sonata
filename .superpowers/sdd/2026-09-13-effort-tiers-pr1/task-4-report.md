@@ -34,7 +34,7 @@ Commands run:
 
 ## Commit
 
-Pending at report authoring time.
+Implementation commit: `4a658b9d88ecf3a86518a3ff826a45aa705f7984`.
 
 ## Concerns
 
