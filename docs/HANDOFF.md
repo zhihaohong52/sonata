@@ -201,6 +201,25 @@ or less reasoning. Two follow-ups complete it, both named in the spec:
    belongs here too — accepting the grammar while ignoring the level is
    exactly the silent mismatch the load-time refusal exists to prevent.
 
+**`sonata init` never proposes `pricing_provider`, so a fresh config reports
+every request unpriced.** `nativeTomlFor` *preserves* the key on rewrite —
+that was itself a fix, since a rewrite used to un-price a gateway outright —
+but nothing has ever originated one, and `resolvePrice` returns
+`source: 'none'` at its `provider === undefined` guard before models.dev is
+consulted at all. The cost is larger than a missing report: unpriced volume is
+excluded from `[budget] daily_usd`, so a cap silently bounds nothing, and an
+OAuth gateway never reaches `relabelCovered` either, so subscription work is
+reported as unpriced rather than `covered`. Most of the knowledge already
+exists — `PROVIDER_FOR_GATEWAY` (`src/native/providers.ts`) knows a gateway
+named `deepseek` is DeepSeek. Two things stop it being a one-liner, and both
+need settling before anyone implements it: that table names **LiteLLM provider
+prefixes**, not **models.dev provider ids** (LiteLLM wants `gemini` where
+models.dev files `google`), so reusing it directly would produce lookups that
+silently miss; and a gateway's *name* is not always enough — a `codex` gateway
+serves OpenAI models, and the right answer comes from its `auth`. Init should
+*propose* the result, not assert it: this is pricing, where a plausible wrong
+value is worse than an error.
+
 **One asymmetry is known and deliberately left in place.** The init tier
 *screen* widens a scope's rankable gateway names with the selected candidates'
 gateways **and** the gateways that scope's config declares
