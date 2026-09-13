@@ -21,6 +21,7 @@ import { homedir } from 'node:os';
 import { readSettings, writeSettings, installHook, uninstallHook, hookInstalled } from '../settings.js';
 import type { Settings } from '../settings.js';
 import { loadConfig, GLOBAL_CONFIG_RELATIVE, NoConfigError, parseConfig, type SonataConfig } from '../config.js';
+import { assertEffortsPinned, loadAaCatalog } from '../catalog.js';
 import { SONATA_PROJECT_HEADER } from '../native/tenants.js';
 import { SONATA_TOKEN_HEADER, ensureRouterToken } from '../native/router-token.js';
 import { nativeSessionEnv } from './code.js';
@@ -626,7 +627,15 @@ export async function cmdRoute(
           `No sonata.toml found at ${globalPath}. Run \`sonata init\` or create one.`,
         );
       }
-      return { config: parseConfig(readFileSync(globalPath, 'utf8')) };
+      const config = parseConfig(readFileSync(globalPath, 'utf8'));
+      // The project branch above goes through `loadConfig`, which refuses an
+      // unpinned effort candidate; this one parsed the text directly, so
+      // `route on --global` installed env and hooks for a router that then
+      // refuses every request — and reported success. The comment above about
+      // `on`/`auto` installing something that depends on the config loading
+      // applies to the machine config exactly as it does to the project's.
+      assertEffortsPinned(config, loadAaCatalog(opts.home));
+      return { config };
     } catch (err) {
       return { config: { native: undefined } as SonataConfig, error: err };
     }

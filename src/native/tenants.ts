@@ -111,6 +111,10 @@ export class TenantRegistry {
 
   private load(path: string): SonataConfig {
     const config = parseConfig(readFileSync(path, 'utf8'));
+    // A config with no [tiers] has no candidate to pin, so it can never be
+    // refused — and this runs per request, and again per known tenant. Only
+    // the catalog read is skipped; parsing happens either way.
+    if (config.tiers === undefined) return config;
     // Router requests bypass loadConfig, so validate against this registry's cache here.
     assertEffortsPinned(config, loadAaCatalog(this.home));
     return config;

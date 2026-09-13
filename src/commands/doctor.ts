@@ -316,6 +316,19 @@ export async function cmdDoctor(
             ok: true,
             detail: `${count} models · all ${tiered.length} tiered models scored · fetched ${catalog.fetchedAt}`,
           });
+      // A catalog written before effort levels existed has no `family` on any
+      // row, so the refusal cannot fire and nothing here could show it: a
+      // config with an unpinned candidate loads for months and then stops
+      // loading the day someone runs `sonata catalog update`. Silent both ways
+      // — which is why this is said outright rather than left to be inferred
+      // from a healthy-looking rankings line.
+      if (Object.values(catalog.models).every((entry) => entry.family === undefined)) {
+        checks.push({
+          name: 'effort levels',
+          ok: true,
+          detail: 'catalog has no effort levels — run `sonata catalog update` to enable the check',
+        });
+      }
     }
 
     const projectSettings = readSettings(routeSettingsFile(opts.cwd, 'project', home));

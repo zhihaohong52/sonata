@@ -627,16 +627,21 @@ complex = ["flash"]
     }));
   };
 
-  const rankingCheck = async (cwd: string, home: string, now: Date) => {
+  // `cmdDoctor` probes the network for harness versions; stub it out so the
+  // check list is deterministic.
+  const doctorChecks = async (cwd: string, home: string, now: Date) => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
       const { checks } = await cmdDoctor({ cwd, home, now: () => now });
-      return checks.find((c) => c.name === 'model rankings');
+      return checks;
     } finally {
       globalThis.fetch = originalFetch;
     }
   };
+
+  const rankingCheck = async (cwd: string, home: string, now: Date) =>
+    (await doctorChecks(cwd, home, now)).find((c) => c.name === 'model rankings');
 
   it('flags a ranking catalog older than the freshness window', async () => {
     // Advisory, not blocking: a stale catalog still ranks, but on superseded
@@ -667,6 +672,38 @@ complex = ["flash"]
     const { cwd, home } = tieredSetup();
     const c = await rankingCheck(cwd, home, new Date('2026-08-28T00:00:00.000Z'));
     expect(c?.detail).toMatch(/no catalog .* effort levels cannot be checked/);
+  });
+
+  it('reports a catalog that carries no effort levels, and names the fix', async () => {
+    // The dangerous case, and the one "no catalog" cannot cover: a cache
+    // written before effort levels existed has no `family` on any row, so the
+    // refusal cannot fire. Nothing about the rankings line says so — it reads
+    // healthy, and a config with an unpinned candidate loads for months and
+    // stops the day someone runs `sonata catalog update`. Said outright rather
+    // than left to be inferred.
+    const { cwd, home } = tieredSetup();
+    writeCatalog(home, '2026-08-20T00:00:00.000Z');
+    const checks = await doctorChecks(cwd, home, new Date('2026-08-28T00:00:00.000Z'));
+    const c = checks.find((check) => check.name === 'effort levels');
+    expect(c?.ok).toBe(true);
+    expect(c?.detail).toMatch(/catalog has no effort levels/);
+    expect(c?.detail).toMatch(/sonata catalog update/);
+  });
+
+  it('says nothing about effort levels when the catalog carries them', async () => {
+    const { cwd, home } = tieredSetup();
+    const path = join(home, '.config', 'sonata', 'catalog.json');
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      fetchedAt: '2026-08-20T00:00:00.000Z',
+      models: {
+        'deepseek-v4-flash': {
+          codingIndex: 45, blendedPriceUsd: 0.3, family: 'deepseek-v4-flash', effort: 'default',
+        },
+      },
+    }));
+    const checks = await doctorChecks(cwd, home, new Date('2026-08-28T00:00:00.000Z'));
+    expect(checks.find((check) => check.name === 'effort levels')).toBeUndefined();
   });
 
   it('scores an effort-pinned candidate by its bare key for coverage', async () => {

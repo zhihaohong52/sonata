@@ -887,8 +887,10 @@ export function loadConfig(cwd: string, home: string = homedir()): SonataConfig 
     );
   }
   const config = parseConfig(readFileSync(path, 'utf8'));
-  // The catalog is available only at runtime, after pure text parsing.
-  assertEffortsPinned(config, loadAaCatalog(home));
+  // The catalog is available only at runtime, after pure text parsing. A
+  // config with no [tiers] has nothing to pin, so the catalog read is skipped
+  // — this is the router's per-request path as well as every command's.
+  if (config.tiers !== undefined) assertEffortsPinned(config, loadAaCatalog(home));
   return config;
 }
 
