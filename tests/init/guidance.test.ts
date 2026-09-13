@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GUIDANCE_BEGIN, GUIDANCE_END, guidanceBlock, mergeGuidance, removeGuidance } from '../../src/init/guidance.js';
+import { GUIDANCE_BEGIN, GUIDANCE_END, guidanceBlock, locateGuidance, mergeGuidance, removeGuidance } from '../../src/init/guidance.js';
 
 describe('mergeGuidance', () => {
   const block = guidanceBlock();
@@ -100,6 +100,51 @@ describe('mergeGuidance', () => {
     // Rewriting only the first would leave a stale second block behind,
     // silently contradicting it.
     expect(() => mergeGuidance(broken, block)).toThrow(/more than one|duplicate|repeated/i);
+  });
+
+  // The regression that corrupted this repository's own CLAUDE.md. The prose
+  // documenting the marker contract quotes both markers, which the old
+  // occurrence count read as a well-formed pair — so the block was spliced
+  // into the middle of the sentence joining them, eating the ` and ` between.
+  it('ignores markers quoted inline in prose rather than reading them as a block', () => {
+    const doc = [
+      '# Notes',
+      '',
+      'Sonata owns what is between `<!-- sonata:begin -->` and `<!-- sonata:end -->`',
+      'and nothing else.',
+    ].join('\n');
+    expect(locateGuidance(doc)).toBeUndefined();
+  });
+
+  it('ignores an inline marker even when it is the only text on the line besides quoting', () => {
+    expect(locateGuidance('The `<!-- sonata:begin -->` marker opens the block.')).toBeUndefined();
+  });
+
+  it('finds a block whose markers stand alone, even indented', () => {
+    const doc = 'intro\n\n  <!-- sonata:begin -->\n  body\n  <!-- sonata:end -->\n';
+    const at = locateGuidance(doc);
+    expect(at).toBeDefined();
+    // The offsets are the markers' own, so the indentation stays outside the
+    // span and is preserved like every other byte the block does not enclose.
+    expect(doc.slice(at!.begin, at!.end)).toBe('<!-- sonata:begin -->\n  body\n  <!-- sonata:end -->');
+  });
+
+  it('refuses a standalone end marker whose begin is only quoted', () => {
+    const doc = 'We write `<!-- sonata:begin -->` here.\n\n<!-- sonata:end -->\n';
+    expect(() => locateGuidance(doc)).toThrow(/stray/);
+  });
+
+  it('counts only standalone markers when refusing repeats', () => {
+    // One real block plus prose quoting the markers is not two blocks.
+    const doc = [
+      'The pair is `<!-- sonata:begin -->` … `<!-- sonata:end -->`.',
+      '',
+      '<!-- sonata:begin -->',
+      'managed',
+      '<!-- sonata:end -->',
+      '',
+    ].join('\n');
+    expect(locateGuidance(doc)).toBeDefined();
   });
 
   it('refuses an end marker with no begin marker', () => {
@@ -203,6 +248,16 @@ describe('removeGuidance', () => {
     expect(removed).toBe(`${head}${tail}`);
     expect(removed).toContain('# My project\n\n\nText above.\n\n\n');
     expect(removed).toContain('\n\n\nText below.\n\n');
+  });
+
+  it('appends to a file that only quotes the markers, leaving the prose intact', () => {
+    const doc = 'Sonata owns what is between `<!-- sonata:begin -->` and `<!-- sonata:end -->`.\n';
+    const merged = mergeGuidance(doc, guidanceBlock());
+    // Every original byte survives as a prefix: the block is appended, not
+    // spliced into the sentence.
+    expect(merged.startsWith(doc)).toBe(true);
+    expect(merged).toContain('`<!-- sonata:begin -->` and `<!-- sonata:end -->`.');
+    expect(removeGuidance(merged)).toBe(doc);
   });
 
   it('round-trips a merge into a file with content on both sides', () => {
