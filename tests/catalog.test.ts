@@ -632,3 +632,38 @@ describe('candidateLabel', () => {
     expect(candidateLabel('gpt-5.6-luna@max', undefined)).toBe('gpt-5.6-luna @max');
   });
 });
+
+
+describe('proposeTiers — effort variants', () => {
+  it('ranks variants as candidates: complex by capability, simple by value above the floor', () => {
+    const tiers = proposeTiers(['gpt-5.6-luna', 'gpt-5.6-terra', 'deepseek-v4-flash'], FAMILY_AA);
+    // terra@max 43.7 edges luna@max 42.7 — within the 1.0 tie margin, so
+    // price decides: luna@max ($0.178) beats terra@max ($1.399).
+    expect(tiers.complex.slice(0, 3)).toEqual(['gpt-5.6-luna@max', 'gpt-5.6-terra@max', 'deepseek-v4-flash']);
+    // Floor = 0.75 × 43.7 = 32.8: luna@high (35.6) clears it and leads on
+    // value; luna@low (17.9) does not, whatever its cost.
+    expect(tiers.simple[0]).toBe('gpt-5.6-luna@high');
+    expect(tiers.simple).not.toContain('gpt-5.6-luna@low');
+    expect(tiers.simple).toContain('gpt-5.6-luna@xhigh');
+  });
+
+  it('demotes every variant of an avoided model, by bare key', () => {
+    const tiers = proposeTiers(['gpt-5.6-luna', 'deepseek-v4-flash'], FAMILY_AA, [], new Set(['gpt-5.6-luna']));
+    expect(tiers.complex[0]).toBe('deepseek-v4-flash');
+    expect(tiers.simple[0]).toBe('deepseek-v4-flash');
+  });
+
+  it('is unchanged for a catalog without families', () => {
+    const aa: AaCatalog = {
+      fetchedAt: '2026-08-25T00:00:00Z',
+      models: {
+        'cheap-and-good': { codingIndex: 58, blendedPriceUsd: 1, agenticIndex: 58, costPerTask: 0.09 },
+        'top-and-dear': { codingIndex: 60, blendedPriceUsd: 1, agenticIndex: 60, costPerTask: 0.95 },
+      },
+    };
+    expect(proposeTiers(['top-and-dear', 'cheap-and-good'], aa)).toEqual({
+      complex: ['top-and-dear', 'cheap-and-good'],
+      simple: ['cheap-and-good', 'top-and-dear'],
+    });
+  });
+});

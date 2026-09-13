@@ -527,12 +527,19 @@ export function proposeTiers(
   providers: readonly string[] = [],
   avoided: ReadonlySet<string> = new Set(),
 ): TierProposal {
+  // Rank over every scored level of every selected model. A model AA scores
+  // at several efforts is several candidates here - luna@high and luna@max
+  // are different capability/cost points, and which one a tier wants is the
+  // whole question. Identity without families, so a catalog-less run (and
+  // every existing caller) sees exactly the keys it passed.
+  const candidates = expandCandidates(modelKeys, aa, providers);
+  const bareKey = (candidate: string): string => splitCandidate(candidate).key;
   const rankOf = (k: string) => rank(k, aa, providers);
   // An avoided model sorts after every non-avoided one, whatever it scores.
   // Demotion, not exclusion: the tier keeps it as a fallback candidate, so
   // avoiding a gateway costs preference rather than the depth a ranked list
   // exists to provide.
-  const avoidance = (a: string, b: string) => Number(avoided.has(a)) - Number(avoided.has(b));
+  const avoidance = (a: string, b: string) => Number(avoided.has(bareKey(a))) - Number(avoided.has(bareKey(b)));
   // Complex work wants the most capable model, cost breaking ties — including
   // a near-tie: a capability gap within AA_CAPABILITY_TIE_MARGIN is treated as
   // noise rather than a real edge, so price decides it the same as an exact
@@ -548,15 +555,15 @@ export function proposeTiers(
     return avoidance(a, b) || valueOf(rb) - valueOf(ra) || rb.index - ra.index;
   };
 
-  const complex = modelKeys.filter((k) => lookupModel(k, aa, providers).capable).sort(byCapability);
+  const complex = candidates.filter((k) => lookupModel(k, aa, providers).capable).sort(byCapability);
   // The floor is relative to the best model actually selected, so it adapts to
   // the user's own set rather than to an absolute score that is wrong whenever
   // their selection is uniformly strong or uniformly modest.
   // Measured over the models that can actually lead the tier: including an
   // avoided model here could raise the bar high enough to exclude everything
   // preferred, inverting the setting's intent.
-  const preferred = modelKeys.filter((k) => !avoided.has(k));
-  const leaders = preferred.length > 0 ? preferred : modelKeys;
+  const preferred = candidates.filter((k) => !avoided.has(bareKey(k)));
+  const leaders = preferred.length > 0 ? preferred : candidates;
   const best = Math.max(0, ...leaders.map((k) => rankOf(k).index));
   // The cost bar is relative to the cheapest model that can actually *enter*
   // the tier — not merely the cheapest one selected. `best` gets away with
@@ -596,13 +603,13 @@ export function proposeTiers(
   };
   // Same `eligible` the ceiling is measured over, so who sets the bar and who
   // is judged against it cannot drift apart.
-  const simple = modelKeys.filter((k) => eligible(k) && isCheap(k)).sort(byValue);
+  const simple = candidates.filter((k) => eligible(k) && isCheap(k)).sort(byValue);
   // A tier must always resolve to something: with no capable model, everything
   // is complex-eligible; with no cheap-capable model, simple mirrors complex.
   // The fallback is sorted too — raw input order would break the documented
   // "index descending, price ascending" ordering on exactly the path where no
   // model cleared the threshold.
-  const complexFinal = complex.length > 0 ? complex : [...modelKeys].sort(byCapability);
+  const complexFinal = complex.length > 0 ? complex : [...candidates].sort(byCapability);
   // Falls back to the complex set, but re-sorted by value: the reason to
   // fall back is that nothing cleared the cheap bar, not that cost stopped
   // mattering for grunt work.
