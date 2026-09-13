@@ -663,6 +663,38 @@ complex = ["flash"]
     expect(c?.detail).toMatch(/built-in defaults/);
   });
 
+  it('reports that effort levels cannot be checked when there is no catalog', async () => {
+    const { cwd, home } = tieredSetup();
+    const c = await rankingCheck(cwd, home, new Date('2026-08-28T00:00:00.000Z'));
+    expect(c?.detail).toMatch(/no catalog .* effort levels cannot be checked/);
+  });
+
+  it('scores an effort-pinned candidate by its bare key for coverage', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-effort-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-effort-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."big"]
+gateway = "acme"
+id = "big"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["big@high"]
+complex = ["big@high"]
+`);
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    const path = join(home, '.config', 'sonata', 'catalog.json');
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      fetchedAt: '2026-08-27T00:00:00.000Z',
+      models: { big: { codingIndex: 45, blendedPriceUsd: 0.3 } },
+    }));
+    const c = await rankingCheck(cwd, home, new Date('2026-08-28T00:00:00.000Z'));
+    expect(c?.detail).not.toMatch(/unscored/);
+  });
+
   it('names a tiered model the catalog cannot score, however fresh it is', async () => {
     // Age is the wrong instrument for this failure: a catalog fetched
     // yesterday is reported fresh and still knows nothing about a model

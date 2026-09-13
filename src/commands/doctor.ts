@@ -1,4 +1,5 @@
 import { extendedContextAdvice } from '../extended-context.js';
+import { splitCandidate } from '../effort.js';
 import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
@@ -263,7 +264,7 @@ export async function cmdDoctor(
       checks.push({
         name: 'model rankings',
         ok: true,
-        detail: 'no catalog — tiers ranked from built-in defaults; run `sonata catalog update`',
+        detail: 'no catalog — tiers ranked from built-in defaults, and effort levels cannot be checked; run `sonata catalog update`',
       });
     } else {
       const age = aaCatalogAgeDays(catalog.fetchedAt, now());
@@ -287,8 +288,10 @@ export async function cmdDoctor(
       // `native.models` when it carries a gateway and into `models` when it
       // carries a harness — and a key routed only one of those ways is absent
       // from the other map entirely.
-      const upstream = (key: string): string =>
-        config.native?.models?.[key]?.id ?? config.models?.[key]?.id ?? key;
+      const upstream = (candidate: string): string => {
+        const { key } = splitCandidate(candidate);
+        return config.native?.models?.[key]?.id ?? config.models?.[key]?.id ?? key;
+      };
       // Gateway names are what `normalizeModelName` strips to recover the
       // upstream id, so passing them is what makes a key like
       // `<gateway>-<model>` resolvable at all.
