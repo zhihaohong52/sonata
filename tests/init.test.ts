@@ -1854,6 +1854,10 @@ gateway = "project-gw"
 id = "some-model"
 context_window = 128000
 
+[models."project-alias"]
+harness = "codex"
+id = "project-reasoning-model"
+
 [tiers.code]
 simple = ["project-model"]
 complex = ["project-model"]
@@ -1867,6 +1871,10 @@ base_url = "https://global.example/v1"
 gateway = "global-gw"
 id = "some-model"
 context_window = 128000
+
+[models."global-alias"]
+harness = "codex"
+id = "global-reasoning-model"
 
 [tiers.code]
 simple = ["global-model"]
@@ -1885,6 +1893,10 @@ complex = ["global-model"]
     expect(tuiMocks.data!.declaredGatewayNames).toEqual({
       project: ['project-gw'],
       global: ['global-gw'],
+    });
+    expect(tuiMocks.data!.harnessOnlyUpstreams).toEqual({
+      project: { 'project-alias': 'project-reasoning-model' },
+      global: { 'global-alias': 'global-reasoning-model' },
     });
   });
 

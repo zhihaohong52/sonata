@@ -65,6 +65,20 @@ describe('plan — the config it emits', () => {
     }
   });
 
+  it('keeps a saved effort pin when no catalog is available', () => {
+    // The validation error tells users to hand-pin a model after catalog
+    // levels appear. A later init without that catalog must not erase it.
+    const existing = {
+      unifiedModels: { 'acme-fast': { gateway: 'acme', id: 'fast' } },
+      tiers: { code: { simple: ['acme-fast@high'], complex: ['acme-fast@high'] } },
+    } as never;
+    const p = plan(
+      env({ configsByScope: { project: existing } }),
+      { ...state, tiers: undefined }, noCredentials, opts,
+    );
+    expect(parseConfig(p.configToml).tiers!.code.simple).toContain('acme-fast@high');
+  });
+
   it('never writes a model key twice', () => {
     const p = plan(env(), state, noCredentials, opts);
     const keys = [...p.configToml.matchAll(/^\[models\."([^"]+)"\]$/gm)].map((m) => m[1]);

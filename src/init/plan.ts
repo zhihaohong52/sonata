@@ -17,6 +17,7 @@ import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { readChatGptOAuth } from '../native/codex-auth.js';
 import { GLOBAL_CONFIG_RELATIVE } from '../config.js';
 import { isOauthGatewayAuth } from '../config.js';
+import { splitCandidate } from '../effort.js';
 import { addByokCandidates, addLiveCandidates, rewriteOauthToApiKey } from './candidates.js';
 
 /** A resolvable bearer key for this gateway from this source. */
@@ -156,10 +157,18 @@ export function plan(
     ?? configForScope?.unifiedModels?.[key]?.harnessId
     ?? key;
   const expand = (keys: string[]) => expandCandidates(keys, catalog, gatewayNames, upstreamFor);
-  // Valid candidates are the expanded keys: a bare key for a model the
-  // catalog scores by level is exactly what `loadConfig` refuses, so it must
-  // not survive as "kept" here either.
-  const validTierKeys = new Set(expand([...nativeKeys, ...Object.keys(migratedModels)]));
+  const rankableKeys = [...nativeKeys, ...Object.keys(migratedModels)];
+  const expandedTierKeys = expand(rankableKeys);
+  // A hand-pinned level remains valid when its bare model is still selected,
+  // even when the catalog is absent or no longer publishes that exact level.
+  // Do not admit bare saved keys here: catalog-scored bare keys are invalid.
+  const validTierKeys = (saved: readonly string[] | undefined): Set<string> => new Set([
+    ...expandedTierKeys,
+    ...(saved ?? []).filter((candidate) => {
+      const { key, effort } = splitCandidate(candidate);
+      return effort !== undefined && rankableKeys.includes(key);
+    }),
+  ]);
   const addedKeys = expand(nativeKeys.filter((key) => !savedNativeKeys.includes(key)));
   const tiers = Object.fromEntries(roles.map((role) => {
     const proposal = proposeTiers(
@@ -172,8 +181,8 @@ export function plan(
     const added = (tier: 'simple' | 'complex') =>
       [...new Set([...addedKeys, ...unpinnedVariants(saved?.[tier], catalog, gatewayNames, upstreamFor)])];
     return [role, {
-      simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple, added('simple')),
-      complex: reconcileTierList(saved?.complex, validTierKeys, proposal.complex, added('complex')),
+      simple: reconcileTierList(saved?.simple, validTierKeys(saved?.simple), proposal.simple, added('simple')),
+      complex: reconcileTierList(saved?.complex, validTierKeys(saved?.complex), proposal.complex, added('complex')),
     }];
   }));
 

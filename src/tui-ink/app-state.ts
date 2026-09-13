@@ -293,6 +293,8 @@ export function acceptRemainingTiers(
    * make `A` select candidates the user never saw on those screens.
    */
   unpinned: (saved: string[] | undefined) => string[] = () => [],
+  /** All candidates the picker offers, including config-only harness routes. */
+  offeredKeys: string[] = state.nativeKeys ?? [],
 ): InitState {
   let next = state;
   for (let index = Math.max(0, fromIndex); index < roles.length * 2; index++) {
@@ -307,7 +309,7 @@ export function acceptRemainingTiers(
       ranked: seededRankingFor(
         withoutExpandedBareCandidates(saved, tierAdded),
         proposal[tier],
-        expand(next.nativeKeys ?? []),
+        expand(offeredKeys),
         expand(allNativeKeys),
         [...new Set([...added, ...tierAdded])],
       ),

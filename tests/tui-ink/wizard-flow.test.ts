@@ -266,3 +266,66 @@ describe('a tier screen for a config whose gateway this session never offered', 
     expect(rows).not.toContain('acme-big@high');
   });
 });
+
+describe('a tier screen for a harness-only config entry', () => {
+  it("offers the tier editor effort variants", async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-wizard-harness-only-'));
+    const path = aaCatalogPath(home);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      fetchedAt: '2026-09-13T00:00:00Z',
+      models: {
+        'gpt-5.6-luna': { codingIndex: 80, blendedPriceUsd: 1, agenticIndex: 55, costPerTask: 0.2, family: 'luna', effort: 'max' },
+        'gpt-5.6-luna-high': { codingIndex: 70, blendedPriceUsd: 0.8, agenticIndex: 45, costPerTask: 0.1, family: 'luna', effort: 'high' },
+      },
+    }));
+    const toml = [
+      'schema_version = 1',
+      '',
+      '[native.gateways."acme"]',
+      'base_url = "https://acme.example/v1"',
+      '',
+      '[models."acme-fast"]',
+      'gateway = "acme"',
+      'id = "fast"',
+      'context_window = 128000',
+      '',
+      '[models."alias"]',
+      'harness = "codex"',
+      'id = "gpt-5.6-luna"',
+      '',
+      '[tiers.code]',
+      'simple = ["alias@high"]',
+      'complex = ["alias@max"]',
+      '',
+    ].join('\n');
+    const config = parseConfig(toml);
+    const w = renderWizard({
+      home,
+      harnesses: [{ name: 'opencode', installed: true }],
+      providers: [{ key: 'opencode/acme', harness: 'opencode', provider: 'acme', count: 1 }],
+      candidates: [],
+      roles: ['code'],
+      byokProviders: [],
+      storedKeys: {},
+      fetchModels: async () => ({ outcome: 'ok', models: [] }),
+      declaredGatewayNames: { project: ['acme'] },
+      harnessOnlyUpstreams: { project: { alias: 'gpt-5.6-luna' } },
+      initialStateByScope: {
+        project: {
+          configScope: 'project',
+          providerKeys: ['opencode/acme'],
+          nativeKeys: ['acme-fast'],
+          roles: ['code'],
+          tiers: config.tiers,
+        },
+      },
+    });
+
+    await walkToFirstTier(w);
+    const expected = rankableCandidates(config, loadAaCatalog(home)!);
+    expect(expected).toContain('alias@high');
+    expect(expected).toContain('alias@max');
+    expect([...offeredRows(w.lastFrame()!)].sort()).toEqual([...expected].sort());
+  });
+});

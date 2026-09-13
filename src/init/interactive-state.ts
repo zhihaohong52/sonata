@@ -68,6 +68,16 @@ export async function interactiveState(
     declaredGatewayNamesByScope[scope] = Object.keys(env.configsByScope[scope]?.native?.gateways ?? {});
   }
 
+  const harnessOnlyUpstreamsByScope: Partial<Record<ConfigScope, Record<string, string>>> = {};
+  for (const scope of ['project', 'global'] as const) {
+    const models = env.configsByScope[scope]?.unifiedModels ?? {};
+    harnessOnlyUpstreamsByScope[scope] = Object.fromEntries(
+      Object.entries(models)
+        .filter(([, model]) => model.harness !== undefined && model.gateway === undefined)
+        .map(([key, model]) => [key, model.id ?? model.harnessId ?? key]),
+    );
+  }
+
   const codexCredential = readChatGptOAuth(opts.home, 'codex');
   const opencodeCredential = readOpencodeChatGptOAuth(opts.home);
   const daysUntil = (expiresAt: number | undefined): number | null => expiresAt === undefined
@@ -107,6 +117,7 @@ export async function interactiveState(
     gatewayBaseUrls: env.providerBaseUrls,
     avoidGateways: env.configsByScope[resolvedScope]?.avoidGateways ?? [],
     declaredGatewayNames: declaredGatewayNamesByScope,
+    harnessOnlyUpstreams: harnessOnlyUpstreamsByScope,
     initialState,
     initialStateByScope,
   };

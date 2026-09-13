@@ -67,6 +67,13 @@ export interface WizardData {
    * the scope answer is re-read when the user walks back to it.
    */
   declaredGatewayNames?: Partial<Record<'project' | 'global', string[]>>;
+  /**
+   * Harness-only config entries are rankable even though they have no native
+   * gateway and therefore never appear in the wizard's selected native keys.
+   * Each value is resolved with `id ?? harnessId ?? key` before this data is
+   * built, matching the tier editor and effort-pin validation.
+   */
+  harnessOnlyUpstreams?: Partial<Record<'project' | 'global', Record<string, string>>>;
   /** Injected so tests never reach the network. */
   fetchModels?: typeof defaultFetchModels;
   initialState?: InitState;
@@ -294,7 +301,26 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       // is only *usually* `<gateway>-<id>` — a hand-named key has no prefix to
       // strip, so normalizing the key itself finds nothing and this screen
       // would offer no pin for a candidate `loadConfig` refuses.
-      const idsByKey = new Map(known.map((candidate) => [candidate.key, candidate.id]));
+      const harnessOnlyUpstreams = state.configScope !== undefined
+        ? data.harnessOnlyUpstreams?.[state.configScope] ?? {}
+        : {};
+      // The tier editor ranks every config entry, including harness-only
+      // routes. They cannot enter nativeKeys, but must be offered so a saved
+      // pin remains repairable in this writer too.
+      const rankableKeys = [...new Set([
+        ...(state.nativeKeys ?? []),
+        ...Object.keys(harnessOnlyUpstreams),
+      ])];
+      // Preserve the native universe that withholds temporarily deselected
+      // routes, then add harness-only config entries to it.
+      const pickerUniverseKeys = [...new Set([
+        ...known.map((candidate) => candidate.key),
+        ...Object.keys(harnessOnlyUpstreams),
+      ])];
+      const idsByKey = new Map([
+        ...known.map((candidate) => [candidate.key, candidate.id] as const),
+        ...Object.entries(harnessOnlyUpstreams),
+      ]);
       const upstreamFor = (key: string): string => idsByKey.get(key) ?? key;
       const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways, avoided, upstreamFor);
       const expand = (keys: string[]) => expandCandidates(keys, catalog, gateways, upstreamFor);
@@ -323,7 +349,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       return <RankedSelect
         key={`${role}-${tier}`}
         title={`${role}: ${tier} models`}
-        items={tierPickerKeys(expand(state.nativeKeys ?? []), initialRanked, expand(known.map((candidate) => candidate.key)))
+        items={tierPickerKeys(expand(rankableKeys), initialRanked, expand(pickerUniverseKeys))
           .map((candidate) => ({ value: candidate, label: candidateLabel(candidate, catalog, gateways, upstreamFor) }))}
         initialRanked={initialRanked}
         footer={footer}
@@ -346,10 +372,11 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
                 // the startup set, bulk acceptance would withhold different
                 // keys from the screens it stands in for, and the two paths are
                 // required to write a byte-identical config.
-                known.map((candidate) => candidate.key),
+                pickerUniverseKeys,
                 globalAddedKeys,
                 expand,
                 (savedTier) => unpinnedVariants(savedTier, catalog, gateways, upstreamFor),
+                rankableKeys,
               ));
               setStep(5);
             }
