@@ -10,7 +10,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { isEffort, type Effort } from './effort.js';
+import { EFFORT_LEVELS, isEffort, joinCandidate, splitCandidate, type Effort } from './effort.js';
 
 export const AA_ATTRIBUTION =
   'Model rankings by Artificial Analysis — https://artificialanalysis.ai';
@@ -285,10 +285,76 @@ export function aaLookupNames(normalized: string): string[] {
   return names;
 }
 
-/** The AA row for a normalized name, trying each spelling it may be filed
- *  under. Dots-to-dashes is applied to every candidate, not only the first. */
-function aaEntryFor(normalized: string, aa?: AaCatalog): AaEntry | undefined {
+export interface CatalogFamily {
+  /** The family's catalog name (the default row's key). */
+  name: string;
+  /** The level AA evaluated the unsuffixed row at — absent if every row is suffixed. */
+  default?: Effort;
+  /** Every scored level, in `EFFORT_LEVELS` order. */
+  variants: Map<Effort, AaEntry>;
+}
+
+/**
+ * Rows grouped by family, built once per catalog object. A `WeakMap` keyed on
+ * the catalog rather than a field on it, so a cache loaded from disk and a
+ * catalog literal in a test are indexed the same way and neither is mutated.
+ */
+const familyIndex = new WeakMap<AaCatalog, Map<string, CatalogFamily>>();
+
+function familiesOf(aa: AaCatalog): Map<string, CatalogFamily> {
+  let index = familyIndex.get(aa);
+  if (index !== undefined) return index;
+  index = new Map();
+  for (const [key, entry] of Object.entries(aa.models)) {
+    if (entry.family === undefined || entry.effort === undefined) continue;
+    let fam = index.get(entry.family);
+    if (fam === undefined) {
+      fam = { name: entry.family, variants: new Map() };
+      index.set(entry.family, fam);
+    }
+    fam.variants.set(entry.effort, entry);
+    if (key === entry.family) fam.default = entry.effort;
+  }
+  // Order every family's variants weakest-first so callers can rely on it.
+  for (const fam of index.values()) {
+    const ordered = new Map<Effort, AaEntry>();
+    for (const level of EFFORT_LEVELS) {
+      const entry = fam.variants.get(level);
+      if (entry !== undefined) ordered.set(level, entry);
+    }
+    fam.variants = ordered;
+  }
+  familyIndex.set(aa, index);
+  return index;
+}
+
+/**
+ * The effort family a normalized model name belongs to, if the catalog scores
+ * it at two or more levels. One scored level is a model, not a choice.
+ *
+ * Resolved through the same spellings `aaEntryFor` tries, so a name that finds
+ * its score also finds its family.
+ */
+export function catalogFamily(normalized: string, aa?: AaCatalog): CatalogFamily | undefined {
   if (aa === undefined) return undefined;
+  const families = familiesOf(aa);
+  for (const name of aaLookupNames(normalized)) {
+    for (const spelling of [name, aaMatchKey(name)]) {
+      const entry = aa.models[spelling];
+      const fam = entry?.family !== undefined ? families.get(entry.family) : families.get(spelling);
+      if (fam !== undefined && fam.variants.size >= 2) return fam;
+    }
+  }
+  return undefined;
+}
+
+/** The AA row for a normalized name, trying each spelling it may be filed
+ * under. With an effort, the family's row at that level — and nothing else:
+ * a level on a model the catalog does not score by level is unscored, never
+ * silently the bare row. */
+function aaEntryFor(normalized: string, aa?: AaCatalog, effort?: Effort): AaEntry | undefined {
+  if (aa === undefined) return undefined;
+  if (effort !== undefined) return catalogFamily(normalized, aa)?.variants.get(effort);
   for (const name of aaLookupNames(normalized)) {
     const hit = aa.models[name] ?? aa.models[aaMatchKey(name)];
     if (hit !== undefined) return hit;
@@ -315,8 +381,9 @@ const CURATED: Record<string, { capable: boolean; cheap: boolean }> = {
 };
 
 export function lookupModel(name: string, aa?: AaCatalog, providers: readonly string[] = []): CatalogEntry {
-  const normalized = normalizeModelName(name, providers);
-  const scored = aaEntryFor(normalized, aa);
+  const { key, effort } = splitCandidate(name);
+  const normalized = normalizeModelName(key, providers);
+  const scored = aaEntryFor(normalized, aa, effort);
   if (scored !== undefined) {
     return {
       capable: scored.codingIndex >= AA_CAPABLE_CODING_INDEX,
@@ -324,6 +391,7 @@ export function lookupModel(name: string, aa?: AaCatalog, providers: readonly st
       source: 'aa',
     };
   }
+  // A curated judgement is about the model, whichever level it runs at.
   const curated = CURATED[normalized];
   if (curated !== undefined) return { ...curated, source: 'curated' };
   return { capable: true, cheap: false, source: 'default' };
@@ -331,9 +399,74 @@ export function lookupModel(name: string, aa?: AaCatalog, providers: readonly st
 
 export interface TierProposal { simple: string[]; complex: string[] }
 
-/** The AA row behind a model key, joined through the match key. */
-function scoreFor(key: string, aa?: AaCatalog, providers: readonly string[] = []): AaEntry | undefined {
-  return aaEntryFor(normalizeModelName(key, providers), aa);
+/** The AA row behind a candidate (`key` or `key@effort`), joined through the match key. */
+function scoreFor(candidate: string, aa?: AaCatalog, providers: readonly string[] = []): AaEntry | undefined {
+  const { key, effort } = splitCandidate(candidate);
+  return aaEntryFor(normalizeModelName(key, providers), aa, effort);
+}
+
+/**
+ * Each key as the candidates a ranking may choose between: one per scored
+ * level for a model the catalog knows by level, the bare key otherwise. A
+ * candidate that already names a level is passed through — the caller has
+ * decided. Identity without a catalog, which is what keeps every existing
+ * caller's behaviour unchanged until a catalog with families is present.
+ */
+export function expandCandidates(
+  keys: readonly string[],
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+): string[] {
+  return keys.flatMap((candidate) => {
+    const { key, effort } = splitCandidate(candidate);
+    if (effort !== undefined) return [candidate];
+    const fam = catalogFamily(normalizeModelName(key, providers), aa);
+    return fam === undefined ? [candidate] : [...fam.variants.keys()].map((level) => joinCandidate(key, level));
+  });
+}
+
+export function hasEffortVariants(key: string, aa?: AaCatalog, providers: readonly string[] = []): boolean {
+  return expandCandidates([key], aa, providers).length > 1;
+}
+
+/**
+ * The variants of every *bare* saved candidate whose model has effort levels.
+ *
+ * A config written before effort existed, or a legacy migration, holds bare
+ * keys; once a catalog with families is present those keys are refused at
+ * load, so the wizard must re-propose them rather than drop them. They are
+ * handed to `reconcileTierList` as `added`, which inserts each at the rank
+ * the proposal gives it — the same treatment as a model selected for the
+ * first time, which is what a never-ranked level is.
+ */
+export function unpinnedVariants(
+  saved: readonly string[] | undefined,
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+): string[] {
+  return (saved ?? []).flatMap((candidate) => {
+    const { effort } = splitCandidate(candidate);
+    if (effort !== undefined) return [];
+    const expanded = expandCandidates([candidate], aa, providers);
+    return expanded.length > 1 ? expanded : [];
+  });
+}
+
+/**
+ * A ranking row: `<key> @<effort>`, then the capability and the cost the
+ * ranking actually sorts on, so a user comparing two rows sees the numbers
+ * that ordered them. Per-task cost where AA costed the model, else the
+ * per-1M blend — labelled, because the two are different units.
+ */
+export function candidateLabel(candidate: string, aa?: AaCatalog, providers: readonly string[] = []): string {
+  const { key, effort } = splitCandidate(candidate);
+  const head = effort === undefined ? key : `${key} @${effort}`;
+  const entry = scoreFor(candidate, aa, providers);
+  if (entry === undefined) return head;
+  const cost = entry.costPerTask !== undefined
+    ? `$${entry.costPerTask.toFixed(3)}/task`
+    : `$${entry.blendedPriceUsd.toFixed(2)}/1M`;
+  return `${head.padEnd(32)} ${capabilityOf(entry).toFixed(1).padStart(4)}  ${cost}`;
 }
 
 /**

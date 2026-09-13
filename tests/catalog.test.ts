@@ -5,6 +5,7 @@ import { join, dirname } from 'node:path';
 import {
   normalizeModelName, lookupModel, proposeTiers, loadAaCatalog, aaCatalogPath,
   aaCatalogAgeDays, aaLookupNames, catalogCoverage, SIMPLE_COST_CEILING,
+  catalogFamily, expandCandidates, hasEffortVariants, unpinnedVariants, candidateLabel,
   type AaCatalog,
 } from '../src/catalog.js';
 
@@ -522,5 +523,97 @@ describe('catalogCoverage', () => {
     // The case age cannot describe: no catalog is not "0 days old".
     expect(catalogCoverage(['deepseek-v4-flash'], undefined).unscored)
       .toEqual(['deepseek-v4-flash']);
+  });
+});
+
+
+const FAMILY_AA: AaCatalog = {
+  fetchedAt: '2026-09-13T00:00:00Z',
+  models: {
+    'gpt-5-6-luna': { codingIndex: 71, blendedPriceUsd: 0.45, agenticIndex: 42.7, costPerTask: 0.178, family: 'gpt-5-6-luna', effort: 'max' },
+    'gpt-5-6-luna-xhigh': { codingIndex: 68, blendedPriceUsd: 0.45, agenticIndex: 39.5, costPerTask: 0.085, family: 'gpt-5-6-luna', effort: 'xhigh' },
+    'gpt-5-6-luna-high': { codingIndex: 60, blendedPriceUsd: 0.45, agenticIndex: 35.6, costPerTask: 0.044, family: 'gpt-5-6-luna', effort: 'high' },
+    'gpt-5-6-luna-low': { codingIndex: 44, blendedPriceUsd: 0.45, agenticIndex: 17.9, costPerTask: 0.0098, family: 'gpt-5-6-luna', effort: 'low' },
+    'gpt-5-6-terra': { codingIndex: 78, blendedPriceUsd: 4.5, agenticIndex: 43.7, costPerTask: 1.399, family: 'gpt-5-6-terra', effort: 'max' },
+    'gpt-5-6-terra-high': { codingIndex: 70, blendedPriceUsd: 4.5, agenticIndex: 37.6, costPerTask: 0.338, family: 'gpt-5-6-terra', effort: 'high' },
+    'deepseek-v4-flash': { codingIndex: 65, blendedPriceUsd: 0.66, agenticIndex: 41.7, costPerTask: 0.22 },
+    // A family of one: AA scored it at one level and named it. Not variants.
+    'lonely': { codingIndex: 50, blendedPriceUsd: 1, family: 'lonely', effort: 'high' },
+  },
+};
+
+describe('catalogFamily', () => {
+  it('groups rows by family and knows the default level', () => {
+    const fam = catalogFamily('gpt-5.6-luna', FAMILY_AA)!;
+    expect(fam.name).toBe('gpt-5-6-luna');
+    expect(fam.default).toBe('max');
+    expect([...fam.variants.keys()]).toEqual(['low', 'high', 'xhigh', 'max']);
+    expect(fam.variants.get('high')?.costPerTask).toBe(0.044);
+  });
+  it('is undefined for a model with fewer than two scored levels', () => {
+    expect(catalogFamily('deepseek-v4-flash', FAMILY_AA)).toBeUndefined();
+    expect(catalogFamily('lonely', FAMILY_AA)).toBeUndefined();
+    expect(catalogFamily('gpt-5.6-luna', undefined)).toBeUndefined();
+  });
+  it('finds a family through the same spellings a score is found through', () => {
+    // An OpenRouter-flattened ref still reaches its family.
+    expect(catalogFamily('openai-gpt-5.6-luna', FAMILY_AA)?.name).toBe('gpt-5-6-luna');
+  });
+});
+
+describe('expandCandidates', () => {
+  it('expands a key with variants into one candidate per level, weakest first', () => {
+    expect(expandCandidates(['gpt-5.6-luna', 'deepseek-v4-flash'], FAMILY_AA)).toEqual([
+      'gpt-5.6-luna@low', 'gpt-5.6-luna@high', 'gpt-5.6-luna@xhigh', 'gpt-5.6-luna@max',
+      'deepseek-v4-flash',
+    ]);
+  });
+  it('is the identity without a catalog', () => {
+    expect(expandCandidates(['gpt-5.6-luna'], undefined)).toEqual(['gpt-5.6-luna']);
+  });
+  it('leaves an already-pinned candidate alone', () => {
+    expect(expandCandidates(['gpt-5.6-luna@high'], FAMILY_AA)).toEqual(['gpt-5.6-luna@high']);
+  });
+  it('recovers the id through configured gateway names', () => {
+    expect(hasEffortVariants('codex-gpt-5.6-luna', FAMILY_AA, ['codex'])).toBe(true);
+    expect(hasEffortVariants('deepseek-v4-flash', FAMILY_AA)).toBe(false);
+  });
+});
+
+describe('unpinnedVariants', () => {
+  it('expands only the bare saved keys that have variants', () => {
+    expect(unpinnedVariants(['gpt-5.6-luna', 'deepseek-v4-flash', 'gpt-5.6-terra@high'], FAMILY_AA)).toEqual([
+      'gpt-5.6-luna@low', 'gpt-5.6-luna@high', 'gpt-5.6-luna@xhigh', 'gpt-5.6-luna@max',
+    ]);
+    expect(unpinnedVariants(undefined, FAMILY_AA)).toEqual([]);
+  });
+});
+
+describe('lookupModel / scoreFor with an effort', () => {
+  it('scores a candidate at its own level', () => {
+    expect(lookupModel('gpt-5.6-luna@low', FAMILY_AA)).toEqual({ capable: true, cheap: true, source: 'aa' });
+    // 44 >= 40 keeps it capable; the bare row is the max row.
+    expect(lookupModel('gpt-5.6-luna', FAMILY_AA).source).toBe('aa');
+  });
+  it('treats an effort on a model with no family as unscored', () => {
+    // `lonely` is scored at one level only, so `@high` finds no family — and
+    // it is not in the curated table, so it falls through to the default.
+    expect(lookupModel('lonely@high', FAMILY_AA).source).toBe('default');
+  });
+});
+
+describe('candidateLabel', () => {
+  it('shows the level, the capability and the per-task cost', () => {
+    expect(candidateLabel('gpt-5.6-luna@xhigh', FAMILY_AA)).toMatch(/^gpt-5\.6-luna @xhigh\s+39\.5\s+\$0\.085\/task$/);
+    expect(candidateLabel('deepseek-v4-flash', FAMILY_AA)).toMatch(/^deepseek-v4-flash\s+41\.7\s+\$0\.220\/task$/);
+  });
+  it('aligns the numbers across rows', () => {
+    const a = candidateLabel('gpt-5.6-luna@xhigh', FAMILY_AA);
+    const b = candidateLabel('deepseek-v4-flash', FAMILY_AA);
+    expect(a.indexOf('39.5')).toBe(b.indexOf('41.7'));
+  });
+  it('falls back to the per-1M rate, and to the bare key with no catalog', () => {
+    expect(candidateLabel('lonely', FAMILY_AA)).toMatch(/^lonely\s+50\.0\s+\$1\.00\/1M$/);
+    expect(candidateLabel('gpt-5.6-luna@max', undefined)).toBe('gpt-5.6-luna @max');
   });
 });
