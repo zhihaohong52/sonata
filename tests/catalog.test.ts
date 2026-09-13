@@ -542,6 +542,17 @@ const FAMILY_AA: AaCatalog = {
   },
 };
 
+const FAMILY_COLLISION_AA: AaCatalog = {
+  fetchedAt: '2026-09-13T00:00:00Z',
+  models: {
+    // This exact spelling identifies a singleton family.
+    'vendor-gpt-5.6-luna': { codingIndex: 50, blendedPriceUsd: 1, family: 'vendor-gpt-5.6-luna', effort: 'high' },
+    // The shortened spelling identifies a different model with variants.
+    'gpt-5-6-luna': { codingIndex: 71, blendedPriceUsd: 0.45, family: 'gpt-5-6-luna', effort: 'max' },
+    'gpt-5-6-luna-high': { codingIndex: 60, blendedPriceUsd: 0.45, family: 'gpt-5-6-luna', effort: 'high' },
+  },
+};
+
 describe('catalogFamily', () => {
   it('groups rows by family and knows the default level', () => {
     const fam = catalogFamily('gpt-5.6-luna', FAMILY_AA)!;
@@ -558,6 +569,10 @@ describe('catalogFamily', () => {
   it('finds a family through the same spellings a score is found through', () => {
     // An OpenRouter-flattened ref still reaches its family.
     expect(catalogFamily('openai-gpt-5.6-luna', FAMILY_AA)?.name).toBe('gpt-5-6-luna');
+  });
+  it('guards against a shortened-spelling family collision', () => {
+    expect(catalogFamily('vendor-gpt-5.6-luna', FAMILY_COLLISION_AA)).toBeUndefined();
+    expect(lookupModel('vendor-gpt-5.6-luna@high', FAMILY_COLLISION_AA).source).not.toBe('aa');
   });
 });
 

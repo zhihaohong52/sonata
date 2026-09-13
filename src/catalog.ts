@@ -342,7 +342,10 @@ export function catalogFamily(normalized: string, aa?: AaCatalog): CatalogFamily
     for (const spelling of [name, aaMatchKey(name)]) {
       const entry = aa.models[spelling];
       const fam = entry?.family !== undefined ? families.get(entry.family) : families.get(spelling);
-      if (fam !== undefined && fam.variants.size >= 2) return fam;
+      // The first spelling that identifies a model wins, even if it has no variants.
+      if (entry !== undefined || fam !== undefined) {
+        return fam !== undefined && fam.variants.size >= 2 ? fam : undefined;
+      }
     }
   }
   return undefined;
