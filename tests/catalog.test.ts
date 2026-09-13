@@ -2,10 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { parseConfig } from '../src/config.js';
 import {
   normalizeModelName, lookupModel, proposeTiers, loadAaCatalog, aaCatalogPath,
   aaCatalogAgeDays, aaLookupNames, catalogCoverage, SIMPLE_COST_CEILING,
   catalogFamily, expandCandidates, hasEffortVariants, unpinnedVariants, candidateLabel,
+  unpinnedCandidates, assertEffortsPinned,
   type AaCatalog,
 } from '../src/catalog.js';
 
@@ -601,6 +603,47 @@ describe('unpinnedVariants', () => {
       'gpt-5.6-luna@low', 'gpt-5.6-luna@high', 'gpt-5.6-luna@xhigh', 'gpt-5.6-luna@max',
     ]);
     expect(unpinnedVariants(undefined, FAMILY_AA)).toEqual([]);
+  });
+});
+
+const PINNABLE = `
+[models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+[models."flash"]
+gateway = "deepseek"
+id = "deepseek-v4-flash"
+[native.gateways."codex"]
+auth = "codex-oauth"
+[native.gateways."deepseek"]
+base_url = "https://api.deepseek.example/v1"
+[tiers.code]
+simple = ["luna", "flash"]
+complex = ["luna@max", "flash"]
+`;
+
+describe('unpinnedCandidates / assertEffortsPinned', () => {
+  it('names a bare candidate whose model the catalog scores at several levels', () => {
+    const config = parseConfig(PINNABLE);
+    const found = unpinnedCandidates(config, FAMILY_AA);
+    expect(found.map((u) => [u.role, u.tier, u.key])).toEqual([['code', 'simple', 'luna']]);
+    expect(found[0].family.default).toBe('max');
+    expect(() => assertEffortsPinned(config, FAMILY_AA)).toThrow(
+      /tiers\.code\.simple "luna".*levels low, high, xhigh, max.*default is max.*"luna@max".*sonata init/s,
+    );
+  });
+
+  it('is silent with no catalog, and for a fully pinned config', () => {
+    const config = parseConfig(PINNABLE);
+    expect(() => assertEffortsPinned(config, undefined)).not.toThrow();
+    const pinned = parseConfig(PINNABLE.replace('simple = ["luna", "flash"]', 'simple = ["luna@high", "flash"]'));
+    expect(() => assertEffortsPinned(pinned, FAMILY_AA)).not.toThrow();
+  });
+
+  it('resolves the upstream id through the gateway name, not the config key', () => {
+    // `[models."codex-gpt-5.6-luna"]` with id `gpt-5.6-luna` is the same model.
+    const config = parseConfig(PINNABLE.replace(/"luna"/g, '"codex-gpt-5.6-luna"').replace(/"luna@max"/, '"codex-gpt-5.6-luna@max"'));
+    expect(unpinnedCandidates(config, FAMILY_AA).map((u) => u.key)).toEqual(['codex-gpt-5.6-luna']);
   });
 });
 

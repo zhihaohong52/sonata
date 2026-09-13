@@ -5,6 +5,7 @@ import { parse as parseToml } from 'smol-toml';
 import { applyMigrations, readSchemaVersion } from './migrations.js';
 import { mainWorktreeDir } from './git-worktree.js';
 import { splitCandidate, type Effort } from './effort.js';
+import { assertEffortsPinned, loadAaCatalog } from './catalog.js';
 
 export const KNOWN_HARNESSES = ['opencode', 'codex', 'pi', 'reasonix', 'claude'] as const;
 export const KNOWN_ROLES = ['review', 'code', 'explore', 'plan'] as const;
@@ -885,7 +886,10 @@ export function loadConfig(cwd: string, home: string = homedir()): SonataConfig 
       `${join(home, GLOBAL_CONFIG_RELATIVE)}. Run \`sonata init\` or create one.`,
     );
   }
-  return parseConfig(readFileSync(path, 'utf8'));
+  const config = parseConfig(readFileSync(path, 'utf8'));
+  // The catalog is available only at runtime, after pure text parsing.
+  assertEffortsPinned(config, loadAaCatalog(home));
+  return config;
 }
 
 /**

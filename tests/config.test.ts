@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { aaCatalogPath } from '../src/catalog.js';
 import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents, expectedAgentNames, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL, resolveTierAlias, harnessModelFor, NoConfigError } from '../src/config.js';
 
 const VALID = `
@@ -1110,5 +1111,28 @@ pricing_provider = ${value}
     expect(parseConfig(gateway('"openai"')).native!.gateways.g.pricingProvider).toEqual(['openai']);
     expect(parseConfig(gateway('["openai", "deepseek"]')).native!.gateways.g.pricingProvider)
       .toEqual(['openai', 'deepseek']);
+  });
+});
+
+describe('loadConfig — effort pinning', () => {
+  it('refuses a bare candidate with variants when a catalog is cached, and loads without one', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sonata-cfg-'));
+    const home = mkdtempSync(join(tmpdir(), 'sonata-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), [
+      '[models."luna"]', 'gateway = "acme"', 'id = "gpt-5.6-luna"',
+      '[native.gateways."acme"]', 'base_url = "https://acme.example/v1"',
+      '[tiers.code]', 'simple = ["luna"]', 'complex = ["luna"]', '',
+    ].join('\n'));
+    expect(() => loadConfig(cwd, home)).not.toThrow();
+    const catalog = aaCatalogPath(home);
+    mkdirSync(dirname(catalog), { recursive: true });
+    writeFileSync(catalog, JSON.stringify({
+      fetchedAt: '2026-09-13T00:00:00Z',
+      models: {
+        'gpt-5-6-luna': { codingIndex: 71, blendedPriceUsd: 0.45, family: 'gpt-5-6-luna', effort: 'max' },
+        'gpt-5-6-luna-high': { codingIndex: 60, blendedPriceUsd: 0.45, family: 'gpt-5-6-luna', effort: 'high' },
+      },
+    }));
+    expect(() => loadConfig(cwd, home)).toThrow(/tiers\.code\.simple "luna"/);
   });
 });

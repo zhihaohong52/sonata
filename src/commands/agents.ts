@@ -18,6 +18,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../extended-context.js';
 import { configPath, loadConfig, parseConfig, TIER_NAMES, tiersCollapse, type SonataConfig } from '../config.js';
+import { assertEffortsPinned, loadAaCatalog } from '../catalog.js';
 import { replaceTiersBlock } from '../init/toml.js';
 import { cmdSync } from './sync.js';
 import { pruneAgents } from '../detect.js';
@@ -172,7 +173,8 @@ export function writeTiers(
   }
 
   const next = replaceTiersBlock(text, tiers);
-  parseConfig(next);
+  // Reject an unsafe ranking before it can replace the working file.
+  assertEffortsPinned(parseConfig(next), loadAaCatalog(opts.home));
   writeFileSync(path, next);
 
   // A ranking change can move a role between one collapsed agent and two tier

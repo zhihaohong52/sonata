@@ -11,6 +11,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EFFORT_LEVELS, isEffort, joinCandidate, splitCandidate, type Effort } from './effort.js';
+import type { SonataConfig } from './config.js';
 
 export const AA_ATTRIBUTION =
   'Model rankings by Artificial Analysis — https://artificialanalysis.ai';
@@ -349,6 +350,52 @@ export function catalogFamily(normalized: string, aa?: AaCatalog): CatalogFamily
     }
   }
   return undefined;
+}
+
+export interface UnpinnedCandidate {
+  role: string;
+  tier: 'simple' | 'complex';
+  /** The bare config key as written in the tier list. */
+  key: string;
+  family: CatalogFamily;
+}
+
+export function unpinnedCandidates(
+  config: Pick<SonataConfig, 'tiers' | 'unifiedModels' | 'native'>,
+  aa?: AaCatalog,
+): UnpinnedCandidate[] {
+  if (aa === undefined || config.tiers === undefined) return [];
+  const gateways = Object.keys(config.native?.gateways ?? {});
+  const out: UnpinnedCandidate[] = [];
+  for (const [role, lists] of Object.entries(config.tiers)) {
+    for (const tier of ['simple', 'complex'] as const) {
+      for (const candidate of lists[tier]) {
+        const { key, effort } = splitCandidate(candidate);
+        if (effort !== undefined) continue;
+        const model = config.unifiedModels[key];
+        const upstream = model?.id ?? model?.harnessId ?? key;
+        const family = catalogFamily(normalizeModelName(upstream, gateways), aa);
+        if (family !== undefined) out.push({ role, tier, key, family });
+      }
+    }
+  }
+  return out;
+}
+
+export function assertEffortsPinned(
+  config: Pick<SonataConfig, 'tiers' | 'unifiedModels' | 'native'>,
+  aa?: AaCatalog,
+): void {
+  const unpinned = unpinnedCandidates(config, aa);
+  if (unpinned.length === 0) return;
+  const lines = unpinned.map(({ role, tier, key, family }) => {
+    const levels = [...family.variants.keys()].join(', ');
+    const fallback = family.default ?? [...family.variants.keys()].at(-1)!;
+    return `tiers.${role}.${tier} "${key}" names a model the catalog scores at levels ${levels}`
+      + ` (its default is ${family.default ?? 'unstated'}) but pins none — it would be ranked at that default`
+      + ` and run at the gateway's own. Write "${key}@${fallback}" (or another level).`;
+  });
+  throw new Error(`sonata.toml: ${lines.join('\n')}\nRun \`sonata init\` to re-rank every tier with effort levels.`);
 }
 
 /** The AA row for a normalized name, trying each spelling it may be filed
