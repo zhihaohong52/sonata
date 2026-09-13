@@ -41,6 +41,30 @@ describe('aggregate', () => {
     expect(report.pricedTotalUsd).toBe(1);
   });
 
+  // Issue #30: the router has always written a failed candidate into the row's
+  // `attempts`, and nothing read it. A candidate that failed on every attempt
+  // therefore had no row of its own in any breakdown — `sonata usage` showed
+  // the serving model and no trace of the one that killed the agent.
+  it('surfaces candidates a request fell past, which appear in no model row', () => {
+    const report = aggregate([
+      row({ attempts: [{ key: 'deepseek-flash', status: 400 }] }),
+      row({ attempts: [{ key: 'deepseek-flash', status: 503 }, { key: 'luna', status: 429 }] }),
+    ], 'model', {});
+
+    // The served model is still the only bucket: an attempt is not a request.
+    expect(report.buckets.map((b) => b.label)).toEqual(['flash']);
+    expect(report.buckets[0].requests).toBe(2);
+
+    expect(report.failedAttempts).toEqual([
+      { key: 'deepseek-flash', count: 2, statuses: [400, 503] },
+      { key: 'luna', count: 1, statuses: [429] },
+    ]);
+  });
+
+  it('reports no failed attempts when every request was served first time', () => {
+    expect(aggregate([row(), row()], 'model', {}).failedAttempts).toEqual([]);
+  });
+
   it('keeps unpriced volume out of the total and counts it separately', () => {
     const report = aggregate([row(), row({ price: { source: 'none' } })], 'model', {});
     expect(report.pricedTotalUsd).toBe(0.5);
