@@ -1,4 +1,5 @@
 import { byokCandidateKey } from '../native/models.js';
+import { splitCandidate } from '../effort.js';
 import { reconcileTierList } from '../init/helpers.js';
 import type { CredentialSource } from '../config.js';
 import type { InitState } from './types.js';
@@ -286,21 +287,45 @@ export function acceptRemainingTiers(
    * different configs from identical state.
    */
   expand: (keys: string[]) => string[] = (keys) => keys,
+  /**
+   * Variants newly required by one saved tier. A legacy bare candidate expands
+   * only on the tier where it was saved; applying it to every later tier would
+   * make `A` select candidates the user never saw on those screens.
+   */
+  unpinned: (saved: string[] | undefined) => string[] = () => [],
 ): InitState {
   let next = state;
   for (let index = Math.max(0, fromIndex); index < roles.length * 2; index++) {
     const role = roles[Math.floor(index / 2)];
     if (role === undefined) continue;
     const tier = index % 2 === 0 ? 'simple' : 'complex';
+    const saved = next.tiers?.[role]?.[tier];
+    const tierAdded = unpinned(saved);
     next = applyStep(next, 4, {
       role,
       tier,
       ranked: seededRankingFor(
-        next.tiers?.[role]?.[tier], proposal[tier], expand(next.nativeKeys ?? []), expand(allNativeKeys), added,
+        withoutExpandedBareCandidates(saved, tierAdded),
+        proposal[tier],
+        expand(next.nativeKeys ?? []),
+        expand(allNativeKeys),
+        [...new Set([...added, ...tierAdded])],
       ),
     });
   }
   return next;
+}
+
+/** Remove legacy bare keys once the tier offers their scored effort variants. */
+export function withoutExpandedBareCandidates(
+  saved: string[] | undefined,
+  variants: readonly string[],
+): string[] | undefined {
+  const expandedKeys = new Set(variants.map((candidate) => splitCandidate(candidate).key));
+  return saved?.filter((candidate) => {
+    const { key, effort } = splitCandidate(candidate);
+    return effort !== undefined || !expandedKeys.has(key);
+  });
 }
 
 /**

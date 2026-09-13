@@ -15,6 +15,7 @@ import {
   initialRankedFor,
   acceptRemainingTiers,
   tierPickerKeys,
+  withoutExpandedBareCandidates,
   type AvailableCredentials,
   type CandidateOption,
   type ProviderOption,
@@ -268,15 +269,17 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         ? data.initialStateByScope?.[state.configScope]
         : undefined)?.nativeKeys ?? data.initialState?.nativeKeys ?? [];
       const saved = state.tiers?.[role]?.[tier];
+      const globalAddedKeys = expand(
+        (state.nativeKeys ?? []).filter((key) => !baselineNativeKeys.includes(key)),
+      );
+      const tierVariants = unpinnedVariants(saved, catalog, gateways);
+      // A legacy bare key has no valid row beside its effort variants. Drop it
+      // before seeding so confirming this screen cannot preserve an invalid key.
+      const savedForScreen = withoutExpandedBareCandidates(saved, tierVariants);
       // Deduplicated: `reconcileTierList` inserts every `added` entry it does
       // not already hold, so a level named twice would be inserted twice.
-      const addedKeys = [...new Set([
-        ...expand((state.nativeKeys ?? []).filter((key) => !baselineNativeKeys.includes(key))),
-        // A bare key saved before effort existed is about to be refused at
-        // load; re-propose its levels rather than let the screen drop it.
-        ...unpinnedVariants(saved, catalog, gateways),
-      ])];
-      const initialRanked = initialRankedFor(saved, proposal[tier], addedKeys);
+      const addedKeys = [...new Set([...globalAddedKeys, ...tierVariants])];
+      const initialRanked = initialRankedFor(savedForScreen, proposal[tier], addedKeys);
       const footer = catalog
         ? `rankings: Artificial Analysis (fetched ${catalog.fetchedAt}) — artificialanalysis.ai`
         : 'rankings: built-in defaults — refresh with sonata catalog update';
@@ -307,8 +310,9 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
                 // keys from the screens it stands in for, and the two paths are
                 // required to write a byte-identical config.
                 known.map((candidate) => candidate.key),
-                addedKeys,
+                globalAddedKeys,
                 expand,
+                (savedTier) => unpinnedVariants(savedTier, catalog, gateways),
               ));
               setStep(5);
             }
