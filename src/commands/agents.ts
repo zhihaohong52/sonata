@@ -27,6 +27,7 @@ import { splitCandidate, type Effort } from '../effort.js';
 export type Tier = 'simple' | 'complex';
 
 export interface AgentModelRow {
+  /** The candidate as ranked — `<key>` or `<key>@<effort>` — not a key into `[models]`. */
   key: string;
   effort?: Effort;
   /** How the router can reach it. `missing` means the key names no model. */
@@ -212,12 +213,26 @@ export function rankableKeys(config: SonataConfig): string[] {
 }
 
 /**
+ * A config key as the upstream id a catalog lookup needs.
+ *
+ * Tier lists hold config *keys* while the catalog is keyed by upstream *id*
+ * (the rule `cmdDoctor` already resolves by), and a key is only *usually*
+ * `<gateway>-<id>`: `[models."luna"]` with `id = "gpt-5.6-luna"` has no
+ * gateway prefix to strip, so normalizing the key itself finds nothing and
+ * this editor would offer no pin for a candidate `loadConfig` refuses.
+ */
+function upstreamOf(config: SonataConfig): (key: string) => string {
+  return (key) => config.unifiedModels[key]?.id ?? config.unifiedModels[key]?.harnessId ?? key;
+}
+
+/**
  * Every candidate the editor may rank: each rankable key, expanded into its
  * scored effort levels where the catalog has them. The same expansion the
  * wizard's tier screens apply, so the two editors offer the same rows.
  */
 export function rankableCandidates(config: SonataConfig, aa?: AaCatalog): string[] {
-  return expandCandidates(rankableKeys(config), aa, Object.keys(config.native?.gateways ?? {}));
+  return expandCandidates(
+    rankableKeys(config), aa, Object.keys(config.native?.gateways ?? {}), upstreamOf(config));
 }
 
 export function loadAgentsView(opts: AgentsOptions): { config: SonataConfig; rows: AgentRow[] } {
@@ -238,7 +253,7 @@ export interface AgentsIo {
 /** A ranking row's label: the key, what it resolves to, and its window. */
 export function itemLabel(config: SonataConfig, candidate: string, aa?: AaCatalog): string {
   const row = modelRow(config, candidate);
-  const scored = candidateLabel(candidate, aa, Object.keys(config.native?.gateways ?? {}));
+  const scored = candidateLabel(candidate, aa, Object.keys(config.native?.gateways ?? {}), upstreamOf(config));
   return row.route === 'missing'
     ? `${scored}  (names no model)`
     : `${scored.padEnd(50)} ${row.gateway}/${row.id}  ${windowLabel(row.contextWindow)}`;

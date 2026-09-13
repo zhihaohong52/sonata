@@ -10,6 +10,10 @@ import {
   unpinnedCandidates, assertEffortsPinned,
   type AaCatalog,
 } from '../src/catalog.js';
+import { plan, type CredentialProbe } from '../src/init/plan.js';
+import { rankableCandidates } from '../src/commands/agents.js';
+import { splitCandidate } from '../src/effort.js';
+import type { InitEnvironment } from '../src/init/discover.js';
 
 describe('normalizeModelName', () => {
   it('strips harness/provider prefixes and date suffixes', () => {
@@ -644,6 +648,92 @@ describe('unpinnedCandidates / assertEffortsPinned', () => {
     // `[models."codex-gpt-5.6-luna"]` with id `gpt-5.6-luna` is the same model.
     const config = parseConfig(PINNABLE.replace(/"luna"/g, '"codex-gpt-5.6-luna"').replace(/"luna@max"/, '"codex-gpt-5.6-luna@max"'));
     expect(unpinnedCandidates(config, FAMILY_AA).map((u) => u.key)).toEqual(['codex-gpt-5.6-luna']);
+  });
+});
+
+/**
+ * The invariant the two editors exist to satisfy: for anything
+ * `assertEffortsPinned` refuses, both a re-run of `sonata init` and
+ * `sonata agents` must produce a pin that clears it.
+ *
+ * This was violated by resolving the catalog family through two different
+ * names. The refusal resolves a candidate through its model's upstream *id*
+ * (the rule `cmdDoctor` follows), while expansion resolved through the config
+ * *key* — so for a hand-named key the two disagreed, the refusal fired, and no
+ * editor could offer the level that would clear it. `sonata init` re-wrote the
+ * same bare candidate and aborted in `loadConfig`; `sonata agents` could not
+ * even open, since it loads the config first. The only way out was hand-editing
+ * `sonata.toml`, which is what makes this a merge blocker rather than a wart.
+ *
+ * Asserted as a property of the refused set, not of `PINNABLE`: a fixture
+ * added later is covered without touching the assertion.
+ */
+describe('effort pinning — every editor can repair what loadConfig refuses', () => {
+  const noCredentials: CredentialProbe = {
+    hasKey: () => false,
+    hasOauthCredential: () => false,
+    autoSource: () => null,
+    copilotUsable: false,
+  };
+
+  const nativeCandidate = (key: string, gateway: string, id: string) => ({
+    key, gateway, id, contextWindow: 128000,
+    baseUrl: `https://${gateway}.example/v1`, auth: 'api-key' as const,
+  });
+
+  const pinned = (list: readonly string[], key: string): boolean => list.some((candidate) => {
+    const parts = splitCandidate(candidate);
+    return parts.key === key && parts.effort !== undefined;
+  });
+
+  it('offers a pin for every refused candidate, in plan() and in the agents editor', () => {
+    const config = parseConfig(PINNABLE);
+    const refused = unpinnedCandidates(config, FAMILY_AA);
+    // If the fixture ever stops being refusable this test would pass vacuously.
+    expect(refused.map((u) => [u.role, u.tier, u.key])).toEqual([['code', 'simple', 'luna']]);
+
+    // `plan` reads the catalog off disk, as `cmdInit` does.
+    const home = mkdtempSync(join(tmpdir(), 'sonata-pin-'));
+    const catalogPath = aaCatalogPath(home);
+    mkdirSync(dirname(catalogPath), { recursive: true });
+    writeFileSync(catalogPath, JSON.stringify(FAMILY_AA));
+
+    const env: InitEnvironment = {
+      cwd: '/repo',
+      home,
+      tmux: { installed: true, version: '3.4', problems: [] },
+      harnesses: [], problems: [], offered: [],
+      allNativeCandidates: [
+        nativeCandidate('luna', 'codex', 'gpt-5.6-luna'),
+        nativeCandidate('flash', 'deepseek', 'deepseek-v4-flash'),
+      ],
+      providerBaseUrls: {},
+      gatewayAuth: new Map(),
+      oauthProviders: new Map(), byokProviders: [], configsByScope: { project: config },
+      existingHookScope: undefined, copilotUsable: false,
+    };
+    // No `tiers` in state: the saved lists come from the config being repaired,
+    // which is what `sonata init` reads when it opens on a refused config.
+    const state = {
+      configScope: 'project' as const,
+      providerKeys: [],
+      nativeKeys: ['luna', 'flash'],
+      roles: ['code'],
+      hookScope: 'project' as const,
+      routing: 'project' as const,
+    };
+    const planned = plan(env, state, noCredentials, { cwd: '/repo', home, packageRoot: '/pkg' });
+    const emitted = parseConfig(planned.configToml).tiers!;
+
+    for (const { role, tier, key } of refused) {
+      expect(pinned(emitted[role]![tier], key)).toBe(true);
+      expect(pinned(rankableCandidates(config, FAMILY_AA), key)).toBe(true);
+    }
+    // The point of the pin: what `plan` emits loads. A pin that clears the
+    // message but not `loadConfig` would satisfy the two lines above and none
+    // of the invariant.
+    const emittedConfig = parseConfig(planned.configToml);
+    expect(() => assertEffortsPinned(emittedConfig, FAMILY_AA)).not.toThrow();
   });
 });
 

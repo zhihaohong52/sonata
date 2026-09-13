@@ -144,21 +144,33 @@ export function plan(
     : [];
   const catalog = loadAaCatalog(opts.home);
   const gatewayNames = gatewayNamesOf(nativeByKey);
-  const expand = (keys: string[]) => expandCandidates(keys, catalog, gatewayNames);
+  // A config key as the upstream id a catalog lookup needs. Tier lists hold
+  // config keys while the catalog is keyed by upstream id, and a key is only
+  // *usually* `<gateway>-<id>` — a hand-named key has no prefix to strip, so
+  // normalizing the key itself finds nothing. Without this the wizard re-writes
+  // the very bare candidate `loadConfig` refuses, which is exactly the state
+  // `sonata init` was being told to repair.
+  const upstreamFor = (key: string): string =>
+    nativeByKey.get(key)?.id
+    ?? configForScope?.unifiedModels?.[key]?.id
+    ?? configForScope?.unifiedModels?.[key]?.harnessId
+    ?? key;
+  const expand = (keys: string[]) => expandCandidates(keys, catalog, gatewayNames, upstreamFor);
   // Valid candidates are the expanded keys: a bare key for a model the
   // catalog scores by level is exactly what `loadConfig` refuses, so it must
   // not survive as "kept" here either.
   const validTierKeys = new Set(expand([...nativeKeys, ...Object.keys(migratedModels)]));
   const addedKeys = expand(nativeKeys.filter((key) => !savedNativeKeys.includes(key)));
   const tiers = Object.fromEntries(roles.map((role) => {
-    const proposal = proposeTiers(nativeKeys, catalog, gatewayNames, avoidedKeysOf(nativeByKey, avoidGateways));
+    const proposal = proposeTiers(
+      nativeKeys, catalog, gatewayNames, avoidedKeysOf(nativeByKey, avoidGateways), upstreamFor);
     const saved = state.tiers?.[role] ?? configForScope?.tiers?.[role];
     // A saved bare key with variants is re-proposed as its levels, at the
     // rank the proposal gives each — the same treatment as a new model.
     // Deduplicated, because `reconcileTierList` inserts each `added` entry
     // it does not already hold and would insert a repeated one twice.
     const added = (tier: 'simple' | 'complex') =>
-      [...new Set([...addedKeys, ...unpinnedVariants(saved?.[tier], catalog, gatewayNames)])];
+      [...new Set([...addedKeys, ...unpinnedVariants(saved?.[tier], catalog, gatewayNames, upstreamFor)])];
     return [role, {
       simple: reconcileTierList(saved?.simple, validTierKeys, proposal.simple, added('simple')),
       complex: reconcileTierList(saved?.complex, validTierKeys, proposal.complex, added('complex')),

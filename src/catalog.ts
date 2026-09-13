@@ -398,7 +398,27 @@ export function assertEffortsPinned(
   throw new Error(`sonata.toml: ${lines.join('\n')}\nRun \`sonata init\` to re-rank every tier with effort levels.`);
 }
 
-/** The AA row for a normalized name, trying each spelling it may be filed
+/**
+ * How a config *key* becomes the upstream *id* a catalog lookup needs.
+ *
+ * Tier lists hold config keys while the catalog is keyed by upstream id, and
+ * a key is only *usually* `<gateway>-<id>`: a hand-named key
+ * (`[models."luna"]` with `id = "gpt-5.6-luna"`) has no prefix to strip, so
+ * normalizing the key itself finds nothing. Every candidate-facing helper
+ * takes one, defaulting to identity — which is what leaves a catalog-less run
+ * and a caller that supplies no resolver behaving exactly as before.
+ */
+export type UpstreamFor = (key: string) => string;
+
+const identityUpstream: UpstreamFor = (key) => key;
+
+/** A key as the name the catalog is asked about. */
+function normalizedFor(key: string, providers: readonly string[], upstreamFor: UpstreamFor): string {
+  return normalizeModelName(upstreamFor(key), providers);
+}
+
+/**
+ * The AA row for a normalized name, trying each spelling it may be filed
  * under. With an effort, the family's row at that level — and nothing else:
  * a level on a model the catalog does not score by level is unscored, never
  * silently the bare row. */
@@ -430,9 +450,14 @@ const CURATED: Record<string, { capable: boolean; cheap: boolean }> = {
   'ox-alpha-free': { capable: false, cheap: true },
 };
 
-export function lookupModel(name: string, aa?: AaCatalog, providers: readonly string[] = []): CatalogEntry {
+export function lookupModel(
+  name: string,
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
+): CatalogEntry {
   const { key, effort } = splitCandidate(name);
-  const normalized = normalizeModelName(key, providers);
+  const normalized = normalizedFor(key, providers, upstreamFor);
   const scored = aaEntryFor(normalized, aa, effort);
   if (scored !== undefined) {
     return {
@@ -450,9 +475,14 @@ export function lookupModel(name: string, aa?: AaCatalog, providers: readonly st
 export interface TierProposal { simple: string[]; complex: string[] }
 
 /** The AA row behind a candidate (`key` or `key@effort`), joined through the match key. */
-function scoreFor(candidate: string, aa?: AaCatalog, providers: readonly string[] = []): AaEntry | undefined {
+function scoreFor(
+  candidate: string,
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
+): AaEntry | undefined {
   const { key, effort } = splitCandidate(candidate);
-  return aaEntryFor(normalizeModelName(key, providers), aa, effort);
+  return aaEntryFor(normalizedFor(key, providers, upstreamFor), aa, effort);
 }
 
 /**
@@ -466,17 +496,23 @@ export function expandCandidates(
   keys: readonly string[],
   aa?: AaCatalog,
   providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
 ): string[] {
   return keys.flatMap((candidate) => {
     const { key, effort } = splitCandidate(candidate);
     if (effort !== undefined) return [candidate];
-    const fam = catalogFamily(normalizeModelName(key, providers), aa);
+    const fam = catalogFamily(normalizedFor(key, providers, upstreamFor), aa);
     return fam === undefined ? [candidate] : [...fam.variants.keys()].map((level) => joinCandidate(key, level));
   });
 }
 
-export function hasEffortVariants(key: string, aa?: AaCatalog, providers: readonly string[] = []): boolean {
-  return expandCandidates([key], aa, providers).length > 1;
+export function hasEffortVariants(
+  key: string,
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
+): boolean {
+  return expandCandidates([key], aa, providers, upstreamFor).length > 1;
 }
 
 /**
@@ -493,11 +529,12 @@ export function unpinnedVariants(
   saved: readonly string[] | undefined,
   aa?: AaCatalog,
   providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
 ): string[] {
   return (saved ?? []).flatMap((candidate) => {
     const { effort } = splitCandidate(candidate);
     if (effort !== undefined) return [];
-    const expanded = expandCandidates([candidate], aa, providers);
+    const expanded = expandCandidates([candidate], aa, providers, upstreamFor);
     return expanded.length > 1 ? expanded : [];
   });
 }
@@ -508,10 +545,15 @@ export function unpinnedVariants(
  * that ordered them. Per-task cost where AA costed the model, else the
  * per-1M blend — labelled, because the two are different units.
  */
-export function candidateLabel(candidate: string, aa?: AaCatalog, providers: readonly string[] = []): string {
+export function candidateLabel(
+  candidate: string,
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
+): string {
   const { key, effort } = splitCandidate(candidate);
   const head = effort === undefined ? key : `${key} @${effort}`;
-  const entry = scoreFor(candidate, aa, providers);
+  const entry = scoreFor(candidate, aa, providers, upstreamFor);
   if (entry === undefined) return head;
   const cost = entry.costPerTask !== undefined
     ? `$${entry.costPerTask.toFixed(3)}/task`
@@ -548,8 +590,9 @@ function rank(
   key: string,
   aa?: AaCatalog,
   providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
 ): { index: number; price: number } {
-  const scored = scoreFor(key, aa, providers);
+  const scored = scoreFor(key, aa, providers, upstreamFor);
   return scored !== undefined
     ? { index: capabilityOf(scored), price: costOfEntry(scored) }
     : { index: AA_CAPABLE_CODING_INDEX, price: AA_CHEAP_BLENDED_PRICE_USD };
@@ -573,15 +616,16 @@ export function proposeTiers(
   aa?: AaCatalog,
   providers: readonly string[] = [],
   avoided: ReadonlySet<string> = new Set(),
+  upstreamFor: UpstreamFor = identityUpstream,
 ): TierProposal {
   // Rank over every scored level of every selected model. A model AA scores
   // at several efforts is several candidates here - luna@high and luna@max
   // are different capability/cost points, and which one a tier wants is the
   // whole question. Identity without families, so a catalog-less run (and
   // every existing caller) sees exactly the keys it passed.
-  const candidates = expandCandidates(modelKeys, aa, providers);
+  const candidates = expandCandidates(modelKeys, aa, providers, upstreamFor);
   const bareKey = (candidate: string): string => splitCandidate(candidate).key;
-  const rankOf = (k: string) => rank(k, aa, providers);
+  const rankOf = (k: string) => rank(k, aa, providers, upstreamFor);
   // An avoided model sorts after every non-avoided one, whatever it scores.
   // Demotion, not exclusion: the tier keeps it as a fallback candidate, so
   // avoiding a gateway costs preference rather than the depth a ranked list
@@ -602,7 +646,7 @@ export function proposeTiers(
     return avoidance(a, b) || valueOf(rb) - valueOf(ra) || rb.index - ra.index;
   };
 
-  const complex = candidates.filter((k) => lookupModel(k, aa, providers).capable).sort(byCapability);
+  const complex = candidates.filter((k) => lookupModel(k, aa, providers, upstreamFor).capable).sort(byCapability);
   // The floor is relative to the best model actually selected, so it adapts to
   // the user's own set rather than to an absolute score that is wrong whenever
   // their selection is uniformly strong or uniformly modest.
@@ -631,8 +675,8 @@ export function proposeTiers(
   // rate when AA has not costed a model, and the two are different units by
   // two orders of magnitude — a ratio that mixes them would read an uncosted
   // model as ~30x dearer than it is and refuse it on a unit error.
-  const perTask = (k: string) => scoreFor(k, aa, providers)?.costPerTask;
-  const eligible = (k: string): boolean => lookupModel(k, aa, providers).capable
+  const perTask = (k: string) => scoreFor(k, aa, providers, upstreamFor)?.costPerTask;
+  const eligible = (k: string): boolean => lookupModel(k, aa, providers, upstreamFor).capable
     && rankOf(k).index >= best * SIMPLE_CAPABILITY_FLOOR;
   const costs = leaders
     .filter(eligible)
@@ -645,7 +689,7 @@ export function proposeTiers(
   // change has no better information about.
   const isCheap = (k: string): boolean => {
     const cost = perTask(k);
-    if (cost === undefined || ceiling === undefined) return lookupModel(k, aa, providers).cheap;
+    if (cost === undefined || ceiling === undefined) return lookupModel(k, aa, providers, upstreamFor).cheap;
     return cost <= ceiling;
   };
   // Same `eligible` the ceiling is measured over, so who sets the bar and who

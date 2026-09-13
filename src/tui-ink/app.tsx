@@ -289,8 +289,15 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const avoided = new Set(
         known.filter((c) => avoid.has(c.gateway)).map((c) => c.key),
       );
-      const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways, avoided);
-      const expand = (keys: string[]) => expandCandidates(keys, catalog, gateways);
+      // A config key as the upstream id a catalog lookup needs. Tier lists
+      // hold config keys while the catalog is keyed by upstream id, and a key
+      // is only *usually* `<gateway>-<id>` — a hand-named key has no prefix to
+      // strip, so normalizing the key itself finds nothing and this screen
+      // would offer no pin for a candidate `loadConfig` refuses.
+      const idsByKey = new Map(known.map((candidate) => [candidate.key, candidate.id]));
+      const upstreamFor = (key: string): string => idsByKey.get(key) ?? key;
+      const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways, avoided, upstreamFor);
+      const expand = (keys: string[]) => expandCandidates(keys, catalog, gateways, upstreamFor);
       // A model native-selected this run that no prior run ever ranked for
       // this role/tier — the baseline is the wizard's own starting state for
       // the active scope, not `state` itself, which has already picked up
@@ -302,7 +309,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const globalAddedKeys = expand(
         (state.nativeKeys ?? []).filter((key) => !baselineNativeKeys.includes(key)),
       );
-      const tierVariants = unpinnedVariants(saved, catalog, gateways);
+      const tierVariants = unpinnedVariants(saved, catalog, gateways, upstreamFor);
       // A legacy bare key has no valid row beside its effort variants. Drop it
       // before seeding so confirming this screen cannot preserve an invalid key.
       const savedForScreen = withoutExpandedBareCandidates(saved, tierVariants);
@@ -317,7 +324,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         key={`${role}-${tier}`}
         title={`${role}: ${tier} models`}
         items={tierPickerKeys(expand(state.nativeKeys ?? []), initialRanked, expand(known.map((candidate) => candidate.key)))
-          .map((candidate) => ({ value: candidate, label: candidateLabel(candidate, catalog, gateways) }))}
+          .map((candidate) => ({ value: candidate, label: candidateLabel(candidate, catalog, gateways, upstreamFor) }))}
         initialRanked={initialRanked}
         footer={footer}
         onSubmit={(ranked) => {
@@ -342,7 +349,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
                 known.map((candidate) => candidate.key),
                 globalAddedKeys,
                 expand,
-                (savedTier) => unpinnedVariants(savedTier, catalog, gateways),
+                (savedTier) => unpinnedVariants(savedTier, catalog, gateways, upstreamFor),
               ));
               setStep(5);
             }
