@@ -201,6 +201,38 @@ or less reasoning. Two follow-ups complete it, both named in the spec:
    belongs here too — accepting the grammar while ignoring the level is
    exactly the silent mismatch the load-time refusal exists to prevent.
 
+**Three known gaps in the effort-tier work, recorded rather than fixed.**
+
+1. **The upstream-id resolver's *scoring* half is untested.** `upstreamFor` is
+   threaded through `expandCandidates` *and* through `proposeTiers`'
+   `rankOf`/`eligible`/`isCheap`, so expansion and ranking always resolve the
+   same name — but only the expansion half is asserted. Reverting
+   `proposeTiers`' fifth argument alone leaves the suite green at 1933:
+   `reconcileTierList` appends the pins at `rankOf === Infinity` instead of
+   interleaving them, so every assertion still passes and the only difference
+   is a tier ordered by the mid-score fallback. The masked failure is a
+   mis-*ordering*, not a refusal that cannot be cleared, which is why this is
+   recorded rather than blocking. Ten lines close it permanently: assert
+   `proposeTiers(['luna','flash'], FAMILY_AA, ['codex','deepseek'], new Set(),
+   upstreamFor)` places `luna@low` ahead of `luna@max` in `simple`.
+
+2. **The wizard's tier screen cannot offer a pin for a harness-only key.** A
+   `[models."k3"] harness = "opencode"` entry with no `gateway` never enters
+   the wizard's candidate set, so `app.tsx`'s resolver falls back to the key
+   and the screen shows only the bare row. The refusal *does* fire for that
+   shape (`unpinnedCandidates` reaches `harnessId`), and both `src/init/plan.ts`
+   and `rankableCandidates` write the pin, so such a config is still
+   repairable — the screen is simply narrower than the writer.
+
+3. **Resolving through the id is a silent ranking change for a key that spells
+   one model and points at another.** An Azure-style deployment
+   (`[models."gpt-5.6-luna"]` with `id = "my-gpt5-deployment"`) now scores from
+   the curated/default table where it previously matched AA on its key. That is
+   the intended direction — it is what the refusal and `sonata doctor` already
+   treated as truth, and the ordinary case (`flash` for
+   `deepseek-v4-flash-0731`) gets better — but it is untested and worth knowing
+   before someone reports a tier that reordered itself.
+
 **`sonata init` never proposes `pricing_provider`, so a fresh config reports
 every request unpriced.** `nativeTomlFor` *preserves* the key on rewrite —
 that was itself a fix, since a rewrite used to un-price a gateway outright —
