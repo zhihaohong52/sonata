@@ -29,6 +29,7 @@ import { litellmRequired } from '../native/providers.js';
 import { litellmStatus, type InstallerDeps } from '../native/litellm-venv.js';
 import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm.js';
 import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, loadAaCatalog } from '../catalog.js';
+import { proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
 import { keyReport, resolveKeyFromSource } from '../native/credentials.js';
@@ -398,6 +399,37 @@ export async function cmdDoctor(
       });
       if (advice !== undefined) checks.push({ name: 'extended context', ok: true, detail: advice });
     }
+  }
+
+  // A gateway with no `pricing_provider` reports every request unpriced:
+  // `resolvePrice` returns `source: 'none'` at its `provider === undefined`
+  // guard, before models.dev is consulted at all. Two consequences that are
+  // not visible from the outside, which is why this is said outright rather
+  // than left to be noticed — `[budget] daily_usd` bounds priced spend, so it
+  // caps $0 forever and its only symptom is a refusal that never comes; and an
+  // OAuth gateway never reaches `relabelCovered`, so subscription work reads
+  // `unpriced` instead of `covered`.
+  //
+  // `ok: true` because an unpriced gateway routes perfectly well. This costs
+  // observability and a budget cap, not the ability to run.
+  const gatewayEntries = Object.entries(config.native?.gateways ?? {});
+  const unpricedGateways = gatewayEntries.filter(
+    ([, gw]) => gw.pricingProvider === undefined || gw.pricingProvider.length === 0,
+  );
+  if (unpricedGateways.length > 0) {
+    const named = unpricedGateways.slice(0, 3).map(([name, gw]) => {
+      const proposal = proposePricingProvider(name, gw.auth);
+      // Naming the exact line is the point: a user told only that a gateway is
+      // unpriced has to go and find what the key is called and what it takes.
+      return proposal === undefined ? name : `${name} (pricing_provider = ["${proposal[0]}"])`;
+    });
+    checks.push({
+      name: 'gateway pricing',
+      ok: true,
+      detail: `${unpricedGateways.length} of ${gatewayEntries.length} gateway(s) price nothing — `
+        + `${named.join(', ')}${unpricedGateways.length > 3 ? ', …' : ''}`
+        + '; `sonata usage` reports their volume unpriced and `[budget] daily_usd` does not bound it',
+    });
   }
 
   // `sonata init` run in $HOME used to write here, and nothing reads it. It

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ModelsDevCache } from '../src/modelsdev.js';
 import { parseConfig } from '../src/config.js';
-import { costOf, inWindow, ratesFor, resolvePrice } from '../src/pricing.js';
+import { costOf, inWindow, ratesFor, resolvePrice, proposePricingProvider, MODELSDEV_PROVIDER_FOR_GATEWAY } from '../src/pricing.js';
 
 const at = (iso: string) => new Date(iso);
 const WRAP = { from: '16:30', to: '00:30', input: 0.11, output: 0.33 };
@@ -487,5 +487,60 @@ pricing_provider = ["deepseek"]
     expect(resolvePrice(config, 'newish', tokens, now, cacheWith({
       openrouter: { 'deepseek/deepseek-v4.1-flash': { input: 0.15 } },
     }))).toEqual({ source: 'none' });
+  });
+});
+
+// Issue #31: nothing ever originated a `pricing_provider`, so a fresh config
+// priced nothing at all.
+describe('proposePricingProvider', () => {
+  it('maps a gateway named after its provider', () => {
+    expect(proposePricingProvider('deepseek', 'api-key')).toEqual(['deepseek']);
+    expect(proposePricingProvider('openrouter', 'api-key')).toEqual(['openrouter']);
+  });
+
+  // The trap that keeps this table separate from PROVIDER_FOR_GATEWAY.
+  it('uses the models.dev id for Gemini, which is `google` and not LiteLLM\'s `gemini`', () => {
+    expect(proposePricingProvider('google', 'api-key')).toEqual(['google']);
+    expect(Object.values(MODELSDEV_PROVIDER_FOR_GATEWAY)).not.toContain('gemini');
+  });
+
+  it('derives the provider from auth, which outranks the gateway name', () => {
+    // A gateway called `codex` serves OpenAI models; the name alone would be
+    // right here by luck, so the case that proves the precedence is a gateway
+    // whose name maps somewhere else entirely.
+    expect(proposePricingProvider('codex', 'codex-oauth')).toEqual(['openai']);
+    expect(proposePricingProvider('deepseek', 'codex-oauth')).toEqual(['openai']);
+    expect(proposePricingProvider('anything', 'copilot-oauth')).toEqual(['github-copilot']);
+  });
+
+  it('declines to guess for a gateway it does not recognise', () => {
+    expect(proposePricingProvider('my-private-proxy', 'api-key')).toBeUndefined();
+    expect(proposePricingProvider('', undefined)).toBeUndefined();
+  });
+
+  it('proposes a provider that resolvePrice can actually use', () => {
+    // The whole point of the mapping is to unblock `resolvePrice`, whose
+    // `provider === undefined` guard returns `none` before models.dev is read.
+    const config = parseConfig([
+      'schema_version = 1',
+      '[native.gateways."deepseek"]',
+      'base_url = "https://api.deepseek.com/v1"',
+      `pricing_provider = ["${proposePricingProvider('deepseek', 'api-key')![0]}"]`,
+      '[models."m"]',
+      'gateway = "deepseek"',
+      'id = "deepseek-chat"',
+      'context_window = 128000',
+    ].join('\n'));
+    const cache = {
+      fetchedAt: '2026-09-14T00:00:00.000Z',
+      providers: { deepseek: { 'deepseek-chat': { input: 1, output: 2 } } },
+    };
+    const price = resolvePrice(
+      config, 'm',
+      { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheCreation: 0 },
+      new Date('2026-09-14T00:00:00.000Z'), cache,
+    );
+    expect(price.source).toBe('models-dev');
+    expect(price.totalUsd).toBe(3);
   });
 });

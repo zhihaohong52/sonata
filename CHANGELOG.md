@@ -27,6 +27,37 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   so. The pinned level is not yet sent upstream — that lands with the router
   and adapter follow-ups.
 
+### Fixed
+- **`sonata init` no longer corrupts a `CLAUDE.md` that documents the marker
+  contract** (#29). Markers were counted wherever they appeared, so a file
+  merely *quoting* `<!-- sonata:begin -->` and `<!-- sonata:end -->` in prose
+  looked like a well-formed pair and the managed block was spliced into the
+  middle of the sentence joining them. A marker now counts only when it stands
+  alone on its line; a file that only quotes them has no block and is appended
+  to cleanly. This repository's own `CLAUDE.md` was the file it ate.
+- **A multi-turn tier agent no longer dies when its candidate changes** (#30).
+  Ranked fallback picks a candidate per request, so a conversation carrying one
+  model's extended-thinking blocks could be handed to another, which rejects
+  the whole transcript (`The content[].thinking in the thinking mode must be
+  passed back to the API`). The router now remembers which candidate served a
+  conversation and tries it first — a preference, not a pin, so cooldowns still
+  apply — and drops the previous model's thinking blocks when a conversation
+  does change hands, on both the litellm and direct transports.
+- **`sonata usage` reports candidates a request fell past.** The ledger has
+  always recorded them in each row's `attempts` and nothing read them, so a
+  candidate that failed every time it was reached appeared in no breakdown at
+  all while being very visible as dead subagents.
+- **A new gateway is born with a `pricing_provider`** (#31), from a
+  models.dev provider table verified against the live feed, or from the
+  gateway's `auth` (which outranks its name, since a `codex` gateway serves
+  OpenAI models). Without one, `resolvePrice` returned `source: 'none'` before
+  models.dev was consulted at all — so a fresh config reported every request
+  unpriced, `[budget] daily_usd` bounded $0 forever, and an OAuth gateway never
+  reached `relabelCovered` and read as unpriced rather than covered. Only a
+  gateway sonata is writing for the *first* time gets a proposal, so deleting
+  the key declines it permanently. `sonata doctor` names each gateway that
+  prices nothing, and the exact line that would fix it.
+
 ## [0.8.3] - 2026-09-12
 
 ### Added

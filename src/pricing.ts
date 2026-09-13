@@ -102,6 +102,100 @@ function relabelCovered(auth: NativeGatewayAuth | undefined, price: LedgerPrice)
 export const PRICE_FALLBACK_PROVIDER = 'openrouter';
 
 /**
+ * Which models.dev provider serves a gateway of this name.
+ *
+ * This is NOT `PROVIDER_FOR_GATEWAY` (`src/native/providers.ts`) and must not
+ * be folded into it. That table names *LiteLLM* provider prefixes, which pick
+ * a wire format; this one names *models.dev* provider ids, which pick a price
+ * table. The namespaces overlap enough to look interchangeable and are not:
+ * LiteLLM wants `gemini` where models.dev files `google`, so sharing one table
+ * would produce a lookup that silently returns no rate — the failure mode
+ * hardest to notice, since an unpriced row looks exactly like a model nobody
+ * has published a price for.
+ *
+ * Every id here was checked against a real models.dev feed. A gateway whose id
+ * could not be confirmed is deliberately absent rather than guessed: an absent
+ * entry costs a `pricing_provider` line the user types themselves, while a
+ * wrong one prices real spend against the wrong provider's rates — and one
+ * model spans an 8x range across serving providers.
+ *
+ * A name alone is only ever a *proposal*. It says nothing about markup: these
+ * rates are right for a gateway reselling at the lab's list rate, which is the
+ * same assumption `pricing_provider` already carries wherever it is set by hand.
+ */
+export const MODELSDEV_PROVIDER_FOR_GATEWAY: Record<string, string> = {
+  openai: 'openai',
+  'openai-codex': 'openai',
+  codex: 'openai',
+  anthropic: 'anthropic',
+  deepseek: 'deepseek',
+  // models.dev files Gemini under `google`; LiteLLM calls the same provider
+  // `gemini`. This line is the whole reason the two tables stay separate.
+  google: 'google',
+  mistral: 'mistral',
+  xai: 'xai',
+  openrouter: 'openrouter',
+  groq: 'groq',
+  together: 'togetherai',
+  together_ai: 'togetherai',
+  fireworks: 'fireworks-ai',
+  fireworks_ai: 'fireworks-ai',
+  cerebras: 'cerebras',
+  deepinfra: 'deepinfra',
+  'deep-infra': 'deepinfra',
+  nebius: 'nebius',
+  perplexity: 'perplexity',
+  novita: 'novita-ai',
+  'github-copilot': 'github-copilot',
+  opencode: 'opencode',
+  'opencode-go': 'opencode-go',
+  azure: 'azure',
+  huggingface: 'huggingface',
+  moonshotai: 'moonshotai',
+  zai: 'zai',
+  minimax: 'minimax',
+  nvidia: 'nvidia',
+  nvidia_nim: 'nvidia',
+  vercel: 'vercel',
+  siliconflow: 'siliconflow',
+  modelscope: 'modelscope',
+  baseten: 'baseten',
+  chutes: 'chutes',
+  venice: 'venice',
+  upstage: 'upstage',
+  cohere: 'cohere',
+};
+
+/** What an OAuth credential proves about whose models a gateway serves. */
+const MODELSDEV_PROVIDER_FOR_AUTH: Record<string, string> = {
+  'codex-oauth': 'openai',
+  'copilot-oauth': 'github-copilot',
+};
+
+/**
+ * A `pricing_provider` proposal for a gateway, or `undefined` when sonata
+ * cannot say.
+ *
+ * Auth is consulted **before** the name, because the name is the less reliable
+ * of the two: a gateway called `codex` serves OpenAI models, and a user is
+ * free to name a gateway anything at all, while an OAuth credential can only
+ * ever reach the backend that issued it.
+ *
+ * `undefined` is a real answer, and the common one for a custom gateway. A
+ * caller must leave the key out rather than substitute a default — an
+ * unpriced row states that sonata does not know, which is the truth, whereas a
+ * wrong provider states a number that is wrong by its own markup.
+ */
+export function proposePricingProvider(
+  gateway: string,
+  auth: NativeGatewayAuth | undefined,
+): string[] | undefined {
+  const byAuth = auth === undefined ? undefined : MODELSDEV_PROVIDER_FOR_AUTH[auth];
+  const provider = byAuth ?? MODELSDEV_PROVIDER_FOR_GATEWAY[gateway];
+  return provider === undefined ? undefined : [provider];
+}
+
+/**
  * Match a bare model id against a provider that vendor-qualifies its keys.
  *
  * A sonata config carries the upstream id its gateway serves (`

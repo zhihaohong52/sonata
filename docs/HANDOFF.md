@@ -225,24 +225,20 @@ or less reasoning. Two follow-ups complete it, both named in the spec:
    `deepseek-v4-flash-0731`) gets better — but it is untested and worth knowing
    before someone reports a tier that reordered itself.
 
-**`sonata init` never proposes `pricing_provider`, so a fresh config reports
-every request unpriced.** `nativeTomlFor` *preserves* the key on rewrite —
-that was itself a fix, since a rewrite used to un-price a gateway outright —
-but nothing has ever originated one, and `resolvePrice` returns
-`source: 'none'` at its `provider === undefined` guard before models.dev is
-consulted at all. The cost is larger than a missing report: unpriced volume is
-excluded from `[budget] daily_usd`, so a cap silently bounds nothing, and an
-OAuth gateway never reaches `relabelCovered` either, so subscription work is
-reported as unpriced rather than `covered`. Most of the knowledge already
-exists — `PROVIDER_FOR_GATEWAY` (`src/native/providers.ts`) knows a gateway
-named `deepseek` is DeepSeek. Two things stop it being a one-liner, and both
-need settling before anyone implements it: that table names **LiteLLM provider
-prefixes**, not **models.dev provider ids** (LiteLLM wants `gemini` where
-models.dev files `google`), so reusing it directly would produce lookups that
-silently miss; and a gateway's *name* is not always enough — a `codex` gateway
-serves OpenAI models, and the right answer comes from its `auth`. Init should
-*propose* the result, not assert it: this is pricing, where a plausible wrong
-value is worse than an error.
+**`sonata init` now originates a `pricing_provider` for a gateway it writes
+for the first time** (#31, fixed). Before this, nothing ever originated one and
+`resolvePrice` returned `source: 'none'` at its `provider === undefined` guard
+before models.dev was consulted — so a fresh config priced nothing, `[budget]
+daily_usd` bounded $0 forever, and an OAuth gateway never reached
+`relabelCovered`, reading as unpriced rather than `covered`. Two things worth
+keeping in mind now that it exists: `MODELSDEV_PROVIDER_FOR_GATEWAY`
+(`src/pricing.ts`) is a **separate table** from `PROVIDER_FOR_GATEWAY`
+(`src/native/providers.ts`) and merging them would be a silent regression —
+the first names models.dev ids, the second LiteLLM prefixes, and they disagree
+on Gemini (`google` vs `gemini`); and the proposal fires **only for a gateway
+absent from the config being rewritten**, which is what makes deleting the key
+a permanent decline. Add a mapping only after checking the id against a real
+models.dev feed.
 
 **One asymmetry is known and deliberately left in place.** The init tier
 *screen* widens a scope's rankable gateway names with the selected candidates'
@@ -411,20 +407,26 @@ is worth more than a clean document.
 - **Give a scratch `serve` a scratch `HOME`.** One started with the real HOME
   overwrites the live serve state and deletes it on stop, after which `sonata
   restart` refuses.
-- **A native tier agent that takes more than one turn can be moved to a
-  different model between requests, and die on the thinking blocks the first
-  one left behind.** The router picks a ranked candidate **per request**, so a
-  conversation whose earlier requests were served by one model — carrying that
-  model's extended-thinking blocks in its history — can have a later request
-  fall through to a candidate that rejects them: `400 — The
-  content[].thinking in the thinking mode must be passed back to the API`.
-  Observed twice on 2026-09-13, resuming a `sonata-code-simple` agent and a
-  fresh `sonata-review-simple` dispatch, both landing on
-  `deepseek-deepseek-flash` after `gpt-5.6-luna` had served the earlier
-  requests. The documented safety argument for tier fallback — retries happen
-  only before the first byte of a single request — does not extend to a
-  multi-turn conversation already committed to one model's extended-thinking
-  format. Not fixed, and no issue filed yet.
+- **A conversation now keeps the candidate that served it** (#30, fixed). The
+  router used to pick a ranked candidate **per request**, so a conversation
+  whose earlier requests were served by one model — carrying that model's
+  extended-thinking blocks in its history — could fall through to a candidate
+  that rejects them: `400 — The content[].thinking in the thinking mode must
+  be passed back to the API`. Observed twice on 2026-09-13, both landing on
+  `deepseek-deepseek-flash` after `gpt-5.6-luna` had served the earlier turns.
+  `conversationKey` + `stripForeignThinking` (`src/native/router.ts`) fix it:
+  the serving candidate is preferred on later turns, and a switch drops the
+  previous model's thinking blocks rather than forwarding them. **The residual
+  risk to know about** is that stickiness is keyed on a hash of the first
+  message, so two agents opening with byte-identical text share a pin — which
+  costs only a shared preference, never correctness, since the strip covers
+  any switch either way.
+- **`sonata usage` now reports candidates a request fell past.** The ledger had
+  always recorded them in each row's `attempts` and nothing read them, which is
+  why the original report of the bug above found no trace of the failing model
+  and wrongly concluded the router had not recorded it. It had. If you are
+  chasing a dead subagent, read the `fell past` line before concluding the
+  router never saw the request.
 
 ### Git, PRs and review
 
