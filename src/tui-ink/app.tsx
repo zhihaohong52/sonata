@@ -54,6 +54,19 @@ export interface WizardData {
   gatewayBaseUrls?: Record<string, string>;
   /** Gateways the config asks to rank last; see SonataConfig.avoidGateways. */
   avoidGateways?: string[];
+  /**
+   * The gateway names the config on disk declares, by scope — the keys of its
+   * `[native.gateways]` table.
+   *
+   * A tier screen recovers a model's upstream id from a key by stripping a
+   * configured gateway prefix, and a saved key can name a gateway no candidate
+   * in this session belongs to (the harness that used to discover it is gone,
+   * or this run never offered it). `sonata agents` reads this same table, so a
+   * name missing here is exactly what makes the two writers of a tier list
+   * offer different rows for one config. By scope, not resolved here, because
+   * the scope answer is re-read when the user walks back to it.
+   */
+  declaredGatewayNames?: Partial<Record<'project' | 'global', string[]>>;
   /** Injected so tests never reach the network. */
   fetchModels?: typeof defaultFetchModels;
   initialState?: InitState;
@@ -252,7 +265,24 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const known = knownCandidates(data.candidates, state);
       // Gateway names come from the candidate set: a model key is
       // `<gateway>-<id>`, and without them the id cannot be recovered.
-      const gateways = [...new Set(known.map((candidate) => candidate.gateway))];
+      //
+      // Unioned with the names the config declares for the scope being edited,
+      // because a saved key can outlive the candidate that explained it — the
+      // harness that discovered the gateway is uninstalled, or this run simply
+      // never offered it. Then no candidate yields its name, the id is never
+      // recovered, and a model AA scores at several efforts loses every variant
+      // but the bare key. `sonata agents` expands the same key through
+      // `[native.gateways]`, so a name missing here is what makes the wizard
+      // and the editor offer different rows for one config. The union can only
+      // add a name, so nothing the candidate set already normalized is
+      // withdrawn — a candidate-derived name always keeps its place.
+      const declaredGatewayNames = state.configScope !== undefined
+        ? data.declaredGatewayNames?.[state.configScope] ?? []
+        : [];
+      const gateways = [...new Set([
+        ...known.map((candidate) => candidate.gateway),
+        ...declaredGatewayNames,
+      ])];
       // Resolved from the candidate set, not by matching key prefixes: a key
       // only looks like `<gateway>-<id>`.
       const avoid = new Set(data.avoidGateways ?? []);

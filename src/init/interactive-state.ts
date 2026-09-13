@@ -57,6 +57,16 @@ export async function interactiveState(
   for (const scope of ['project', 'global'] as const) {
     if (env.configsByScope[scope]) initialStateByScope[scope] = deriveInitState(env.configsByScope[scope]!, scope, env.offered);
   }
+  // The gateway names each scope's config declares. Kept beside the state
+  // derived from the same config, and read from `[native.gateways]` — the
+  // expression `rankableCandidates` (`sonata agents`) uses, so the two writers
+  // of a tier list cannot name a key differently. A config whose gateway no
+  // harness discovers anymore has no candidate to supply the name, and its
+  // models are the ones that would otherwise lose their effort variants.
+  const declaredGatewayNamesByScope: Partial<Record<ConfigScope, string[]>> = {};
+  for (const scope of ['project', 'global'] as const) {
+    declaredGatewayNamesByScope[scope] = Object.keys(env.configsByScope[scope]?.native?.gateways ?? {});
+  }
 
   const codexCredential = readChatGptOAuth(opts.home, 'codex');
   const opencodeCredential = readOpencodeChatGptOAuth(opts.home);
@@ -96,6 +106,7 @@ export async function interactiveState(
     gatewayAuth: Object.fromEntries(env.gatewayAuth),
     gatewayBaseUrls: env.providerBaseUrls,
     avoidGateways: env.configsByScope[resolvedScope]?.avoidGateways ?? [],
+    declaredGatewayNames: declaredGatewayNamesByScope,
     initialState,
     initialStateByScope,
   };
