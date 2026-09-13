@@ -1118,3 +1118,86 @@ base_url = "https://gateway.example/v1"
     expect(check?.detail).toContain('install uv');
   });
 });
+
+// CodeRabbit on #32: `pricing_provider` is the THIRD thing `resolvePrice`
+// consults (model rates, then gateway rates, then the provider), so a gateway
+// priced by hand needs none — and reporting it as pricing nothing is a false
+// statement about the user's own config.
+describe('cmdDoctor — gateway pricing', () => {
+  let cwd: string;
+  let home: string;
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-doctor-price-'));
+    home = mkdtempSync(join(tmpdir(), 'sonata-doctor-price-home-'));
+  });
+
+  const pricingCheck = async (toml: string) => {
+    writeFileSync(join(cwd, 'sonata.toml'), toml);
+    return (await cmdDoctor({ cwd, home })).checks.find((c) => c.name === 'gateway pricing');
+  };
+
+  const config = (gatewayExtra: string, modelExtra = '') => `
+schema_version = 1
+[native.gateways."acme"]
+base_url = "https://acme.example/v1"
+${gatewayExtra}
+[models."m"]
+gateway = "acme"
+id = "model-x"
+context_window = 128000
+${modelExtra}
+`;
+
+  it('names a gateway with no pricing of any kind', async () => {
+    const check = await pricingCheck(config(''));
+    expect(check).toBeDefined();
+    expect(check!.detail).toContain('acme');
+  });
+
+  it('stays silent for a gateway priced by a gateway [price] block', async () => {
+    expect(await pricingCheck(config('[native.gateways."acme".price]\ninput = 1.0\noutput = 2.0'))).toBeUndefined();
+  });
+
+  it('stays silent for a gateway whose every model is priced by hand', async () => {
+    expect(await pricingCheck(config('', '[models."m".price]\ninput = 1.0\noutput = 2.0'))).toBeUndefined();
+  });
+
+  it('still names a gateway where only SOME models are hand-priced', async () => {
+    const toml = `
+schema_version = 1
+[native.gateways."acme"]
+base_url = "https://acme.example/v1"
+[models."priced"]
+gateway = "acme"
+id = "model-x"
+context_window = 128000
+[models."priced".price]
+input = 1.0
+output = 2.0
+[models."bare"]
+gateway = "acme"
+id = "model-y"
+context_window = 128000
+`;
+    const check = await pricingCheck(toml);
+    expect(check).toBeDefined();
+    expect(check!.detail).toContain('acme');
+  });
+
+  it('stays silent for a gateway that declares pricing_provider', async () => {
+    expect(await pricingCheck(config('pricing_provider = ["openai"]'))).toBeUndefined();
+  });
+
+  it('says nothing about a gateway serving no models, which cannot spend', async () => {
+    const toml = `
+schema_version = 1
+[native.gateways."unused"]
+base_url = "https://unused.example/v1"
+[models."m"]
+harness = "codex"
+id = "gpt-5.6-sol"
+`;
+    expect(await pricingCheck(toml)).toBeUndefined();
+  });
+});
+

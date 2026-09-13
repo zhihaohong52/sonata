@@ -60,12 +60,32 @@ export function guidanceBlock(): string {
   ].join('\n');
 }
 
-function countOccurrences(haystack: string, needle: string): number {
-  let count = 0;
-  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + needle.length)) {
-    count += 1;
+/**
+ * Every offset at which `marker` occupies a line of its own.
+ *
+ * A marker is a container only when it stands alone. Quoted inside a sentence
+ * it is a *citation* — which is exactly how this repository's own `CLAUDE.md`
+ * documents the contract, and counting those made the one file that explains
+ * the markers the one file the writer ate: the prose mentions each marker
+ * once, so the pair looked well-formed and the block was spliced into the
+ * middle of the sentence joining them.
+ *
+ * Matching the trimmed line keeps an indented marker usable (a block nested in
+ * a list still delimits), while the offsets returned are the marker's own, so
+ * any leading whitespace stays outside the span and is preserved byte-for-byte
+ * like every other byte the markers do not enclose.
+ */
+function standaloneMarkers(existing: string, marker: string): number[] {
+  const found: number[] = [];
+  for (let at = existing.indexOf(marker); at !== -1; at = existing.indexOf(marker, at + marker.length)) {
+    // `lastIndexOf('\n', -1)` is -1 for a marker at offset 0, which lands the
+    // line start on 0 — the same answer the general case gives.
+    const lineStart = existing.lastIndexOf('\n', at - 1) + 1;
+    const newline = existing.indexOf('\n', at);
+    const lineEnd = newline === -1 ? existing.length : newline;
+    if (existing.slice(lineStart, lineEnd).trim() === marker) found.push(at);
   }
-  return count;
+  return found;
 }
 
 /**
@@ -76,37 +96,47 @@ function countOccurrences(haystack: string, needle: string): number {
  * repaired, for the reason the markers exist at all: each available repair —
  * inventing an end, reading a stray marker as prose, rewriting the first of
  * two blocks — can eat a paragraph the user wrote.
+ *
+ * Only a marker standing alone on its line counts. A file that merely *quotes*
+ * the markers therefore has no block, which is the "not installed yet" state
+ * and appends cleanly — rather than being read as a block spanning the prose
+ * between them, which is what corrupted this repository's own `CLAUDE.md`.
  */
 export function locateGuidance(existing: string): { begin: number; end: number } | undefined {
-  const begins = countOccurrences(existing, GUIDANCE_BEGIN);
-  const ends = countOccurrences(existing, GUIDANCE_END);
+  const begins = standaloneMarkers(existing, GUIDANCE_BEGIN);
+  const ends = standaloneMarkers(existing, GUIDANCE_END);
 
   // Repeated markers are refused before any splice is attempted. `indexOf`
   // alone would span from the *first* begin to the *first* end, and in a file
   // shaped begin/…/begin/…/end that swallows the user text sitting between the
   // two begins. Two complete blocks are equally malformed: rewriting one would
   // leave the other behind to contradict it.
-  if (begins > 1 || ends > 1) {
+  if (begins.length > 1 || ends.length > 1) {
     throw new Error(
-      `CLAUDE.md contains more than one sonata block (${begins} "${GUIDANCE_BEGIN}", `
-      + `${ends} "${GUIDANCE_END}"). Leave exactly one, and run the command again.`,
+      `CLAUDE.md contains more than one sonata block (${begins.length} "${GUIDANCE_BEGIN}", `
+      + `${ends.length} "${GUIDANCE_END}"). Leave exactly one, and run the command again.`,
     );
   }
 
-  const begin = existing.indexOf(GUIDANCE_BEGIN);
-  const end = existing.indexOf(GUIDANCE_END);
+  const begin = begins[0] ?? -1;
+  const end = ends[0] ?? -1;
 
-  // A marker without its partner means the file was hand-edited.
+  // A marker without its partner means the file was hand-edited. Both messages
+  // name the standalone-line rule, because the other way to reach here is a
+  // marker that IS in the file but quoted inside a sentence — and an error
+  // saying "no matching end" about a file the user can see an end marker in
+  // reads as sonata failing to find what is in front of it.
   if (begin !== -1 && end === -1) {
     throw new Error(
       `CLAUDE.md has an unterminated sonata block: "${GUIDANCE_BEGIN}" with no matching `
-      + `"${GUIDANCE_END}". Restore the end marker, or delete the block, and run the command again.`,
+      + `"${GUIDANCE_END}" on a line of its own. Restore the end marker, or delete the block, `
+      + 'and run the command again.',
     );
   }
   if (begin === -1 && end !== -1) {
     throw new Error(
-      `CLAUDE.md has a stray "${GUIDANCE_END}" marker with no matching "${GUIDANCE_BEGIN}". `
-      + 'Remove it, and run the command again.',
+      `CLAUDE.md has a stray "${GUIDANCE_END}" marker with no matching "${GUIDANCE_BEGIN}" `
+      + 'on a line of its own. Remove it, and run the command again.',
     );
   }
   if (begin !== -1 && end !== -1 && end < begin) {

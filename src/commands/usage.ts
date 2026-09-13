@@ -36,11 +36,30 @@ export interface UsageBucket {
   coveredRequests: number;
 }
 
+/**
+ * A candidate a request fell *past* on its way to being served.
+ *
+ * The ledger has always recorded these in each row's `attempts`, and nothing
+ * read them — so a candidate that failed every time it was reached had no row
+ * of its own in any breakdown and was invisible here, while being very visible
+ * as dead subagents. Reported separately from the buckets because an attempt
+ * is not a served request: folding it into the model rows would double-count
+ * the request that eventually succeeded.
+ */
+export interface FailedAttempt {
+  key: string;
+  /** How many times a request fell past this candidate. */
+  count: number;
+  /** Distinct statuses seen, ascending. A 400 and a 503 mean very different things. */
+  statuses: number[];
+}
+
 export interface UsageReport {
   buckets: UsageBucket[];
   pricedTotalUsd: number;
   unpriced: { requests: number; input: number; output: number };
   covered: { requests: number; totalUsd: number };
+  failedAttempts: FailedAttempt[];
   priceCacheAgeMs?: number;
 }
 
@@ -135,6 +154,7 @@ export function aggregate(
   const buckets = new Map<string, UsageBucket>();
   const unpriced = { requests: 0, input: 0, output: 0 };
   const covered = { requests: 0, totalUsd: 0 };
+  const failed = new Map<string, { count: number; statuses: Set<number> }>();
   let pricedTotalUsd = 0;
 
   for (const row of rows) {
@@ -167,6 +187,16 @@ export function aggregate(
       pricedTotalUsd += row.price.totalUsd;
     }
     buckets.set(label, bucket);
+
+    // `attempts` is written by the router for every candidate that failed
+    // before one served. A row is keyed by the candidate that *did* serve, so
+    // without this the failures have no representation at all.
+    for (const attempt of row.attempts) {
+      const entry = failed.get(attempt.key) ?? { count: 0, statuses: new Set<number>() };
+      entry.count += 1;
+      entry.statuses.add(attempt.status);
+      failed.set(attempt.key, entry);
+    }
   }
 
   return {
@@ -179,6 +209,9 @@ export function aggregate(
     pricedTotalUsd,
     unpriced,
     covered,
+    failedAttempts: [...failed.entries()]
+      .map(([key, { count, statuses }]) => ({ key, count, statuses: [...statuses].sort((a, b) => a - b) }))
+      .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key)),
   };
 }
 

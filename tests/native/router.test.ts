@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, createRouterServer, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, STICKY_TTL_MS, createRouterServer, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
 
@@ -1288,5 +1288,291 @@ describe('routeRequest — the project hint is authorised, not merely trusted', 
     for (const h of headersSeen) {
       expect(Object.keys(h).map((k) => k.toLowerCase())).not.toContain(SONATA_TOKEN_HEADER);
     }
+  });
+});
+
+// ── A conversation must keep its model, and survive losing it ──
+//
+// Ranked fallback picks a candidate per request, which is right for one
+// request and wrong for a conversation: a transcript carrying one model's
+// extended-thinking blocks handed to another is rejected outright with
+// "The content[].thinking in the thinking mode must be passed back to the
+// API" — a 400 that kills a multi-turn agent mid-task and reads as a defect
+// in its own work. Observed twice on 2026-09-13 (issue #30).
+describe('conversation stickiness', () => {
+  const ROUTES = {
+    role: 'code', tier: 'simple',
+    routes: [
+      { key: 'flash', native: { gateway: 'g', id: 'flash-1' } },
+      { key: 'luna', native: { gateway: 'g', id: 'luna-1' } },
+    ],
+  };
+
+  const THINKING = { type: 'thinking', thinking: 'step one', signature: 'sig-abc' };
+
+  /** Turn `n` of one conversation: messages[0] is invariant as turns append. */
+  const turn = (n: number, opener = 'implement the parser') => ({
+    method: 'POST', url: '/v1/messages',
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({
+      model: 'sonata-code-simple',
+      messages: [
+        { role: 'user', content: opener },
+        ...Array.from({ length: n - 1 }, () => (
+          { role: 'assistant', content: [THINKING, { type: 'text', text: 'ok' }] }
+        )),
+      ],
+    })),
+  });
+
+  beforeEach(() => clearCooldowns());
+
+  const harness = () => {
+    const seen: string[] = [];
+    const bodies: any[] = [];
+    const state = { flashFails: true, clock: 1_000 };
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const payload = JSON.parse(init.body as string) as { model: string };
+        seen.push(payload.model);
+        bodies.push(payload);
+        return new Response('{}', { status: payload.model === 'default/flash' && state.flashFails ? 503 : 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+      now: () => state.clock,
+    };
+    return { seen, bodies, state, deps };
+  };
+
+  it('keeps a conversation on the candidate that served it after the ranked leader recovers', async () => {
+    const { seen, state, deps } = harness();
+
+    // Turn 1: the leader fails, so luna serves — and is remembered.
+    await routeRequest(turn(1), deps);
+    expect(seen).toEqual(['default/flash', 'default/luna']);
+
+    // flash recovers and its cooldown lapses, so rank order would pick it again.
+    state.flashFails = false;
+    state.clock += TIER_COOLDOWN_MS + 1;
+
+    // Turn 2 of the SAME conversation still goes to luna.
+    await routeRequest(turn(2), deps);
+    expect(seen.slice(2)).toEqual(['default/luna']);
+
+    // A different conversation is unaffected and gets the ranked leader.
+    await routeRequest(turn(1, 'write the docs'), deps);
+    expect(seen.slice(3)).toEqual(['default/flash']);
+  });
+
+  it('is a preference, not a pin: a cooling sticky candidate still falls through', async () => {
+    const { seen, state, deps } = harness();
+    state.flashFails = false;
+
+    await routeRequest(turn(1), deps);
+    expect(seen).toEqual(['default/flash']);
+
+    // The pinned candidate now fails; the tier must still fall through to luna
+    // rather than dying on the model the conversation happens to prefer.
+    state.flashFails = true;
+    await routeRequest(turn(2), deps);
+    expect(seen.slice(1)).toEqual(['default/flash', 'default/luna']);
+  });
+
+  it("drops the previous model's thinking blocks when a conversation changes hands", async () => {
+    const { seen, bodies, state, deps } = harness();
+    state.flashFails = false;
+
+    await routeRequest(turn(1), deps);
+    // Turn 2 carries flash's thinking blocks; flash then fails, so luna takes over.
+    state.flashFails = true;
+    await routeRequest(turn(3), deps);
+
+    expect(seen).toEqual(['default/flash', 'default/flash', 'default/luna']);
+    const served = bodies.at(-1)!;
+    const types = served.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content.map((b: any) => b.type) : []);
+    expect(types).not.toContain('thinking');
+    // The conversation's actual content survives — only the other model's
+    // internal reasoning is gone.
+    expect(types).toContain('text');
+    expect(served.messages[0]).toEqual({ role: 'user', content: 'implement the parser' });
+  });
+
+  it('leaves the body untouched while a conversation stays on its candidate', async () => {
+    const { bodies, state, deps } = harness();
+    state.flashFails = false;
+
+    await routeRequest(turn(1), deps);
+    await routeRequest(turn(3), deps);
+
+    const types = bodies.at(-1)!.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content.map((b: any) => b.type) : []);
+    expect(types).toContain('thinking');
+  });
+
+  // CodeRabbit #32: a pinned candidate that 400s was preferred again on every
+  // retry until the 2h TTL. An UNRECOGNISED 400 never earns the capability
+  // cooldown, so nothing else broke the loop either.
+  it('stops preferring a candidate that hands back a 400', async () => {
+    const seen: string[] = [];
+    const state = { flash400: false };
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return model === 'default/flash' && state.flash400
+          ? new Response(JSON.stringify({ error: { message: 'some client error' } }), { status: 400 })
+          : new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    };
+
+    // flash serves and is pinned.
+    await routeRequest(turn(1), deps);
+    expect(seen).toEqual(['default/flash']);
+
+    // It now 400s. The 400 is returned to the caller (not a recognised
+    // capability failure), so nothing cools it down.
+    state.flash400 = true;
+    expect((await routeRequest(turn(2), deps)).status).toBe(400);
+    expect(seen.slice(1)).toEqual(['default/flash']);
+
+    // The retry must NOT prefer it again. Rank order puts flash first anyway,
+    // so it is tried, 400s, and the tier falls through — the point is that the
+    // pin is no longer forcing it ahead of a healthy candidate.
+    await routeRequest(turn(2), deps);
+    expect(seen.slice(2)).toEqual(['default/flash']);
+  });
+
+  // The reason the pin is DEMOTED rather than deleted: the record of whose
+  // thinking blocks the transcript carries has to outlive the preference, or
+  // the next candidate receives them and 400s on exactly the bug this fixes.
+  it('still strips the demoted model\'s thinking blocks when another candidate takes over', async () => {
+    const seen: string[] = [];
+    const bodies: any[] = [];
+    // phase 1: flash is down, so luna serves and is pinned.
+    // phase 2: luna 400s, demoting the pin.
+    // phase 3: flash is healthy and leads on rank order again.
+    const state = { phase: 1, clock: 1_000 };
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const payload = JSON.parse(init.body as string) as { model: string };
+        seen.push(payload.model);
+        bodies.push(payload);
+        const flash = payload.model === 'default/flash';
+        if (state.phase === 1) return new Response('{}', { status: flash ? 503 : 200 });
+        if (state.phase === 2 && !flash) {
+          return new Response(JSON.stringify({ error: { message: 'client error' } }), { status: 400 });
+        }
+        return new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+      now: () => state.clock,
+    };
+
+    await routeRequest(turn(1), deps);
+    expect(seen).toEqual(['default/flash', 'default/luna']);
+
+    // Luna is now preferred over the ranked leader, and 400s.
+    state.phase = 2;
+    expect((await routeRequest(turn(3), deps)).status).toBe(400);
+    expect(seen.slice(2)).toEqual(['default/luna']);
+
+    // Retried: the preference is gone, so flash leads on rank again — and it
+    // must still receive the transcript with luna's thinking blocks removed.
+    // Past flash's 503 cooldown, well short of the sticky TTL that would erase
+    // the memory of luna having served.
+    state.phase = 3;
+    state.clock += TIER_COOLDOWN_MS + 1;
+    await routeRequest(turn(3), deps);
+    const served = bodies.at(-1)!;
+    expect(served.model).toBe('default/flash');
+    const types = served.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content.map((b: any) => b.type) : []);
+    expect(types).not.toContain('thinking');
+    expect(types).toContain('text');
+  });
+
+  it('forgets a conversation that has been idle past the TTL', async () => {
+    const { seen, state, deps } = harness();
+
+    await routeRequest(turn(1), deps);
+    expect(seen).toEqual(['default/flash', 'default/luna']);
+
+    state.flashFails = false;
+    state.clock += STICKY_TTL_MS + 1;
+
+    // The pin has aged out, so rank order applies again.
+    await routeRequest(turn(2), deps);
+    expect(seen.slice(2)).toEqual(['default/flash']);
+  });
+});
+
+describe('conversationKey', () => {
+  const body = (messages: unknown[]) => Buffer.from(JSON.stringify({ model: 'm', messages }));
+  const opener = { role: 'user', content: 'hello' };
+
+  it('is stable as turns are appended', () => {
+    const one = conversationKey(body([opener]), 't', 'sonata-code-simple');
+    const many = conversationKey(body([opener, { role: 'assistant', content: 'hi' }, { role: 'user', content: 'more' }]), 't', 'sonata-code-simple');
+    expect(one).toBeDefined();
+    expect(many).toBe(one);
+  });
+
+  it('separates two roles that open with the same message, and two tenants', () => {
+    const a = conversationKey(body([opener]), 't', 'sonata-code-simple');
+    expect(conversationKey(body([opener]), 't', 'sonata-review-simple')).not.toBe(a);
+    expect(conversationKey(body([opener]), 'other', 'sonata-code-simple')).not.toBe(a);
+  });
+
+  it('is undefined for a body with no messages, so stickiness simply does not apply', () => {
+    expect(conversationKey(body([]), 't', 'a')).toBeUndefined();
+    expect(conversationKey(Buffer.from('not json'), 't', 'a')).toBeUndefined();
+  });
+});
+
+describe('stripForeignThinking', () => {
+  const roundTrip = (payload: unknown) => JSON.parse(stripForeignThinking(Buffer.from(JSON.stringify(payload))).toString());
+
+  it('drops thinking and redacted_thinking but keeps text and tool_use', () => {
+    const out = roundTrip({
+      messages: [{
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'x', signature: 's' },
+          { type: 'redacted_thinking', data: 'opaque' },
+          { type: 'text', text: 'answer' },
+          { type: 'tool_use', id: 'tu', name: 'Read', input: {} },
+        ],
+      }],
+    });
+    expect(out.messages[0].content.map((b: any) => b.type)).toEqual(['text', 'tool_use']);
+  });
+
+  it('leaves user messages alone even if they carry a thinking-shaped block', () => {
+    const payload = { messages: [{ role: 'user', content: [{ type: 'thinking', thinking: 'quoted' }] }] };
+    expect(roundTrip(payload)).toEqual(payload);
+  });
+
+  it('drops an assistant turn left with no content rather than sending an empty array', () => {
+    // An empty content array is itself a 400, and a turn that was nothing but
+    // thinking carried nothing the next model can act on.
+    const out = roundTrip({
+      messages: [
+        { role: 'user', content: 'go' },
+        { role: 'assistant', content: [{ type: 'thinking', thinking: 'only this' }] },
+      ],
+    });
+    expect(out.messages).toEqual([{ role: 'user', content: 'go' }]);
+  });
+
+  it('returns the identical buffer when there is nothing to strip', () => {
+    const body = Buffer.from(JSON.stringify({ messages: [{ role: 'assistant', content: [{ type: 'text', text: 'a' }] }] }));
+    expect(stripForeignThinking(body)).toBe(body);
+  });
+
+  it('passes a body it cannot parse straight through', () => {
+    const body = Buffer.from('not json');
+    expect(stripForeignThinking(body)).toBe(body);
   });
 });

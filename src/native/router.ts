@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import { budgetRefusal, type BudgetStatus } from '../budget.js';
@@ -363,9 +364,170 @@ const cooldowns = new Map<string, number>();
  */
 const capability400Counts = new Map<string, number>();
 
+/**
+ * How long a conversation stays pinned to the candidate that served it.
+ *
+ * Long enough to cover a subagent's whole run — the agents this protects are
+ * the long multi-turn ones — and short enough that an idle entry ages out
+ * rather than pinning a conversation to a model the ranking has since moved
+ * on from.
+ */
+export const STICKY_TTL_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Cap on remembered conversations, so a long-lived router cannot grow this
+ * without bound. Eviction is oldest-touched-first (Map preserves insertion
+ * order and `stickySet` re-inserts), which is the right victim: a conversation
+ * nobody has spoken to in a thousand others' time is over.
+ */
+export const STICKY_MAX_CONVERSATIONS = 1000;
+
+/**
+ * Which candidate last served a given conversation.
+ *
+ * Ranked fallback picks a candidate *per request*, which is correct for a
+ * single request and wrong for a conversation: a transcript carrying one
+ * model's extended-thinking blocks handed to a different model is rejected
+ * outright — `The content[].thinking in the thinking mode must be passed back
+ * to the API`, a 400 that kills the agent mid-task and reads as a defect in
+ * its own work. Remembering who served a conversation lets the router prefer
+ * that candidate, and lets it know when it is about to switch.
+ */
+const stickyCandidates = new Map<string, { key: string; at: number; prefer: boolean }>();
+
+function stickyGet(conversation: string, at: number): { key: string; prefer: boolean } | undefined {
+  const hit = stickyCandidates.get(conversation);
+  if (hit === undefined) return undefined;
+  if (at - hit.at > STICKY_TTL_MS) {
+    stickyCandidates.delete(conversation);
+    return undefined;
+  }
+  return hit;
+}
+
+function stickySet(conversation: string, key: string, at: number): void {
+  // Delete-then-set moves the entry to the end of the insertion order, so a
+  // conversation still in use is never the eviction victim.
+  stickyCandidates.delete(conversation);
+  stickyCandidates.set(conversation, { key, at, prefer: true });
+  if (stickyCandidates.size > STICKY_MAX_CONVERSATIONS) {
+    const oldest = stickyCandidates.keys().next();
+    if (!oldest.done) stickyCandidates.delete(oldest.value);
+  }
+}
+
+/**
+ * Stop *preferring* a candidate that just 400d, without forgetting that it
+ * served this conversation.
+ *
+ * The two are different facts and the entry has to keep both. Dropping the
+ * record outright — the obvious fix — reopens the hole this whole mechanism
+ * exists to close: the next request would find no entry, so `foreign` would be
+ * false, so the transcript would reach a different model with the 400ing
+ * model's thinking blocks still in it. Preference is what must lapse; the
+ * memory of whose reasoning is in the history must not.
+ *
+ * Only the candidate that actually holds the pin may drop it, so an older
+ * concurrent request cannot clear a pin a newer one has since set.
+ */
+function stickyDemote(conversation: string, key: string): void {
+  const hit = stickyCandidates.get(conversation);
+  if (hit === undefined || hit.key !== key) return;
+  hit.prefer = false;
+}
+
+/**
+ * A stable identity for the conversation this request belongs to.
+ *
+ * The first message is the one part of a transcript that does not change as
+ * turns are appended, so hashing it gives the same answer on turn 1 and turn
+ * 40. The alias and tenant join it because two roles are two conversations
+ * even when their opening message is identical, and two projects are never the
+ * same conversation.
+ *
+ * A collision — two agents genuinely opened with the same text — costs nothing
+ * beyond a shared preference, since this only reorders candidates that were
+ * all eligible anyway. `undefined` (an unparseable or empty body) simply means
+ * no stickiness, which is the behaviour that shipped before this existed.
+ */
+export function conversationKey(body: Buffer, tenant: string, alias: string): string | undefined {
+  try {
+    const messages = (JSON.parse(body.toString()) as { messages?: unknown }).messages;
+    if (!Array.isArray(messages) || messages.length === 0) return undefined;
+    return createHash('sha256')
+      .update(`${tenant}\u0000${alias}\u0000${JSON.stringify(messages[0])}`)
+      .digest('hex')
+      .slice(0, 16);
+  } catch {
+    return undefined;
+  }
+}
+
+function isThinkingBlock(block: unknown): boolean {
+  if (typeof block !== 'object' || block === null) return false;
+  const type = (block as { type?: unknown }).type;
+  return type === 'thinking' || type === 'redacted_thinking';
+}
+
+/**
+ * Drop extended-thinking blocks a *different* model produced.
+ *
+ * Called only when the candidate about to serve is not the one that served
+ * this conversation before. Those blocks are that other model's internal
+ * reasoning: the new model cannot read them, and several upstreams reject the
+ * whole request rather than ignore them. `redacted_thinking` carries opaque
+ * vendor state the producing upstream requires echoed back exactly — which is
+ * precisely why it cannot travel to a different vendor.
+ *
+ * Assistant *text* and tool_use blocks are untouched, so the conversation's
+ * actual content survives; what is lost is reasoning the new model was never
+ * going to be able to use. The alternative is not a richer transcript, it is a
+ * 400.
+ *
+ * An assistant turn left with no content at all is dropped rather than sent
+ * empty: an empty content array is itself a 400, and a turn that was nothing
+ * but thinking carried nothing the next model can act on.
+ */
+export function stripForeignThinking(body: Buffer): Buffer {
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(body.toString()) as Record<string, unknown>;
+  } catch {
+    return body;
+  }
+  const messages = payload.messages;
+  if (!Array.isArray(messages)) return body;
+
+  let changed = false;
+  const out: unknown[] = [];
+  for (const message of messages) {
+    const record = typeof message === 'object' && message !== null ? message as Record<string, unknown> : undefined;
+    if (record === undefined || record.role !== 'assistant' || !Array.isArray(record.content)) {
+      out.push(message);
+      continue;
+    }
+    const kept = record.content.filter((block) => !isThinkingBlock(block));
+    if (kept.length === record.content.length) {
+      out.push(message);
+      continue;
+    }
+    changed = true;
+    if (kept.length > 0) out.push({ ...record, content: kept });
+  }
+  if (!changed) return body;
+  return Buffer.from(JSON.stringify({ ...payload, messages: out }));
+}
+
+/**
+ * Test seam: every scrap of per-candidate and per-conversation memory the
+ * router accumulates. Sticky pins are cleared alongside the cooldowns because
+ * a conversation pinned by one test would otherwise steer the next one's
+ * candidate ordering.
+ */
 export function clearCooldowns(): void {
   cooldowns.clear();
   capability400Counts.clear();
+  stickyCandidates.clear();
 }
 
 /** Which capability failure this 400 body is, or undefined if it is not one. */
@@ -730,9 +892,28 @@ async function routeTierRequest(
   const now = deps.now ?? Date.now;
   const headers = litellmHeaders(requestHeaders(req.headers), deps.litellmKey);
   const flattened = litellmBody(req.body);
-  const candidates = resolved.routes.filter((route) => route.native !== undefined);
+  const ranked = resolved.routes.filter((route) => route.native !== undefined);
   const attempts: { key: string; status: number }[] = [];
   let skippedUnavailableLitellm = false;
+
+  // Which candidate already served this conversation, if any. Preferring it
+  // keeps a multi-turn agent on one model, which is what stops its transcript
+  // growing extended-thinking blocks the next candidate would reject.
+  const conversation = conversationKey(req.body, tenant.id, alias);
+  const pinned = conversation === undefined ? undefined : stickyGet(conversation, now());
+  // Two different questions, deliberately read from two fields. `lastServed`
+  // is whose extended-thinking blocks the transcript carries, and stays true
+  // until another candidate actually serves. `sticky` is who to TRY first, and
+  // lapses the moment that candidate hands back a 400.
+  const lastServed = pinned?.key;
+  const sticky = pinned?.prefer === true ? pinned.key : undefined;
+  // Preference, not a pin: the sticky candidate moves to the front and every
+  // other keeps its rank behind it. Its cooldown still applies, so a candidate
+  // that has genuinely failed is still skipped — the fallback's whole point —
+  // and the strip below is what makes that switch survivable.
+  const candidates = sticky === undefined
+    ? ranked
+    : [...ranked.filter((route) => route.key === sticky), ...ranked.filter((route) => route.key !== sticky)];
 
   for (const route of candidates) {
     const cool = litellmModelName(tenant, route.key);
@@ -748,7 +929,22 @@ async function routeTierRequest(
     // Only the litellm path needs the string-flattened system form and the
     // sonata alias key rewritten in — a direct gateway has never heard of
     // that key and understands block arrays fine.
-    const body = direct ? withModel(req.body, route.native!.id) : withModel(flattened, cool);
+    //
+    // A conversation changing hands is the one case where the body must be
+    // edited on BOTH transports: the thinking blocks in it were produced by
+    // the candidate that is no longer serving, and the direct path's usual
+    // byte-identical contract exists to echo vendor state back to the vendor
+    // that issued it — which is exactly what has stopped being true here.
+    const foreign = lastServed !== undefined && lastServed !== route.key;
+    if (foreign) {
+      deps.log?.(
+        `router: ${alias} conversation moving ${lastServed} -> ${route.key}, ` +
+        "dropping the previous model's thinking blocks",
+      );
+    }
+    const outbound = direct ? req.body : flattened;
+    const prepared = foreign ? stripForeignThinking(outbound) : outbound;
+    const body = withModel(prepared, direct ? route.native!.id : cool);
     const response = direct
       ? await forwardDirect(
         body,
@@ -811,6 +1007,13 @@ async function routeTierRequest(
         }
       }
 
+      // The candidate handed back a 400, so it stops being the one to try
+      // first — otherwise a pinned candidate that 400s is preferred again on
+      // every retry until the 2h TTL, and an UNRECOGNISED 400 never earns the
+      // capability cooldown that would otherwise break the loop. Preference
+      // lapses; the record of whose thinking blocks are in the transcript does
+      // not, so the next candidate still gets them stripped.
+      if (conversation !== undefined) stickyDemote(conversation, route.key);
       return withUsageRecording({
         status: response.status,
         headers: response.headers,
@@ -833,6 +1036,10 @@ async function routeTierRequest(
     for (const key of capability400Counts.keys()) {
       if (key.startsWith(`${cool} `)) capability400Counts.delete(key);
     }
+    // Pin only on a response the client actually receives. A 400 handed back
+    // above is a request this candidate could not serve, and pinning to it
+    // would make the next turn prefer the model that just refused.
+    if (conversation !== undefined) stickySet(conversation, route.key, now());
     deps.log?.(`${req.method} ${req.url} model=${alias} -> ${route.key} -> ${direct ? 'direct' : 'litellm'}`);
     return withUsageRecording(response, {
       startedAt,

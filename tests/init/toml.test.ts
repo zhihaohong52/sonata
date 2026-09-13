@@ -160,9 +160,13 @@ describe('nativeTomlFor — codex-oauth gateways', () => {
 
   it('round-trips through parseConfig', () => {
     const config = parseConfig(nativeTomlFor({ code: [codexCandidate, keyCandidate] }));
-    expect(config.native!.gateways.codex).toEqual({
+    expect(config.native!.gateways.codex).toMatchObject({
       baseUrl: CODEX_OAUTH_BASE_URL, auth: 'codex-oauth',
     });
+    // A new OAuth gateway is born with a pricing provider derived from its
+    // auth — without one it can never reach `relabelCovered` and subscription
+    // work reads as unpriced rather than covered.
+    expect(config.native!.gateways.codex.pricingProvider).toEqual(['openai']);
     expect(config.native!.gateways.acme.auth).toBe('api-key');
   });
 });
@@ -178,9 +182,10 @@ describe('nativeTomlFor — copilot-oauth', () => {
     expect(toml).not.toContain('base_url');
 
     const config = parseConfig(toml);
-    expect(config.native!.gateways['github-copilot']).toEqual({
+    expect(config.native!.gateways['github-copilot']).toMatchObject({
       baseUrl: COPILOT_OAUTH_BASE_URL, auth: 'copilot-oauth',
     });
+    expect(config.native!.gateways['github-copilot'].pricingProvider).toEqual(['github-copilot']);
   });
 });
 
@@ -217,6 +222,72 @@ describe('nativeTomlFor — avoid_gateways', () => {
     expect(parseConfig(toml).avoidGateways).toBeUndefined();
   });
 });
+// Issue #31: a config written by init had no `pricing_provider` on any
+// gateway, so `resolvePrice` returned `source: 'none'` at its
+// `provider === undefined` guard before models.dev was consulted at all —
+// 173 requests, $0.0000 priced, everything unpriced on a real machine config.
+describe('nativeTomlFor — originating pricing_provider', () => {
+  const gw = (gateway: string) => ({
+    key: `${gateway}-m`, gateway, id: 'm', contextWindow: 128000,
+    baseUrl: 'https://example.test/v1', auth: 'api-key' as const,
+  });
+
+  it('proposes a models.dev provider for a gateway it is writing for the first time', () => {
+    const config = parseConfig(nativeTomlFor({ code: [gw('deepseek')] }));
+    expect(config.native!.gateways.deepseek.pricingProvider).toEqual(['deepseek']);
+  });
+
+  it('uses the models.dev id, not the LiteLLM one, for Gemini', () => {
+    // LiteLLM calls this provider `gemini`; models.dev files it as `google`.
+    // Reusing PROVIDER_FOR_GATEWAY here would look right and silently miss.
+    const config = parseConfig(nativeTomlFor({ code: [gw('google')] }));
+    expect(config.native!.gateways.google.pricingProvider).toEqual(['google']);
+  });
+
+  it('leaves a gateway it cannot identify unpriced rather than guessing', () => {
+    const toml = nativeTomlFor({ code: [gw('my-private-proxy')] });
+    expect(toml).not.toContain('pricing_provider');
+    expect(parseConfig(toml).native!.gateways['my-private-proxy'].pricingProvider).toBeUndefined();
+  });
+
+  // The property that makes origination *declinable*, and the reason it is
+  // keyed on the gateway being new rather than on the key being absent.
+  it('never re-adds a pricing_provider the user deleted from an existing gateway', () => {
+    const existing = parseConfig(nativeTomlFor({ code: [gw('deepseek')] }));
+    expect(existing.native!.gateways.deepseek.pricingProvider).toEqual(['deepseek']);
+
+    // The user deletes the line; the gateway itself stays.
+    const edited = parseConfig([
+      'schema_version = 1',
+      '[native.gateways."deepseek"]',
+      'base_url = "https://example.test/v1"',
+      '[models."deepseek-m"]',
+      'gateway = "deepseek"',
+      'id = "m"',
+      'context_window = 128000',
+    ].join('\n'));
+    expect(edited.native!.gateways.deepseek.pricingProvider).toBeUndefined();
+
+    const rewritten = nativeTomlFor({ code: [gw('deepseek')] }, {}, undefined, {}, [], undefined, [], edited);
+    expect(rewritten).not.toContain('pricing_provider');
+  });
+
+  it('preserves a pricing_provider the user changed, rather than re-proposing its own', () => {
+    const edited = parseConfig([
+      'schema_version = 1',
+      '[native.gateways."deepseek"]',
+      'base_url = "https://example.test/v1"',
+      'pricing_provider = ["openrouter"]',
+      '[models."deepseek-m"]',
+      'gateway = "deepseek"',
+      'id = "m"',
+      'context_window = 128000',
+    ].join('\n'));
+    const rewritten = parseConfig(nativeTomlFor({ code: [gw('deepseek')] }, {}, undefined, {}, [], undefined, [], edited));
+    expect(rewritten.native!.gateways.deepseek.pricingProvider).toEqual(['openrouter']);
+  });
+});
+
 describe('nativeTomlFor — settings init must not silently drop', () => {
   const candidate = {
     key: 'acme-m', gateway: 'acme', id: 'm', contextWindow: 128000,
