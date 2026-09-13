@@ -649,6 +649,40 @@ base_url = "http://gateway.example/v1"
 base_url = "http://openai.example/v1"
 `;
 
+  it('accepts <key>@<effort> and exposes the level on the resolved route', () => {
+    const config = parseConfig(TIERED.replace(
+      'complex = ["gpt-5.6-terra", "deepseek-v4-flash"]',
+      'complex = ["gpt-5.6-terra@xhigh", "deepseek-v4-flash", "gpt-5.6-terra@high"]',
+    ));
+    expect(config.tiers?.code.complex).toEqual(['gpt-5.6-terra@xhigh', 'deepseek-v4-flash', 'gpt-5.6-terra@high']);
+    const routes = resolveTierAlias(config, 'sonata-code-complex')!.routes;
+    expect(routes.map((r) => [r.key, r.effort])).toEqual([
+      ['gpt-5.6-terra', 'xhigh'], ['deepseek-v4-flash', undefined], ['gpt-5.6-terra', 'high'],
+    ]);
+    // The route resolves the bare key, so the model's native half is found.
+    expect(routes[0].native).toMatchObject({ gateway: 'openai', id: 'gpt-5.6-terra' });
+  });
+
+  it('refuses an unknown or empty effort level, naming the list', () => {
+    expect(() => parseConfig(TIERED.replace('simple = ["deepseek-v4-flash"]', 'simple = ["deepseek-v4-flash@turbo"]')))
+      .toThrow(/tiers\.code\.simple.*"turbo"/);
+    expect(() => parseConfig(TIERED.replace('simple = ["deepseek-v4-flash"]', 'simple = ["deepseek-v4-flash@"]')))
+      .toThrow(/tiers\.code\.simple/);
+  });
+
+  it('still refuses a level on a key that names no model', () => {
+    expect(() => parseConfig(TIERED.replace('simple = ["deepseek-v4-flash"]', 'simple = ["ghost@high"]')))
+      .toThrow(/unknown model "ghost"/);
+  });
+
+  it('does not collapse a role whose tiers differ only by effort', () => {
+    const config = parseConfig(TIERED.replace(
+      'complex = ["deepseek-v4-flash"]\n', 'complex = ["deepseek-v4-flash@high"]\n',
+    ));
+    expect(resolveTierAlias(config, 'sonata-explore')).toBeUndefined();
+    expect(resolveTierAlias(config, 'sonata-explore-complex')!.routes[0].effort).toBe('high');
+  });
+
   it('parses unified models with native and harness routes', () => {
     const config = parseConfig(TIERED);
     expect(config.models['deepseek-v4-flash']).toEqual({

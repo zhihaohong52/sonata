@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import { applyMigrations, readSchemaVersion } from './migrations.js';
 import { mainWorktreeDir } from './git-worktree.js';
+import { splitCandidate, type Effort } from './effort.js';
 
 export const KNOWN_HARNESSES = ['opencode', 'codex', 'pi', 'reasonix', 'claude'] as const;
 export const KNOWN_ROLES = ['review', 'code', 'explore', 'plan'] as const;
@@ -77,6 +78,8 @@ export interface TierLists { simple: string[]; complex: string[] }
 
 export interface TierRoute {
   key: string;
+  /** The reasoning-effort level this candidate is pinned to, if any. */
+  effort?: Effort;
   native?: { gateway: string; id: string; transport?: Transport; baseUrl?: string };
   harness?: { harness: string; id: string };
 }
@@ -396,7 +399,14 @@ export function parseConfig(text: string): SonataConfig {
         throw new Error(`sonata.toml: tiers.${role} needs non-empty string lists "simple" and "complex".`);
       }
       for (const [tier, keys] of [['simple', simple], ['complex', complex]] as const) {
-        for (const key of keys) {
+        for (const candidate of keys) {
+          // `<key>@<effort>`: the level is validated here, the key below.
+          let key: string;
+          try {
+            ({ key } = splitCandidate(candidate));
+          } catch (err) {
+            throw new Error(`sonata.toml: tiers.${role}.${tier} ${(err as Error).message}`);
+          }
           if (isAnthropicRoutedName(key)) {
             throw new Error(
               `sonata.toml: tiers.${role}.${tier} model "${key}" cannot use the ` +
@@ -780,11 +790,13 @@ export function resolveTierAlias(
   const hasExplicitTier = rest !== role;
   if (!hasExplicitTier && !tiersCollapse(lists)) return undefined;
   const keys = tier === 'simple' ? lists.simple : lists.complex;
-  const routes = keys.map((key): TierRoute => {
+  const routes = keys.map((candidate): TierRoute => {
+    const { key, effort } = splitCandidate(candidate);
     const model = config.unifiedModels[key];
     const gw = model?.gateway !== undefined ? config.native?.gateways?.[model.gateway] : undefined;
     return {
       key,
+      ...(effort === undefined ? {} : { effort }),
       native: model?.gateway !== undefined && model.id !== undefined
         ? {
           gateway: model.gateway,

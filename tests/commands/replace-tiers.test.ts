@@ -41,6 +41,12 @@ const config = [
 ].join('\n');
 
 describe('replaceTiersBlock', () => {
+  it('writes effort-pinned candidates and they parse back', () => {
+    const out = replaceTiersBlock(config, { code: { simple: ['acme-slow@low'], complex: ['acme-fast@max'] } });
+    const cfg = parseConfig(out);
+    expect(cfg.tiers?.code).toEqual({ simple: ['acme-slow@low'], complex: ['acme-fast@max'] });
+  });
+
   it('writes the new ranking', () => {
     const next = replaceTiersBlock(config, {
       code: { simple: ['acme-slow'], complex: ['acme-fast'] },
