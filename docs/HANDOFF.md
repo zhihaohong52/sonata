@@ -175,6 +175,46 @@ the worktree, or run `sonata route on` there *before* starting the session —
 `route auto` installs the hooks but cannot route a session that has already
 launched.
 
+## Effort-level tier candidates — built 2026-09-13, on `effort-tiers-pr1`
+
+A `[tiers]` candidate may pin a reasoning-effort level
+(`"gpt-5.6-luna@xhigh"`), the catalog records which level each Artificial
+Analysis row was scored at, and both writers of a tier list rank every scored
+level of a model as its own candidate. Read
+`docs/superpowers/specs/2026-09-13-effort-tiers-design.md` and its plan
+(`docs/superpowers/plans/2026-09-13-effort-tiers-pr1.md`) before touching it;
+the `CLAUDE.md` bullet is the short version. Unreleased, and not yet opened as
+a PR, at the time of writing.
+
+**Nothing in this change sends an effort level upstream.** A pinned level
+today changes the ranking, the candidate labels and `TierRoute.effort`, and
+nothing else — it is a way to *choose* a model, not yet a way to ask for more
+or less reasoning. Two follow-ups complete it, both named in the spec:
+
+1. **PR 2 — the router injects `reasoning_effort`, and the ledger records
+   it.** The router is the layer that knows a request's level, and a ledger
+   row should name it for the same reason it names the candidate that served
+   the request.
+2. **PR 3 — the harness adapters.** Gated on probing each real binary: every
+   adapter bug in this repository's history was invisible in documentation and
+   obvious on the first real run. `sonata dispatch --model <key>@<effort>`
+   belongs here too — accepting the grammar while ignoring the level is
+   exactly the silent mismatch the load-time refusal exists to prevent.
+
+**One asymmetry is known and deliberately left in place.** The init tier
+*screen* widens a scope's rankable gateway names with the selected candidates'
+gateways **and** the gateways that scope's config declares
+(`interactive-state.ts`'s `declaredGatewayNames`, read by `app.tsx`), while
+the init *writer* still derives them from candidates alone
+(`gatewayNamesOf(nativeByKey)`, `src/init/plan.ts:146`). The two can disagree
+only for a gateway declared in `[native.gateways]` that has **no** native
+model whose key prefixes a harness-only key — no config producing that could
+be constructed. If one arose, the screen would offer a row the writer's
+`validTierKeys` lacks, and `reconcileTierList` would drop that saved key.
+Widening the writer's universe changes init's write path for every user and
+deserves its own review; the failure direction is a visible dropped key fixed
+by re-ranking, not a wrong model.
+
 ## If you want work, in the order I would take it
 
 All five are cheap and none blocks anything.
@@ -328,6 +368,20 @@ is worth more than a clean document.
 - **Give a scratch `serve` a scratch `HOME`.** One started with the real HOME
   overwrites the live serve state and deletes it on stop, after which `sonata
   restart` refuses.
+- **A native tier agent that takes more than one turn can be moved to a
+  different model between requests, and die on the thinking blocks the first
+  one left behind.** The router picks a ranked candidate **per request**, so a
+  conversation whose earlier requests were served by one model — carrying that
+  model's extended-thinking blocks in its history — can have a later request
+  fall through to a candidate that rejects them: `400 — The
+  content[].thinking in the thinking mode must be passed back to the API`.
+  Observed twice on 2026-09-13, resuming a `sonata-code-simple` agent and a
+  fresh `sonata-review-simple` dispatch, both landing on
+  `deepseek-deepseek-flash` after `gpt-5.6-luna` had served the earlier
+  requests. The documented safety argument for tier fallback — retries happen
+  only before the first byte of a single request — does not extend to a
+  multi-turn conversation already committed to one model's extended-thinking
+  format. Not fixed, and no issue filed yet.
 
 ### Git, PRs and review
 
@@ -406,6 +460,14 @@ is worth more than a clean document.
   compare the plugin manifest version against `curl -s
   localhost:37703/api/version` before believing any network diagnosis. The
   local patch is four `sed`s and **reverts on any plugin update**.
+- **Claude Code's Bash-tool shell drops single-underscore zsh functions from
+  its snapshot.** A `~/.zshrc` stub like `node() { _nvm_lazy_load; node "$@"; }`
+  survives the snapshot but `_nvm_lazy_load` does not, so every `node`/`npm`
+  in a tool shell prints `command not found: _nvm_lazy_load` and recurses to
+  `FUNCNEST`. Fixed 2026-09-13 by renaming the helper to `nvm_lazy_load`;
+  keep the lazy loading itself (it saves ~650 ms per shell, which the tmux
+  panes `npm test` spawns pay). Within an already-broken session, prefix
+  commands with `unset -f node npm npx nvm corepack; . ~/.nvm/nvm.sh >/dev/null;`.
 
 ## Working agreements
 

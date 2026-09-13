@@ -61,6 +61,23 @@ migrated automatically the next time you run `sonata init` (a config still in
 that shape parses fine in the meantime — `sonata doctor` just points at
 `init` to migrate it).
 
+A tier candidate may pin a reasoning-effort level: `"gpt-5.6-luna@xhigh"`.
+The level is one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+`max`, and it belongs to the *slot*, not the model — the same model may sit
+in `simple` at `high` and in `complex` at `max`. `sonata init` ranks every
+level Artificial Analysis has scored for a model as its own row, because for
+the current generation the level is often the larger lever: GPT-5.6 Luna at
+`max` out-scores GPT-5.6 Terra at every level below `max`, at an eighth of
+the cost per task.
+
+**A bare candidate whose model the catalog scores at several levels is
+refused when the config loads.** Ranked bare, it is scored at the model's
+default row (usually its highest level) and dispatched with no level at all,
+so what the ranking promised and what runs are different models. The error
+names the candidate, its levels and its default; `sonata init` re-ranks
+every tier with levels. With no catalog cache the check cannot run, and
+`sonata doctor` says so.
+
 Run `sonata sync` after editing the config; Claude Code picks up the
 generated agents automatically.
 
