@@ -122,6 +122,9 @@ function modelIdentity(entry: Record<string, unknown>): { name: string; family?:
   const name = normalizeModelName(source);
   const effort = display === undefined ? undefined : parseAaEffort(display);
   if (effort === undefined) return { name };
+  // AA reserves a terminal slug suffix for the effort level. If a natural
+  // model name ends in that word, shortening only this variant safely splits
+  // it from the default row rather than merging the two families.
   const suffix = `-${aaEffortSuffix(effort)}`;
   const base = source.endsWith(suffix) ? source.slice(0, -suffix.length) : source;
   return { name, family: normalizeModelName(base), effort };

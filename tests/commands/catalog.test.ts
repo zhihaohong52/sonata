@@ -148,6 +148,9 @@ describe('cmdCatalogUpdate — effort variants', () => {
     // trailing date is still trailing when normalizeModelName looks for it.
     expect(models['heavy']).toMatchObject({ family: 'heavy', effort: 'max' });
     expect(models['heavy-0424-high']).toMatchObject({ family: 'heavy', effort: 'high' });
+    // A level-ending slug follows AA's convention: its family is the slug
+    // with the level suffix removed, even when that could be a natural name.
+    expect(models['summit-high']).toMatchObject({ family: 'summit', effort: 'high' });
     // A parenthetical that is not a level records nothing.
     expect(models['plodder']).not.toHaveProperty('family');
     expect(models['plodder']).not.toHaveProperty('effort');

@@ -45,6 +45,12 @@
       "pricing": {"price_1m_input_tokens": 2, "price_1m_output_tokens": 8}
     },
     {
+      "name": "Acme Summit High (high)",
+      "slug": "acme/summit-high",
+      "evaluations": {"artificial_analysis_coding_index": 55, "artificial_analysis_agentic_index": 31},
+      "pricing": {"price_1m_input_tokens": 0.4, "price_1m_output_tokens": 1.2}
+    },
+    {
       "name": "Acme Plodder (Dec '24)",
       "slug": "acme/plodder",
       "evaluations": {"artificial_analysis_coding_index": 20},
