@@ -29,6 +29,7 @@ import { litellmRequired } from '../native/providers.js';
 import { litellmStatus, type InstallerDeps } from '../native/litellm-venv.js';
 import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm.js';
 import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, loadAaCatalog } from '../catalog.js';
+import { proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
 import { keyReport, resolveKeyFromSource } from '../native/credentials.js';
@@ -398,6 +399,59 @@ export async function cmdDoctor(
       });
       if (advice !== undefined) checks.push({ name: 'extended context', ok: true, detail: advice });
     }
+  }
+
+  // A gateway with no `pricing_provider` reports every request unpriced:
+  // `resolvePrice` returns `source: 'none'` at its `provider === undefined`
+  // guard, before models.dev is consulted at all. Two consequences that are
+  // not visible from the outside, which is why this is said outright rather
+  // than left to be noticed — `[budget] daily_usd` bounds priced spend, so it
+  // caps $0 forever and its only symptom is a refusal that never comes; and an
+  // OAuth gateway never reaches `relabelCovered`, so subscription work reads
+  // `unpriced` instead of `covered`.
+  //
+  // `ok: true` because an unpriced gateway routes perfectly well. This costs
+  // observability and a budget cap, not the ability to run.
+  const gatewayEntries = Object.entries(config.native?.gateways ?? {});
+  // `pricing_provider` is the THIRD thing `resolvePrice` consults, not the
+  // first: a model `[price]`, then a gateway `[price]`, then the provider. So
+  // a gateway priced by hand needs no provider at all, and reporting it as
+  // pricing nothing would be a false statement about the user's own config —
+  // worse than saying nothing, since the message goes on to claim the budget
+  // does not bound it.
+  //
+  // A legacy `[native.models]` entry carries no `price` of its own, so it is
+  // always "not hand-priced" — which is the honest answer, not an oversight.
+  const handPricedOn = (gateway: string): boolean[] => [
+    ...Object.values(config.unifiedModels)
+      .filter((model) => model.gateway === gateway)
+      .map((model) => model.price !== undefined),
+    ...Object.values(config.native?.models ?? {})
+      .filter((model) => model.gateway === gateway)
+      .map(() => false),
+  ];
+  const unpricedGateways = gatewayEntries.filter(([name, gw]) => {
+    if (gw.pricingProvider !== undefined && gw.pricingProvider.length > 0) return false;
+    if (gw.price !== undefined) return false;
+    const priced = handPricedOn(name);
+    // A gateway serving nothing cannot generate spend, so naming it is noise.
+    // Otherwise it is unpriced only if some model on it is not hand-priced.
+    return priced.length > 0 && priced.some((isPriced) => !isPriced);
+  });
+  if (unpricedGateways.length > 0) {
+    const named = unpricedGateways.slice(0, 3).map(([name, gw]) => {
+      const proposal = proposePricingProvider(name, gw.auth);
+      // Naming the exact line is the point: a user told only that a gateway is
+      // unpriced has to go and find what the key is called and what it takes.
+      return proposal === undefined ? name : `${name} (pricing_provider = ["${proposal[0]}"])`;
+    });
+    checks.push({
+      name: 'gateway pricing',
+      ok: true,
+      detail: `${unpricedGateways.length} of ${gatewayEntries.length} gateway(s) price nothing — `
+        + `${named.join(', ')}${unpricedGateways.length > 3 ? ', …' : ''}`
+        + '; `sonata usage` reports their volume unpriced and `[budget] daily_usd` does not bound it',
+    });
   }
 
   // `sonata init` run in $HOME used to write here, and nothing reads it. It

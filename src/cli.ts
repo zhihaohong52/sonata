@@ -562,6 +562,15 @@ export async function main(argv: string[]): Promise<number> {
     if (report.unpriced.requests > 0) {
       console.log(`unpriced       ${report.unpriced.requests} requests · ${report.unpriced.input} in · ${report.unpriced.output} out`);
     }
+    if (report.failedAttempts.length > 0) {
+      // These are requests that fell past a candidate before one served them.
+      // They carry no tokens and appear in no model row, so this line is the
+      // only place a candidate failing on every attempt becomes visible.
+      const worst = report.failedAttempts.slice(0, 5)
+        .map((a) => `${a.key} ${a.count}× (${a.statuses.join('/')})`)
+        .join(', ');
+      console.log(`fell past      ${worst}`);
+    }
     console.log('native path only — `sonata dispatch` runs bypass the router and cannot be measured');
     if (report.priceCacheAgeMs !== undefined) {
       console.log(`prices: models.dev cache ${Math.floor(report.priceCacheAgeMs / 86_400_000)}d old`);

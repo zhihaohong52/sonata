@@ -4,6 +4,7 @@ import type { NativeGatewayAuth, NativeGatewayWireFormat } from '../config.js';
 import type { SonataConfig, PriceConfig, Rates } from '../config.js';
 import { isOauthGatewayAuth, oauthGatewayBaseUrl } from '../config.js';
 import { proposeTiers } from '../catalog.js';
+import { proposePricingProvider } from '../pricing.js';
 import { gatewayNamesOf, avoidedKeysOf, duplicateKeys } from './helpers.js';
 import { CURRENT_SCHEMA_VERSION, SCHEMA_VERSION_KEY } from '../migrations.js';
 
@@ -134,8 +135,22 @@ export function nativeTomlFor(
     // continuing to WRITE it would mean every new config is born legacy.
     if (wireFormat === 'anthropic') lines.push(`provider = ${tomlKey(wireFormat)}`);
     const kept = existing?.native?.gateways?.[gateway];
-    if (kept?.pricingProvider !== undefined && kept.pricingProvider.length > 0) {
-      lines.push(`pricing_provider = [${kept.pricingProvider.map(tomlKey).join(', ')}]`);
+    // A gateway already in the config keeps exactly what it has — INCLUDING
+    // nothing. That is what makes an origination declinable: delete the key
+    // once and no later rewrite puts it back, the same way a hand-reordered
+    // tier would survive if init did not re-propose it. Only a gateway sonata
+    // has not written before gets a proposal.
+    //
+    // Without one, `resolvePrice` returns `source: 'none'` at its
+    // `provider === undefined` guard before models.dev is consulted at all —
+    // so a fresh config reports every request unpriced, `[budget] daily_usd`
+    // bounds $0 forever, and an OAuth gateway never reaches `relabelCovered`
+    // and reads as unpriced rather than covered.
+    const pricingProvider = kept === undefined
+      ? proposePricingProvider(gateway, auth)
+      : kept.pricingProvider;
+    if (pricingProvider !== undefined && pricingProvider.length > 0) {
+      lines.push(`pricing_provider = [${pricingProvider.map(tomlKey).join(', ')}]`);
     }
     lines.push('');
     // After the gateway's bare keys: a sub-table header ends the parent table,
