@@ -35,12 +35,16 @@ export function jsonResponse(status: number, value: unknown): RouterResponse {
  * What remains is DNS rebinding: a hostname resolving to 127.0.0.1 carries an
  * attacker's origin. The Host header is what tells the two apart.
  */
-function isLoopbackHost(host: string | undefined): boolean {
+function isLoopbackHost(host: string | undefined, port: number): boolean {
   if (host === undefined || host === '') return false;
-  const name = host.startsWith('[')
-    ? host.slice(0, host.indexOf(']') + 1)
-    : host.split(':')[0];
-  return name === 'localhost' || name === '127.0.0.1' || name === '[::1]' || name === '::1';
+  const expectedPort = String(port);
+  const accepted = [
+    `localhost:${expectedPort}`,
+    `127.0.0.1:${expectedPort}`,
+    `[::1]:${expectedPort}`,
+  ];
+  if (port === 80) accepted.push('localhost', '127.0.0.1', '[::1]');
+  return accepted.includes(host);
 }
 
 export function handleUiRequest(
@@ -58,12 +62,12 @@ export function handleUiRequest(
   }
   if (path !== '/__sonata' && !path.startsWith(UI_PREFIX)) return undefined;
 
-  if (!isLoopbackHost(req.headers.host)) {
+  if (!isLoopbackHost(req.headers.host, deps.port)) {
     return jsonResponse(403, { error: 'sonata UI is loopback-only' });
   }
   // Never fall through: a non-GET reaching routeRequest would be forwarded
   // upstream as though it were an API call.
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
+  if (req.method !== 'GET') {
     return jsonResponse(405, { error: 'the sonata UI is read-only; use GET' });
   }
 

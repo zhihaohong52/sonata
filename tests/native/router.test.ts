@@ -1755,13 +1755,31 @@ describe('stripForeignThinking', () => {
 });
 
 describe('the UI does not disturb the proxy', () => {
-  it('still routes POST /v1/messages when the UI is mounted', async () => {
+  it('routes API requests through the proxy and handles UI writes locally', async () => {
     const rec: any[] = [];
-    await routeRequest(
-      { method: 'POST', url: '/v1/messages', headers: { authorization: 'Bearer usr' },
-        body: Buffer.from(JSON.stringify({ model: 'claude-sonnet-5' })) },
-      { ...base, fetch: fakeFetch(rec), ui: { home: '/tmp/nowhere', port: 4100 } } as any,
-    );
-    expect(rec[0].url).toBe('https://api.anthropic.com/v1/messages');
+    const ui = { home: '/tmp/nowhere', port: 0 };
+    const server = createRouterServer({
+      ...base,
+      fetch: fakeFetch(rec) as typeof fetch,
+      ui,
+    });
+    await new Promise<void>((resolve) => server.listen(0, 'localhost', resolve));
+    const port = (server.address() as { port: number }).port;
+    ui.port = port;
+    try {
+      const proxied = await fetch(`http://localhost:${port}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-sonnet-5' }),
+      });
+      expect(proxied.status).toBe(200);
+      expect(rec[0].url).toBe('https://api.anthropic.com/v1/messages');
+
+      const uiWrite = await fetch(`http://localhost:${port}/__sonata/api/usage`, { method: 'POST' });
+      expect(uiWrite.status).toBe(405);
+      expect(rec).toHaveLength(1);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
   });
 });

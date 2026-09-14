@@ -31,12 +31,40 @@ describe('handleUiRequest', () => {
     expect(res?.status).toBe(403);
   });
 
-  it('accepts 127.0.0.1 as well as localhost', () => {
-    const res = handleUiRequest(
-      { method: 'GET', url: '/__sonata/api/ping', headers: { host: '127.0.0.1:4100' } },
-      deps,
-    );
-    expect(res?.status).toBe(200);
+  it('accepts each loopback host with the router port', () => {
+    for (const host of ['localhost:4100', '127.0.0.1:4100', '[::1]:4100']) {
+      const res = handleUiRequest(
+        { method: 'GET', url: '/__sonata/api/ping', headers: { host } },
+        deps,
+      );
+      expect(res?.status).toBe(200);
+    }
+  });
+
+  it('accepts bare loopback hosts only on the default HTTP port', () => {
+    for (const host of ['localhost', '127.0.0.1', '[::1]']) {
+      const res = handleUiRequest(
+        { method: 'GET', url: '/__sonata/api/ping', headers: { host } },
+        { ...deps, port: 80 },
+      );
+      expect(res?.status).toBe(200);
+    }
+  });
+
+  it('rejects a loopback host with the wrong or malformed port', () => {
+    for (const host of ['localhost:9999', 'localhost:bad', 'localhost:4100:extra', '[::1]garbage']) {
+      const res = handleUiRequest(
+        { method: 'GET', url: '/__sonata/api/ping', headers: { host } },
+        deps,
+      );
+      expect(res?.status).toBe(403);
+    }
+  });
+
+  it('refuses HEAD because the UI only accepts GET', () => {
+    const res = handleUiRequest({ method: 'HEAD', url: '/__sonata/api/ping', headers: host }, deps);
+    expect(res?.status).toBe(405);
+    expect(body(res!).error).toMatch(/GET/);
   });
 
   it('never sends a CORS header', () => {
