@@ -8,6 +8,32 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Changed
+- **Value is measured per task, never across units.** The simple tier's sort
+  divided capability by whichever cost a row carried: `costPerTask` (dollars
+  per unit of work) where AA costed the model, the per-1M blend (dollars per
+  token) where it did not — two orders of magnitude apart. Measured,
+  `deepseek-v4-flash@none` (18.9 at $0.12/1M) out-valued `deepseek-flash@max`
+  (39.5 at $0.265/task) on a unit error. Every per-task-costed row now ranks
+  ahead of every uncosted one, and the ratio is only taken within a unit; the
+  complex tier's cost tie-break is likewise void across units. Admission
+  already compared per-task costs only — this is the sort catching up. A
+  catalog with no per-task costs at all ranks exactly as before.
+- **Every catalog row is offered at a level; a row stating none is `@none`.**
+  AA's only DeepSeek V4.1 Flash row is "(Reasoning, Max Effort)"; the wizard and
+  `sonata agents` offered the bare key, which ranked on the max-effort score
+  and ran at whatever the gateway defaulted to — the exact mismatch the
+  `@<effort>` grammar exists to prevent, and one it had been drawing the line
+  at "two or more levels" to avoid. A single-row family is now a family: the
+  key is offered as `@max` (or whichever level the row states), a hand-pinned
+  level scores, and a bare key is refused at load like any other family's —
+  `sonata init` re-proposes it. A row whose name carries **no** level
+  parenthetical was scored with no reasoning level in play, so it is recorded
+  at `none` and offered as `@none` for the same reason: offered bare it would
+  rank on that score and then run at whatever the gateway defaults to. Every
+  tiered candidate therefore now names the level it was ranked at, and an
+  existing config's bare keys are refused until `sonata init` re-ranks them.
+
 ## [0.9.0] - 2026-09-14
 
 ### Fixed
