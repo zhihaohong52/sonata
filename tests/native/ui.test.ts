@@ -80,7 +80,7 @@ describe('handleUiRequest', () => {
 
   it('returns a JSON error rather than throwing, so the Anthropic catch-all is never reached', () => {
     const res = handleUiRequest(
-      { method: 'GET', url: '/__sonata/api/boom', headers: host },
+      { method: 'GET', url: '/__sonata/api/usage', headers: host },
       { ...deps, now: () => { throw new Error('kaboom'); } },
     );
     expect(res?.status).toBe(500);

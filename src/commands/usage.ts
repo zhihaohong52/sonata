@@ -120,7 +120,7 @@ export function projectResolver(home: string): ProjectResolver {
   };
 }
 
-function labelOf(
+export function labelOf(
   row: LedgerRow,
   by: UsageDimension,
   sessions: Record<string, SessionRecord>,

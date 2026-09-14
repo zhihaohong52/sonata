@@ -6,6 +6,7 @@
  * that already exists". Nothing in this file may sum a token or a dollar.
  */
 import type { RouterResponse } from './router.js';
+import { usagePayload } from './ui-usage.js';
 
 /**
  * Trailing slash is load-bearing: `/__sonata_health` is the pre-existing
@@ -81,14 +82,15 @@ export function handleUiRequest(
   }
 }
 
-function route(path: string, _query: URLSearchParams, deps: UiDeps): RouterResponse {
+function route(path: string, query: URLSearchParams, deps: UiDeps): RouterResponse {
   const rest = path === '/__sonata' ? '' : path.slice(UI_PREFIX.length);
   switch (rest) {
     case 'api/ping':
       return jsonResponse(200, { ok: true, port: deps.port, now: (deps.now ?? Date.now)() });
-    case 'api/boom':
-      // Exercised by the error-envelope test via a throwing `now`.
-      return jsonResponse(200, { now: (deps.now ?? Date.now)() });
+    case 'api/usage': {
+      const { report, by, filters } = usagePayload(deps, query);
+      return jsonResponse(200, { by, filters, report });
+    }
     default:
       return jsonResponse(404, { error: `sonata UI: no such path ${rest}` });
   }
