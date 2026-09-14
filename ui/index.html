@@ -3,7 +3,7 @@
 <title>sonata</title>
 <!--
   One file, no build step, no dependency. Fetched content is model-authored:
-  it is inserted with textContent only. The absence of innerHTML here is
+  it is inserted with textContent only. The page is checked for unsafe HTML
   asserted by tests/native/ui-page.test.ts.
 -->
 <style>
@@ -88,8 +88,7 @@ async function get(path, params) {
   return res.json();
 }
 
-// textContent only: fetched content is written by models and by foreign
-// harnesses. Never innerHTML.
+// Fetched content is written by models and by foreign harnesses.
 function cell(tr, text, cls) {
   const td = document.createElement('td');
   if (cls) td.className = cls;
@@ -102,8 +101,9 @@ function clear(tbody) { while (tbody.firstChild) tbody.removeChild(tbody.firstCh
 
 const knownProjects = new Set();
 
-async function loadRows() {
+async function loadRows(generation) {
   const data = await get('/__sonata/api/sessions', filters());
+  if (generation !== refreshGeneration) return;
   const tbody = $('rows').tBodies[0];
   clear(tbody);
   for (const row of data.rows) {
@@ -138,12 +138,16 @@ async function loadRows() {
   }
 }
 
+let detailGeneration = 0;
+
 async function showDetail(row) {
+  const generation = ++detailGeneration;
   $('detail').className = '';
   $('detail').textContent = 'loading…';
   try {
     if (row.kind === 'session') {
       const d = await get('/__sonata/api/session/' + encodeURIComponent(row.id), filters());
+      if (generation !== detailGeneration) return;
       $('detail').textContent = d.routes.map((r) =>
         [r.alias, '->', r.served || '(none served)', r.status,
          'in=' + r.input, 'out=' + r.output,
@@ -152,19 +156,21 @@ async function showDetail(row) {
     } else {
       const p = new URLSearchParams({ project: row.cwd });
       const d = await get('/__sonata/api/run/' + encodeURIComponent(row.id), p);
+      if (generation !== detailGeneration) return;
       $('detail').textContent =
         (d.truncated ? '[transcript truncated — showing the tail]\n\n' : '') +
         d.transcript + (d.report ? '\n\n--- report.md ---\n' + d.report : '');
     }
   } catch (err) {
-    $('detail').textContent = String(err);
+    if (generation === detailGeneration) $('detail').textContent = String(err);
   }
 }
 
-async function loadDashboard() {
+async function loadDashboard(generation) {
   const p = filters();
   p.set('by', $('by').value);
   const data = await get('/__sonata/api/usage', p);
+  if (generation !== refreshGeneration) return;
   const r = data.report;
   // Three separate figures. Summing them would make the headline disagree
   // with what was actually billed.
@@ -198,9 +204,21 @@ async function loadDashboard() {
   }
 }
 
+let refreshGeneration = 0;
+let refreshInFlight = false;
+
 async function refresh() {
-  try { await Promise.all([loadRows(), loadDashboard()]); }
-  catch (err) { $('detail').textContent = String(err); }
+  if (refreshInFlight) return;
+  refreshInFlight = true;
+  const generation = ++refreshGeneration;
+  try {
+    await Promise.all([loadRows(generation), loadDashboard(generation)]);
+    if (generation !== refreshGeneration) return;
+  } catch (err) {
+    if (generation === refreshGeneration) $('detail').textContent = String(err);
+  } finally {
+    refreshInFlight = false;
+  }
 }
 
 for (const id of ['project', 'session', 'since', 'by']) $(id).onchange = refresh;

@@ -27,12 +27,14 @@ describe('the page', () => {
     expect(names).not.toContain('access-control-allow-origin');
   });
 
-  it('inserts ledger and transcript content as text, never as HTML', () => {
-    // The page renders model-authored content. Any use of innerHTML on fetched
-    // data is how that becomes script execution.
+  it('contains no HTML or code-injection sinks', () => {
+    // This is intentionally a static-only guard: fetched content is read from
+    // the page source, while DOM render-path correctness uses textContent.
     const html = readFileSync(uiAssetPath(), 'utf8');
-    expect(html).not.toMatch(/\.innerHTML\s*=/);
-    expect(html).not.toMatch(/insertAdjacentHTML/);
+    const forbidden = ['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write', 'eval(', 'new Function'];
+    for (const identifier of forbidden) {
+      expect(html, `found forbidden identifier: ${identifier}`).not.toContain(identifier);
+    }
   });
 
   it('is listed in package.json files so it reaches the tarball', () => {
