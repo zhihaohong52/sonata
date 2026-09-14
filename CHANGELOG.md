@@ -9,6 +9,27 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 ## [Unreleased]
 
 ### Fixed
+- **A vendor's versionless alias ranks.** DeepSeek's API serves V4.1 Flash as
+  `deepseek-flash`, and no shortening of that spelling reaches Artificial
+  Analysis's versioned `deepseek-v4-1-flash`, so a BYOK DeepSeek gateway
+  ranked it from the unscored default. models.dev names each provider's own
+  slug (`deepseek-flash` → "DeepSeek V4.1 Flash"), so `sonata catalog update`
+  now caches that name and every ranking lookup — the wizard, `sonata
+  agents`, `sonata doctor`'s coverage check and `loadConfig`'s effort check —
+  offers it as a second spelling after the id. The id always wins when it
+  scores, and the name is consulted only under the providers the gateway
+  prices by (`pricing_provider`, else the proposal its name earns), because
+  the same slug means a different model under a different reseller.
+- **A gateway named after its vendor scores its models.** `normalizeModelName`
+  strips configured gateway names off a *key*, but every ranking caller hands
+  it the bare *id* — and a vendor's model names begin with the vendor, so a
+  gateway called `deepseek` had `deepseek-` eaten off `deepseek-v4-pro` and AA
+  asked about `v4-pro`. Measured: every model on such a gateway ranked from the
+  unscored default and lost its effort variants. Each spelling is now offered
+  stripped, then as-is; a lookup that was already right is unchanged.
+- **`npm test` runs on a fresh clone again.** `.gitignore` said
+  `node_modules/`, whose trailing slash matches only a directory, so a symlink
+  of that name was committed (#33) pointing at one machine's absolute path.
 - **`sonata route auto` routes again, and still keeps Remote Control.** Each
   session now writes the routing env at `SessionStart` and schedules a settle
   that takes it back out a few seconds later, so the session routes from its

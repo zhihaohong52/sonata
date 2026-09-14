@@ -29,7 +29,8 @@ import { litellmRequired } from '../native/providers.js';
 import { litellmStatus, type InstallerDeps } from '../native/litellm-venv.js';
 import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm.js';
 import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, loadAaCatalog } from '../catalog.js';
-import { proposePricingProvider } from '../pricing.js';
+import { loadModelsDev } from '../modelsdev.js';
+import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
 import { keyReport, resolveKeyFromSource } from '../native/credentials.js';
@@ -289,20 +290,25 @@ export async function cmdDoctor(
       // `native.models` when it carries a gateway and into `models` when it
       // carries a harness — and a key routed only one of those ways is absent
       // from the other map entirely.
-      const upstream = (candidate: string): string => {
-        const { key } = splitCandidate(candidate);
-        return config.native?.models?.[key]?.id ?? config.models?.[key]?.id ?? key;
-      };
+      const upstream = (key: string): string =>
+        config.native?.models?.[key]?.id ?? config.models?.[key]?.id ?? key;
       // Gateway names are what `normalizeModelName` strips to recover the
       // upstream id, so passing them is what makes a key like
-      // `<gateway>-<model>` resolvable at all.
+      // `<gateway>-<model>` resolvable at all. The resolver is the one
+      // `loadConfig` scores by, so a vendor's versionless alias that scores
+      // there through its models.dev name is not reported unscored here.
       const gateways = Object.keys(config.native?.gateways ?? {});
-      const { unscored } = catalogCoverage(tiered.map(upstream), catalog, gateways);
+      // Coverage is by bare key: a pinned level on a model the catalog does
+      // not score by level is a choice, not a model the catalog lacks.
+      const resolver = configUpstreamFor(config, loadModelsDev(home));
+      const bareKeys = [...new Set(tiered.map((candidate) => splitCandidate(candidate).key))];
+      const { unscored: unscoredKeys } = catalogCoverage(bareKeys, catalog, gateways, resolver);
+      const unscored = unscoredKeys.map(upstream);
       checks.push(unscored.length > 0
         ? {
             name: 'model rankings',
             ok: true,
-            detail: `${unscored.length} of ${tiered.length} tiered models unscored `
+            detail: `${unscored.length} of ${bareKeys.length} tiered models unscored `
               + `(${unscored.slice(0, 3).join(', ')}${unscored.length > 3 ? ', …' : ''}) — `
               + 'ranked from built-in defaults; run `sonata catalog update`',
           }
@@ -315,7 +321,7 @@ export async function cmdDoctor(
         : {
             name: 'model rankings',
             ok: true,
-            detail: `${count} models · all ${tiered.length} tiered models scored · fetched ${catalog.fetchedAt}`,
+            detail: `${count} models · all ${bareKeys.length} tiered models scored · fetched ${catalog.fetchedAt}`,
           });
       // A catalog written before effort levels existed has no `family` on any
       // row, so the refusal cannot fire and nothing here could show it: a

@@ -26,6 +26,8 @@ import { join } from 'node:path';
 
 import { GLOBAL_CONFIG_RELATIVE, configPath as resolveConfigPath, parseConfig, type SonataConfig } from '../config.js';
 import { assertEffortsPinned, loadAaCatalog } from '../catalog.js';
+import { loadModelsDev } from '../modelsdev.js';
+import { configUpstreamFor } from '../pricing.js';
 import { loadSessions } from '../sessions.js';
 import type { RouterTenant } from './router.js';
 
@@ -116,7 +118,7 @@ export class TenantRegistry {
     // the catalog read is skipped; parsing happens either way.
     if (config.tiers === undefined) return config;
     // Router requests bypass loadConfig, so validate against this registry's cache here.
-    assertEffortsPinned(config, loadAaCatalog(this.home));
+    assertEffortsPinned(config, loadAaCatalog(this.home), configUpstreamFor(config, loadModelsDev(this.home)));
     return config;
   }
 

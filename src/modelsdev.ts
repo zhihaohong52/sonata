@@ -27,6 +27,17 @@ export interface ModelsDevCache {
    * which reads as "unknown" and falls back to the built-in default.
    */
   contexts?: Record<string, Record<string, number>>;
+  /**
+   * provider id -> model id -> display name.
+   *
+   * A provider's slug is its own: DeepSeek serves V4.1 Flash as the
+   * versionless alias `deepseek-flash`, and no catalog keyed by versioned
+   * model can be asked about that. The display name is the one field every
+   * provider agrees on for the same weights (`DeepSeek V4.1 Flash` under all
+   * thirty that list it), so it is what joins a slug to a ranking. Absent on
+   * a cache written before this field existed, which reads as "unknown".
+   */
+  names?: Record<string, Record<string, string>>;
 }
 
 export function modelsDevPath(home: string): string {
@@ -89,6 +100,86 @@ export function normalizeModelsDevContexts(doc: unknown): NonNullable<ModelsDevC
     if (Object.keys(models).length > 0) contexts[providerId] = models;
   }
   return contexts;
+}
+
+/**
+ * Read `name` for every model models.dev publishes one for, costed or not —
+ * the rate normalizer requires a `cost` block, and an uncosted model still
+ * has a name.
+ */
+export function normalizeModelsDevNames(doc: unknown): NonNullable<ModelsDevCache['names']> {
+  if (!isRecord(doc)) return {};
+  const names: NonNullable<ModelsDevCache['names']> = {};
+  for (const [providerId, rawProvider] of Object.entries(doc)) {
+    if (providerId === '' || !isRecord(rawProvider) || !isRecord(rawProvider.models)) continue;
+    const models: Record<string, string> = {};
+    for (const [modelId, rawModel] of Object.entries(rawProvider.models)) {
+      if (modelId === '' || !isRecord(rawModel)) continue;
+      const name = rawModel.name;
+      if (typeof name !== 'string' || name.trim() === '') continue;
+      models[modelId] = name.trim();
+    }
+    if (Object.keys(models).length > 0) names[providerId] = models;
+  }
+  return names;
+}
+
+/**
+ * The display name models.dev gives an upstream id, under the providers a
+ * gateway names — and only those.
+ *
+ * Unlike a context window, a *slug* is not a property of the model: `nan`
+ * files `deepseek-v4-flash` as V4.1 Flash while DeepSeek itself files that
+ * slug as V4 Flash. So the search is the one pricing performs — the gateway's
+ * `pricing_provider` list, in order, exact slug first and then the bare-id
+ * match against a vendor-qualified key — never every provider. Two matches
+ * naming different models is a coin flip, and answers nothing.
+ */
+export function displayNameFor(
+  names: NonNullable<ModelsDevCache['names']> | undefined,
+  providers: readonly string[],
+  id: string,
+): string | undefined {
+  if (names === undefined || id === '') return undefined;
+  const wanted = id.includes(':') ? id.slice(0, id.indexOf(':')) : id;
+  if (wanted === '') return undefined;
+  const bareWanted = wanted.includes('/') ? wanted.slice(wanted.indexOf('/') + 1) : wanted;
+  for (const provider of providers) {
+    const table = names[provider];
+    if (table === undefined) continue;
+    const exact = table[wanted];
+    if (exact !== undefined) return exact;
+    let found: string | undefined;
+    for (const [key, name] of Object.entries(table)) {
+      const slash = key.indexOf('/');
+      if (slash <= 0 || slash === key.length - 1) continue;
+      if (key.slice(slash + 1) !== bareWanted) continue;
+      if (found === undefined) { found = name; continue; }
+      if (found !== name) { found = undefined; break; }
+    }
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+/**
+ * The names a ranking catalog may be asked about for an upstream id: the id
+ * itself, then its models.dev display name spelled as a model id. Order is
+ * precedence — `normalizedFor` in catalog.ts tries these in turn and the
+ * first that scores wins, so the name can only add a score where the id
+ * found none. The spelling is the obvious one (`DeepSeek V4.1 Flash` →
+ * `deepseek-v4.1-flash`); `aaMatchKey` folds the dot on lookup, and a name
+ * that spells the same as the id is not offered twice.
+ */
+export function catalogSpellingsFor(
+  names: NonNullable<ModelsDevCache['names']> | undefined,
+  providers: readonly string[],
+  id: string,
+): string[] {
+  const name = displayNameFor(names, providers, id);
+  if (name === undefined) return [id];
+  const spelled = name.toLowerCase().replace(/\s+/g, '-');
+  return spelled === id ? [id] : [id, spelled];
 }
 
 /**

@@ -50,6 +50,8 @@ describe('cmdCatalogUpdate', () => {
     expect(JSON.parse(readFileSync(modelsDevPath(home), 'utf8'))).toMatchObject({
       fetchedAt: '2026-09-10T12:00:00.000Z',
       providers: { deepseek: { 'deepseek-v4-flash': { input: 0.44, output: 1.32, cachedInput: 0.014, cacheWrite: 0.66 } } },
+      // The display name is what joins a provider's own slug to a ranking.
+      names: { deepseek: { 'deepseek-v4-flash': 'Synthetic Flash' } },
     });
   });
 

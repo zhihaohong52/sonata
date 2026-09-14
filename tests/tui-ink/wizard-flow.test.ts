@@ -329,3 +329,61 @@ describe('a tier screen for a harness-only config entry', () => {
     expect([...offeredRows(w.lastFrame()!)].sort()).toEqual([...expected].sort());
   });
 });
+
+describe('a tier screen for a gateway whose slug is a versionless alias', () => {
+  // DeepSeek serves V4.1 Flash as `deepseek-flash`, which AA files under the
+  // versioned `deepseek-v4-1-flash`; models.dev names the slug, and the
+  // wizard has to rank through that name or the model is offered unscored
+  // and bare — measured on a BYOK DeepSeek gateway, both of its models were.
+  it('offers the effort variants the models.dev name resolves to', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-wizard-alias-'));
+    const path = aaCatalogPath(home);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      fetchedAt: '2026-09-13T00:00:00Z',
+      models: {
+        'deepseek-v4-1-flash': { codingIndex: 60, blendedPriceUsd: 0.5, agenticIndex: 40, costPerTask: 0.2, family: 'deepseek-v4-1-flash', effort: 'max' },
+        'deepseek-v4-1-flash-high': { codingIndex: 55, blendedPriceUsd: 0.5, agenticIndex: 36, costPerTask: 0.1, family: 'deepseek-v4-1-flash', effort: 'high' },
+        'deepseek-v4-pro': { codingIndex: 59, blendedPriceUsd: 0.54, agenticIndex: 28, costPerTask: 0.12, family: 'deepseek-v4-pro', effort: 'max' },
+        'deepseek-v4-pro-high': { codingIndex: 58, blendedPriceUsd: 0.54, agenticIndex: 27, costPerTask: 0.11, family: 'deepseek-v4-pro', effort: 'high' },
+      },
+    }));
+    writeFileSync(join(dirname(path), 'models-dev.json'), JSON.stringify({
+      fetchedAt: '2026-09-13T00:00:00Z',
+      providers: { deepseek: { 'deepseek-flash': { input: 0.15, output: 0.6 } } },
+      names: { deepseek: { 'deepseek-flash': 'DeepSeek V4.1 Flash' } },
+    }));
+
+    const w = renderWizard({
+      home,
+      harnesses: [{ name: 'opencode', installed: true }],
+      providers: [{ key: 'byok/deepseek', harness: 'byok', provider: 'deepseek', count: 2 }],
+      candidates: [
+        { key: 'deepseek-deepseek-flash', gateway: 'deepseek', id: 'deepseek-flash', label: 'deepseek/deepseek-flash' },
+        { key: 'deepseek-deepseek-v4-pro', gateway: 'deepseek', id: 'deepseek-v4-pro', label: 'deepseek/deepseek-v4-pro' },
+      ],
+      roles: ['code'],
+      byokProviders: [],
+      storedKeys: {},
+      gatewayAuth: { deepseek: 'api-key' },
+      fetchModels: async () => ({ outcome: 'ok', models: [] }),
+      initialStateByScope: {
+        project: {
+          configScope: 'project',
+          providerKeys: ['byok/deepseek'],
+          nativeKeys: ['deepseek-deepseek-flash', 'deepseek-deepseek-v4-pro'],
+          roles: ['code'],
+        },
+      },
+    });
+    await w.press(ENTER); // config scope -> project
+    await w.press(DOWN, ENTER); // providers menu -> the "Continue" row
+    await w.press(ENTER); // models -> the saved selection
+    await w.press(ENTER); // roles -> the saved role
+    expect(w.lastFrame()).toContain('code: simple models');
+    expect([...offeredRows(w.lastFrame()!)].sort()).toEqual([
+      'deepseek-deepseek-flash@high', 'deepseek-deepseek-flash@max',
+      'deepseek-deepseek-v4-pro@high', 'deepseek-deepseek-v4-pro@max',
+    ]);
+  });
+});
