@@ -1006,3 +1006,48 @@ describe('proposeTiers — effort breaks a capability-and-price tie', () => {
     expect(proposeTiers(['gemini-3.7-flash'], cheaper).complex[0]).toBe('gemini-3.7-flash@low');
   });
 });
+
+describe('proposeTiers — value is measured per task, never across units', () => {
+  // Admission already compares per-task costs only, but the simple tier's
+  // *sort* divided capability by whichever number a row had: `costPerTask`
+  // in dollars per unit of work, or the per-1M blend in dollars per token.
+  // Measured: `deepseek-v4-flash@none` (18.9 at $0.12/1M) out-valued
+  // `deepseek-flash@max` (39.5 at $0.265/task) — a unit error, not a ranking.
+  const aa: AaCatalog = {
+    fetchedAt: '2026-09-13T00:00:00Z',
+    models: {
+      'deepseek-v4-1-flash': { codingIndex: 55, blendedPriceUsd: 0.5, agenticIndex: 39.5, costPerTask: 0.265, family: 'deepseek-v4-1-flash', effort: 'max' },
+      'deepseek-v4-flash-non-reasoning': { codingIndex: 45, blendedPriceUsd: 0.12, agenticIndex: 38.9, family: 'deepseek-v4-flash', effort: 'none' },
+      'deepseek-v4-flash': { codingIndex: 60, blendedPriceUsd: 0.66, agenticIndex: 41.7, costPerTask: 0.22, family: 'deepseek-v4-flash', effort: 'max' },
+    },
+  };
+
+  it('ranks every per-task-costed row ahead of every uncosted one in the simple tier', () => {
+    expect(proposeTiers(['deepseek-v4.1-flash', 'deepseek-v4-flash'], aa).simple)
+      .toEqual(['deepseek-v4-flash@max', 'deepseek-v4.1-flash@max', 'deepseek-v4-flash@none']);
+  });
+
+  it('still orders an all-uncosted set by capability per per-1M dollar', () => {
+    const uncosted: AaCatalog = {
+      fetchedAt: aa.fetchedAt,
+      models: {
+        'a': { codingIndex: 50, blendedPriceUsd: 0.5, agenticIndex: 50 },
+        'b': { codingIndex: 52, blendedPriceUsd: 0.9, agenticIndex: 52 },
+      },
+    };
+    expect(proposeTiers(['a', 'b'], uncosted).simple).toEqual(['a', 'b']);
+  });
+
+  it('breaks a complex-tier capability tie on per-task cost, not on a per-1M figure', () => {
+    // 41.7 vs 41.5: a tie. The uncosted row's $0.12/1M must not read as
+    // "cheaper" than $0.22/task.
+    const tied: AaCatalog = {
+      fetchedAt: aa.fetchedAt,
+      models: {
+        'x': { codingIndex: 60, blendedPriceUsd: 0.66, agenticIndex: 41.7, costPerTask: 0.22 },
+        'y': { codingIndex: 60, blendedPriceUsd: 0.12, agenticIndex: 41.5 },
+      },
+    };
+    expect(proposeTiers(['x', 'y'], tied).complex).toEqual(['x', 'y']);
+  });
+});

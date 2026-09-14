@@ -9,6 +9,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 ## [Unreleased]
 
 ### Changed
+- **Value is measured per task, never across units.** The simple tier's sort
+  divided capability by whichever cost a row carried: `costPerTask` (dollars
+  per unit of work) where AA costed the model, the per-1M blend (dollars per
+  token) where it did not — two orders of magnitude apart. Measured,
+  `deepseek-v4-flash@none` (18.9 at $0.12/1M) out-valued `deepseek-flash@max`
+  (39.5 at $0.265/task) on a unit error. Every per-task-costed row now ranks
+  ahead of every uncosted one, and the ratio is only taken within a unit; the
+  complex tier's cost tie-break is likewise void across units. Admission
+  already compared per-task costs only — this is the sort catching up. A
+  catalog with no per-task costs at all ranks exactly as before.
 - **A model AA scored at one stated level is offered at that level.** AA's
   only DeepSeek V4.1 Flash row is "(Reasoning, Max Effort)"; the wizard and
   `sonata agents` offered the bare key, which ranked on the max-effort score

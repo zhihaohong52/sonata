@@ -628,11 +628,21 @@ function rank(
   aa?: AaCatalog,
   providers: readonly string[] = [],
   upstreamFor: UpstreamFor = identityUpstream,
-): { index: number; price: number } {
+): { index: number; price: number; perTask: boolean } {
   const scored = scoreFor(key, aa, providers, upstreamFor);
   return scored !== undefined
-    ? { index: capabilityOf(scored), price: costOfEntry(scored) }
-    : { index: AA_CAPABLE_CODING_INDEX, price: AA_CHEAP_BLENDED_PRICE_USD };
+    ? { index: capabilityOf(scored), price: costOfEntry(scored), perTask: scored.costPerTask !== undefined }
+    : { index: AA_CAPABLE_CODING_INDEX, price: AA_CHEAP_BLENDED_PRICE_USD, perTask: false };
+}
+
+/**
+ * Compare two prices only when they are in the same unit. `price` is dollars
+ * per task where AA costed the model and dollars per 1M tokens otherwise —
+ * two orders of magnitude apart — so across units the comparison is void
+ * (0), and a costed row sorts ahead of an uncosted one wherever that matters.
+ */
+function samePriceUnit(a: { perTask: boolean }, b: { perTask: boolean }): boolean {
+  return a.perTask === b.perTask;
 }
 
 /**
@@ -686,14 +696,26 @@ export function proposeTiers(
   const byCapability = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
     const gap = Math.abs(rb.index - ra.index) <= AA_CAPABILITY_TIE_MARGIN ? 0 : rb.index - ra.index;
-    return avoidance(a, b) || gap || ra.price - rb.price || byLevel(a, b);
+    const byPrice = samePriceUnit(ra, rb) ? ra.price - rb.price : 0;
+    return avoidance(a, b) || gap || byPrice || byLevel(a, b);
   };
   // Simple work wants the most capability per dollar, capability breaking
   // ties. At one price, value *is* capability, so a score inside the tie
   // margin is the same noise it is above — a lower level scoring 0.3 higher
   // is not an edge, and the level decides as it does there.
+  //
+  // Value is only comparable within one price unit. Every row AA costed per
+  // task ranks ahead of every row it did not: a per-task cost prices the
+  // work, the per-1M blend prices tokens, and dividing capability by
+  // whichever a row happened to carry read `deepseek-v4-flash@none` (18.9 at
+  // $0.12/1M) as better value than `deepseek-flash@max` (39.5 at
+  // $0.265/task) — a unit error. Within the uncosted group the per-1M ratio
+  // is still a value ordering, just a weaker proxy, so a catalog with no
+  // per-task costs at all ranks exactly as before.
   const byValue = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
+    const byUnit = Number(rb.perTask) - Number(ra.perTask);
+    if (byUnit !== 0) return avoidance(a, b) || byUnit;
     if (ra.price === rb.price && Math.abs(rb.index - ra.index) <= AA_CAPABILITY_TIE_MARGIN) {
       return avoidance(a, b) || byLevel(a, b);
     }
