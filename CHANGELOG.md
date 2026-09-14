@@ -8,6 +8,23 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+- **`sonata route auto` routes again, and still keeps Remote Control.** Each
+  session now writes the routing env at `SessionStart` and schedules a settle
+  that takes it back out a few seconds later, so the session routes from its
+  first request while the *next* session still launches into a clean file.
+  Routing at `SubagentStart` had stopped working: the subagent that fires that
+  hook has already resolved its endpoint, so it reached `api.anthropic.com` and
+  died with `model_not_found` — which reads as a broken agent rather than
+  unrouted plumbing. The `SubagentStart`/`SubagentStop` pair is kept as a repair
+  path, since the value a session holds is long-lived but not proven permanent.
+- **A collapsed tier agent can route at all.** `SONATA_AGENT_MATCHER` required a
+  trailing hyphen, so a role whose `simple` and `complex` lists are element-wise
+  identical — generated as one agent named for the role alone, e.g. `explore` —
+  matched nothing, fired no hook, and died at Anthropic. The matcher now ends
+  `(-|$)`; Claude Code's own `Explore`/`Plan` are still excluded by case, and a
+  longer name like `planner` by the boundary.
+
 ### Added
 - **Effort-level tier candidates** (`"gpt-5.6-luna@xhigh"`). `sonata catalog
   update` now records which reasoning-effort level each Artificial Analysis

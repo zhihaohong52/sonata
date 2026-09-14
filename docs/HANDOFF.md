@@ -140,7 +140,12 @@ not:
    this repository. Note the reporter's hand-copied `sonata.toml` is still
    registered with the running router as its *own* tenant — that split is what
    the borrow removes once the copy is deleted.
-2. **The settings `env` block is read at launch only, on the current Claude
+2. **~~The settings `env` block is read at launch only~~ — RETRACTED
+   2026-09-14; see "The launch-only finding was wrong" below.** What follows is
+   the observation as recorded at the time. The dispatches really did 404; the
+   inference drawn from them did not survive measurement.
+
+   **The settings `env` block is read at launch only, on the current Claude
    Code build.** They wrote the env by hand into a *running* session's settings
    file, confirmed `route status` reported routing on, and two native agents
    dispatched from that session still 404'd at `api.anthropic.com` with the
@@ -185,6 +190,62 @@ exist in the worktree. Given finding 2 above, launch with `sonata code` from
 the worktree, or run `sonata route on` there *before* starting the session —
 `route auto` installs the hooks but cannot route a session that has already
 launched.
+
+## The launch-only finding was wrong — corrected 2026-09-14
+
+The 2026-09-10 conclusion above ("the settings `env` block is read at launch
+only") was mistaken, and the "upstream-blocked, don't attempt another local
+fix" verdict built on it is withdrawn. `route auto` is fixed on `main`'s
+successor branch; this section records how, because the *evidence* that
+overturned it is the part worth keeping.
+
+**What was actually happening.** Mid-session `env` writes ARE picked up. What
+fails is one subagent: the one whose start fires the `SubagentStart` hook has
+already resolved its endpoint by the time the hook's write lands, so it alone
+reaches `api.anthropic.com` and dies with `model_not_found`. Every earlier
+session watched exactly that subagent fail and concluded nothing was read.
+
+**The measurements** (Claude Code 2.1.270, all attributed per session id in the
+ledger rather than by router log line — the log is shared by every routed
+session on the machine, which is how the first attempt at this confounded two
+sessions):
+
+- A session that launched into a clean settings file picked up an env written
+  mid-session by a `SubagentStart` hook at 18:53:32 and routed **231 requests**
+  afterwards; its first routed request landed in the same second as the write.
+- A subagent dispatched from that same session later routed normally
+  (`sonata-review-simple -> deepseek-deepseek-flash`, 200).
+- Removing the env does **not** stop a running session routing: 54 minutes and
+  still routing, pinged every 8 minutes.
+- A session launched clean and routed by its own `SessionStart` hook keeps
+  Remote Control — confirmed by the user against the live session, and again by
+  the cross-session messaging layer reporting it as Remote Control connected.
+
+**The fix.** `cmdRouteSession('start')` writes the routing env — before any
+subagent exists, so nothing races it — and schedules `cmdRouteSettle`, which
+takes it back out a few seconds later in a detached child (the hook blocks the
+session's own start, so the delay cannot be waited out in-process). The session
+keeps routing on the value it has already read; the removal is what lets the
+next session launch clean and keep Remote Control. Verified end to end: a
+session launched against the built CLI routed 11 requests including a tier
+alias, with the settings file clean again by the time it did.
+
+**The `SubagentStart`/`SubagentStop` pair is kept, demoted to a repair path.**
+The reverted `bdf8e27` experiment remains the honest limit: the value a session
+holds is a cache with a lifetime, not a permanent state, and that session
+lapsed after tens of minutes. 54 minutes is longer than that and still not a
+proof of permanence. So a lapse must be *recoverable* rather than assumed away
+— if one happens, the next foreign-model subagent's start re-writes the env and
+the session picks it up again. **If you observe a lapse, that is the mechanism
+to reach for; do not lengthen the settle delay, which cannot help.**
+
+**Also fixed while measuring this: a collapsed tier agent could never route.**
+`SONATA_AGENT_MATCHER` required a trailing hyphen, but a role whose `simple`
+and `complex` lists are element-wise identical is generated as ONE agent named
+for the role alone (`explore`). It matched nothing, fired no hook, and died at
+Anthropic — indistinguishable from a broken agent. The boundary is now `(-|$)`.
+This had been live for as long as `tiersCollapse` and the matcher have
+coexisted, and no test compared them.
 
 ## Effort-level tier candidates — PR 1 of 3 merged; **PR 2 and PR 3 are the queued work**
 

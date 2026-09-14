@@ -26,7 +26,7 @@ import { routerPorts } from './commands/ports.js';
 import { cmdCode } from './commands/code.js';
 import { recentRoutes } from './commands/status.js';
 import { summarizeRuns } from './commands/runs.js';
-import { cmdRoute, cmdRouteSession, cmdRouteSubagent, type RouteAction } from './commands/route.js';
+import { cmdRoute, cmdRouteSession, cmdRouteSettle, cmdRouteSubagent, type RouteAction } from './commands/route.js';
 import { cmdCatalogUpdate, validateAaKey } from './commands/catalog.js';
 import { cmdLitellm } from './commands/litellm.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
@@ -783,6 +783,22 @@ export async function main(argv: string[]): Promise<number> {
       return 0;
     }
 
+    // The settle: the second half of a SessionStart, run in a detached child
+    // so the hook itself returns at once. It waits out the window in which the
+    // session reads the routing env, then takes that env back out so the NEXT
+    // session launches into a clean file and keeps Remote Control.
+    if (action === 'session-settle') {
+      const id = rest[rest.indexOf('--id') + 1];
+      if (!rest.includes('--id') || !id) throw new Error('sonata route session-settle requires --id <session-id>');
+      try {
+        await cmdRouteSettle(id, opts);
+      } catch (err) {
+        if (err instanceof NoConfigError) return 0;
+        throw err;
+      }
+      return 0;
+    }
+
     // Also the body of a hook, not a surface for people: routing follows the
     // foreign-model subagents that need it, turned on at SubagentStart and off
     // when the last one stops.
@@ -816,7 +832,7 @@ export async function main(argv: string[]): Promise<number> {
         console.log('  see `sonata status` for what the router has actually served recently');
       }
       if (status.auto) {
-        console.log('  auto:   on — routing turns on only while a foreign-model subagent runs');
+        console.log('  auto:   on — each session routes itself at start, then clears the file again');
         console.log('          (every session keeps Remote Control: none launches into a routed file)');
         if (status.sessions > 0) console.log(`  live:   ${status.sessions} routed session(s)`);
       } else if (action === 'manual') {

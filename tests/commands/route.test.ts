@@ -19,6 +19,7 @@ import {
   routeEnv,
   cmdRoute,
   cmdRouteSession,
+  cmdRouteSettle,
   cmdRouteSubagent,
   routeSubagentsFile,
   subagentHookCommand,
@@ -540,18 +541,99 @@ describe('cmdRouteSession', () => {
     return { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
   }
 
-  it('counts a session without routing it — routing follows subagents, not sessions', async () => {
-    // Routing on at SessionStart is what made `route auto` degrade into
-    // `route on`: it stayed on while any session lived, so every session
-    // after the first launched into a dirty file and lost Remote Control.
+  // ── Why SessionStart routes again, and why that is no longer the old bug ──
+  //
+  // Routing here once made `route auto` degrade into `route on`: the env
+  // stayed in the file for as long as any session lived, so every session
+  // launched after the first read it at startup and lost Remote Control.
+  // Routing was moved to SubagentStart to avoid that, and then routed nothing
+  // at all — the subagent that FIRES the hook has already resolved its
+  // endpoint, so it goes to api.anthropic.com and dies with model_not_found.
+  //
+  // Three measurements on 2026-09-14 (Claude Code 2.1.270) settle the shape:
+  //   1. A session that launched into a clean file DOES pick up an env
+  //      written mid-session — 231 routed requests, starting in the same
+  //      second as the hook's write.
+  //   2. Only the triggering subagent misses it; every later one routes.
+  //   3. REMOVING the env does not stop a running session routing — 54
+  //      minutes and still going, confirmed per session id in the ledger.
+  //
+  // So the env only has to be present long enough for this session to read
+  // it. Writing it at SessionStart (before any subagent exists, so nothing
+  // races it) and taking it away again afterwards gives routing AND Remote
+  // Control to every session, which is what `route auto` always claimed.
+  it('routes the session it starts, then settles the file back to clean', async () => {
     const o = opts();
-    const started = await cmdRouteSession('start', 's1', o, deps);
-    expect(started).toEqual({ sessions: 1, routing: 'off' });
-    expect((await cmdRoute('status', o))?.on).toBe(false);
+    const settled: string[] = [];
+    const started = await cmdRouteSession('start', 's1', o, { ...deps, settle: (id) => settled.push(id) });
+
+    expect(started).toEqual({ sessions: 1, routing: 'on' });
+    expect((await cmdRoute('status', o))?.on).toBe(true);
+    // The settle is scheduled, not performed inline: it must outlive this
+    // process without delaying the hook, which blocks the session's start.
+    expect(settled).toEqual(['s1']);
 
     const ended = await cmdRouteSession('end', 's1', o, deps);
     expect(ended).toEqual({ sessions: 0, routing: 'off' });
     expect((await cmdRoute('status', o))?.on).toBe(false);
+  });
+
+  it('settling removes the routing env but leaves the session registered', async () => {
+    // The session keeps routing on the value it already read; what the
+    // removal buys is the NEXT session launching into a clean file. Losing
+    // the registration instead would make the next SessionEnd believe it was
+    // the last one out and tear routing down under a live session.
+    const o = opts();
+    await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
+    expect((await cmdRoute('status', o))?.on).toBe(true);
+
+    await cmdRouteSettle('s1', o, { delay: async () => {} });
+
+    expect((await cmdRoute('status', o))?.on).toBe(false);
+    expect(readSessions(routeSessionsFile(cwd, 'project', home))).toEqual(['s1']);
+  });
+
+  // Two sessions started inside one settle window: s1's settle must not take
+  // the env away from s2, which may not have read the file yet. Getting this
+  // wrong starts a session silently unrouted — the exact failure this whole
+  // design exists to remove, and the one that cannot be told apart from a
+  // broken agent. Only the NEWEST registered session clears, so the env
+  // survives until a full settle window after the last start.
+  it('does not let an older session settle away a newer one\'s routing', async () => {
+    const o = opts();
+    await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
+    await cmdRouteSession('start', 's2', o, { ...deps, settle: () => {} });
+
+    await cmdRouteSettle('s1', o, { delay: async () => {} });
+    expect((await cmdRoute('status', o))?.on).toBe(true);
+
+    await cmdRouteSettle('s2', o, { delay: async () => {} });
+    expect((await cmdRoute('status', o))?.on).toBe(false);
+  });
+
+  // Failing safe: an unsettled env costs the next session's Remote Control,
+  // which is visible at launch and recoverable. Clearing it for a session that
+  // may still be reading costs that session's routing, which is silent.
+  it('leaves the env alone when the settling session is gone', async () => {
+    const o = opts();
+    await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
+    await cmdRouteSession('start', 's2', o, { ...deps, settle: () => {} });
+    await cmdRouteSession('end', 's2', o, deps);
+
+    await cmdRouteSettle('s2', o, { delay: async () => {} });
+    expect((await cmdRoute('status', o))?.on).toBe(true);
+  });
+
+  it('waits before settling, so the session has read the file first', async () => {
+    const o = opts();
+    await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
+
+    let onAtDelay: boolean | undefined;
+    await cmdRouteSettle('s1', o, {
+      delay: async () => { onAtDelay = (await cmdRoute('status', o))?.on; },
+    });
+
+    expect(onAtDelay).toBe(true);
   });
 
   it('keeps counting a sibling session after one ends', async () => {
@@ -625,7 +707,7 @@ describe('cmdRouteSession', () => {
     expect(ended).toEqual({ sessions: 0, routing: 'off' });
     const started = await startPromise;
     // The start then re-registered on top of the completed write, not mid-write.
-    expect(started).toEqual({ sessions: 1, routing: 'off' });
+    expect(started).toEqual({ sessions: 1, routing: 'on' });
     // The registry is consistent: s2 is counted, exactly once.
     expect(readSessions(routeSessionsFile(cwd))).toEqual(['s2']);
 
@@ -654,7 +736,7 @@ describe('cmdRouteSession', () => {
 
     await expect(cmdRouteSession('start', 'global', { ...base, scope: 'global' }, deps)).resolves.toEqual({
       sessions: 1,
-      routing: 'off',
+      routing: 'on',
     });
     await expect(cmdRouteSession('start', 'project', { ...base, scope: 'project' }, deps)).rejects.toThrow();
   });
@@ -745,7 +827,7 @@ describe('cmdRouteSession', () => {
     ) as unknown as typeof fetch);
 
     const o = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
-    await expect(cmdRouteSession('start', 's1', o)).resolves.toEqual({ sessions: 1, routing: 'off' });
+    await expect(cmdRouteSession('start', 's1', o)).resolves.toEqual({ sessions: 1, routing: 'on' });
     expect(existsSync(routeSessionsFile(cwd))).toBe(true);
   });
 
@@ -884,6 +966,29 @@ describe('subagent hook installation', () => {
       expect(re.test(name)).toBe(true);
     }
     for (const name of ['general-purpose', 'Explore', 'Plan', 'statusline-setup']) {
+      expect(re.test(name)).toBe(false);
+    }
+  });
+
+  // A role whose `simple` and `complex` lists are element-wise identical is
+  // generated as ONE agent named for the role alone (`explore`, alias
+  // `sonata-explore`) — `tiersCollapse` is what decides that, and `sonata sync`
+  // writes the file. A matcher requiring the trailing hyphen never matches it,
+  // so a collapsed agent could never route: measured 2026-09-14 with an
+  // `explore` dispatch that fired no hook at all, wrote no routing env, and
+  // died with `model_not_found` at api.anthropic.com.
+  it('matches a collapsed tier agent, which is named for its role alone', () => {
+    const re = new RegExp(SONATA_AGENT_MATCHER);
+    for (const name of ['code', 'review', 'explore', 'plan', 'native-explore']) {
+      expect(re.test(name)).toBe(true);
+    }
+  });
+
+  it('still rejects a built-in whose name merely starts with a role word', () => {
+    const re = new RegExp(SONATA_AGENT_MATCHER);
+    // Case-sensitive, so Claude Code's own `Explore`/`Plan` never match; and a
+    // longer lowercase name must not match on its prefix alone.
+    for (const name of ['Explore', 'Plan', 'coder', 'planner', 'reviewer', 'explorer']) {
       expect(re.test(name)).toBe(false);
     }
   });
