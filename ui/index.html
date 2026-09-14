@@ -1,0 +1,210 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>sonata</title>
+<!--
+  One file, no build step, no dependency. Fetched content is model-authored:
+  it is inserted with textContent only. The absence of innerHTML here is
+  asserted by tests/native/ui-page.test.ts.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; padding: 16px; }
+  h1 { font-size: 15px; margin: 0 0 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid rgba(128,128,128,.3); }
+  th { font-weight: 600; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: rgba(128,128,128,.12); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .muted { opacity: .6; }
+  .totals { display: flex; gap: 24px; margin-bottom: 12px; }
+  pre { white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow: auto;
+        background: rgba(128,128,128,.1); padding: 8px; }
+</style>
+<h1>sonata</h1>
+<div class="bar">
+  <select id="project"><option value="">all projects</option></select>
+  <input id="session" placeholder="session id">
+  <select id="since">
+    <option value="1h">1h</option>
+    <option value="24h" selected>24h</option>
+    <option value="7d">7d</option>
+    <option value="30d">30d</option>
+  </select>
+  <select id="by">
+    <option value="model" selected>by model</option>
+    <option value="role">by role</option>
+    <option value="tier">by tier</option>
+    <option value="effort">by effort</option>
+    <option value="gateway">by gateway</option>
+    <option value="session">by session</option>
+    <option value="project">by project</option>
+  </select>
+  <label><input type="checkbox" id="live" checked> live</label>
+</div>
+
+<h2>Sessions &amp; runs</h2>
+<table id="rows"><thead><tr>
+  <th>kind</th><th>id</th><th>project</th><th>started</th><th>state</th>
+  <th class="num">req</th><th class="num">in</th><th class="num">out</th><th class="num">cost</th>
+</tr></thead><tbody></tbody></table>
+
+<h2>Detail</h2>
+<pre id="detail" class="muted">Select a row.</pre>
+
+<h2>Dashboard</h2>
+<div class="totals">
+  <div>priced <span id="t-priced">—</span></div>
+  <div>covered <span id="t-covered">—</span></div>
+  <div>unpriced <span id="t-unpriced">—</span></div>
+</div>
+<table id="buckets"><thead><tr>
+  <th>label</th><th class="num">req</th><th class="num">in</th><th class="num">out</th>
+  <th class="num">cost</th><th class="num">covered</th><th class="num">unpriced req</th>
+</tr></thead><tbody></tbody></table>
+
+<h2>Candidates fallen past</h2>
+<table id="failed"><thead><tr>
+  <th>candidate</th><th class="num">count</th><th>statuses</th>
+</tr></thead><tbody></tbody></table>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const usd = (n) => '$' + Number(n).toFixed(4);
+const int = (n) => Number(n).toLocaleString();
+
+function filters() {
+  const p = new URLSearchParams();
+  if ($('project').value) p.set('project', $('project').value);
+  if ($('session').value.trim()) p.set('session', $('session').value.trim());
+  p.set('since', $('since').value);
+  return p;
+}
+
+async function get(path, params) {
+  const res = await fetch(path + (params ? '?' + params : ''));
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+
+// textContent only: fetched content is written by models and by foreign
+// harnesses. Never innerHTML.
+function cell(tr, text, cls) {
+  const td = document.createElement('td');
+  if (cls) td.className = cls;
+  td.textContent = text;
+  tr.appendChild(td);
+  return td;
+}
+
+function clear(tbody) { while (tbody.firstChild) tbody.removeChild(tbody.firstChild); }
+
+const knownProjects = new Set();
+
+async function loadRows() {
+  const data = await get('/__sonata/api/sessions', filters());
+  const tbody = $('rows').tBodies[0];
+  clear(tbody);
+  for (const row of data.rows) {
+    if (row.project && !knownProjects.has(row.project)) {
+      knownProjects.add(row.project);
+      const opt = document.createElement('option');
+      opt.value = row.project;
+      opt.textContent = row.project;
+      $('project').appendChild(opt);
+    }
+    const tr = document.createElement('tr');
+    cell(tr, row.kind);
+    cell(tr, row.id);
+    cell(tr, row.project || '—');
+    cell(tr, row.started ? new Date(row.started).toLocaleString() : '—');
+    cell(tr, row.kind === 'run' ? row.state + (row.degraded ? ' (degraded)' : '') : (row.models || []).join(', '));
+    if (row.kind === 'session') {
+      cell(tr, int(row.requests), 'num');
+      cell(tr, int(row.input), 'num');
+      cell(tr, int(row.output), 'num');
+      const c = cell(tr, usd(row.costUsd), 'num');
+      if (row.unpricedRequests) c.title = row.unpricedRequests + ' unpriced request(s) not included';
+    } else {
+      cell(tr, '—', 'num');
+      cell(tr, '—', 'num');
+      cell(tr, '—', 'num');
+      // Never 0: this run never transited the router.
+      cell(tr, '—', 'num muted').title = row.usageReason;
+    }
+    tr.onclick = () => showDetail(row);
+    tbody.appendChild(tr);
+  }
+}
+
+async function showDetail(row) {
+  $('detail').className = '';
+  $('detail').textContent = 'loading…';
+  try {
+    if (row.kind === 'session') {
+      const d = await get('/__sonata/api/session/' + encodeURIComponent(row.id), filters());
+      $('detail').textContent = d.routes.map((r) =>
+        [r.alias, '->', r.served || '(none served)', r.status,
+         'in=' + r.input, 'out=' + r.output,
+         r.attempts.length ? 'past: ' + r.attempts.map((a) => a.key + '/' + a.status).join(' ') : ''
+        ].join(' ')).join('\n') || 'no requests in this window';
+    } else {
+      const p = new URLSearchParams({ project: row.cwd });
+      const d = await get('/__sonata/api/run/' + encodeURIComponent(row.id), p);
+      $('detail').textContent =
+        (d.truncated ? '[transcript truncated — showing the tail]\n\n' : '') +
+        d.transcript + (d.report ? '\n\n--- report.md ---\n' + d.report : '');
+    }
+  } catch (err) {
+    $('detail').textContent = String(err);
+  }
+}
+
+async function loadDashboard() {
+  const p = filters();
+  p.set('by', $('by').value);
+  const data = await get('/__sonata/api/usage', p);
+  const r = data.report;
+  // Three separate figures. Summing them would make the headline disagree
+  // with what was actually billed.
+  $('t-priced').textContent = usd(r.pricedTotalUsd);
+  $('t-covered').textContent = usd(r.covered.totalUsd) + ' (' + int(r.covered.requests) + ' req)';
+  $('t-unpriced').textContent = int(r.unpriced.requests) + ' req, ' +
+    int(r.unpriced.input) + ' in / ' + int(r.unpriced.output) + ' out';
+
+  const tb = $('buckets').tBodies[0];
+  clear(tb);
+  for (const b of r.buckets) {
+    const tr = document.createElement('tr');
+    cell(tr, b.label);
+    cell(tr, int(b.requests), 'num');
+    cell(tr, int(b.input), 'num');
+    cell(tr, int(b.output), 'num');
+    cell(tr, usd(b.costUsd), 'num');
+    cell(tr, usd(b.coveredUsd), 'num');
+    cell(tr, int(b.unpricedRequests), 'num');
+    tb.appendChild(tr);
+  }
+
+  const fb = $('failed').tBodies[0];
+  clear(fb);
+  for (const f of r.failedAttempts) {
+    const tr = document.createElement('tr');
+    cell(tr, f.key);
+    cell(tr, int(f.count), 'num');
+    cell(tr, f.statuses.join(', '));
+    fb.appendChild(tr);
+  }
+}
+
+async function refresh() {
+  try { await Promise.all([loadRows(), loadDashboard()]); }
+  catch (err) { $('detail').textContent = String(err); }
+}
+
+for (const id of ['project', 'session', 'since', 'by']) $(id).onchange = refresh;
+$('session').oninput = () => { clearTimeout(window.__t); window.__t = setTimeout(refresh, 400); };
+setInterval(() => { if ($('live').checked) refresh(); }, 5000);
+refresh();
+</script>

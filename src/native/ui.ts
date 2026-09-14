@@ -5,6 +5,9 @@
  * module already computed -- see the spec's "Every number comes from a function
  * that already exists". Nothing in this file may sum a token or a dollar.
  */
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { RouterResponse } from './router.js';
 import { parseFilters, usagePayload } from './ui-usage.js';
 import { sessionRows } from './ui-sessions.js';
@@ -16,6 +19,23 @@ import { runDetail, sessionDetail } from './ui-detail.js';
  * health route and must NOT be captured by this prefix.
  */
 export const UI_PREFIX = '/__sonata/';
+
+/**
+ * `sonata` on PATH runs `dist/`, not `src/`, so this resolves relative to the
+ * executing file and walks up to the package root -- the same reason
+ * `sonata --version` reads the manifest beside its own executable.
+ */
+export function uiAssetPath(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'ui', 'index.html');
+}
+
+function pageResponse(): RouterResponse {
+  return {
+    status: 200,
+    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+    body: readFileSync(uiAssetPath()),
+  };
+}
 
 export interface UiDeps {
   home: string;
@@ -87,6 +107,7 @@ export function handleUiRequest(
 
 function route(path: string, query: URLSearchParams, deps: UiDeps): RouterResponse {
   const rest = path === '/__sonata' ? '' : path.slice(UI_PREFIX.length);
+  if (rest === '' || rest === 'index.html') return pageResponse();
   if (rest.startsWith('api/session/')) {
     const id = decodeURIComponent(rest.slice('api/session/'.length));
     if (id === '') return jsonResponse(404, { error: 'sonata UI: no session id' });
