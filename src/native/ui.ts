@@ -6,7 +6,9 @@
  * that already exists". Nothing in this file may sum a token or a dollar.
  */
 import type { RouterResponse } from './router.js';
-import { usagePayload } from './ui-usage.js';
+import { parseFilters, usagePayload } from './ui-usage.js';
+import { sessionRows } from './ui-sessions.js';
+import { runRows } from './ui-runs.js';
 
 /**
  * Trailing slash is load-bearing: `/__sonata_health` is the pre-existing
@@ -90,6 +92,13 @@ function route(path: string, query: URLSearchParams, deps: UiDeps): RouterRespon
     case 'api/usage': {
       const { report, by, filters } = usagePayload(deps, query);
       return jsonResponse(200, { by, filters, report });
+    }
+    case 'api/sessions': {
+      const filters = parseFilters(query, (deps.now ?? Date.now)());
+      const rows = [...sessionRows(deps, filters), ...runRows(deps, filters)].sort(
+        (a, b) => (Date.parse(b.started ?? '') || 0) - (Date.parse(a.started ?? '') || 0),
+      );
+      return jsonResponse(200, { filters, rows });
     }
     default:
       return jsonResponse(404, { error: `sonata UI: no such path ${rest}` });
