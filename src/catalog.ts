@@ -330,8 +330,13 @@ function familiesOf(aa: AaCatalog): Map<string, CatalogFamily> {
 }
 
 /**
- * The effort family a normalized model name belongs to, if the catalog scores
- * it at two or more levels. One scored level is a model, not a choice.
+ * The effort family a normalized model name belongs to, if the catalog
+ * *states* the level its rows were scored at. A family of one is still a
+ * family: AA's only DeepSeek V4.1 Flash row is "(Reasoning, Max Effort)",
+ * and that is a level to pin, not a level-less model — offered bare, the key
+ * ranks on the max-effort score and runs at whatever the gateway defaults to.
+ * A row that states no level (`deepseek-v4-flash` alone) has no family and
+ * stays a single bare candidate.
  *
  * Resolved through the same spellings `aaEntryFor` tries, so a name that finds
  * its score also finds its family.
@@ -344,10 +349,8 @@ export function catalogFamily(normalized: string | readonly string[], aa?: AaCat
       for (const spelling of [name, aaMatchKey(name)]) {
         const entry = aa.models[spelling];
         const fam = entry?.family !== undefined ? families.get(entry.family) : families.get(spelling);
-        // The first spelling that identifies a model wins, even if it has no variants.
-        if (entry !== undefined || fam !== undefined) {
-          return fam !== undefined && fam.variants.size >= 2 ? fam : undefined;
-        }
+        // The first spelling that identifies a model wins, even if it has no family.
+        if (entry !== undefined || fam !== undefined) return fam;
       }
     }
   }

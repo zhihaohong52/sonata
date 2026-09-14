@@ -8,6 +8,17 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Changed
+- **A model AA scored at one stated level is offered at that level.** AA's
+  only DeepSeek V4.1 Flash row is "(Reasoning, Max Effort)"; the wizard and
+  `sonata agents` offered the bare key, which ranked on the max-effort score
+  and ran at whatever the gateway defaulted to — the exact mismatch the
+  `@<effort>` grammar exists to prevent, and one it had been drawing the line
+  at "two or more levels" to avoid. A single-row family is now a family: the
+  key is offered as `@max` (or whichever level the row states), a hand-pinned
+  level scores, and a bare key is refused at load like any other family's —
+  `sonata init` re-proposes it. A row that states no level is unchanged.
+
 ## [0.9.0] - 2026-09-14
 
 ### Fixed

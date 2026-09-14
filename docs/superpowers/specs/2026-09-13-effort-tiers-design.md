@@ -142,7 +142,10 @@ In `src/config.ts`:
 `parseConfig`.** `parseConfig` is pure text-in/config-out and has no
 catalog; `loadConfig` has `home` and can load one. After parsing it walks
 every tier candidate; for each *bare* one whose resolved upstream id has a
-catalog family with two or more scored levels, it throws naming the
+catalog family (one or more rows that *state* their level — a single
+"(Reasoning, Max Effort)" row is a family of one, since a bare key would
+otherwise run at an unstated effort; the two-or-more threshold this originally
+drew was dropped 2026-09-14), it throws naming the
 candidate, the family's default level, the levels available, and `sonata
 init` as the fix. With no catalog cache the check is skipped — sonata
 cannot know a family exists — and `sonata doctor` says so. The router loads
