@@ -9,6 +9,7 @@ import type { RouterResponse } from './router.js';
 import { parseFilters, usagePayload } from './ui-usage.js';
 import { sessionRows } from './ui-sessions.js';
 import { runRows } from './ui-runs.js';
+import { runDetail, sessionDetail } from './ui-detail.js';
 
 /**
  * Trailing slash is load-bearing: `/__sonata_health` is the pre-existing
@@ -86,6 +87,17 @@ export function handleUiRequest(
 
 function route(path: string, query: URLSearchParams, deps: UiDeps): RouterResponse {
   const rest = path === '/__sonata' ? '' : path.slice(UI_PREFIX.length);
+  if (rest.startsWith('api/session/')) {
+    const id = decodeURIComponent(rest.slice('api/session/'.length));
+    if (id === '') return jsonResponse(404, { error: 'sonata UI: no session id' });
+    return jsonResponse(200, sessionDetail(deps, id, query));
+  }
+  if (rest.startsWith('api/run/')) {
+    const id = decodeURIComponent(rest.slice('api/run/'.length));
+    const detail = runDetail(deps, id, query.get('project') ?? undefined);
+    if (detail === undefined) return jsonResponse(404, { error: `sonata UI: no run ${id}` });
+    return jsonResponse(200, detail);
+  }
   switch (rest) {
     case 'api/ping':
       return jsonResponse(200, { ok: true, port: deps.port, now: (deps.now ?? Date.now)() });
