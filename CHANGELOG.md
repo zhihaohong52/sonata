@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-14
+
 ### Fixed
 - **A vendor's versionless alias ranks.** DeepSeek's API serves V4.1 Flash as
   `deepseek-flash`, and no shortening of that spelling reaches Artificial
