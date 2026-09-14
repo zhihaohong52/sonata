@@ -78,3 +78,44 @@ describe('cmdVerify — unusable meta', () => {
     expect(cmdVerify({ cwd: runDirWith({ id: 'abc123' }), id: 'abc123' }).ok).toBe(false);
   });
 });
+
+describe('cmdVerify — effort variants', () => {
+  const variant = {
+    id: 'abc123', model: 'flash', harness: 'opencode', role: 'code', effort: 'high',
+  };
+
+  it('names the variant in the detail, which is the report`s provenance line', () => {
+    // `cmdTail` appends this detail to every finished report as the evidence a
+    // dispatch really happened. A variant run whose provenance names the bare
+    // model understates what ran.
+    const res = cmdVerify({ cwd: runDirWith(variant), id: 'abc123' });
+    expect(res.ok).toBe(true);
+    expect(res.detail).toContain('flash@high');
+  });
+
+  it('accepts the variant `sonata dispatch` printed', () => {
+    // `sonata dispatch` prints `model=flash@high`; copying that straight into
+    // `sonata verify --model` used to false-fail, because meta records the
+    // bare key and the level separately.
+    const res = cmdVerify({ cwd: runDirWith(variant), id: 'abc123', model: 'flash@high' });
+    expect(res.ok).toBe(true);
+  });
+
+  it('still accepts the bare key — the run did run on that model', () => {
+    const res = cmdVerify({ cwd: runDirWith(variant), id: 'abc123', model: 'flash' });
+    expect(res.ok).toBe(true);
+  });
+
+  it('refuses a different level of the same model', () => {
+    const res = cmdVerify({ cwd: runDirWith(variant), id: 'abc123', model: 'flash@max' });
+    expect(res.ok).toBe(false);
+    expect(res.detail).toContain('flash@high');
+  });
+
+  it('refuses a level for a run that pinned none', () => {
+    const res = cmdVerify({
+      cwd: runDirWith({ ...variant, effort: undefined }), id: 'abc123', model: 'flash@high',
+    });
+    expect(res.ok).toBe(false);
+  });
+});

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runDir } from '../store.js';
+import { joinCandidate, type Effort } from '../effort.js';
 
 export interface VerifyOptions { cwd: string; id: string; model?: string }
 
@@ -20,7 +21,10 @@ export function cmdVerify(opts: VerifyOptions): { ok: boolean; detail: string } 
     return { ok: false, detail: `no run "${opts.id}" — looked in ${dir}` };
   }
 
-  let meta: { model?: string; harness?: string; role?: string; exitCode?: number; degraded?: boolean };
+  let meta: {
+    model?: string; harness?: string; role?: string; exitCode?: number; degraded?: boolean;
+    effort?: Effort;
+  };
   try {
     meta = JSON.parse(readFileSync(metaPath, 'utf8'));
   } catch {
@@ -37,10 +41,22 @@ export function cmdVerify(opts: VerifyOptions): { ok: boolean; detail: string } 
   }
 
 
-  if (opts.model !== undefined && meta.model !== opts.model) {
+  // `sonata dispatch` prints the candidate it ran, `model=flash@high`, and the
+  // obvious next step is to paste that into `sonata verify --model`. meta keeps
+  // the key and the level in separate fields, so comparing the raw string would
+  // false-fail on sonata's own output.
+  //
+  // A bare `--model flash` still matches any level of flash: the question it
+  // asks is "did this run on flash", and it did. A level is only compared when
+  // one was named, and then it must match exactly — `flash@max` against a run
+  // that pinned `high` is a different candidate, and a level against a run that
+  // pinned none is a claim that run cannot support.
+  const ran = joinCandidate(meta.model, meta.effort);
+  const wanted = opts.model;
+  if (wanted !== undefined && wanted !== (wanted.includes('@') ? ran : meta.model)) {
     return {
       ok: false,
-      detail: `run "${opts.id}" ran ${meta.model}, not ${opts.model}`,
+      detail: `run "${opts.id}" ran ${ran}, not ${wanted}`,
     };
   }
 
@@ -60,7 +76,7 @@ export function cmdVerify(opts: VerifyOptions): { ok: boolean; detail: string } 
 
   return {
     ok: true,
-    detail: `${opts.id}: ${meta.role} on ${meta.model} via ${meta.harness} · ${exit}` +
+    detail: `${opts.id}: ${meta.role} on ${ran} via ${meta.harness} · ${exit}` +
       (meta.degraded ? ' · degraded' : '') + unreconciled,
   };
 }

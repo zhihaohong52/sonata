@@ -106,7 +106,16 @@ function buildScript(input: PlanInput): LaunchPlan {
   // Under `dontAsk` the model is refused the write tool and the shell fallback
   // alike, so it cannot write report.md. Nothing went wrong; sonata takes the
   // terminal output as the report and must not mark such a run degraded.
-  return { script, interactive, canWriteReport: !readOnly };
+  //
+  // `effortHonoured: false` because reasonix was NOT INSTALLED on the machine
+  // where the other three harnesses were probed (2026-09-14), so whether it
+  // has an effort control at all is unknown. This is "unprobed", not "probed
+  // and found absent" — the repo rule is to probe the real binary before
+  // writing an adapter, and a guessed flag would report a run as honoured
+  // while it ran at the default. Sonata annotates the report instead. If a
+  // control is found, set this true and capture the evidence under
+  // tests/fixtures/panes/ like every other reasonix behaviour here.
+  return { script, interactive, canWriteReport: !readOnly, effortHonoured: false };
 }
 
 function headlessScript(input: PlanInput, readOnly: boolean): string {

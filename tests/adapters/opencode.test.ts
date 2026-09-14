@@ -212,3 +212,40 @@ describe('openCodeAdapter.plan — only primary agents are dispatchable', () => 
       .toBe(false);
   });
 });
+
+describe('openCodeAdapter.plan — reasoning effort', () => {
+  // Probed 2026-09-14 against opencode 1.18.29: `--variant <level>` on
+  // `opencode run` is applied — reasoning tokens moved with it on an identical
+  // prompt (low → 132, xhigh → 230) and the stored message records
+  // `"variant":"xhigh"`.
+  it('pins the level with --variant', () => {
+    const p = openCodeAdapter.plan({ ...base, mode: 'acceptEdits', effort: 'xhigh' });
+    expect(p.script).toContain('--variant xhigh');
+    expect(p.effortHonoured).toBe(true);
+  });
+
+  it('passes the level through unmapped, since the legal set is per model', () => {
+    // models.dev publishes the levels per model (gpt-5.6-luna has no
+    // `minimal`), and `opencode run` accepts an unknown variant silently. The
+    // adapter does not own that table, so it sends what was asked for rather
+    // than substituting a level the user did not choose.
+    const p = openCodeAdapter.plan({ ...base, mode: 'acceptEdits', effort: 'minimal' });
+    expect(p.script).toContain('--variant minimal');
+  });
+
+  it('sends no --variant when the candidate pins no level', () => {
+    const p = openCodeAdapter.plan({ ...base, mode: 'acceptEdits' });
+    expect(p.script).not.toContain('--variant');
+    expect(p.effortHonoured).toBe(true);
+  });
+});
+
+describe('openCodeAdapter.plan — `none` needs no mapping', () => {
+  // models.dev publishes `none` in `reasoning_options[].values`, so opencode's
+  // own vocabulary matches sonata's here. pi is the one harness that spells it
+  // differently; this test is what would notice pi's mapping leaking outward.
+  it('sends none as none', () => {
+    const p = openCodeAdapter.plan({ ...base, mode: 'acceptEdits', effort: 'none' });
+    expect(p.script).toContain('--variant none');
+  });
+});

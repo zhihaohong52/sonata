@@ -108,6 +108,40 @@ describe('cmdRun', () => {
     expect(await hasSession(res.session)).toBe(true);
   });
 
+  it('sends a pinned effort level to the harness and records it on the run', async () => {
+    const taskFile = join(cwd, 'task.txt');
+    writeFileSync(taskFile, 'Refactor the parser.');
+
+    const res = await cmdRun({
+      cwd, role: 'code', model: 'fake', taskFile, effort: 'xhigh',
+      rolesDir: join(cwd, 'roles'), sessionId: sessionInMode('acceptEdits'),
+    });
+    created.push(res.session);
+
+    // The launched script is the evidence the level actually reached the
+    // harness; meta is what `sonata tail` later reads to decide whether to
+    // annotate the report.
+    expect(readFileSync(join(runDir(cwd, res.id), 'harness.sh'), 'utf8')).toContain('--variant xhigh');
+    const meta = readMeta(cwd, res.id);
+    expect(meta.effort).toBe('xhigh');
+    expect(meta.effortHonoured).toBe(true);
+  });
+
+  it('records the harness`s answer even when no level was pinned', async () => {
+    const taskFile = join(cwd, 'task.txt');
+    writeFileSync(taskFile, 'x');
+
+    const res = await cmdRun({
+      cwd, role: 'code', model: 'fake', taskFile,
+      rolesDir: join(cwd, 'roles'), sessionId: sessionInMode('acceptEdits'),
+    });
+    created.push(res.session);
+
+    const meta = readMeta(cwd, res.id);
+    expect(meta.effort).toBeUndefined();
+    expect(meta.effortHonoured).toBe(true);
+  });
+
   it('rejects an undefined model with an actionable message', async () => {
     const taskFile = join(cwd, 'task.txt');
     writeFileSync(taskFile, 'x');

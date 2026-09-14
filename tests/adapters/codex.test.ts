@@ -308,3 +308,43 @@ describe('parseCodexModels', () => {
     expect(parseCodexModels(JSON.stringify({ result: { data: [{ displayName: 'no id' }] } }))).toEqual([]);
   });
 });
+
+describe('codexAdapter.plan — reasoning effort', () => {
+  // Probed 2026-09-14 against codex-cli 0.153.4: `-c model_reasoning_effort=<level>`
+  // is accepted on `codex exec` AND the interactive TUI, and the run header
+  // prints `reasoning effort: xhigh`, so the setting demonstrably takes. An
+  // unsupported level is refused upstream, naming exactly sonata's own enum:
+  // 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'.
+  it('pins the level on codex exec', () => {
+    const p = codexAdapter.plan({ ...base, mode: 'acceptEdits', effort: 'xhigh' });
+    expect(p.script).toContain('codex exec');
+    expect(p.script).toContain('-c model_reasoning_effort="xhigh"');
+    expect(p.effortHonoured).toBe(true);
+  });
+
+  it('pins the level on the interactive TUI too', () => {
+    const p = codexAdapter.plan({ ...base, mode: 'default', effort: 'low' });
+    expect(p.interactive).toBe(true);
+    expect(p.script).toContain('-c model_reasoning_effort="low"');
+    expect(p.effortHonoured).toBe(true);
+  });
+
+  it('sends no effort config when the candidate pins none', () => {
+    const p = codexAdapter.plan({ ...base, mode: 'acceptEdits' });
+    expect(p.script).not.toContain('model_reasoning_effort');
+    // A capability of the harness, not of this run: codex has the control
+    // whether or not a level was asked for.
+    expect(p.effortHonoured).toBe(true);
+  });
+});
+
+describe('codexAdapter.plan — `none` needs no mapping', () => {
+  // The level whose spelling differs most across harnesses (pi calls it `off`).
+  // Codex's own supported set, quoted verbatim when it refuses an invalid
+  // level, opens with 'none' — so this one passes through untouched, and this
+  // test is what would notice if someone "helpfully" mapped it.
+  it('sends none as none', () => {
+    const p = codexAdapter.plan({ ...base, mode: 'acceptEdits', effort: 'none' });
+    expect(p.script).toContain('-c model_reasoning_effort="none"');
+  });
+});

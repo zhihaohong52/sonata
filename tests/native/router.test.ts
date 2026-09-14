@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, STICKY_TTL_MS, createRouterServer, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, withEffort, STICKY_TTL_MS, createRouterServer, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
 
@@ -577,6 +577,41 @@ describe('withModel', () => {
   it('rewrites only the model field', () => {
     const out = JSON.parse(withModel(Buffer.from('{"model":"a","x":1}'), 'b').toString());
     expect(out).toEqual({ model: 'b', x: 1 });
+  });
+});
+
+// ── withEffort ──
+//
+// The catalog ranks a model at a stated level; the router must dispatch it at
+// that level or the ranking describes a different model. LiteLLM translates
+// Claude Code's `thinking: {type: "adaptive"}` into `reasoning_effort: medium`
+// when both are present, so an explicit level has to REPLACE the thinking
+// block rather than sit beside it.
+describe('withEffort', () => {
+  const parse = (b: Buffer) => JSON.parse(b.toString());
+
+  it('sets reasoning_effort and removes thinking and output_config.effort', () => {
+    const body = Buffer.from(JSON.stringify({
+      model: 'm', thinking: { type: 'adaptive' }, output_config: { effort: 'medium', other: 1 }, messages: [],
+    }));
+    expect(parse(withEffort(body, 'xhigh'))).toEqual({
+      model: 'm', reasoning_effort: 'xhigh', output_config: { other: 1 }, messages: [],
+    });
+  });
+
+  it('drops an output_config left empty rather than sending {}', () => {
+    const body = Buffer.from(JSON.stringify({ model: 'm', output_config: { effort: 'low' } }));
+    expect(parse(withEffort(body, 'high'))).toEqual({ model: 'm', reasoning_effort: 'high' });
+  });
+
+  it('returns the identical buffer for a bare candidate', () => {
+    const body = Buffer.from('{"model":"m","thinking":{"type":"adaptive"}}');
+    expect(withEffort(body, undefined)).toBe(body);
+  });
+
+  it('returns the identical buffer when the body does not parse', () => {
+    const body = Buffer.from('not json');
+    expect(withEffort(body, 'low')).toBe(body);
   });
 });
 
@@ -1505,6 +1540,148 @@ describe('conversation stickiness', () => {
     // The pin has aged out, so rank order applies again.
     await routeRequest(turn(2), deps);
     expect(seen.slice(2)).toEqual(['default/flash']);
+  });
+});
+
+// ── Effort-level candidates ──
+//
+// A `[tiers]` candidate may pin a level (`luna@xhigh`). The router is the
+// layer that knows a request's level, so it is where the level is injected,
+// and the ledger row names it for the same reason it names the candidate.
+describe('effort-level candidates', () => {
+  const ROUTES = {
+    role: 'code', tier: 'complex',
+    routes: [
+      { key: 'luna', effort: 'xhigh' as const, native: { gateway: 'g', id: 'luna-1' } },
+      { key: 'luna', effort: 'high' as const, native: { gateway: 'g', id: 'luna-1' } },
+      { key: 'flash', native: { gateway: 'g', id: 'flash-1' } },
+    ],
+  };
+  const DIRECT = {
+    role: 'code', tier: 'complex',
+    routes: [{ key: 'orr', effort: 'low' as const, native: {
+      gateway: 'g', id: 'or-1', transport: 'direct' as const, baseUrl: 'https://gw.example/v1',
+    } }],
+  };
+  const request = (model = 'sonata-code-complex') => ({
+    method: 'POST', url: '/v1/messages',
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({
+      model,
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'medium' },
+      messages: [{ role: 'user', content: 'go' }],
+    })),
+  });
+
+  beforeEach(() => clearCooldowns());
+
+  const harness = (routes: typeof ROUTES | typeof DIRECT, failing: string[] = []) => {
+    const bodies: any[] = [];
+    const logs: string[] = [];
+    const rows: any[] = [];
+    const clock = { now: 1_000 };
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const payload = JSON.parse(init.body as string);
+        bodies.push(payload);
+        return new Response('{"ok":true}', {
+          status: failing.includes(payload.model) ? 503 : 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
+      resolveTier: () => routes,
+      recordUsage: (row: any) => rows.push(row),
+      log: (line: string) => logs.push(line),
+      now: () => clock.now,
+    };
+    return { bodies, logs, rows, clock, deps };
+  };
+  /** A streamed response records its row only once the body is consumed. */
+  const drain = async (res: { body: AsyncIterable<Uint8Array> | Buffer }) => {
+    if (Buffer.isBuffer(res.body)) return;
+    for await (const _chunk of res.body) { /* consume */ }
+  };
+
+  it('sends reasoning_effort and drops thinking on the litellm path', async () => {
+    const { bodies, deps } = harness(ROUTES);
+    await routeRequest(request(), deps);
+    expect(bodies[0]).toMatchObject({ model: 'default/luna', reasoning_effort: 'xhigh' });
+    expect(bodies[0].thinking).toBeUndefined();
+    expect(bodies[0].output_config).toBeUndefined();
+  });
+
+  it('sends reasoning_effort on the direct path too, leaving the rest of the body alone', async () => {
+    const { bodies, deps } = harness(DIRECT);
+    const req = request();
+    await routeRequest(req, deps);
+    const { thinking: _t, output_config: _o, ...original } = JSON.parse(req.body.toString());
+    expect(bodies[0]).toEqual({ ...original, model: 'or-1', reasoning_effort: 'low' });
+  });
+
+  it('leaves a bare candidate\'s body exactly as before', async () => {
+    const { bodies, deps } = harness(ROUTES, ['default/luna']);
+    await routeRequest(request(), deps);
+    // luna@xhigh failed, luna@high is the same model (skipped by cooldown),
+    // so flash — bare — served, with the request untouched.
+    const served = bodies[bodies.length - 1];
+    expect(served.model).toBe('default/flash');
+    expect(served.reasoning_effort).toBeUndefined();
+    expect(served.thinking).toEqual({ type: 'adaptive' });
+    expect(served.output_config).toEqual({ effort: 'medium' });
+  });
+
+  it('cools the MODEL after a variant fails, so the next level of the same model is skipped', async () => {
+    const { bodies, deps } = harness(ROUTES, ['default/luna']);
+    await routeRequest(request(), deps);
+    // One attempt at luna (xhigh), then straight to flash: luna@high was not retried.
+    expect(bodies.map((b) => [b.model, b.reasoning_effort])).toEqual([
+      ['default/luna', 'xhigh'],
+      ['default/flash', undefined],
+    ]);
+  });
+
+  it('names the variant in the log line', async () => {
+    const { logs, deps } = harness(ROUTES);
+    await routeRequest(request(), deps);
+    expect(logs).toContain('POST /v1/messages model=sonata-code-complex -> luna@xhigh -> litellm');
+  });
+
+  it('records the effort on the ledger row', async () => {
+    const { rows, deps } = harness(ROUTES);
+    await drain(await routeRequest(request(), deps));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ key: 'luna', effort: 'xhigh' });
+  });
+
+  it('leaves the ledger row\'s effort absent for a bare candidate', async () => {
+    const { rows, deps } = harness(ROUTES, ['default/luna']);
+    await drain(await routeRequest(request(), deps));
+    expect(rows[0].key).toBe('flash');
+    expect('effort' in rows[0]).toBe(false);
+  });
+
+  // `sonata dispatch --model <key>@<effort>` on a native-only key runs the
+  // claude harness, whose `--model` names a bare sonata key to the router.
+  // The router accepts the same grammar there, so the harness lane can honour
+  // a level without a second wire format.
+  it('accepts <key>@<effort> as a bare model name', async () => {
+    const { bodies, rows, deps } = harness(ROUTES);
+    await drain(await routeRequest(request('flash@low'), deps));
+    expect(bodies[0]).toMatchObject({ model: 'default/flash', reasoning_effort: 'low' });
+    expect(bodies[0].thinking).toBeUndefined();
+    expect(rows[0]).toMatchObject({ alias: 'flash', effort: 'low' });
+  });
+
+  it('refuses an unknown level on a bare model name with a 400 naming the levels', async () => {
+    const { bodies, deps } = harness(ROUTES);
+    const res = await routeRequest(request('flash@bogus'), deps);
+    expect(res.status).toBe(400);
+    expect(JSON.parse((res.body as Buffer).toString()).error.message)
+      .toContain('unknown effort level "bogus"');
+    expect(bodies).toHaveLength(0);
   });
 });
 

@@ -19,6 +19,10 @@ harness = "opencode"
 simple = ["flash", "terra"]
 complex = ["terra"]
 
+[tiers.review]
+simple = ["flash@high", "terra@max"]
+complex = ["terra@max"]
+
 [native.gateways."g"]
 base_url = "http://gateway.example/v1"
 `;
@@ -208,5 +212,74 @@ describe('taskPath', () => {
     // before either launch read it back.
     const paths = new Set(Array.from({ length: 200 }, () => taskPath(cwd)));
     expect(paths.size).toBe(200);
+  });
+});
+
+describe('cmdDispatch — effort levels', () => {
+  const reviewOpts = () => ({ cwd, home, tier: 'review-simple', task: 'look at it', rolesDir: '/roles' });
+
+  it('passes a tier candidate`s pinned level through to the run', async () => {
+    const seen: Array<{ model: string; effort?: string }> = [];
+    await cmdDispatch(reviewOpts(), {
+      run: async (o) => {
+        seen.push({ model: o.model, effort: o.effort });
+        return { id: 'r1', session: 's', interactive: false };
+      },
+      wait: async () => ({ id: 'r1', state: 'DONE', report: 'ok', lines: [], degraded: false }) as never,
+    });
+    // The model key reaching the adapter stays bare — the level travels beside
+    // it, never inside the id a harness is asked to resolve.
+    expect(seen).toEqual([{ model: 'flash', effort: 'high' }]);
+  });
+
+  it('names the variant in the attempt history, not just the model', async () => {
+    // Two slots can hold the same model at different levels; an attempt list
+    // that says "terra" twice cannot tell which one failed.
+    const outcome = await cmdDispatch(reviewOpts(), {
+      run: async () => ({ id: 'r1', session: 's', interactive: false }),
+      wait: async (o) => (o.id === 'r1'
+        ? { id: 'r1', state: 'DONE', report: '', degraded: true, lines: [] }
+        : { id: 'r1', state: 'DONE', report: 'terra did it', degraded: false, lines: [] }) as never,
+    });
+    expect(outcome.attempts.map((a) => a.modelKey)).toEqual(['flash@high', 'terra@max']);
+    expect(outcome.modelKey).toBe('terra@max');
+  });
+
+  it('accepts the same grammar on --model', async () => {
+    const seen: Array<{ model: string; effort?: string }> = [];
+    const outcome = await cmdDispatch(
+      { cwd, home, model: 'flash@high', task: 'do it', rolesDir: '/roles' },
+      {
+        run: async (o) => {
+          seen.push({ model: o.model, effort: o.effort });
+          return { id: 'r1', session: 's', interactive: false };
+        },
+        wait: async () => ({ id: 'r1', state: 'DONE', report: 'ok', lines: [], degraded: false }) as never,
+      },
+    );
+    expect(seen).toEqual([{ model: 'flash', effort: 'high' }]);
+    expect(outcome.modelKey).toBe('flash@high');
+  });
+
+  it('refuses an unknown level rather than dropping it', async () => {
+    await expect(cmdDispatch(
+      { cwd, home, model: 'flash@bogus', task: 'do it', rolesDir: '/roles' },
+      { run: async () => { throw new Error('should not launch'); }, wait: async () => ({}) as never },
+    )).rejects.toThrow(/unknown effort level "bogus"/);
+  });
+
+  it('still resolves a bare key after the split', async () => {
+    const seen: Array<{ model: string; effort?: string }> = [];
+    await cmdDispatch(
+      { cwd, home, model: 'flash', task: 'do it', rolesDir: '/roles' },
+      {
+        run: async (o) => {
+          seen.push({ model: o.model, effort: o.effort });
+          return { id: 'r1', session: 's', interactive: false };
+        },
+        wait: async () => ({ id: 'r1', state: 'DONE', report: 'ok', lines: [], degraded: false }) as never,
+      },
+    );
+    expect(seen).toEqual([{ model: 'flash', effort: undefined }]);
   });
 });

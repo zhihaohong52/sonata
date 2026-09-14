@@ -1,4 +1,5 @@
 import type { PermissionMode } from '../types.js';
+import type { Effort } from '../effort.js';
 
 export interface PlanInput {
   modelId: string;
@@ -7,6 +8,12 @@ export interface PlanInput {
   cwd: string;
   runDir: string;
   instructionsPath: string;
+  /**
+   * The reasoning-effort level this tier candidate is pinned to, from the
+   * `<key>@<effort>` grammar. Absent means the candidate states none and the
+   * harness runs at its own default — exactly today's request.
+   */
+  effort?: Effort;
 }
 
 export interface LaunchPlan {
@@ -30,6 +37,23 @@ export interface LaunchPlan {
    * detector must not fire; the run_timeout watchdog remains the backstop.
    */
   silentUntilExit?: boolean;
+  /**
+   * Whether this plan actually sends `PlanInput.effort` to the harness.
+   *
+   * Required, not optional, because accepting the `<key>@<effort>` grammar
+   * while quietly ignoring the level is the silent mismatch the whole design
+   * exists to prevent — a new adapter must answer rather than inherit a
+   * default. It reports a property of the HARNESS, so it is answered whether
+   * or not a level was asked for; `cmdTail` reads it only when one was, and
+   * annotates the report when the answer is false.
+   *
+   * It claims the level reaches the harness's command line, NOT that the model
+   * has that level. opencode accepts an unknown `--variant` silently and
+   * LiteLLM's `drop_params` drops an unsupported `reasoning_effort` the same
+   * way; sonata cannot tell "honoured" from "dropped" downstream of the flag,
+   * and reports what it can see rather than assuming the rest.
+   */
+  effortHonoured: boolean;
 }
 
 export interface HarnessAdapter {

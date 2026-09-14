@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, harnessModelFor, isReadOnlyRole } from '../config.js';
+import type { Effort } from '../effort.js';
 import { worktreeFingerprint } from '../worktree.js';
 import { getAdapter } from '../adapters/index.js';
 import { createRun, runDir, writeMeta } from '../store.js';
@@ -20,6 +21,12 @@ export interface RunOptions {
   taskFile: string;
   rolesDir: string;
   sessionId: string | undefined;
+  /**
+   * The level the tier candidate pinned (`<key>@<effort>`). It travels beside
+   * the model key, never inside it: `harnessModelFor` resolves the bare key,
+   * and each adapter decides how — or whether — to express the level.
+   */
+  effort?: Effort;
 }
 
 export interface RunResult {
@@ -171,6 +178,7 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     cwd: opts.cwd,
     runDir: dir,
     instructionsPath,
+    effort: opts.effort,
   });
 
   writeFileSync(instructionsPath, composeInstructions({
@@ -202,6 +210,11 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     interactive: plan.interactive,
     canWriteReport: plan.canWriteReport ?? true,
     silentUntilExit: plan.silentUntilExit ?? false,
+    // Recorded whatever the plan answered, so `sonata tail` can say the run
+    // did not run as ranked. Read together with `effort`: a harness with no
+    // control is unremarkable until a level was actually asked for.
+    ...(opts.effort === undefined ? {} : { effort: opts.effort }),
+    effortHonoured: plan.effortHonoured,
     // Sampled here, not before `createRun`, so that sonata's own scaffolding —
     // the run directory and the three files just written into it — is already
     // on disk in this sample as it will be in the one tail takes at exit. A
