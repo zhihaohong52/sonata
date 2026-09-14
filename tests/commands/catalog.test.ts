@@ -153,9 +153,10 @@ describe('cmdCatalogUpdate — effort variants', () => {
     // A level-ending slug follows AA's convention: its family is the slug
     // with the level suffix removed, even when that could be a natural name.
     expect(models['summit-high']).toMatchObject({ family: 'summit', effort: 'high' });
-    // A parenthetical that is not a level records nothing.
-    expect(models['plodder']).not.toHaveProperty('family');
-    expect(models['plodder']).not.toHaveProperty('effort');
+    // A parenthetical that is not a level states no level, which is itself a
+    // level: the row is its own family at `none`, so the key is pinnable and
+    // cannot silently run at the gateway's default.
+    expect(models['plodder']).toMatchObject({ family: 'plodder', effort: 'none' });
   });
 });
 

@@ -122,9 +122,12 @@ export interface AaEntry {
    * the parenthetical in AA's display name at `catalog update` — `GPT-5.6
    * Luna (max)` is slug `gpt-5-6-luna`, `… (low)` is `gpt-5-6-luna-low` —
    * so the unsuffixed default row is a member of its family too, and the
-   * family knows which level its default is. Absent on a row whose name
-   * carries no level, and on every row of a cache written before this was
-   * recorded, which is the "cannot check" state `loadConfig` skips on.
+   * family knows which level its default is. A row whose name carries no
+   * level was scored with no reasoning in play, so it is recorded at `none`
+   * and is its own family — every row a current `catalog update` writes
+   * therefore carries both fields. They are absent only on a cache written
+   * before this was recorded, which is the "cannot check" state `loadConfig`
+   * skips on.
    */
   family?: string;
   effort?: Effort;
@@ -330,8 +333,16 @@ function familiesOf(aa: AaCatalog): Map<string, CatalogFamily> {
 }
 
 /**
- * The effort family a normalized model name belongs to, if the catalog scores
- * it at two or more levels. One scored level is a model, not a choice.
+ * The effort family a normalized model name belongs to.
+ *
+ * A family of one is still a family: AA's only DeepSeek V4.1 Flash row is
+ * "(Reasoning, Max Effort)", and that is a level to pin, not a level-less
+ * model — offered bare, the key ranks on the max-effort score and runs at
+ * whatever the gateway defaults to. A row stating no level is recorded at
+ * `none` for the same reason, so it too is a singleton family and
+ * `expandCandidates` emits `<key>@none`. Only a model the catalog does not
+ * hold, or a cache written before families were recorded, has none — which
+ * is the state `loadConfig` cannot check and skips on.
  *
  * Resolved through the same spellings `aaEntryFor` tries, so a name that finds
  * its score also finds its family.
@@ -344,10 +355,8 @@ export function catalogFamily(normalized: string | readonly string[], aa?: AaCat
       for (const spelling of [name, aaMatchKey(name)]) {
         const entry = aa.models[spelling];
         const fam = entry?.family !== undefined ? families.get(entry.family) : families.get(spelling);
-        // The first spelling that identifies a model wins, even if it has no variants.
-        if (entry !== undefined || fam !== undefined) {
-          return fam !== undefined && fam.variants.size >= 2 ? fam : undefined;
-        }
+        // The first spelling that identifies a model wins, even if it has no family.
+        if (entry !== undefined || fam !== undefined) return fam;
       }
     }
   }
@@ -539,13 +548,23 @@ export function expandCandidates(
   });
 }
 
+/**
+ * Whether the catalog turns this bare key into pinned candidates at all.
+ *
+ * Counted by *difference*, not by how many levels came back: a family of one
+ * expands to a single candidate that is not the bare key, and the whole point
+ * is that the bare key must not survive. Counting `> 1` dropped exactly that
+ * model, which is how a single-level saved key was silently deleted from a
+ * tier rather than re-proposed.
+ */
 export function hasEffortVariants(
   key: string,
   aa?: AaCatalog,
   providers: readonly string[] = [],
   upstreamFor: UpstreamFor = identityUpstream,
 ): boolean {
-  return expandCandidates([key], aa, providers, upstreamFor).length > 1;
+  const expanded = expandCandidates([key], aa, providers, upstreamFor);
+  return expanded.length > 1 || expanded[0] !== key;
 }
 
 /**
@@ -568,7 +587,10 @@ export function unpinnedVariants(
     const { effort } = splitCandidate(candidate);
     if (effort !== undefined) return [];
     const expanded = expandCandidates([candidate], aa, providers, upstreamFor);
-    return expanded.length > 1 ? expanded : [];
+    // Difference, not count: a family of one yields a single *pinned*
+    // candidate, and the saved bare key it replaces is the thing being
+    // repaired. A `> 1` test dropped it from the tier instead.
+    return expanded.length > 1 || expanded[0] !== candidate ? expanded : [];
   });
 }
 
@@ -625,11 +647,21 @@ function rank(
   aa?: AaCatalog,
   providers: readonly string[] = [],
   upstreamFor: UpstreamFor = identityUpstream,
-): { index: number; price: number } {
+): { index: number; price: number; perTask: boolean } {
   const scored = scoreFor(key, aa, providers, upstreamFor);
   return scored !== undefined
-    ? { index: capabilityOf(scored), price: costOfEntry(scored) }
-    : { index: AA_CAPABLE_CODING_INDEX, price: AA_CHEAP_BLENDED_PRICE_USD };
+    ? { index: capabilityOf(scored), price: costOfEntry(scored), perTask: scored.costPerTask !== undefined }
+    : { index: AA_CAPABLE_CODING_INDEX, price: AA_CHEAP_BLENDED_PRICE_USD, perTask: false };
+}
+
+/**
+ * Compare two prices only when they are in the same unit. `price` is dollars
+ * per task where AA costed the model and dollars per 1M tokens otherwise —
+ * two orders of magnitude apart — so across units the comparison is void
+ * (0), and a costed row sorts ahead of an uncosted one wherever that matters.
+ */
+function samePriceUnit(a: { perTask: boolean }, b: { perTask: boolean }): boolean {
+  return a.perTask === b.perTask;
 }
 
 /**
@@ -683,14 +715,26 @@ export function proposeTiers(
   const byCapability = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
     const gap = Math.abs(rb.index - ra.index) <= AA_CAPABILITY_TIE_MARGIN ? 0 : rb.index - ra.index;
-    return avoidance(a, b) || gap || ra.price - rb.price || byLevel(a, b);
+    const byPrice = samePriceUnit(ra, rb) ? ra.price - rb.price : 0;
+    return avoidance(a, b) || gap || byPrice || byLevel(a, b);
   };
   // Simple work wants the most capability per dollar, capability breaking
   // ties. At one price, value *is* capability, so a score inside the tie
   // margin is the same noise it is above — a lower level scoring 0.3 higher
   // is not an edge, and the level decides as it does there.
+  //
+  // Value is only comparable within one price unit. Every row AA costed per
+  // task ranks ahead of every row it did not: a per-task cost prices the
+  // work, the per-1M blend prices tokens, and dividing capability by
+  // whichever a row happened to carry read `deepseek-v4-flash@none` (18.9 at
+  // $0.12/1M) as better value than `deepseek-flash@max` (39.5 at
+  // $0.265/task) — a unit error. Within the uncosted group the per-1M ratio
+  // is still a value ordering, just a weaker proxy, so a catalog with no
+  // per-task costs at all ranks exactly as before.
   const byValue = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
+    const byUnit = Number(rb.perTask) - Number(ra.perTask);
+    if (byUnit !== 0) return avoidance(a, b) || byUnit;
     if (ra.price === rb.price && Math.abs(rb.index - ra.index) <= AA_CAPABILITY_TIE_MARGIN) {
       return avoidance(a, b) || byLevel(a, b);
     }
