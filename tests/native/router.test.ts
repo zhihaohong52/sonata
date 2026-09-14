@@ -1753,3 +1753,15 @@ describe('stripForeignThinking', () => {
     expect(stripForeignThinking(body)).toBe(body);
   });
 });
+
+describe('the UI does not disturb the proxy', () => {
+  it('still routes POST /v1/messages when the UI is mounted', async () => {
+    const rec: any[] = [];
+    await routeRequest(
+      { method: 'POST', url: '/v1/messages', headers: { authorization: 'Bearer usr' },
+        body: Buffer.from(JSON.stringify({ model: 'claude-sonnet-5' })) },
+      { ...base, fetch: fakeFetch(rec), ui: { home: '/tmp/nowhere', port: 4100 } } as any,
+    );
+    expect(rec[0].url).toBe('https://api.anthropic.com/v1/messages');
+  });
+});
