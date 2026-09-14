@@ -88,6 +88,12 @@ export function runDetail(
     const tail = truncateBytes(readEvents(cwd, id).join('\n'), MAX_TRANSCRIPT_BYTES, 'tail');
     const whole = readReport(cwd, id);
     // A report capped nowhere would defeat the cap it is returned beside.
+    // Head, not tail -- deliberately the opposite of the transcript, and NOT an
+    // oversight to be tidied up later. Sonata's own annotations are prefixes
+    // (`[timed out: …]`, `[no worktree change: …]`, `[effort … not honoured:
+    // …]`), and they are exactly what tells a reader whether the rest of the
+    // report can be believed. Truncating them away would hide the notice that
+    // says the content is untrustworthy.
     const report = whole === null ? null : truncateBytes(whole, MAX_REPORT_BYTES, 'head');
     return {
       id,

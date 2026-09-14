@@ -48,6 +48,7 @@
 </div>
 
 <h2>Sessions &amp; runs</h2>
+<div id="rows-note" class="muted"></div>
 <table id="rows"><thead><tr>
   <th>kind</th><th>id</th><th>project</th><th>started</th><th>state</th>
   <th class="num">req</th><th class="num">in</th><th class="num">out</th><th class="num">cost</th>
@@ -145,6 +146,11 @@ async function loadRows(generation) {
     tr.onclick = () => showDetail(row);
     tbody.appendChild(tr);
   }
+  // Surfaced the way the transcript's truncation notice is: a short list must
+  // not read as "this is all of them".
+  $('rows-note').textContent = data.runsTruncated
+    ? '[run list truncated \u2014 showing the newest runs matching this filter]'
+    : '';
 }
 
 let detailGeneration = 0;

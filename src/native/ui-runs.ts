@@ -24,11 +24,10 @@ export const MAX_PROJECT_DIRS = 200;
 /** Holding the page open must not re-enumerate the filesystem per render. */
 export const PROJECT_CACHE_MS = 5000;
 /**
- * A bound on how many run rows one page load may carry.
+ * A bound on how many run rows one **response** may carry.
  *
  * `MAX_PROJECT_DIRS` bounds how many directories are enumerated, not how many
- * runs live in them, so without this both the synchronous IO of building the
- * rows and the response array itself are unbounded.
+ * runs live in them, so without this the response array is unbounded.
  */
 export const MAX_RUN_ROWS = 500;
 
@@ -106,13 +105,11 @@ export function projectDirs(deps: UiDeps): string[] {
 }
 
 /**
- * Every run row across every discovered project, newest first, capped.
+ * Every run row across every discovered project, newest first, **uncapped**.
  *
- * The cap is applied **after** sorting, and that ordering is the point: the
- * rows are gathered project by project, so capping as they are collected would
- * keep whatever the first directory happened to hold and silently drop newer
- * runs from every later one. Sorting first makes the cap mean "the newest 500
- * runs on this machine", which is what a reader of a newest-first list expects.
+ * Cached unfiltered and uncapped deliberately: this value is shared by every
+ * filter, so baking either a filter or a cap into it would let the first query
+ * to warm the cache decide what every later one can see.
  */
 function allRunRows(deps: UiDeps): RunRow[] {
   const dirs = projectDirs(deps); // also refreshes `cache` when it is stale
@@ -143,19 +140,47 @@ function allRunRows(deps: UiDeps): RunRow[] {
   out.sort(
     (a, b) => (Date.parse(b.started ?? '') || 0) - (Date.parse(a.started ?? '') || 0) || a.id.localeCompare(b.id),
   );
-  const rows = out.length > MAX_RUN_ROWS ? out.slice(0, MAX_RUN_ROWS) : out;
-  if (cache !== undefined) cache.rows = rows;
-  return rows;
+  if (cache !== undefined) cache.rows = out;
+  return out;
 }
 
-export function runRows(deps: UiDeps, filters: UiFilters): RunRow[] {
+/**
+ * The rows for one query, and whether the cap hid any of them.
+ *
+ * Order of operations is filter, then sort, then cap -- and each step is where
+ * it is for a reason. **Filtering precedes the cap** because a cap exists to
+ * bound a response, not to reinterpret the query: capping first would make a
+ * project filter show that project's share of the newest N *globally*, so
+ * filtering to a quiet project on a busy machine could return nothing while
+ * that project has plenty of runs. **Sorting precedes the cap** because the
+ * rows are gathered directory by directory, so capping during collection would
+ * keep the first directory's rows and silently drop newer runs from every
+ * later one. (The cached list is already sorted, and filtering preserves
+ * order, so the sort is not redone per request.)
+ *
+ * `truncated` is reported rather than left implicit: a silently short list is
+ * the same class of problem as a `0` that means unknown.
+ */
+export function runRows(
+  deps: UiDeps,
+  filters: UiFilters,
+): { rows: RunRow[]; truncated: boolean } {
   // A run has no Claude Code session id, so it can never match a session
   // filter. Returning nothing is the honest answer; returning every run would
   // ignore the filter the user set.
-  if (filters.session !== undefined) return [];
+  if (filters.session !== undefined) return { rows: [], truncated: false };
 
-  const rows = allRunRows(deps);
-  if (filters.project === undefined) return rows;
-  const wanted = projectResolver(deps.home)(filters.project);
-  return rows.filter((row) => row.project === wanted);
+  // The filter is applied on the READ side of the cache, never baked into the
+  // cached value -- otherwise the first filter to warm it would poison it for
+  // every other filter.
+  const all = allRunRows(deps);
+  const matched = filters.project === undefined
+    ? all
+    : (() => {
+        const wanted = projectResolver(deps.home)(filters.project);
+        return all.filter((row) => row.project === wanted);
+      })();
+
+  if (matched.length <= MAX_RUN_ROWS) return { rows: matched, truncated: false };
+  return { rows: matched.slice(0, MAX_RUN_ROWS), truncated: true };
 }

@@ -159,18 +159,18 @@ describe('projectDirs', () => {
 
 describe('runRows', () => {
   it('finds runs across every discovered project', () => {
-    expect(runRows(deps(), all).map((r) => r.id).sort()).toEqual(['aaa111', 'bbb222', 'ccc333']);
+    expect(runRows(deps(), all).rows.map((r) => r.id).sort()).toEqual(['aaa111', 'bbb222', 'ccc333']);
   });
 
   it('never reports usage as zero', () => {
-    for (const row of runRows(deps(), all)) {
+    for (const row of runRows(deps(), all).rows) {
       expect(row.usage).toBeNull();
       expect(row.usageReason).toBe(RUN_USAGE_REASON);
     }
   });
 
   it('carries state and the degraded verdict from summarizeRuns', () => {
-    const rows = runRows(deps(), all);
+    const rows = runRows(deps(), all).rows;
     expect(rows.find((r) => r.id === 'aaa111')!.state).toBe('DONE');
     expect(rows.find((r) => r.id === 'aaa111')!.degraded).toBe(false);
     expect(rows.find((r) => r.id === 'bbb222')!.state).toBe('RUNNING');
@@ -178,21 +178,21 @@ describe('runRows', () => {
   });
 
   it('filters by project', () => {
-    expect(runRows(deps(), { ...all, project: projB }).map((r) => r.id)).toEqual(['ccc333']);
+    expect(runRows(deps(), { ...all, project: projB }).rows.map((r) => r.id)).toEqual(['ccc333']);
   });
 
   it('returns nothing when a session filter is set, since a run has no session id', () => {
-    expect(runRows(deps(), { ...all, session: 's1' })).toEqual([]);
+    expect(runRows(deps(), { ...all, session: 's1' })).toEqual({ rows: [], truncated: false });
   });
 
   it('sorts newest first', () => {
-    expect(runRows(deps(), all).map((r) => r.id)).toEqual(['ccc333', 'bbb222', 'aaa111']);
+    expect(runRows(deps(), all).rows.map((r) => r.id)).toEqual(['ccc333', 'bbb222', 'aaa111']);
   });
 
   it('survives a project with no .sonata directory at all', () => {
     const empty = mkdtempSync(join(tmpdir(), 'empty-'));
     try {
-      const rows = runRows({ ...deps(), tenants: () => [{ id: 't1', configPath: join(empty, 'sonata.toml') }] }, all);
+      const rows = runRows({ ...deps(), tenants: () => [{ id: 't1', configPath: join(empty, 'sonata.toml') }] }, all).rows;
       expect(rows.map((r) => r.id)).toEqual(['ccc333']);
     } finally {
       rmSync(empty, { recursive: true, force: true });
@@ -224,18 +224,21 @@ describe('GET /__sonata/api/sessions', () => {
     expect(kinds).toEqual(new Set(['session', 'run']));
     expect(rows.find((r: any) => r.kind === 'session').requests).toBe(1);
     expect(rows.find((r: any) => r.kind === 'run').usageReason).toBe(RUN_USAGE_REASON);
+    // The payload says whether the run cap hid anything, rather than letting a
+    // short list read as "this is all of them".
+    expect(JSON.parse((res!.body as Buffer).toString()).runsTruncated).toBe(false);
   });
 });
 
 describe('run row caching and cap', () => {
   it('serves the rows from cache rather than re-reading every run per request', () => {
     const cachedDeps = { ...deps(), now: () => 1000 };
-    expect(runRows(cachedDeps, all).map((r) => r.id)).toEqual(['ccc333', 'bbb222', 'aaa111']);
+    expect(runRows(cachedDeps, all).rows.map((r) => r.id)).toEqual(['ccc333', 'bbb222', 'aaa111']);
     // A new run on disk must NOT appear until the TTL expires: that is the
     // proof the rows themselves are cached, not merely the directory list.
     makeRun(projA, 'ddd444', { role: 'code', startedAt: '2026-09-15T06:00:00.000Z' });
-    expect(runRows(cachedDeps, all).map((r) => r.id)).toEqual(['ccc333', 'bbb222', 'aaa111']);
-    expect(runRows({ ...cachedDeps, now: () => 1000 + PROJECT_CACHE_MS }, all).map((r) => r.id))
+    expect(runRows(cachedDeps, all).rows.map((r) => r.id)).toEqual(['ccc333', 'bbb222', 'aaa111']);
+    expect(runRows({ ...cachedDeps, now: () => 1000 + PROJECT_CACHE_MS }, all).rows.map((r) => r.id))
       .toEqual(['ddd444', 'ccc333', 'bbb222', 'aaa111']);
   });
 
@@ -247,9 +250,39 @@ describe('run row caching and cap', () => {
       // All older than projB's 05:00 run.
       makeRun(projA, id, { role: 'code', startedAt: `2026-09-14T00:00:00.00${i % 10}Z` });
     }
-    const rows = runRows(deps(), all);
+    const { rows, truncated } = runRows(deps(), all);
     expect(rows).toHaveLength(MAX_RUN_ROWS);
+    expect(truncated).toBe(true);
     expect(rows[0].id).toBe('ccc333');
     expect(rows.map((r) => r.id)).toContain('bbb222');
+  });
+
+  it("caps AFTER filtering, so a filter never shows a project's share of a global cap", () => {
+    // Bury projB's single run behind far more than the cap in projA. Capping
+    // before filtering would return nothing for projB while it has a run.
+    for (let i = 0; i < MAX_RUN_ROWS + 10; i += 1) {
+      const id = i.toString(16).padStart(6, '0');
+      makeRun(projA, id, { role: 'code', startedAt: `2026-09-16T00:00:00.00${i % 10}Z` });
+    }
+    const filtered = runRows(deps(), { ...all, project: projB });
+    expect(filtered.rows.map((r) => r.id)).toEqual(['ccc333']);
+    expect(filtered.truncated).toBe(false);
+    // ...and the unfiltered view is still capped and still says so.
+    expect(runRows(deps(), all).truncated).toBe(true);
+  });
+
+  it('serves two different project filters correctly from ONE warm cache', () => {
+    const cachedDeps = { ...deps(), now: () => 1000 };
+    // Warm the cache with one filter, then query the other inside the TTL.
+    expect(runRows(cachedDeps, { ...all, project: projA }).rows.map((r) => r.id))
+      .toEqual(['bbb222', 'aaa111']);
+    expect(runRows(cachedDeps, { ...all, project: projB }).rows.map((r) => r.id))
+      .toEqual(['ccc333']);
+    // The unfiltered view is unaffected by either: the filter lives on the
+    // read side of the cache, never baked into the cached value.
+    expect(runRows(cachedDeps, all).rows.map((r) => r.id))
+      .toEqual(['ccc333', 'bbb222', 'aaa111']);
+    expect(runRows(cachedDeps, { ...all, project: projA }).rows.map((r) => r.id))
+      .toEqual(['bbb222', 'aaa111']);
   });
 });

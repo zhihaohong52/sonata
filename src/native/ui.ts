@@ -150,10 +150,14 @@ function route(path: string, query: URLSearchParams, deps: UiDeps): RouterRespon
     }
     case 'api/sessions': {
       const filters = parseFilters(query, (deps.now ?? Date.now)());
-      const rows = [...sessionRows(deps, filters), ...runRows(deps, filters)].sort(
+      const runs = runRows(deps, filters);
+      const rows = [...sessionRows(deps, filters), ...runs.rows].sort(
         (a, b) => (Date.parse(b.started ?? '') || 0) - (Date.parse(a.started ?? '') || 0),
       );
-      return jsonResponse(200, { filters, rows });
+      // Said out loud, never left implicit: a silently short list reads as
+      // "this is all of them", which is the same class of wrong as a 0 that
+      // means unknown.
+      return jsonResponse(200, { filters, rows, runsTruncated: runs.truncated });
     }
     default:
       return jsonResponse(404, { error: `sonata UI: no such path ${rest}` });
