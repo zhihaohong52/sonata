@@ -336,16 +336,18 @@ function familiesOf(aa: AaCatalog): Map<string, CatalogFamily> {
  * Resolved through the same spellings `aaEntryFor` tries, so a name that finds
  * its score also finds its family.
  */
-export function catalogFamily(normalized: string, aa?: AaCatalog): CatalogFamily | undefined {
+export function catalogFamily(normalized: string | readonly string[], aa?: AaCatalog): CatalogFamily | undefined {
   if (aa === undefined) return undefined;
   const families = familiesOf(aa);
-  for (const name of aaLookupNames(normalized)) {
-    for (const spelling of [name, aaMatchKey(name)]) {
-      const entry = aa.models[spelling];
-      const fam = entry?.family !== undefined ? families.get(entry.family) : families.get(spelling);
-      // The first spelling that identifies a model wins, even if it has no variants.
-      if (entry !== undefined || fam !== undefined) {
-        return fam !== undefined && fam.variants.size >= 2 ? fam : undefined;
+  for (const offered of typeof normalized === 'string' ? [normalized] : normalized) {
+    for (const name of aaLookupNames(offered)) {
+      for (const spelling of [name, aaMatchKey(name)]) {
+        const entry = aa.models[spelling];
+        const fam = entry?.family !== undefined ? families.get(entry.family) : families.get(spelling);
+        // The first spelling that identifies a model wins, even if it has no variants.
+        if (entry !== undefined || fam !== undefined) {
+          return fam !== undefined && fam.variants.size >= 2 ? fam : undefined;
+        }
       }
     }
   }
@@ -360,9 +362,18 @@ export interface UnpinnedCandidate {
   family: CatalogFamily;
 }
 
+/** The resolver a config-reading caller gets when it supplies none: id, else harness id, else the key. */
+function configIdUpstream(config: Pick<SonataConfig, 'unifiedModels'>): UpstreamFor {
+  return (key) => {
+    const model = config.unifiedModels[key];
+    return model?.id ?? model?.harnessId ?? key;
+  };
+}
+
 export function unpinnedCandidates(
   config: Pick<SonataConfig, 'tiers' | 'unifiedModels' | 'native'>,
   aa?: AaCatalog,
+  upstreamFor: UpstreamFor = configIdUpstream(config),
 ): UnpinnedCandidate[] {
   if (aa === undefined || config.tiers === undefined) return [];
   const gateways = Object.keys(config.native?.gateways ?? {});
@@ -372,9 +383,7 @@ export function unpinnedCandidates(
       for (const candidate of lists[tier]) {
         const { key, effort } = splitCandidate(candidate);
         if (effort !== undefined) continue;
-        const model = config.unifiedModels[key];
-        const upstream = model?.id ?? model?.harnessId ?? key;
-        const family = catalogFamily(normalizeModelName(upstream, gateways), aa);
+        const family = catalogFamily(normalizedFor(key, gateways, upstreamFor), aa);
         if (family !== undefined) out.push({ role, tier, key, family });
       }
     }
@@ -385,8 +394,9 @@ export function unpinnedCandidates(
 export function assertEffortsPinned(
   config: Pick<SonataConfig, 'tiers' | 'unifiedModels' | 'native'>,
   aa?: AaCatalog,
+  upstreamFor?: UpstreamFor,
 ): void {
-  const unpinned = unpinnedCandidates(config, aa);
+  const unpinned = unpinnedCandidates(config, aa, upstreamFor);
   if (unpinned.length === 0) return;
   const lines = unpinned.map(({ role, tier, key, family }) => {
     const levels = [...family.variants.keys()].join(', ');
@@ -408,13 +418,34 @@ export function assertEffortsPinned(
  * takes one, defaulting to identity — which is what leaves a catalog-less run
  * and a caller that supplies no resolver behaving exactly as before.
  */
-export type UpstreamFor = (key: string) => string;
+export type UpstreamFor = (key: string) => string | readonly string[];
 
 const identityUpstream: UpstreamFor = (key) => key;
 
-/** A key as the name the catalog is asked about. */
-function normalizedFor(key: string, providers: readonly string[], upstreamFor: UpstreamFor): string {
-  return normalizeModelName(upstreamFor(key), providers);
+/**
+ * A key as the names the catalog is asked about, in order.
+ *
+ * Usually one: the upstream id. A resolver may offer more — a vendor's
+ * versionless alias (`deepseek-flash`) can never be shortened into AA's
+ * versioned key, but the display name models.dev gives that slug can be
+ * (`DeepSeek V4.1 Flash` → `deepseek-v4.1-flash`). Order is precedence: the
+ * first spelling that scores wins, so a later one can only add a score where
+ * there was none, never move a model that already matches.
+ */
+function normalizedFor(key: string, providers: readonly string[], upstreamFor: UpstreamFor): string[] {
+  const upstream = upstreamFor(key);
+  const spellings = typeof upstream === 'string' ? [upstream] : upstream;
+  // Each spelling is offered stripped of the configured gateway names, then
+  // as-is. A *key* needs the strip (`deepseek-deepseek-v4-pro`); an *id* the
+  // resolver has already freed of its gateway carries none — and a vendor's
+  // model names begin with the vendor, so a gateway called `deepseek` made
+  // the strip eat `deepseek-` off `deepseek-v4-pro` and ask AA about
+  // `v4-pro`. Stripped first keeps every lookup that was right unchanged; the
+  // unstripped form only ever adds a hit where the strip left none.
+  return [...new Set(spellings.flatMap((name) => [
+    normalizeModelName(name, providers),
+    normalizeModelName(name),
+  ]))];
 }
 
 /**
@@ -422,12 +453,14 @@ function normalizedFor(key: string, providers: readonly string[], upstreamFor: U
  * under. With an effort, the family's row at that level — and nothing else:
  * a level on a model the catalog does not score by level is unscored, never
  * silently the bare row. */
-function aaEntryFor(normalized: string, aa?: AaCatalog, effort?: Effort): AaEntry | undefined {
+function aaEntryFor(normalized: string | readonly string[], aa?: AaCatalog, effort?: Effort): AaEntry | undefined {
   if (aa === undefined) return undefined;
   if (effort !== undefined) return catalogFamily(normalized, aa)?.variants.get(effort);
-  for (const name of aaLookupNames(normalized)) {
-    const hit = aa.models[name] ?? aa.models[aaMatchKey(name)];
-    if (hit !== undefined) return hit;
+  for (const spelling of typeof normalized === 'string' ? [normalized] : normalized) {
+    for (const name of aaLookupNames(spelling)) {
+      const hit = aa.models[name] ?? aa.models[aaMatchKey(name)];
+      if (hit !== undefined) return hit;
+    }
   }
   return undefined;
 }
@@ -467,7 +500,7 @@ export function lookupModel(
     };
   }
   // A curated judgement is about the model, whichever level it runs at.
-  const curated = CURATED[normalized];
+  const curated = normalized.map((spelling) => CURATED[spelling]).find((entry) => entry !== undefined);
   if (curated !== undefined) return { ...curated, source: 'curated' };
   return { capable: true, cheap: false, source: 'default' };
 }
@@ -575,11 +608,12 @@ export function catalogCoverage(
   modelKeys: readonly string[],
   aa?: AaCatalog,
   providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
 ): { scored: string[]; unscored: string[] } {
   const scored: string[] = [];
   const unscored: string[] = [];
   for (const key of modelKeys) {
-    (scoreFor(key, aa, providers) !== undefined ? scored : unscored).push(key);
+    (scoreFor(key, aa, providers, upstreamFor) !== undefined ? scored : unscored).push(key);
   }
   return { scored, unscored };
 }
@@ -635,15 +669,32 @@ export function proposeTiers(
   // a near-tie: a capability gap within AA_CAPABILITY_TIE_MARGIN is treated as
   // noise rather than a real edge, so price decides it the same as an exact
   // tie would. A real edge (bigger than the margin) still wins outright.
+  // When capability and price both tie, the higher effort level leads. The
+  // levels of one model are the case: AA prices a level-less row per 1M
+  // tokens, so every level shares one price, and adjacent levels sit inside
+  // the tie margin — with nothing left to order them the sort kept
+  // `expandCandidates`' weakest-first order, ranking `@low` above `@medium`
+  // at the same price. A level exists to think harder; at equal cost it wins.
+  const levelOf = (k: string): number => {
+    const { effort } = splitCandidate(k);
+    return effort === undefined ? -1 : EFFORT_LEVELS.indexOf(effort);
+  };
+  const byLevel = (a: string, b: string) => levelOf(b) - levelOf(a);
   const byCapability = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
     const gap = Math.abs(rb.index - ra.index) <= AA_CAPABILITY_TIE_MARGIN ? 0 : rb.index - ra.index;
-    return avoidance(a, b) || gap || ra.price - rb.price;
+    return avoidance(a, b) || gap || ra.price - rb.price || byLevel(a, b);
   };
-  // Simple work wants the most capability per dollar, capability breaking ties.
+  // Simple work wants the most capability per dollar, capability breaking
+  // ties. At one price, value *is* capability, so a score inside the tie
+  // margin is the same noise it is above — a lower level scoring 0.3 higher
+  // is not an edge, and the level decides as it does there.
   const byValue = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
-    return avoidance(a, b) || valueOf(rb) - valueOf(ra) || rb.index - ra.index;
+    if (ra.price === rb.price && Math.abs(rb.index - ra.index) <= AA_CAPABILITY_TIE_MARGIN) {
+      return avoidance(a, b) || byLevel(a, b);
+    }
+    return avoidance(a, b) || valueOf(rb) - valueOf(ra) || rb.index - ra.index || byLevel(a, b);
   };
 
   const complex = candidates.filter((k) => lookupModel(k, aa, providers, upstreamFor).capable).sort(byCapability);

@@ -20,6 +20,8 @@ import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../ext
 import { configPath, loadConfig, parseConfig, TIER_NAMES, tiersCollapse, type SonataConfig } from '../config.js';
 import { assertEffortsPinned, candidateLabel, expandCandidates, loadAaCatalog, type AaCatalog } from '../catalog.js';
 import { replaceTiersBlock } from '../init/toml.js';
+import { loadModelsDev, type ModelsDevCache } from '../modelsdev.js';
+import { configUpstreamFor } from '../pricing.js';
 import { cmdSync } from './sync.js';
 import { pruneAgents } from '../detect.js';
 import { splitCandidate, type Effort } from '../effort.js';
@@ -179,7 +181,8 @@ export function writeTiers(
 
   const next = replaceTiersBlock(text, tiers);
   // Reject an unsafe ranking before it can replace the working file.
-  assertEffortsPinned(parseConfig(next), loadAaCatalog(opts.home));
+  const nextConfig = parseConfig(next);
+  assertEffortsPinned(nextConfig, loadAaCatalog(opts.home), configUpstreamFor(nextConfig, loadModelsDev(opts.home)));
   writeFileSync(path, next);
 
   // A ranking change can move a role between one collapsed agent and two tier
@@ -213,16 +216,19 @@ export function rankableKeys(config: SonataConfig): string[] {
 }
 
 /**
- * A config key as the upstream id a catalog lookup needs.
+ * A config key as the upstream spellings a catalog lookup needs.
  *
  * Tier lists hold config *keys* while the catalog is keyed by upstream *id*
  * (the rule `cmdDoctor` already resolves by), and a key is only *usually*
  * `<gateway>-<id>`: `[models."luna"]` with `id = "gpt-5.6-luna"` has no
  * gateway prefix to strip, so normalizing the key itself finds nothing and
- * this editor would offer no pin for a candidate `loadConfig` refuses.
+ * this editor would offer no pin for a candidate `loadConfig` refuses. With
+ * a models.dev cache the id's display name is offered too, which is what
+ * scores a vendor's versionless alias — the same resolver `loadConfig` uses,
+ * so this editor cannot pass a ranking the loader then refuses.
  */
-function upstreamOf(config: SonataConfig): (key: string) => string {
-  return (key) => config.unifiedModels[key]?.id ?? config.unifiedModels[key]?.harnessId ?? key;
+function upstreamOf(config: SonataConfig, modelsDev?: ModelsDevCache) {
+  return configUpstreamFor(config, modelsDev);
 }
 
 /**
@@ -230,9 +236,9 @@ function upstreamOf(config: SonataConfig): (key: string) => string {
  * scored effort levels where the catalog has them. The same expansion the
  * wizard's tier screens apply, so the two editors offer the same rows.
  */
-export function rankableCandidates(config: SonataConfig, aa?: AaCatalog): string[] {
+export function rankableCandidates(config: SonataConfig, aa?: AaCatalog, modelsDev?: ModelsDevCache): string[] {
   return expandCandidates(
-    rankableKeys(config), aa, Object.keys(config.native?.gateways ?? {}), upstreamOf(config));
+    rankableKeys(config), aa, Object.keys(config.native?.gateways ?? {}), upstreamOf(config, modelsDev));
 }
 
 export function loadAgentsView(opts: AgentsOptions): { config: SonataConfig; rows: AgentRow[] } {
@@ -251,9 +257,9 @@ export interface AgentsIo {
 }
 
 /** A ranking row's label: the key, what it resolves to, and its window. */
-export function itemLabel(config: SonataConfig, candidate: string, aa?: AaCatalog): string {
+export function itemLabel(config: SonataConfig, candidate: string, aa?: AaCatalog, modelsDev?: ModelsDevCache): string {
   const row = modelRow(config, candidate);
-  const scored = candidateLabel(candidate, aa, Object.keys(config.native?.gateways ?? {}), upstreamOf(config));
+  const scored = candidateLabel(candidate, aa, Object.keys(config.native?.gateways ?? {}), upstreamOf(config, modelsDev));
   return row.route === 'missing'
     ? `${scored}  (names no model)`
     : `${scored.padEnd(50)} ${row.gateway}/${row.id}  ${windowLabel(row.contextWindow)}`;
@@ -282,10 +288,12 @@ export async function cmdAgents(
   }
 
   const catalog = loadAaCatalog(opts.home);
+  const modelsDev = loadModelsDev(opts.home);
   const next = await io.edit({
     config,
     initialTiers: config.tiers,
-    items: rankableCandidates(config, catalog).map((candidate) => ({ value: candidate, label: itemLabel(config, candidate, catalog) })),
+    items: rankableCandidates(config, catalog, modelsDev)
+      .map((candidate) => ({ value: candidate, label: itemLabel(config, candidate, catalog, modelsDev) })),
   });
   if (next === undefined) {
     for (const line of renderAgents(rows)) io.out(line);

@@ -53,6 +53,15 @@ describe('loadModelsDev', () => {
     expect(loadModelsDev(home)!.providers.deepseek['deepseek-v4-flash'].cacheWrite).toBe(0.66);
   });
 
+  it('drops a malformed names map rather than failing the cache or a later lookup', () => {
+    mkdirSync(dirname(modelsDevPath(home)), { recursive: true });
+    const providers = { deepseek: { 'deepseek-v4-flash': { input: 0.44, output: 1.32 } } };
+    writeFileSync(modelsDevPath(home), JSON.stringify({ fetchedAt: 'x', providers, names: null }));
+    expect(loadModelsDev(home)!.names).toBeUndefined();
+    writeFileSync(modelsDevPath(home), JSON.stringify({ fetchedAt: 'x', providers, names: { deepseek: null, ok: { 'deepseek-flash': 'DeepSeek V4.1 Flash' }, bad: { m: 7 } } }));
+    expect(loadModelsDev(home)!.names).toEqual({ ok: { 'deepseek-flash': 'DeepSeek V4.1 Flash' } });
+  });
+
   it('returns undefined for corrupt or malformed caches', () => {
     mkdirSync(dirname(modelsDevPath(home)), { recursive: true });
     writeFileSync(modelsDevPath(home), '{not json');

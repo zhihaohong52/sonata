@@ -6,6 +6,8 @@ import { applyMigrations, readSchemaVersion } from './migrations.js';
 import { mainWorktreeDir } from './git-worktree.js';
 import { splitCandidate, type Effort } from './effort.js';
 import { assertEffortsPinned, loadAaCatalog } from './catalog.js';
+import { loadModelsDev } from './modelsdev.js';
+import { configUpstreamFor } from './pricing.js';
 
 export const KNOWN_HARNESSES = ['opencode', 'codex', 'pi', 'reasonix', 'claude'] as const;
 export const KNOWN_ROLES = ['review', 'code', 'explore', 'plan'] as const;
@@ -892,7 +894,9 @@ export function loadConfig(cwd: string, home: string = homedir()): SonataConfig 
   // The catalog is available only at runtime, after pure text parsing. A
   // config with no [tiers] has nothing to pin, so the catalog read is skipped
   // — this is the router's per-request path as well as every command's.
-  if (config.tiers !== undefined) assertEffortsPinned(config, loadAaCatalog(home));
+  if (config.tiers !== undefined) {
+    assertEffortsPinned(config, loadAaCatalog(home), configUpstreamFor(config, loadModelsDev(home)));
+  }
   return config;
 }
 
