@@ -122,7 +122,13 @@ function modelIdentity(entry: Record<string, unknown>): { name: string; family?:
   if (source === undefined) return undefined;
   const name = normalizeModelName(source);
   const effort = display === undefined ? undefined : parseAaEffort(display);
-  if (effort === undefined) return { name };
+  // A row whose display name carries no level parenthetical was scored with
+  // no reasoning level in play, so it is recorded at `none` — a family of
+  // one. Offered bare instead, the key would rank on that score and then run
+  // at whatever the gateway defaults to, which is the mismatch the
+  // `@<effort>` grammar exists to prevent. The slug carries no suffix to
+  // strip, so the family is the key itself.
+  if (effort === undefined) return { name, family: name, effort: 'none' };
   // AA reserves a terminal slug suffix for the effort level. If a natural
   // model name ends in that word, shortening only this variant safely splits
   // it from the default row rather than merging the two families.

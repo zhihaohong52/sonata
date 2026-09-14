@@ -19,15 +19,20 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   complex tier's cost tie-break is likewise void across units. Admission
   already compared per-task costs only — this is the sort catching up. A
   catalog with no per-task costs at all ranks exactly as before.
-- **A model AA scored at one stated level is offered at that level.** AA's
-  only DeepSeek V4.1 Flash row is "(Reasoning, Max Effort)"; the wizard and
+- **Every catalog row is offered at a level; a row stating none is `@none`.**
+  AA's only DeepSeek V4.1 Flash row is "(Reasoning, Max Effort)"; the wizard and
   `sonata agents` offered the bare key, which ranked on the max-effort score
   and ran at whatever the gateway defaulted to — the exact mismatch the
   `@<effort>` grammar exists to prevent, and one it had been drawing the line
   at "two or more levels" to avoid. A single-row family is now a family: the
   key is offered as `@max` (or whichever level the row states), a hand-pinned
   level scores, and a bare key is refused at load like any other family's —
-  `sonata init` re-proposes it. A row that states no level is unchanged.
+  `sonata init` re-proposes it. A row whose name carries **no** level
+  parenthetical was scored with no reasoning level in play, so it is recorded
+  at `none` and offered as `@none` for the same reason: offered bare it would
+  rank on that score and then run at whatever the gateway defaults to. Every
+  tiered candidate therefore now names the level it was ranked at, and an
+  existing config's bare keys are refused until `sonata init` re-ranks them.
 
 ## [0.9.0] - 2026-09-14
 

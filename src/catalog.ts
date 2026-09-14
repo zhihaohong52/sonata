@@ -542,13 +542,23 @@ export function expandCandidates(
   });
 }
 
+/**
+ * Whether the catalog turns this bare key into pinned candidates at all.
+ *
+ * Counted by *difference*, not by how many levels came back: a family of one
+ * expands to a single candidate that is not the bare key, and the whole point
+ * is that the bare key must not survive. Counting `> 1` dropped exactly that
+ * model, which is how a single-level saved key was silently deleted from a
+ * tier rather than re-proposed.
+ */
 export function hasEffortVariants(
   key: string,
   aa?: AaCatalog,
   providers: readonly string[] = [],
   upstreamFor: UpstreamFor = identityUpstream,
 ): boolean {
-  return expandCandidates([key], aa, providers, upstreamFor).length > 1;
+  const expanded = expandCandidates([key], aa, providers, upstreamFor);
+  return expanded.length > 1 || expanded[0] !== key;
 }
 
 /**
@@ -571,7 +581,10 @@ export function unpinnedVariants(
     const { effort } = splitCandidate(candidate);
     if (effort !== undefined) return [];
     const expanded = expandCandidates([candidate], aa, providers, upstreamFor);
-    return expanded.length > 1 ? expanded : [];
+    // Difference, not count: a family of one yields a single *pinned*
+    // candidate, and the saved bare key it replaces is the thing being
+    // repaired. A `> 1` test dropped it from the tier instead.
+    return expanded.length > 1 || expanded[0] !== candidate ? expanded : [];
   });
 }
 

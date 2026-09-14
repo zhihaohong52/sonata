@@ -542,7 +542,9 @@ const FAMILY_AA: AaCatalog = {
     'gpt-5-6-luna-low': { codingIndex: 44, blendedPriceUsd: 0.45, agenticIndex: 17.9, costPerTask: 0.0098, family: 'gpt-5-6-luna', effort: 'low' },
     'gpt-5-6-terra': { codingIndex: 78, blendedPriceUsd: 4.5, agenticIndex: 43.7, costPerTask: 1.399, family: 'gpt-5-6-terra', effort: 'max' },
     'gpt-5-6-terra-high': { codingIndex: 70, blendedPriceUsd: 4.5, agenticIndex: 37.6, costPerTask: 0.338, family: 'gpt-5-6-terra', effort: 'high' },
-    'deepseek-v4-flash': { codingIndex: 65, blendedPriceUsd: 0.66, agenticIndex: 41.7, costPerTask: 0.22 },
+    // No level parenthetical on AA's row: scored with no reasoning in play,
+    // so it is a family of one at `none`.
+    'deepseek-v4-flash': { codingIndex: 65, blendedPriceUsd: 0.66, agenticIndex: 41.7, costPerTask: 0.22, family: 'deepseek-v4-flash', effort: 'none' },
     // A family of one: AA scored it at one level and *named* it. Offered at
     // that level, since a bare key would run at the gateway's own.
     'lonely': { codingIndex: 50, blendedPriceUsd: 1, family: 'lonely', effort: 'high' },
@@ -568,9 +570,18 @@ describe('catalogFamily', () => {
     expect([...fam.variants.keys()]).toEqual(['low', 'high', 'xhigh', 'max']);
     expect(fam.variants.get('high')?.costPerTask).toBe(0.044);
   });
-  it('is undefined for a row that states no level, or without a catalog', () => {
-    expect(catalogFamily('deepseek-v4-flash', FAMILY_AA)).toBeUndefined();
+  it('is undefined without a catalog, or for a model the catalog does not hold', () => {
     expect(catalogFamily('gpt-5.6-luna', undefined)).toBeUndefined();
+    expect(catalogFamily('never-heard-of-it', FAMILY_AA)).toBeUndefined();
+  });
+  it('reads a row that states no level as a family of one at none', () => {
+    // AA scored it with no parenthetical, so no reasoning level was in play.
+    // Offered as `@none` rather than bare, so the dispatch states the level
+    // the score was measured at instead of taking the gateway's default.
+    const fam = catalogFamily('deepseek-v4-flash', FAMILY_AA)!;
+    expect([...fam.variants.keys()]).toEqual(['none']);
+    expect(expandCandidates(['deepseek-v4-flash'], FAMILY_AA)).toEqual(['deepseek-v4-flash@none']);
+    expect(lookupModel('deepseek-v4-flash@none', FAMILY_AA).source).toBe('aa');
   });
   it('is a family of one for a row that states its level', () => {
     // AA's only DeepSeek V4.1 Flash row is "(Reasoning, Max Effort)": one
@@ -599,7 +610,8 @@ describe('expandCandidates', () => {
   it('expands a key with variants into one candidate per level, weakest first', () => {
     expect(expandCandidates(['gpt-5.6-luna', 'deepseek-v4-flash'], FAMILY_AA)).toEqual([
       'gpt-5.6-luna@low', 'gpt-5.6-luna@high', 'gpt-5.6-luna@xhigh', 'gpt-5.6-luna@max',
-      'deepseek-v4-flash',
+      // Its AA row states no level, which is itself a level: `none`.
+      'deepseek-v4-flash@none',
     ]);
   });
   it('is the identity without a catalog', () => {
@@ -610,14 +622,20 @@ describe('expandCandidates', () => {
   });
   it('recovers the id through configured gateway names', () => {
     expect(hasEffortVariants('codex-gpt-5.6-luna', FAMILY_AA, ['codex'])).toBe(true);
-    expect(hasEffortVariants('deepseek-v4-flash', FAMILY_AA)).toBe(false);
+    // A family of one still replaces the bare key, so it counts.
+    expect(hasEffortVariants('deepseek-v4-flash', FAMILY_AA)).toBe(true);
+    expect(hasEffortVariants('never-heard-of-it', FAMILY_AA)).toBe(false);
   });
 });
 
 describe('unpinnedVariants', () => {
-  it('expands only the bare saved keys that have variants', () => {
-    expect(unpinnedVariants(['gpt-5.6-luna', 'deepseek-v4-flash', 'gpt-5.6-terra@high'], FAMILY_AA)).toEqual([
+  it('expands every bare saved key the catalog can pin, and leaves pinned ones alone', () => {
+    // A family of one counts: `deepseek-v4-flash` becomes `@none`, and the
+    // bare key it replaces is exactly what is being repaired — dropping it
+    // deleted the model from the tier instead.
+    expect(unpinnedVariants(['gpt-5.6-luna', 'deepseek-v4-flash', 'gpt-5.6-terra@high', 'never-heard-of-it'], FAMILY_AA)).toEqual([
       'gpt-5.6-luna@low', 'gpt-5.6-luna@high', 'gpt-5.6-luna@xhigh', 'gpt-5.6-luna@max',
+      'deepseek-v4-flash@none',
     ]);
     expect(unpinnedVariants(undefined, FAMILY_AA)).toEqual([]);
   });
@@ -643,7 +661,11 @@ describe('unpinnedCandidates / assertEffortsPinned', () => {
   it('names a bare candidate whose model the catalog scores at several levels', () => {
     const config = parseConfig(PINNABLE);
     const found = unpinnedCandidates(config, FAMILY_AA);
-    expect(found.map((u) => [u.role, u.tier, u.key])).toEqual([['code', 'simple', 'luna']]);
+    // `flash` is refused too: its row states no level, so it is a family of
+    // one at `none` and a bare key would run at the gateway's default.
+    expect(found.map((u) => [u.role, u.tier, u.key])).toEqual([
+      ['code', 'simple', 'luna'], ['code', 'simple', 'flash'], ['code', 'complex', 'flash'],
+    ]);
     expect(found[0].family.default).toBe('max');
     expect(() => assertEffortsPinned(config, FAMILY_AA)).toThrow(
       /tiers\.code\.simple "luna".*levels low, high, xhigh, max.*default is max.*"luna@max".*sonata init/s,
@@ -653,14 +675,17 @@ describe('unpinnedCandidates / assertEffortsPinned', () => {
   it('is silent with no catalog, and for a fully pinned config', () => {
     const config = parseConfig(PINNABLE);
     expect(() => assertEffortsPinned(config, undefined)).not.toThrow();
-    const pinned = parseConfig(PINNABLE.replace('simple = ["luna", "flash"]', 'simple = ["luna@high", "flash"]'));
+    const pinned = parseConfig(PINNABLE
+      .replace('simple = ["luna", "flash"]', 'simple = ["luna@high", "flash@none"]')
+      .replace('complex = ["luna@max", "flash"]', 'complex = ["luna@max", "flash@none"]'));
     expect(() => assertEffortsPinned(pinned, FAMILY_AA)).not.toThrow();
   });
 
   it('resolves the upstream id through the gateway name, not the config key', () => {
     // `[models."codex-gpt-5.6-luna"]` with id `gpt-5.6-luna` is the same model.
     const config = parseConfig(PINNABLE.replace(/"luna"/g, '"codex-gpt-5.6-luna"').replace(/"luna@max"/, '"codex-gpt-5.6-luna@max"'));
-    expect(unpinnedCandidates(config, FAMILY_AA).map((u) => u.key)).toEqual(['codex-gpt-5.6-luna']);
+    expect(unpinnedCandidates(config, FAMILY_AA).map((u) => u.key))
+      .toEqual(['codex-gpt-5.6-luna', 'flash', 'flash']);
   });
 });
 
@@ -703,7 +728,9 @@ describe('effort pinning — every editor can repair what loadConfig refuses', (
     const config = parseConfig(PINNABLE);
     const refused = unpinnedCandidates(config, FAMILY_AA);
     // If the fixture ever stops being refusable this test would pass vacuously.
-    expect(refused.map((u) => [u.role, u.tier, u.key])).toEqual([['code', 'simple', 'luna']]);
+    expect(refused.map((u) => [u.role, u.tier, u.key])).toEqual([
+      ['code', 'simple', 'luna'], ['code', 'simple', 'flash'], ['code', 'complex', 'flash'],
+    ]);
 
     // `plan` reads the catalog off disk, as `cmdInit` does.
     const home = mkdtempSync(join(tmpdir(), 'sonata-pin-'));
@@ -833,11 +860,11 @@ describe('lookupModel / scoreFor with an effort', () => {
 describe('candidateLabel', () => {
   it('shows the level, the capability and the per-task cost', () => {
     expect(candidateLabel('gpt-5.6-luna@xhigh', FAMILY_AA)).toMatch(/^gpt-5\.6-luna @xhigh\s+39\.5\s+\$0\.085\/task$/);
-    expect(candidateLabel('deepseek-v4-flash', FAMILY_AA)).toMatch(/^deepseek-v4-flash\s+41\.7\s+\$0\.220\/task$/);
+    expect(candidateLabel('deepseek-v4-flash@none', FAMILY_AA)).toMatch(/^deepseek-v4-flash @none\s+41\.7\s+\$0\.220\/task$/);
   });
   it('aligns the numbers across rows', () => {
     const a = candidateLabel('gpt-5.6-luna@xhigh', FAMILY_AA);
-    const b = candidateLabel('deepseek-v4-flash', FAMILY_AA);
+    const b = candidateLabel('deepseek-v4-flash@none', FAMILY_AA);
     expect(a.indexOf('39.5')).toBe(b.indexOf('41.7'));
   });
   it('falls back to the per-1M rate, and to the bare key with no catalog', () => {
@@ -852,7 +879,7 @@ describe('proposeTiers — effort variants', () => {
     const tiers = proposeTiers(['gpt-5.6-luna', 'gpt-5.6-terra', 'deepseek-v4-flash'], FAMILY_AA);
     // terra@max 43.7 edges luna@max 42.7 — within the 1.0 tie margin, so
     // price decides: luna@max ($0.178) beats terra@max ($1.399).
-    expect(tiers.complex.slice(0, 3)).toEqual(['gpt-5.6-luna@max', 'gpt-5.6-terra@max', 'deepseek-v4-flash']);
+    expect(tiers.complex.slice(0, 3)).toEqual(['gpt-5.6-luna@max', 'gpt-5.6-terra@max', 'deepseek-v4-flash@none']);
     // Floor = 0.75 × 43.7 = 32.8: luna@high (35.6) clears it and leads on
     // value; luna@low (17.9) does not, whatever its cost.
     expect(tiers.simple[0]).toBe('gpt-5.6-luna@high');
@@ -862,8 +889,8 @@ describe('proposeTiers — effort variants', () => {
 
   it('demotes every variant of an avoided model, by bare key', () => {
     const tiers = proposeTiers(['gpt-5.6-luna', 'deepseek-v4-flash'], FAMILY_AA, [], new Set(['gpt-5.6-luna']));
-    expect(tiers.complex[0]).toBe('deepseek-v4-flash');
-    expect(tiers.simple[0]).toBe('deepseek-v4-flash');
+    expect(tiers.complex[0]).toBe('deepseek-v4-flash@none');
+    expect(tiers.simple[0]).toBe('deepseek-v4-flash@none');
   });
 
   it('is unchanged for a catalog without families', () => {
