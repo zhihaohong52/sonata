@@ -85,6 +85,71 @@ describe('tail decide — worktree delta', () => {
   });
 });
 
+describe('tail decide — effort a harness could not honour', () => {
+  const finished = { ...base, exitCode: 0, report: 'I fixed the bug.' };
+
+  it('annotates a trusted run that ran at the harness default', () => {
+    // The candidate was ranked at xhigh and dispatched to a harness sonata
+    // cannot set a level on, so the run is not the model that was ranked. The
+    // report is still trustworthy; the reader just needs to know which model
+    // produced it.
+    const r = decide({ ...finished, effort: 'xhigh', effortHonoured: false, harness: 'reasonix' });
+    expect(r.report).toMatch(/^\[effort xhigh not honoured: sonata has no effort control for reasonix\]/);
+    expect(r.report).toContain('I fixed the bug.');
+  });
+
+  it('does not degrade such a run', () => {
+    // Effort is a preference, not a safety boundary, so the permission-mode
+    // precedent — refuse rather than downgrade — deliberately does not apply.
+    const r = decide({ ...finished, effort: 'xhigh', effortHonoured: false, harness: 'reasonix' });
+    expect(r.state).toBe('DONE');
+    expect(r.degraded).toBe(false);
+  });
+
+  it('says nothing when the harness did send the level', () => {
+    const r = decide({ ...finished, effort: 'xhigh', effortHonoured: true, harness: 'codex' });
+    expect(r.report).toBe('I fixed the bug.');
+  });
+
+  it('says nothing when no level was asked for', () => {
+    // A bare candidate runs at the harness default by design; there is no
+    // mismatch to report, whatever the harness can or cannot do.
+    const r = decide({ ...finished, effortHonoured: false, harness: 'reasonix' });
+    expect(r.report).toBe('I fixed the bug.');
+  });
+
+  it('annotates a read-only run, whose report is trusted too', () => {
+    // `[read-only run: …]` does NOT say the report cannot be believed — it says
+    // the terminal output IS the report, and the run is not degraded. So it is
+    // a trusted branch and the note belongs on it. This is the branch a
+    // reasonix review run takes, and reasonix is the one harness sonata has no
+    // effort control for, so dropping it here would silence the annotation in
+    // precisely the case it exists for.
+    const r = decide({
+      ...base, exitCode: 0, canWriteReport: false, report: null,
+      paneTail: ['the model said this'], effort: 'xhigh', effortHonoured: false, harness: 'reasonix',
+    });
+    expect(r.degraded).toBe(false);
+    expect(r.report).toMatch(/^\[effort xhigh not honoured: sonata has no effort control for reasonix\]/);
+    expect(r.report).toContain('[read-only run:');
+  });
+
+  it('does not stack the note onto a degraded run', () => {
+    const r = decide({ ...base, exitCode: 1, effort: 'xhigh', effortHonoured: false, harness: 'reasonix' });
+    expect(r.report).toMatch(/^\[degraded:/);
+    expect(r.report).not.toContain('not honoured');
+  });
+
+  it('carries both notes when the run also changed nothing', () => {
+    const r = decide({
+      ...finished, effort: 'max', effortHonoured: false, harness: 'reasonix', worktreeUnchanged: true,
+    });
+    expect(r.report).toMatch(/^\[effort max not honoured:/);
+    expect(r.report).toContain('[no worktree change:');
+    expect(r.report).toContain('I fixed the bug.');
+  });
+});
+
 describe('tail decide — runs that cannot write a report', () => {
   const readOnly = { ...base, canWriteReport: false };
 
@@ -379,5 +444,40 @@ describe('harnessOutput — the watchdog fg echo', () => {
   it('keeps a model line that merely mentions a harness path', () => {
     const line = 'I inspected bash scripts including /repo/.sonata/runs/abc123/harness.sh';
     expect(harnessOutput([line])).toEqual([line]);
+  });
+});
+
+describe('cmdTail composes the effort annotation from the run`s own meta', () => {
+  // The `decide` tests above cover the composition; this covers the WIRING.
+  // Without it the three lines that read `meta.effort` / `meta.effortHonoured`
+  // / `meta.harness` into `decide` could be deleted with the suite green, and
+  // spec §7 asks for the annotation "through `tail`", not one layer below it.
+  let cwd: string;
+  const session = 'sonata-test-tail-effort';
+  const id = 'eff123';
+
+  beforeEach(async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-effort-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '[run]\nstall_timeout_seconds = 120\n');
+    mkdirSync(runDir(cwd, id), { recursive: true });
+    writeFileSync(join(runDir(cwd, id), 'meta.json'), JSON.stringify({
+      id, role: 'code', model: 'kimi', harness: 'reasonix', mode: 'acceptEdits',
+      interactive: false, session, cwd, startedAt: '2026-09-14T00:00:00.000Z',
+      effort: 'xhigh', effortHonoured: false,
+    }));
+    writeFileSync(join(runDir(cwd, id), 'report.md'), 'I fixed the bug.');
+    writeFileSync(join(runDir(cwd, id), 'exit'), '0\n');
+    await newSession({ session, cwd });
+  });
+
+  afterEach(async () => { await killSession(session); });
+
+  it('annotates a finished run the harness could not honour the level for', async () => {
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+
+    expect(r.state).toBe('DONE');
+    expect(r.degraded).toBe(false);
+    expect(r.report).toMatch(/^\[effort xhigh not honoured: sonata has no effort control for reasonix\]/);
+    expect(r.report).toContain('I fixed the bug.');
   });
 });

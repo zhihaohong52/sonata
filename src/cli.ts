@@ -59,7 +59,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata catalog   show or refresh the Artificial Analysis model catalog
   sonata litellm   install or report sonata's own pinned LiteLLM (install|status)
   sonata usage     report native-path token and cost usage from the ledger
-                   [--since 7d] [--by model|role|tier|gateway|session|project]
+                   [--since 7d] [--by model|role|tier|effort|gateway|session|project]
                    [--project <dir>] [--session <id>] [--json]
   sonata status    router health and the last hour of routes
   sonata runs      list every run, with state and whether it wrote a report
@@ -513,8 +513,8 @@ export async function main(argv: string[]): Promise<number> {
       },
     });
     const by = (values.by ?? 'model') as UsageDimension;
-    if (!['model', 'role', 'tier', 'gateway', 'session', 'project'].includes(by)) {
-      throw new Error('sonata usage --by must be one of: model | role | tier | gateway | session | project');
+    if (!['model', 'role', 'tier', 'effort', 'gateway', 'session', 'project'].includes(by)) {
+      throw new Error('sonata usage --by must be one of: model | role | tier | effort | gateway | session | project');
     }
     const report = await cmdUsage({
       home: homedir(),

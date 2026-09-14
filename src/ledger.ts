@@ -13,6 +13,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
+import type { Effort } from './effort.js';
 import type { UsageTokens } from './native/usage.js';
 
 export type LedgerPrice =
@@ -46,6 +47,14 @@ export interface LedgerRow {
   role?: string;
   tier?: string;
   key?: string;
+  /**
+   * The reasoning-effort level the router sent (`reasoning_effort`), when the
+   * candidate carried one. Absent means none was asked for. Present means it
+   * was SENT, not that it was honoured: a provider with no effort control
+   * drops the field silently (`drop_params`), and the router cannot tell.
+   * The only evidence a level applied is this row's cost moving with it.
+   */
+  effort?: Effort;
   gateway?: string;
   upstream: 'litellm' | 'anthropic' | 'direct';
   litellmModel?: string;

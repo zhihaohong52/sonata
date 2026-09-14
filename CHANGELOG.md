@@ -33,6 +33,36 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   Measured on the current catalog, GPT-5.6 Luna at `max` out-scores GPT-5.6
   Terra at every level below `max` at an eighth of the cost per task —
   a comparison the ranking could not previously express.
+- **A pinned level now reaches the model, on both lanes.** On the native path
+  the router sets top-level `reasoning_effort` per candidate and deletes
+  `thinking` / `output_config.effort` on that request — LiteLLM translates
+  Claude Code's `thinking: {type: "adaptive"}` into `reasoning_effort: medium`,
+  so leaving both in is how an explicit `xhigh` was silently overwritten. The
+  ledger records the level and `sonata usage --by effort` breaks down by it.
+  On the harness path `sonata dispatch --tier <role>-<tier>` reads each
+  candidate's level and `--model <key>@<effort>` takes the same grammar:
+  codex gets `-c model_reasoning_effort=<level>` (on `codex exec` and the
+  interactive TUI alike), opencode `--variant <level>`, pi `--thinking <level>`
+  — where sonata's `none` is mapped to pi's own spelling, `off` — and the
+  claude harness carries the level in the model name, which the router already
+  splits. All four measured against the real binaries.
+- **A harness sonata cannot set a level on annotates its report rather than
+  failing.** The run goes ahead at the harness default and `sonata tail`
+  prefixes `[effort <level> not honoured: sonata has no effort control for
+  <harness>]` — the same shape as the existing `[no worktree change: …]` note,
+  and deliberately not a `degraded` verdict: effort is a preference, not a
+  safety boundary, so the permission-mode precedent of refusing rather than
+  downgrading does not apply. It reports what sonata knows — that sonata has
+  no control for that harness — not that the harness has none. Today that is
+  reasonix alone, and only because it was not installed on the machine where
+  the other four were probed.
+- **`sonata verify` speaks the same variant `sonata dispatch` prints.** A
+  dispatch reports `model=flash@high`; pasting that into `sonata verify
+  --model` used to fail, because a run records the key and the level in
+  separate fields. A bare `--model flash` still matches any level of that
+  model — the question it asks is which model ran — while a level must match
+  exactly. The provenance line appended to every finished report names the
+  variant too, so a run at a pinned level no longer understates itself.
 
 ### Changed
 - **A bare tier candidate whose model the catalog scores at several levels
@@ -41,8 +71,7 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   ranking and the dispatch described different models. The error names the
   candidate and its levels; `sonata init` re-ranks with levels. The check
   needs a catalog cache; without one it is skipped and `sonata doctor` says
-  so. The pinned level is not yet sent upstream — that lands with the router
-  and adapter follow-ups.
+  so.
 
 ### Fixed
 - **`sonata init` no longer corrupts a `CLAUDE.md` that documents the marker

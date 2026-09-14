@@ -11,6 +11,7 @@ import {
 import { cmdVerify } from './verify.js';
 import { worktreeUnchangedSince } from '../worktree.js';
 import type { TailState } from '../types.js';
+import type { Effort } from '../effort.js';
 
 /**
  * The provenance line appended to every finished report.
@@ -60,6 +61,16 @@ export interface DecideInput {
    * `src/worktree.ts`.
    */
   worktreeUnchanged?: boolean;
+  /**
+   * The level this run's tier candidate pinned, and whether the harness plan
+   * actually sent it. Both are needed: a harness with no effort control is
+   * unremarkable until a level was asked for, and `effortHonoured` undefined
+   * means a run predating the field — unknown, never unhonoured.
+   */
+  effort?: Effort;
+  effortHonoured?: boolean;
+  /** Which harness ran, named in the effort annotation. */
+  harness?: string;
 }
 
 /**
@@ -133,15 +144,41 @@ export function decide(input: DecideInput): TailResult {
       ? '[no worktree change: the run finished without modifying any file git tracks or reports]\n\n'
       : '';
 
+    // The second annotation, on the same terms and for the same reason. A tier
+    // candidate is ranked at a level; a harness sonata cannot set that level on
+    // runs at its own default, so the model that produced this report is not
+    // the model that was ranked. Effort is a preference, not a safety boundary
+    // — unlike a permission mode, which is refused rather than downgraded — so
+    // this states the fact and leaves the report trusted.
+    //
+    // It says what sonata knows: that sonata has no control for this harness.
+    // Not that the harness has none — reasonix was never probed, and asserting
+    // absence from an absence of evidence is the kind of false claim the whole
+    // report contract exists to keep out.
+    //
+    // Ordered before `noChange` — how the run was configured, then what it
+    // produced — and carried on every branch whose report is TRUSTED, which is
+    // two of them, not one. `[read-only run: …]` does not say the report cannot
+    // be believed; it says the terminal output *is* the report, and such a run
+    // is explicitly not degraded. Treating it as self-explanatory the way
+    // `noChange` does would drop the note exactly where it matters most: a
+    // read-only reasonix run is both the branch that lands here and the only
+    // harness sonata has no effort control for. (`noChange` genuinely cannot
+    // reach that branch — a read-only role has no launch fingerprint to
+    // compare — so the two notes differ here for a reason, not by oversight.)
+    const effortNote = input.effort !== undefined && input.effortHonoured === false
+      ? `[effort ${input.effort} not honoured: sonata has no effort control for ${input.harness ?? 'this harness'}]\n\n`
+      : '';
+
     const report = input.timedOut
       ? `[timed out: sonata killed the run after the configured run_timeout_seconds]\n\n${input.paneTail.join('\n')}`
       : reportImpossible
-        ? `[read-only run: the harness cannot write a report file, so this is its terminal output]\n\n${input.paneTail.join('\n')}`
+        ? `${effortNote}[read-only run: the harness cannot write a report file, so this is its terminal output]\n\n${input.paneTail.join('\n')}`
         : degraded && !spoke
           ? `[degraded: the harness exited ${input.exitCode} without producing any output — nothing ran]\n\n${input.paneTail.join('\n')}`
           : degraded
             ? `[degraded: harness exited ${input.exitCode} without writing a report]\n\n${input.paneTail.join('\n')}`
-            : `${noChange}${input.report!}`;
+            : `${effortNote}${noChange}${input.report!}`;
     return {
       state: 'DONE',
       lines: input.newLines,
@@ -319,6 +356,9 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       silentUntilExit: meta.silentUntilExit,
       launchMarker: scriptPath,
       worktreeUnchanged,
+      effort: meta.effort,
+      effortHonoured: meta.effortHonoured,
+      harness: meta.harness,
     });
 
     if (result.state === 'DONE') {

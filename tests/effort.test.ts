@@ -23,6 +23,11 @@ describe('splitCandidate / joinCandidate', () => {
     expect(() => splitCandidate('gpt-5.6-luna@')).toThrow(/effort level/);
     expect(() => splitCandidate('gpt-5.6-luna@turbo')).toThrow(/"turbo"/);
   });
+  it('refuses an empty key', () => {
+    // `@low` names a level and no model: the router would otherwise forward
+    // `default/` to LiteLLM, and a tier list would hold a key matching nothing.
+    expect(() => splitCandidate('@low')).toThrow(/model key must precede "@"/);
+  });
   it('round-trips through join', () => {
     expect(joinCandidate('k', 'low')).toBe('k@low');
     expect(joinCandidate('k')).toBe('k');

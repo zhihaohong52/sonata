@@ -66,6 +66,23 @@ function buildScript(input: PlanInput): LaunchPlan {
   // the models people configure, so the run died before the model saw the task.
   const flags = ['run', `--agent ${agent}`, `-m ${input.modelId}`, '--interactive'];
   if (auto) flags.push('--auto');
+  // Probed 2026-09-14 against opencode 1.18.29: `--variant <level>` is applied
+  // on the `run` path — reasoning tokens moved with it on an identical prompt
+  // (low → 132, xhigh → 230) and the stored message records the variant.
+  //
+  // The level is passed through UNMAPPED. models.dev publishes the legal set
+  // per model (`reasoning_options[].values`; gpt-5.6-luna has no `minimal`),
+  // and `opencode run` accepts an unknown variant silently rather than
+  // erroring — so a level a model does not publish is dropped and sonata
+  // cannot see that it was. Substituting a nearby level instead would run at a
+  // setting the user never chose while still reporting it honoured, which is
+  // worse than the unknown: same class as the router's own `drop_params`
+  // limit, reported as what sonata can see and no more.
+  //
+  // Safe to place before the positional message: `opencode run --help` on
+  // 1.18.29 declares `--variant` as `[string]`, unlike `-f`, which is `[array]`
+  // and greedily eats the next positional — the bug the note below exists for.
+  if (input.effort !== undefined) flags.push(`--variant ${input.effort}`);
 
   // `-f` is declared as an array option, so it greedily consumes any following
   // positional. The message MUST come before `-f` or opencode treats the prompt
@@ -93,7 +110,7 @@ function buildScript(input: PlanInput): LaunchPlan {
   //
   // Keyed off the agent actually chosen rather than the role, because the two
   // can differ: `plan` mode sends a write-capable role to the plan agent too.
-  return { script, interactive: false, canWriteReport: agent !== 'plan' };
+  return { script, interactive: false, canWriteReport: agent !== 'plan', effortHonoured: true };
 }
 
 export const openCodeAdapter: HarnessAdapter = {

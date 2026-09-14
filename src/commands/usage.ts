@@ -16,7 +16,7 @@ import { loadModelsDev } from '../modelsdev.js';
 import { readRows, type LedgerRow } from '../ledger.js';
 import { loadSessions, type SessionRecord } from '../sessions.js';
 
-export type UsageDimension = 'model' | 'role' | 'tier' | 'gateway' | 'session' | 'project';
+export type UsageDimension = 'model' | 'role' | 'tier' | 'effort' | 'gateway' | 'session' | 'project';
 
 export interface UsageBucket {
   label: string;
@@ -135,6 +135,12 @@ function labelOf(
     case 'model': return row.key || row.alias || '(unresolved)';
     case 'role': return row.role ?? '—';
     case 'tier': return row.tier ?? '—';
+    // A row with no level is the baseline every pinned row is judged against,
+    // so it is labelled rather than dropped: `drop_params` means the router
+    // cannot tell a level that was honoured from one silently discarded, and
+    // cost-per-task moving against the no-level rows is the only evidence
+    // available that a level did anything at all.
+    case 'effort': return row.effort ?? 'none sent';
     case 'gateway': return row.gateway ?? row.upstream;
     case 'session': return row.session ?? 'unknown';
     case 'project': {

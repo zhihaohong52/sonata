@@ -343,3 +343,22 @@ describe('adapter registry', () => {
     expect(adapter.pathPrepend).toEqual([]);
   });
 });
+
+describe('reasonixAdapter.plan — reasoning effort', () => {
+  // reasonix is NOT installed on the machine this was written on, so its
+  // effort control — if it has one — could not be probed. The repo rule is
+  // "probe the real binary before writing an adapter", so nothing is invented
+  // here: the plan reports the level unhonoured and `sonata tail` annotates
+  // the report, rather than passing a guessed flag that would report a run as
+  // honoured while it ran at the default.
+  it('reports the level unhonoured rather than guessing a flag', () => {
+    const p = reasonixAdapter.plan({ ...base, mode: 'acceptEdits', effort: 'xhigh' });
+    expect(p.effortHonoured).toBe(false);
+    expect(p.script).not.toContain('xhigh');
+  });
+
+  it('reports unhonoured even with no level asked for', () => {
+    const p = reasonixAdapter.plan({ ...base, mode: 'acceptEdits' });
+    expect(p.effortHonoured).toBe(false);
+  });
+});

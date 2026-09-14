@@ -78,6 +78,28 @@ names the candidate, its levels and its default; `sonata init` re-ranks
 every tier with levels. With no catalog cache the check cannot run, and
 `sonata doctor` says so.
 
+**What a pinned level actually does.** A native tier agent's requests carry
+`reasoning_effort` at that level, recorded on each ledger row — `sonata usage
+--by effort` breaks spend down by it. A `sonata dispatch` run passes it to the
+harness: `-c model_reasoning_effort` on codex, `--variant` on opencode,
+`--thinking` on pi (where `none` becomes pi's own `off`), and in the model name
+for the claude harness, which routes back through sonata's router. `sonata
+dispatch --model <key>@<effort>` takes the same grammar as a tier candidate,
+and refuses an unknown level rather than dropping it.
+
+Where sonata has no way to set a level — reasonix today, because it was not
+installed on the machine the others were probed on — the run goes ahead at the
+harness default and its report opens with `[effort xhigh not honoured: sonata
+has no effort control for reasonix]`. That is a note, not a failure: the report
+is still trusted, and the run is not marked degraded. Effort is a preference,
+unlike a permission mode, which sonata refuses rather than quietly downgrades.
+
+One limit worth stating: sonata can see that it sent the level, not that the
+model applied it. A gateway without an effort control drops the field silently,
+and `opencode run` accepts a `--variant` a model does not publish without
+complaining. The evidence a level did anything is cost per task moving with it
+in `sonata usage`.
+
 Run `sonata sync` after editing the config; Claude Code picks up the
 generated agents automatically.
 

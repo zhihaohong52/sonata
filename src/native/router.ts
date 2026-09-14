@@ -7,10 +7,13 @@ import type { LedgerRow } from '../ledger.js';
 import { SONATA_PROJECT_HEADER, TenantError } from './tenants.js';
 import { SONATA_TOKEN_HEADER, projectHintAuthorised } from './router-token.js';
 import type { Transport } from './providers.js';
+import { joinCandidate, splitCandidate, type Effort } from '../effort.js';
 import { createUsageCollector, type UsageTokens, usageFromJsonBody } from './usage.js';
 
 export interface TierRoute {
   key: string;
+  /** The reasoning-effort level this candidate is pinned to, if any. */
+  effort?: Effort;
   native?: { gateway: string; id: string; transport?: Transport; baseUrl?: string };
   harness?: { harness: string; id: string };
 }
@@ -200,6 +203,8 @@ interface RecordContext {
   role?: string;
   tier?: string;
   key?: string;
+  /** The level the request was pinned to, when the candidate carried one. */
+  effort?: Effort;
   gateway?: string;
   upstream: 'litellm' | 'anthropic' | 'direct';
   attempts: { key: string; status: number }[];
@@ -240,6 +245,9 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
           role: ctx.role,
           tier: ctx.tier,
           key: ctx.key,
+          // Only when a level was sent: an absent field means "no level was
+          // asked for", which is a different fact from `effort: undefined`.
+          ...(ctx.effort === undefined ? {} : { effort: ctx.effort }),
           gateway: ctx.gateway,
           upstream: ctx.upstream,
           litellmModel: response.headers['x-litellm-model-name'],
@@ -305,6 +313,49 @@ export function withModel(body: Buffer, model: string): Buffer {
     return body;
   }
   return Buffer.from(JSON.stringify({ ...payload, model }));
+}
+
+/**
+ * Pins a request to a reasoning-effort level, for a tier candidate that
+ * carries one (`luna@xhigh`).
+ *
+ * Sets top-level `reasoning_effort` — LiteLLM's Anthropic-messages passthrough
+ * reads it and maps it per provider (Responses `reasoning.effort`, Gemini
+ * thinking level, xAI `reasoning_effort`) — and DELETES `thinking` and
+ * `output_config.effort`. That deletion is the load-bearing part: LiteLLM
+ * translates Claude Code's `thinking: {type: "adaptive"}` into
+ * `reasoning_effort: medium` when it is present, so leaving both in is how an
+ * explicit `xhigh` gets silently overwritten by the adaptive default. The
+ * ranking scored this model at the stated level; a request that runs it at
+ * another describes a different model.
+ *
+ * Applied on both transports. On `direct` the body is otherwise passed
+ * through byte-identical because assistant blocks carry opaque vendor state;
+ * one top-level key leaves those blocks untouched, and an Anthropic-wire
+ * upstream ignores a key it does not know (measured 2026-09-14 against
+ * DeepSeek's `/anthropic/v1/messages`: 200 with `reasoning_effort: "bogus"`).
+ *
+ * A bare candidate (no effort) returns the identical buffer — exactly the
+ * request that shipped before levels existed. What the router cannot tell is
+ * whether the upstream HONOURED the level: `drop_params: true` means a
+ * provider with no effort control drops the field silently. Same class as
+ * unpriced volume — recorded on the ledger row, never assumed applied.
+ */
+export function withEffort(body: Buffer, effort: Effort | undefined): Buffer {
+  if (effort === undefined) return body;
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(body.toString()) as Record<string, unknown>;
+  } catch {
+    return body;
+  }
+  const { thinking: _thinking, output_config: outputConfig, ...rest } = payload;
+  const out: Record<string, unknown> = { ...rest, reasoning_effort: effort };
+  if (typeof outputConfig === 'object' && outputConfig !== null && !Array.isArray(outputConfig)) {
+    const { effort: _effort, ...keptConfig } = outputConfig as Record<string, unknown>;
+    if (Object.keys(keptConfig).length > 0) out.output_config = keptConfig;
+  }
+  return Buffer.from(JSON.stringify(out));
 }
 
 export const TIER_COOLDOWN_MS = 60_000;
@@ -944,7 +995,10 @@ async function routeTierRequest(
     }
     const outbound = direct ? req.body : flattened;
     const prepared = foreign ? stripForeignThinking(outbound) : outbound;
-    const body = withModel(prepared, direct ? route.native!.id : cool);
+    // Effort is applied last, after the strip: both touch thinking-adjacent
+    // fields for different reasons, and the strip must see the original.
+    const body = withEffort(withModel(prepared, direct ? route.native!.id : cool), route.effort);
+    const variant = joinCandidate(route.key, route.effort);
     const response = direct
       ? await forwardDirect(
         body,
@@ -1027,6 +1081,7 @@ async function routeTierRequest(
         role: resolved.role,
         tier: resolved.tier,
         key: route.key,
+        effort: route.effort,
         gateway: route.native!.gateway,
         upstream: direct ? 'direct' : 'litellm',
         attempts,
@@ -1040,7 +1095,7 @@ async function routeTierRequest(
     // above is a request this candidate could not serve, and pinning to it
     // would make the next turn prefer the model that just refused.
     if (conversation !== undefined) stickySet(conversation, route.key, now());
-    deps.log?.(`${req.method} ${req.url} model=${alias} -> ${route.key} -> ${direct ? 'direct' : 'litellm'}`);
+    deps.log?.(`${req.method} ${req.url} model=${alias} -> ${variant} -> ${direct ? 'direct' : 'litellm'}`);
     return withUsageRecording(response, {
       startedAt,
       session,
@@ -1050,6 +1105,7 @@ async function routeTierRequest(
       role: resolved.role,
       tier: resolved.tier,
       key: route.key,
+      effort: route.effort,
       gateway: route.native!.gateway,
       upstream: direct ? 'direct' : 'litellm',
       attempts,
@@ -1093,8 +1149,26 @@ async function routeTierRequest(
 }
 
 export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promise<RouterResponse> {
-  const alias = requestedModel(req.body);
+  const requested = requestedModel(req.body);
   const session = req.headers['x-claude-code-session-id'];
+
+  // A bare model name may carry a level (`flash@low`) in the same grammar a
+  // tier candidate uses. This is how the claude harness adapter — whose
+  // `--model` names a sonata key straight to the router — honours a
+  // `sonata dispatch --model <key>@<effort>`. A tier alias never contains
+  // `@`, and a `claude-` model is Anthropic's own and passes through
+  // untouched, so neither is split.
+  let alias = requested;
+  let bareEffort: Effort | undefined;
+  if (requested !== undefined && requested.includes('@') && !requested.startsWith('sonata-') && !isClaudeRequest(req.body)) {
+    try {
+      ({ key: alias, effort: bareEffort } = splitCandidate(requested));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      deps.log?.(`router: refused model=${requested} — ${message}`);
+      return { status: 400, headers: { 'content-type': 'application/json' }, body: anthropicErrorBody('invalid_request_error', message) };
+    }
+  }
 
   // A hint is honoured only from a caller that proves it is the user: naming a
   // project chooses that project's gateways, endpoints and stored credentials,
@@ -1163,9 +1237,9 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     ? req.body
     : alias === undefined
       ? litellmBody(req.body)
-      : withModel(litellmBody(req.body), litellmModelName(tenant, alias));
+      : withEffort(withModel(litellmBody(req.body), litellmModelName(tenant, alias)), bareEffort);
 
-  deps.log?.(`${req.method} ${req.url} model=${requestedModel(req.body) ?? '?'} -> ${upstream}`);
+  deps.log?.(`${req.method} ${req.url} model=${requested ?? '?'} -> ${upstream}`);
 
   if (!anthropic) {
     if (unavailable !== undefined) {
@@ -1191,6 +1265,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
         // `RecordContext` fields are handled elsewhere — never an own property
         // with value `undefined`.
         ...(alias !== undefined ? { key: alias, gateway: deps.resolveGateway?.(alias, tenant) } : {}),
+        effort: bareEffort,
         upstream: 'litellm',
         attempts: [],
       },

@@ -216,3 +216,28 @@ describe('adapter registry', () => {
     expect(adapter.pathPrepend).toEqual(['$HOME/.local/bin']);
   });
 });
+
+describe('piAdapter.plan — reasoning effort', () => {
+  // Probed 2026-09-14 against pi 0.85.1: `--thinking <level>` takes
+  // off, minimal, low, medium, high, xhigh, max. An invalid level prints
+  // `Warning: Invalid thinking level "bogus"` and CONTINUES at the default, so
+  // pi will not fail a run for a level sonata got wrong — which is exactly why
+  // the one name that differs is mapped here rather than passed through.
+  it('pins the level with --thinking', () => {
+    const p = piAdapter.plan({ ...base, mode: 'acceptEdits', effort: 'xhigh' });
+    expect(p.script).toContain('--thinking xhigh');
+    expect(p.effortHonoured).toBe(true);
+  });
+
+  it('spells `none` as pi`s own `off`', () => {
+    const p = piAdapter.plan({ ...base, mode: 'acceptEdits', effort: 'none' });
+    expect(p.script).toContain('--thinking off');
+    expect(p.script).not.toContain('--thinking none');
+  });
+
+  it('sends no --thinking when the candidate pins no level', () => {
+    const p = piAdapter.plan({ ...base, mode: 'acceptEdits' });
+    expect(p.script).not.toContain('--thinking');
+    expect(p.effortHonoured).toBe(true);
+  });
+});

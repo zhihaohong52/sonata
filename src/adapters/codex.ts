@@ -184,7 +184,16 @@ function buildScript(input: PlanInput): LaunchPlan {
 
   // `--skip-git-repo-check` is accepted by `codex exec` only; passing it to the
   // interactive TUI is a hard argument error. Keep it out of the shared flags.
+  //
+  // `-c model_reasoning_effort` IS shared: probed 2026-09-14 against codex-cli
+  // 0.153.4, both `codex exec` and the TUI accept it and the run header prints
+  // `reasoning effort: xhigh`, so it demonstrably takes. Codex's own supported
+  // set — reported by the upstream when it refuses one — is exactly sonata's
+  // `EFFORT_LEVELS`, so no mapping is needed, and a level codex refuses fails
+  // the launch, which the ranked dispatch already reads as "try the next
+  // candidate".
   const common = [`-m ${shellQuote(input.modelId)}`];
+  if (input.effort !== undefined) common.push(`-c model_reasoning_effort="${input.effort}"`);
 
   let invocation: string;
   if (interactive) {
@@ -222,7 +231,7 @@ function buildScript(input: PlanInput): LaunchPlan {
   // so the model cannot write report.md. Default-mode code runs use the
   // interactive workspace-write TUI instead of sandboxFor() and can write it.
   const canWriteReport = interactive || (!readOnly && sandboxFor(input.mode) !== 'read-only');
-  return { script, interactive, canWriteReport };
+  return { script, interactive, canWriteReport, effortHonoured: true };
 }
 
 /** `default` mode needs Codex's interactive TUI to surface approvals. */

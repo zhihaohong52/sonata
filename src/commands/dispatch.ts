@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { loadConfig, harnessModelFor, resolveTierAlias } from '../config.js';
+import { joinCandidate, splitCandidate, type Effort } from '../effort.js';
 import { cmdRun } from './run.js';
 import type { RunOptions } from './run.js';
 import { cmdWait } from './wait.js';
@@ -79,7 +80,10 @@ export async function cmdDispatch(
   deps: DispatchDeps = {},
 ): Promise<DispatchOutcome> {
   const config = loadConfig(opts.cwd, opts.home);
-  const candidates: string[] = [];
+  // A candidate is a (model, level) pair, not a model. Two slots in one tier
+  // may hold the same model at different levels, so carrying only the key
+  // would collapse them — and the attempt history could not say which failed.
+  const candidates: Array<{ key: string; effort?: Effort }> = [];
   let role = 'code';
 
   if ((opts.tier === undefined) === (opts.model === undefined)) {
@@ -92,24 +96,29 @@ export async function cmdDispatch(
     if (!resolved) throw new Error(`sonata dispatch: unknown tier "${opts.tier}"`);
     role = resolved.role;
     for (const route of resolved.routes) {
-      if (route.harness !== undefined) candidates.push(route.key);
+      if (route.harness !== undefined) candidates.push({ key: route.key, effort: route.effort });
     }
     if (candidates.length === 0) {
       throw new Error(`sonata dispatch: tier "${opts.tier}" has no harness routes`);
     }
   } else {
-    if (!harnessModelFor(config, opts.model!)
-      && !config.models[opts.model!]
-      && !config.native?.models[opts.model!]
-      && !(config.unifiedModels[opts.model!]?.gateway !== undefined && config.unifiedModels[opts.model!]?.id !== undefined)) {
-      throw new Error(`sonata dispatch: model "${opts.model}" has no harness route`);
+    // `--model` takes the same `<key>@<effort>` grammar a tier candidate does,
+    // and refuses an unknown level here rather than dropping it — accepting the
+    // grammar while ignoring the level is exactly the silent mismatch this
+    // design exists to prevent.
+    const { key, effort } = splitCandidate(opts.model!);
+    if (!harnessModelFor(config, key)
+      && !config.models[key]
+      && !config.native?.models[key]
+      && !(config.unifiedModels[key]?.gateway !== undefined && config.unifiedModels[key]?.id !== undefined)) {
+      throw new Error(`sonata dispatch: model "${key}" has no harness route`);
     }
     // Unlike --tier, a bare --model key carries no role of its own — a
     // legacy config's review-<model>/explore-<model> wrapper depends on
     // this being right, since running the wrong role's prompt under a
     // read-only role's own permission policy would let it write.
     role = opts.role ?? 'code';
-    candidates.push(opts.model!);
+    candidates.push({ key, effort });
   }
 
   const run = deps.run ?? cmdRun;
@@ -117,7 +126,11 @@ export async function cmdDispatch(
   const attempts: DispatchAttempt[] = [];
   let lastId = '';
 
-  for (const modelKey of candidates) {
+  for (const candidate of candidates) {
+    const { key, effort } = candidate;
+    // What every report of this attempt names: the variant, so two slots
+    // holding one model at different levels stay distinguishable.
+    const modelKey = joinCandidate(key, effort);
     const taskFile = taskPath(opts.cwd);
     writeFileSync(taskFile, opts.task);
 
@@ -126,7 +139,8 @@ export async function cmdDispatch(
       const runOpts: RunOptions = {
         cwd: opts.cwd,
         role,
-        model: modelKey,
+        model: key,
+        effort,
         taskFile,
         rolesDir: opts.rolesDir,
         sessionId: opts.sessionId,
@@ -190,7 +204,10 @@ export async function cmdDispatch(
   return {
     id: lastId,
     state: 'FAILED',
-    modelKey: candidates[candidates.length - 1] ?? '',
+    modelKey: (() => {
+      const last = candidates[candidates.length - 1];
+      return last === undefined ? '' : joinCandidate(last.key, last.effort);
+    })(),
     attempts,
   };
 }

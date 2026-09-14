@@ -18,6 +18,30 @@ function row(over: Partial<LedgerRow> = {}): LedgerRow {
   };
 }
 
+// The only evidence a pinned level was actually applied is cost moving with
+// it — `drop_params: true` means a provider without an effort control drops
+// the field silently — so the level has to be a dimension you can group spend
+// by, not merely a field on a row.
+describe('aggregate --by effort', () => {
+  it('groups rows by the level the router sent', () => {
+    const report = aggregate([
+      row({ key: 'luna', effort: 'xhigh', price: { source: 'model', totalUsd: 1 } }),
+      row({ key: 'luna', effort: 'xhigh', price: { source: 'model', totalUsd: 2 } }),
+      row({ key: 'luna', effort: 'low', price: { source: 'model', totalUsd: 0.25 } }),
+    ], 'effort', {});
+    expect(report.buckets.map((b) => [b.label, b.costUsd])).toEqual([
+      ['xhigh', 3], ['low', 0.25],
+    ]);
+  });
+
+  it('labels a bare candidate rather than dropping it', () => {
+    // A request sent with no level is not an absence of data — it is the
+    // no-level baseline the pinned rows must be compared against.
+    const report = aggregate([row({ key: 'flash' })], 'effort', {});
+    expect(report.buckets.map((b) => b.label)).toEqual(['none sent']);
+  });
+});
+
 describe('parseDuration', () => {
   it('parses days, hours and minutes', () => {
     expect(parseDuration('7d')).toBe(7 * 24 * 3600 * 1000);
