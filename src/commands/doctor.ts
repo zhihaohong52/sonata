@@ -460,6 +460,34 @@ export async function cmdDoctor(
     });
   }
 
+  // An id naming no models.dev provider is the silent half of the setting
+  // above: the gateway *looks* configured, every model on it still resolves
+  // to `source: 'none'`, and the unpriced warning has already been silenced
+  // by the key's presence. Measured on a real config — `"tencent"` is not a
+  // models.dev id (it files `tencent-tokenhub`), so that gateway's Tencent
+  // models were unpriced despite being asked for.
+  //
+  // Checked here rather than in `parseConfig`, for the same reason effort
+  // pinning is: the parser is pure text-in/config-out and has no cache to
+  // compare against. With no cache there is nothing to check, and a guess
+  // would be worse than silence — so the check is skipped, not failed.
+  const modelsDevForProviders = loadModelsDev(home);
+  if (modelsDevForProviders !== undefined) {
+    const known = new Set(Object.keys(modelsDevForProviders.providers));
+    const unmatched = gatewayEntries.flatMap(([name, gw]) => {
+      const missing = (gw.pricingProvider ?? []).filter((provider) => !known.has(provider));
+      return missing.length === 0 ? [] : [`${name}: ${missing.map((m) => `"${m}"`).join(', ')}`];
+    });
+    if (unmatched.length > 0) {
+      checks.push({
+        name: 'pricing providers',
+        ok: true,
+        detail: `${unmatched.join('; ')} — named in pricing_provider but not published by models.dev, `
+          + 'so they price nothing; check the spelling or run `sonata catalog update`',
+      });
+    }
+  }
+
   // `sonata init` run in $HOME used to write here, and nothing reads it. It
   // looks exactly like configuration, which is worse than not existing.
   const stray = join(home, 'sonata.toml');

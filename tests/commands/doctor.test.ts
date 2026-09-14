@@ -766,6 +766,64 @@ complex = ["brand-new"]
     expect(c?.detail).toMatch(/sonata catalog update/);
   });
 
+  it('names a pricing_provider id that matches no models.dev provider', async () => {
+    // The setting's only visible effect is a price that *appears*, so an id
+    // matching nothing is invisible: the gateway reads as configured and
+    // every model on it still resolves to `source: none`. Measured on a real
+    // config — `"tencent"` is not a models.dev provider id (it files
+    // `tencent-tokenhub`), so Hy4 was unpriced despite being asked for.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-pp-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-pp-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+pricing_provider = ["deepseek", "tencent", "nope"]
+`);
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'models-dev.json'), JSON.stringify({
+      fetchedAt: '2026-09-14T00:00:00.000Z',
+      providers: { deepseek: { 'deepseek-v4-flash': { input: 1, output: 2 } } },
+    }));
+    const checks = await doctorChecks(cwd, home, new Date('2026-09-14T00:00:00.000Z'));
+    const c = checks.find((check) => check.name === 'pricing providers');
+    expect(c?.ok).toBe(true);
+    expect(c?.detail).toContain('acme');
+    expect(c?.detail).toContain('tencent');
+    expect(c?.detail).toContain('nope');
+    // The ids that do match are not named — only the ones doing nothing.
+    expect(c?.detail).not.toContain('"deepseek"');
+  });
+
+  it('says nothing about pricing providers that all match, or with no cache', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-pp2-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-pp2-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."flash"]
+gateway = "acme"
+id = "deepseek-v4-flash"
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+pricing_provider = ["deepseek"]
+`);
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    // No cache at all: sonata cannot know which ids exist, so it must not guess.
+    expect((await doctorChecks(cwd, home, new Date('2026-09-14T00:00:00.000Z')))
+      .find((check) => check.name === 'pricing providers')).toBeUndefined();
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'models-dev.json'), JSON.stringify({
+      fetchedAt: '2026-09-14T00:00:00.000Z',
+      providers: { deepseek: { 'deepseek-v4-flash': { input: 1, output: 2 } } },
+    }));
+    expect((await doctorChecks(cwd, home, new Date('2026-09-14T00:00:00.000Z')))
+      .find((check) => check.name === 'pricing providers')).toBeUndefined();
+  });
+
   it('scores a vendor alias through its models.dev name, and an id that begins with the gateway name', async () => {
     // A BYOK DeepSeek gateway: its own slug for V4.1 Flash is the versionless
     // `deepseek-flash`, and `deepseek-v4-pro` begins with the gateway's name.
