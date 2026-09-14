@@ -593,6 +593,37 @@ describe('cmdRouteSession', () => {
     expect(readSessions(routeSessionsFile(cwd, 'project', home))).toEqual(['s1']);
   });
 
+  // Two sessions started inside one settle window: s1's settle must not take
+  // the env away from s2, which may not have read the file yet. Getting this
+  // wrong starts a session silently unrouted — the exact failure this whole
+  // design exists to remove, and the one that cannot be told apart from a
+  // broken agent. Only the NEWEST registered session clears, so the env
+  // survives until a full settle window after the last start.
+  it('does not let an older session settle away a newer one\'s routing', async () => {
+    const o = opts();
+    await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
+    await cmdRouteSession('start', 's2', o, { ...deps, settle: () => {} });
+
+    await cmdRouteSettle('s1', o, { delay: async () => {} });
+    expect((await cmdRoute('status', o))?.on).toBe(true);
+
+    await cmdRouteSettle('s2', o, { delay: async () => {} });
+    expect((await cmdRoute('status', o))?.on).toBe(false);
+  });
+
+  // Failing safe: an unsettled env costs the next session's Remote Control,
+  // which is visible at launch and recoverable. Clearing it for a session that
+  // may still be reading costs that session's routing, which is silent.
+  it('leaves the env alone when the settling session is gone', async () => {
+    const o = opts();
+    await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
+    await cmdRouteSession('start', 's2', o, { ...deps, settle: () => {} });
+    await cmdRouteSession('end', 's2', o, deps);
+
+    await cmdRouteSettle('s2', o, { delay: async () => {} });
+    expect((await cmdRoute('status', o))?.on).toBe(true);
+  });
+
   it('waits before settling, so the session has read the file first', async () => {
     const o = opts();
     await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });

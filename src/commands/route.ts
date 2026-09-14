@@ -767,6 +767,23 @@ export const ROUTE_SETTLE_MS = 5_000;
  * registration would make the next SessionEnd believe it was the last one out
  * and tear routing down under a session that is still working.
  *
+ * **Only the newest registered session clears.** Two sessions starting inside
+ * one settle window otherwise race: s1's settle fires while s2 has written the
+ * env but may not have read it yet, and s2 then runs unrouted — silently, and
+ * indistinguishably from a broken agent, which is the single failure this
+ * design exists to remove. Deferring to the newest registration means the env
+ * survives until a full window after the LAST start, and every session in the
+ * burst has had its own window.
+ *
+ * The check and the removal are taken under the session lock, the same lock
+ * `cmdRouteSession('start')` holds while it registers and writes the env, so
+ * "is anyone newer?" cannot be answered against a list that changes underneath.
+ *
+ * A session that is no longer registered does nothing. That direction is
+ * deliberate: an env left in place costs the NEXT session's Remote Control,
+ * which is visible at launch and recoverable, while clearing one that a live
+ * session has not read yet costs that session's routing, which is not.
+ *
  * The honest limit: the earlier `bdf8e27` experiment saw a session keep
  * routing for tens of minutes after a removal and then stop, so the value a
  * session holds is known to be long-lived and NOT known to be permanent.
@@ -779,12 +796,17 @@ export async function cmdRouteSettle(
   const scope = opts.scope ?? 'project';
   const wait = deps.delay ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   await wait(ROUTE_SETTLE_MS);
-  // Only while this session is still live. A session that ended during the
-  // delay has already had `route off` run for it if it was the last one, and
-  // re-running the removal here would race that cleanup.
-  const registered = readSessions(routeSessionsFile(opts.cwd, scope, opts.home));
-  if (!registered.includes(sessionId)) return;
-  routeOffKeepingRegistries(opts, scope);
+
+  const registry = routeSessionsFile(opts.cwd, scope, opts.home);
+  await withSessionLock(registry, () => {
+    const registered = readSessions(registry);
+    // The newest registration, not merely membership. Registration order is
+    // the file's order — `cmdRouteSession('start')` appends — so the last
+    // entry is the most recent session to have written the env, and only its
+    // own settle may take that env away again.
+    if (registered[registered.length - 1] !== sessionId) return;
+    routeOffKeepingRegistries(opts, scope);
+  });
 }
 
 export async function cmdRouteSession(
@@ -901,9 +923,15 @@ export async function cmdRouteSession(
     }
   }
 
-  await withSessionLock(registry, () => {
+  // Registering and writing the routing env are ONE critical section, because
+  // `cmdRouteSettle` decides whether to clear that env by asking who is
+  // newest. Split apart, a settle could read the registry between another
+  // session's append and its write and answer that question against a list
+  // that was about to change.
+  await withSessionLock(registry, async () => {
     const current = readSessions(registry);
     writeSessions(registry, current.includes(sessionId) ? current : [...current, sessionId]);
+    await cmdRoute('on', opts);
   });
 
   // Records which project this session belongs to, so `sonata usage --by
@@ -926,7 +954,6 @@ export async function cmdRouteSession(
   // taking it out again a moment later is what keeps the next session's launch
   // clean. Both halves were measured on 2026-09-14 (Claude Code 2.1.270) — see
   // `cmdRouteSettle` and the tests.
-  await cmdRoute('on', opts);
   (deps.settle ?? ((id: string) => spawnSettle(id, opts, scope)))(sessionId);
 
   const after = readSessions(registry);
