@@ -96,15 +96,19 @@ parenthetical of `name`:
 - Anything else sets no effort. The parser recognises the enum and nothing
   else — the enum is LiteLLM's own `reasoning_effort` set (plus `max`, which
   AA publishes and OpenAI accepts), so the vocabulary is bounded by the wire,
-  not by a vendor table. A row with no parenthetical is a bare model.
+  not by a vendor table. A row with no parenthetical was scored with no
+  reasoning level in play, so it is recorded at `none` (amended 2026-09-14;
+  it was originally left as a bare model, which ranked on that row's score
+  and then ran at the gateway's own effort).
 - `family` is the name with the parenthetical stripped, run through
   `normalizeModelName`. The unsuffixed slug belongs to the family too; that
   is how a config's `gpt-5.6-luna` resolves to a family of six scored levels
   and learns that its default row is `max`.
 
 Cache entries gain `{ family?: string, effort?: Effort }`. Both optional, so
-a cache written by the current version still loads — it just carries no
-families, which is the "cannot check" state below. The fixture
+a cache written by an earlier version still loads — it just carries no
+families, which is the "cannot check" state below. A current `catalog update`
+writes both on every row, a level-less one included. The fixture
 `tests/fixtures/aa/models.json` grows a hand-invented family with a default
 row and two suffixed rows (still synthetic, per AA's licence).
 
@@ -142,10 +146,11 @@ In `src/config.ts`:
 `parseConfig`.** `parseConfig` is pure text-in/config-out and has no
 catalog; `loadConfig` has `home` and can load one. After parsing it walks
 every tier candidate; for each *bare* one whose resolved upstream id has a
-catalog family (one or more rows that *state* their level — a single
-"(Reasoning, Max Effort)" row is a family of one, since a bare key would
-otherwise run at an unstated effort; the two-or-more threshold this originally
-drew was dropped 2026-09-14), it throws naming the
+catalog family — which, since 2026-09-14, is every row the catalog holds: a
+single "(Reasoning, Max Effort)" row is a family of one, and a row stating no
+level is a family of one at `none`, because a bare key would otherwise rank on
+that row's score and then run at the gateway's own effort. (This originally
+required two or more stated levels.) It throws naming the
 candidate, the family's default level, the levels available, and `sonata
 init` as the fix. With no catalog cache the check is skipped — sonata
 cannot know a family exists — and `sonata doctor` says so. The router loads

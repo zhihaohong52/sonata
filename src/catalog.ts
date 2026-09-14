@@ -122,9 +122,12 @@ export interface AaEntry {
    * the parenthetical in AA's display name at `catalog update` — `GPT-5.6
    * Luna (max)` is slug `gpt-5-6-luna`, `… (low)` is `gpt-5-6-luna-low` —
    * so the unsuffixed default row is a member of its family too, and the
-   * family knows which level its default is. Absent on a row whose name
-   * carries no level, and on every row of a cache written before this was
-   * recorded, which is the "cannot check" state `loadConfig` skips on.
+   * family knows which level its default is. A row whose name carries no
+   * level was scored with no reasoning in play, so it is recorded at `none`
+   * and is its own family — every row a current `catalog update` writes
+   * therefore carries both fields. They are absent only on a cache written
+   * before this was recorded, which is the "cannot check" state `loadConfig`
+   * skips on.
    */
   family?: string;
   effort?: Effort;
@@ -330,13 +333,16 @@ function familiesOf(aa: AaCatalog): Map<string, CatalogFamily> {
 }
 
 /**
- * The effort family a normalized model name belongs to, if the catalog
- * *states* the level its rows were scored at. A family of one is still a
- * family: AA's only DeepSeek V4.1 Flash row is "(Reasoning, Max Effort)",
- * and that is a level to pin, not a level-less model — offered bare, the key
- * ranks on the max-effort score and runs at whatever the gateway defaults to.
- * A row that states no level (`deepseek-v4-flash` alone) has no family and
- * stays a single bare candidate.
+ * The effort family a normalized model name belongs to.
+ *
+ * A family of one is still a family: AA's only DeepSeek V4.1 Flash row is
+ * "(Reasoning, Max Effort)", and that is a level to pin, not a level-less
+ * model — offered bare, the key ranks on the max-effort score and runs at
+ * whatever the gateway defaults to. A row stating no level is recorded at
+ * `none` for the same reason, so it too is a singleton family and
+ * `expandCandidates` emits `<key>@none`. Only a model the catalog does not
+ * hold, or a cache written before families were recorded, has none — which
+ * is the state `loadConfig` cannot check and skips on.
  *
  * Resolved through the same spellings `aaEntryFor` tries, so a name that finds
  * its score also finds its family.
