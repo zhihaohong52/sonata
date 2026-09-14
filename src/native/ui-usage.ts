@@ -12,7 +12,8 @@ import {
 } from '../commands/usage.js';
 import type { UiDeps } from './ui.js';
 
-const DIMENSIONS: UsageDimension[] = ['model', 'role', 'tier', 'effort', 'gateway', 'session', 'project'];
+/** The one definition of what `?by=` accepts; the HTTP layer validates against it. */
+export const USAGE_DIMENSIONS: UsageDimension[] = ['model', 'role', 'tier', 'effort', 'gateway', 'session', 'project'];
 const DEFAULT_WINDOW_MS = 86_400_000;
 
 export interface UiFilters {
@@ -46,8 +47,8 @@ export function usagePayload(
   query: URLSearchParams,
 ): { report: UsageReport; by: UsageDimension; filters: UiFilters } {
   const by = (nonEmpty(query.get('by')) ?? 'model') as UsageDimension;
-  if (!DIMENSIONS.includes(by)) {
-    throw new Error(`sonata UI: unknown dimension "${by}" — use one of ${DIMENSIONS.join(', ')}`);
+  if (!USAGE_DIMENSIONS.includes(by)) {
+    throw new Error(`sonata UI: unknown dimension "${by}" — use one of ${USAGE_DIMENSIONS.join(', ')}`);
   }
   const now = (deps.now ?? Date.now)();
   const filters = parseFilters(query, now);

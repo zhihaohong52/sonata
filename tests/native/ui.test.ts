@@ -25,7 +25,7 @@ describe('handleUiRequest', () => {
 
   it('refuses a non-loopback Host, which is what closes DNS rebinding', () => {
     const res = handleUiRequest(
-      { method: 'GET', url: '/__sonata/api/ping', headers: { host: 'evil.example.com' } },
+      { method: 'GET', url: '/__sonata/api/usage', headers: { host: 'evil.example.com' } },
       deps,
     );
     expect(res?.status).toBe(403);
@@ -34,7 +34,7 @@ describe('handleUiRequest', () => {
   it('accepts each loopback host with the router port', () => {
     for (const host of ['localhost:4100', '127.0.0.1:4100', '[::1]:4100']) {
       const res = handleUiRequest(
-        { method: 'GET', url: '/__sonata/api/ping', headers: { host } },
+        { method: 'GET', url: '/__sonata/api/usage', headers: { host } },
         deps,
       );
       expect(res?.status).toBe(200);
@@ -44,7 +44,7 @@ describe('handleUiRequest', () => {
   it('accepts bare loopback hosts only on the default HTTP port', () => {
     for (const host of ['localhost', '127.0.0.1', '[::1]']) {
       const res = handleUiRequest(
-        { method: 'GET', url: '/__sonata/api/ping', headers: { host } },
+        { method: 'GET', url: '/__sonata/api/usage', headers: { host } },
         { ...deps, port: 80 },
       );
       expect(res?.status).toBe(200);
@@ -54,7 +54,7 @@ describe('handleUiRequest', () => {
   it('rejects a loopback host with the wrong or malformed port', () => {
     for (const host of ['localhost:9999', 'localhost:bad', 'localhost:4100:extra', '[::1]garbage']) {
       const res = handleUiRequest(
-        { method: 'GET', url: '/__sonata/api/ping', headers: { host } },
+        { method: 'GET', url: '/__sonata/api/usage', headers: { host } },
         deps,
       );
       expect(res?.status).toBe(403);
@@ -62,15 +62,34 @@ describe('handleUiRequest', () => {
   });
 
   it('refuses HEAD because the UI only accepts GET', () => {
-    const res = handleUiRequest({ method: 'HEAD', url: '/__sonata/api/ping', headers: host }, deps);
+    const res = handleUiRequest({ method: 'HEAD', url: '/__sonata/api/usage', headers: host }, deps);
     expect(res?.status).toBe(405);
     expect(body(res!).error).toMatch(/GET/);
   });
 
   it('never sends a CORS header', () => {
-    const res = handleUiRequest({ method: 'GET', url: '/__sonata/api/ping', headers: host }, deps);
+    const res = handleUiRequest({ method: 'GET', url: '/__sonata/api/usage', headers: host }, deps);
     const names = Object.keys(res!.headers).map((n) => n.toLowerCase());
     expect(names).not.toContain('access-control-allow-origin');
+  });
+
+  it('refuses an unknown dimension with a 400 naming the valid ones, not a generic 500', () => {
+    const res = handleUiRequest(
+      { method: 'GET', url: '/__sonata/api/usage?by=wheelbarrow', headers: host },
+      deps,
+    );
+    expect(res?.status).toBe(400);
+    const parsed = body(res!);
+    for (const dimension of ['model', 'role', 'tier', 'effort', 'gateway', 'session', 'project']) {
+      expect(parsed.error).toContain(dimension);
+    }
+    // Self-authored: the caller's own input is never echoed back.
+    expect(JSON.stringify(parsed)).not.toContain('wheelbarrow');
+  });
+
+  it('sends nosniff on a JSON response', () => {
+    const res = handleUiRequest({ method: 'GET', url: '/__sonata/api/usage', headers: host }, deps);
+    expect(res!.headers['x-content-type-options']).toBe('nosniff');
   });
 
   it('404s an unknown path under the prefix', () => {

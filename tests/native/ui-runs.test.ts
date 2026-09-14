@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { projectDirs, runRows, clearProjectDirCache, RUN_USAGE_REASON, MAX_PROJECT_DIRS, PROJECT_CACHE_MS } from '../../src/native/ui-runs.js';
+import { projectDirs, runRows, clearUiRunCache, RUN_USAGE_REASON, MAX_PROJECT_DIRS, MAX_RUN_ROWS, PROJECT_CACHE_MS } from '../../src/native/ui-runs.js';
 
 let home: string;
 let projA: string;
@@ -18,7 +18,7 @@ function makeRun(cwd: string, id: string, meta: Record<string, unknown>, opts: {
 }
 
 beforeEach(() => {
-  clearProjectDirCache();
+  clearUiRunCache();
   home = mkdtempSync(join(tmpdir(), 'sonata-uir-'));
   projA = mkdtempSync(join(tmpdir(), 'projA-'));
   projB = mkdtempSync(join(tmpdir(), 'projB-'));
@@ -133,12 +133,12 @@ describe('projectDirs', () => {
     expect(projectDirs(cachedDeps)).toEqual([projA]);
   });
 
-  it('clearProjectDirCache forces immediate re-enumeration', () => {
+  it('clearUiRunCache forces immediate re-enumeration', () => {
     let tenantDirs = [projA];
     const cachedDeps = { ...deps(), now: () => 1000, tenants: () => tenantDirs.map((dir, i) => ({ id: `t${i}`, configPath: join(dir, 'sonata.toml') })) };
     expect(projectDirs(cachedDeps)).toEqual([projA, projB]);
     tenantDirs = [projB];
-    clearProjectDirCache();
+    clearUiRunCache();
     expect(projectDirs(cachedDeps)).toEqual([projB]);
   });
 
@@ -224,5 +224,32 @@ describe('GET /__sonata/api/sessions', () => {
     expect(kinds).toEqual(new Set(['session', 'run']));
     expect(rows.find((r: any) => r.kind === 'session').requests).toBe(1);
     expect(rows.find((r: any) => r.kind === 'run').usageReason).toBe(RUN_USAGE_REASON);
+  });
+});
+
+describe('run row caching and cap', () => {
+  it('serves the rows from cache rather than re-reading every run per request', () => {
+    const cachedDeps = { ...deps(), now: () => 1000 };
+    expect(runRows(cachedDeps, all).map((r) => r.id)).toEqual(['ccc333', 'bbb222', 'aaa111']);
+    // A new run on disk must NOT appear until the TTL expires: that is the
+    // proof the rows themselves are cached, not merely the directory list.
+    makeRun(projA, 'ddd444', { role: 'code', startedAt: '2026-09-15T06:00:00.000Z' });
+    expect(runRows(cachedDeps, all).map((r) => r.id)).toEqual(['ccc333', 'bbb222', 'aaa111']);
+    expect(runRows({ ...cachedDeps, now: () => 1000 + PROJECT_CACHE_MS }, all).map((r) => r.id))
+      .toEqual(['ddd444', 'ccc333', 'bbb222', 'aaa111']);
+  });
+
+  it('keeps the NEWEST rows when the cap is reached, not the first project\'s', () => {
+    // projB's run is the newest of the three seeded ones; bury it behind more
+    // runs than the cap allows in projA, which is enumerated first.
+    for (let i = 0; i < MAX_RUN_ROWS + 10; i += 1) {
+      const id = i.toString(16).padStart(6, '0');
+      // All older than projB's 05:00 run.
+      makeRun(projA, id, { role: 'code', startedAt: `2026-09-14T00:00:00.00${i % 10}Z` });
+    }
+    const rows = runRows(deps(), all);
+    expect(rows).toHaveLength(MAX_RUN_ROWS);
+    expect(rows[0].id).toBe('ccc333');
+    expect(rows.map((r) => r.id)).toContain('bbb222');
   });
 });

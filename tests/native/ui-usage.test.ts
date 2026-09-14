@@ -1,8 +1,10 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseFilters, usagePayload } from '../../src/native/ui-usage.js';
+import { projectResolver } from '../../src/commands/usage.js';
 
 let home: string;
 
@@ -86,5 +88,50 @@ describe('usagePayload', () => {
     const { report } = usagePayload(deps(), new URLSearchParams('project=/proj/a'));
     expect(report.buckets).toHaveLength(1);
     expect(report.buckets[0].label).toBe('flash');
+  });
+
+  /**
+   * The nonexistent paths above never exercise resolution: `projectResolver`
+   * hands a missing directory back unchanged, so a naive
+   * `row.project === filters.project` would pass. Here two REAL directories
+   * that resolve to one label must both be selected by one filter — this is
+   * what guards the claim that the page pools exactly as `[budget] daily_usd`
+   * does.
+   */
+  it('pools two spellings of one project under a single filter', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sonata-ui-proj-'));
+    try {
+      // A main checkout holding the config, and a linked worktree that borrows
+      // it — the shape `configPath` resolves to one directory. Written as plain
+      // files: mainWorktreeDir is pure filesystem, never `git rev-parse`.
+      const main = join(root, 'main');
+      const worktree = join(root, 'wt');
+      mkdirSync(join(main, '.git', 'worktrees', 'wt'), { recursive: true });
+      mkdirSync(worktree, { recursive: true });
+      writeFileSync(join(main, 'sonata.toml'), 'schema_version = 1\n');
+      writeFileSync(join(worktree, '.git'), `gitdir: ${join(main, '.git', 'worktrees', 'wt')}\n`);
+      writeFileSync(join(main, '.git', 'worktrees', 'wt', 'commondir'), '../..\n');
+
+      const usage = join(home, '.config', 'sonata', 'usage');
+      const day = new Date().toISOString().slice(0, 10);
+      writeFileSync(join(usage, `${day}.jsonl`), [
+        row({ key: 'flash', session: 's1', project: main }),
+        row({ key: 'terra', session: 's2', project: worktree }),
+        row({ key: 'luna', session: 's3', project: '/proj/elsewhere' }),
+      ].join('\n') + '\n');
+
+      // Both spellings name the same project...
+      const resolve = projectResolver(home);
+      expect(resolve(worktree)).toBe(resolve(main));
+      expect(dirname(join(main, 'sonata.toml'))).toBe(main);
+
+      // ...so either one selects BOTH rows, and only those two.
+      for (const spelling of [main, worktree]) {
+        const { report } = usagePayload(deps(), new URLSearchParams(`project=${spelling}`));
+        expect(report.buckets.map((b) => b.label).sort()).toEqual(['flash', 'terra']);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

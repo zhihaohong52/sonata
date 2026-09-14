@@ -17,7 +17,40 @@ import type { UiDeps } from './ui.js';
 
 /** `events.jsonl` has no size bound; a response must. */
 export const MAX_TRANSCRIPT_BYTES = 262_144;
+/** `report.md` has no size bound either, and it rides the same response. */
+export const MAX_REPORT_BYTES = 262_144;
 export const MAX_ROUTE_LINES = 500;
+
+/**
+ * Cap a string in the **byte** domain, never the character one.
+ *
+ * Slicing bytes can land mid-sequence, so the kept range is advanced (or
+ * retreated) to a UTF-8 character boundary: a lone continuation byte decodes
+ * to U+FFFD and a split surrogate pair is worse still.
+ *
+ * `keep` is not cosmetic. A transcript keeps its **tail**, because the end of a
+ * run is what says how it finished. A report keeps its **head**, because
+ * sonata's own annotations — `[timed out: …]`, `[no worktree change: …]`,
+ * `[effort … not honoured: …]` — are prefixes, and they are precisely the part
+ * that says whether the rest can be believed.
+ */
+export function truncateBytes(
+  value: string,
+  maxBytes: number,
+  keep: 'head' | 'tail',
+): { text: string; truncated: boolean } {
+  const bytes = Buffer.from(value, 'utf8');
+  if (bytes.byteLength <= maxBytes) return { text: value, truncated: false };
+  const isContinuation = (i: number): boolean => i < bytes.byteLength && (bytes[i] & 0xc0) === 0x80;
+  if (keep === 'tail') {
+    let start = bytes.byteLength - maxBytes;
+    while (isContinuation(start)) start += 1;
+    return { text: bytes.subarray(start).toString('utf8'), truncated: true };
+  }
+  let end = maxBytes;
+  while (end > 0 && isContinuation(end)) end -= 1;
+  return { text: bytes.subarray(0, end).toString('utf8'), truncated: true };
+}
 
 export function sessionDetail(
   deps: UiDeps,
@@ -34,7 +67,11 @@ export function runDetail(
   deps: UiDeps,
   id: string,
   cwdParam: string | undefined,
-): { id: string; cwd: string; transcript: string; truncated: boolean; report: string | null } | undefined {
+): {
+  id: string; cwd: string;
+  transcript: string; truncated: boolean;
+  report: string | null; reportTruncated: boolean;
+} | undefined {
   // Run ids are six lowercase hex characters from newRunId(). Validate before
   // constructing any path so a caller cannot use traversal or an absolute id.
   if (!/^[0-9a-f]{6}$/.test(id)) return undefined;
@@ -47,24 +84,18 @@ export function runDetail(
 
   for (const cwd of candidates) {
     if (!existsSync(join(runDir(cwd, id), 'meta.json'))) continue;
-    const whole = readEvents(cwd, id).join('\n');
-    const bytes = Buffer.from(whole, 'utf8');
-    const truncated = bytes.byteLength > MAX_TRANSCRIPT_BYTES;
-    let transcript = whole;
-    if (truncated) {
-      // Slice bytes, then advance past continuation bytes so UTF-8 decoding
-      // starts at a character boundary and cannot create an unpaired surrogate.
-      let start = bytes.byteLength - MAX_TRANSCRIPT_BYTES;
-      while (start < bytes.byteLength && (bytes[start] & 0xc0) === 0x80) start += 1;
-      transcript = bytes.subarray(start).toString('utf8');
-    }
+    // Tail-first: the end of a run is what says how it finished.
+    const tail = truncateBytes(readEvents(cwd, id).join('\n'), MAX_TRANSCRIPT_BYTES, 'tail');
+    const whole = readReport(cwd, id);
+    // A report capped nowhere would defeat the cap it is returned beside.
+    const report = whole === null ? null : truncateBytes(whole, MAX_REPORT_BYTES, 'head');
     return {
       id,
       cwd,
-      // Tail-first: the end of a run is what says how it finished.
-      transcript,
-      truncated,
-      report: readReport(cwd, id),
+      transcript: tail.text,
+      truncated: tail.truncated,
+      report: report === null ? null : report.text,
+      reportTruncated: report !== null && report.truncated,
     };
   }
   return undefined;

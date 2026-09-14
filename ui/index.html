@@ -42,12 +42,16 @@
     <option value="project">by project</option>
   </select>
   <label><input type="checkbox" id="live" checked> live</label>
+  <!-- A failed poll is reported here, never in the detail pane: clobbering the
+       detail pane would wipe the transcript the user is reading. -->
+  <span id="status" class="muted" role="status"></span>
 </div>
 
 <h2>Sessions &amp; runs</h2>
 <table id="rows"><thead><tr>
   <th>kind</th><th>id</th><th>project</th><th>started</th><th>state</th>
   <th class="num">req</th><th class="num">in</th><th class="num">out</th><th class="num">cost</th>
+  <th class="num">covered</th>
 </tr></thead><tbody></tbody></table>
 
 <h2>Detail</h2>
@@ -126,11 +130,16 @@ async function loadRows(generation) {
       cell(tr, int(row.output), 'num');
       const c = cell(tr, usd(row.costUsd), 'num');
       if (row.unpricedRequests) c.title = row.unpricedRequests + ' unpriced request(s) not included';
+      // Covered is its own figure, never folded into cost: a subscription-backed
+      // session would otherwise read $0.0000, identical to one that truly cost
+      // nothing. Same separation the dashboard already keeps.
+      cell(tr, usd(row.coveredUsd), 'num');
     } else {
       cell(tr, '—', 'num');
       cell(tr, '—', 'num');
       cell(tr, '—', 'num');
       // Never 0: this run never transited the router.
+      cell(tr, '—', 'num muted').title = row.usageReason;
       cell(tr, '—', 'num muted').title = row.usageReason;
     }
     tr.onclick = () => showDetail(row);
@@ -159,7 +168,11 @@ async function showDetail(row) {
       if (generation !== detailGeneration) return;
       $('detail').textContent =
         (d.truncated ? '[transcript truncated — showing the tail]\n\n' : '') +
-        d.transcript + (d.report ? '\n\n--- report.md ---\n' + d.report : '');
+        d.transcript + (d.report
+          ? '\n\n--- report.md ---\n'
+            + (d.reportTruncated ? '[report truncated — showing the head]\n\n' : '')
+            + d.report
+          : '');
     }
   } catch (err) {
     if (generation === detailGeneration) $('detail').textContent = String(err);
@@ -214,8 +227,9 @@ async function refresh() {
   try {
     await Promise.all([loadRows(generation), loadDashboard(generation)]);
     if (generation !== refreshGeneration) return;
+    $('status').textContent = '';
   } catch (err) {
-    if (generation === refreshGeneration) $('detail').textContent = String(err);
+    if (generation === refreshGeneration) $('status').textContent = 'refresh failed: ' + String(err);
   } finally {
     refreshInFlight = false;
   }

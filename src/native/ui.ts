@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RouterResponse } from './router.js';
-import { parseFilters, usagePayload } from './ui-usage.js';
+import { parseFilters, usagePayload, USAGE_DIMENSIONS } from './ui-usage.js';
 import { sessionRows } from './ui-sessions.js';
 import { runRows } from './ui-runs.js';
 import { runDetail, sessionDetail } from './ui-detail.js';
@@ -32,7 +32,11 @@ export function uiAssetPath(): string {
 function pageResponse(): RouterResponse {
   return {
     status: 200,
-    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    },
     body: readFileSync(uiAssetPath()),
   };
 }
@@ -49,7 +53,13 @@ export function jsonResponse(status: number, value: unknown): RouterResponse {
     status,
     // Deliberately no access-control-allow-origin: without it a page the user
     // visits cannot read these endpoints cross-origin.
-    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      // These bodies echo caller-supplied path fragments; nosniff closes the
+      // category rather than relying on the content type being honoured.
+      'x-content-type-options': 'nosniff',
+    },
     body: Buffer.from(JSON.stringify(value)),
   };
 }
@@ -75,6 +85,10 @@ export function handleUiRequest(
   req: { method: string; url: string; headers: Record<string, string> },
   deps: UiDeps,
 ): RouterResponse | undefined {
+  // The proxy hot path (`/v1/messages`) runs through here for every request a
+  // native agent makes: a substring test, not a URL parse, is what it pays.
+  if (!req.url.startsWith('/__sonata')) return undefined;
+
   let path: string;
   let query: URLSearchParams;
   try {
@@ -120,9 +134,17 @@ function route(path: string, query: URLSearchParams, deps: UiDeps): RouterRespon
     return jsonResponse(200, detail);
   }
   switch (rest) {
-    case 'api/ping':
-      return jsonResponse(200, { ok: true, port: deps.port, now: (deps.now ?? Date.now)() });
     case 'api/usage': {
+      // A deliberate refusal must not arrive as the generic 500 the catch-all
+      // produces. The message is self-authored: the caller's own input is never
+      // echoed back into the body.
+      const requested = query.get('by');
+      if (requested !== null && requested !== '' && !(USAGE_DIMENSIONS as string[]).includes(requested)) {
+        return jsonResponse(400, {
+          error: `sonata UI: unknown dimension — use one of ${USAGE_DIMENSIONS.join(', ')}`,
+          dimensions: USAGE_DIMENSIONS,
+        });
+      }
       const { report, by, filters } = usagePayload(deps, query);
       return jsonResponse(200, { by, filters, report });
     }

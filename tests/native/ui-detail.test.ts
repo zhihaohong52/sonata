@@ -2,16 +2,16 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { sessionDetail, runDetail, MAX_TRANSCRIPT_BYTES } from '../../src/native/ui-detail.js';
+import { sessionDetail, runDetail, MAX_TRANSCRIPT_BYTES, MAX_REPORT_BYTES } from '../../src/native/ui-detail.js';
 import { handleUiRequest } from '../../src/native/ui.js';
-import { clearProjectDirCache } from '../../src/native/ui-runs.js';
+import { clearUiRunCache } from '../../src/native/ui-runs.js';
 
 let home: string;
 let proj: string;
 let outside: string;
 
 beforeEach(() => {
-  clearProjectDirCache();
+  clearUiRunCache();
   home = mkdtempSync(join(tmpdir(), 'sonata-uid-'));
   proj = mkdtempSync(join(tmpdir(), 'projD-'));
   outside = mkdtempSync(join(tmpdir(), 'outsideD-'));
@@ -165,5 +165,37 @@ describe('runDetail', () => {
     expect(Buffer.byteLength(detail.transcript, 'utf8')).toBeLessThanOrEqual(MAX_TRANSCRIPT_BYTES);
     expect(detail.transcript).toContain('END');
     expect(detail.transcript).not.toContain('START');
+  });
+
+  it('caps the report too, head-first, and says so', () => {
+    const dir = join(proj, '.sonata', 'runs', 'fff666');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'meta.json'), JSON.stringify({ id: 'fff666', session: 'sonata-fff666', cwd: proj }));
+    writeFileSync(join(dir, 'events.jsonl'), 'short\n');
+    // Head-first: sonata's own annotations are prefixes, and they are what say
+    // whether the rest of the report can be believed.
+    writeFileSync(join(dir, 'report.md'), `[timed out: 60s]\n${'é'.repeat(MAX_REPORT_BYTES)}\nTAIL\n`);
+    const detail = runDetail(deps(), 'fff666', proj)!;
+    expect(detail.reportTruncated).toBe(true);
+    expect(Buffer.byteLength(detail.report!, 'utf8')).toBeLessThanOrEqual(MAX_REPORT_BYTES);
+    expect(detail.report).toContain('[timed out: 60s]');
+    expect(detail.report).not.toContain('TAIL');
+    // No replacement character: the cut landed on a character boundary.
+    expect(detail.report).not.toContain('\uFFFD');
+  });
+
+  it('leaves a short report untruncated, and reports absence as null not truncated', () => {
+    makeRun(proj, 'ccc333', 'short\n');
+    const short = runDetail(deps(), 'ccc333', proj)!;
+    expect(short.reportTruncated).toBe(false);
+    expect(short.report).toBe('# done\n');
+
+    const dir = join(proj, '.sonata', 'runs', 'ddd444');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'meta.json'), JSON.stringify({ id: 'ddd444', session: 'sonata-ddd444', cwd: proj }));
+    writeFileSync(join(dir, 'events.jsonl'), 'short\n');
+    const none = runDetail(deps(), 'ddd444', proj)!;
+    expect(none.report).toBeNull();
+    expect(none.reportTruncated).toBe(false);
   });
 });
