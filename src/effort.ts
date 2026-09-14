@@ -28,6 +28,9 @@ export function splitCandidate(candidate: string): { key: string; effort?: Effor
   if (at < 0) return { key: candidate };
   const key = candidate.slice(0, at);
   const level = candidate.slice(at + 1);
+  if (key === '') {
+    throw new Error(`"${candidate}": a model key must precede "@"`);
+  }
   if (level === '') {
     throw new Error(`"${candidate}": an effort level follows "@" — one of ${EFFORT_LEVELS.join(', ')}`);
   }
