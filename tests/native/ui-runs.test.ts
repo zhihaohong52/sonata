@@ -1,8 +1,8 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { projectDirs, runRows, clearProjectDirCache, RUN_USAGE_REASON, MAX_PROJECT_DIRS } from '../../src/native/ui-runs.js';
+import { projectDirs, runRows, clearProjectDirCache, RUN_USAGE_REASON, MAX_PROJECT_DIRS, PROJECT_CACHE_MS } from '../../src/native/ui-runs.js';
 
 let home: string;
 let projA: string;
@@ -50,9 +50,23 @@ describe('projectDirs', () => {
     expect(dirs).toEqual([projB]);
   });
 
-  it('deduplicates a directory reached both ways', () => {
-    const dirs = projectDirs({ ...deps(), tenants: () => [{ id: 't1', configPath: join(projB, 'sonata.toml') }] });
-    expect(dirs).toEqual([projB]);
+  it('deduplicates a directory reached both ways through realpath', () => {
+    const link = join(home, 'projB-link');
+    try {
+      symlinkSync(projB, link, 'dir');
+    } catch {
+      return; // Symlinks may be unavailable in a restricted test environment.
+    }
+    try {
+      const dirs = projectDirs({
+        ...deps(),
+        tenants: () => [{ id: 't1', configPath: join(link, 'sonata.toml') }],
+      });
+      expect(dirs).toHaveLength(1);
+      expect(realpathSync(dirs[0])).toBe(realpathSync(projB));
+    } finally {
+      rmSync(link, { recursive: true, force: true });
+    }
   });
 
   it('skips a directory that no longer exists rather than throwing', () => {
@@ -70,6 +84,75 @@ describe('projectDirs', () => {
       expect(projectDirs({ ...deps(), tenants: () => many })).toHaveLength(MAX_PROJECT_DIRS);
     } finally {
       for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('caps the union when the remaining directories come from sessions', () => {
+    const dirs: string[] = [];
+    const sessionHome = mkdtempSync(join(tmpdir(), 'sonata-uir-cap-home-'));
+    try {
+      for (let i = 0; i < MAX_PROJECT_DIRS - 2 + 5; i += 1) {
+        dirs.push(mkdtempSync(join(tmpdir(), 'sonata-uir-cap-session-')));
+      }
+      mkdirSync(join(sessionHome, '.config', 'sonata'), { recursive: true });
+      writeFileSync(join(sessionHome, '.config', 'sonata', 'sessions.json'), JSON.stringify(
+        Object.fromEntries(dirs.slice(MAX_PROJECT_DIRS - 2).map((cwd, i) => [`s${i}`, { session: `s${i}`, cwd, started: '' }])),
+      ));
+      const tenantDirs = dirs.slice(0, MAX_PROJECT_DIRS - 2);
+      const many = tenantDirs.map((dir, i) => ({ id: `t${i}`, configPath: join(dir, 'sonata.toml') }));
+      expect(projectDirs({ ...deps(), home: sessionHome, tenants: () => many })).toHaveLength(MAX_PROJECT_DIRS);
+    } finally {
+      rmSync(sessionHome, { recursive: true, force: true });
+      for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reuses a matching cache entry during the TTL', () => {
+    let now = 1000;
+    let tenants = [{ id: 't1', configPath: join(projA, 'sonata.toml') }];
+    const cachedDeps = { ...deps(), now: () => now, tenants: () => tenants };
+    expect(projectDirs(cachedDeps)).toEqual([projA, projB]);
+    // The tenant object changes, but its config-path key stays the same. Change
+    // the session source so a fresh enumeration would produce a different list.
+    tenants = [{ id: 't2', configPath: join(projA, 'sonata.toml') }];
+    writeFileSync(join(home, '.config', 'sonata', 'sessions.json'), JSON.stringify({
+      s1: { session: 's1', cwd: projA, started: '2026-09-15T00:00:00.000Z' },
+    }));
+    now += PROJECT_CACHE_MS - 1;
+    expect(projectDirs(cachedDeps)).toEqual([projA, projB]);
+  });
+
+  it('re-enumerates after the cache TTL', () => {
+    let now = 1000;
+    const cachedDeps = { ...deps(), now: () => now };
+    expect(projectDirs(cachedDeps)).toEqual([projA, projB]);
+    writeFileSync(join(home, '.config', 'sonata', 'sessions.json'), JSON.stringify({
+      s1: { session: 's1', cwd: projA, started: '2026-09-15T00:00:00.000Z' },
+    }));
+    now += PROJECT_CACHE_MS;
+    expect(projectDirs(cachedDeps)).toEqual([projA]);
+  });
+
+  it('clearProjectDirCache forces immediate re-enumeration', () => {
+    let tenantDirs = [projA];
+    const cachedDeps = { ...deps(), now: () => 1000, tenants: () => tenantDirs.map((dir, i) => ({ id: `t${i}`, configPath: join(dir, 'sonata.toml') })) };
+    expect(projectDirs(cachedDeps)).toEqual([projA, projB]);
+    tenantDirs = [projB];
+    clearProjectDirCache();
+    expect(projectDirs(cachedDeps)).toEqual([projB]);
+  });
+
+  it('does not reuse a cache entry for a different home or tenant set', () => {
+    const otherHome = mkdtempSync(join(tmpdir(), 'sonata-uir-other-home-'));
+    const otherProject = mkdtempSync(join(tmpdir(), 'sonata-uir-other-project-'));
+    try {
+      const first = { ...deps(), tenants: () => [{ id: 't1', configPath: join(projA, 'sonata.toml') }] };
+      expect(projectDirs(first)).toEqual([projA, projB]);
+      expect(projectDirs({ ...first, home: otherHome })).toEqual([projA]);
+      expect(projectDirs({ ...first, tenants: () => [{ id: 't2', configPath: join(otherProject, 'sonata.toml') }] })).toEqual([otherProject, projB]);
+    } finally {
+      rmSync(otherHome, { recursive: true, force: true });
+      rmSync(otherProject, { recursive: true, force: true });
     }
   });
 });
@@ -120,13 +203,26 @@ describe('runRows', () => {
 import { handleUiRequest } from '../../src/native/ui.js';
 
 describe('GET /__sonata/api/sessions', () => {
+  beforeEach(() => {
+    const usage = join(home, '.config', 'sonata', 'usage');
+    const day = new Date().toISOString().slice(0, 10);
+    mkdirSync(usage, { recursive: true });
+    writeFileSync(join(usage, `${day}.jsonl`), JSON.stringify({
+      ts: new Date().toISOString(), ms: 10, alias: 'sonata-code-simple', upstream: 'litellm',
+      status: 200, complete: true, tokens: { input: 100, output: 20 },
+      price: { source: 'models-dev', totalUsd: 0.25 }, attempts: [], key: 'flash', session: 's1', project: projB,
+    }) + '\n');
+  });
   it('returns both row kinds in one list', () => {
     const res = handleUiRequest(
       { method: 'GET', url: '/__sonata/api/sessions?since=30d', headers: { host: 'localhost:4100' } },
       deps(),
     );
     expect(res?.status).toBe(200);
-    const kinds = new Set(JSON.parse((res!.body as Buffer).toString()).rows.map((r: any) => r.kind));
-    expect(kinds.has('run')).toBe(true);
+    const rows = JSON.parse((res!.body as Buffer).toString()).rows;
+    const kinds = new Set(rows.map((r: any) => r.kind));
+    expect(kinds).toEqual(new Set(['session', 'run']));
+    expect(rows.find((r: any) => r.kind === 'session').requests).toBe(1);
+    expect(rows.find((r: any) => r.kind === 'run').usageReason).toBe(RUN_USAGE_REASON);
   });
 });

@@ -39,7 +39,7 @@ export interface RunRow {
   usageReason: string;
 }
 
-let cache: { at: number; dirs: string[] } | undefined;
+let cache: { at: number; key: string; dirs: string[] } | undefined;
 
 export function clearProjectDirCache(): void {
   cache = undefined;
@@ -56,7 +56,9 @@ export function clearProjectDirCache(): void {
  */
 export function projectDirs(deps: UiDeps): string[] {
   const now = (deps.now ?? Date.now)();
-  if (cache !== undefined && now - cache.at < PROJECT_CACHE_MS) return cache.dirs;
+  const tenantPaths = (deps.tenants?.() ?? []).map((tenant) => tenant.configPath);
+  const cacheKey = JSON.stringify([deps.home, tenantPaths]);
+  if (cache !== undefined && cache.key === cacheKey && now - cache.at < PROJECT_CACHE_MS) return cache.dirs;
 
   const seen = new Set<string>();
   const out: string[] = [];
@@ -78,12 +80,12 @@ export function projectDirs(deps: UiDeps): string[] {
     out.push(dir);
   };
 
-  for (const tenant of deps.tenants?.() ?? []) {
-    if (tenant.configPath !== null) add(dirname(tenant.configPath));
+  for (const configPath of tenantPaths) {
+    if (configPath !== null) add(dirname(configPath));
   }
   for (const record of Object.values(loadSessions(deps.home))) add(record?.cwd);
 
-  cache = { at: now, dirs: out };
+  cache = { at: now, key: cacheKey, dirs: out };
   return out;
 }
 
