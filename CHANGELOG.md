@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-14
+
 ### Added
 - **`sonata doctor` names a `pricing_provider` id models.dev does not
   publish.** The setting's only visible effect is a price that *appears*, so
