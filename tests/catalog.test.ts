@@ -937,3 +937,44 @@ describe('lookupModel — a gateway named after the vendor', () => {
     expect(lookupModel('deepseek-deepseek-v4-pro', aa, ['deepseek']).source).toBe('aa');
   });
 });
+
+describe('proposeTiers — effort breaks a capability-and-price tie', () => {
+  // Gemini 3.7 Flash at `low` and `medium` score 71.0 and 71.5 — inside the
+  // tie margin — and AA costs neither per task, so both fall to the same
+  // per-1M blend. With nothing left to order them the sort kept input order,
+  // which is weakest level first. The whole point of a level is that a
+  // higher one thinks harder; at the same price it should lead.
+  const aa: AaCatalog = {
+    fetchedAt: '2026-09-13T00:00:00Z',
+    models: {
+      'gemini-3-7-flash': { codingIndex: 72, blendedPriceUsd: 1.5, agenticIndex: 72, family: 'gemini-3-7-flash', effort: 'high' },
+      'gemini-3-7-flash-medium': { codingIndex: 71.5, blendedPriceUsd: 1.5, agenticIndex: 71.5, family: 'gemini-3-7-flash', effort: 'medium' },
+      'gemini-3-7-flash-low': { codingIndex: 71, blendedPriceUsd: 1.5, agenticIndex: 71, family: 'gemini-3-7-flash', effort: 'low' },
+    },
+  };
+
+  it('ranks the higher level first in both tiers', () => {
+    const { complex, simple } = proposeTiers(['gemini-3.7-flash'], aa);
+    expect(complex).toEqual(['gemini-3.7-flash@high', 'gemini-3.7-flash@medium', 'gemini-3.7-flash@low']);
+    expect(simple).toEqual(['gemini-3.7-flash@high', 'gemini-3.7-flash@medium', 'gemini-3.7-flash@low']);
+  });
+
+  it('still lets a real capability edge or a cheaper price win over the level', () => {
+    const edged: AaCatalog = {
+      fetchedAt: aa.fetchedAt,
+      models: {
+        ...aa.models,
+        'gemini-3-7-flash-low': { codingIndex: 74, blendedPriceUsd: 1.5, agenticIndex: 74, family: 'gemini-3-7-flash', effort: 'low' },
+      },
+    };
+    expect(proposeTiers(['gemini-3.7-flash'], edged).complex[0]).toBe('gemini-3.7-flash@low');
+    const cheaper: AaCatalog = {
+      fetchedAt: aa.fetchedAt,
+      models: {
+        ...aa.models,
+        'gemini-3-7-flash-low': { codingIndex: 71, blendedPriceUsd: 0.5, agenticIndex: 71, family: 'gemini-3-7-flash', effort: 'low' },
+      },
+    };
+    expect(proposeTiers(['gemini-3.7-flash'], cheaper).complex[0]).toBe('gemini-3.7-flash@low');
+  });
+});

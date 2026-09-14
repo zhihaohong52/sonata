@@ -27,6 +27,13 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   asked about `v4-pro`. Measured: every model on such a gateway ranked from the
   unscored default and lost its effort variants. Each spelling is now offered
   stripped, then as-is; a lookup that was already right is unchanged.
+- **At equal capability and price, the higher effort level ranks first.**
+  Adjacent levels of one model sit inside the capability tie margin and, when
+  AA has not costed the row per task, share one per-1M price — so the sort
+  had nothing left to order them by and kept weakest-first, ranking
+  `gemini-3.7-flash@low` above `@medium`. A level exists to think harder; at
+  equal cost it now leads, in both tiers. A real capability edge or a cheaper
+  price still wins over it.
 - **`npm test` runs on a fresh clone again.** `.gitignore` said
   `node_modules/`, whose trailing slash matches only a directory, so a symlink
   of that name was committed (#33) pointing at one machine's absolute path.

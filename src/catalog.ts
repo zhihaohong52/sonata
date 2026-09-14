@@ -669,15 +669,26 @@ export function proposeTiers(
   // a near-tie: a capability gap within AA_CAPABILITY_TIE_MARGIN is treated as
   // noise rather than a real edge, so price decides it the same as an exact
   // tie would. A real edge (bigger than the margin) still wins outright.
+  // When capability and price both tie, the higher effort level leads. The
+  // levels of one model are the case: AA prices a level-less row per 1M
+  // tokens, so every level shares one price, and adjacent levels sit inside
+  // the tie margin — with nothing left to order them the sort kept
+  // `expandCandidates`' weakest-first order, ranking `@low` above `@medium`
+  // at the same price. A level exists to think harder; at equal cost it wins.
+  const levelOf = (k: string): number => {
+    const { effort } = splitCandidate(k);
+    return effort === undefined ? -1 : EFFORT_LEVELS.indexOf(effort);
+  };
+  const byLevel = (a: string, b: string) => levelOf(b) - levelOf(a);
   const byCapability = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
     const gap = Math.abs(rb.index - ra.index) <= AA_CAPABILITY_TIE_MARGIN ? 0 : rb.index - ra.index;
-    return avoidance(a, b) || gap || ra.price - rb.price;
+    return avoidance(a, b) || gap || ra.price - rb.price || byLevel(a, b);
   };
   // Simple work wants the most capability per dollar, capability breaking ties.
   const byValue = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
-    return avoidance(a, b) || valueOf(rb) - valueOf(ra) || rb.index - ra.index;
+    return avoidance(a, b) || valueOf(rb) - valueOf(ra) || rb.index - ra.index || byLevel(a, b);
   };
 
   const complex = candidates.filter((k) => lookupModel(k, aa, providers, upstreamFor).capable).sort(byCapability);
