@@ -1043,6 +1043,11 @@ export async function cmdServe(
       instanceId,
       log: (line) => console.log(line),
       tenants: () => registry.summary(),
+      ui: {
+        home: opts.home,
+        port: ports.router,
+        tenants: () => registry.summary(),
+      },
       resolveTenant: (hint) => registry.resolve(hint),
       // Created here, not per request: a settings file written once has to keep
       // authorising its project hint across restarts.
@@ -1104,6 +1109,7 @@ export async function cmdServe(
       throw error;
     }
     recordRouterPid(opts.home, ports.router, process.pid);
+    console.log(`sonata UI: http://localhost:${ports.router}/__sonata/`);
   } catch (error) {
     // Suppress the respawn watcher before killing the child — otherwise its
     // `exit` handler schedules a respawn against `configPath`, which the

@@ -602,6 +602,7 @@ export async function main(argv: string[]): Promise<number> {
     if (port !== undefined) {
       const up = await isSonataRouter(port);
       console.log(up ? `router: up on localhost:${port}` : 'router: down');
+      if (up) console.log(`sonata UI: http://localhost:${routerPorts(home).router}/__sonata/`);
     }
 
     // The last hour of routes by default, narrowed to the most recent session

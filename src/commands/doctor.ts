@@ -576,6 +576,7 @@ export async function cmdDoctor(
         } else {
           const tenants = (rawTenants as { configPath: string | null }[]).map((t) => t.configPath ?? '?');
           checks.push({ name: 'serve health', ok: true, detail: `up · ${tenants.length} project(s)${tenants.length > 0 ? `: ${tenants.join(', ')}` : ''}` });
+          checks.push({ name: 'sonata UI', ok: true, detail: `http://localhost:${routerPorts(home).router}/__sonata/` });
         }
       }
     } catch {
