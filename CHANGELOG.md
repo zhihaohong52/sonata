@@ -8,6 +8,19 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+- **`sonata doctor` names a `pricing_provider` id models.dev does not
+  publish.** The setting's only visible effect is a price that *appears*, so
+  an id matching nothing is invisible: the gateway reads as configured, every
+  model on it still resolves to `source: none`, and the "gateway prices
+  nothing" warning has already been silenced by the key's presence. Measured
+  on three real configs — `"tencent"` is not a models.dev provider id (it
+  files `tencent-tokenhub`), so those gateways' Tencent models were unpriced
+  despite being asked for, and `[budget] daily_usd` did not bound them.
+  Checked in `doctor` rather than `parseConfig`, which is pure
+  text-in/config-out and has no cache to compare against; with no cache the
+  check is skipped rather than guessed.
+
 ### Changed
 - **Value is measured per task, never across units.** The simple tier's sort
   divided capability by whichever cost a row carried: `costPerTask` (dollars
