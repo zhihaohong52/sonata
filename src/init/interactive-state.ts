@@ -68,6 +68,14 @@ export async function interactiveState(
     declaredGatewayNamesByScope[scope] = Object.keys(env.configsByScope[scope]?.native?.gateways ?? {});
   }
 
+  const declaredPricingProvidersByScope: Partial<Record<ConfigScope, Record<string, string[]>>> = {};
+  for (const scope of ['project', 'global'] as const) {
+    declaredPricingProvidersByScope[scope] = Object.fromEntries(
+      Object.entries(env.configsByScope[scope]?.native?.gateways ?? {})
+        .flatMap(([name, gateway]) => gateway.pricingProvider === undefined ? [] : [[name, gateway.pricingProvider]]),
+    );
+  }
+
   const harnessOnlyUpstreamsByScope: Partial<Record<ConfigScope, Record<string, string>>> = {};
   for (const scope of ['project', 'global'] as const) {
     const models = env.configsByScope[scope]?.unifiedModels ?? {};
@@ -117,6 +125,7 @@ export async function interactiveState(
     gatewayBaseUrls: env.providerBaseUrls,
     avoidGateways: env.configsByScope[resolvedScope]?.avoidGateways ?? [],
     declaredGatewayNames: declaredGatewayNamesByScope,
+    declaredPricingProviders: declaredPricingProvidersByScope,
     harnessOnlyUpstreams: harnessOnlyUpstreamsByScope,
     initialState,
     initialStateByScope,

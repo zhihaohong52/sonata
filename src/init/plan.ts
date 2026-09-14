@@ -1,4 +1,5 @@
 import { enrichContextWindows, loadModelsDev } from '../modelsdev.js';
+import { catalogSpellingsForGateway, configUpstreamFor } from '../pricing.js';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { InitEnvironment } from './discover.js';
@@ -131,7 +132,8 @@ export function plan(
   // placeholder for every model whose real window it did not know, and it is
   // indistinguishable from a decision once in the file — 19 of 24 models on
   // the development machine carried it, several of them 1M models.
-  enrichContextWindows(nativeByKey, loadModelsDev(opts.home)?.contexts);
+  const modelsDev = loadModelsDev(opts.home);
+  enrichContextWindows(nativeByKey, modelsDev?.contexts);
 
   const chosenNative = nativeKeys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined);
 
@@ -151,11 +153,23 @@ export function plan(
   // normalizing the key itself finds nothing. Without this the wizard re-writes
   // the very bare candidate `loadConfig` refuses, which is exactly the state
   // `sonata init` was being told to repair.
-  const upstreamFor = (key: string): string =>
-    nativeByKey.get(key)?.id
-    ?? configForScope?.unifiedModels?.[key]?.id
-    ?? configForScope?.unifiedModels?.[key]?.harnessId
-    ?? key;
+  //
+  // Each id is offered beside its models.dev display name, under the
+  // providers the gateway prices by — which is what scores a vendor's
+  // versionless alias (`deepseek-flash` is "DeepSeek V4.1 Flash"). A gateway
+  // created this run has no config yet, so the resolver takes the candidate's
+  // own gateway and auth and lets the pricing proposal name the provider.
+  const savedUpstreamFor = configUpstreamFor(configForScope ?? { unifiedModels: {}, native: undefined }, modelsDev);
+  const upstreamFor = (key: string): string | readonly string[] => {
+    const candidate = nativeByKey.get(key);
+    if (candidate === undefined) return savedUpstreamFor(key);
+    const declared = configForScope?.native?.gateways[candidate.gateway];
+    return catalogSpellingsForGateway(
+      modelsDev,
+      { name: candidate.gateway, auth: declared?.auth ?? candidate.auth, pricingProvider: declared?.pricingProvider },
+      candidate.id,
+    );
+  };
   const expand = (keys: string[]) => expandCandidates(keys, catalog, gatewayNames, upstreamFor);
   const rankableKeys = [...nativeKeys, ...Object.keys(migratedModels)];
   const expandedTierKeys = expand(rankableKeys);

@@ -5,6 +5,8 @@ import { RankedSelect } from './components/ranked-select.js';
 import { ProvidersStep } from './components/providers-step.js';
 import { ModelsStep } from './components/models-step.js';
 import { candidateLabel, expandCandidates, loadAaCatalog, proposeTiers, unpinnedVariants } from '../catalog.js';
+import { loadModelsDev } from '../modelsdev.js';
+import { catalogSpellingsForGateway } from '../pricing.js';
 import {
   applyStep,
   candidatesForProviders,
@@ -67,6 +69,14 @@ export interface WizardData {
    * the scope answer is re-read when the user walks back to it.
    */
   declaredGatewayNames?: Partial<Record<'project' | 'global', string[]>>;
+  /**
+   * Each declared gateway's `pricing_provider`, by scope. A tier screen offers
+   * a model's models.dev display name beside its id, and that name lives
+   * under the provider the gateway prices by — a slug is only meaningful
+   * under its own provider. A gateway with none configured (every BYOK
+   * gateway created this run) gets the proposal its name and auth earn.
+   */
+  declaredPricingProviders?: Partial<Record<'project' | 'global', Record<string, string[]>>>;
   /**
    * Harness-only config entries are rankable even though they have no native
    * gateway and therefore never appear in the wizard's selected native keys.
@@ -321,7 +331,25 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         ...known.map((candidate) => [candidate.key, candidate.id] as const),
         ...Object.entries(harnessOnlyUpstreams),
       ]);
-      const upstreamFor = (key: string): string => idsByKey.get(key) ?? key;
+      // A native candidate's id is offered beside its models.dev display
+      // name, which is what scores a vendor's versionless alias
+      // (`deepseek-flash` is "DeepSeek V4.1 Flash"). Harness-only entries
+      // have no gateway to price by and keep their id alone.
+      const modelsDev = loadModelsDev(data.home);
+      const pricingProviders = state.configScope !== undefined
+        ? data.declaredPricingProviders?.[state.configScope] ?? {}
+        : {};
+      const gatewayByKey = new Map(known.map((candidate) => [candidate.key, candidate.gateway] as const));
+      const upstreamFor = (key: string): string | readonly string[] => {
+        const id = idsByKey.get(key) ?? key;
+        const gateway = gatewayByKey.get(key);
+        if (gateway === undefined) return id;
+        return catalogSpellingsForGateway(
+          modelsDev,
+          { name: gateway, auth: data.gatewayAuth?.[gateway], pricingProvider: pricingProviders[gateway] },
+          id,
+        );
+      };
       const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways, avoided, upstreamFor);
       const expand = (keys: string[]) => expandCandidates(keys, catalog, gateways, upstreamFor);
       // A model native-selected this run that no prior run ever ranked for

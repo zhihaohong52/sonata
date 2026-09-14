@@ -766,6 +766,48 @@ complex = ["brand-new"]
     expect(c?.detail).toMatch(/sonata catalog update/);
   });
 
+  it('scores a vendor alias through its models.dev name, and an id that begins with the gateway name', async () => {
+    // A BYOK DeepSeek gateway: its own slug for V4.1 Flash is the versionless
+    // `deepseek-flash`, and `deepseek-v4-pro` begins with the gateway's name.
+    // Measured, both reported unscored while AA held rows for both.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-alias-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-alias-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."deepseek-deepseek-flash"]
+gateway = "deepseek"
+id = "deepseek-flash"
+
+[models."deepseek-deepseek-v4-pro"]
+gateway = "deepseek"
+id = "deepseek-v4-pro"
+
+[native.gateways."deepseek"]
+base_url = "https://api.deepseek.com/v1"
+pricing_provider = ["deepseek"]
+
+[tiers.code]
+simple = ["deepseek-deepseek-flash"]
+complex = ["deepseek-deepseek-v4-pro"]
+`);
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    const catalogPath = join(home, '.config', 'sonata', 'catalog.json');
+    mkdirSync(dirname(catalogPath), { recursive: true });
+    writeFileSync(catalogPath, JSON.stringify({
+      fetchedAt: '2026-08-27T00:00:00.000Z',
+      models: {
+        'deepseek-v4-1-flash': { codingIndex: 45, blendedPriceUsd: 0.3 },
+        'deepseek-v4-pro': { codingIndex: 59, blendedPriceUsd: 0.54 },
+      },
+    }));
+    writeFileSync(join(home, '.config', 'sonata', 'models-dev.json'), JSON.stringify({
+      fetchedAt: '2026-08-27T00:00:00.000Z',
+      providers: { deepseek: { 'deepseek-flash': { input: 0.15, output: 0.6 } } },
+      names: { deepseek: { 'deepseek-flash': 'DeepSeek V4.1 Flash' } },
+    }));
+    const c = await rankingCheck(cwd, home, new Date('2026-08-28T00:00:00.000Z'));
+    expect(c?.detail).toMatch(/all 2 tiered models scored/);
+  });
+
   it('confirms coverage when every tiered model is scored', async () => {
     // The config key is `flash`; the catalog is keyed by the upstream id. A
     // check that compared keys would call every hand-named model unscored.

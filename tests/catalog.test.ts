@@ -737,6 +737,73 @@ describe('effort pinning — every editor can repair what loadConfig refuses', (
   });
 });
 
+describe('plan() ranks a BYOK gateway\'s models through models.dev names', () => {
+  const noCredentials: CredentialProbe = {
+    hasKey: () => false,
+    hasOauthCredential: () => false,
+    autoSource: () => null,
+    copilotUsable: false,
+  };
+
+  it('pins the alias and the vendor-prefixed id at their scored levels', () => {
+    // DeepSeek's own slugs: `deepseek-flash` is the versionless alias for
+    // V4.1 Flash, and `deepseek-v4-pro` begins with the gateway's name. AA
+    // scores both by level, so both must be re-proposed as pinned variants —
+    // a bare key here is what `loadConfig` refuses.
+    const home = mkdtempSync(join(tmpdir(), 'sonata-alias-'));
+    const catalogPath = aaCatalogPath(home);
+    mkdirSync(dirname(catalogPath), { recursive: true });
+    writeFileSync(catalogPath, JSON.stringify({
+      fetchedAt: '2026-09-13T00:00:00Z',
+      models: {
+        'deepseek-v4-1-flash': { codingIndex: 60, blendedPriceUsd: 0.5, family: 'deepseek-v4-1-flash', effort: 'max' },
+        'deepseek-v4-1-flash-high': { codingIndex: 55, blendedPriceUsd: 0.5, family: 'deepseek-v4-1-flash', effort: 'high' },
+        'deepseek-v4-pro': { codingIndex: 59, blendedPriceUsd: 0.54, family: 'deepseek-v4-pro', effort: 'max' },
+        'deepseek-v4-pro-high': { codingIndex: 58, blendedPriceUsd: 0.54, family: 'deepseek-v4-pro', effort: 'high' },
+      },
+    }));
+    writeFileSync(join(dirname(catalogPath), 'models-dev.json'), JSON.stringify({
+      fetchedAt: '2026-09-13T00:00:00Z',
+      providers: { deepseek: { 'deepseek-flash': { input: 0.15, output: 0.6 } } },
+      names: { deepseek: { 'deepseek-flash': 'DeepSeek V4.1 Flash' } },
+    }));
+
+    const candidate = (key: string, id: string) => ({
+      key, gateway: 'deepseek', id, contextWindow: 128000,
+      baseUrl: 'https://api.deepseek.example/v1', auth: 'api-key' as const,
+    });
+    const env: InitEnvironment = {
+      cwd: '/repo',
+      home,
+      tmux: { installed: true, version: '3.4', problems: [] },
+      harnesses: [], problems: [], offered: [],
+      allNativeCandidates: [
+        candidate('deepseek-deepseek-flash', 'deepseek-flash'),
+        candidate('deepseek-deepseek-v4-pro', 'deepseek-v4-pro'),
+      ],
+      providerBaseUrls: {},
+      gatewayAuth: new Map(),
+      oauthProviders: new Map(), byokProviders: [], configsByScope: {},
+      existingHookScope: undefined, copilotUsable: false,
+    };
+    const state = {
+      configScope: 'project' as const,
+      providerKeys: [],
+      nativeKeys: ['deepseek-deepseek-flash', 'deepseek-deepseek-v4-pro'],
+      roles: ['code'],
+      hookScope: 'project' as const,
+      routing: 'project' as const,
+    };
+    const planned = plan(env, state, noCredentials, { cwd: '/repo', home, packageRoot: '/pkg' });
+    const emitted = parseConfig(planned.configToml).tiers!.code;
+    expect(emitted.complex).toEqual(expect.arrayContaining([
+      'deepseek-deepseek-flash@max', 'deepseek-deepseek-flash@high',
+      'deepseek-deepseek-v4-pro@max', 'deepseek-deepseek-v4-pro@high',
+    ]));
+    expect(emitted.complex).not.toContain('deepseek-deepseek-flash');
+  });
+});
+
 describe('lookupModel / scoreFor with an effort', () => {
   it('scores a candidate at its own level', () => {
     expect(lookupModel('gpt-5.6-luna@low', FAMILY_AA)).toEqual({ capable: true, cheap: true, source: 'aa' });
@@ -798,5 +865,131 @@ describe('proposeTiers — effort variants', () => {
       complex: ['top-and-dear', 'cheap-and-good'],
       simple: ['cheap-and-good', 'top-and-dear'],
     });
+  });
+});
+
+describe('lookupModel — an upstream resolver may offer several spellings', () => {
+  // DeepSeek's API serves V4.1 Flash as the versionless alias `deepseek-flash`,
+  // which no segment-dropping can turn into AA's `deepseek-v4-1-flash`. The
+  // resolver offers the alias first and a display-name-derived spelling after
+  // it, and the first spelling that scores wins.
+  const aa: AaCatalog = {
+    fetchedAt: '2026-09-01T00:00:00Z',
+    models: {
+      'deepseek-v4-1-flash': { codingIndex: 55, blendedPriceUsd: 0.4, family: 'deepseek-v4-1-flash', effort: 'max' },
+      'deepseek-flash-x': { codingIndex: 10, blendedPriceUsd: 9.0 },
+    },
+  };
+  const spellings = (key: string) => key === 'deepseek-deepseek-flash' ? ['deepseek-flash', 'deepseek-v4.1-flash'] : key;
+
+  it('scores an alias through its later spelling when the first misses', () => {
+    expect(lookupModel('deepseek-deepseek-flash', aa, ['deepseek'], spellings)).toMatchObject({ source: 'aa', cheap: true });
+    expect(candidateLabel('deepseek-deepseek-flash', aa, ['deepseek'], spellings)).toContain('55.0');
+  });
+
+  it('lets the first spelling win when it scores', () => {
+    const direct: AaCatalog = {
+      fetchedAt: '2026-09-01T00:00:00Z',
+      models: { ...aa.models, 'deepseek-flash': { codingIndex: 20, blendedPriceUsd: 9.0 } },
+    };
+    expect(lookupModel('deepseek-deepseek-flash', direct, ['deepseek'], spellings).cheap).toBe(false);
+  });
+
+  it('finds the family through a later spelling too', () => {
+    const fam: AaCatalog = {
+      fetchedAt: '2026-09-01T00:00:00Z',
+      models: {
+        'deepseek-v4-1-flash': { codingIndex: 55, blendedPriceUsd: 0.4, family: 'deepseek-v4-1-flash', effort: 'max' },
+        'deepseek-v4-1-flash-high': { codingIndex: 50, blendedPriceUsd: 0.3, family: 'deepseek-v4-1-flash', effort: 'high' },
+      },
+    };
+    expect(expandCandidates(['deepseek-deepseek-flash'], fam, ['deepseek'], spellings))
+      .toEqual(['deepseek-deepseek-flash@high', 'deepseek-deepseek-flash@max']);
+  });
+
+  it('is unchanged for a resolver returning one string', () => {
+    expect(lookupModel('deepseek-deepseek-flash', aa, ['deepseek'], (k) => k).source).toBe('default');
+  });
+});
+
+describe('lookupModel — a gateway named after the vendor', () => {
+  // `upstreamFor` hands back the bare id, which carries no gateway prefix —
+  // but the vendor's own model names begin with the vendor, and a gateway
+  // called `deepseek` made the provider strip eat `deepseek-` off
+  // `deepseek-v4-pro` and ask AA about `v4-pro`. Measured on a BYOK DeepSeek
+  // gateway: every one of its models ranked from the unscored default.
+  const aa: AaCatalog = {
+    fetchedAt: '2026-09-01T00:00:00Z',
+    models: {
+      'deepseek-v4-pro': { codingIndex: 59, blendedPriceUsd: 0.54, family: 'deepseek-v4-pro', effort: 'max' },
+      'deepseek-v4-pro-high': { codingIndex: 58, blendedPriceUsd: 0.54, family: 'deepseek-v4-pro', effort: 'high' },
+    },
+  };
+  const id = (key: string) => key === 'deepseek-deepseek-v4-pro' ? 'deepseek-v4-pro' : key;
+
+  it('still scores an id that begins with the gateway name', () => {
+    expect(lookupModel('deepseek-deepseek-v4-pro', aa, ['deepseek'], id).source).toBe('aa');
+    expect(expandCandidates(['deepseek-deepseek-v4-pro'], aa, ['deepseek'], id))
+      .toEqual(['deepseek-deepseek-v4-pro@high', 'deepseek-deepseek-v4-pro@max']);
+  });
+
+  it('still strips the gateway off a key the resolver leaves alone', () => {
+    expect(lookupModel('deepseek-deepseek-v4-pro', aa, ['deepseek']).source).toBe('aa');
+  });
+});
+
+describe('proposeTiers — effort breaks a capability-and-price tie', () => {
+  // Gemini 3.7 Flash at `low` and `medium` score 71.0 and 71.5 — inside the
+  // tie margin — and AA costs neither per task, so both fall to the same
+  // per-1M blend. With nothing left to order them the sort kept input order,
+  // which is weakest level first. The whole point of a level is that a
+  // higher one thinks harder; at the same price it should lead.
+  const aa: AaCatalog = {
+    fetchedAt: '2026-09-13T00:00:00Z',
+    models: {
+      'gemini-3-7-flash': { codingIndex: 72, blendedPriceUsd: 1.5, agenticIndex: 72, family: 'gemini-3-7-flash', effort: 'high' },
+      'gemini-3-7-flash-medium': { codingIndex: 71.5, blendedPriceUsd: 1.5, agenticIndex: 71.5, family: 'gemini-3-7-flash', effort: 'medium' },
+      'gemini-3-7-flash-low': { codingIndex: 71, blendedPriceUsd: 1.5, agenticIndex: 71, family: 'gemini-3-7-flash', effort: 'low' },
+    },
+  };
+
+  it('ranks the higher level first in both tiers', () => {
+    const { complex, simple } = proposeTiers(['gemini-3.7-flash'], aa);
+    expect(complex).toEqual(['gemini-3.7-flash@high', 'gemini-3.7-flash@medium', 'gemini-3.7-flash@low']);
+    expect(simple).toEqual(['gemini-3.7-flash@high', 'gemini-3.7-flash@medium', 'gemini-3.7-flash@low']);
+  });
+
+  it('treats an equal-price score inside the tie margin as a tie in the simple tier too', () => {
+    // A lower level scoring 0.3 higher is noise, not an edge: at the same
+    // price the higher level still leads. `byValue` compared raw value
+    // before the level and let the noise decide.
+    const noisy: AaCatalog = {
+      fetchedAt: aa.fetchedAt,
+      models: {
+        ...aa.models,
+        'gemini-3-7-flash-low': { codingIndex: 71.8, blendedPriceUsd: 1.5, agenticIndex: 71.8, family: 'gemini-3-7-flash', effort: 'low' },
+      },
+    };
+    expect(proposeTiers(['gemini-3.7-flash'], noisy).simple)
+      .toEqual(['gemini-3.7-flash@high', 'gemini-3.7-flash@medium', 'gemini-3.7-flash@low']);
+  });
+
+  it('still lets a real capability edge or a cheaper price win over the level', () => {
+    const edged: AaCatalog = {
+      fetchedAt: aa.fetchedAt,
+      models: {
+        ...aa.models,
+        'gemini-3-7-flash-low': { codingIndex: 74, blendedPriceUsd: 1.5, agenticIndex: 74, family: 'gemini-3-7-flash', effort: 'low' },
+      },
+    };
+    expect(proposeTiers(['gemini-3.7-flash'], edged).complex[0]).toBe('gemini-3.7-flash@low');
+    const cheaper: AaCatalog = {
+      fetchedAt: aa.fetchedAt,
+      models: {
+        ...aa.models,
+        'gemini-3-7-flash-low': { codingIndex: 71, blendedPriceUsd: 0.5, agenticIndex: 71, family: 'gemini-3-7-flash', effort: 'low' },
+      },
+    };
+    expect(proposeTiers(['gemini-3.7-flash'], cheaper).complex[0]).toBe('gemini-3.7-flash@low');
   });
 });

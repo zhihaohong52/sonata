@@ -8,8 +8,8 @@
 import { isOauthGatewayAuth, type NativeGatewayAuth, type PriceConfig, type PriceWindow, type Rates, type SonataConfig } from './config.js';
 import type { LedgerPrice } from './ledger.js';
 import type { UsageTokens } from './native/usage.js';
-import { normalizeModelName } from './catalog.js';
-import type { ModelsDevCache } from './modelsdev.js';
+import { normalizeModelName, type UpstreamFor } from './catalog.js';
+import { catalogSpellingsFor, type ModelsDevCache } from './modelsdev.js';
 
 function minutes(hhmm: string): number {
   const [hours, minutesPart] = hhmm.split(':');
@@ -231,6 +231,52 @@ function sameRates(a: Rates, b: Rates): boolean {
     && a.cachedInput === b.cachedInput && a.cacheWrite === b.cacheWrite;
 }
 
+/** The named providers, then OpenRouter as the implicit last resort. */
+function withFallbackProvider(provider: readonly string[]): readonly string[] {
+  return provider.includes(PRICE_FALLBACK_PROVIDER) ? provider : [...provider, PRICE_FALLBACK_PROVIDER];
+}
+
+/**
+ * The spellings a ranking catalog may be asked about for a model a gateway
+ * serves: the id, then its models.dev display name (`catalogSpellingsFor`).
+ *
+ * The providers consulted are the ones pricing consults — the gateway's
+ * `pricing_provider`, else the proposal its name and auth would have earned,
+ * then OpenRouter — because a slug is only meaningful under its own provider.
+ * A gateway created this run has no config yet, which is why the proposal
+ * stands in: that is exactly the BYOK DeepSeek gateway whose every model
+ * ranked from the unscored default.
+ */
+export function catalogSpellingsForGateway(
+  modelsDev: ModelsDevCache | undefined,
+  gateway: { name: string; auth?: NativeGatewayAuth; pricingProvider?: readonly string[] } | undefined,
+  id: string,
+): string[] {
+  if (modelsDev?.names === undefined || gateway === undefined) return [id];
+  const named = gateway.pricingProvider ?? proposePricingProvider(gateway.name, gateway.auth) ?? [];
+  return catalogSpellingsFor(modelsDev.names, withFallbackProvider(named), id);
+}
+
+/**
+ * A config key as the catalog spellings of the model it names — the resolver
+ * every config-reading caller (`sonata agents`, `doctor`, `loadConfig`'s
+ * effort check) hands to the catalog helpers.
+ */
+export function configUpstreamFor(
+  config: Pick<SonataConfig, 'unifiedModels' | 'native'>,
+  modelsDev: ModelsDevCache | undefined,
+): UpstreamFor {
+  return (key) => {
+    const model = config.unifiedModels[key];
+    if (model === undefined) return [key];
+    const gatewayName = model.gateway;
+    const gateway = gatewayName === undefined ? undefined : config.native?.gateways[gatewayName];
+    const id = model.id ?? model.harnessId ?? key;
+    if (gatewayName === undefined || gateway === undefined) return [id];
+    return catalogSpellingsForGateway(modelsDev, { name: gatewayName, auth: gateway.auth, pricingProvider: gateway.pricingProvider }, id);
+  };
+}
+
 export function resolvePrice(
   config: SonataConfig,
   key: string | undefined,
@@ -279,7 +325,7 @@ export function resolvePrice(
   // a model the lab itself has not listed can still be priced from the rate
   // models.dev already holds for it. Naming it yourself simply moves it up.
   let scraped: Rates | undefined;
-  outer: for (const id of provider.includes(PRICE_FALLBACK_PROVIDER) ? provider : [...provider, PRICE_FALLBACK_PROVIDER]) {
+  outer: for (const id of withFallbackProvider(provider)) {
     const table = modelsDev.providers[id];
     if (table === undefined) continue;
     for (const name of lookup) {
