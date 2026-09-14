@@ -3,15 +3,18 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sessionDetail, runDetail, MAX_TRANSCRIPT_BYTES } from '../../src/native/ui-detail.js';
+import { handleUiRequest } from '../../src/native/ui.js';
 import { clearProjectDirCache } from '../../src/native/ui-runs.js';
 
 let home: string;
 let proj: string;
+let outside: string;
 
 beforeEach(() => {
   clearProjectDirCache();
   home = mkdtempSync(join(tmpdir(), 'sonata-uid-'));
   proj = mkdtempSync(join(tmpdir(), 'projD-'));
+  outside = mkdtempSync(join(tmpdir(), 'outsideD-'));
   const usage = join(home, '.config', 'sonata', 'usage');
   mkdirSync(usage, { recursive: true });
   const day = new Date().toISOString().slice(0, 10);
@@ -41,10 +44,22 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const d of [home, proj]) rmSync(d, { recursive: true, force: true });
+  for (const d of [home, proj, outside]) rmSync(d, { recursive: true, force: true });
 });
 
 const deps = () => ({ home, port: 4100, tenants: () => [{ id: 't', configPath: join(proj, 'sonata.toml') }] });
+
+function body(res: { body: unknown }): any {
+  return JSON.parse((res.body as Buffer).toString());
+}
+
+function makeRun(cwd: string, id: string, events = 'line one\nline two\n', report = '# done\n'): void {
+  const dir = join(cwd, '.sonata', 'runs', id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'meta.json'), JSON.stringify({ id, session: `sonata-${id}`, cwd }));
+  writeFileSync(join(dir, 'events.jsonl'), events);
+  writeFileSync(join(dir, 'report.md'), report);
+}
 
 describe('sessionDetail', () => {
   it('returns only that session’s request stream', () => {
@@ -60,6 +75,15 @@ describe('sessionDetail', () => {
 
   it('returns an empty stream for an unknown session rather than throwing', () => {
     expect(sessionDetail(deps(), 'nope', new URLSearchParams('since=30d')).routes).toEqual([]);
+  });
+
+  it('serves a session detail through the HTTP handler', () => {
+    const ok = handleUiRequest(
+      { method: 'GET', url: '/__sonata/api/session/s1?since=30d', headers: { host: 'localhost:4100' } },
+      deps(),
+    );
+    expect(ok?.status).toBe(200);
+    expect(body(ok!).id).toBe('s1');
   });
 });
 
@@ -79,18 +103,66 @@ describe('runDetail', () => {
     expect(runDetail(deps(), 'aaa111', '/etc')).toBeUndefined();
   });
 
-  it('returns undefined for an unknown id', () => {
-    expect(runDetail(deps(), 'zzz999', proj)).toBeUndefined();
+  it('does not read a well-formed run outside discovered projects', () => {
+    makeRun(outside, 'bbb222', 'secret\n');
+    expect(runDetail(deps(), 'bbb222', outside)).toBeUndefined();
+  });
+
+  it.each([
+    '..', '../aaa111', '../../etc/passwd', '/aaa111', 'aaa111/extra', 'AAA111',
+  ])('rejects unsafe run id %s before path access', (id) => {
+    expect(runDetail(deps(), id, proj)).toBeUndefined();
+  });
+
+  it('rejects a percent-encoded traversal id through the HTTP handler', () => {
+    const res = handleUiRequest(
+      { method: 'GET', url: '/__sonata/api/run/%2e%2e%2f%2e%2e%2fetc%2fpasswd?project=' + encodeURIComponent(proj), headers: { host: 'localhost:4100' } },
+      deps(),
+    );
+    expect(res?.status).toBe(404);
+  });
+
+  it('serves a run detail through the HTTP handler and 404s unknown ids', () => {
+    const ok = handleUiRequest(
+      { method: 'GET', url: '/__sonata/api/run/aaa111?project=' + encodeURIComponent(proj), headers: { host: 'localhost:4100' } },
+      deps(),
+    );
+    expect(ok?.status).toBe(200);
+    expect(body(ok!).report).toBe('# done\n');
+    const missing = handleUiRequest(
+      { method: 'GET', url: '/__sonata/api/run/zzz999?project=' + encodeURIComponent(proj), headers: { host: 'localhost:4100' } },
+      deps(),
+    );
+    expect(missing?.status).toBe(404);
+  });
+
+  it('round-trips emoji transcript content through JSON without change', () => {
+    makeRun(proj, 'ccc333', 'before\n😀🚀\nafter\n');
+    const detail = runDetail(deps(), 'ccc333', proj)!;
+    expect(JSON.parse(JSON.stringify(detail)).transcript).toBe(detail.transcript);
+  });
+
+  it('caps multibyte transcripts in UTF-8 bytes without losing the tail', () => {
+    const dir = join(proj, '.sonata', 'runs', 'ddd444');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'meta.json'), JSON.stringify({ id: 'ddd444', session: 'sonata-ddd444', cwd: proj }));
+    writeFileSync(join(dir, 'events.jsonl'), `START\n${'é'.repeat(MAX_TRANSCRIPT_BYTES / 2 + 1000)}\nEND\n`);
+    const detail = runDetail(deps(), 'ddd444', proj)!;
+    expect(detail.truncated).toBe(true);
+    expect(Buffer.byteLength(detail.transcript, 'utf8')).toBeLessThanOrEqual(MAX_TRANSCRIPT_BYTES);
+    expect(detail.transcript).toContain('END');
+    expect(detail.transcript).not.toContain('START');
+    expect(JSON.parse(JSON.stringify(detail)).transcript).toBe(detail.transcript);
   });
 
   it('truncates a long transcript tail-first and says so', () => {
-    const dir = join(proj, '.sonata', 'runs', 'big999');
+    const dir = join(proj, '.sonata', 'runs', 'bee999');
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'meta.json'), JSON.stringify({ id: 'big999', session: 'sonata-big999', cwd: proj }));
+    writeFileSync(join(dir, 'meta.json'), JSON.stringify({ id: 'bee999', session: 'sonata-bee999', cwd: proj }));
     writeFileSync(join(dir, 'events.jsonl'), `START\n${'x'.repeat(MAX_TRANSCRIPT_BYTES + 1000)}\nEND\n`);
-    const detail = runDetail(deps(), 'big999', proj)!;
+    const detail = runDetail(deps(), 'bee999', proj)!;
     expect(detail.truncated).toBe(true);
-    expect(detail.transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_BYTES);
+    expect(Buffer.byteLength(detail.transcript, 'utf8')).toBeLessThanOrEqual(MAX_TRANSCRIPT_BYTES);
     expect(detail.transcript).toContain('END');
     expect(detail.transcript).not.toContain('START');
   });

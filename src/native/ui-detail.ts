@@ -35,6 +35,10 @@ export function runDetail(
   id: string,
   cwdParam: string | undefined,
 ): { id: string; cwd: string; transcript: string; truncated: boolean; report: string | null } | undefined {
+  // Run ids are six lowercase hex characters from newRunId(). Validate before
+  // constructing any path so a caller cannot use traversal or an absolute id.
+  if (!/^[0-9a-f]{6}$/.test(id)) return undefined;
+
   // The cwd is a query parameter, so it is caller-controlled. It is only ever
   // honoured when it names a project discovery already found -- otherwise the
   // parameter would be a way to read a run directory anywhere on the machine.
@@ -44,12 +48,21 @@ export function runDetail(
   for (const cwd of candidates) {
     if (!existsSync(join(runDir(cwd, id), 'meta.json'))) continue;
     const whole = readEvents(cwd, id).join('\n');
-    const truncated = Buffer.byteLength(whole, 'utf8') > MAX_TRANSCRIPT_BYTES;
+    const bytes = Buffer.from(whole, 'utf8');
+    const truncated = bytes.byteLength > MAX_TRANSCRIPT_BYTES;
+    let transcript = whole;
+    if (truncated) {
+      // Slice bytes, then advance past continuation bytes so UTF-8 decoding
+      // starts at a character boundary and cannot create an unpaired surrogate.
+      let start = bytes.byteLength - MAX_TRANSCRIPT_BYTES;
+      while (start < bytes.byteLength && (bytes[start] & 0xc0) === 0x80) start += 1;
+      transcript = bytes.subarray(start).toString('utf8');
+    }
     return {
       id,
       cwd,
       // Tail-first: the end of a run is what says how it finished.
-      transcript: truncated ? whole.slice(-MAX_TRANSCRIPT_BYTES) : whole,
+      transcript,
       truncated,
       report: readReport(cwd, id),
     };
