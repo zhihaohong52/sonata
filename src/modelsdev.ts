@@ -245,10 +245,29 @@ export function loadModelsDev(home: string): ModelsDevCache | undefined {
     const doc = JSON.parse(readFileSync(path, 'utf8')) as ModelsDevCache;
     if (typeof doc.fetchedAt !== 'string') return undefined;
     if (!isRecord(doc.providers) || !providersAreValid(doc.providers)) return undefined;
+    // `names` is optional and consulted per lookup, so a malformed map must
+    // not fail the cache the prices still depend on — nor survive to throw
+    // inside a ranking. Keep the well-formed provider tables, drop the rest.
+    const names = validNames(doc.names);
+    if (names === undefined) delete doc.names; else doc.names = names;
     return doc;
   } catch {
     return undefined;
   }
+}
+
+function validNames(raw: unknown): NonNullable<ModelsDevCache['names']> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const names: NonNullable<ModelsDevCache['names']> = {};
+  for (const [providerId, table] of Object.entries(raw)) {
+    if (providerId === '' || !isRecord(table)) continue;
+    const models: Record<string, string> = {};
+    for (const [modelId, name] of Object.entries(table)) {
+      if (modelId !== '' && typeof name === 'string' && name !== '') models[modelId] = name;
+    }
+    if (Object.keys(models).length > 0) names[providerId] = models;
+  }
+  return Object.keys(names).length > 0 ? names : undefined;
 }
 
 const RATE_KEYS: ReadonlySet<string> = new Set(['input', 'cachedInput', 'cacheWrite', 'output']);

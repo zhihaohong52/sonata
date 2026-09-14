@@ -959,6 +959,21 @@ describe('proposeTiers — effort breaks a capability-and-price tie', () => {
     expect(simple).toEqual(['gemini-3.7-flash@high', 'gemini-3.7-flash@medium', 'gemini-3.7-flash@low']);
   });
 
+  it('treats an equal-price score inside the tie margin as a tie in the simple tier too', () => {
+    // A lower level scoring 0.3 higher is noise, not an edge: at the same
+    // price the higher level still leads. `byValue` compared raw value
+    // before the level and let the noise decide.
+    const noisy: AaCatalog = {
+      fetchedAt: aa.fetchedAt,
+      models: {
+        ...aa.models,
+        'gemini-3-7-flash-low': { codingIndex: 71.8, blendedPriceUsd: 1.5, agenticIndex: 71.8, family: 'gemini-3-7-flash', effort: 'low' },
+      },
+    };
+    expect(proposeTiers(['gemini-3.7-flash'], noisy).simple)
+      .toEqual(['gemini-3.7-flash@high', 'gemini-3.7-flash@medium', 'gemini-3.7-flash@low']);
+  });
+
   it('still lets a real capability edge or a cheaper price win over the level', () => {
     const edged: AaCatalog = {
       fetchedAt: aa.fetchedAt,

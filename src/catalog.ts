@@ -685,9 +685,15 @@ export function proposeTiers(
     const gap = Math.abs(rb.index - ra.index) <= AA_CAPABILITY_TIE_MARGIN ? 0 : rb.index - ra.index;
     return avoidance(a, b) || gap || ra.price - rb.price || byLevel(a, b);
   };
-  // Simple work wants the most capability per dollar, capability breaking ties.
+  // Simple work wants the most capability per dollar, capability breaking
+  // ties. At one price, value *is* capability, so a score inside the tie
+  // margin is the same noise it is above — a lower level scoring 0.3 higher
+  // is not an edge, and the level decides as it does there.
   const byValue = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
+    if (ra.price === rb.price && Math.abs(rb.index - ra.index) <= AA_CAPABILITY_TIE_MARGIN) {
+      return avoidance(a, b) || byLevel(a, b);
+    }
     return avoidance(a, b) || valueOf(rb) - valueOf(ra) || rb.index - ra.index || byLevel(a, b);
   };
 
