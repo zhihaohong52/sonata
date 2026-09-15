@@ -65,14 +65,15 @@ export function truncateBytes(
  * for the same reason: a window edge can land mid-sequence, and a lone
  * continuation byte decodes to U+FFFD.
  */
-async function readWindow(
+export async function readWindow(
   path: string,
   maxBytes: number,
   keep: 'head' | 'tail',
+  openFile: typeof fsp.open = fsp.open,
 ): Promise<{ text: string; truncated: boolean } | null> {
   let handle: fsp.FileHandle;
   try {
-    handle = await fsp.open(path, 'r');
+    handle = await openFile(path, 'r');
   } catch {
     return null; // absent, or unreadable — indistinguishable from the caller's side
   }
@@ -80,8 +81,8 @@ async function readWindow(
     const size = (await handle.stat()).size;
     if (size <= maxBytes) {
       const whole = Buffer.alloc(size);
-      if (size > 0) await handle.read(whole, 0, size, 0);
-      return { text: whole.toString('utf8'), truncated: false };
+      const bytesRead = await readFully(handle, whole, 0);
+      return { text: whole.subarray(0, bytesRead).toString('utf8'), truncated: false };
     }
     // One byte past the cap on the head path: the boundary test asks what the
     // FIRST excluded byte is, and without it a sequence cut by the cap decodes
@@ -90,7 +91,7 @@ async function readWindow(
     const want = keep === 'tail' ? maxBytes : maxBytes + 1;
     const position = keep === 'tail' ? size - maxBytes : 0;
     const window = Buffer.alloc(want);
-    const { bytesRead } = await handle.read(window, 0, want, position);
+    const bytesRead = await readFully(handle, window, position);
     const bytes = window.subarray(0, bytesRead);
     const isContinuation = (i: number): boolean => i < bytes.byteLength && (bytes[i] & 0xc0) === 0x80;
     if (keep === 'tail') {
@@ -170,6 +171,16 @@ export async function runDetail(
     };
   }
   return undefined;
+}
+
+async function readFully(handle: fsp.FileHandle, buffer: Buffer, position: number): Promise<number> {
+  let total = 0;
+  while (total < buffer.byteLength) {
+    const { bytesRead } = await handle.read(buffer, total, buffer.byteLength - total, position + total);
+    if (bytesRead === 0) break;
+    total += bytesRead;
+  }
+  return total;
 }
 
 function sameDir(a: string, b: string): boolean {

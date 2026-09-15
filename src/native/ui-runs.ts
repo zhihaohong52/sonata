@@ -216,7 +216,11 @@ async function readExitAsync(path: string): Promise<number | null> {
  */
 async function allRunRows(deps: UiDeps): Promise<RunRow[]> {
   const dirs = projectDiscovery(deps).dirs; // also refreshes `cache` when it is stale
-  const cached = cache?.rows;
+  // Keep the entry selected for this scan. Another request may replace the
+  // module cache while the filesystem awaits below; that result must not be
+  // written into the replacement entry.
+  const entry = cache;
+  const cached = entry?.rows;
   if (cached !== undefined) return cached;
 
   const resolve = projectResolver(deps.home);
@@ -243,7 +247,7 @@ async function allRunRows(deps: UiDeps): Promise<RunRow[]> {
   out.sort(
     (a, b) => (Date.parse(b.started ?? '') || 0) - (Date.parse(a.started ?? '') || 0) || a.id.localeCompare(b.id),
   );
-  if (cache !== undefined) cache.rows = out;
+  if (cache === entry && entry !== undefined) entry.rows = out;
   return out;
 }
 

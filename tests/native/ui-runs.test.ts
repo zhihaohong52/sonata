@@ -278,6 +278,22 @@ describe('run row caching and cap', () => {
     expect((await runRows(deps(), all)).truncated).toBe(true);
   });
 
+  it('does not let an earlier scan populate a replacement cache entry', async () => {
+    const now = 1000;
+    // Make A's async scan materially slower than B's. The second request starts
+    // while A is suspended in its first filesystem await, then A completes last
+    // and must not overwrite B's replacement cache entry.
+    for (let i = 0; i < 200; i += 1) {
+      makeRun(projA, i.toString(16).padStart(6, '0'), { role: 'code', startedAt: `2026-09-15T01:00:${String(i % 60).padStart(2, '0')}.000Z` });
+    }
+    const depsA = { ...deps(), now: () => now, tenants: () => [{ id: 'a', configPath: join(projA, 'sonata.toml') }] };
+    const depsB = { ...deps(), now: () => now, tenants: () => [{ id: 'b', configPath: join(projB, 'sonata.toml') }] };
+    const scanA = runRows(depsA, all);
+    const scanB = runRows(depsB, all);
+    await Promise.all([scanA, scanB]);
+    expect((await runRows(depsB, all)).rows.map((row) => row.id)).toEqual(['ccc333']);
+  });
+
   it('serves two different project filters correctly from ONE warm cache', async () => {
     const cachedDeps = { ...deps(), now: () => 1000 };
     // Warm the cache with one filter, then query the other inside the TTL.

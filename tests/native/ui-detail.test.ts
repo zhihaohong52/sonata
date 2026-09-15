@@ -1,8 +1,9 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import * as fsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { sessionDetail, runDetail, MAX_TRANSCRIPT_BYTES, MAX_REPORT_BYTES } from '../../src/native/ui-detail.js';
+import { sessionDetail, runDetail, readWindow, MAX_TRANSCRIPT_BYTES, MAX_REPORT_BYTES } from '../../src/native/ui-detail.js';
 import { handleUiRequest } from '../../src/native/ui.js';
 import { clearUiRunCache } from '../../src/native/ui-runs.js';
 
@@ -140,6 +141,26 @@ describe('runDetail', () => {
     makeRun(proj, 'ccc333', 'before\n😀🚀\nafter\n');
     const detail = (await runDetail(deps(), 'ccc333', proj))!;
     expect(JSON.parse(JSON.stringify(detail)).transcript).toBe(detail.transcript);
+  });
+
+  it('fills partial reads before decoding a large short transcript', async () => {
+    const content = 'x'.repeat(200 * 1024);
+    const path = join(proj, 'partial-read.txt');
+    writeFileSync(path, content);
+    const partialOpen: typeof fsp.open = async (...args) => {
+      const handle = await fsp.open(...args);
+      return {
+        stat: handle.stat.bind(handle),
+        close: handle.close.bind(handle),
+        read: async (buffer: Buffer, offset: number, length: number, position: number) =>
+          handle.read(buffer, offset, Math.max(1, Math.floor(length / 2)), position),
+      } as unknown as fsp.FileHandle;
+    };
+    const result = await readWindow(path, Buffer.byteLength(content), 'head', partialOpen);
+    expect(result).not.toBeNull();
+    expect(Buffer.byteLength(result!.text, 'utf8')).toBe(Buffer.byteLength(content, 'utf8'));
+    expect(result!.text).toBe(content);
+    expect(result!.text).not.toContain('\u0000');
   });
 
   it('caps multibyte transcripts in UTF-8 bytes without losing the tail', async () => {
