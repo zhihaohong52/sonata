@@ -38,25 +38,25 @@ afterEach(() => { rmSync(home, { recursive: true, force: true }); });
 describe('sessionRows', () => {
   const deps = () => ({ home, port: 4100 });
 
-  it('produces one row per session that has ledger rows', () => {
-    const rows = sessionRows(deps(), all);
+  it('produces one row per session that has ledger rows', async () => {
+    const rows = await sessionRows(deps(), all);
     expect(rows.map((r) => r.id).sort()).toEqual(['s1', 's2']);
     expect(rows.every((r) => r.kind === 'session')).toBe(true);
   });
 
-  it('omits a registered session with no requests rather than showing an empty row', () => {
-    expect(sessionRows(deps(), all).find((r) => r.id === 's3')).toBeUndefined();
+  it('omits a registered session with no requests rather than showing an empty row', async () => {
+    expect((await sessionRows(deps(), all)).find((r) => r.id === 's3')).toBeUndefined();
   });
 
-  it('counts requests and tokens', () => {
-    const s1 = sessionRows(deps(), all).find((r) => r.id === 's1')!;
+  it('counts requests and tokens', async () => {
+    const s1 = (await sessionRows(deps(), all)).find((r) => r.id === 's1')!;
     expect(s1.requests).toBe(3);
     expect(s1.input).toBe(300);
     expect(s1.output).toBe(60);
   });
 
-  it('keeps unpriced and covered out of costUsd', () => {
-    const rows = sessionRows(deps(), all);
+  it('keeps unpriced and covered out of costUsd', async () => {
+    const rows = await sessionRows(deps(), all);
     const s1 = rows.find((r) => r.id === 's1')!;
     expect(s1.costUsd).toBe(0.5);
     expect(s1.unpricedRequests).toBe(1);
@@ -65,25 +65,25 @@ describe('sessionRows', () => {
     expect(s2.coveredUsd).toBe(3);
   });
 
-  it('lists the distinct candidates that served it', () => {
-    const s1 = sessionRows(deps(), all).find((r) => r.id === 's1')!;
+  it('lists the distinct candidates that served it', async () => {
+    const s1 = (await sessionRows(deps(), all)).find((r) => r.id === 's1')!;
     expect(s1.models.sort()).toEqual(['flash', 'terra']);
   });
 
-  it('carries the start time from the session map', () => {
-    const s1 = sessionRows(deps(), all).find((r) => r.id === 's1')!;
+  it('carries the start time from the session map', async () => {
+    const s1 = (await sessionRows(deps(), all)).find((r) => r.id === 's1')!;
     expect(s1.started).toBe('2026-09-15T00:00:00.000Z');
   });
 
-  it('filters by session', () => {
-    expect(sessionRows(deps(), { ...all, session: 's2' }).map((r) => r.id)).toEqual(['s2']);
+  it('filters by session', async () => {
+    expect((await sessionRows(deps(), { ...all, session: 's2' })).map((r) => r.id)).toEqual(['s2']);
   });
 
-  it('filters by project', () => {
-    expect(sessionRows(deps(), { ...all, project: '/proj/b' }).map((r) => r.id)).toEqual(['s2']);
+  it('filters by project', async () => {
+    expect((await sessionRows(deps(), { ...all, project: '/proj/b' })).map((r) => r.id)).toEqual(['s2']);
   });
 
-  it('sorts newest first', () => {
-    expect(sessionRows(deps(), all).map((r) => r.id)).toEqual(['s2', 's1']);
+  it('sorts newest first', async () => {
+    expect((await sessionRows(deps(), all)).map((r) => r.id)).toEqual(['s2', 's1']);
   });
 });

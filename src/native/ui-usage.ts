@@ -4,7 +4,7 @@
  * Parameter parsing and nothing else: every figure comes back from
  * `aggregate`, so the page and `sonata usage` cannot disagree about money.
  */
-import { readRows } from '../ledger.js';
+import { readRowsAsync } from '../ledger.js';
 import { loadSessions } from '../sessions.js';
 import {
   aggregate, labelOf, parseDuration, projectResolver,
@@ -42,10 +42,10 @@ export function parseFilters(query: URLSearchParams, now: number): UiFilters {
   };
 }
 
-export function usagePayload(
+export async function usagePayload(
   deps: UiDeps,
   query: URLSearchParams,
-): { report: UsageReport; by: UsageDimension; filters: UiFilters } {
+): Promise<{ report: UsageReport; by: UsageDimension; filters: UiFilters }> {
   const by = (nonEmpty(query.get('by')) ?? 'model') as UsageDimension;
   if (!USAGE_DIMENSIONS.includes(by)) {
     throw new Error(`sonata UI: unknown dimension "${by}" — use one of ${USAGE_DIMENSIONS.join(', ')}`);
@@ -55,7 +55,7 @@ export function usagePayload(
   const sessions = loadSessions(deps.home);
   const resolve = projectResolver(deps.home);
 
-  let rows = readRows(deps.home, filters.sinceMs, now);
+  let rows = await readRowsAsync(deps.home, filters.sinceMs, now);
   if (filters.session !== undefined) rows = rows.filter((row) => row.session === filters.session);
   if (filters.project !== undefined) {
     // Resolved labels, never raw cwds — the same pooling `[budget] daily_usd`

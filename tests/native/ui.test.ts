@@ -9,31 +9,31 @@ function body(res: { body: unknown }): any {
 }
 
 describe('handleUiRequest', () => {
-  it('ignores a path outside the prefix so the proxy still sees it', () => {
-    expect(handleUiRequest({ method: 'POST', url: '/v1/messages', headers: host }, deps)).toBeUndefined();
+  it('ignores a path outside the prefix so the proxy still sees it', async () => {
+    expect(await handleUiRequest({ method: 'POST', url: '/v1/messages', headers: host }, deps)).toBeUndefined();
   });
 
-  it('ignores the pre-existing health route', () => {
-    expect(handleUiRequest({ method: 'GET', url: '/__sonata_health', headers: host }, deps)).toBeUndefined();
+  it('ignores the pre-existing health route', async () => {
+    expect(await handleUiRequest({ method: 'GET', url: '/__sonata_health', headers: host }, deps)).toBeUndefined();
   });
 
-  it('refuses a non-GET under the prefix rather than letting it reach the proxy', () => {
-    const res = handleUiRequest({ method: 'POST', url: '/__sonata/api/usage', headers: host }, deps);
+  it('refuses a non-GET under the prefix rather than letting it reach the proxy', async () => {
+    const res = await handleUiRequest({ method: 'POST', url: '/__sonata/api/usage', headers: host }, deps);
     expect(res?.status).toBe(405);
     expect(body(res!).error).toMatch(/GET/);
   });
 
-  it('refuses a non-loopback Host, which is what closes DNS rebinding', () => {
-    const res = handleUiRequest(
+  it('refuses a non-loopback Host, which is what closes DNS rebinding', async () => {
+    const res = await handleUiRequest(
       { method: 'GET', url: '/__sonata/api/usage', headers: { host: 'evil.example.com' } },
       deps,
     );
     expect(res?.status).toBe(403);
   });
 
-  it('accepts each loopback host with the router port', () => {
+  it('accepts each loopback host with the router port', async () => {
     for (const host of ['localhost:4100', '127.0.0.1:4100', '[::1]:4100']) {
-      const res = handleUiRequest(
+      const res = await handleUiRequest(
         { method: 'GET', url: '/__sonata/api/usage', headers: { host } },
         deps,
       );
@@ -41,9 +41,9 @@ describe('handleUiRequest', () => {
     }
   });
 
-  it('accepts bare loopback hosts only on the default HTTP port', () => {
+  it('accepts bare loopback hosts only on the default HTTP port', async () => {
     for (const host of ['localhost', '127.0.0.1', '[::1]']) {
-      const res = handleUiRequest(
+      const res = await handleUiRequest(
         { method: 'GET', url: '/__sonata/api/usage', headers: { host } },
         { ...deps, port: 80 },
       );
@@ -51,9 +51,9 @@ describe('handleUiRequest', () => {
     }
   });
 
-  it('rejects a loopback host with the wrong or malformed port', () => {
+  it('rejects a loopback host with the wrong or malformed port', async () => {
     for (const host of ['localhost:9999', 'localhost:bad', 'localhost:4100:extra', '[::1]garbage']) {
-      const res = handleUiRequest(
+      const res = await handleUiRequest(
         { method: 'GET', url: '/__sonata/api/usage', headers: { host } },
         deps,
       );
@@ -61,20 +61,20 @@ describe('handleUiRequest', () => {
     }
   });
 
-  it('refuses HEAD because the UI only accepts GET', () => {
-    const res = handleUiRequest({ method: 'HEAD', url: '/__sonata/api/usage', headers: host }, deps);
+  it('refuses HEAD because the UI only accepts GET', async () => {
+    const res = await handleUiRequest({ method: 'HEAD', url: '/__sonata/api/usage', headers: host }, deps);
     expect(res?.status).toBe(405);
     expect(body(res!).error).toMatch(/GET/);
   });
 
-  it('never sends a CORS header', () => {
-    const res = handleUiRequest({ method: 'GET', url: '/__sonata/api/usage', headers: host }, deps);
+  it('never sends a CORS header', async () => {
+    const res = await handleUiRequest({ method: 'GET', url: '/__sonata/api/usage', headers: host }, deps);
     const names = Object.keys(res!.headers).map((n) => n.toLowerCase());
     expect(names).not.toContain('access-control-allow-origin');
   });
 
-  it('refuses an unknown dimension with a 400 naming the valid ones, not a generic 500', () => {
-    const res = handleUiRequest(
+  it('refuses an unknown dimension with a 400 naming the valid ones, not a generic 500', async () => {
+    const res = await handleUiRequest(
       { method: 'GET', url: '/__sonata/api/usage?by=wheelbarrow', headers: host },
       deps,
     );
@@ -87,18 +87,18 @@ describe('handleUiRequest', () => {
     expect(JSON.stringify(parsed)).not.toContain('wheelbarrow');
   });
 
-  it('sends nosniff on a JSON response', () => {
-    const res = handleUiRequest({ method: 'GET', url: '/__sonata/api/usage', headers: host }, deps);
+  it('sends nosniff on a JSON response', async () => {
+    const res = await handleUiRequest({ method: 'GET', url: '/__sonata/api/usage', headers: host }, deps);
     expect(res!.headers['x-content-type-options']).toBe('nosniff');
   });
 
-  it('404s an unknown path under the prefix', () => {
-    const res = handleUiRequest({ method: 'GET', url: '/__sonata/api/nope', headers: host }, deps);
+  it('404s an unknown path under the prefix', async () => {
+    const res = await handleUiRequest({ method: 'GET', url: '/__sonata/api/nope', headers: host }, deps);
     expect(res?.status).toBe(404);
   });
 
-  it('returns a JSON error rather than throwing, so the Anthropic catch-all is never reached', () => {
-    const res = handleUiRequest(
+  it('returns a JSON error rather than throwing, so the Anthropic catch-all is never reached', async () => {
+    const res = await handleUiRequest(
       { method: 'GET', url: '/__sonata/api/usage', headers: host },
       { ...deps, now: () => { throw new Error('kaboom'); } },
     );
@@ -109,7 +109,7 @@ describe('handleUiRequest', () => {
 });
 
 describe('UI_PREFIX', () => {
-  it('ends in a slash so /__sonata_health cannot match it', () => {
+  it('ends in a slash so /__sonata_health cannot match it', async () => {
     expect(UI_PREFIX).toBe('/__sonata/');
     expect('/__sonata_health'.startsWith(UI_PREFIX)).toBe(false);
   });

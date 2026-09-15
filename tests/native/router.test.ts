@@ -1190,6 +1190,55 @@ describe('createRouterServer — health', () => {
       const body = await (await fetch(`http://127.0.0.1:${port}/__sonata_health`)).json() as Record<string, unknown>;
       expect(body).toMatchObject({ sonata: true, multiTenant: true, instanceId: 'i', tenants: [{ id: 'aaaaaaaaaaaa', configPath: '/p/a/sonata.toml' }] });
       expect(body).not.toHaveProperty('configPath');
+      // No `ui` dep here, so the capability is false: a caller must be able to
+      // tell a router that serves the UI from one that does not, rather than
+      // printing a URL that 404s.
+      expect(body.ui).toBe(false);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('reports ui: true when the UI is mounted', async () => {
+    const server = createRouterServer({
+      fetch, litellmBase: 'http://litellm', litellmKey: 'k', health: true,
+      ui: { home: '/tmp/nowhere', port: 4100 },
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const body = await (await fetch(`http://127.0.0.1:${port}/__sonata_health`)).json() as Record<string, unknown>;
+      expect(body.ui).toBe(true);
+      // The health route still wins over the UI prefix test.
+      expect(body.sonata).toBe(true);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('serves the page at / and leaves a POST / to the proxy', async () => {
+    let proxied = 0;
+    // The bound port is only known after `listen`, and the Host check needs it
+    // -- the same reason `sonata serve` writes it back into its own UiDeps.
+    const ui = { home: '/tmp/nowhere', port: 0 };
+    const server = createRouterServer({
+      fetch: (async () => { proxied += 1; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k', health: true, ui,
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    ui.port = port;
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toMatch(/text\/html/);
+      expect(await res.text()).toContain('<!doctype html>');
+      expect(proxied).toBe(0);
+
+      // The regression that matters: a bare POST / is a proxied request.
+      const post = await fetch(`http://127.0.0.1:${port}/`, { method: 'POST', body: '{}' });
+      await post.text();
+      expect(proxied).toBe(1);
     } finally {
       server.close();
     }

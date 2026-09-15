@@ -37,7 +37,7 @@ import { keyReport, resolveKeyFromSource } from '../native/credentials.js';
 import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
-import { serveHealthUrl } from './serve.js';
+import { serveHealthUrl, healthReportsUi } from './serve.js';
 import { routerPorts } from './ports.js';
 import { nativeSessionEnv } from './code.js';
 import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile, diagnoseRouteAuto, isLocalhostUrl } from './route.js';
@@ -576,7 +576,11 @@ export async function cmdDoctor(
         } else {
           const tenants = (rawTenants as { configPath: string | null }[]).map((t) => t.configPath ?? '?');
           checks.push({ name: 'serve health', ok: true, detail: `up · ${tenants.length} project(s)${tenants.length > 0 ? `: ${tenants.join(', ')}` : ''}` });
-          checks.push({ name: 'sonata UI', ok: true, detail: `http://localhost:${routerPorts(home).router}/__sonata/` });
+          // Same gate as `sonata status`: a router without the `ui` capability
+          // is one built before the UI existed, and its URL would 404.
+          if (healthReportsUi(body)) {
+            checks.push({ name: 'sonata UI', ok: true, detail: `http://localhost:${routerPorts(home).router}/` });
+          }
         }
       }
     } catch {

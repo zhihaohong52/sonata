@@ -6,7 +6,7 @@
  * never issued a request has no row: an empty row would say "this session cost
  * nothing" where the truth is "nothing was routed for it".
  */
-import { readRows } from '../ledger.js';
+import { readRowsAsync } from '../ledger.js';
 import { loadSessions } from '../sessions.js';
 import { aggregate, labelOf, projectResolver } from '../commands/usage.js';
 import type { UiFilters } from './ui-usage.js';
@@ -27,13 +27,13 @@ export interface SessionRow {
   models: string[];
 }
 
-export function sessionRows(deps: UiDeps, filters: UiFilters): SessionRow[] {
+export async function sessionRows(deps: UiDeps, filters: UiFilters): Promise<SessionRow[]> {
   const now = (deps.now ?? Date.now)();
   const sessions = loadSessions(deps.home);
   const resolve = projectResolver(deps.home);
   const wanted = filters.project === undefined ? undefined : resolve(filters.project);
 
-  let rows = readRows(deps.home, filters.sinceMs, now);
+  let rows = await readRowsAsync(deps.home, filters.sinceMs, now);
   if (filters.session !== undefined) rows = rows.filter((row) => row.session === filters.session);
   if (filters.project !== undefined) {
     rows = rows.filter((row) => labelOf(row, 'project', sessions, resolve) === wanted);

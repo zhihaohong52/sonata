@@ -21,7 +21,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove } from './commands/auth.js';
-import { cmdServe, cmdRestart, startServeDaemon, isSonataRouter } from './commands/serve.js';
+import { cmdServe, cmdRestart, startServeDaemon, isSonataRouter, sonataRouterHasUi } from './commands/serve.js';
 import { routerPorts } from './commands/ports.js';
 import { cmdCode } from './commands/code.js';
 import { recentRoutes } from './commands/status.js';
@@ -602,7 +602,10 @@ export async function main(argv: string[]): Promise<number> {
     if (port !== undefined) {
       const up = await isSonataRouter(port);
       console.log(up ? `router: up on localhost:${port}` : 'router: down');
-      if (up) console.log(`sonata UI: http://localhost:${port}/__sonata/`);
+      // Only advertised when the running router says it serves the UI: a
+      // router from an older build answers `sonata: true` and would have sent
+      // the user to a 404.
+      if (up && await sonataRouterHasUi(port)) console.log(`sonata UI: http://localhost:${port}/`);
     }
 
     // The last hour of routes by default, narrowed to the most recent session

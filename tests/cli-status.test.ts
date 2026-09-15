@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { main } from '../src/cli.js';
-import { isSonataRouter } from '../src/commands/serve.js';
+import { isSonataRouter, sonataRouterHasUi } from '../src/commands/serve.js';
 import { readRows } from '../src/ledger.js';
 import { summarizeRuns } from '../src/commands/runs.js';
 import { cmdRoute, type RouteStatus } from '../src/commands/route.js';
@@ -14,6 +14,7 @@ vi.mock('../src/commands/serve.js', () => ({
   cmdRestart: vi.fn(),
   startServeDaemon: vi.fn(),
   isSonataRouter: vi.fn(),
+  sonataRouterHasUi: vi.fn(),
 }));
 vi.mock('../src/ledger.js', () => ({ readRows: vi.fn() }));
 vi.mock('../src/commands/runs.js', () => ({ summarizeRuns: vi.fn() }));
@@ -25,6 +26,7 @@ vi.mock('../src/commands/route.js', () => ({
 
 const routerPortsMock = vi.mocked(routerPorts);
 const isSonataRouterMock = vi.mocked(isSonataRouter);
+const sonataRouterHasUiMock = vi.mocked(sonataRouterHasUi);
 const readRowsMock = vi.mocked(readRows);
 const summarizeRunsMock = vi.mocked(summarizeRuns);
 const cmdRouteMock = vi.mocked(cmdRoute);
@@ -58,9 +60,32 @@ describe('sonata status CLI wiring', () => {
     expect((err as Error).message).toBe(`Unknown option '--sessionx'`);
   });
 
+  /**
+   * The URL is printed only when the running router says it serves the UI:
+   * `sonata: true` alone passes for a router built before the UI existed, and
+   * printing its URL would send the user to a 404.
+   */
+  it('advertises the UI url only when the router reports the capability', async () => {
+    routerPortsMock.mockReturnValue({ router: 4100, litellm: 4000 });
+    isSonataRouterMock.mockResolvedValue(true);
+    readRowsMock.mockReturnValue([] as never);
+
+    sonataRouterHasUiMock.mockResolvedValue(false);
+    let spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await main(['status']);
+    expect(spy.mock.calls.map(([l]) => String(l)).join('\n')).not.toContain('sonata UI:');
+    spy.mockRestore();
+
+    sonataRouterHasUiMock.mockResolvedValue(true);
+    spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await main(['status']);
+    expect(spy.mock.calls.map(([l]) => String(l)).join('\n')).toContain('sonata UI: http://localhost:4100/');
+  });
+
   it('defaults to the most recent session', async () => {
     routerPortsMock.mockReturnValue({ router: 4100, litellm: 4000 });
     isSonataRouterMock.mockResolvedValue(true);
+    sonataRouterHasUiMock.mockResolvedValue(false);
     readRowsMock.mockReturnValue([
       cell({ ts: '2026-08-27T12:00:00.000Z', session: 'sess-a', key: 'flash' }),
       cell({ ts: '2026-08-27T13:00:00.000Z', session: 'sess-b', key: 'grok' }),

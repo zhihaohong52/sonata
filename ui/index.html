@@ -16,6 +16,10 @@
   th { font-weight: 600; }
   tbody tr { cursor: pointer; }
   tbody tr:hover { background: rgba(128,128,128,.12); }
+  /* A real button, so the detail view is reachable by keyboard: a tr with an
+     onclick can be neither focused nor activated with Enter/Space. */
+  button.open { font: inherit; background: none; border: 0; padding: 0; cursor: pointer;
+                color: inherit; text-decoration: underline; text-align: left; }
   .num { text-align: right; font-variant-numeric: tabular-nums; }
   .muted { opacity: .6; }
   .totals { display: flex; gap: 24px; margin-bottom: 12px; }
@@ -121,7 +125,14 @@ async function loadRows(generation) {
     }
     const tr = document.createElement('tr');
     cell(tr, row.kind);
-    cell(tr, row.id);
+    // The id cell is the detail action. textContent only, like every other cell.
+    const idCell = cell(tr, '');
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'open';
+    open.textContent = row.id;
+    open.onclick = (ev) => { ev.stopPropagation(); showDetail(row); };
+    idCell.appendChild(open);
     cell(tr, row.project || '—');
     cell(tr, row.started ? new Date(row.started).toLocaleString() : '—');
     cell(tr, row.kind === 'run' ? row.state + (row.degraded ? ' (degraded)' : '') : (row.models || []).join(', '));
@@ -148,9 +159,13 @@ async function loadRows(generation) {
   }
   // Surfaced the way the transcript's truncation notice is: a short list must
   // not read as "this is all of them".
-  $('rows-note').textContent = data.runsTruncated
-    ? '[run list truncated \u2014 showing the newest runs matching this filter]'
-    : '';
+  // Two independent kinds of incompleteness: the row cap, and discovery
+  // stopping short of every project. Reporting only the first would let an
+  // answer missing whole projects read as complete.
+  const notes = [];
+  if (data.runsTruncated) notes.push('[run list truncated \u2014 showing the newest runs matching this filter]');
+  if (data.projectsTruncated) notes.push('[project discovery truncated \u2014 some projects\u2019 runs are not listed]');
+  $('rows-note').textContent = notes.join(' ');
 }
 
 let detailGeneration = 0;
@@ -225,9 +240,10 @@ async function loadDashboard(generation) {
 
 let refreshGeneration = 0;
 let refreshInFlight = false;
+let refreshQueued = false;
 
 async function refresh() {
-  if (refreshInFlight) return;
+  if (refreshInFlight) { refreshQueued = true; return; }
   refreshInFlight = true;
   const generation = ++refreshGeneration;
   try {
@@ -238,11 +254,22 @@ async function refresh() {
     if (generation === refreshGeneration) $('status').textContent = 'refresh failed: ' + String(err);
   } finally {
     refreshInFlight = false;
+    if (refreshQueued) { refreshQueued = false; refresh(); }
   }
 }
 
-for (const id of ['project', 'session', 'since', 'by']) $(id).onchange = refresh;
-$('session').oninput = () => { clearTimeout(window.__t); window.__t = setTimeout(refresh, 400); };
+// A filter change during an active request must not be dropped: the in-flight
+// response carries the OLD filters, so it is invalidated here (bumping the
+// generation makes its renderers return) and exactly one follow-up is queued
+// to run when it settles. Without this, turning live polling off left the
+// stale view on screen indefinitely.
+function filtersChanged() {
+  refreshGeneration += 1;
+  refresh();
+}
+
+for (const id of ['project', 'session', 'since', 'by']) $(id).onchange = filtersChanged;
+$('session').oninput = () => { clearTimeout(window.__t); window.__t = setTimeout(filtersChanged, 400); };
 setInterval(() => { if ($('live').checked) refresh(); }, 5000);
 refresh();
 </script>

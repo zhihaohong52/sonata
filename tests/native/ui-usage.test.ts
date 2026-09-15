@@ -31,22 +31,22 @@ beforeEach(() => {
 afterEach(() => { rmSync(home, { recursive: true, force: true }); });
 
 describe('parseFilters', () => {
-  it('defaults to a 24h window', () => {
+  it('defaults to a 24h window', async () => {
     const now = 1_000_000_000_000;
     expect(parseFilters(new URLSearchParams(), now).sinceMs).toBe(now - 86_400_000);
   });
 
-  it('accepts the same duration grammar as sonata usage', () => {
+  it('accepts the same duration grammar as sonata usage', async () => {
     const now = 1_000_000_000_000;
     expect(parseFilters(new URLSearchParams('since=30m'), now).sinceMs).toBe(now - 1_800_000);
   });
 
-  it('falls back to the default on an unparseable duration rather than throwing', () => {
+  it('falls back to the default on an unparseable duration rather than throwing', async () => {
     const now = 1_000_000_000_000;
     expect(parseFilters(new URLSearchParams('since=forever'), now).sinceMs).toBe(now - 86_400_000);
   });
 
-  it('reads project and session, and treats empty as absent', () => {
+  it('reads project and session, and treats empty as absent', async () => {
     const f = parseFilters(new URLSearchParams('project=/proj/a&session='), Date.now());
     expect(f.project).toBe('/proj/a');
     expect(f.session).toBeUndefined();
@@ -56,36 +56,36 @@ describe('parseFilters', () => {
 describe('usagePayload', () => {
   const deps = () => ({ home, port: 4100 });
 
-  it('aggregates by model by default', () => {
-    const { report, by } = usagePayload(deps(), new URLSearchParams());
+  it('aggregates by model by default', async () => {
+    const { report, by } = await usagePayload(deps(), new URLSearchParams());
     expect(by).toBe('model');
     expect(report.buckets.map((b) => b.label).sort()).toEqual(['flash', 'terra']);
     expect(report.buckets.find((b) => b.label === 'flash')!.requests).toBe(2);
   });
 
-  it('keeps unpriced volume out of the priced total', () => {
-    const { report } = usagePayload(deps(), new URLSearchParams());
+  it('keeps unpriced volume out of the priced total', async () => {
+    const { report } = await usagePayload(deps(), new URLSearchParams());
     expect(report.pricedTotalUsd).toBe(1);
     expect(report.unpriced.requests).toBe(1);
   });
 
-  it('honours an explicit dimension', () => {
-    const { report } = usagePayload(deps(), new URLSearchParams('by=session'));
+  it('honours an explicit dimension', async () => {
+    const { report } = await usagePayload(deps(), new URLSearchParams('by=session'));
     expect(report.buckets.map((b) => b.label).sort()).toEqual(['s1', 's2']);
   });
 
-  it('rejects an unknown dimension instead of silently reporting by model', () => {
-    expect(() => usagePayload(deps(), new URLSearchParams('by=wheelbarrow'))).toThrow(/dimension/);
+  it('rejects an unknown dimension instead of silently reporting by model', async () => {
+    await expect(usagePayload(deps(), new URLSearchParams('by=wheelbarrow'))).rejects.toThrow(/dimension/);
   });
 
-  it('filters to one session', () => {
-    const { report } = usagePayload(deps(), new URLSearchParams('session=s1'));
+  it('filters to one session', async () => {
+    const { report } = await usagePayload(deps(), new URLSearchParams('session=s1'));
     expect(report.buckets).toHaveLength(1);
     expect(report.buckets[0].requests).toBe(2);
   });
 
-  it('filters to one project by resolved label', () => {
-    const { report } = usagePayload(deps(), new URLSearchParams('project=/proj/a'));
+  it('filters to one project by resolved label', async () => {
+    const { report } = await usagePayload(deps(), new URLSearchParams('project=/proj/a'));
     expect(report.buckets).toHaveLength(1);
     expect(report.buckets[0].label).toBe('flash');
   });
@@ -98,7 +98,7 @@ describe('usagePayload', () => {
    * what guards the claim that the page pools exactly as `[budget] daily_usd`
    * does.
    */
-  it('pools two spellings of one project under a single filter', () => {
+  it('pools two spellings of one project under a single filter', async () => {
     const root = mkdtempSync(join(tmpdir(), 'sonata-ui-proj-'));
     try {
       // A main checkout holding the config, and a linked worktree that borrows
@@ -127,7 +127,7 @@ describe('usagePayload', () => {
 
       // ...so either one selects BOTH rows, and only those two.
       for (const spelling of [main, worktree]) {
-        const { report } = usagePayload(deps(), new URLSearchParams(`project=${spelling}`));
+        const { report } = await usagePayload(deps(), new URLSearchParams(`project=${spelling}`));
         expect(report.buckets.map((b) => b.label).sort()).toEqual(['flash', 'terra']);
       }
     } finally {

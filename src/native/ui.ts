@@ -21,6 +21,28 @@ import { runDetail, sessionDetail } from './ui-detail.js';
 export const UI_PREFIX = '/__sonata/';
 
 /**
+ * A bare `GET /` serves the page too.
+ *
+ * Nothing Claude Code asks the router for touches `/` — its calls are all
+ * `/v1/*` — so claiming this path costs no proxy behaviour, and before it was
+ * claimed the request was forwarded to Anthropic and came back as Anthropic's
+ * own 404. **Only a bare GET is claimed**: a `POST /` is left alone and still
+ * reaches `routeRequest`, and every path that is neither `/` nor under
+ * `/__sonata` is untouched.
+ */
+function claimsUrl(method: string, url: string): boolean {
+  if (isRootPageRequest(method, url)) return true;
+  // Prefix-exact, so `/__sonata_health` (the pre-existing health route) and any
+  // other `/__sonataX` path still reach `routeRequest` exactly as before.
+  return url === '/__sonata' || url.startsWith('/__sonata/') || url.startsWith('/__sonata?');
+}
+
+function isRootPageRequest(method: string, url: string): boolean {
+  if (method !== 'GET') return false;
+  return url === '/' || url.startsWith('/?') || url.startsWith('/#');
+}
+
+/**
  * `sonata` on PATH runs `dist/`, not `src/`, so this resolves relative to the
  * executing file and walks up to the package root -- the same reason
  * `sonata --version` reads the manifest beside its own executable.
@@ -81,13 +103,26 @@ function isLoopbackHost(host: string | undefined, port: number): boolean {
   return accepted.includes(host);
 }
 
+/**
+ * The dispatch decision is **synchronous** and stays that way: a proxied
+ * request pays two `startsWith` tests and returns, never a promise tick. Only
+ * the UI branch is async, because reading the ledger and the run store off the
+ * event loop is the whole point of this round.
+ */
 export function handleUiRequest(
   req: { method: string; url: string; headers: Record<string, string> },
   deps: UiDeps,
-): RouterResponse | undefined {
+): Promise<RouterResponse> | undefined {
   // The proxy hot path (`/v1/messages`) runs through here for every request a
   // native agent makes: a substring test, not a URL parse, is what it pays.
-  if (!req.url.startsWith('/__sonata')) return undefined;
+  if (!claimsUrl(req.method, req.url)) return undefined;
+  return handleUiRequestAsync(req, deps);
+}
+
+async function handleUiRequestAsync(
+  req: { method: string; url: string; headers: Record<string, string> },
+  deps: UiDeps,
+): Promise<RouterResponse> {
 
   let path: string;
   let query: URLSearchParams;
@@ -96,9 +131,16 @@ export function handleUiRequest(
     path = parsed.pathname;
     query = parsed.searchParams;
   } catch {
-    return undefined; // not ours to answer; let the proxy deal with it
+    // The synchronous guard already claimed this request, so it cannot be
+    // handed back to the proxy: a URL this module cannot parse is answered
+    // here rather than forwarded upstream as an API call.
+    return jsonResponse(400, { error: 'sonata UI: unparseable request url' });
   }
-  if (path !== '/__sonata' && !path.startsWith(UI_PREFIX)) return undefined;
+  if (path !== '/' && path !== '/__sonata' && !path.startsWith(UI_PREFIX)) {
+    // `/index.html` and friends: claimed by neither guard, so they belong to
+    // the proxy exactly as before.
+    return jsonResponse(404, { error: 'sonata UI: no such path' });
+  }
 
   if (!isLoopbackHost(req.headers.host, deps.port)) {
     return jsonResponse(403, { error: 'sonata UI is loopback-only' });
@@ -110,7 +152,7 @@ export function handleUiRequest(
   }
 
   try {
-    return route(path, query, deps);
+    return await route(path, query, deps);
   } catch {
     // The server's catch-all answers in Anthropic's error shape, which is
     // right for a proxied request and confusing for a fetch from the page.
@@ -119,17 +161,18 @@ export function handleUiRequest(
   }
 }
 
-function route(path: string, query: URLSearchParams, deps: UiDeps): RouterResponse {
+async function route(path: string, query: URLSearchParams, deps: UiDeps): Promise<RouterResponse> {
+  if (path === '/') return pageResponse();
   const rest = path === '/__sonata' ? '' : path.slice(UI_PREFIX.length);
   if (rest === '' || rest === 'index.html') return pageResponse();
   if (rest.startsWith('api/session/')) {
     const id = decodeURIComponent(rest.slice('api/session/'.length));
     if (id === '') return jsonResponse(404, { error: 'sonata UI: no session id' });
-    return jsonResponse(200, sessionDetail(deps, id, query));
+    return jsonResponse(200, await sessionDetail(deps, id, query));
   }
   if (rest.startsWith('api/run/')) {
     const id = decodeURIComponent(rest.slice('api/run/'.length));
-    const detail = runDetail(deps, id, query.get('project') ?? undefined);
+    const detail = await runDetail(deps, id, query.get('project') ?? undefined);
     if (detail === undefined) return jsonResponse(404, { error: `sonata UI: no run ${id}` });
     return jsonResponse(200, detail);
   }
@@ -145,19 +188,27 @@ function route(path: string, query: URLSearchParams, deps: UiDeps): RouterRespon
           dimensions: USAGE_DIMENSIONS,
         });
       }
-      const { report, by, filters } = usagePayload(deps, query);
+      const { report, by, filters } = await usagePayload(deps, query);
       return jsonResponse(200, { by, filters, report });
     }
     case 'api/sessions': {
       const filters = parseFilters(query, (deps.now ?? Date.now)());
-      const runs = runRows(deps, filters);
-      const rows = [...sessionRows(deps, filters), ...runs.rows].sort(
+      const runs = await runRows(deps, filters);
+      const rows = [...await sessionRows(deps, filters), ...runs.rows].sort(
         (a, b) => (Date.parse(b.started ?? '') || 0) - (Date.parse(a.started ?? '') || 0),
       );
       // Said out loud, never left implicit: a silently short list reads as
       // "this is all of them", which is the same class of wrong as a 0 that
       // means unknown.
-      return jsonResponse(200, { filters, rows, runsTruncated: runs.truncated });
+      return jsonResponse(200, {
+        filters, rows,
+        runsTruncated: runs.truncated,
+        // Hitting the discovery cap omits whole projects' runs, which
+        // `runsTruncated` cannot express: it reports only the row cap, so an
+        // incomplete answer could report `false`. Same principle as
+        // `usage: null` — an incomplete answer must say so.
+        projectsTruncated: runs.discoveryTruncated,
+      });
     }
     default:
       return jsonResponse(404, { error: `sonata UI: no such path ${rest}` });

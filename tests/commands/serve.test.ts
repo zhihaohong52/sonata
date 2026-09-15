@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
-  cmdServe, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, occupiedPortMessage, startServeDaemon,
+  cmdServe, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
   serveStatePath, stopServe, cmdRestart, sonataRouterInstanceId, defaultWaitForLitellm, sonataRouterMultiTenant,
   budgetStatusesFor,
 } from '../../src/commands/serve.js';
@@ -1440,6 +1440,31 @@ describe('isSonataRouter', () => {
     const notJson = (async () => new Response('<html>')) as unknown as typeof fetch;
     expect(await isSonataRouter(4100, ok)).toBe(true);
     expect(await isSonataRouter(4100, notJson)).toBe(false);
+  });
+});
+
+describe('the ui capability on the health payload', () => {
+  /**
+   * `sonata: true` alone passes for a router built before the UI existed, so
+   * advertising the URL on that basis sends the user to a 404. Absent means
+   * absent: the field is required, never inferred.
+   */
+  it('is true only when the payload says ui: true', () => {
+    expect(healthReportsUi({ status: 'ok', sonata: true, ui: true })).toBe(true);
+    expect(healthReportsUi({ status: 'ok', sonata: true })).toBe(false);
+    expect(healthReportsUi({ status: 'ok', sonata: true, ui: false })).toBe(false);
+    expect(healthReportsUi({ status: 'ok', ui: true })).toBe(false);
+    expect(healthReportsUi(null)).toBe(false);
+    expect(healthReportsUi('<html>')).toBe(false);
+  });
+
+  it('probes a live port through the same predicate', async () => {
+    const withUi = (async () => new Response(JSON.stringify({ sonata: true, ui: true }))) as unknown as typeof fetch;
+    const without = (async () => new Response(JSON.stringify({ sonata: true }))) as unknown as typeof fetch;
+    const broken = (async () => { throw new Error('refused'); }) as unknown as typeof fetch;
+    expect(await sonataRouterHasUi(4100, withUi)).toBe(true);
+    expect(await sonataRouterHasUi(4100, without)).toBe(false);
+    expect(await sonataRouterHasUi(4100, broken)).toBe(false);
   });
 });
 

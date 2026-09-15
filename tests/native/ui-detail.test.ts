@@ -62,23 +62,23 @@ function makeRun(cwd: string, id: string, events = 'line one\nline two\n', repor
 }
 
 describe('sessionDetail', () => {
-  it('returns only that session’s request stream', () => {
-    const detail = sessionDetail(deps(), 's1', new URLSearchParams('since=30d'));
+  it('returns only that session’s request stream', async () => {
+    const detail = await sessionDetail(deps(), 's1', new URLSearchParams('since=30d'));
     expect(detail.routes).toHaveLength(1);
     expect(detail.routes[0].served).toBe('flash');
   });
 
-  it('carries the candidates the request fell past', () => {
-    const detail = sessionDetail(deps(), 's1', new URLSearchParams('since=30d'));
+  it('carries the candidates the request fell past', async () => {
+    const detail = await sessionDetail(deps(), 's1', new URLSearchParams('since=30d'));
     expect(detail.routes[0].attempts).toEqual([{ key: 'terra', status: 503 }]);
   });
 
-  it('returns an empty stream for an unknown session rather than throwing', () => {
-    expect(sessionDetail(deps(), 'nope', new URLSearchParams('since=30d')).routes).toEqual([]);
+  it('returns an empty stream for an unknown session rather than throwing', async () => {
+    expect((await sessionDetail(deps(), 'nope', new URLSearchParams('since=30d'))).routes).toEqual([]);
   });
 
-  it('serves a session detail through the HTTP handler', () => {
-    const ok = handleUiRequest(
+  it('serves a session detail through the HTTP handler', async () => {
+    const ok = await handleUiRequest(
       { method: 'GET', url: '/__sonata/api/session/s1?since=30d', headers: { host: 'localhost:4100' } },
       deps(),
     );
@@ -88,66 +88,66 @@ describe('sessionDetail', () => {
 });
 
 describe('runDetail', () => {
-  it('returns the transcript and the report', () => {
-    const detail = runDetail(deps(), 'aaa111', proj)!;
+  it('returns the transcript and the report', async () => {
+    const detail = (await runDetail(deps(), 'aaa111', proj))!;
     expect(detail.transcript).toContain('line two');
     expect(detail.report).toBe('# done\n');
     expect(detail.truncated).toBe(false);
   });
 
-  it('finds the run without a cwd hint by searching discovered projects', () => {
-    expect(runDetail(deps(), 'aaa111', undefined)!.cwd).toBeTruthy();
+  it('finds the run without a cwd hint by searching discovered projects', async () => {
+    expect((await runDetail(deps(), 'aaa111', undefined))!.cwd).toBeTruthy();
   });
 
-  it('refuses a cwd that is not a discovered project, so the param cannot read arbitrary paths', () => {
-    expect(runDetail(deps(), 'aaa111', '/etc')).toBeUndefined();
+  it('refuses a cwd that is not a discovered project, so the param cannot read arbitrary paths', async () => {
+    expect(await runDetail(deps(), 'aaa111', '/etc')).toBeUndefined();
   });
 
-  it('does not read a well-formed run outside discovered projects', () => {
+  it('does not read a well-formed run outside discovered projects', async () => {
     makeRun(outside, 'bbb222', 'secret\n');
-    expect(runDetail(deps(), 'bbb222', outside)).toBeUndefined();
+    expect(await runDetail(deps(), 'bbb222', outside)).toBeUndefined();
   });
 
   it.each([
     '..', '../aaa111', '../../etc/passwd', '/aaa111', 'aaa111/extra', 'AAA111',
-  ])('rejects unsafe run id %s before path access', (id) => {
-    expect(runDetail(deps(), id, proj)).toBeUndefined();
+  ])('rejects unsafe run id %s before path access', async (id) => {
+    expect(await runDetail(deps(), id, proj)).toBeUndefined();
   });
 
-  it('rejects a percent-encoded traversal id through the HTTP handler', () => {
-    const res = handleUiRequest(
+  it('rejects a percent-encoded traversal id through the HTTP handler', async () => {
+    const res = await handleUiRequest(
       { method: 'GET', url: '/__sonata/api/run/%2e%2e%2f%2e%2e%2fetc%2fpasswd?project=' + encodeURIComponent(proj), headers: { host: 'localhost:4100' } },
       deps(),
     );
     expect(res?.status).toBe(404);
   });
 
-  it('serves a run detail through the HTTP handler and 404s unknown ids', () => {
-    const ok = handleUiRequest(
+  it('serves a run detail through the HTTP handler and 404s unknown ids', async () => {
+    const ok = await handleUiRequest(
       { method: 'GET', url: '/__sonata/api/run/aaa111?project=' + encodeURIComponent(proj), headers: { host: 'localhost:4100' } },
       deps(),
     );
     expect(ok?.status).toBe(200);
     expect(body(ok!).report).toBe('# done\n');
-    const missing = handleUiRequest(
+    const missing = await handleUiRequest(
       { method: 'GET', url: '/__sonata/api/run/zzz999?project=' + encodeURIComponent(proj), headers: { host: 'localhost:4100' } },
       deps(),
     );
     expect(missing?.status).toBe(404);
   });
 
-  it('round-trips emoji transcript content through JSON without change', () => {
+  it('round-trips emoji transcript content through JSON without change', async () => {
     makeRun(proj, 'ccc333', 'before\n😀🚀\nafter\n');
-    const detail = runDetail(deps(), 'ccc333', proj)!;
+    const detail = (await runDetail(deps(), 'ccc333', proj))!;
     expect(JSON.parse(JSON.stringify(detail)).transcript).toBe(detail.transcript);
   });
 
-  it('caps multibyte transcripts in UTF-8 bytes without losing the tail', () => {
+  it('caps multibyte transcripts in UTF-8 bytes without losing the tail', async () => {
     const dir = join(proj, '.sonata', 'runs', 'ddd444');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'meta.json'), JSON.stringify({ id: 'ddd444', session: 'sonata-ddd444', cwd: proj }));
     writeFileSync(join(dir, 'events.jsonl'), `START\n${'é'.repeat(MAX_TRANSCRIPT_BYTES / 2 + 1000)}\nEND\n`);
-    const detail = runDetail(deps(), 'ddd444', proj)!;
+    const detail = (await runDetail(deps(), 'ddd444', proj))!;
     expect(detail.truncated).toBe(true);
     expect(Buffer.byteLength(detail.transcript, 'utf8')).toBeLessThanOrEqual(MAX_TRANSCRIPT_BYTES);
     expect(detail.transcript).toContain('END');
@@ -155,19 +155,19 @@ describe('runDetail', () => {
     expect(JSON.parse(JSON.stringify(detail)).transcript).toBe(detail.transcript);
   });
 
-  it('truncates a long transcript tail-first and says so', () => {
+  it('truncates a long transcript tail-first and says so', async () => {
     const dir = join(proj, '.sonata', 'runs', 'bee999');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'meta.json'), JSON.stringify({ id: 'bee999', session: 'sonata-bee999', cwd: proj }));
     writeFileSync(join(dir, 'events.jsonl'), `START\n${'x'.repeat(MAX_TRANSCRIPT_BYTES + 1000)}\nEND\n`);
-    const detail = runDetail(deps(), 'bee999', proj)!;
+    const detail = (await runDetail(deps(), 'bee999', proj))!;
     expect(detail.truncated).toBe(true);
     expect(Buffer.byteLength(detail.transcript, 'utf8')).toBeLessThanOrEqual(MAX_TRANSCRIPT_BYTES);
     expect(detail.transcript).toContain('END');
     expect(detail.transcript).not.toContain('START');
   });
 
-  it('caps the report too, head-first, and says so', () => {
+  it('caps the report too, head-first, and says so', async () => {
     const dir = join(proj, '.sonata', 'runs', 'fff666');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'meta.json'), JSON.stringify({ id: 'fff666', session: 'sonata-fff666', cwd: proj }));
@@ -175,7 +175,7 @@ describe('runDetail', () => {
     // Head-first: sonata's own annotations are prefixes, and they are what say
     // whether the rest of the report can be believed.
     writeFileSync(join(dir, 'report.md'), `[timed out: 60s]\n${'é'.repeat(MAX_REPORT_BYTES)}\nTAIL\n`);
-    const detail = runDetail(deps(), 'fff666', proj)!;
+    const detail = (await runDetail(deps(), 'fff666', proj))!;
     expect(detail.reportTruncated).toBe(true);
     expect(Buffer.byteLength(detail.report!, 'utf8')).toBeLessThanOrEqual(MAX_REPORT_BYTES);
     expect(detail.report).toContain('[timed out: 60s]');
@@ -184,9 +184,9 @@ describe('runDetail', () => {
     expect(detail.report).not.toContain('\uFFFD');
   });
 
-  it('leaves a short report untruncated, and reports absence as null not truncated', () => {
+  it('leaves a short report untruncated, and reports absence as null not truncated', async () => {
     makeRun(proj, 'ccc333', 'short\n');
-    const short = runDetail(deps(), 'ccc333', proj)!;
+    const short = (await runDetail(deps(), 'ccc333', proj))!;
     expect(short.reportTruncated).toBe(false);
     expect(short.report).toBe('# done\n');
 
@@ -194,7 +194,7 @@ describe('runDetail', () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'meta.json'), JSON.stringify({ id: 'ddd444', session: 'sonata-ddd444', cwd: proj }));
     writeFileSync(join(dir, 'events.jsonl'), 'short\n');
-    const none = runDetail(deps(), 'ddd444', proj)!;
+    const none = (await runDetail(deps(), 'ddd444', proj))!;
     expect(none.report).toBeNull();
     expect(none.reportTruncated).toBe(false);
   });

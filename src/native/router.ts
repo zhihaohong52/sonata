@@ -1330,17 +1330,25 @@ export function createRouterServer(deps: RouterDeps): Server {
       if (deps.health && new URL(req.url ?? '/', 'http://localhost').pathname === '/__sonata_health') {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
-          status: 'ok', sonata: true, multiTenant: true, instanceId: deps.instanceId ?? null, tenants: deps.tenants?.() ?? [],
+          status: 'ok', sonata: true, multiTenant: true,
+          // A capability, not a version: a caller must be able to tell a router
+          // that serves the UI from one built before it existed, rather than
+          // printing a URL that 404s. Absent means no UI.
+          ui: deps.ui !== undefined,
+          instanceId: deps.instanceId ?? null, tenants: deps.tenants?.() ?? [],
         }));
         return;
       }
       if (deps.ui !== undefined) {
+        // Not awaited unconditionally: `handleUiRequest`'s decision is
+        // synchronous, so a proxied request does not even pay a microtask tick
+        // for the UI existing.
         const handled = handleUiRequest(
           { method: req.method ?? 'GET', url: req.url ?? '/', headers: incomingHeaders(req) },
           deps.ui,
         );
         if (handled !== undefined) {
-          await respond(res, handled);
+          await respond(res, await handled);
           return;
         }
       }

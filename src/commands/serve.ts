@@ -16,6 +16,7 @@ import { readCopilotToken } from '../native/copilot-auth.js';
 import { envVarForGateway, litellmConfigYamlForTenants } from '../native/litellm.js';
 import { litellmRequired, transportFor } from '../native/providers.js';
 import { litellmStatus, managedLitellmPath } from '../native/litellm-venv.js';
+import type { UiDeps } from '../native/ui.js';
 import { createRouterServer, type RouterTenant } from '../native/router.js';
 import { canonicalConfigPath, TenantRegistry } from '../native/tenants.js';
 import { ensureRouterToken } from '../native/router-token.js';
@@ -327,6 +328,33 @@ export async function isSonataRouter(
     if (!response.ok) return false;
     const body = await response.json() as { sonata?: unknown };
     return body?.sonata === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a health payload says its router serves the UI.
+ *
+ * `sonata: true` alone is not enough: a router started from an older build
+ * passes that and has no UI, so advertising the URL would send the user to a
+ * 404. A payload without the field is treated as not having it.
+ */
+export function healthReportsUi(body: unknown): boolean {
+  return body !== null && typeof body === 'object'
+    && (body as { sonata?: unknown }).sonata === true
+    && (body as { ui?: unknown }).ui === true;
+}
+
+/** `healthReportsUi` against a live port — the form `sonata status` needs. */
+export async function sonataRouterHasUi(
+  port: number,
+  doFetch: typeof fetch = fetch,
+): Promise<boolean> {
+  try {
+    const response = await doFetch(serveHealthUrl(port), { signal: AbortSignal.timeout(2000) });
+    if (!response.ok) return false;
+    return healthReportsUi(await response.json());
   } catch {
     return false;
   }
@@ -726,6 +754,7 @@ export async function cmdServe(
   // a run that died in between left its config behind.
   let child: SpawnedLitellm | undefined;
   let router: ReturnType<typeof createRouterServer> | undefined;
+  let uiDeps: UiDeps;
   let stopping = false;
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
@@ -1035,6 +1064,10 @@ export async function cmdServe(
       if (removedSessions > 0) console.log(`sessions: pruned ${removedSessions} record(s) older than ${LEDGER_RETENTION_DAYS}d`);
     } catch { /* pruning is housekeeping; it never blocks serving */ }
 
+    // Held by reference so the bound port can be written back after `listen`:
+    // a configured port of 0 means "pick an ephemeral one", and a UiDeps still
+    // carrying 0 fails every request's Host check.
+    uiDeps = { home: opts.home, port: ports.router, tenants: () => registry.summary() };
     router = createRouterServer({
       fetch,
       litellmBase: `http://localhost:${ports.litellm}`,
@@ -1043,11 +1076,7 @@ export async function cmdServe(
       instanceId,
       log: (line) => console.log(line),
       tenants: () => registry.summary(),
-      ui: {
-        home: opts.home,
-        port: ports.router,
-        tenants: () => registry.summary(),
-      },
+      ui: uiDeps,
       resolveTenant: (hint) => registry.resolve(hint),
       // Created here, not per request: a settings file written once has to keep
       // authorising its project hint across restarts.
@@ -1109,7 +1138,11 @@ export async function cmdServe(
       throw error;
     }
     recordRouterPid(opts.home, ports.router, process.pid);
-    console.log(`sonata UI: http://localhost:${ports.router}/__sonata/`);
+    // `listen` has resolved, so this is the port actually bound — the same as
+    // the configured one unless that was 0.
+    const bound = router.address();
+    uiDeps.port = typeof bound === 'object' && bound !== null ? bound.port : ports.router;
+    console.log(`sonata UI: http://localhost:${uiDeps.port}/`);
   } catch (error) {
     // Suppress the respawn watcher before killing the child — otherwise its
     // `exit` handler schedules a respawn against `configPath`, which the

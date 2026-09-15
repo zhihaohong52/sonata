@@ -11,6 +11,7 @@
  * carelessly, and sonata does not get to repeat it in its own store.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import * as fsp from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { Effort } from './effort.js';
@@ -87,35 +88,103 @@ export function appendRow(home: string, row: LedgerRow): void {
   appendFileSync(ledgerPathFor(home, at), `${JSON.stringify(row)}\n`);
 }
 
+const DAY_MS = 24 * 3600 * 1000;
+
+/**
+ * The day files that could hold a row in `[sinceMs, now]`.
+ *
+ * The filename **is** the UTC date, so a file whose whole day lies outside the
+ * window provably cannot help and is not opened. Measured before this existed:
+ * a 24-hour query parsed 14 files / 15 MB / 36,797 lines to answer from one —
+ * every 5 seconds while the UI page was open, on the event loop the router
+ * serves every native agent's request from.
+ *
+ * A one-day margin is kept on **both** sides: a row whose `ts` disagrees with
+ * its filename (clock skew, a hand-edited file) must still be found. The
+ * per-row `ts` filter stays the source of truth; this only avoids opening
+ * files that cannot contribute, so the selection is behaviour-preserving.
+ */
+function ledgerFileNames(names: string[], sinceMs: number, now: number): string[] {
+  const from = Number.isFinite(sinceMs) ? sinceMs - DAY_MS : -Infinity;
+  const to = Number.isFinite(now) ? now + DAY_MS : Infinity;
+  const out: string[] = [];
+  for (const name of names.sort()) {
+    const match = FILE_PATTERN.exec(name);
+    if (match === null) continue;
+    const dayStart = Date.parse(`${match[1]}T00:00:00.000Z`);
+    // A filename this module wrote always parses; one that does not is kept
+    // rather than skipped, so a surprise can never silently lose rows.
+    if (Number.isFinite(dayStart) && (dayStart + DAY_MS <= from || dayStart >= to)) continue;
+    out.push(name);
+  }
+  return out;
+}
+
+/** One file's lines, validated and windowed, appended to `out`. */
+function collectRows(raw: string, sinceMs: number, now: number, out: LedgerRow[]): void {
+  for (const line of raw.split('\n')) {
+    if (line === '') continue;
+    let row: LedgerRow;
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (parsed === null || typeof parsed !== 'object' || typeof (parsed as { ts?: unknown }).ts !== 'string') continue;
+      row = parsed as LedgerRow;
+      if (!Number.isFinite(Date.parse(row.ts))) continue;
+      if (!hasRequiredFields(row)) continue;
+    } catch {
+      // A torn final line (a crash mid-append) must not cost the whole report.
+      continue;
+    }
+    const ts = Date.parse(row.ts);
+    if (!Number.isFinite(ts) || ts < sinceMs || ts > now) continue;
+    out.push(row);
+  }
+}
+
 export function readRows(home: string, sinceMs: number, now: number = Date.now()): LedgerRow[] {
   const dir = ledgerDir(home);
   if (!existsSync(dir)) return [];
   const out: LedgerRow[] = [];
-  for (const name of readdirSync(dir).sort()) {
-    if (!FILE_PATTERN.test(name)) continue;
+  for (const name of ledgerFileNames(readdirSync(dir), sinceMs, now)) {
     let raw: string;
     try {
       raw = readFileSync(join(dir, name), 'utf8');
     } catch {
       continue;
     }
-    for (const line of raw.split('\n')) {
-      if (line === '') continue;
-      let row: LedgerRow;
-      try {
-        const parsed: unknown = JSON.parse(line);
-        if (parsed === null || typeof parsed !== 'object' || typeof (parsed as { ts?: unknown }).ts !== 'string') continue;
-        row = parsed as LedgerRow;
-        if (!Number.isFinite(Date.parse(row.ts))) continue;
-        if (!hasRequiredFields(row)) continue;
-      } catch {
-        // A torn final line (a crash mid-append) must not cost the whole report.
-        continue;
-      }
-      const ts = Date.parse(row.ts);
-      if (!Number.isFinite(ts) || ts < sinceMs || ts > now) continue;
-      out.push(row);
+    collectRows(raw, sinceMs, now, out);
+  }
+  return out;
+}
+
+/**
+ * The same read, off the event loop.
+ *
+ * An **addition**, never a replacement: `spentTodayUsd` and every CLI command
+ * depend on the synchronous signature above. Both share `ledgerFileNames` and
+ * `collectRows`, so the two cannot drift about which rows exist.
+ */
+export async function readRowsAsync(
+  home: string,
+  sinceMs: number,
+  now: number = Date.now(),
+): Promise<LedgerRow[]> {
+  const dir = ledgerDir(home);
+  let names: string[];
+  try {
+    names = await fsp.readdir(dir);
+  } catch {
+    return [];
+  }
+  const out: LedgerRow[] = [];
+  for (const name of ledgerFileNames(names, sinceMs, now)) {
+    let raw: string;
+    try {
+      raw = await fsp.readFile(join(dir, name), 'utf8');
+    } catch {
+      continue;
     }
+    collectRows(raw, sinceMs, now, out);
   }
   return out;
 }
