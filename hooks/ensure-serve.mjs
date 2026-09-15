@@ -20,7 +20,6 @@ if (Number.isInteger(port) && port > 0) {
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const res = await fetch(`http://localhost:${port}/__sonata_health`, { signal: ctrl.signal });
-      if (!res.ok) return null;
       const body = await res.json();
       return body?.sonata === true ? body : null;
     } catch {
