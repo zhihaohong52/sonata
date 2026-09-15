@@ -8,6 +8,25 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- A local web UI on the router at `http://localhost:4100/`, served by
+  every `sonata serve`. Lists routed sessions and `sonata dispatch` runs in one
+  list with their logs, and a usage dashboard by model, role, tier, effort,
+  gateway, session or project — all filterable by project and session. It is
+  read-only, loopback-only and GET-only, and computes no figure of its own: the
+  numbers come from the same functions `sonata usage` and `sonata status` use,
+  so the page cannot disagree with the CLI or with `[budget] daily_usd`. A
+  dispatch run's usage reads "not observable" rather than `0`, because such a
+  run never transits the router. The page is served at `/` as well as the
+  original `/__sonata/`; the JSON API stays under `/__sonata/api/`. Nothing
+  else about the proxy changes — a bare `POST /` is not intercepted. Every
+  read the UI makes is asynchronous and bounded (day files outside the queried
+  window are never opened, run reports are never read to test their presence,
+  and a transcript's tail is read through a file handle rather than loading the
+  whole file), because the router is on the request path of every native
+  agent.
+
 ## [0.9.1] - 2026-09-14
 
 ### Added

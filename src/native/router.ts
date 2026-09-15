@@ -9,6 +9,7 @@ import { SONATA_TOKEN_HEADER, projectHintAuthorised } from './router-token.js';
 import type { Transport } from './providers.js';
 import { joinCandidate, splitCandidate, type Effort } from '../effort.js';
 import { createUsageCollector, type UsageTokens, usageFromJsonBody } from './usage.js';
+import { handleUiRequest, type UiDeps } from './ui.js';
 
 export interface TierRoute {
   key: string;
@@ -114,6 +115,12 @@ export interface RouterDeps {
   gatewayKeys?: (tenant: RouterTenant) => Record<string, string>;
   /** Why LiteLLM cannot serve right now (venv missing, broken), or undefined when it can. A litellm-bound request is answered 502 with this text rather than forwarded. */
   litellmUnavailable?: () => string | undefined;
+  /**
+   * Serves the local UI under `/__sonata/`. Absent means no UI -- which is what
+   * every test and every non-`serve` caller gets, so the proxy path is
+   * unaffected by this feature existing.
+   */
+  ui?: UiDeps;
 }
 
 export interface RouterRequest {
@@ -1323,9 +1330,27 @@ export function createRouterServer(deps: RouterDeps): Server {
       if (deps.health && new URL(req.url ?? '/', 'http://localhost').pathname === '/__sonata_health') {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
-          status: 'ok', sonata: true, multiTenant: true, instanceId: deps.instanceId ?? null, tenants: deps.tenants?.() ?? [],
+          status: 'ok', sonata: true, multiTenant: true,
+          // A capability, not a version: a caller must be able to tell a router
+          // that serves the UI from one built before it existed, rather than
+          // printing a URL that 404s. Absent means no UI.
+          ui: deps.ui !== undefined,
+          instanceId: deps.instanceId ?? null, tenants: deps.tenants?.() ?? [],
         }));
         return;
+      }
+      if (deps.ui !== undefined) {
+        // Not awaited unconditionally: `handleUiRequest`'s decision is
+        // synchronous, so a proxied request does not even pay a microtask tick
+        // for the UI existing.
+        const handled = handleUiRequest(
+          { method: req.method ?? 'GET', url: req.url ?? '/', headers: incomingHeaders(req) },
+          deps.ui,
+        );
+        if (handled !== undefined) {
+          await respond(res, await handled);
+          return;
+        }
       }
       await respond(res, await routeRequest({
         method: req.method ?? 'GET',

@@ -33,15 +33,22 @@ which is most of the time.
 
 ## Mounting
 
-Every route sits under `/__sonata/`, beside the existing `/__sonata_health`
-check in `createRouterServer` (`src/native/router.ts:1321`). Anthropic's
-surface is entirely `/v1/*`, so no proxied path is shadowed and the dispatch
-check is a prefix test ahead of `routeRequest`, costing one `startsWith` per
-proxied request.
+`/__sonata/` is the UI's route prefix, beside the existing `/__sonata_health`
+check in `createRouterServer` (`src/native/router.ts:1321`), with bare `GET /`
+as the sole exception. Anthropic's surface is entirely `/v1/*`, so no proxied
+path is shadowed and the dispatch check is a prefix test ahead of
+`routeRequest`, costing one `startsWith` per proxied request.
+
+Claiming `/` is safe because nothing the proxy needs lives there: a bare `GET /`
+was previously forwarded upstream and answered with Anthropic's own 404, and no
+Claude Code request path is bare `/`. Only `GET /` is taken — every other path
+outside the prefix still reaches `routeRequest` untouched, and a bare `POST /`
+is not intercepted.
 
 | route | returns |
 |---|---|
-| `GET /__sonata/` | the page |
+| `GET /` | the page |
+| `GET /__sonata/` | the page (the original URL; it is in the CHANGELOG, the README, `sonata doctor` and `sonata status`, so it keeps working) |
 | `GET /__sonata/api/sessions` | the merged session + run list |
 | `GET /__sonata/api/session/<id>` | one routed session's request stream |
 | `GET /__sonata/api/run/<id>?project=<dir>` | one dispatch run's transcript and report |
@@ -50,6 +57,17 @@ proxied request.
 `GET` only. A non-GET under the prefix is 405, not a fall-through to the
 proxy: a `POST /__sonata/anything` reaching `routeRequest` would be forwarded
 upstream as if it were an API call.
+
+**A bare `GET /` serves the page, and claims nothing else.** Anthropic's
+surface is entirely `/v1/*` and nothing Claude Code asks the router for touches
+`/`, so the path was reaching Anthropic and coming back as Anthropic's own 404
+— it costs no proxy behaviour to claim. The claim is deliberately narrow: only
+method `GET` with a url of `/`, `/?…` or `/#…`. A `POST /` is **not**
+intercepted and still reaches `routeRequest`, and the `/__sonata` test is
+prefix-exact (`/__sonata`, `/__sonata/…`, `/__sonata?…`), so `/__sonata_health`
+and any other `/__sonataX` path are untouched. The dispatch decision itself
+stays synchronous — two `startsWith` tests — even though the UI branch is now
+async, so a proxied request pays no extra tick.
 
 ## Every number comes from a function that already exists
 
@@ -222,12 +240,34 @@ credentials serve a request.
 The router is on the request path of every native agent, so the UI must not be
 able to slow it down.
 
-- Ledger reads are bounded by `since` and by the ledger's own 30-day retention.
-- Run enumeration is capped at a fixed number of project directories and its
-  result is cached for a few seconds, so holding the page open does not stat
-  the filesystem per render.
+This section originally promised more than the first implementation delivered;
+the promise governs, and the three gaps below are how it is actually kept.
+
+- **Nothing the UI reads happens synchronously.** `handleUiRequest`'s *dispatch
+  decision* is synchronous, so a proxied request pays two `startsWith` tests
+  and nothing else — but every filesystem read behind it is `node:fs/promises`,
+  because the alternative is blocking the event loop that serves every native
+  agent's request.
+- Ledger reads are bounded by `since`, by the ledger's own 30-day retention,
+  **and by the day file's name**. The filename is the UTC date, so a file whose
+  whole day is outside the window is never opened (one day of margin either
+  side; the per-row `ts` filter stays the source of truth). Measured before
+  this: a 24-hour query parsed 14 files, 15 MB and 36,797 lines to answer from
+  one, every 5 seconds a page was open. `readRowsAsync` is the async sibling
+  the UI uses; the synchronous `readRows` is unchanged for `spentTodayUsd` and
+  the CLI.
+- Run enumeration is capped at a fixed number of project directories, bounded
+  in *candidates considered* as well as in directories accepted (a rejected
+  candidate still costs a stat), and its result is cached for a few seconds, so
+  holding the page open does not stat the filesystem per render. Discovery
+  stopping short is reported, like the row cap: `projectsTruncated`.
+  Summarising a project's runs is the UI's own async enumerator, field-for-field
+  `summarizeRuns` (which stays as it is for `sonata runs`) but without reading
+  report bodies — `degraded` needs report *presence*, not its contents.
 - Transcript responses are capped in bytes, tail-first, with a flag saying the
-  response was truncated. `events.jsonl` has no size bound.
+  response was truncated. `events.jsonl` has no size bound — so only the
+  window is read, through a file handle at an offset, rather than loading the
+  file and then discarding most of it. The report is the same, head-first.
 - Every handler is wrapped so a throw returns a JSON error rather than
   reaching the server's catch-all, which answers in Anthropic's error shape —
   correct for a proxied request, wrong and confusing for a fetch from the page.
@@ -242,6 +282,7 @@ in the existing vitest suite. No browser, no screenshot tests.
 - `session` filtering selects only that session's rows
 - `since` bounds the window
 - a non-GET under `/__sonata/` is 405 and is **not** forwarded upstream
+- a `POST /` is not intercepted at all and still reaches `routeRequest`
 - `POST /v1/messages` still routes — the regression that matters most
 - a `Host` that is not loopback is refused
 - a project directory that does not exist is skipped, not fatal

@@ -1,0 +1,275 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>sonata</title>
+<!--
+  One file, no build step, no dependency. Fetched content is model-authored:
+  it is inserted with textContent only. The page is checked for unsafe HTML
+  asserted by tests/native/ui-page.test.ts.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; padding: 16px; }
+  h1 { font-size: 15px; margin: 0 0 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid rgba(128,128,128,.3); }
+  th { font-weight: 600; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: rgba(128,128,128,.12); }
+  /* A real button, so the detail view is reachable by keyboard: a tr with an
+     onclick can be neither focused nor activated with Enter/Space. */
+  button.open { font: inherit; background: none; border: 0; padding: 0; cursor: pointer;
+                color: inherit; text-decoration: underline; text-align: left; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .muted { opacity: .6; }
+  .totals { display: flex; gap: 24px; margin-bottom: 12px; }
+  pre { white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow: auto;
+        background: rgba(128,128,128,.1); padding: 8px; }
+</style>
+<h1>sonata</h1>
+<div class="bar">
+  <select id="project"><option value="">all projects</option></select>
+  <input id="session" placeholder="session id">
+  <select id="since">
+    <option value="1h">1h</option>
+    <option value="24h" selected>24h</option>
+    <option value="7d">7d</option>
+    <option value="30d">30d</option>
+  </select>
+  <select id="by">
+    <option value="model" selected>by model</option>
+    <option value="role">by role</option>
+    <option value="tier">by tier</option>
+    <option value="effort">by effort</option>
+    <option value="gateway">by gateway</option>
+    <option value="session">by session</option>
+    <option value="project">by project</option>
+  </select>
+  <label><input type="checkbox" id="live" checked> live</label>
+  <!-- A failed poll is reported here, never in the detail pane: clobbering the
+       detail pane would wipe the transcript the user is reading. -->
+  <span id="status" class="muted" role="status"></span>
+</div>
+
+<h2>Sessions &amp; runs</h2>
+<div id="rows-note" class="muted"></div>
+<table id="rows"><thead><tr>
+  <th>kind</th><th>id</th><th>project</th><th>started</th><th>state</th>
+  <th class="num">req</th><th class="num">in</th><th class="num">out</th><th class="num">cost</th>
+  <th class="num">covered</th>
+</tr></thead><tbody></tbody></table>
+
+<h2>Detail</h2>
+<pre id="detail" class="muted">Select a row.</pre>
+
+<h2>Dashboard</h2>
+<div class="totals">
+  <div>priced <span id="t-priced">—</span></div>
+  <div>covered <span id="t-covered">—</span></div>
+  <div>unpriced <span id="t-unpriced">—</span></div>
+</div>
+<table id="buckets"><thead><tr>
+  <th>label</th><th class="num">req</th><th class="num">in</th><th class="num">out</th>
+  <th class="num">cost</th><th class="num">covered</th><th class="num">unpriced req</th>
+</tr></thead><tbody></tbody></table>
+
+<h2>Candidates fallen past</h2>
+<table id="failed"><thead><tr>
+  <th>candidate</th><th class="num">count</th><th>statuses</th>
+</tr></thead><tbody></tbody></table>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const usd = (n) => '$' + Number(n).toFixed(4);
+const int = (n) => Number(n).toLocaleString();
+
+function filters() {
+  const p = new URLSearchParams();
+  if ($('project').value) p.set('project', $('project').value);
+  if ($('session').value.trim()) p.set('session', $('session').value.trim());
+  p.set('since', $('since').value);
+  return p;
+}
+
+async function get(path, params) {
+  const res = await fetch(path + (params ? '?' + params : ''));
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+
+// Fetched content is written by models and by foreign harnesses.
+function cell(tr, text, cls) {
+  const td = document.createElement('td');
+  if (cls) td.className = cls;
+  td.textContent = text;
+  tr.appendChild(td);
+  return td;
+}
+
+function clear(tbody) { while (tbody.firstChild) tbody.removeChild(tbody.firstChild); }
+
+const knownProjects = new Set();
+
+async function loadRows(generation) {
+  const data = await get('/__sonata/api/sessions', filters());
+  if (generation !== refreshGeneration) return;
+  const tbody = $('rows').tBodies[0];
+  clear(tbody);
+  for (const row of data.rows) {
+    if (row.project && !knownProjects.has(row.project)) {
+      knownProjects.add(row.project);
+      const opt = document.createElement('option');
+      opt.value = row.project;
+      opt.textContent = row.project;
+      $('project').appendChild(opt);
+    }
+    const tr = document.createElement('tr');
+    cell(tr, row.kind);
+    // The id cell is the detail action. textContent only, like every other cell.
+    const idCell = cell(tr, '');
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'open';
+    open.textContent = row.id;
+    open.onclick = (ev) => { ev.stopPropagation(); showDetail(row); };
+    idCell.appendChild(open);
+    cell(tr, row.project || '—');
+    cell(tr, row.started ? new Date(row.started).toLocaleString() : '—');
+    cell(tr, row.kind === 'run' ? row.state + (row.degraded ? ' (degraded)' : '') : (row.models || []).join(', '));
+    if (row.kind === 'session') {
+      cell(tr, int(row.requests), 'num');
+      cell(tr, int(row.input), 'num');
+      cell(tr, int(row.output), 'num');
+      const c = cell(tr, usd(row.costUsd), 'num');
+      if (row.unpricedRequests) c.title = row.unpricedRequests + ' unpriced request(s) not included';
+      // Covered is its own figure, never folded into cost: a subscription-backed
+      // session would otherwise read $0.0000, identical to one that truly cost
+      // nothing. Same separation the dashboard already keeps.
+      cell(tr, usd(row.coveredUsd), 'num');
+    } else {
+      cell(tr, '—', 'num');
+      cell(tr, '—', 'num');
+      cell(tr, '—', 'num');
+      // Never 0: this run never transited the router.
+      cell(tr, '—', 'num muted').title = row.usageReason;
+      cell(tr, '—', 'num muted').title = row.usageReason;
+    }
+    tr.onclick = () => showDetail(row);
+    tbody.appendChild(tr);
+  }
+  // Surfaced the way the transcript's truncation notice is: a short list must
+  // not read as "this is all of them".
+  // Two independent kinds of incompleteness: the row cap, and discovery
+  // stopping short of every project. Reporting only the first would let an
+  // answer missing whole projects read as complete.
+  const notes = [];
+  if (data.runsTruncated) notes.push('[run list truncated \u2014 showing the newest runs matching this filter]');
+  if (data.projectsTruncated) notes.push('[project discovery truncated \u2014 some projects\u2019 runs are not listed]');
+  $('rows-note').textContent = notes.join(' ');
+}
+
+let detailGeneration = 0;
+
+async function showDetail(row) {
+  const generation = ++detailGeneration;
+  $('detail').className = '';
+  $('detail').textContent = 'loading…';
+  try {
+    if (row.kind === 'session') {
+      const d = await get('/__sonata/api/session/' + encodeURIComponent(row.id), filters());
+      if (generation !== detailGeneration) return;
+      $('detail').textContent = d.routes.map((r) =>
+        [r.alias, '->', r.served || '(none served)', r.status,
+         'in=' + r.input, 'out=' + r.output,
+         r.attempts.length ? 'past: ' + r.attempts.map((a) => a.key + '/' + a.status).join(' ') : ''
+        ].join(' ')).join('\n') || 'no requests in this window';
+    } else {
+      const p = new URLSearchParams({ project: row.cwd });
+      const d = await get('/__sonata/api/run/' + encodeURIComponent(row.id), p);
+      if (generation !== detailGeneration) return;
+      $('detail').textContent =
+        (d.truncated ? '[transcript truncated — showing the tail]\n\n' : '') +
+        d.transcript + (d.report
+          ? '\n\n--- report.md ---\n'
+            + (d.reportTruncated ? '[report truncated — showing the head]\n\n' : '')
+            + d.report
+          : '');
+    }
+  } catch (err) {
+    if (generation === detailGeneration) $('detail').textContent = String(err);
+  }
+}
+
+async function loadDashboard(generation) {
+  const p = filters();
+  p.set('by', $('by').value);
+  const data = await get('/__sonata/api/usage', p);
+  if (generation !== refreshGeneration) return;
+  const r = data.report;
+  // Three separate figures. Summing them would make the headline disagree
+  // with what was actually billed.
+  $('t-priced').textContent = usd(r.pricedTotalUsd);
+  $('t-covered').textContent = usd(r.covered.totalUsd) + ' (' + int(r.covered.requests) + ' req)';
+  $('t-unpriced').textContent = int(r.unpriced.requests) + ' req, ' +
+    int(r.unpriced.input) + ' in / ' + int(r.unpriced.output) + ' out';
+
+  const tb = $('buckets').tBodies[0];
+  clear(tb);
+  for (const b of r.buckets) {
+    const tr = document.createElement('tr');
+    cell(tr, b.label);
+    cell(tr, int(b.requests), 'num');
+    cell(tr, int(b.input), 'num');
+    cell(tr, int(b.output), 'num');
+    cell(tr, usd(b.costUsd), 'num');
+    cell(tr, usd(b.coveredUsd), 'num');
+    cell(tr, int(b.unpricedRequests), 'num');
+    tb.appendChild(tr);
+  }
+
+  const fb = $('failed').tBodies[0];
+  clear(fb);
+  for (const f of r.failedAttempts) {
+    const tr = document.createElement('tr');
+    cell(tr, f.key);
+    cell(tr, int(f.count), 'num');
+    cell(tr, f.statuses.join(', '));
+    fb.appendChild(tr);
+  }
+}
+
+let refreshGeneration = 0;
+let refreshInFlight = false;
+let refreshQueued = false;
+
+async function refresh() {
+  if (refreshInFlight) { refreshQueued = true; return; }
+  refreshInFlight = true;
+  const generation = ++refreshGeneration;
+  try {
+    await Promise.all([loadRows(generation), loadDashboard(generation)]);
+    if (generation !== refreshGeneration) return;
+    $('status').textContent = '';
+  } catch (err) {
+    if (generation === refreshGeneration) $('status').textContent = 'refresh failed: ' + String(err);
+  } finally {
+    refreshInFlight = false;
+    if (refreshQueued) { refreshQueued = false; refresh(); }
+  }
+}
+
+// A filter change during an active request must not be dropped: the in-flight
+// response carries the OLD filters, so it is invalidated here (bumping the
+// generation makes its renderers return) and exactly one follow-up is queued
+// to run when it settles. Without this, turning live polling off left the
+// stale view on screen indefinitely.
+function filtersChanged() {
+  refreshGeneration += 1;
+  refresh();
+}
+
+for (const id of ['project', 'session', 'since', 'by']) $(id).onchange = filtersChanged;
+$('session').oninput = () => { clearTimeout(window.__t); window.__t = setTimeout(filtersChanged, 400); };
+setInterval(() => { if ($('live').checked) refresh(); }, 5000);
+refresh();
+</script>

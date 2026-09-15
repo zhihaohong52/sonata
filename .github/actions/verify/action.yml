@@ -91,6 +91,7 @@ runs:
             "roles/code.md",
             "roles/review.md",
             "hooks/capture-mode.mjs",
+            "ui/index.html",
             "README.md",
             "LICENSE",
           ];
