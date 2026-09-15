@@ -40,6 +40,8 @@ export interface RouterDeps {
   litellmKey: string;
   log?: (line: string) => void;
   health?: boolean;
+  /** Whether startup dependencies are ready for the health probe. */
+  healthReady?: () => boolean;
   tenants?: () => { id: string; configPath: string | null }[];
   /**
    * A random id generated once per `cmdServe` invocation, reported on
@@ -1328,9 +1330,10 @@ export function createRouterServer(deps: RouterDeps): Server {
   return createServer(async (req, res) => {
     try {
       if (deps.health && new URL(req.url ?? '/', 'http://localhost').pathname === '/__sonata_health') {
-        res.writeHead(200, { 'content-type': 'application/json' });
+        const ready = deps.healthReady?.() ?? true;
+        res.writeHead(ready ? 200 : 503, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
-          status: 'ok', sonata: true, multiTenant: true,
+          status: ready ? 'ok' : 'starting', sonata: true, ready, multiTenant: true,
           // A capability, not a version: a caller must be able to tell a router
           // that serves the UI from one built before it existed, rather than
           // printing a URL that 404s. Absent means no UI.

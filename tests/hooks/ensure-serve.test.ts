@@ -43,6 +43,31 @@ describe('ensure-serve SessionStart hook', () => {
     }
   });
 
+  it('exits 0 and does not spawn when a Sonata router is still starting', async () => {
+    const binDir = mkdtempSync(join(tmpdir(), 'ensure-serve-bin-'));
+    const sentinel = join(binDir, 'spawned');
+    writeFileSync(join(binDir, 'sonata'),
+      `#!/usr/bin/env node
+require('node:fs').writeFileSync(${JSON.stringify(sentinel)}, 'yes');
+`,
+      { mode: 0o755 });
+    const server = createServer((_req, res) => {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'starting', sonata: true, multiTenant: true }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    try {
+      const { code, signal } = await invoke([String(port)], process.cwd(), { ...process.env, PATH: `${binDir}${delimiter}${process.env.PATH}` });
+      expect(code).toBe(0);
+      expect(signal).toBe(null);
+      expect(existsSync(sentinel)).toBe(false);
+    } finally {
+      server.close();
+    }
+  });
+
   it('exits 1 when the router predates multi-tenant routing', async () => {
     const server = createServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });

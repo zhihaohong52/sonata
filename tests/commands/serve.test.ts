@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 
 import {
   cmdServe, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
-  serveStatePath, stopServe, cmdRestart, sonataRouterInstanceId, defaultWaitForLitellm, sonataRouterMultiTenant,
+  serveStatePath, stopServe, cmdRestart, defaultWaitForLitellm, sonataRouterMultiTenant,
   budgetStatusesFor,
 } from '../../src/commands/serve.js';
 import type { RouterTenant } from '../../src/native/router.js';
@@ -322,6 +322,54 @@ litellm = 4000
     expect(existsSync(tempDir)).toBe(false);
   });
 
+  it('closes the router when eager LiteLLM startup fails after binding', async () => {
+    const net = await import('node:net');
+    const probe = net.createServer();
+    await new Promise<void>((resolve) => probe.listen(0, 'localhost', () => resolve()));
+    const address = probe.address();
+    if (address === null || typeof address === 'string') throw new Error('probe did not bind');
+    const routerPort = address.port;
+    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+
+    await expect(cmdServe({
+      cwd, home, tempDir: tempDirFor(), ports: { router: routerPort, litellm: 4000 },
+      spawnLitellm: () => ({ pid: 4242, kill: () => {} }),
+      waitForLitellm: async () => { throw new Error('LiteLLM never came up'); },
+    })).rejects.toThrow('LiteLLM never came up');
+
+    expect(existsSync(serveStatePath(home, routerPort))).toBe(false);
+    const rebound = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      rebound.once('error', reject);
+      rebound.listen(routerPort, 'localhost', () => resolve());
+    });
+    await new Promise<void>((resolve, reject) => rebound.close((error) => error ? reject(error) : resolve()));
+  });
+
+  it('preserves a replacement router record when eager startup later fails', async () => {
+    const net = await import('node:net');
+    const probe = net.createServer();
+    await new Promise<void>((resolve) => probe.listen(0, 'localhost', () => resolve()));
+    const address = probe.address();
+    if (address === null || typeof address === 'string') throw new Error('probe did not bind');
+    const routerPort = address.port;
+    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+
+    await expect(cmdServe({
+      cwd, home, tempDir: tempDirFor(), ports: { router: routerPort, litellm: 4000 },
+      spawnLitellm: () => ({ pid: 4242, kill: () => {} }),
+      waitForLitellm: async () => {
+        // A replacement cannot bind while this router owns the port, so this
+        // seam models the state rewrite directly; the catch must not clobber it.
+        mkdirSync(dirname(serveStatePath(home, routerPort)), { recursive: true });
+        writeFileSync(serveStatePath(home, routerPort), JSON.stringify({ routerPid: 999 }));
+        throw new Error('LiteLLM never came up');
+      },
+    })).rejects.toThrow('LiteLLM never came up');
+
+    expect(JSON.parse(readFileSync(serveStatePath(home, routerPort), 'utf8'))).toMatchObject({ routerPid: 999 });
+  });
+
   it('never writes into the real system temp directory when a tempDir is given', async () => {
     const before = readdirSync(tmpdir()).filter((n) => n.startsWith('sonata-litellm-'));
     const handle = await cmdServe({
@@ -346,6 +394,34 @@ litellm = 4000
     const state = JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8'));
     expect(state.routerPid).toBe(process.pid);
     expect(state.litellmPid).toBe(4242);
+  });
+
+  it('does not touch the winner state when a second serve loses the router port race', async () => {
+    const net = await import('node:net');
+    const probe = net.createServer();
+    await new Promise<void>((resolve) => probe.listen(0, 'localhost', () => resolve()));
+    const address = probe.address();
+    if (address === null || typeof address === 'string') throw new Error('probe did not bind');
+    const routerPort = address.port;
+    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+
+    const winner = await cmdServe({
+      cwd, home, tempDir: join(cwd, 'winner'), ports: { router: routerPort, litellm: 4000 },
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 4242, kill: () => {} }),
+    });
+    handles.push(winner);
+    const path = serveStatePath(home, routerPort);
+    const before = JSON.parse(readFileSync(path, 'utf8'));
+
+    await expect(cmdServe({
+      cwd, home, tempDir: join(cwd, 'loser'), ports: { router: routerPort, litellm: 4000 },
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 4343, kill: () => {} }),
+    })).rejects.toThrow(/already served by another sonata router/);
+
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({
+      routerPid: before.routerPid,
+      litellmPid: before.litellmPid,
+    });
   });
 
   it('leaves the legacy unkeyed record alone when cleaning up its own orphan', async () => {
@@ -1428,18 +1504,31 @@ describe('occupiedPortMessage', () => {
     expect(await occupiedPortMessage(4100, dead)).toMatch(/non-sonata/);
   });
 
-  it('says non-sonata when the endpoint errors', async () => {
+  it('names a starting sonata router when the port is held during startup', async () => {
+    const message = await occupiedPortMessage(4100, health({ status: 'starting', sonata: true }, false));
+    expect(message).toMatch(/another sonata router/);
+    expect(message).not.toMatch(/non-sonata/);
+  });
+
+  it('names sonata when the endpoint is starting or otherwise non-2xx', async () => {
     const message = await occupiedPortMessage(4100, health({ sonata: true }, false));
-    expect(message).toMatch(/non-sonata/);
+    expect(message).toMatch(/another sonata router/);
   });
 });
 
 describe('isSonataRouter', () => {
-  it('is true only for the sonata health payload', async () => {
-    const ok = (async () => new Response(JSON.stringify({ status: 'ok', sonata: true }))) as unknown as typeof fetch;
-    const notJson = (async () => new Response('<html>')) as unknown as typeof fetch;
-    expect(await isSonataRouter(4100, ok)).toBe(true);
+  it('identifies a starting router independently of its readiness status', async () => {
+    const starting = (async () => new Response(JSON.stringify({ status: 'starting', sonata: true }), { status: 503 })) as unknown as typeof fetch;
+    expect(await isSonataRouter(4100, starting)).toBe(true);
+  });
+
+  it('keeps non-sonata, malformed, and unreachable endpoints negative', async () => {
+    const nonSonata = (async () => new Response(JSON.stringify({ status: 'starting' }), { status: 503 })) as unknown as typeof fetch;
+    const notJson = (async () => new Response('<html>', { status: 503 })) as unknown as typeof fetch;
+    const unreachable = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
+    expect(await isSonataRouter(4100, nonSonata)).toBe(false);
     expect(await isSonataRouter(4100, notJson)).toBe(false);
+    expect(await isSonataRouter(4100, unreachable)).toBe(false);
   });
 });
 
@@ -1465,23 +1554,6 @@ describe('the ui capability on the health payload', () => {
     expect(await sonataRouterHasUi(4100, withUi)).toBe(true);
     expect(await sonataRouterHasUi(4100, without)).toBe(false);
     expect(await sonataRouterHasUi(4100, broken)).toBe(false);
-  });
-});
-
-describe('sonataRouterInstanceId', () => {
-  it('resolves the instance id from the sonata health payload', async () => {
-    const ok = (async () =>
-      new Response(JSON.stringify({ status: 'ok', sonata: true, instanceId: 'abc-123' }))) as unknown as typeof fetch;
-    expect(await sonataRouterInstanceId(4100, ok)).toBe('abc-123');
-  });
-
-  it('returns null for a non-sonata or malformed response', async () => {
-    const notSonata = (async () => new Response(JSON.stringify({ status: 'ok' }))) as unknown as typeof fetch;
-    const notJson = (async () => new Response('<html>')) as unknown as typeof fetch;
-    const noId = (async () => new Response(JSON.stringify({ status: 'ok', sonata: true }))) as unknown as typeof fetch;
-    expect(await sonataRouterInstanceId(4100, notSonata)).toBeNull();
-    expect(await sonataRouterInstanceId(4100, notJson)).toBeNull();
-    expect(await sonataRouterInstanceId(4100, noId)).toBeNull();
   });
 });
 
@@ -1619,6 +1691,33 @@ context_window = 128000
     expect(result.port).toBe(4100);
   });
 
+  // The old instance-id probe also waited through 503 responses; this test
+  // guards the readiness contract without claiming to prove the identity fix.
+  it('does not accept a starting router as ready', async () => {
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+    const spy = ((_cmd: string, _args: string[], o: { env?: NodeJS.ProcessEnv }) => {
+      capturedEnv = o.env;
+      return { pid: 4242, unref: () => {} };
+    }) as unknown as typeof spawnType;
+
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1;
+      return new Response(JSON.stringify({
+        status: calls < 3 ? 'starting' : 'ok', sonata: true,
+        ready: calls < 3 ? false : true,
+        instanceId: capturedEnv?.SONATA_SERVE_INSTANCE_ID,
+      }), { status: calls < 3 ? 503 : 200 });
+    }) as unknown as typeof fetch);
+
+    const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: spy,
+      sleep: async () => {},
+    }, home);
+    expect(calls).toBe(3);
+    expect(result.pid).toBe(4242);
+  });
+
   it('gives up with the log path when the daemon never answers', async () => {
     let clock = 0;
     await expect(startServeDaemon(home, ['node', 'cli.js', 'serve'], {
@@ -1694,12 +1793,16 @@ litellm = 4000
     mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
     writeFileSync(serveStatePath(home, 4100), JSON.stringify({ litellmPid: 222 }));
 
+    // This assertion is a guard for the existing refusal path: the state
+    // check happens before the kill list is built, and predates this fix.
+    const killed: number[] = [];
     const result = await stopServe({
-      cwd, home, probeHealth: sonataHealth, findPortPid: () => '48213',
+      cwd, home, probeHealth: sonataHealth, findPortPid: () => '48213', kill: (pid) => killed.push(pid),
     }).catch((e) => e as Error);
 
     expect((result as Error).message).toMatch(/no recorded pid/);
     expect((result as Error).message).toMatch(/kill 48213/);
+    expect(killed).toEqual([]);
     expect(existsSync(serveStatePath(home, 4100))).toBe(true);
   });
 
@@ -2241,6 +2344,9 @@ litellm = 4000
     });
     await new Promise((r) => setTimeout(r, 0));
     expect(spawns).toBe(1);
+    const state = JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8'));
+    expect(state.routerPid).toBe(process.pid);
+    expect(state.litellmPid).toBe(1);
   });
 
   it('serialises the model-change check, so two concurrent first requests spawn one child and a later crash still respawns', async () => {

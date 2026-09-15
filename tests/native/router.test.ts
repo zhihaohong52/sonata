@@ -1199,6 +1199,22 @@ describe('createRouterServer — health', () => {
     }
   });
 
+  it('reports not-ready while eager LiteLLM startup is still pending', async () => {
+    const server = createRouterServer({
+      fetch, litellmBase: 'http://litellm', litellmKey: 'k', health: true,
+      healthReady: () => false,
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/__sonata_health`);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ sonata: true, ready: false });
+    } finally {
+      server.close();
+    }
+  });
+
   it('reports ui: true when the UI is mounted', async () => {
     const server = createRouterServer({
       fetch, litellmBase: 'http://litellm', litellmKey: 'k', health: true,

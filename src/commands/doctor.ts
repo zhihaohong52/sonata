@@ -555,9 +555,11 @@ export async function cmdDoctor(
       } catch {
         body = undefined;
       }
-      const healthy = response.status === 200 && body !== null && typeof body === 'object' && (body as Record<string, unknown>).sonata === true;
-      if (!healthy) {
+      const identified = body !== null && typeof body === 'object' && (body as Record<string, unknown>).sonata === true;
+      if (!identified) {
         checks.push({ name: 'serve health', ok: true, detail: 'not running — start with `sonata serve`' });
+      } else if (response.status !== 200 || (body as { ready?: unknown }).ready === false || (body as { status?: unknown }).status === 'starting') {
+        checks.push({ name: 'serve health', ok: true, detail: 'starting — LiteLLM is not ready yet' });
       } else if ((body as { multiTenant?: unknown }).multiTenant !== true) {
         checks.push({ name: 'serve health', ok: false, detail: `up, but predates multi-tenant routing — sessions here will refuse it; run \`sonata restart\`` });
       } else {

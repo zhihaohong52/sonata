@@ -234,7 +234,10 @@ function killRecordedOrphan(home: string, routerPort: number): void {
   // reach: it names no port, so it could just as easily describe another
   // project's daemon, whose litellm is not ours to kill.
   if (found !== undefined) {
-    try { unlinkSync(found.path); } catch { /* gone is the goal */ }
+    // Keep the router's ownership record: lazy startup can run after the
+    // router has recorded its pid, and a losing serve can run before it binds
+    // while another router is still using this file.
+    writeServeState(home, routerPort, { routerPid: found.state.routerPid });
   }
 }
 
@@ -244,6 +247,20 @@ function recordLitellmPid(home: string, routerPort: number, pid: number): void {
 
 function recordRouterPid(home: string, routerPort: number, pid: number): void {
   writeServeState(home, routerPort, { ...readServeState(home, routerPort), routerPid: pid });
+}
+
+/**
+ * Removes this process's failed-start record before releasing its port.
+ *
+ * The pid check prevents a late startup failure from deleting a replacement
+ * router's record if another process has already taken the port and rewritten
+ * the keyed state. The child is killed separately by the caller, so removing
+ * the whole record cannot strand its LiteLLM pid; the legacy file is never read.
+ */
+function clearFailedRouterRecord(home: string, routerPort: number): void {
+  const state = readServeState(home, routerPort);
+  if (state?.routerPid !== process.pid) return;
+  try { unlinkSync(serveStatePath(home, routerPort)); } catch { /* already gone */ }
 }
 
 /**
@@ -316,7 +333,15 @@ export function serveHealthUrl(routerPort: number): string {
   return `http://localhost:${routerPort}/__sonata_health`;
 }
 
-/** Whether whatever holds a port is a sonata router. */
+/**
+ * Answers the identity question, not the readiness question.
+ *
+ * A router reports `503 starting` while its eager LiteLLM child is coming up,
+ * but it is still a Sonata process holding the port. Reading the body before
+ * checking HTTP status keeps `occupiedPortMessage` from calling that process
+ * a foreign listener; malformed, non-Sonata and unreachable responses remain
+ * negative.
+ */
 export async function isSonataRouter(
   port: number,
   doFetch: typeof fetch = fetch,
@@ -325,9 +350,29 @@ export async function isSonataRouter(
     const response = await doFetch(serveHealthUrl(port), {
       signal: AbortSignal.timeout(2000),
     });
-    if (!response.ok) return false;
     const body = await response.json() as { sonata?: unknown };
     return body?.sonata === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a Sonata health response is ready to serve traffic. */
+export async function sonataRouterReady(
+  port: number,
+  doFetch: typeof fetch = fetch,
+  expectedInstanceId?: string,
+): Promise<boolean> {
+  try {
+    const response = await doFetch(serveHealthUrl(port), {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!response.ok) return false;
+    const body = await response.json() as { sonata?: unknown; ready?: unknown; status?: unknown; instanceId?: unknown };
+    return body.sonata === true
+      && body.ready !== false
+      && body.status !== 'starting'
+      && (expectedInstanceId === undefined || body.instanceId === expectedInstanceId);
   } catch {
     return false;
   }
@@ -353,6 +398,9 @@ export async function sonataRouterHasUi(
 ): Promise<boolean> {
   try {
     const response = await doFetch(serveHealthUrl(port), { signal: AbortSignal.timeout(2000) });
+    // UI capability is only advertised from a successful response. This keeps
+    // the PR #38 compatibility guard: an older router must never be given a
+    // URL it cannot serve, even though identity accepts its health body.
     if (!response.ok) return false;
     return healthReportsUi(await response.json());
   } catch {
@@ -367,7 +415,6 @@ export async function sonataRouterMultiTenant(
 ): Promise<boolean | null> {
   try {
     const response = await doFetch(serveHealthUrl(port), { signal: AbortSignal.timeout(2000) });
-    if (!response.ok) return null;
     const body = await response.json() as { sonata?: unknown; multiTenant?: unknown };
     if (body?.sonata !== true) return null;
     return body.multiTenant === true;
@@ -379,24 +426,6 @@ export async function sonataRouterMultiTenant(
 /** The one refusal every caller gives a router that predates this design. */
 export function preMultiTenantMessage(port: number): string {
   return `sonata: router on port ${port} predates multi-tenant routing — run \`sonata restart\``;
-}
-
-/** The instance id a running sonata router reports on /__sonata_health, or null if the port isn't a sonata router (or reports none). */
-export async function sonataRouterInstanceId(
-  port: number,
-  doFetch: typeof fetch = fetch,
-): Promise<string | null> {
-  try {
-    const response = await doFetch(serveHealthUrl(port), {
-      signal: AbortSignal.timeout(2000),
-    });
-    if (!response.ok) return null;
-    const body = await response.json() as { sonata?: unknown; instanceId?: unknown };
-    if (body?.sonata !== true) return null;
-    return typeof body.instanceId === 'string' ? body.instanceId : null;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -738,11 +767,6 @@ export async function cmdServe(
     return false;
   };
   const needsLitellmAtStart = unionNeedsLitellm();
-  if (needsLitellmAtStart && !litellmHealthy()) {
-    // Startup keeps the loud refusal: a router that comes up with its default
-    // tenant unservable is a router nobody asked for.
-    throw new Error(`sonata serve: this config routes through LiteLLM, which is ${litellmStatus(opts.home, true).state} — run \`sonata litellm install\``);
-  }
 
   const masterKey = `sk-sonata-${randomBytes(32).toString('hex')}`;
   const instanceId = opts.instanceId ?? process.env.SONATA_SERVE_INSTANCE_ID ?? randomUUID();
@@ -782,12 +806,6 @@ export async function cmdServe(
       }
     };
     refreshGatewayKeys(mergedNative());
-
-    // A predecessor's orphaned litellm would hold the port and answer with the
-    // wrong master key; kill it (recorded pid only) before spawning our own.
-    // Scoped to this router's port: another project's daemon on a different
-    // port has its own litellm on its own port and is not our orphan to kill.
-    killRecordedOrphan(opts.home, ports.router);
 
     // The litellm child dying on its own (not via `stop()`) used to go
     // unnoticed until the next request 502'd and someone ran `sonata restart`
@@ -1042,11 +1060,6 @@ export async function cmdServe(
       return inFlight;
     };
 
-    if (needsLitellmAtStart) {
-      child = spawnLitellmChild();
-      await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
-    }
-
     // Retention is enforced where the writer starts, so a long-lived daemon
     // cannot accumulate day-files indefinitely the way opencode's event table
     // did (6.5 GB, and not something sonata gets to repeat in its own store).
@@ -1064,6 +1077,8 @@ export async function cmdServe(
       if (removedSessions > 0) console.log(`sessions: pruned ${removedSessions} record(s) older than ${LEDGER_RETENTION_DAYS}d`);
     } catch { /* pruning is housekeeping; it never blocks serving */ }
 
+    let litellmReadyResolved = !needsLitellmAtStart;
+
     // Held by reference so the bound port can be written back after `listen`:
     // a configured port of 0 means "pick an ephemeral one", and a UiDeps still
     // carrying 0 fails every request's Host check.
@@ -1073,6 +1088,7 @@ export async function cmdServe(
       litellmBase: `http://localhost:${ports.litellm}`,
       litellmKey: masterKey,
       health: true,
+      healthReady: () => !needsLitellmAtStart || litellmReadyResolved,
       instanceId,
       log: (line) => console.log(line),
       tenants: () => registry.summary(),
@@ -1138,18 +1154,38 @@ export async function cmdServe(
       throw error;
     }
     recordRouterPid(opts.home, ports.router, process.pid);
+    // Do all shared-state cleanup only after this process owns the router port.
+    // Requests can already arrive after listen(), so publish the startup work
+    // as the readiness gate before yielding to the event loop.
+    if (needsLitellmAtStart) {
+      litellmReady = (async () => {
+        if (!litellmHealthy()) {
+          throw new Error(`sonata serve: this config routes through LiteLLM, which is ${litellmStatus(opts.home, true).state} — run \`sonata litellm install\``);
+        }
+        killRecordedOrphan(opts.home, ports.router);
+        child = spawnLitellmChild();
+        await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
+      })();
+      await litellmReady;
+      litellmReadyResolved = true;
+    }
     // `listen` has resolved, so this is the port actually bound — the same as
     // the configured one unless that was 0.
     const bound = router.address();
     uiDeps.port = typeof bound === 'object' && bound !== null ? bound.port : ports.router;
     console.log(`sonata UI: http://localhost:${uiDeps.port}/`);
   } catch (error) {
-    // Suppress the respawn watcher before killing the child — otherwise its
-    // `exit` handler schedules a respawn against `configPath`, which the
-    // `rmSync` below is about to delete, producing a doomed child spawned
-    // after this whole call has already thrown.
+    // A post-bind startup failure must not strand an unusable router for an
+    // in-process caller: before eager startup moved after `listen`, this path
+    // could only fail before a socket existed.
     stopping = true;
     child?.kill();
+    // Clear the record while this process still owns the bound port. A
+    // replacement cannot have written a new record until after close begins.
+    if (router?.listening === true) clearFailedRouterRecord(opts.home, ports.router);
+    if (router !== undefined) {
+      try { await close(router); } catch { /* preserve the startup error */ }
+    }
     rmSync(tempDir, { force: true, recursive: true });
     throw error;
   }
@@ -1228,7 +1264,7 @@ export async function startServeDaemon(
   cwd: string = process.cwd(),
 ): Promise<DaemonResult> {
   const spawnFn = deps.spawn ?? spawn;
-  const probe = deps.probe ?? (async (port: number, id: string) => (await sonataRouterInstanceId(port)) === id);
+  const probe = deps.probe ?? (async (port: number, id: string) => (await sonataRouterReady(port, fetch, id)));
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const timeoutMs = deps.timeoutMs ?? 60_000;
