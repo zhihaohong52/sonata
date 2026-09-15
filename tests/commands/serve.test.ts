@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 
 import {
   cmdServe, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
-  serveStatePath, stopServe, cmdRestart, sonataRouterInstanceId, defaultWaitForLitellm, sonataRouterMultiTenant,
+  serveStatePath, stopServe, cmdRestart, defaultWaitForLitellm, sonataRouterMultiTenant,
   budgetStatusesFor,
 } from '../../src/commands/serve.js';
 import type { RouterTenant } from '../../src/native/router.js';
@@ -1532,23 +1532,6 @@ describe('the ui capability on the health payload', () => {
   });
 });
 
-describe('sonataRouterInstanceId', () => {
-  it('resolves the instance id from the sonata health payload', async () => {
-    const ok = (async () =>
-      new Response(JSON.stringify({ status: 'ok', sonata: true, instanceId: 'abc-123' }))) as unknown as typeof fetch;
-    expect(await sonataRouterInstanceId(4100, ok)).toBe('abc-123');
-  });
-
-  it('returns null for a non-sonata or malformed response', async () => {
-    const notSonata = (async () => new Response(JSON.stringify({ status: 'ok' }))) as unknown as typeof fetch;
-    const notJson = (async () => new Response('<html>')) as unknown as typeof fetch;
-    const noId = (async () => new Response(JSON.stringify({ status: 'ok', sonata: true }))) as unknown as typeof fetch;
-    expect(await sonataRouterInstanceId(4100, notSonata)).toBeNull();
-    expect(await sonataRouterInstanceId(4100, notJson)).toBeNull();
-    expect(await sonataRouterInstanceId(4100, noId)).toBeNull();
-  });
-});
-
 describe('startServeDaemon', () => {
   let home: string;
   beforeEach(() => {
@@ -1683,6 +1666,8 @@ context_window = 128000
     expect(result.port).toBe(4100);
   });
 
+  // The old instance-id probe also waited through 503 responses; this test
+  // guards the readiness contract without claiming to prove the identity fix.
   it('does not accept a starting router as ready', async () => {
     let capturedEnv: NodeJS.ProcessEnv | undefined;
     const spy = ((_cmd: string, _args: string[], o: { env?: NodeJS.ProcessEnv }) => {
@@ -1783,6 +1768,8 @@ litellm = 4000
     mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
     writeFileSync(serveStatePath(home, 4100), JSON.stringify({ litellmPid: 222 }));
 
+    // This assertion is a guard for the existing refusal path: the state
+    // check happens before the kill list is built, and predates this fix.
     const killed: number[] = [];
     const result = await stopServe({
       cwd, home, probeHealth: sonataHealth, findPortPid: () => '48213', kill: (pid) => killed.push(pid),

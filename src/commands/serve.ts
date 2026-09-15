@@ -384,6 +384,9 @@ export async function sonataRouterHasUi(
 ): Promise<boolean> {
   try {
     const response = await doFetch(serveHealthUrl(port), { signal: AbortSignal.timeout(2000) });
+    // UI capability is only advertised from a successful response. This keeps
+    // the PR #38 compatibility guard: an older router must never be given a
+    // URL it cannot serve, even though identity accepts its health body.
     if (!response.ok) return false;
     return healthReportsUi(await response.json());
   } catch {
@@ -409,23 +412,6 @@ export async function sonataRouterMultiTenant(
 /** The one refusal every caller gives a router that predates this design. */
 export function preMultiTenantMessage(port: number): string {
   return `sonata: router on port ${port} predates multi-tenant routing — run \`sonata restart\``;
-}
-
-/** The instance id a running sonata router reports on /__sonata_health, or null if the port isn't a sonata router (or reports none). */
-export async function sonataRouterInstanceId(
-  port: number,
-  doFetch: typeof fetch = fetch,
-): Promise<string | null> {
-  try {
-    const response = await doFetch(serveHealthUrl(port), {
-      signal: AbortSignal.timeout(2000),
-    });
-    const body = await response.json() as { sonata?: unknown; instanceId?: unknown };
-    if (body?.sonata !== true) return null;
-    return typeof body.instanceId === 'string' ? body.instanceId : null;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -1261,7 +1247,7 @@ export async function startServeDaemon(
   cwd: string = process.cwd(),
 ): Promise<DaemonResult> {
   const spawnFn = deps.spawn ?? spawn;
-  const probe = deps.probe ?? ((port: number, id: string) => sonataRouterReady(port, fetch, id));
+  const probe = deps.probe ?? (async (port: number, id: string) => (await sonataRouterReady(port, fetch, id)));
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const timeoutMs = deps.timeoutMs ?? 60_000;

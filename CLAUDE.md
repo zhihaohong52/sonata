@@ -612,7 +612,8 @@ rather than guessing — same principle as `occupiedPortMessage`. The old
 `killRecordedOrphan` unlinked the whole per-port file: the first request that
 started lazy LiteLLM, or a `serve` that lost the bind race after touching the
 file, could leave only `litellmPid`, so several `restart` attempts could refuse
-until someone killed the stale pid by hand.
+until someone killed the stale pid by hand. Shared-state cleanup now happens
+only after this process owns the port, which makes the losing instance harmless.
 
 **`serve` watches its own LiteLLM child and respawns it if it exits on its
 own** (`cmdServe`, `src/commands/serve.ts`) — the child dying used to go

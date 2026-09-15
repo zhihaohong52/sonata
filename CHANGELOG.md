@@ -14,7 +14,7 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   startup and a losing `sonata serve` instance could otherwise remove the
   router's state record, leaving `sonata restart` unable to stop the daemon;
   startup cleanup now runs only after the router wins its port bind, and
-  `stopServe` never kills an unpaired LiteLLM pid.
+  `stopServe` already refuses before killing an unpaired LiteLLM pid.
 
 ### Added
 
