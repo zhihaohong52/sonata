@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  ledgerDir, ledgerPathFor, appendRow, readRows, pruneLedger,
+  ledgerDir, ledgerPathFor, appendRow, readRows, readRowsAsync, pruneLedger,
   LEDGER_RETENTION_DAYS, type LedgerRow,
 } from '../src/ledger.js';
 import { aggregate } from '../src/commands/usage.js';
@@ -170,5 +170,92 @@ describe('legacy ai-pricing rows stay readable', () => {
     const rows = readRows(home, Date.parse('2026-09-03T00:00:00Z'), Date.parse('2026-09-03T23:59:59Z'));
     expect(rows).toHaveLength(1);
     expect(rows[0].price).toEqual({ source: 'ai-pricing', totalUsd: 1.25 });
+  });
+});
+
+
+describe('day-file selection', () => {
+  /**
+   * The filename IS the UTC date, so a file whose whole day falls outside the
+   * window cannot contribute. Measured before this existed: a 24-hour query
+   * opened 14 files / 15 MB / 36,797 lines to answer from one, on the router's
+   * own event loop, every 5 seconds a UI page was open.
+   */
+  function seedDays(days: string[]): void {
+    mkdirSync(ledgerDir(home), { recursive: true });
+    for (const day of days) {
+      writeFileSync(
+        join(ledgerDir(home), `${day}.jsonl`),
+        `${JSON.stringify(row({ ts: `${day}T12:00:00.000Z`, key: day }))}\n`,
+      );
+    }
+  }
+
+  const days = ['2026-08-01', '2026-08-20', '2026-08-21', '2026-08-22', '2026-08-23'];
+
+  it('does not open a day file that is entirely before the window', () => {
+    seedDays(days);
+    // A far-off file holding a row that IS inside the window: if the file were
+    // opened, its row would come back. Its absence is the proof it was skipped.
+    writeFileSync(
+      join(ledgerDir(home), '2026-01-01.jsonl'),
+      `${JSON.stringify(row({ ts: '2026-08-22T12:00:00.000Z', key: 'would-have-matched' }))}\n`,
+    );
+    const keys = readRows(
+      home,
+      Date.parse('2026-08-22T00:00:00.000Z'),
+      Date.parse('2026-08-22T23:00:00.000Z'),
+    ).map((r) => r.key);
+    expect(keys).toEqual(['2026-08-22']);
+  });
+
+  it('keeps a one-day margin on both sides, so a row whose ts disagrees with its filename is still found', () => {
+    mkdirSync(ledgerDir(home), { recursive: true });
+    // A hand-edited / clock-skewed file: filed under the 21st, timestamped the 22nd.
+    writeFileSync(
+      join(ledgerDir(home), '2026-08-21.jsonl'),
+      `${JSON.stringify(row({ ts: '2026-08-22T01:00:00.000Z', key: 'skewed' }))}\n`,
+    );
+    const rows = readRows(
+      home,
+      Date.parse('2026-08-22T00:00:00.000Z'),
+      Date.parse('2026-08-22T23:00:00.000Z'),
+    );
+    expect(rows.map((r) => r.key)).toEqual(['skewed']);
+  });
+
+  it('still drops an in-file row outside the window: the per-row ts stays the source of truth', () => {
+    mkdirSync(ledgerDir(home), { recursive: true });
+    writeFileSync(join(ledgerDir(home), '2026-08-22.jsonl'), [
+      JSON.stringify(row({ ts: '2026-08-22T01:00:00.000Z', key: 'in' })),
+      JSON.stringify(row({ ts: '2026-08-22T23:30:00.000Z', key: 'after-now' })),
+    ].join('\n') + '\n');
+    const rows = readRows(
+      home,
+      Date.parse('2026-08-22T00:00:00.000Z'),
+      Date.parse('2026-08-22T12:00:00.000Z'),
+    );
+    expect(rows.map((r) => r.key)).toEqual(['in']);
+  });
+
+  it('readRowsAsync returns exactly what readRows does', async () => {
+    seedDays(days);
+    for (const [since, now] of [
+      [0, Date.now()],
+      [Date.parse('2026-08-21T00:00:00.000Z'), Date.parse('2026-08-23T00:00:00.000Z')],
+      [Date.parse('2030-01-01T00:00:00.000Z'), Date.parse('2030-01-02T00:00:00.000Z')],
+    ] as [number, number][]) {
+      expect(await readRowsAsync(home, since, now)).toEqual(readRows(home, since, now));
+    }
+  });
+
+  it('readRowsAsync answers an absent ledger directory with no rows, like readRows', async () => {
+    const empty = mkdtempSync(join(tmpdir(), 'sonata-ledger-empty-'));
+    try {
+      expect(await readRowsAsync(empty, 0)).toEqual([]);
+      expect(readRows(empty, 0)).toEqual([]);
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
   });
 });

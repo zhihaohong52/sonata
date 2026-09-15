@@ -25,14 +25,7 @@
   "bin": {
     "sonata": "dist/cli.js"
   },
-  "files": [
-    "dist",
-    "roles",
-    "hooks",
-    "skills",
-    "README.md",
-    "LICENSE"
-  ],
+  "files": ["dist", "roles", "hooks", "skills", "ui", "README.md", "LICENSE"],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",

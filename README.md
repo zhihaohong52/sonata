@@ -376,7 +376,7 @@ killed and the run is reported `DONE`, `degraded`, with a report beginning
 | `sonata auth` | Manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`, `login <gateway>`) |
 | `sonata catalog [update]` | Show the cached Artificial Analysis catalog's age, or refresh it (needs a stored `artificialanalysis` key). `sonata doctor` warns when it goes stale |
 | `sonata litellm install\|status` | Install or report sonata's own pinned LiteLLM venv. `status` answering `not-required` is healthy — it means no gateway in this config routes through it |
-| `sonata serve` | Run the native router and its managed LiteLLM child (`--daemon` detaches) |
+| `sonata serve` | Run the native router and its managed LiteLLM child (`--daemon` detaches); UI: `http://localhost:4100/` |
 | `sonata restart` | Kill whatever sonata router currently holds the port and start a fresh daemon |
 | `sonata code` | Launch a Claude Code session routed through the local proxy (passes `claude` args through) |
 | `sonata route on\|off\|status [--global]` | Route every plain `claude` session in the project (or, with `--global`, every project) through the proxy via settings.local.json/settings.json |
