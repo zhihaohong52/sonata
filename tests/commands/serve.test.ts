@@ -348,6 +348,34 @@ litellm = 4000
     expect(state.litellmPid).toBe(4242);
   });
 
+  it('does not touch the winner state when a second serve loses the router port race', async () => {
+    const net = await import('node:net');
+    const probe = net.createServer();
+    await new Promise<void>((resolve) => probe.listen(0, 'localhost', () => resolve()));
+    const address = probe.address();
+    if (address === null || typeof address === 'string') throw new Error('probe did not bind');
+    const routerPort = address.port;
+    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+
+    const winner = await cmdServe({
+      cwd, home, tempDir: join(cwd, 'winner'), ports: { router: routerPort, litellm: 4000 },
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 4242, kill: () => {} }),
+    });
+    handles.push(winner);
+    const path = serveStatePath(home, routerPort);
+    const before = JSON.parse(readFileSync(path, 'utf8'));
+
+    await expect(cmdServe({
+      cwd, home, tempDir: join(cwd, 'loser'), ports: { router: routerPort, litellm: 4000 },
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 4343, kill: () => {} }),
+    })).rejects.toThrow(/already served by another sonata router/);
+
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({
+      routerPid: before.routerPid,
+      litellmPid: before.litellmPid,
+    });
+  });
+
   it('leaves the legacy unkeyed record alone when cleaning up its own orphan', async () => {
     // killRecordedOrphan is scoped to this router's port on purpose. The
     // legacy file names no port, so reading it here made that scoping
@@ -1694,12 +1722,14 @@ litellm = 4000
     mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
     writeFileSync(serveStatePath(home, 4100), JSON.stringify({ litellmPid: 222 }));
 
+    const killed: number[] = [];
     const result = await stopServe({
-      cwd, home, probeHealth: sonataHealth, findPortPid: () => '48213',
+      cwd, home, probeHealth: sonataHealth, findPortPid: () => '48213', kill: (pid) => killed.push(pid),
     }).catch((e) => e as Error);
 
     expect((result as Error).message).toMatch(/no recorded pid/);
     expect((result as Error).message).toMatch(/kill 48213/);
+    expect(killed).toEqual([]);
     expect(existsSync(serveStatePath(home, 4100))).toBe(true);
   });
 
@@ -2241,6 +2271,9 @@ litellm = 4000
     });
     await new Promise((r) => setTimeout(r, 0));
     expect(spawns).toBe(1);
+    const state = JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8'));
+    expect(state.routerPid).toBe(process.pid);
+    expect(state.litellmPid).toBe(1);
   });
 
   it('serialises the model-change check, so two concurrent first requests spawn one child and a later crash still respawns', async () => {

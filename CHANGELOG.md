@@ -8,6 +8,14 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve the recorded `routerPid` when LiteLLM orphan cleanup runs. Lazy
+  startup and a losing `sonata serve` instance could otherwise remove the
+  router's state record, leaving `sonata restart` unable to stop the daemon;
+  startup cleanup now runs only after the router wins its port bind, and
+  `stopServe` never kills an unpaired LiteLLM pid.
+
 ### Added
 
 - A local web UI on the router at `http://localhost:4100/`, served by

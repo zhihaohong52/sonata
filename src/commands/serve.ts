@@ -234,7 +234,10 @@ function killRecordedOrphan(home: string, routerPort: number): void {
   // reach: it names no port, so it could just as easily describe another
   // project's daemon, whose litellm is not ours to kill.
   if (found !== undefined) {
-    try { unlinkSync(found.path); } catch { /* gone is the goal */ }
+    // Keep the router's ownership record: lazy startup can run after the
+    // router has recorded its pid, and a losing serve can run before it binds
+    // while another router is still using this file.
+    writeServeState(home, routerPort, { routerPid: found.state.routerPid });
   }
 }
 
@@ -738,11 +741,6 @@ export async function cmdServe(
     return false;
   };
   const needsLitellmAtStart = unionNeedsLitellm();
-  if (needsLitellmAtStart && !litellmHealthy()) {
-    // Startup keeps the loud refusal: a router that comes up with its default
-    // tenant unservable is a router nobody asked for.
-    throw new Error(`sonata serve: this config routes through LiteLLM, which is ${litellmStatus(opts.home, true).state} — run \`sonata litellm install\``);
-  }
 
   const masterKey = `sk-sonata-${randomBytes(32).toString('hex')}`;
   const instanceId = opts.instanceId ?? process.env.SONATA_SERVE_INSTANCE_ID ?? randomUUID();
@@ -782,12 +780,6 @@ export async function cmdServe(
       }
     };
     refreshGatewayKeys(mergedNative());
-
-    // A predecessor's orphaned litellm would hold the port and answer with the
-    // wrong master key; kill it (recorded pid only) before spawning our own.
-    // Scoped to this router's port: another project's daemon on a different
-    // port has its own litellm on its own port and is not our orphan to kill.
-    killRecordedOrphan(opts.home, ports.router);
 
     // The litellm child dying on its own (not via `stop()`) used to go
     // unnoticed until the next request 502'd and someone ran `sonata restart`
@@ -1042,11 +1034,6 @@ export async function cmdServe(
       return inFlight;
     };
 
-    if (needsLitellmAtStart) {
-      child = spawnLitellmChild();
-      await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
-    }
-
     // Retention is enforced where the writer starts, so a long-lived daemon
     // cannot accumulate day-files indefinitely the way opencode's event table
     // did (6.5 GB, and not something sonata gets to repeat in its own store).
@@ -1138,6 +1125,20 @@ export async function cmdServe(
       throw error;
     }
     recordRouterPid(opts.home, ports.router, process.pid);
+    // Do all shared-state cleanup only after this process owns the router port.
+    // Requests can already arrive after listen(), so publish the startup work
+    // as the readiness gate before yielding to the event loop.
+    if (needsLitellmAtStart) {
+      litellmReady = (async () => {
+        if (!litellmHealthy()) {
+          throw new Error(`sonata serve: this config routes through LiteLLM, which is ${litellmStatus(opts.home, true).state} — run \`sonata litellm install\``);
+        }
+        killRecordedOrphan(opts.home, ports.router);
+        child = spawnLitellmChild();
+        await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
+      })();
+      await litellmReady;
+    }
     // `listen` has resolved, so this is the port actually bound — the same as
     // the configured one unless that was 0.
     const bound = router.address();

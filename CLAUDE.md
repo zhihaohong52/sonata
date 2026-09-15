@@ -606,14 +606,13 @@ itself recorded (never a pid found by scanning the OS — the same discipline as
 the pre-existing litellm-orphan kill), and polls the health endpoint until the
 port actually frees before returning. `cmdRestart` runs that then
 `startServeDaemon`. If the port answers as a sonata router but the state file
-has no matching pid (a different sonata install, or state left by an older
-version, or the record was lost — e.g. an unrelated `stop()` call deleted the
-state file before this router's own `routerPid` write), `stopServe` refuses
-rather than guessing — same principle as `occupiedPortMessage`; measured live,
-this can leave a stale daemon surviving several `restart` attempts that each
-report false success (`startServeDaemon` sees *a* sonata router answering and
-declares victory, even though its own freshly-spawned instance already lost
-the port race and shut itself down) until someone kills the stale pid by hand.
+has no matching pid (a different sonata install, state left by an older
+version, or a live record damaged by LiteLLM startup), `stopServe` refuses
+rather than guessing — same principle as `occupiedPortMessage`. The old
+`killRecordedOrphan` unlinked the whole per-port file: the first request that
+started lazy LiteLLM, or a `serve` that lost the bind race after touching the
+file, could leave only `litellmPid`, so several `restart` attempts could refuse
+until someone killed the stale pid by hand.
 
 **`serve` watches its own LiteLLM child and respawns it if it exits on its
 own** (`cmdServe`, `src/commands/serve.ts`) — the child dying used to go
