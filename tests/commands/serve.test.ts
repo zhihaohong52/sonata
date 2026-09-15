@@ -322,6 +322,29 @@ litellm = 4000
     expect(existsSync(tempDir)).toBe(false);
   });
 
+  it('closes the router when eager LiteLLM startup fails after binding', async () => {
+    const net = await import('node:net');
+    const probe = net.createServer();
+    await new Promise<void>((resolve) => probe.listen(0, 'localhost', () => resolve()));
+    const address = probe.address();
+    if (address === null || typeof address === 'string') throw new Error('probe did not bind');
+    const routerPort = address.port;
+    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+
+    await expect(cmdServe({
+      cwd, home, tempDir: tempDirFor(), ports: { router: routerPort, litellm: 4000 },
+      spawnLitellm: () => ({ pid: 4242, kill: () => {} }),
+      waitForLitellm: async () => { throw new Error('LiteLLM never came up'); },
+    })).rejects.toThrow('LiteLLM never came up');
+
+    const rebound = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      rebound.once('error', reject);
+      rebound.listen(routerPort, 'localhost', () => resolve());
+    });
+    await new Promise<void>((resolve, reject) => rebound.close((error) => error ? reject(error) : resolve()));
+  });
+
   it('never writes into the real system temp directory when a tempDir is given', async () => {
     const before = readdirSync(tmpdir()).filter((n) => n.startsWith('sonata-litellm-'));
     const handle = await cmdServe({

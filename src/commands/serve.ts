@@ -1051,6 +1051,8 @@ export async function cmdServe(
       if (removedSessions > 0) console.log(`sessions: pruned ${removedSessions} record(s) older than ${LEDGER_RETENTION_DAYS}d`);
     } catch { /* pruning is housekeeping; it never blocks serving */ }
 
+    let litellmReadyResolved = !needsLitellmAtStart;
+
     // Held by reference so the bound port can be written back after `listen`:
     // a configured port of 0 means "pick an ephemeral one", and a UiDeps still
     // carrying 0 fails every request's Host check.
@@ -1060,6 +1062,7 @@ export async function cmdServe(
       litellmBase: `http://localhost:${ports.litellm}`,
       litellmKey: masterKey,
       health: true,
+      healthReady: () => !needsLitellmAtStart || litellmReadyResolved,
       instanceId,
       log: (line) => console.log(line),
       tenants: () => registry.summary(),
@@ -1138,6 +1141,7 @@ export async function cmdServe(
         await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
       })();
       await litellmReady;
+      litellmReadyResolved = true;
     }
     // `listen` has resolved, so this is the port actually bound — the same as
     // the configured one unless that was 0.
@@ -1145,12 +1149,14 @@ export async function cmdServe(
     uiDeps.port = typeof bound === 'object' && bound !== null ? bound.port : ports.router;
     console.log(`sonata UI: http://localhost:${uiDeps.port}/`);
   } catch (error) {
-    // Suppress the respawn watcher before killing the child — otherwise its
-    // `exit` handler schedules a respawn against `configPath`, which the
-    // `rmSync` below is about to delete, producing a doomed child spawned
-    // after this whole call has already thrown.
+    // A post-bind startup failure must not strand an unusable router for an
+    // in-process caller: before eager startup moved after `listen`, this path
+    // could only fail before a socket existed.
     stopping = true;
     child?.kill();
+    if (router !== undefined) {
+      try { await close(router); } catch { /* preserve the startup error */ }
+    }
     rmSync(tempDir, { force: true, recursive: true });
     throw error;
   }
