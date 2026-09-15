@@ -33,11 +33,17 @@ which is most of the time.
 
 ## Mounting
 
-Every route sits under `/__sonata/`, beside the existing `/__sonata_health`
-check in `createRouterServer` (`src/native/router.ts:1321`). Anthropic's
-surface is entirely `/v1/*`, so no proxied path is shadowed and the dispatch
-check is a prefix test ahead of `routeRequest`, costing one `startsWith` per
-proxied request.
+`/__sonata/` is the UI's route prefix, beside the existing `/__sonata_health`
+check in `createRouterServer` (`src/native/router.ts:1321`), with bare `GET /`
+as the sole exception. Anthropic's surface is entirely `/v1/*`, so no proxied
+path is shadowed and the dispatch check is a prefix test ahead of
+`routeRequest`, costing one `startsWith` per proxied request.
+
+Claiming `/` is safe because nothing the proxy needs lives there: a bare `GET /`
+was previously forwarded upstream and answered with Anthropic's own 404, and no
+Claude Code request path is bare `/`. Only `GET /` is taken — every other path
+outside the prefix still reaches `routeRequest` untouched, and a bare `POST /`
+is not intercepted.
 
 | route | returns |
 |---|---|
