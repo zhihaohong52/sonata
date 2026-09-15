@@ -21,15 +21,6 @@ export const AA_ATTRIBUTION =
 export const AA_CAPABLE_CODING_INDEX = 40;
 
 /**
- * Blended $/1M tokens at or below this ⇒ cheap enough for the simple tier.
- *
- * Only reaches the simple tier for a model AA has **not** costed per task;
- * `SIMPLE_COST_CEILING` decides the ones it has. Kept because a per-1M rate is
- * the only price such a model has.
- */
-export const AA_CHEAP_BLENDED_PRICE_USD = 1.0;
-
-/**
  * A model may cost at most this multiple of the cheapest *selected* model's
  * per-task cost and still be eligible for a simple tier.
  *
@@ -77,7 +68,6 @@ export const AA_CAPABILITY_TIE_MARGIN = 1.0;
 
 export interface CatalogEntry {
   capable: boolean;
-  cheap: boolean;
   source: 'curated' | 'aa' | 'default';
 }
 
@@ -144,16 +134,6 @@ export interface AaEntry {
  */
 export function capabilityOf(entry: AaEntry): number {
   return entry.agenticIndex ?? entry.codingIndex ?? entry.intelligenceIndex ?? 0;
-}
-
-/**
- * What one unit of work costs, best available measure first.
- *
- * `costPerTask` prices the work; the blended per-1M rate only prices tokens
- * and is a weaker proxy, kept for models AA has not costed.
- */
-export function costOfEntry(entry: AaEntry): number {
-  return entry.costPerTask ?? entry.blendedPriceUsd;
 }
 
 /**
@@ -477,19 +457,19 @@ function aaEntryFor(normalized: string | readonly string[], aa?: AaCatalog, effo
 /** Our own judgement, not AA data. Kept deliberately small: the default for
  * anything unlisted is capable-not-cheap, the direction that never silently
  * hands hard work to a weak model. */
-const CURATED: Record<string, { capable: boolean; cheap: boolean }> = {
-  'deepseek-v4-flash': { capable: true, cheap: true },
-  'deepseek-v4-pro': { capable: true, cheap: false },
-  'gpt-5.6-luna': { capable: true, cheap: true },
-  'gpt-5.6-terra': { capable: true, cheap: false },
-  'gpt-5.6-sol': { capable: true, cheap: false },
-  'kimi-k3': { capable: true, cheap: true },
-  'kimi-k3-free': { capable: false, cheap: true },
-  'glm-5.3': { capable: true, cheap: true },
-  'grok-4.6': { capable: true, cheap: false },
-  'gemini-3.7-flash': { capable: true, cheap: true },
-  'qwen3.8-max': { capable: true, cheap: false },
-  'ox-alpha-free': { capable: false, cheap: true },
+const CURATED: Record<string, { capable: boolean }> = {
+  'deepseek-v4-flash': { capable: true },
+  'deepseek-v4-pro': { capable: true },
+  'gpt-5.6-luna': { capable: true },
+  'gpt-5.6-terra': { capable: true },
+  'gpt-5.6-sol': { capable: true },
+  'kimi-k3': { capable: true },
+  'kimi-k3-free': { capable: false },
+  'glm-5.3': { capable: true },
+  'grok-4.6': { capable: true },
+  'gemini-3.7-flash': { capable: true },
+  'qwen3.8-max': { capable: true },
+  'ox-alpha-free': { capable: false },
 };
 
 export function lookupModel(
@@ -504,14 +484,13 @@ export function lookupModel(
   if (scored !== undefined) {
     return {
       capable: scored.codingIndex >= AA_CAPABLE_CODING_INDEX,
-      cheap: scored.blendedPriceUsd <= AA_CHEAP_BLENDED_PRICE_USD,
       source: 'aa',
     };
   }
   // A curated judgement is about the model, whichever level it runs at.
   const curated = normalized.map((spelling) => CURATED[spelling]).find((entry) => entry !== undefined);
   if (curated !== undefined) return { ...curated, source: 'curated' };
-  return { capable: true, cheap: false, source: 'default' };
+  return { capable: true, source: 'default' };
 }
 
 export interface TierProposal { simple: string[]; complex: string[] }
@@ -525,6 +504,27 @@ function scoreFor(
 ): AaEntry | undefined {
   const { key, effort } = splitCandidate(candidate);
   return aaEntryFor(normalizedFor(key, providers, upstreamFor), aa, effort);
+}
+
+/** Whether AA supplies the per-task cost required for init ranking. */
+export function hasTaskCost(
+  candidate: string,
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
+): boolean {
+  // Without a cache there is no exclusion data; preserve the built-in path.
+  return aa === undefined || scoreFor(candidate, aa, providers, upstreamFor)?.costPerTask !== undefined;
+}
+
+/** Keep only candidates AA can compare on its dollars-per-task scale. */
+export function taskCostedCandidates(
+  candidates: readonly string[],
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
+): string[] {
+  return candidates.filter((candidate) => hasTaskCost(candidate, aa, providers, upstreamFor));
 }
 
 /**
@@ -610,10 +610,8 @@ export function candidateLabel(
   const head = effort === undefined ? key : `${key} @${effort}`;
   const entry = scoreFor(candidate, aa, providers, upstreamFor);
   if (entry === undefined) return head;
-  const cost = entry.costPerTask !== undefined
-    ? `$${entry.costPerTask.toFixed(3)}/task`
-    : `$${entry.blendedPriceUsd.toFixed(2)}/1M`;
-  return `${head.padEnd(32)} ${capabilityOf(entry).toFixed(1).padStart(4)}  ${cost}`;
+  if (entry.costPerTask === undefined) return `${head}  (AA publishes no cost-per-task — add by hand to sonata.toml)`;
+  return `${head.padEnd(32)} ${capabilityOf(entry).toFixed(1).padStart(4)}  $${entry.costPerTask.toFixed(3)}/task`;
 }
 
 /**
@@ -647,21 +645,11 @@ function rank(
   aa?: AaCatalog,
   providers: readonly string[] = [],
   upstreamFor: UpstreamFor = identityUpstream,
-): { index: number; price: number; perTask: boolean } {
+): { index: number; price: number } {
   const scored = scoreFor(key, aa, providers, upstreamFor);
   return scored !== undefined
-    ? { index: capabilityOf(scored), price: costOfEntry(scored), perTask: scored.costPerTask !== undefined }
-    : { index: AA_CAPABLE_CODING_INDEX, price: AA_CHEAP_BLENDED_PRICE_USD, perTask: false };
-}
-
-/**
- * Compare two prices only when they are in the same unit. `price` is dollars
- * per task where AA costed the model and dollars per 1M tokens otherwise —
- * two orders of magnitude apart — so across units the comparison is void
- * (0), and a costed row sorts ahead of an uncosted one wherever that matters.
- */
-function samePriceUnit(a: { perTask: boolean }, b: { perTask: boolean }): boolean {
-  return a.perTask === b.perTask;
+    ? { index: capabilityOf(scored), price: scored.costPerTask ?? 0 }
+    : { index: AA_CAPABLE_CODING_INDEX, price: 0 };
 }
 
 /**
@@ -689,7 +677,9 @@ export function proposeTiers(
   // are different capability/cost points, and which one a tier wants is the
   // whole question. Identity without families, so a catalog-less run (and
   // every existing caller) sees exactly the keys it passed.
-  const candidates = expandCandidates(modelKeys, aa, providers, upstreamFor);
+  // With a catalog, only AA's per-task scale is valid. Without one, keep the
+  // built-in proposal path usable because there is no exclusion data yet.
+  const candidates = taskCostedCandidates(expandCandidates(modelKeys, aa, providers, upstreamFor), aa, providers, upstreamFor);
   const bareKey = (candidate: string): string => splitCandidate(candidate).key;
   const rankOf = (k: string) => rank(k, aa, providers, upstreamFor);
   // An avoided model sorts after every non-avoided one, whatever it scores.
@@ -715,7 +705,7 @@ export function proposeTiers(
   const byCapability = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
     const gap = Math.abs(rb.index - ra.index) <= AA_CAPABILITY_TIE_MARGIN ? 0 : rb.index - ra.index;
-    const byPrice = samePriceUnit(ra, rb) ? ra.price - rb.price : 0;
+    const byPrice = ra.price - rb.price;
     return avoidance(a, b) || gap || byPrice || byLevel(a, b);
   };
   // Simple work wants the most capability per dollar, capability breaking
@@ -723,18 +713,10 @@ export function proposeTiers(
   // margin is the same noise it is above — a lower level scoring 0.3 higher
   // is not an edge, and the level decides as it does there.
   //
-  // Value is only comparable within one price unit. Every row AA costed per
-  // task ranks ahead of every row it did not: a per-task cost prices the
-  // work, the per-1M blend prices tokens, and dividing capability by
-  // whichever a row happened to carry read `deepseek-v4-flash@none` (18.9 at
-  // $0.12/1M) as better value than `deepseek-flash@max` (39.5 at
-  // $0.265/task) — a unit error. Within the uncosted group the per-1M ratio
-  // is still a value ordering, just a weaker proxy, so a catalog with no
-  // per-task costs at all ranks exactly as before.
+  // Every candidate left here has an AA per-task cost, so capability per
+  // dollar is one comparable unit rather than a mix of work and token prices.
   const byValue = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
-    const byUnit = Number(rb.perTask) - Number(ra.perTask);
-    if (byUnit !== 0) return avoidance(a, b) || byUnit;
     if (ra.price === rb.price && Math.abs(rb.index - ra.index) <= AA_CAPABILITY_TIE_MARGIN) {
       return avoidance(a, b) || byLevel(a, b);
     }
@@ -778,14 +760,9 @@ export function proposeTiers(
     .map(perTask)
     .filter((c): c is number => c !== undefined && c > 0);
   const ceiling = costs.length > 0 ? Math.min(...costs) * SIMPLE_COST_CEILING : undefined;
-  // A model AA has not costed per task has no place on that scale, so it keeps
-  // the absolute judgement it had before: the curated table's `cheap`, or the
-  // per-1M bar. That is the pre-existing behaviour for exactly the models this
-  // change has no better information about.
   const isCheap = (k: string): boolean => {
     const cost = perTask(k);
-    if (cost === undefined || ceiling === undefined) return lookupModel(k, aa, providers, upstreamFor).cheap;
-    return cost <= ceiling;
+    return cost !== undefined && ceiling !== undefined && cost <= ceiling;
   };
   // Same `eligible` the ceiling is measured over, so who sets the bar and who
   // is judged against it cannot drift apart.

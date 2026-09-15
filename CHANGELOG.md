@@ -8,6 +8,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Changed
+
+- **`sonata init` ranks only AA models with a published cost per task.** Per-token
+  blended prices and dollars per task are incomparable, so uncosted models are
+  no longer offered or ranked by the wizard. The picker names excluded models
+  and explains that they remain valid hand additions to `sonata.toml`; the
+  router, config parser, sync, and dispatch continue to accept them. `sonata
+  doctor` now reports configured hand-held models that the wizard would not
+  offer, and `sonata agents` preserves them on a no-op edit.
+
 ### Fixed
 
 - Preserve the recorded `routerPid` when LiteLLM orphan cleanup runs. Lazy
