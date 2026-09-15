@@ -14,6 +14,7 @@ vi.mock('../src/commands/serve.js', () => ({
   cmdRestart: vi.fn(),
   startServeDaemon: vi.fn(),
   isSonataRouter: vi.fn(),
+  sonataRouterReady: vi.fn(),
   sonataRouterHasUi: vi.fn(),
 }));
 vi.mock('../src/ledger.js', () => ({ readRows: vi.fn() }));
@@ -68,6 +69,8 @@ describe('sonata status CLI wiring', () => {
   it('advertises the UI url only when the router reports the capability', async () => {
     routerPortsMock.mockReturnValue({ router: 4100, litellm: 4000 });
     isSonataRouterMock.mockResolvedValue(true);
+    const { sonataRouterReady } = await import('../src/commands/serve.js');
+    vi.mocked(sonataRouterReady).mockResolvedValue(true);
     readRowsMock.mockReturnValue([] as never);
 
     sonataRouterHasUiMock.mockResolvedValue(false);
@@ -85,6 +88,8 @@ describe('sonata status CLI wiring', () => {
   it('defaults to the most recent session', async () => {
     routerPortsMock.mockReturnValue({ router: 4100, litellm: 4000 });
     isSonataRouterMock.mockResolvedValue(true);
+    const { sonataRouterReady } = await import('../src/commands/serve.js');
+    vi.mocked(sonataRouterReady).mockResolvedValue(true);
     sonataRouterHasUiMock.mockResolvedValue(false);
     readRowsMock.mockReturnValue([
       cell({ ts: '2026-08-27T12:00:00.000Z', session: 'sess-a', key: 'flash' }),

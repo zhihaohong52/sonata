@@ -319,7 +319,15 @@ export function serveHealthUrl(routerPort: number): string {
   return `http://localhost:${routerPort}/__sonata_health`;
 }
 
-/** Whether whatever holds a port is a sonata router. */
+/**
+ * Answers the identity question, not the readiness question.
+ *
+ * A router reports `503 starting` while its eager LiteLLM child is coming up,
+ * but it is still a Sonata process holding the port. Reading the body before
+ * checking HTTP status keeps `occupiedPortMessage` from calling that process
+ * a foreign listener; malformed, non-Sonata and unreachable responses remain
+ * negative.
+ */
 export async function isSonataRouter(
   port: number,
   doFetch: typeof fetch = fetch,
@@ -328,9 +336,29 @@ export async function isSonataRouter(
     const response = await doFetch(serveHealthUrl(port), {
       signal: AbortSignal.timeout(2000),
     });
-    if (!response.ok) return false;
     const body = await response.json() as { sonata?: unknown };
     return body?.sonata === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a Sonata health response is ready to serve traffic. */
+export async function sonataRouterReady(
+  port: number,
+  doFetch: typeof fetch = fetch,
+  expectedInstanceId?: string,
+): Promise<boolean> {
+  try {
+    const response = await doFetch(serveHealthUrl(port), {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!response.ok) return false;
+    const body = await response.json() as { sonata?: unknown; ready?: unknown; status?: unknown; instanceId?: unknown };
+    return body.sonata === true
+      && body.ready !== false
+      && body.status !== 'starting'
+      && (expectedInstanceId === undefined || body.instanceId === expectedInstanceId);
   } catch {
     return false;
   }
@@ -370,7 +398,6 @@ export async function sonataRouterMultiTenant(
 ): Promise<boolean | null> {
   try {
     const response = await doFetch(serveHealthUrl(port), { signal: AbortSignal.timeout(2000) });
-    if (!response.ok) return null;
     const body = await response.json() as { sonata?: unknown; multiTenant?: unknown };
     if (body?.sonata !== true) return null;
     return body.multiTenant === true;
@@ -393,7 +420,6 @@ export async function sonataRouterInstanceId(
     const response = await doFetch(serveHealthUrl(port), {
       signal: AbortSignal.timeout(2000),
     });
-    if (!response.ok) return null;
     const body = await response.json() as { sonata?: unknown; instanceId?: unknown };
     if (body?.sonata !== true) return null;
     return typeof body.instanceId === 'string' ? body.instanceId : null;
@@ -1235,7 +1261,7 @@ export async function startServeDaemon(
   cwd: string = process.cwd(),
 ): Promise<DaemonResult> {
   const spawnFn = deps.spawn ?? spawn;
-  const probe = deps.probe ?? (async (port: number, id: string) => (await sonataRouterInstanceId(port)) === id);
+  const probe = deps.probe ?? ((port: number, id: string) => sonataRouterReady(port, fetch, id));
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const timeoutMs = deps.timeoutMs ?? 60_000;

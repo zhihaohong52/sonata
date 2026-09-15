@@ -1479,18 +1479,31 @@ describe('occupiedPortMessage', () => {
     expect(await occupiedPortMessage(4100, dead)).toMatch(/non-sonata/);
   });
 
-  it('says non-sonata when the endpoint errors', async () => {
+  it('names a starting sonata router when the port is held during startup', async () => {
+    const message = await occupiedPortMessage(4100, health({ status: 'starting', sonata: true }, false));
+    expect(message).toMatch(/another sonata router/);
+    expect(message).not.toMatch(/non-sonata/);
+  });
+
+  it('names sonata when the endpoint is starting or otherwise non-2xx', async () => {
     const message = await occupiedPortMessage(4100, health({ sonata: true }, false));
-    expect(message).toMatch(/non-sonata/);
+    expect(message).toMatch(/another sonata router/);
   });
 });
 
 describe('isSonataRouter', () => {
-  it('is true only for the sonata health payload', async () => {
-    const ok = (async () => new Response(JSON.stringify({ status: 'ok', sonata: true }))) as unknown as typeof fetch;
-    const notJson = (async () => new Response('<html>')) as unknown as typeof fetch;
-    expect(await isSonataRouter(4100, ok)).toBe(true);
+  it('identifies a starting router independently of its readiness status', async () => {
+    const starting = (async () => new Response(JSON.stringify({ status: 'starting', sonata: true }), { status: 503 })) as unknown as typeof fetch;
+    expect(await isSonataRouter(4100, starting)).toBe(true);
+  });
+
+  it('keeps non-sonata, malformed, and unreachable endpoints negative', async () => {
+    const nonSonata = (async () => new Response(JSON.stringify({ status: 'starting' }), { status: 503 })) as unknown as typeof fetch;
+    const notJson = (async () => new Response('<html>', { status: 503 })) as unknown as typeof fetch;
+    const unreachable = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
+    expect(await isSonataRouter(4100, nonSonata)).toBe(false);
     expect(await isSonataRouter(4100, notJson)).toBe(false);
+    expect(await isSonataRouter(4100, unreachable)).toBe(false);
   });
 });
 
@@ -1668,6 +1681,31 @@ context_window = 128000
     }, home);
     expect(calls).toBe(3);
     expect(result.port).toBe(4100);
+  });
+
+  it('does not accept a starting router as ready', async () => {
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+    const spy = ((_cmd: string, _args: string[], o: { env?: NodeJS.ProcessEnv }) => {
+      capturedEnv = o.env;
+      return { pid: 4242, unref: () => {} };
+    }) as unknown as typeof spawnType;
+
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1;
+      return new Response(JSON.stringify({
+        status: calls < 3 ? 'starting' : 'ok', sonata: true,
+        ready: calls < 3 ? false : true,
+        instanceId: capturedEnv?.SONATA_SERVE_INSTANCE_ID,
+      }), { status: calls < 3 ? 503 : 200 });
+    }) as unknown as typeof fetch);
+
+    const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: spy,
+      sleep: async () => {},
+    }, home);
+    expect(calls).toBe(3);
+    expect(result.pid).toBe(4242);
   });
 
   it('gives up with the log path when the daemon never answers', async () => {
