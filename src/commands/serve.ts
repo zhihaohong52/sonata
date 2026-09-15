@@ -250,6 +250,20 @@ function recordRouterPid(home: string, routerPort: number, pid: number): void {
 }
 
 /**
+ * Removes this process's failed-start record before releasing its port.
+ *
+ * The pid check prevents a late startup failure from deleting a replacement
+ * router's record if another process has already taken the port and rewritten
+ * the keyed state. The child is killed separately by the caller, so removing
+ * the whole record cannot strand its LiteLLM pid; the legacy file is never read.
+ */
+function clearFailedRouterRecord(home: string, routerPort: number): void {
+  const state = readServeState(home, routerPort);
+  if (state?.routerPid !== process.pid) return;
+  try { unlinkSync(serveStatePath(home, routerPort)); } catch { /* already gone */ }
+}
+
+/**
  * Polls litellm until it answers *as ours*, so a silent bind failure surfaces
  * here.
  *
@@ -1166,6 +1180,9 @@ export async function cmdServe(
     // could only fail before a socket existed.
     stopping = true;
     child?.kill();
+    // Clear the record while this process still owns the bound port. A
+    // replacement cannot have written a new record until after close begins.
+    if (router?.listening === true) clearFailedRouterRecord(opts.home, ports.router);
     if (router !== undefined) {
       try { await close(router); } catch { /* preserve the startup error */ }
     }
