@@ -13,6 +13,32 @@ section below for what landed and what is still open on it. Everything else
 remains a judgement call that belongs to the user; read the 1.0 gate section
 before going looking.
 
+## The tier set is three, not two (2026-09-16)
+
+`[tiers.<role>]` now carries an **optional** `normal` list beside `simple` and
+`complex`. Assume three tiers when reading anything below this section; the
+narrative above and the incident records further down predate it and describe
+two, which is what they were.
+
+Each tier is one sort key: `complex` by capability, `normal` by capability per
+task-dollar, `simple` by that same value ranking under a cost cap of 12x the
+best-value model's own cost-per-task. `SIMPLE_CAPABILITY_FLOOR` is gone —
+flooring the value tier makes it produce a list byte-identical to the cheap
+one, which is measured in `docs/superpowers/specs/2026-09-16-three-tiers-design.md`.
+
+**Nothing migrates.** `normal` is optional, so a config without one parses,
+generates the same 8 agents and routes exactly as before; there is no
+`schema_version` bump. A user gains the third tier by re-running `sonata init`.
+Verified end to end: this repository's own config has no `normal` and still
+syncs 8 agents, while a scratch three-tier config syncs 3 for one role.
+
+The thing most likely to be got wrong next is **selection, not ranking**. Over
+30 days of ledger, `complex` took 74% of tiered requests and 80% of spend,
+because every agent description used to end "when unsure, use `-complex`".
+`-normal` is now the default and the criteria are observable rather than
+adjectival. Judge whether that worked with `sonata usage --by tier`, and if the
+split has not moved, the next lever is structural rather than more wording.
+
 ## Where things stand
 
 - `main` at `ed34902`, clean, in sync with origin. **`[Unreleased]` is not

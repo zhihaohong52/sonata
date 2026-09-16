@@ -36,7 +36,7 @@ export const AA_CAPABLE_CODING_INDEX = 40;
  * at $1.50/1M while costing $0.577/task — less per unit of work than five
  * models that got in, and a sixth of the way to the $1/1M bar it failed.
  *
- * **Relative**, for the reason `SIMPLE_CAPABILITY_FLOOR` is: an absolute bar
+ * **Relative**, because an absolute bar
  * is wrong in both directions. A user whose whole selection is expensive gets
  * an empty simple tier and falls back to mirroring complex, which stops the
  * tier discriminating at all; one whose selection is uniformly cheap gets
@@ -135,33 +135,6 @@ export interface AaEntry {
 export function capabilityOf(entry: AaEntry): number {
   return entry.agenticIndex ?? entry.codingIndex ?? entry.intelligenceIndex ?? 0;
 }
-
-/**
- * A model must reach this fraction of the best score among the *selected*
- * models to be eligible for a simple tier.
- *
- * Relative, not absolute: an absolute floor is wrong in both directions —
- * it excludes everything when a user's whole selection is modest, and admits
- * junk when their selection is strong. The simple tier optimises
- * capability-per-dollar, and without a floor a very cheap, very weak model
- * wins on ratio alone.
- *
- * Set where it is to keep the tier *deep* as well as good. A tier is a ranked
- * fallback list, so a floor strict enough to admit one model leaves the router
- * nothing to fall through to and sends the first failure straight to 529 and
- * the dispatch lane. Measured on a real 17-model config, 0.85 admitted exactly
- * one model where 0.75 admits four.
- *
- * The floor is not only a depth control: it also decides the *leader*, because
- * a model it admits can outrank the others on value. On that same config,
- * raising it to 0.85 excludes the cheapest model and promotes a stronger,
- * dearer one. So it trades capability against both cost and resilience, and
- * moving it changes what grunt work actually runs on — not merely what stands
- * behind that choice.
- */
-export const SIMPLE_CAPABILITY_FLOOR = 0.75;
-
-
 
 /**
  * The key an AA score is stored and looked up under.
@@ -493,7 +466,7 @@ export function lookupModel(
   return { capable: true, source: 'default' };
 }
 
-export interface TierProposal { simple: string[]; complex: string[] }
+export interface TierProposal { simple: string[]; normal: string[]; complex: string[] }
 
 /** The AA row behind a candidate (`key` or `key@effort`), joined through the match key. */
 function scoreFor(
@@ -670,6 +643,28 @@ function valueOf(r: { index: number; price: number }): number {
   return r.index / Math.max(r.price, 0.01);
 }
 
+/**
+ * Rank a role's selected models into the three tiers.
+ *
+ * Each tier is one sort key over the two quantities AA publishes — a coding
+ * index and a cost per task. `complex` takes capability, cost breaking a
+ * near-tie; `normal` takes capability per task-dollar; `simple` is `normal`
+ * filtered to a cost cap, so it never sorts independently and cannot disagree
+ * with `normal` about order.
+ *
+ * Only candidates AA prices per task are considered (`taskCostedCandidates`),
+ * because capability-per-token and capability-per-task are different units and
+ * ranking across them is an arithmetic error, not a judgement.
+ *
+ * Three properties are deliberate and easy to undo by accident:
+ * `simple` is a *subsequence* of `normal`, not a prefix — value is not
+ * monotonic in cost; the cap is anchored to the best-value model, which
+ * therefore always clears it, so `simple` is never empty on any config; and
+ * there is no capability floor, because a floor makes the value ranking
+ * collapse into the cost ranking and `normal` becomes a copy of `simple`.
+ *
+ * Avoided gateways are demoted rather than excluded, and never set either bar.
+ */
 export function proposeTiers(
   modelKeys: string[],
   aa?: AaCatalog,
@@ -728,61 +723,36 @@ export function proposeTiers(
     return avoidance(a, b) || valueOf(rb) - valueOf(ra) || rb.index - ra.index || byLevel(a, b);
   };
 
-  const complex = candidates.filter((k) => lookupModel(k, aa, providers, upstreamFor).capable).sort(byCapability);
-  // The floor is relative to the best model actually selected, so it adapts to
-  // the user's own set rather than to an absolute score that is wrong whenever
-  // their selection is uniformly strong or uniformly modest.
-  // Measured over the models that can actually lead the tier: including an
-  // avoided model here could raise the bar high enough to exclude everything
-  // preferred, inverting the setting's intent.
-  const preferred = candidates.filter((k) => !avoided.has(bareKey(k)));
-  const leaders = preferred.length > 0 ? preferred : candidates;
-  const best = Math.max(0, ...leaders.map((k) => rankOf(k).index));
-  // The cost bar is relative to the cheapest model that can actually *enter*
-  // the tier — not merely the cheapest one selected. `best` gets away with
-  // reading every leader because it is a `Math.max`, which a weak model cannot
-  // drag down; the ceiling is a `Math.min`, which one absolutely can. A very
-  // cheap, very weak model would set a bar so low that nothing eligible clears
-  // it, `simple` would come back empty, and the fallback would mirror the
-  // complex set — the tier silently ceasing to discriminate, which is the whole
-  // failure the floor exists to prevent. So the same two predicates that decide
-  // membership below also decide who is allowed to set the bar.
+  const capable = (k: string): boolean => lookupModel(k, aa, providers, upstreamFor).capable;
+  const perTask = (k: string): number | undefined => scoreFor(k, aa, providers, upstreamFor)?.costPerTask;
+
+  const complex = candidates.filter(capable).sort(byCapability);
+  const normal = candidates.filter(capable).sort(byValue);
+
+  // Anchor the cap to the best-value model that can actually lead. Avoided
+  // models remain fallbacks but must not raise the price paid by preferred ones.
+  const anchor = normal.find((k) => !avoided.has(bareKey(k))) ?? normal[0];
+  const anchorCost = anchor === undefined ? undefined : perTask(anchor);
+  const ceiling = anchorCost === undefined ? undefined : anchorCost * SIMPLE_COST_CEILING;
+  // Filtering `normal` rather than sorting again is what stops `simple`
+  // disagreeing with it about order: it never does its own sort.
   //
-  // Avoided models are already out (`leaders`), for the same reason the
-  // capability floor is measured over `preferred`: an avoided model setting the
-  // bar would move it for models the user asked to demote, which is not what
-  // avoidance means.
-  //
-  // Measured over per-task costs only. `rankOf().price` falls back to a per-1M
-  // rate when AA has not costed a model, and the two are different units by
-  // two orders of magnitude — a ratio that mixes them would read an uncosted
-  // model as ~30x dearer than it is and refuse it on a unit error.
-  const perTask = (k: string) => scoreFor(k, aa, providers, upstreamFor)?.costPerTask;
-  const eligible = (k: string): boolean => lookupModel(k, aa, providers, upstreamFor).capable
-    && rankOf(k).index >= best * SIMPLE_CAPABILITY_FLOOR;
-  const costs = leaders
-    .filter(eligible)
-    .map(perTask)
-    .filter((c): c is number => c !== undefined && c > 0);
-  const ceiling = costs.length > 0 ? Math.min(...costs) * SIMPLE_COST_CEILING : undefined;
-  const isCheap = (k: string): boolean => {
+  // The result is a **subsequence, not a prefix**. `normal` is ordered by
+  // value, and value is not monotonic in cost — a dearer model with a much
+  // better score outranks a cheap weak one — so an over-ceiling candidate can
+  // sit ahead of an under-ceiling one and the filter skips past it.
+  // Truncating at the first over-ceiling candidate would make it a true
+  // prefix and would drop the qualifying cheap models behind it, which is the
+  // opposite of what a cheap tier is for.
+  const simple = ceiling === undefined ? [] : normal.filter((k) => {
     const cost = perTask(k);
-    return cost !== undefined && ceiling !== undefined && cost <= ceiling;
-  };
-  // Same `eligible` the ceiling is measured over, so who sets the bar and who
-  // is judged against it cannot drift apart.
-  const simple = candidates.filter((k) => eligible(k) && isCheap(k)).sort(byValue);
-  // A tier must always resolve to something: with no capable model, everything
-  // is complex-eligible; with no cheap-capable model, simple mirrors complex.
-  // The fallback is sorted too — raw input order would break the documented
-  // "index descending, price ascending" ordering on exactly the path where no
-  // model cleared the threshold.
+    return cost !== undefined && cost <= ceiling;
+  });
+
   const complexFinal = complex.length > 0 ? complex : [...candidates].sort(byCapability);
-  // Falls back to the complex set, but re-sorted by value: the reason to
-  // fall back is that nothing cleared the cheap bar, not that cost stopped
-  // mattering for grunt work.
-  const simpleFinal = simple.length > 0 ? simple : [...complexFinal].sort(byValue);
-  return { simple: simpleFinal, complex: complexFinal };
+  const normalFinal = normal.length > 0 ? normal : [...complexFinal].sort(byValue);
+  const simpleFinal = simple.length > 0 ? simple : normalFinal;
+  return { simple: simpleFinal, normal: normalFinal, complex: complexFinal };
 }
 
 /**

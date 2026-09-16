@@ -14,28 +14,37 @@ the task text directly as the trailing argument).
 
 ## Difficulty heuristic
 
-- **simple** — mechanical, well-specified, contained: single-file changes,
-  bulk edits, scaffolding, test-writing against a clear spec.
-- **complex** — cross-cutting, ambiguous, design-sensitive, or needs
-  sustained reasoning: multi-file refactors, API design, debugging unknowns.
-- When unsure, use `-complex`.
+- **simple** — writable without asking a question: one or two files, no
+  interface change.
+- **normal** — the default. You know what to change but not exactly how; it
+  needs reading the surrounding code and may touch several files, but what
+  "done" means is not in question.
+- **complex** — needs a design decision affecting other components, or "done"
+  is still ambiguous.
+- Size is not difficulty. A large mechanical change is `simple`; a three-line
+  change that decides an interface is `complex`.
+- When unsure, use `-normal`.
 
 ## The loop
 
-1. **Plan.** Dispatch `plan-complex` with the feature description. Ask it for
-   a numbered task list with per-task difficulty guesses.
+1. **Plan.** Dispatch `plan-complex` with the feature description; planning
+   stays at `plan-complex` because it is where a design decision lives. Ask it
+   for a numbered task list with per-task difficulty guesses.
 2. **Route.** For each task, judge difficulty yourself (the plan's guess is
-   advice, not binding) and dispatch `code-simple` or `code-complex` with a
-   self-contained task description — name the files to touch and the files to
-   leave alone; never say "see the plan".
+   advice, not binding) and dispatch `code-simple`, `code-normal` or
+   `code-complex` with a self-contained task description — name the files to
+   touch and the files to leave alone; never say "see the plan".
 3. **Gate.** After each task, dispatch `review-simple` on the diff. Findings →
    dispatch a fix at the same tier, then re-review.
-   - **Escalation rule:** a task that fails review twice at `simple` re-runs at
-     `complex` from scratch.
+   - **Escalation rule:** a task that fails review twice re-runs one tier up,
+     from scratch — `simple` to `normal`, `normal` to `complex`. A task that
+     fails twice at `complex` stops and is reported, not re-run: another
+     attempt at the same tier is the definition of no progress.
    - **Loop bound:** at most 3 fix iterations per task; then stop and surface
      the findings to the user.
 4. **Final gate.** When every task passed, dispatch `review-complex` over the
-   whole change. Findings loop back through step 3.
+   whole change. Keep the final gate at `review-complex` even when the tasks
+   used a lower tier; findings loop back through step 3.
 
 ## When not to loop
 

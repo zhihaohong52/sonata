@@ -22,7 +22,7 @@ import {
   type CandidateOption,
   type ProviderOption,
 } from './app-state.js';
-import { type NativeGatewayAuth } from '../config.js';
+import { TIER_NAMES, type NativeGatewayAuth } from '../config.js';
 import { byokCandidateKey, fetchModels as defaultFetchModels } from '../native/models.js';
 import { ROLE_BLURB } from '../roles.js';
 import type { InitState, TuiResult } from './types.js';
@@ -155,8 +155,8 @@ function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWiza
       {(state.roles ?? []).map((role) => {
         const tiers = state.tiers?.[role];
         const line = tiers
-          ? (['simple', 'complex'] as const).map((tier) => {
-              const ranked = tiers[tier] ?? [];
+          ? TIER_NAMES.map((tier) => {
+              const ranked = (tiers as { simple?: string[]; normal?: string[]; complex?: string[] })[tier] ?? [];
               const [main, ...backups] = ranked;
               return `${tier} → ${main ?? 'none'}${backups.length > 0 ? ` (+${backups.length} backup${backups.length === 1 ? '' : 's'})` : ''}`;
             }).join(' · ')
@@ -298,8 +298,8 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     }
     case 4: {
       const roles = state.roles ?? [];
-      const role = roles[Math.floor(tierIndex / 2)];
-      const tier = tierIndex % 2 === 0 ? 'simple' : 'complex';
+      const role = roles[Math.floor(tierIndex / TIER_NAMES.length)];
+      const tier = TIER_NAMES[tierIndex % TIER_NAMES.length]!;
       if (!role) return <Summary state={state} onDone={onDone} onBack={back} />;
       const catalog = loadAaCatalog(data.home);
       // Ranking runs over every model actually selected, not the startup set:
@@ -387,7 +387,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const baselineNativeKeys = (state.configScope !== undefined
         ? data.initialStateByScope?.[state.configScope]
         : undefined)?.nativeKeys ?? data.initialState?.nativeKeys ?? [];
-      const saved = state.tiers?.[role]?.[tier];
+      const saved = (state.tiers?.[role] as { simple?: string[]; normal?: string[]; complex?: string[] } | undefined)?.[tier];
       const globalAddedKeys = expand(
         (state.nativeKeys ?? []).filter((key) => !baselineNativeKeys.includes(key)),
       );
@@ -418,10 +418,10 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         footer={footer}
         onSubmit={(ranked) => {
           setState((current) => applyStep(current, 4, { role, tier, ranked }));
-          if (tierIndex + 1 < roles.length * 2) setTierIndex((current) => current + 1);
+          if (tierIndex + 1 < roles.length * TIER_NAMES.length) setTierIndex((current) => current + 1);
           else setStep(5);
         }}
-        onAcceptRest={tierIndex + 1 < roles.length * 2
+        onAcceptRest={tierIndex + 1 < roles.length * TIER_NAMES.length
           ? (ranked) => {
               // This screen keeps what the user actually ranked; only the
               // screens after it take the seed they would have opened with.

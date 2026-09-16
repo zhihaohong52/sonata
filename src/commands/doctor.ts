@@ -249,6 +249,13 @@ export async function cmdDoctor(
           'it loads as-is; run `sonata init` to rewrite it stamped',
       });
     }
+    if (config.tiers !== undefined && Object.values(config.tiers).every((lists) => lists.normal === undefined)) {
+      checks.push({
+        name: 'normal tier',
+        ok: true,
+        detail: 'no normal tier configured — it is optional; run `sonata init` to add it',
+      });
+    }
   } catch (err) {
     checks.push({ name: 'sonata.toml', ok: false, detail: (err as Error).message });
     return { ok: false, checks };
@@ -279,7 +286,7 @@ export async function cmdDoctor(
       // · fetched <recent date>" beside a tier ranked on a guess is the
       // reassuring half of the truth.
       const tiered = [...new Set(Object.values(config.tiers)
-        .flatMap((byTier) => [...byTier.simple, ...byTier.complex]))];
+        .flatMap((byTier) => [...byTier.simple, ...(byTier.normal ?? []), ...byTier.complex]))];
       // Score the *upstream* id, not the config key. A `[models]` key is
       // whatever the user named it — `flash` is a perfectly ordinary key for
       // `deepseek-v4-flash-0731` — and AA files scores under the model's own

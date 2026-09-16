@@ -10,6 +10,26 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Added
 
+- **A third tier, `normal`, ranked by capability per task-dollar.**
+  `[tiers.<role>]` accepts an optional `normal` list beside `simple` and
+  `complex`, and each tier is now one pure sort key: `complex` by capability,
+  `normal` by value, `simple` by that same value ranking under a cost cap of
+  12x the best-value model's own cost-per-task — making `simple` a cost-capped
+  subsequence of `normal` that can never be empty. `SIMPLE_CAPABILITY_FLOOR` is
+  removed: flooring the value tier produced a list byte-identical to the cheap
+  tier. **Nothing migrates** — `normal` is optional, so an existing config
+  parses, generates the same agents and routes exactly as before, with no
+  `schema_version` bump; you gain the tier by re-running `sonata init`.
+
+- **Generated agents say how to choose a tier, and no longer say to default
+  upward.** Measured over 30 days of one machine's ledger, `complex` took 74%
+  of tiered requests and 80% of priced spend, caused by sonata's own "when
+  unsure, use `-complex`" in every agent description. `-normal` is now the
+  default, each tier carries an observable criterion rather than an adjective,
+  and the agents state that size is not difficulty. The `sonata-loop` skill
+  escalates `simple` → `normal` → `complex` and stops after two failures at
+  `complex`, which is what makes starting at a lower tier cheap to correct.
+
 - **A local build reports `0.9.1-dev-<yyyymmdd-hhmmss>`.** `npm run build` now
   stamps `dist/build-info.json` with the build time, the commit, and whether the
   worktree was dirty, and `sonata --version` reports it. A development install's

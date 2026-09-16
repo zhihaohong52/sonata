@@ -673,6 +673,14 @@ complex = ["flash"]
     expect(c?.detail).not.toMatch(/catalog update/);
   });
 
+  it('reports a missing normal tier as optional information', async () => {
+    const { cwd, home } = tieredSetup();
+    const checks = await doctorChecks(cwd, home, new Date('2026-08-28T00:00:00.000Z'));
+    const normal = checks.find((check) => check.name === 'normal tier');
+    expect(normal?.ok).toBe(true);
+    expect(checks.some((check) => !check.ok && /normal/i.test(`${check.name} ${check.detail}`))).toBe(false);
+  });
+
   it('says tiers fall back to built-in defaults when no catalog exists', async () => {
     const { cwd, home } = tieredSetup();
     const c = await rankingCheck(cwd, home, new Date('2026-08-28T00:00:00.000Z'));

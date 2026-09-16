@@ -1,7 +1,8 @@
 import { byokCandidateKey } from '../native/models.js';
 import { splitCandidate } from '../effort.js';
 import { reconcileTierList } from '../init/helpers.js';
-import type { CredentialSource } from '../config.js';
+import { TIER_NAMES, type CredentialSource } from '../config.js';
+import type { TierProposal } from '../catalog.js';
 import type { InitState } from './types.js';
 
 /**
@@ -51,7 +52,7 @@ export interface PerRoleModelsValue {
 
 export interface TierSelectionValue {
   role: string;
-  tier: 'simple' | 'complex';
+  tier: (typeof TIER_NAMES)[number];
   ranked: string[];
 }
 
@@ -108,7 +109,7 @@ export function applyStep(state: InitState, step: number, value: unknown): InitS
           tiers: {
             ...state.tiers,
             [role]: {
-              ...(state.tiers?.[role] ?? { simple: [], complex: [] }),
+              ...(state.tiers?.[role] ?? { simple: [], normal: [], complex: [] }),
               [tier]: ranked,
             },
           },
@@ -277,7 +278,7 @@ export function acceptRemainingTiers(
   state: InitState,
   roles: string[],
   fromIndex: number,
-  proposal: { simple: string[]; complex: string[] },
+  proposal: TierProposal,
   allNativeKeys: string[] = state.nativeKeys ?? [],
   added: readonly string[] = [],
   /**
@@ -297,11 +298,11 @@ export function acceptRemainingTiers(
   offeredKeys: string[] = state.nativeKeys ?? [],
 ): InitState {
   let next = state;
-  for (let index = Math.max(0, fromIndex); index < roles.length * 2; index++) {
-    const role = roles[Math.floor(index / 2)];
+  for (let index = Math.max(0, fromIndex); index < roles.length * TIER_NAMES.length; index++) {
+    const role = roles[Math.floor(index / TIER_NAMES.length)];
     if (role === undefined) continue;
-    const tier = index % 2 === 0 ? 'simple' : 'complex';
-    const saved = next.tiers?.[role]?.[tier];
+    const tier = TIER_NAMES[index % TIER_NAMES.length]!;
+    const saved = (next.tiers?.[role] as { simple?: string[]; normal?: string[]; complex?: string[] } | undefined)?.[tier];
     const tierAdded = unpinned(saved);
     next = applyStep(next, 4, {
       role,

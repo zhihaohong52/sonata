@@ -15,6 +15,7 @@ base_url = "https://gateway.acme.example/v1"
 
 [tiers.code]
 simple  = ["flash", "kimi-k3"]       # tried in this order; a cooling-down candidate is skipped
+normal  = ["flash", "kimi-k3"]       # optional; absent is valid, empty is refused
 complex = ["kimi-k3", "flash"]
 
 [run]
@@ -55,8 +56,10 @@ read-only sandbox on codex, a tool allowlist on pi, a read-only agent on
 opencode. The strength of that guarantee differs per harness; see
 [Permission modes](permission-modes.md).
 
-Each role chooses its own ranked model list, per difficulty tier, through
-`[tiers.<role>]`; the older flat `[generate.roles]`/`[generate.native]` pair is
+Each role chooses its own ranked model list, per tier, through `[tiers.<role>]`.
+`simple` and `complex` are required; `normal` is optional. An absent `normal`
+list is valid and preserves the previous behavior, while a present-but-empty
+list is refused at parse time. The older flat `[generate.roles]`/`[generate.native]` pair is
 migrated automatically the next time you run `sonata init` (a config still in
 that shape parses fine in the meantime — `sonata doctor` just points at
 `init` to migrate it).

@@ -17,7 +17,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../extended-context.js';
-import { configPath, loadConfig, parseConfig, TIER_NAMES, tiersCollapse, type SonataConfig } from '../config.js';
+import { configPath, loadConfig, parseConfig, TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
 import { assertEffortsPinned, candidateLabel, expandCandidates, hasTaskCost, loadAaCatalog, type AaCatalog } from '../catalog.js';
 import { replaceTiersBlock } from '../init/toml.js';
 import { loadModelsDev, type ModelsDevCache } from '../modelsdev.js';
@@ -26,7 +26,7 @@ import { cmdSync } from './sync.js';
 import { pruneAgents } from '../detect.js';
 import { splitCandidate, type Effort } from '../effort.js';
 
-export type Tier = 'simple' | 'complex';
+export type Tier = 'simple' | 'normal' | 'complex';
 
 export interface AgentModelRow {
   /** The candidate as ranked — `<key>` or `<key>@<effort>` — not a key into `[models]`. */
@@ -85,17 +85,20 @@ export function agentRows(config: SonataConfig): AgentRow[] {
         // A collapsed alias serves both lists, so it may claim only the window
         // both can honour — the same rule `sync` applies.
         extendedContext: tierQualifiesForExtendedContext(config, lists.simple)
+          && (lists.normal === undefined || tierQualifiesForExtendedContext(config, lists.normal))
           && tierQualifiesForExtendedContext(config, lists.complex),
       });
       continue;
     }
     for (const tier of TIER_NAMES) {
+      const keys = lists[tier];
+      if (keys === undefined) continue;
       rows.push({
         agent: `${role}-${tier}`,
         role,
         tier,
-        models: lists[tier].map((key) => modelRow(config, key)),
-        extendedContext: tierQualifiesForExtendedContext(config, lists[tier]),
+        models: keys.map((key) => modelRow(config, key)),
+        extendedContext: tierQualifiesForExtendedContext(config, keys),
       });
     }
   }
@@ -150,7 +153,7 @@ export interface AgentsOptions {
  */
 export function writeTiers(
   opts: AgentsOptions,
-  tiers: Record<string, { simple: string[]; complex: string[] }>,
+  tiers: Record<string, TierLists>,
   /**
    * The `[tiers]` the editor opened on.
    *
@@ -163,7 +166,7 @@ export function writeTiers(
    * ask, and a ranking is exactly the kind of deliberate ordering that must
    * not be guessed at.
    */
-  expect?: Record<string, { simple: string[]; complex: string[] }>,
+  expect?: Record<string, TierLists>,
 ): { path: string; agentsWritten: string[]; pruned: string[]; skipped: string[] } {
   const path = configPath(opts.cwd, opts.home);
   if (path === undefined || path === null) throw new Error('no sonata.toml found — run `sonata init`');
@@ -255,7 +258,9 @@ export function rankableCandidates(config: SonataConfig, aa?: AaCatalog, modelsD
  */
 export function editorCandidates(config: SonataConfig, aa?: AaCatalog, modelsDev?: ModelsDevCache): string[] {
   const rows = rankableCandidates(config, aa, modelsDev);
-  const saved = Object.values(config.tiers ?? {}).flatMap((tiers) => [...tiers.simple, ...tiers.complex]);
+  const saved = Object.values(config.tiers ?? {}).flatMap((tiers) => [
+    ...tiers.simple, ...(tiers.normal ?? []), ...tiers.complex,
+  ]);
   return [...new Set([...rows, ...saved])];
 }
 
@@ -269,9 +274,9 @@ export interface AgentsIo {
   /** `undefined` when the session has no TTY, so the view stays read-only. */
   edit?: (input: {
     config: SonataConfig;
-    initialTiers: Record<string, { simple: string[]; complex: string[] }>;
+    initialTiers: Record<string, TierLists>;
     items: Array<{ value: string; label: string }>;
-  }) => Promise<Record<string, { simple: string[]; complex: string[] }> | undefined>;
+  }) => Promise<Record<string, TierLists> | undefined>;
 }
 
 /** A ranking row's label: the key, what it resolves to, and its window. */

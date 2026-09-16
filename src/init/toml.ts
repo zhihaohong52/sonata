@@ -1,7 +1,7 @@
 import type { NativeCandidate } from './helpers.js';
 import type { CredentialSource } from '../config.js';
 import type { NativeGatewayAuth, NativeGatewayWireFormat } from '../config.js';
-import type { SonataConfig, PriceConfig, Rates } from '../config.js';
+import type { SonataConfig, PriceConfig, Rates, TierLists } from '../config.js';
 import { isOauthGatewayAuth, oauthGatewayBaseUrl } from '../config.js';
 import { proposeTiers } from '../catalog.js';
 import { proposePricingProvider } from '../pricing.js';
@@ -58,7 +58,7 @@ function priceLines(parent: string, price: PriceConfig): string[] {
 export function nativeTomlFor(
   roleModels: Record<string, NativeCandidate[]>,
   credentialSources: Record<string, CredentialSource> = {},
-  selectedTiers?: Record<string, { simple: string[]; complex: string[] }>,
+  selectedTiers?: Record<string, TierLists>,
   extraModels: Record<string, { harness?: string; harnessId?: string }> = {},
   allChosen: readonly NativeCandidate[] = [],
   existingRun?: SonataConfig['run'],
@@ -181,7 +181,13 @@ export function nativeTomlFor(
   }
 
   for (const [role, lists] of Object.entries(tierLists)) {
-    lines.push(`[tiers.${tomlKey(role)}]`, `simple = [${lists.simple.map(tomlKey).join(', ')}]`, `complex = [${lists.complex.map(tomlKey).join(', ')}]`, '');
+    lines.push(
+      `[tiers.${tomlKey(role)}]`,
+      `simple = [${lists.simple.map(tomlKey).join(', ')}]`,
+      ...(lists.normal === undefined ? [] : [`normal = [${lists.normal.map(tomlKey).join(', ')}]`]),
+      `complex = [${lists.complex.map(tomlKey).join(', ')}]`,
+      '',
+    );
   }
 
   lines.push(
@@ -270,7 +276,7 @@ function openDelimiterAfter(line: string): '"""' | "'''" | undefined {
 
 export function replaceTiersBlock(
   toml: string,
-  tiers: Record<string, { simple: string[]; complex: string[] }>,
+  tiers: Record<string, TierLists>,
 ): string {
   const lines = toml.split('\n');
   const isHeader = (line: string): boolean => /^\s*\[/.test(line);
@@ -308,6 +314,7 @@ export function replaceTiersBlock(
   const block = Object.entries(tiers).flatMap(([role, lists]) => [
     `[tiers.${tomlKey(role)}]`,
     `simple = [${lists.simple.map(tomlKey).join(', ')}]`,
+    ...(lists.normal === undefined ? [] : [`normal = [${lists.normal.map(tomlKey).join(', ')}]`]),
     `complex = [${lists.complex.map(tomlKey).join(', ')}]`,
     '',
   ]);

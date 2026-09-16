@@ -80,7 +80,7 @@ describe('the wizard on a first run', () => {
     expect(w.lastFrame()).toContain('opencode/acme/fast');
   });
 
-  it('renders a non-empty ranking on the complex tier and lets it be submitted', async () => {
+  it('renders non-empty rankings on all three tiers and lets them be submitted', async () => {
     const w = renderWizard(firstRunData());
 
     // step 0 config scope -> project
@@ -94,9 +94,11 @@ describe('the wizard on a first run', () => {
     // step 4a code:simple -> accept the proposal
     await w.press(ENTER);
 
-    // step 4b code:complex. The regression: this screen rendered with an
-    // empty ranking, and RankedSelect refuses to submit one — so the wizard
-    // could not be advanced past here at all.
+    // step 4b code:normal. Each tier must open with a usable ranking.
+    expect(w.lastFrame()).toContain('code: normal models');
+    expect(w.lastFrame()).toMatch(/acme-(fast|deep)/);
+
+    await w.press(ENTER);
     expect(w.lastFrame()).toContain('code: complex models');
     expect(w.lastFrame()).toMatch(/acme-(fast|deep)/);
 
@@ -115,7 +117,7 @@ describe('the wizard, remaining flow', () => {
     await w.press(ENTER);
     await w.press(ENTER, ENTER, 'test-key', ENTER, DOWN, ENTER);
     await w.press(SPACE, ENTER);
-    await w.press(ENTER, ENTER, ENTER, ENTER);
+    await w.press(ENTER, ENTER, ENTER, ENTER, ENTER);
 
     const r = w.result();
     expect(r?.cancelled).toBe(false);
@@ -123,6 +125,7 @@ describe('the wizard, remaining flow', () => {
     expect(r?.state.nativeKeys).toEqual(['acme-fast', 'acme-deep']);
     expect(r?.state.roles).toEqual(['code']);
     expect(r?.state.tiers?.code.simple.length).toBeGreaterThan(0);
+    expect(r?.state.tiers?.code.normal?.length).toBeGreaterThan(0);
     expect(r?.state.tiers?.code.complex.length).toBeGreaterThan(0);
   });
 
@@ -154,17 +157,17 @@ describe('the wizard, remaining flow', () => {
     expect(w.result()).toBeUndefined();
   });
 
-  it('walks back from the complex tier to the simple one, not to roles', async () => {
+  it('walks back from the complex tier to the normal one, not to roles', async () => {
     const w = renderWizard(firstRunData());
 
     await w.press(ENTER);
     await w.press(ENTER, ENTER, 'test-key', ENTER, DOWN, ENTER);
     await w.press(SPACE, ENTER);
-    await w.press(ENTER, ENTER);
+    await w.press(ENTER, ENTER, ENTER);
 
     expect(w.lastFrame()).toContain('code: complex models');
     await w.press(LEFT);
-    expect(w.lastFrame()).toContain('code: simple models');
+    expect(w.lastFrame()).toContain('code: normal models');
   });
 });
 
