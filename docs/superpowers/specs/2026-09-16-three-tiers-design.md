@@ -160,6 +160,53 @@ complex = ["terra@max", "luna@max", "terra@xhigh"]
   warning — it is a valid config, and saying otherwise would nag every install
   that predates this.
 
+## Documentation and prompt surfaces
+
+Two of these are behaviour rather than prose, and are listed first because
+shipping the code without them leaves a third tier nothing dispatches to.
+
+**`skills/loop/SKILL.md` — the escalation ladder is a rung longer.** The
+`sonata-loop` skill currently routes a task to `simple` or `complex` and
+re-runs at `complex` after two failed reviews at `simple`. With a middle rung
+that becomes `simple -> normal -> complex`, and the rule needs restating: how
+many failures escalate, and whether the final review gate stays at
+`review-complex` (it should — a gate exists to be strict). This is the one
+surface where a stale document silently changes what runs.
+
+**`src/init/guidance.ts` — the managed `CLAUDE.md` block.** The only text a
+routed session reads unconditionally, and the place the tier choice is
+actually explained to the caller. It must name three tiers, say `-normal` is
+the default, and keep both existing rules (no `model` argument; fan out only
+to tier agents).
+
+**Generated agent descriptions (`src/commands/sync.ts`).** Covered under *Agent
+generation* above. Restated here because the description *is* a prompt: it is
+what the dispatching model reads while choosing, and a mis-selection among
+three is silent.
+
+Prose, in descending order of how wrong it would be left alone:
+
+| File | Tier mentions | What changes |
+|---|---|---|
+| `CLAUDE.md` | 27 | The tier model, the `[tiers]` example, the ranking paragraph, `TIER_NAMES`, alias grammar, agent counts (8 -> 12) |
+| `README.md` | 18 | The front-door explanation of what a tier is and how many agents `init` generates |
+| `docs/guide/configuration.md` | 4 | The `[tiers.<role>]` reference, including that `normal` is optional |
+| `docs/HANDOFF.md` | 8 | Current state; the tier set a new session is told to assume |
+| `docs/guide/limitations.md` | 2 | Wherever the two-tier split is named as a constraint |
+| `CHANGELOG.md` | — | An `## [Unreleased]` entry |
+
+`docs/roadmap.md` has no tier mentions today; check it at ship time, and update
+the claude.ai Artifact it mirrors if it gains one.
+
+**Not edited by hand:** `.claude/agents/*.md` and `.claude/skills/sonata-loop/`
+are generated. They change by running `sonata sync` after the code lands, and a
+stale generated agent on a developer's machine is the expected state until they
+do.
+
+**Also mine, not the repo's:** the session memory notes that name the tier set
+(`sonata-default-subagent-lane`, `sonata-never-override-tier-agent-model`) need
+the third tier, or they will keep teaching two.
+
 ## Compatibility
 
 **No `schema_version` bump and no migration.** Making `normal` optional means an
@@ -187,6 +234,9 @@ when you next ask for it" is the honest default.
 - Round-trip: a config *with* `normal` survives `nativeTomlFor` -> `parseConfig`
   unchanged, and a no-op `sonata agents` edit writes byte-identical TOML.
 - Every assertion is mutation-checked: deleting the feature must fail the test.
+- A documentation check: no shipped prose describes the tier set as exactly two.
+  Cheap to assert badly (a grep for "simple" matches everything), so this is a
+  review-time checklist item rather than a test.
 
 ## Rejected alternatives
 
