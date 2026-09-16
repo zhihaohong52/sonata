@@ -10,6 +10,24 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Changed
 
+- **Every generated agent says not to pass a `model` argument, and the managed
+  `CLAUDE.md` block says it to the caller.** The Agent tool's `model` parameter
+  takes precedence over an agent's frontmatter, so passing one runs sonata's
+  prompt and tools on a Claude model that never reaches the router — silently.
+  Reported after ~15 dispatches had already run that way, where every
+  "foreign-model review" was Claude reviewing Claude. The warning is in each
+  agent's `description` as well as its body, because the description is what
+  the dispatching model reads while the body arrives only after the override
+  has taken effect (#42).
+
+- **Every generated agent now carries a fan-out rule, not just read-only ones.**
+  A tier agent that delegates to Claude's own `Plan`, `Explore` or
+  `general-purpose` ends the foreign-model lane silently — the subagent runs and
+  reports and looks exactly like a routed one. The old `## Delegating` guard sat
+  only on read-only roles, so `code-*`, the agents most able to fan out, were
+  told nothing; one called `Plan` (Opus) in practice. The rule names the tier
+  agent to reach for instead (`plan-complex`, not `Plan`).
+
 - **`sonata init` ranks only AA models with a published cost per task.** Per-token
   blended prices and dollars per task are incomparable, so uncosted models are
   no longer offered or ranked by the wizard. The picker names excluded models
