@@ -20,11 +20,56 @@ export interface AgentSpec { role: string; model: string; harness: string }
  */
 const FANOUT_TOOLS = 'Agent, Task, Workflow';
 
+/**
+ * Why every generated agent says this.
+ *
+ * The routed model is pinned in frontmatter, and the Agent tool's own `model`
+ * parameter takes precedence over frontmatter — so a caller that passes one
+ * runs sonata's prompt and tools on a Claude model that never reaches the
+ * router. Nothing errors and nothing warns: reported 2026-09-15 after ~15
+ * dispatches had already run that way, noticed only when someone asked which
+ * models were in use. Every "foreign-model review" in that session was Claude
+ * reviewing Claude, which is precisely the independence the lane exists to
+ * provide.
+ *
+ * It sits in the `description` as well as the body because the description is
+ * what the *dispatching* model reads while choosing an agent — by the time the
+ * body is in context the override has already happened. Generic multi-agent
+ * advice ("always specify the model explicitly") is what produces this, so the
+ * instruction has to be visible at the point that advice is applied.
+ */
+const NO_MODEL_ARG = 'Dispatch with no `model` argument — it overrides this agent\'s routed model and silently disables sonata routing.';
+
 const DELEGATING = `## Delegating
 
 You may spawn subagents. Delegate only to read-only agent types — \`review-*\`,
 \`explore-*\`, \`plan-*\`. This run is read-only, and delegating to a \`code-*\` agent
 writes to the repository through it. Nothing enforces this but you.
+`;
+
+/**
+ * The fan-out rule, on every generated agent rather than read-only ones.
+ *
+ * A tier agent that delegates to \`Plan\`, \`Explore\` or \`general-purpose\` hands
+ * the work back to Claude, which ends the foreign-model lane silently — the
+ * subagent runs, reports, and looks exactly like a routed one. Observed
+ * 2026-09-16: a \`code-complex\` agent called \`Plan\` (Opus). The old guard said
+ * nothing about this and sat only on read-only roles, so the agent most able
+ * to fan out was the one told least.
+ *
+ * It is prompt text because nothing stronger exists: Claude Code's \`tools:\`
+ * frontmatter grants tools, not permitted argument values, so it can withhold
+ * \`Agent\` entirely but cannot constrain which \`subagent_type\` is passed to it.
+ */
+const FAN_OUT = `## Fanning out
+
+When you delegate, delegate to a **sonata tier agent** — \`code-simple\`,
+\`code-complex\`, \`review-*\`, \`explore-*\`, \`plan-*\`. Do not call Claude's own
+\`Plan\`, \`Explore\`, \`Task\` or \`general-purpose\` agents: they run on Claude, which
+silently ends the foreign-model lane this run exists to provide. Need a plan?
+That is \`plan-complex\` or \`plan-simple\`, not \`Plan\`.
+
+${NO_MODEL_ARG}
 
 Keep fan-out proportionate: every subagent spends tokens your caller pays for, and
 nothing bounds how deep this nests.
@@ -44,8 +89,13 @@ function toolsForRole(role: string): string {
   return `tools: Read, Grep, Glob, ${FANOUT_TOOLS}\n`;
 }
 
+/**
+ * The fan-out guidance for a role: the lane rule for everyone, plus the
+ * read-only-delegation rule for the roles that need it.
+ */
 function delegatingForRole(role: string): string {
-  return isReadOnlyRole(role) ? `\n\n${DELEGATING}` : '';
+  const readOnly = isReadOnlyRole(role) ? `\n\n${DELEGATING}` : '';
+  return `\n\n${FAN_OUT}${readOnly}`;
 }
 
 export function agentMarkdown(spec: AgentSpec): string {
@@ -175,6 +225,7 @@ Your final message must end with a line naming the run:
 `;
 }
 
+
 export function nativeAgentMarkdown(spec: { role: string; model: string }): string {
   const blurb = ROLE_BLURB[spec.role] ?? spec.role;
   const tools = toolsForRole(spec.role);
@@ -182,11 +233,13 @@ export function nativeAgentMarkdown(spec: { role: string; model: string }): stri
 
   return `---
 name: native-${spec.role}-${spec.model}
-description: Runs ${blurb} natively on ${spec.model} inside Claude Code's own loop. Requires a routed session (sonata code, or sonata route on).
+description: Runs ${blurb} natively on ${spec.model} inside Claude Code's own loop. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on).
 model: ${spec.model}
 ${tools}---
 
 This agent only works in a routed session (sonata code, or sonata route on).
+
+${NO_MODEL_ARG}
 
 Focus on ${blurb}.${delegating}
 `;
@@ -210,8 +263,8 @@ export function tierAgentMarkdown(spec: {
   const tools = toolsForRole(spec.role);
   const delegating = delegatingForRole(spec.role);
   const description = tier === undefined
-    ? `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop. Requires a routed session (sonata code, or sonata route on/auto).`
-    : `Runs ${blurb} on a ranked list of foreign models (${tier} tier), natively inside Claude Code's loop. Simple = mechanical, well-specified, contained work (single file, clear spec, bulk edits). Complex = cross-cutting, ambiguous, design-sensitive, or needs sustained reasoning. When unsure, use -complex. Requires a routed session (sonata code, or sonata route on/auto).`;
+    ? `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`
+    : `Runs ${blurb} on a ranked list of foreign models (${tier} tier), natively inside Claude Code's loop. Simple = mechanical, well-specified, contained work (single file, clear spec, bulk edits). Complex = cross-cutting, ambiguous, design-sensitive, or needs sustained reasoning. When unsure, use -complex. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`;
 
   return `---
 name: ${name}
@@ -220,6 +273,10 @@ model: ${model}
 ${tools}---
 
 This agent only works in a routed session (sonata code, or sonata route on/auto).
+
+${NO_MODEL_ARG}
+The tier is the model choice: pick -simple or -complex, and let the frontmatter
+select the model.
 
 ${TIER_AGENT_MARKER} — edits here are overwritten on the next sync.
 

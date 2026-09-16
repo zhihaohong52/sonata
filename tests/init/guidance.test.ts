@@ -154,6 +154,23 @@ describe('mergeGuidance', () => {
 });
 
 describe('guidanceBlock', () => {
+  it('tells a tier agent to fan out only to other tier agents', () => {
+    // Asserted separately from the no-model rule: they are different failures
+    // — one runs the agent itself on Claude, the other hands its *subagent* to
+    // Claude — so an assertion resting on the shared wording would survive
+    // deleting either one.
+    const block = guidanceBlock().replace(/\s+/g, ' ');
+    expect(block).toContain('when one fans out, it should delegate');
+    expect(block).toContain('`plan-complex` or `plan-simple`');
+  });
+
+  it('tells the caller not to pass a model argument', () => {
+    // The caller is what passes it, and this block is the only text a calling
+    // session reads unconditionally — the agent's own warning arrives after
+    // the override has already taken effect.
+    expect(guidanceBlock()).toContain('no `model` argument');
+  });
+
   it('is delimited by the markers mergeGuidance looks for', () => {
     const block = guidanceBlock();
     expect(block.startsWith(GUIDANCE_BEGIN)).toBe(true);

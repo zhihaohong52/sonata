@@ -425,6 +425,39 @@ dispatch_window_seconds = 1500 # blocking window for sonata wait/dispatch
   belong to, never as their value. `cli.ts` prints the directory when a run
   fails or cancels. Logging never throws: an unwritable home degrades to
   `nullInitLog` rather than failing the command it was meant to explain.
+- **A `model` argument on the Agent tool silently defeats tier routing.** Each
+  generated agent pins its routed alias in frontmatter (`model:
+  sonata-code-complex[1m]`), and the tool's own `model` parameter takes
+  precedence over frontmatter — so a caller that passes one runs sonata's
+  prompt and tools on a Claude model that never reaches the router. Nothing
+  errors: reported 2026-09-15 after ~15 dispatches had already run that way,
+  noticed only when someone asked which models were in use, and every
+  "foreign-model review" in that session had been Claude reviewing Claude.
+  Sonata cannot detect it — the request goes straight to `api.anthropic.com`
+  and the router sees nothing — so the mitigation is text in the three places
+  a caller might read: each agent's `description` (what the dispatching model
+  reads while *choosing*, before the body is in context), each agent's body,
+  and the managed `CLAUDE.md` block, which is the only text the calling
+  session reads unconditionally. The generic multi-agent advice "always
+  specify the model explicitly" is what produces this, and is wrong here: for
+  a tier agent the model choice **is** the tier. A description is a plain YAML
+  scalar, so the warning carries an em dash rather than the colon that reads
+  more naturally — `": "` inside an unquoted scalar is a mapping.
+
+- **A tier agent that fans out to a Claude subagent ends the lane, just as
+  silently.** Observed 2026-09-16: a `code-complex` agent called Claude's own
+  `Plan` (Opus), which runs, reports, and is indistinguishable from a routed
+  subagent. Every generated agent therefore carries a `## Fanning out` rule
+  naming the tier agent to reach for instead — `plan-complex`, not `Plan` —
+  where the older `## Delegating` guard (read-only roles must not delegate
+  writes) sat only on read-only roles, leaving the `code-*` agents most able to
+  fan out with no fan-out guidance at all. This is prompt text for the reason
+  recorded under Known Limitations: `tools:` frontmatter grants tools, not
+  permitted argument values, so it can withhold `Agent` outright but cannot
+  constrain the `subagent_type` passed to it. Real enforcement would need a
+  PreToolUse hook on the Agent tool that can identify its calling agent, which
+  has not been probed.
+
 - **Tier agents are discovered natively but not *preferred* natively, which is
   what the CLAUDE.md guidance block exists to fix** (`src/init/guidance.ts`).
   The generated agents are ordinary `.claude/agents/*.md` files, so Claude Code
