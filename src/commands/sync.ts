@@ -86,7 +86,7 @@ When you delegate, delegate to a **sonata tier agent** — \`code-simple\`,
 \`code-normal\`, \`code-complex\`, \`review-*\`, \`explore-*\`, \`plan-*\`. Do not call Claude's own
 \`Plan\`, \`Explore\`, \`Task\` or \`general-purpose\` agents: they run on Claude, which
 silently ends the foreign-model lane this run exists to provide. Need a plan?
-That is \`plan-complex\` or \`plan-simple\`, not \`Plan\`.
+That is \`plan-simple\`, \`plan-normal\` or \`plan-complex\`, not \`Plan\`.
 
 ${NO_MODEL_ARG}
 

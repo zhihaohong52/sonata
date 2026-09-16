@@ -73,7 +73,7 @@ export function guidanceBlock(): string {
     '',
     'The same applies inside a tier agent: when one fans out, it should delegate',
     "to another tier agent, not to Claude's own `Plan`, `Explore` or",
-    '`general-purpose`. A plan is `plan-complex` or `plan-simple`.',
+    '`general-purpose`. A plan is `plan-simple`, `plan-normal` or `plan-complex`.',
     '',
     'If a tier agent fails with `model_not_found`, the session is **not routed** —',
     'that is a setup problem, not a broken agent. Run `sonata doctor`, and start',

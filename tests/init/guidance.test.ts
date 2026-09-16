@@ -169,7 +169,7 @@ describe('guidanceBlock', () => {
     // deleting either one.
     const block = guidanceBlock().replace(/\s+/g, ' ');
     expect(block).toContain('when one fans out, it should delegate');
-    expect(block).toContain('`plan-complex` or `plan-simple`');
+    expect(block).toContain('`plan-simple`, `plan-normal` or `plan-complex`');
   });
 
   it('tells the caller not to pass a model argument', () => {

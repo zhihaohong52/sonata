@@ -150,9 +150,15 @@ describe('tierAgentMarkdown', () => {
     }
   });
 
-  it('says size is not difficulty', () => {
-    const md = tierAgentMarkdown({ role: 'code', tier: 'normal' });
-    expect(md.split('---')[2]).toContain('Size is not difficulty');
+  it('says size is not difficulty, and names the default in the body', () => {
+    // Asserted on wording unique to the body's own block. The phrase alone
+    // appears in the description too, so a test matching only that stayed
+    // green when the body copy was mutated — reported by the agent that
+    // wrote it rather than left to be discovered.
+    const body = tierAgentMarkdown({ role: 'code', tier: 'normal' }).split('---')[2] ?? '';
+    expect(body).toContain('A large mechanical change is `simple`; a three-line');
+    expect(body).toContain('`-normal` — the default. You know what to change, not exactly how.');
+    expect(body).toContain('A task\nthat fails review is re-run one tier up');
   });
 
   it('gives a read-only tier agent read and fan-out tools', () => {
