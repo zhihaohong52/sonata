@@ -25,9 +25,9 @@
   "bin": {
     "sonata": "dist/cli.js"
   },
-  "files": ["dist", "roles", "hooks", "skills", "ui", "README.md", "LICENSE"],
+  "files": ["dist", "roles", "hooks", "skills", "ui", "README.md", "LICENSE", "!dist/build-info.json"],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/build-stamp.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "dev": "tsx src/cli.ts",
