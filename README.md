@@ -298,7 +298,7 @@ when you know what to change but need to fit it into the surrounding code;
 `complex` needs a design decision or the meaning of done is ambiguous. Size is
 not difficulty: a large mechanical change is `simple`, while a three-line
 interface decision is `complex`. When unsure, use `-normal`; a task that fails
-review is re-run one tier up. The `sonata-loop` skill `sonata init` installs
+review twice is re-run one tier up. The `sonata-loop` skill `sonata init` installs
 (`skills/loop/SKILL.md`) drives this across a whole feature: plan, route each task
 to a tier, gate behind review, and escalate `simple` to `normal` to `complex`
 after repeated failures.

@@ -15,7 +15,7 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   `complex`, and each tier is now one pure sort key: `complex` by capability,
   `normal` by value, `simple` by that same value ranking under a cost cap of
   12x the best-value model's own cost-per-task — making `simple` a cost-capped
-  prefix of `normal` that can never be empty. `SIMPLE_CAPABILITY_FLOOR` is
+  subsequence of `normal` that can never be empty. `SIMPLE_CAPABILITY_FLOOR` is
   removed: flooring the value tier produced a list byte-identical to the cheap
   tier. **Nothing migrates** — `normal` is optional, so an existing config
   parses, generates the same agents and routes exactly as before, with no

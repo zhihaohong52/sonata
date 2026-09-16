@@ -63,6 +63,13 @@ describe('lookupModel', () => {
   });
 });
 
+/** Order-preserving containment: every element of `sub`, in `full`'s order. */
+const isSubsequence = (sub: readonly string[], full: readonly string[]): boolean => {
+  let at = 0;
+  for (const key of full) if (key === sub[at]) at++;
+  return at === sub.length;
+};
+
 describe('proposeTiers', () => {
   const threeTierAa: AaCatalog = { fetchedAt: '2026-09-16T00:00:00Z', models: {
     // One family at several efforts: capability nearly flat, cost spread wide.
@@ -77,11 +84,32 @@ describe('proposeTiers', () => {
     expect(p.complex).toEqual(['pro-max', 'flash-high', 'flash-low']);
   });
 
-  it('makes simple a cost-capped prefix of normal', () => {
+  it('makes simple a cost-capped subsequence of normal', () => {
     // 12 x $0.010 = $0.120, so pro-max is out and the order is normal's.
     const p = proposeTiers(['flash-low', 'flash-high', 'pro-max'], threeTierAa);
     expect(p.simple).toEqual(['flash-low', 'flash-high']);
-    expect(p.normal.slice(0, p.simple.length)).toEqual(p.simple);
+    // A subsequence, not a prefix: value is not monotonic in cost, so the
+    // filter can skip an over-ceiling candidate and keep a cheaper one behind
+    // it. Asserted as order-preserving containment rather than as a prefix,
+    // which held only because this fixture happens to be monotonic.
+    expect(isSubsequence(p.simple, p.normal)).toBe(true);
+  });
+
+  it('skips an over-ceiling candidate rather than truncating at it', () => {
+    // Constructed to break the prefix reading: `x` outranks `y` on value but
+    // sits over the cap, so `simple` skips it and keeps `y`. Truncating at the
+    // first over-ceiling candidate would make `simple` a true prefix and drop
+    // `y` — a qualifying cheap model — which is the opposite of what the cheap
+    // tier is for.
+    const aa: AaCatalog = { fetchedAt: 'x', models: {
+      a1: { codingIndex: 44, blendedPriceUsd: 1, costPerTask: 0.010 },
+      x: { codingIndex: 60, blendedPriceUsd: 1, costPerTask: 0.150 },
+      y: { codingIndex: 45, blendedPriceUsd: 1, costPerTask: 0.120 },
+    } };
+    const p = proposeTiers(['a1', 'x', 'y'], aa);
+    expect(p.normal).toEqual(['a1', 'x', 'y']);
+    expect(p.simple).toEqual(['a1', 'y']);
+    expect(isSubsequence(p.simple, p.normal)).toBe(true);
   });
 
   it('always admits the anchor, so simple is never empty', () => {
@@ -139,7 +167,7 @@ describe('proposeTiers', () => {
     expect(tiers.complex[0]).toBe('gpt-5.6-terra');
     expect(tiers.complex).toContain('deepseek-v4-pro');
     // The retired capability floor no longer removes capable models from
-    // simple; it is the cost-capped prefix of the value-ranked normal tier.
+    // simple; it is the cost-capped subsequence of the value-ranked normal tier.
     expect(tiers.normal).toEqual([
       'deepseek-v4-flash', 'gpt-5.6-luna', 'deepseek-v4-pro', 'gpt-5.6-terra',
     ]);
@@ -178,7 +206,7 @@ describe('proposeTiers', () => {
 
   it('allows a cheap but weak model when it leads on value', () => {
     // The capability floor is intentionally retired: simple is a cost-capped
-    // prefix of normal, so a very cheap model can lead on capability per dollar.
+    // subsequence of normal, so a very cheap model can lead on capability per dollar.
     const aa: AaCatalog = {
       fetchedAt: '2026-08-25T00:00:00Z',
       models: {

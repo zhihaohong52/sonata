@@ -966,7 +966,11 @@ export function tierAgentNames(tiers: NonNullable<SonataConfig['tiers']>): strin
   const names: string[] = [];
   for (const [role, lists] of Object.entries(tiers)) {
     if (tiersCollapse(lists)) names.push(role);
-    else names.push(...TIER_NAMES.map((tier) => `${role}-${tier}`));
+    // Only the tiers the role defines. `cmdSync` writes no `-normal` agent for
+    // a role without a `normal` list, so naming one here would make
+    // `staleAgents` treat a left-over `<role>-normal.md` as expected — an
+    // orphan file whose alias `resolveTierAlias` refuses, reported by nothing.
+    else names.push(...TIER_NAMES.filter((tier) => lists[tier] !== undefined).map((tier) => `${role}-${tier}`));
   }
   return names;
 }

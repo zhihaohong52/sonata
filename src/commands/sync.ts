@@ -2,6 +2,9 @@ import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../ext
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generatedAgents, generatedNativeAgents, expectedAgentNames, isReadOnlyRole, loadConfig, TIER_NAMES, tiersCollapse } from '../config.js';
+
+/** One of the tiers a role can define. */
+type Tier = (typeof TIER_NAMES)[number];
 import { isSonataAgent, staleAgents } from '../detect.js';
 import { TIER_AGENT_MARKER } from '../agent-markers.js';
 import { ROLE_BLURB } from '../roles.js';
@@ -46,18 +49,38 @@ const TIER_CRITERION: Record<'simple' | 'normal' | 'complex', string> = {
   complex: 'Use it when the task needs a design decision affecting other components, or is ambiguous about what "done" means, so the first job is deciding what to build.',
 };
 
-const TIER_CHOICE = `## Choosing a tier
+/**
+ * How to choose a tier, naming only the tiers this role actually has.
+ *
+ * Availability is not decoration. `cmdSync` generates no `-normal` agent for a
+ * role whose config has no `normal` list, and `resolveTierAlias` returns
+ * `undefined` for that alias — so a fixed prompt naming `-normal` as the
+ * default would send every dispatch from an unmigrated config at an agent that
+ * does not exist. Since `normal` is optional precisely so existing configs
+ * need no migration, that is the common case, not the edge one.
+ */
+function tierChoice(available: readonly Tier[]): string {
+  if (available.length < 2) return '';
+  const criterion: Record<Tier, string> = {
+    simple: '`-simple` — writable without asking a question.',
+    normal: '`-normal` — the default. You know what to change, not exactly how.',
+    complex: '`-complex` — needs a design decision, or "done" is still ambiguous.',
+  };
+  const bullets = available.map((tier) => `- ${criterion[tier]}`).join('\n');
+  // Without a middle rung there is no default to name, and naming one anyway
+  // is what sent 74% of dispatches to `complex`.
+  const pick = available.includes('normal')
+    ? 'Start at the tier the task actually needs rather than a rung higher. A task\nthat fails review is re-run one tier up, so starting low is cheap to correct\nand starting high is not cheap at all.'
+    : 'Prefer `-simple` whenever the task is specified closely enough to write\nwithout asking a question; a task that fails review is re-run at `-complex`,\nso starting low is cheap to correct and starting high is not cheap at all.';
+  return `## Choosing a tier
 
 Size is not difficulty. A large mechanical change is \`simple\`; a three-line
 change that decides an interface is \`complex\`.
 
-- \`-simple\` — writable without asking a question.
-- \`-normal\` — the default. You know what to change, not exactly how.
-- \`-complex\` — needs a design decision, or "done" is still ambiguous.
+${bullets}
 
-Start at the tier the task actually needs rather than a rung higher. A task
-that fails review is re-run one tier up, so starting low is cheap to correct
-and starting high is not cheap at all.`;
+${pick}`;
+}
 
 const DELEGATING = `## Delegating
 
@@ -80,19 +103,27 @@ writes to the repository through it. Nothing enforces this but you.
  * frontmatter grants tools, not permitted argument values, so it can withhold
  * \`Agent\` entirely but cannot constrain which \`subagent_type\` is passed to it.
  */
-const FAN_OUT = `## Fanning out
+function fanOut(planTiers: readonly Tier[]): string {
+  // Named from the `plan` role's own config, not this role's: their
+  // availability is independent, and naming an agent sonata did not generate
+  // sends the delegation nowhere.
+  const plans = planTiers.length === 0
+    ? '`plan`'
+    : planTiers.map((tier) => `\`plan-${tier}\``).join(planTiers.length === 2 ? ' or ' : ', ').replace(/, ([^,]*)$/, ' or $1');
+  return `## Fanning out
 
-When you delegate, delegate to a **sonata tier agent** — \`code-simple\`,
-\`code-normal\`, \`code-complex\`, \`review-*\`, \`explore-*\`, \`plan-*\`. Do not call Claude's own
-\`Plan\`, \`Explore\`, \`Task\` or \`general-purpose\` agents: they run on Claude, which
-silently ends the foreign-model lane this run exists to provide. Need a plan?
-That is \`plan-simple\`, \`plan-normal\` or \`plan-complex\`, not \`Plan\`.
+When you delegate, delegate to a **sonata tier agent** — the \`code-*\`,
+\`review-*\`, \`explore-*\` and \`plan-*\` agents this config generates. Do not call
+Claude's own \`Plan\`, \`Explore\`, \`Task\` or \`general-purpose\` agents: they run on
+Claude, which silently ends the foreign-model lane this run exists to provide.
+Need a plan? That is ${plans}, not \`Plan\`.
 
 ${NO_MODEL_ARG}
 
 Keep fan-out proportionate: every subagent spends tokens your caller pays for, and
 nothing bounds how deep this nests.
 `;
+}
 
 /**
  * A read-only role's frontmatter tool list. Fan-out is granted to read-only
@@ -112,9 +143,9 @@ function toolsForRole(role: string): string {
  * The fan-out guidance for a role: the lane rule for everyone, plus the
  * read-only-delegation rule for the roles that need it.
  */
-function delegatingForRole(role: string): string {
+function delegatingForRole(role: string, planTiers: readonly Tier[]): string {
   const readOnly = isReadOnlyRole(role) ? `\n\n${DELEGATING}` : '';
-  return `\n\n${FAN_OUT}${readOnly}`;
+  return `\n\n${fanOut(planTiers)}${readOnly}`;
 }
 
 export function agentMarkdown(spec: AgentSpec): string {
@@ -248,7 +279,7 @@ Your final message must end with a line naming the run:
 export function nativeAgentMarkdown(spec: { role: string; model: string }): string {
   const blurb = ROLE_BLURB[spec.role] ?? spec.role;
   const tools = toolsForRole(spec.role);
-  const delegating = delegatingForRole(spec.role);
+  const delegating = delegatingForRole(spec.role, TIER_NAMES);
 
   return `---
 name: native-${spec.role}-${spec.model}
@@ -273,6 +304,14 @@ export function tierAgentMarkdown(spec: {
    * resolves the bare alias — see `src/extended-context.ts`.
    */
   extendedContext?: boolean;
+  /**
+   * The tiers this role's config actually defines. Defaults to all of them,
+   * which is right for a caller that has not been taught availability yet and
+   * wrong only in the direction the old code was already wrong.
+   */
+  availableTiers?: readonly Tier[];
+  /** The tiers the `plan` role defines — independent of this role's. */
+  planTiers?: readonly Tier[];
 }): string {
   const blurb = ROLE_BLURB[spec.role] ?? spec.role;
   const tier = spec.tier;
@@ -280,7 +319,8 @@ export function tierAgentMarkdown(spec: {
   const alias = tier === undefined ? `sonata-${spec.role}` : `sonata-${spec.role}-${tier}`;
   const model = spec.extendedContext === true ? `${alias}${EXTENDED_CONTEXT_SUFFIX}` : alias;
   const tools = toolsForRole(spec.role);
-  const delegating = delegatingForRole(spec.role);
+  const available = spec.availableTiers ?? TIER_NAMES;
+  const delegating = delegatingForRole(spec.role, spec.planTiers ?? TIER_NAMES);
   const description = tier === undefined
     ? `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`
     : `Runs ${blurb} on a ranked list of foreign models (${tier} tier), natively inside Claude Code's loop. ${TIER_CRITERION[tier]} Size is not difficulty — a large mechanical change is simple, a three-line change that decides an interface is complex. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`;
@@ -294,10 +334,10 @@ ${tools}---
 This agent only works in a routed session (sonata code, or sonata route on/auto).
 
 ${NO_MODEL_ARG}
-${TIER_CHOICE}
+${tierChoice(available)}
 
-The tier is the model choice: pick -simple, -normal or -complex, and let the
-frontmatter select the model.
+The tier is the model choice: pick ${available.map((t) => `-${t}`).join(' or ')}, and let
+the frontmatter select the model.
 
 ${TIER_AGENT_MARKER} — edits here are overwritten on the next sync.
 
@@ -323,6 +363,16 @@ export function cmdSync(opts: SyncOptions): SyncResult {
   if (config.tiers !== undefined) {
     const written: string[] = [];
     const skipped: string[] = [];
+    // Read once, from the config: what the generated prompts may name. A role
+    // that collapses generates one unsuffixed agent, so it offers no tier
+    // choice at all; `plan`'s availability is independent of the role being
+    // written, because that is the role a fan-out delegates to.
+    const tiersOf = (role: string): readonly Tier[] => {
+      const lists = config.tiers?.[role];
+      if (lists === undefined || tiersCollapse(lists)) return [];
+      return TIER_NAMES.filter((tier) => lists[tier] !== undefined);
+    };
+    const planTiers = tiersOf('plan');
     for (const [role, lists] of Object.entries(config.tiers)) {
       const tiers: ('simple' | 'normal' | 'complex' | undefined)[] = tiersCollapse(lists)
         ? [undefined]
@@ -348,6 +398,8 @@ export function cmdSync(opts: SyncOptions): SyncResult {
           // The collapsed alias serves both lists, so it may only claim the
           // window both of them can honour.
           extendedContext,
+          availableTiers: tiersOf(role),
+          planTiers,
         }));
         written.push(path);
       }

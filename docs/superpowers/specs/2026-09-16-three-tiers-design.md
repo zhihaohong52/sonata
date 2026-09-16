@@ -1,6 +1,6 @@
 # Three tiers: simple, normal, complex
 
-**Status:** approved design, not yet implemented
+**Status:** implemented
 **Date:** 2026-09-16
 
 ## The decision
@@ -90,7 +90,7 @@ ranking change already proven separately.
 
 ## Known degeneracy, accepted deliberately
 
-`simple` and `normal` share a sort key, so `simple` is a **bounded-cost prefix
+`simple` and `normal` share a sort key, so `simple` is a **bounded-cost subsequence
 of `normal`**: same first candidate, same order, fewer entries. They differ only
 in how deep the fallback chain may reach and how much a single request may cost.
 
@@ -279,7 +279,7 @@ when you next ask for it" is the honest default.
 
 ## Testing
 
-- `proposeTiers` returns three lists; `simple` is a prefix of `normal` on a
+- `proposeTiers` returns three lists; `simple` is a subsequence of `normal` on a
   homogeneous fixture and diverges from it on a mixed one. Both cases are
   asserted, since the prefix property is the accepted degeneracy and the
   divergence is the feature.

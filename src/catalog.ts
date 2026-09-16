@@ -712,7 +712,16 @@ export function proposeTiers(
   const anchor = normal.find((k) => !avoided.has(bareKey(k))) ?? normal[0];
   const anchorCost = anchor === undefined ? undefined : perTask(anchor);
   const ceiling = anchorCost === undefined ? undefined : anchorCost * SIMPLE_COST_CEILING;
-  // Filtering normal, rather than sorting again, makes simple a prefix of it.
+  // Filtering `normal` rather than sorting again is what stops `simple`
+  // disagreeing with it about order: it never does its own sort.
+  //
+  // The result is a **subsequence, not a prefix**. `normal` is ordered by
+  // value, and value is not monotonic in cost — a dearer model with a much
+  // better score outranks a cheap weak one — so an over-ceiling candidate can
+  // sit ahead of an under-ceiling one and the filter skips past it.
+  // Truncating at the first over-ceiling candidate would make it a true
+  // prefix and would drop the qualifying cheap models behind it, which is the
+  // opposite of what a cheap tier is for.
   const simple = ceiling === undefined ? [] : normal.filter((k) => {
     const cost = perTask(k);
     return cost !== undefined && cost <= ceiling;
