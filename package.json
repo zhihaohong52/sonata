@@ -1,6 +1,6 @@
 {
   "name": "@zhihaohong52/sonata",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "Foreign-model subagents for Claude Code — dispatch cheaper or different models through their own harnesses, as ordinary subagents",
   "keywords": [
     "claude-code",
@@ -25,7 +25,16 @@
   "bin": {
     "sonata": "dist/cli.js"
   },
-  "files": ["dist", "roles", "hooks", "skills", "ui", "README.md", "LICENSE", "!dist/build-info.json"],
+  "files": [
+    "dist",
+    "roles",
+    "hooks",
+    "skills",
+    "ui",
+    "README.md",
+    "LICENSE",
+    "!dist/build-info.json"
+  ],
   "scripts": {
     "build": "tsc && node scripts/build-stamp.mjs",
     "typecheck": "tsc --noEmit",
