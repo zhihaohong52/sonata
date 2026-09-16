@@ -133,6 +133,28 @@ describe('nativeAgentMarkdown', () => {
 });
 
 describe('tierAgentMarkdown', () => {
+  it('generates a normal agent when the role has one', () => {
+    const md = tierAgentMarkdown({ role: 'code', tier: 'normal' });
+    expect(md).toMatch(/^name: code-normal$/m);
+    expect(md).toMatch(/^model: sonata-code-normal$/m);
+  });
+
+  it('names normal the default and never tells the reader to default upward', () => {
+    const md = tierAgentMarkdown({ role: 'code', tier: 'normal' });
+    const description = /^description: (.+)$/m.exec(md)?.[1] ?? '';
+    expect(description).toContain('default');
+    for (const tier of ['simple', 'normal', 'complex'] as const) {
+      const d = /^description: (.+)$/m.exec(tierAgentMarkdown({ role: 'code', tier }))?.[1] ?? '';
+      expect(d).not.toContain('When unsure, use -complex');
+      expect(d).not.toContain(': ');
+    }
+  });
+
+  it('says size is not difficulty', () => {
+    const md = tierAgentMarkdown({ role: 'code', tier: 'normal' });
+    expect(md.split('---')[2]).toContain('Size is not difficulty');
+  });
+
   it('gives a read-only tier agent read and fan-out tools', () => {
     // `tools:` is an allow-list: omitting the agent tools from a read-only
     // role's line is what removes the capability, so granting fan-out has to
@@ -357,6 +379,64 @@ code = ["a"]
 });
 
 describe('cmdSync — tier agents', () => {
+  it('skips normal when a role has no normal tier', () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."simple-model"]
+gateway = "gateway"
+id = "simple"
+
+[models."complex-model"]
+gateway = "gateway"
+id = "complex"
+
+[native.gateways."gateway"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["simple-model"]
+complex = ["complex-model"]
+`);
+    const agentsDir = join(cwd, '.claude', 'agents');
+    const res = cmdSync({ cwd, agentsDir });
+    expect(res.written.map((p) => p.split('/').pop()).sort()).toEqual([
+      'code-complex.md',
+      'code-simple.md',
+    ]);
+    expect(existsSync(join(agentsDir, 'code-normal.md'))).toBe(false);
+  });
+
+  it('writes normal when a role has a distinct normal tier', () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."simple-model"]
+gateway = "gateway"
+id = "simple"
+
+[models."normal-model"]
+gateway = "gateway"
+id = "normal"
+
+[models."complex-model"]
+gateway = "gateway"
+id = "complex"
+
+[native.gateways."gateway"]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["simple-model"]
+normal = ["normal-model"]
+complex = ["complex-model"]
+`);
+    const agentsDir = join(cwd, '.claude', 'agents');
+    const res = cmdSync({ cwd, agentsDir });
+    expect(res.written.map((p) => p.split('/').pop()).sort()).toEqual([
+      'code-complex.md',
+      'code-normal.md',
+      'code-simple.md',
+    ]);
+    expect(readFileSync(join(agentsDir, 'code-normal.md'), 'utf8')).toContain('model: sonata-code-normal');
+  });
+
   it('writes one agent per distinct tier and collapses identical tier lists', () => {
     writeFileSync(join(cwd, 'sonata.toml'), `
 [models."simple-model"]

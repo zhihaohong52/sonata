@@ -40,6 +40,25 @@ const FANOUT_TOOLS = 'Agent, Task, Workflow';
  */
 const NO_MODEL_ARG = 'Dispatch with no `model` argument — it overrides this agent\'s routed model and silently disables sonata routing.';
 
+const TIER_CRITERION: Record<'simple' | 'normal' | 'complex', string> = {
+  simple: 'Use it when the task is specified closely enough that the diff could be written without asking a question — typically one or two files, no interface change.',
+  normal: 'This is the default tier. Use it when you know what to change but not exactly how, so it needs reading the surrounding code to fit in; it may touch several files, but what "done" means is not in question.',
+  complex: 'Use it when the task needs a design decision affecting other components, or is ambiguous about what "done" means, so the first job is deciding what to build.',
+};
+
+const TIER_CHOICE = `## Choosing a tier
+
+Size is not difficulty. A large mechanical change is \`simple\`; a three-line
+change that decides an interface is \`complex\`.
+
+- \`-simple\` — writable without asking a question.
+- \`-normal\` — the default. You know what to change, not exactly how.
+- \`-complex\` — needs a design decision, or "done" is still ambiguous.
+
+Start at the tier the task actually needs rather than a rung higher. A task
+that fails review is re-run one tier up, so starting low is cheap to correct
+and starting high is not cheap at all.`;
+
 const DELEGATING = `## Delegating
 
 You may spawn subagents. Delegate only to read-only agent types — \`review-*\`,
@@ -64,7 +83,7 @@ writes to the repository through it. Nothing enforces this but you.
 const FAN_OUT = `## Fanning out
 
 When you delegate, delegate to a **sonata tier agent** — \`code-simple\`,
-\`code-complex\`, \`review-*\`, \`explore-*\`, \`plan-*\`. Do not call Claude's own
+\`code-normal\`, \`code-complex\`, \`review-*\`, \`explore-*\`, \`plan-*\`. Do not call Claude's own
 \`Plan\`, \`Explore\`, \`Task\` or \`general-purpose\` agents: they run on Claude, which
 silently ends the foreign-model lane this run exists to provide. Need a plan?
 That is \`plan-complex\` or \`plan-simple\`, not \`Plan\`.
@@ -247,7 +266,7 @@ Focus on ${blurb}.${delegating}
 
 export function tierAgentMarkdown(spec: {
   role: string;
-  tier?: 'simple' | 'complex';
+  tier?: 'simple' | 'normal' | 'complex';
   /**
    * Declare a 1M window for this tier's alias. Claude Code reads the `[1m]`
    * suffix as "assume 1M" and strips it before forwarding, so the router still
@@ -264,7 +283,7 @@ export function tierAgentMarkdown(spec: {
   const delegating = delegatingForRole(spec.role);
   const description = tier === undefined
     ? `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`
-    : `Runs ${blurb} on a ranked list of foreign models (${tier} tier), natively inside Claude Code's loop. Simple = mechanical, well-specified, contained work (single file, clear spec, bulk edits). Complex = cross-cutting, ambiguous, design-sensitive, or needs sustained reasoning. When unsure, use -complex. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`;
+    : `Runs ${blurb} on a ranked list of foreign models (${tier} tier), natively inside Claude Code's loop. ${TIER_CRITERION[tier]} Size is not difficulty — a large mechanical change is simple, a three-line change that decides an interface is complex. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`;
 
   return `---
 name: ${name}
@@ -275,8 +294,10 @@ ${tools}---
 This agent only works in a routed session (sonata code, or sonata route on/auto).
 
 ${NO_MODEL_ARG}
-The tier is the model choice: pick -simple or -complex, and let the frontmatter
-select the model.
+${TIER_CHOICE}
+
+The tier is the model choice: pick -simple, -normal or -complex, and let the
+frontmatter select the model.
 
 ${TIER_AGENT_MARKER} — edits here are overwritten on the next sync.
 
@@ -303,22 +324,30 @@ export function cmdSync(opts: SyncOptions): SyncResult {
     const written: string[] = [];
     const skipped: string[] = [];
     for (const [role, lists] of Object.entries(config.tiers)) {
-      const tiers: ('simple' | 'complex' | undefined)[] = tiersCollapse(lists) ? [undefined] : [...TIER_NAMES];
+      const tiers: ('simple' | 'normal' | 'complex' | undefined)[] = tiersCollapse(lists)
+        ? [undefined]
+        : [
+          ...TIER_NAMES.filter((tier) => lists[tier] !== undefined),
+        ];
       for (const tier of tiers) {
         const path = join(opts.agentsDir, `${role}${tier === undefined ? '' : `-${tier}`}.md`);
         if (existsSync(path) && !isSonataAgent(path)) {
           skipped.push(path);
           continue;
         }
+        const extendedContext = tier === undefined
+          ? tierQualifiesForExtendedContext(config, lists.simple)
+            && tierQualifiesForExtendedContext(config, lists.complex)
+          : (() => {
+            const keys = lists[tier];
+            return keys !== undefined && tierQualifiesForExtendedContext(config, keys);
+          })();
         writeFileSync(path, tierAgentMarkdown({
           role,
           tier,
           // The collapsed alias serves both lists, so it may only claim the
           // window both of them can honour.
-          extendedContext: tier === undefined
-            ? tierQualifiesForExtendedContext(config, lists.simple)
-              && tierQualifiesForExtendedContext(config, lists.complex)
-            : tierQualifiesForExtendedContext(config, lists[tier]),
+          extendedContext,
         }));
         written.push(path);
       }
