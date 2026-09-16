@@ -7,7 +7,7 @@ import {
   normalizeModelName, lookupModel, proposeTiers, loadAaCatalog, aaCatalogPath,
   aaCatalogAgeDays, aaLookupNames, catalogCoverage, SIMPLE_COST_CEILING,
   catalogFamily, expandCandidates, hasEffortVariants, unpinnedVariants, candidateLabel,
-  unpinnedCandidates, assertEffortsPinned,
+  unpinnedCandidates, assertEffortsPinned, hasTaskCost,
   type AaCatalog,
 } from '../src/catalog.js';
 import { plan, type CredentialProbe } from '../src/init/plan.js';
@@ -45,12 +45,12 @@ describe('normalizeModelName', () => {
 
 describe('lookupModel', () => {
   it('classifies curated models without AA data', () => {
-    expect(lookupModel('deepseek-v4-flash')).toMatchObject({ capable: true, cheap: true, source: 'curated' });
-    expect(lookupModel('gpt-5.6-terra')).toMatchObject({ capable: true, cheap: false, source: 'curated' });
+    expect(lookupModel('deepseek-v4-flash')).toEqual({ capable: true, source: 'curated' });
+    expect(lookupModel('gpt-5.6-terra')).toEqual({ capable: true, source: 'curated' });
   });
 
-  it('defaults unknown models to capable-not-cheap — never demote silently', () => {
-    expect(lookupModel('mystery-model-9000')).toEqual({ capable: true, cheap: false, source: 'default' });
+  it('defaults unknown models to capable — ranking requires catalog task costs', () => {
+    expect(lookupModel('mystery-model-9000')).toEqual({ capable: true, source: 'default' });
   });
 
   it('prefers AA data over the curated table when present', () => {
@@ -64,14 +64,28 @@ describe('lookupModel', () => {
 });
 
 describe('proposeTiers', () => {
-  it('splits keys into simple (cheap) and complex (capable), ranked', () => {
+  it('excludes models without an AA cost-per-task from both tiers', () => {
+    const aa: AaCatalog = {
+      fetchedAt: '2026-09-15T00:00:00Z',
+      models: {
+        costed: { codingIndex: 80, agenticIndex: 80, blendedPriceUsd: 0.2, costPerTask: 0.2 },
+        uncosted: { codingIndex: 90, agenticIndex: 90, blendedPriceUsd: 0.01 },
+      },
+    };
+    expect(proposeTiers(['uncosted', 'costed'], aa)).toEqual({
+      simple: ['costed'],
+      complex: ['costed'],
+    });
+  });
+
+  it('splits task-costed keys into simple and complex tiers, ranked', () => {
     const aa: AaCatalog = {
       fetchedAt: '2026-08-25T00:00:00Z',
       models: {
-        'deepseek-v4-flash': { codingIndex: 45, blendedPriceUsd: 0.3 },
-        'gpt-5.6-luna': { codingIndex: 42, blendedPriceUsd: 0.5 },
-        'deepseek-v4-pro': { codingIndex: 60, blendedPriceUsd: 2.5 },
-        'gpt-5.6-terra': { codingIndex: 70, blendedPriceUsd: 6.0 },
+        'deepseek-v4-flash': { codingIndex: 45, blendedPriceUsd: 0.3, costPerTask: 0.3 },
+        'gpt-5.6-luna': { codingIndex: 42, blendedPriceUsd: 0.5, costPerTask: 0.5 },
+        'deepseek-v4-pro': { codingIndex: 60, blendedPriceUsd: 2.5, costPerTask: 2.5 },
+        'gpt-5.6-terra': { codingIndex: 70, blendedPriceUsd: 6.0, costPerTask: 6.0 },
       },
     };
     const tiers = proposeTiers(
@@ -80,14 +94,9 @@ describe('proposeTiers', () => {
     // complex = most capable first, cost only breaking ties
     expect(tiers.complex[0]).toBe('gpt-5.6-terra');
     expect(tiers.complex).toContain('deepseek-v4-pro');
-    // simple = most capability per unit cost. Here the cheap models (45, 42)
-    // sit below the 0.85 floor relative to the best model (70), so nothing
-    // clears it and the fallback value-ranks the whole set — which still puts
-    // the cheap-and-effective models first, and keeps the expensive ones only
-    // as later fallback candidates.
-    expect(tiers.simple).toEqual([
-      'deepseek-v4-flash', 'gpt-5.6-luna', 'deepseek-v4-pro', 'gpt-5.6-terra',
-    ]);
+    // The 45 and 42 scores fall below the relative capability floor, while
+    // the remaining task-costed candidates stay ordered by value.
+    expect(tiers.simple).toEqual(['deepseek-v4-pro', 'gpt-5.6-terra']);
   });
 
   it('ranks the simple tier by capability per cost, not by capability', () => {
@@ -169,8 +178,8 @@ describe('proposeTiers', () => {
     const aa: AaCatalog = {
       fetchedAt: '2026-08-25T00:00:00Z',
       models: {
-        'gpt-5.6-luna': { codingIndex: 50, blendedPriceUsd: 0.9 },
-        'deepseek-v4-flash': { codingIndex: 50, blendedPriceUsd: 0.2 },
+        'gpt-5.6-luna': { codingIndex: 50, blendedPriceUsd: 0.9, costPerTask: 0.9 },
+        'deepseek-v4-flash': { codingIndex: 50, blendedPriceUsd: 0.2, costPerTask: 0.2 },
       },
     };
     const tiers = proposeTiers(['gpt-5.6-luna', 'deepseek-v4-flash'], aa);
@@ -181,9 +190,9 @@ describe('proposeTiers', () => {
     const aa: AaCatalog = {
       fetchedAt: '2026-08-25T00:00:00Z',
       models: {
-        'gpt-5.6-luna': { codingIndex: 30, blendedPriceUsd: 0.5 },
-        'deepseek-v4-flash': { codingIndex: 20, blendedPriceUsd: 0.2 },
-        'kimi-k3': { codingIndex: 35, blendedPriceUsd: 0.4 },
+        'gpt-5.6-luna': { codingIndex: 30, blendedPriceUsd: 0.5, costPerTask: 0.5 },
+        'deepseek-v4-flash': { codingIndex: 20, blendedPriceUsd: 0.2, costPerTask: 0.2 },
+        'kimi-k3': { codingIndex: 35, blendedPriceUsd: 0.4, costPerTask: 0.4 },
       },
     };
     // None clears the capable threshold, so the fallback takes every key —
@@ -255,6 +264,31 @@ describe('loadAaCatalog', () => {
     expect(loaded!.models.good.codingIndex).toBe(60);
   });
 
+  it('drops a malformed cost-per-task and keeps the row as uncosted', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-catalog-'));
+    const path = aaCatalogPath(home);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      fetchedAt: 'x',
+      models: {
+        costed: { codingIndex: 60, blendedPriceUsd: 1.2, costPerTask: 0.4 },
+        nullCost: { codingIndex: 60, blendedPriceUsd: 1.2, costPerTask: null },
+        stringCost: { codingIndex: 60, blendedPriceUsd: 1.2, costPerTask: '0.4' },
+        infiniteCost: { codingIndex: 60, blendedPriceUsd: 1.2, costPerTask: Infinity },
+      },
+    }));
+    const aa = loadAaCatalog(home)!;
+    // The row survives — only the unusable field goes.
+    expect(Object.keys(aa.models).sort()).toEqual(['costed', 'infiniteCost', 'nullCost', 'stringCost']);
+    expect(aa.models.costed.costPerTask).toBe(0.4);
+    for (const name of ['nullCost', 'stringCost', 'infiniteCost']) {
+      expect(aa.models[name].costPerTask).toBeUndefined();
+      // Uncosted, so it is never offered and `.toFixed(3)` is never reached.
+      expect(hasTaskCost(name, aa)).toBe(false);
+    }
+    expect(hasTaskCost('costed', aa)).toBe(true);
+  });
+
   it('keeps family and effort, and drops an effort that is not a known level', () => {
     const home = mkdtempSync(join(tmpdir(), 'sonata-aa-'));
     const path = aaCatalogPath(home);
@@ -313,7 +347,7 @@ describe('normalizeModelName — configured providers', () => {
   it('lets a configured provider reach its curated entry', () => {
     expect(lookupModel('acme-kimi-k3').source).toBe('default');
     expect(lookupModel('acme-kimi-k3', undefined, ['acme'])).toMatchObject({
-      capable: true, cheap: true, source: 'curated',
+      capable: true, source: 'curated',
     });
   });
 
@@ -323,7 +357,7 @@ describe('normalizeModelName — configured providers', () => {
     // and the documented fallback makes simple mirror complex — the tier stops
     // discriminating at all, which is the damage this fixes.
     expect(proposeTiers(keys).simple).toEqual(proposeTiers(keys).complex);
-    expect(proposeTiers(keys, undefined, ['acme']).simple).toEqual(['acme-kimi-k3']);
+    expect(proposeTiers(keys, undefined, ['acme']).simple).toEqual(['acme-kimi-k3', 'acme-grok-4.6']);
   });
 });
 
@@ -402,14 +436,12 @@ describe('proposeTiers — the simple tier admits on cost per task', () => {
   it('admits a model the per-1M bar refused', () => {
     // Pin what the old gate said, so this test fails loudly if the absolute
     // bar ever comes back.
-    expect(lookupModel('dear-per-token', aa).cheap).toBe(false);
     expect(0.4).toBeLessThanOrEqual(0.05 * SIMPLE_COST_CEILING);
     expect(proposeTiers(['cheapest', 'dear-per-token', 'dear-per-task'], aa).simple)
       .toEqual(['cheapest', 'dear-per-token']);
   });
 
   it('refuses a model the per-1M bar admitted', () => {
-    expect(lookupModel('dear-per-task', aa).cheap).toBe(true);
     expect(proposeTiers(['cheapest', 'dear-per-task'], aa).simple).toEqual(['cheapest']);
   });
 
@@ -420,10 +452,9 @@ describe('proposeTiers — the simple tier admits on cost per task', () => {
     expect(t.simple).toEqual(['dear-per-token']);
   });
 
-  it('keeps the absolute judgement for a model AA has not costed per task', () => {
-    // The change has no better information about an uncosted model, so it must
-    // not move one: `cheap` still comes from the per-1M bar (or the curated
-    // table), exactly as before.
+  it('excludes every model AA has not costed per task', () => {
+    // A per-token rate is not a proxy for task cost in the proposal, so an
+    // uncosted model is absent from both tiers even when its token rate is low.
     const mixed: AaCatalog = {
       fetchedAt: '2026-09-01T00:00:00Z',
       models: {
@@ -433,14 +464,12 @@ describe('proposeTiers — the simple tier admits on cost per task', () => {
       },
     };
     const t = proposeTiers(['costed', 'uncosted-cheap', 'uncosted-dear'], mixed);
-    expect(t.simple).toContain('costed');
-    expect(t.simple).toContain('uncosted-cheap');
-    expect(t.simple).not.toContain('uncosted-dear');
+    expect(t.simple).toEqual(['costed']);
+    expect(t.complex).toEqual(['costed']);
   });
 
-  it('falls back entirely to the absolute bar when nothing is costed per task', () => {
-    // No per-task cost anywhere means no scale to be relative on, so there is
-    // no ceiling at all and behaviour is the pre-change one.
+  it('does not propose models when the catalog has no task costs', () => {
+    // There is no valid ranking scale when AA supplies no task costs.
     const none: AaCatalog = {
       fetchedAt: '2026-09-01T00:00:00Z',
       models: {
@@ -448,7 +477,8 @@ describe('proposeTiers — the simple tier admits on cost per task', () => {
         'b': { codingIndex: 58, agenticIndex: 58, blendedPriceUsd: 3.0 },
       },
     };
-    expect(proposeTiers(['a', 'b'], none).simple).toEqual(['a']);
+    expect(proposeTiers(['a', 'b'], none).simple).toEqual([]);
+    expect(proposeTiers(['a', 'b'], none).complex).toEqual([]);
   });
 });
 
@@ -494,7 +524,7 @@ describe('lookupModel — namespaced OpenRouter refs', () => {
         'glm-5-2': { codingIndex: 55, blendedPriceUsd: 0.1 },
       },
     };
-    expect(lookupModel('openrouter-z-ai-glm-5.2', aa).cheap).toBe(false);
+    expect(lookupModel('openrouter-z-ai-glm-5.2', aa).source).toBe('aa');
   });
 
   it('strips an OpenRouter serving variant', () => {
@@ -796,10 +826,10 @@ describe('plan() ranks a BYOK gateway\'s models through models.dev names', () =>
     writeFileSync(catalogPath, JSON.stringify({
       fetchedAt: '2026-09-13T00:00:00Z',
       models: {
-        'deepseek-v4-1-flash': { codingIndex: 60, blendedPriceUsd: 0.5, family: 'deepseek-v4-1-flash', effort: 'max' },
-        'deepseek-v4-1-flash-high': { codingIndex: 55, blendedPriceUsd: 0.5, family: 'deepseek-v4-1-flash', effort: 'high' },
-        'deepseek-v4-pro': { codingIndex: 59, blendedPriceUsd: 0.54, family: 'deepseek-v4-pro', effort: 'max' },
-        'deepseek-v4-pro-high': { codingIndex: 58, blendedPriceUsd: 0.54, family: 'deepseek-v4-pro', effort: 'high' },
+        'deepseek-v4-1-flash': { codingIndex: 60, blendedPriceUsd: 0.5, costPerTask: 0.2, family: 'deepseek-v4-1-flash', effort: 'max' },
+        'deepseek-v4-1-flash-high': { codingIndex: 55, blendedPriceUsd: 0.5, costPerTask: 0.1, family: 'deepseek-v4-1-flash', effort: 'high' },
+        'deepseek-v4-pro': { codingIndex: 59, blendedPriceUsd: 0.54, costPerTask: 0.2, family: 'deepseek-v4-pro', effort: 'max' },
+        'deepseek-v4-pro-high': { codingIndex: 58, blendedPriceUsd: 0.54, costPerTask: 0.1, family: 'deepseek-v4-pro', effort: 'high' },
       },
     }));
     writeFileSync(join(dirname(catalogPath), 'models-dev.json'), JSON.stringify({
@@ -846,7 +876,7 @@ describe('plan() ranks a BYOK gateway\'s models through models.dev names', () =>
 
 describe('lookupModel / scoreFor with an effort', () => {
   it('scores a candidate at its own level', () => {
-    expect(lookupModel('gpt-5.6-luna@low', FAMILY_AA)).toEqual({ capable: true, cheap: true, source: 'aa' });
+    expect(lookupModel('gpt-5.6-luna@low', FAMILY_AA)).toEqual({ capable: true, source: 'aa' });
     // 44 >= 40 keeps it capable; the bare row is the max row.
     expect(lookupModel('gpt-5.6-luna', FAMILY_AA).source).toBe('aa');
   });
@@ -868,7 +898,7 @@ describe('candidateLabel', () => {
     expect(a.indexOf('39.5')).toBe(b.indexOf('41.7'));
   });
   it('falls back to the per-1M rate, and to the bare key with no catalog', () => {
-    expect(candidateLabel('lonely@high', FAMILY_AA)).toMatch(/^lonely @high\s+50\.0\s+\$1\.00\/1M$/);
+    expect(candidateLabel('lonely@high', FAMILY_AA)).toContain('AA publishes no cost-per-task');
     expect(candidateLabel('gpt-5.6-luna@max', undefined)).toBe('gpt-5.6-luna @max');
   });
 });
@@ -916,14 +946,14 @@ describe('lookupModel — an upstream resolver may offer several spellings', () 
   const aa: AaCatalog = {
     fetchedAt: '2026-09-01T00:00:00Z',
     models: {
-      'deepseek-v4-1-flash': { codingIndex: 55, blendedPriceUsd: 0.4, family: 'deepseek-v4-1-flash', effort: 'max' },
+      'deepseek-v4-1-flash': { codingIndex: 55, blendedPriceUsd: 0.4, costPerTask: 0.2, family: 'deepseek-v4-1-flash', effort: 'max' },
       'deepseek-flash-x': { codingIndex: 10, blendedPriceUsd: 9.0 },
     },
   };
   const spellings = (key: string) => key === 'deepseek-deepseek-flash' ? ['deepseek-flash', 'deepseek-v4.1-flash'] : key;
 
   it('scores an alias through its later spelling when the first misses', () => {
-    expect(lookupModel('deepseek-deepseek-flash', aa, ['deepseek'], spellings)).toMatchObject({ source: 'aa', cheap: true });
+    expect(lookupModel('deepseek-deepseek-flash', aa, ['deepseek'], spellings)).toMatchObject({ source: 'aa' });
     expect(candidateLabel('deepseek-deepseek-flash', aa, ['deepseek'], spellings)).toContain('55.0');
   });
 
@@ -932,7 +962,7 @@ describe('lookupModel — an upstream resolver may offer several spellings', () 
       fetchedAt: '2026-09-01T00:00:00Z',
       models: { ...aa.models, 'deepseek-flash': { codingIndex: 20, blendedPriceUsd: 9.0 } },
     };
-    expect(lookupModel('deepseek-deepseek-flash', direct, ['deepseek'], spellings).cheap).toBe(false);
+    expect(lookupModel('deepseek-deepseek-flash', direct, ['deepseek'], spellings).source).toBe('aa');
   });
 
   it('finds the family through a later spelling too', () => {
@@ -987,9 +1017,9 @@ describe('proposeTiers — effort breaks a capability-and-price tie', () => {
   const aa: AaCatalog = {
     fetchedAt: '2026-09-13T00:00:00Z',
     models: {
-      'gemini-3-7-flash': { codingIndex: 72, blendedPriceUsd: 1.5, agenticIndex: 72, family: 'gemini-3-7-flash', effort: 'high' },
-      'gemini-3-7-flash-medium': { codingIndex: 71.5, blendedPriceUsd: 1.5, agenticIndex: 71.5, family: 'gemini-3-7-flash', effort: 'medium' },
-      'gemini-3-7-flash-low': { codingIndex: 71, blendedPriceUsd: 1.5, agenticIndex: 71, family: 'gemini-3-7-flash', effort: 'low' },
+      'gemini-3-7-flash': { codingIndex: 72, blendedPriceUsd: 1.5, agenticIndex: 72, costPerTask: 0.5, family: 'gemini-3-7-flash', effort: 'high' },
+      'gemini-3-7-flash-medium': { codingIndex: 71.5, blendedPriceUsd: 1.5, agenticIndex: 71.5, costPerTask: 0.5, family: 'gemini-3-7-flash', effort: 'medium' },
+      'gemini-3-7-flash-low': { codingIndex: 71, blendedPriceUsd: 1.5, agenticIndex: 71, costPerTask: 0.5, family: 'gemini-3-7-flash', effort: 'low' },
     },
   };
 
@@ -1007,7 +1037,7 @@ describe('proposeTiers — effort breaks a capability-and-price tie', () => {
       fetchedAt: aa.fetchedAt,
       models: {
         ...aa.models,
-        'gemini-3-7-flash-low': { codingIndex: 71.8, blendedPriceUsd: 1.5, agenticIndex: 71.8, family: 'gemini-3-7-flash', effort: 'low' },
+        'gemini-3-7-flash-low': { codingIndex: 71.8, blendedPriceUsd: 1.5, agenticIndex: 71.8, costPerTask: 0.5, family: 'gemini-3-7-flash', effort: 'low' },
       },
     };
     expect(proposeTiers(['gemini-3.7-flash'], noisy).simple)
@@ -1019,7 +1049,7 @@ describe('proposeTiers — effort breaks a capability-and-price tie', () => {
       fetchedAt: aa.fetchedAt,
       models: {
         ...aa.models,
-        'gemini-3-7-flash-low': { codingIndex: 74, blendedPriceUsd: 1.5, agenticIndex: 74, family: 'gemini-3-7-flash', effort: 'low' },
+        'gemini-3-7-flash-low': { codingIndex: 74, blendedPriceUsd: 1.5, agenticIndex: 74, costPerTask: 0.5, family: 'gemini-3-7-flash', effort: 'low' },
       },
     };
     expect(proposeTiers(['gemini-3.7-flash'], edged).complex[0]).toBe('gemini-3.7-flash@low');
@@ -1027,7 +1057,7 @@ describe('proposeTiers — effort breaks a capability-and-price tie', () => {
       fetchedAt: aa.fetchedAt,
       models: {
         ...aa.models,
-        'gemini-3-7-flash-low': { codingIndex: 71, blendedPriceUsd: 0.5, agenticIndex: 71, family: 'gemini-3-7-flash', effort: 'low' },
+        'gemini-3-7-flash-low': { codingIndex: 71, blendedPriceUsd: 0.5, agenticIndex: 71, costPerTask: 0.1, family: 'gemini-3-7-flash', effort: 'low' },
       },
     };
     expect(proposeTiers(['gemini-3.7-flash'], cheaper).complex[0]).toBe('gemini-3.7-flash@low');
@@ -1051,10 +1081,10 @@ describe('proposeTiers — value is measured per task, never across units', () =
 
   it('ranks every per-task-costed row ahead of every uncosted one in the simple tier', () => {
     expect(proposeTiers(['deepseek-v4.1-flash', 'deepseek-v4-flash'], aa).simple)
-      .toEqual(['deepseek-v4-flash@max', 'deepseek-v4.1-flash@max', 'deepseek-v4-flash@none']);
+      .toEqual(['deepseek-v4-flash@max', 'deepseek-v4.1-flash@max']);
   });
 
-  it('still orders an all-uncosted set by capability per per-1M dollar', () => {
+  it('does not rank an all-uncosted set', () => {
     const uncosted: AaCatalog = {
       fetchedAt: aa.fetchedAt,
       models: {
@@ -1062,12 +1092,12 @@ describe('proposeTiers — value is measured per task, never across units', () =
         'b': { codingIndex: 52, blendedPriceUsd: 0.9, agenticIndex: 52 },
       },
     };
-    expect(proposeTiers(['a', 'b'], uncosted).simple).toEqual(['a', 'b']);
+    expect(proposeTiers(['a', 'b'], uncosted).simple).toEqual([]);
+    expect(proposeTiers(['a', 'b'], uncosted).complex).toEqual([]);
   });
 
-  it('breaks a complex-tier capability tie on per-task cost, not on a per-1M figure', () => {
-    // 41.7 vs 41.5: a tie. The uncosted row's $0.12/1M must not read as
-    // "cheaper" than $0.22/task.
+  it('excludes an uncosted row rather than comparing its token rate', () => {
+    // The uncosted row's $0.12/1M is not comparable to $0.22/task.
     const tied: AaCatalog = {
       fetchedAt: aa.fetchedAt,
       models: {
@@ -1075,6 +1105,6 @@ describe('proposeTiers — value is measured per task, never across units', () =
         'y': { codingIndex: 60, blendedPriceUsd: 0.12, agenticIndex: 41.5 },
       },
     };
-    expect(proposeTiers(['x', 'y'], tied).complex).toEqual(['x', 'y']);
+    expect(proposeTiers(['x', 'y'], tied).complex).toEqual(['x']);
   });
 });

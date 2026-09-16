@@ -54,6 +54,32 @@ function firstRunData(): WizardData {
 }
 
 describe('the wizard on a first run', () => {
+  it('names models excluded for lacking an AA task cost', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-wizard-task-cost-'));
+    const path = aaCatalogPath(home);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      fetchedAt: '2026-09-15T00:00:00Z',
+      models: {
+        fast: { codingIndex: 60, blendedPriceUsd: 0.2, costPerTask: 0.1 },
+        deep: { codingIndex: 70, blendedPriceUsd: 0.5 },
+      },
+    }));
+    const w = renderWizard({
+      ...firstRunData(),
+      home,
+      candidates: [
+        { key: 'acme-fast', gateway: 'acme', id: 'fast', label: 'opencode/acme/fast' },
+        { key: 'acme-deep', gateway: 'acme', id: 'deep', label: 'opencode/acme/deep' },
+      ],
+    });
+    await w.press(ENTER);
+    await w.press(ENTER, ENTER, 'test-key', ENTER, DOWN, ENTER);
+    expect(w.lastFrame()).toContain('excluded acme-deep');
+    expect(w.lastFrame()).toContain('AA publishes no cost-per-task');
+    expect(w.lastFrame()).toContain('opencode/acme/fast');
+  });
+
   it('renders a non-empty ranking on the complex tier and lets it be submitted', async () => {
     const w = renderWizard(firstRunData());
 
@@ -262,8 +288,7 @@ describe('a tier screen for a config whose gateway this session never offered', 
     await walkToFirstTier(w);
 
     const rows = offeredRows(w.lastFrame()!);
-    expect(rows).toContain('acme-big');
-    expect(rows).not.toContain('acme-big@high');
+    expect(rows).toEqual(['acme-big@max']);
   });
 });
 

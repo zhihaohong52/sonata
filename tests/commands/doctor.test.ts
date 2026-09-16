@@ -623,7 +623,7 @@ complex = ["flash"]
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify({
       fetchedAt,
-      models: { 'deepseek-v4-flash': { codingIndex: 45, blendedPriceUsd: 0.3 } },
+      models: { 'deepseek-v4-flash': { codingIndex: 45, blendedPriceUsd: 0.3, costPerTask: 0.2 } },
     }));
   };
 
@@ -737,7 +737,7 @@ complex = ["big@high"]
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify({
       fetchedAt: '2026-08-27T00:00:00.000Z',
-      models: { big: { codingIndex: 45, blendedPriceUsd: 0.3 } },
+      models: { big: { codingIndex: 45, blendedPriceUsd: 0.3, costPerTask: 0.2 } },
     }));
     const c = await rankingCheck(cwd, home, new Date('2026-08-28T00:00:00.000Z'));
     expect(c?.detail).not.toMatch(/unscored/);
@@ -877,8 +877,8 @@ complex = ["deepseek-deepseek-v4-pro"]
     writeFileSync(catalogPath, JSON.stringify({
       fetchedAt: '2026-08-27T00:00:00.000Z',
       models: {
-        'deepseek-v4-1-flash': { codingIndex: 45, blendedPriceUsd: 0.3 },
-        'deepseek-v4-pro': { codingIndex: 59, blendedPriceUsd: 0.54 },
+        'deepseek-v4-1-flash': { codingIndex: 45, blendedPriceUsd: 0.3, costPerTask: 0.2 },
+        'deepseek-v4-pro': { codingIndex: 59, blendedPriceUsd: 0.54, costPerTask: 0.3 },
       },
     }));
     writeFileSync(join(home, '.config', 'sonata', 'models-dev.json'), JSON.stringify({

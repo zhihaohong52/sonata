@@ -39,3 +39,4 @@ that didn't lead to a standalone implementation plan.
 | 2026-08-30 | Two routing reliability defects (tier-absorbing 400, leaked subagent pin) | [spec](specs/2026-08-30-routing-reliability-defects.md) | — **queued**, roadmap items 13 and 14 |
 | 2026-09-13 | Effort levels in tiers: rank and dispatch the same model | [spec](specs/2026-09-13-effort-tiers-design.md) | [plan](plans/2026-09-13-effort-tiers-pr1.md) (PR 1 of 3; router and adapters planned after it merges) |
 | 2026-09-15 | A local UI on the router (sessions, logs, usage dashboard) | [spec](specs/2026-09-15-router-ui-design.md) | [plan](plans/2026-09-15-router-ui.md) |
+| 2026-09-15 | Rank tiers on dollars per task only | [spec](specs/2026-09-15-rank-per-task-only-design.md) | — implemented directly from measured decision |

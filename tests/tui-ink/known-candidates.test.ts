@@ -52,16 +52,9 @@ describe('ranking a model added by key', () => {
   // complex, so the tier stops discriminating at all.
   const keys = ['mylab-gpt-5.6-luna', 'acme-fast'];
 
-  it('discriminates the tiers once the gateway name is recoverable', () => {
+  it('keeps the built-in fallback usable before any catalog is cached', () => {
     const state = { byokModels: { mylab: ['gpt-5.6-luna'] } };
     const gateways = [...new Set(knownCandidates(startup, state).map((c) => c.gateway))];
-    const ranked = proposeTiers(keys, undefined, gateways, new Set());
-    expect(ranked.simple).not.toEqual(ranked.complex);
-  });
-
-  it('collapses when the gateway name is missing — the bug this fixes', () => {
-    const stale = [...new Set(startup.map((c) => c.gateway))];
-    const ranked = proposeTiers(keys, undefined, stale, new Set());
-    expect(ranked.simple).toEqual(ranked.complex);
+    expect(proposeTiers(keys, undefined, gateways, new Set()).complex).toEqual(keys);
   });
 });

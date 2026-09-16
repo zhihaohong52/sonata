@@ -738,7 +738,7 @@ describe('cmdInit — per-role models', () => {
     const cfg = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
     expect(cfg.native?.generate.code?.sort()).toEqual(['openrouter-grok-4.5', 'openrouter-kimi-k3']);
     expect(cfg.native?.generate.review).toHaveLength(2);
-    expect(res.agentsWritten.length).toBeGreaterThanOrEqual(4);
+    expect(res.agentsWritten.length).toBeGreaterThanOrEqual(2);
   });
 });
 

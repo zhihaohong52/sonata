@@ -4,6 +4,7 @@ import { MultiSelect } from './multi-select.js';
 import { mergeLiveCandidates, type CandidateOption } from '../app-state.js';
 import { isAnthropicRoutedName, isOauthGatewayAuth, type NativeGatewayAuth } from '../../config.js';
 import { fetchModels as defaultFetchModels } from '../../native/models.js';
+import { hasTaskCost, type AaCatalog } from '../../catalog.js';
 
 export interface ModelsStepProps {
   candidates: CandidateOption[];
@@ -14,6 +15,17 @@ export interface ModelsStepProps {
   /** Keys already resolvable for a gateway, by gateway name. */
   keys: Record<string, string>;
   initialSelected: Set<string>;
+  /** Cached AA rankings used only to filter newly offered model rows. */
+  aa?: AaCatalog;
+  gatewayNames?: readonly string[];
+  /**
+   * Resolved AA spellings for a candidate, taken from its own gateway and id.
+   * Keyed by *candidate*, not by key: `mergeLiveCandidates` mints a key for a
+   * gateway added this run, which a startup-built key→candidate map cannot
+   * resolve — it would hand back the key unchanged and the row would look
+   * uncosted purely because its gateway is new.
+   */
+  upstreamForCandidate?: (candidate: CandidateOption) => string | readonly string[];
   fetchModels?: typeof defaultFetchModels;
   /** Selected keys, plus what each gateway's own /models endpoint reported. */
   onSubmit: (keys: string[], live: Record<string, string[]>) => void;
@@ -71,7 +83,7 @@ export function refreshableGateways(
 export function ModelsStep(props: ModelsStepProps): React.ReactElement {
   const {
     candidates, addedGateways = [], gatewayBaseUrls, gatewayAuth, keys, initialSelected,
-    fetchModels = defaultFetchModels, onSubmit, onBack, onCancel,
+    aa, gatewayNames = [], upstreamForCandidate, fetchModels = defaultFetchModels, onSubmit, onBack, onCancel,
   } = props;
   const targets = refreshableGateways(candidates, gatewayBaseUrls, gatewayAuth, keys, addedGateways);
   const [live, setLive] = useState<Record<string, string[]> | undefined>(
@@ -121,9 +133,27 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
   }
 
   const merged = mergeLiveCandidates(candidates, live);
+  // Gateways added this run are absent from the startup list, so their prefix
+  // would survive `normalizeModelName` and the lookup would miss.
+  const names = [...new Set([...gatewayNames, ...merged.map((candidate) => candidate.gateway)])];
+  const costed = aa === undefined
+    ? merged
+    : merged.filter((candidate) => hasTaskCost(
+      candidate.key,
+      aa,
+      names,
+      upstreamForCandidate === undefined ? undefined : () => upstreamForCandidate(candidate),
+    ));
+  const offered = costed;
+  const excluded = merged.filter((candidate) => !costed.includes(candidate));
   const refreshed = Object.keys(live).length;
   return (
     <Box flexDirection="column">
+      {excluded.length > 0 && (
+        <Text dimColor>
+          excluded {excluded.map((candidate) => candidate.key).join(', ')} — AA publishes no cost-per-task; add by hand to sonata.toml
+        </Text>
+      )}
       {refreshed > 0 && (
         <Text dimColor>
           refreshed {refreshed} provider{refreshed === 1 ? '' : 's'} from their /models endpoint
@@ -140,7 +170,7 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
         // wrapping the longer ones past the terminal width. A BYOK candidate is
         // labelled with its display name, where the id is genuinely new
         // information, so the hint is kept there.
-        items={merged.map((candidate) => ({
+        items={offered.map((candidate) => ({
           value: candidate.key,
           label: candidate.label,
           hint: candidate.label.endsWith(candidate.id) ? undefined : candidate.id,
