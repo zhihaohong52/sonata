@@ -17,8 +17,9 @@ Two ways to run it:
 - **Native** — the foreign model runs *inside Claude Code's own loop*: its
   tools, its permission modes, no separate TUI. A local routing proxy
   (`sonata serve`) makes this possible; see the [Native path guide](docs/guide/native-path.md).
-  This is the default: `sonata init` generates one tier agent per role, each
-  backed by a ranked list of models the router tries in order.
+  This is the default: `sonata init` generates one agent per role and present tier
+  (up to 12 agents), each backed by a ranked list of models the router tries in
+  order.
 - **Harness** — the foreign model runs in *its own* CLI (OpenCode, Codex, Pi,
   Reasonix), launched in a detached tmux session and driven through
   `sonata dispatch`. No proxy required — this is the fallback lane: when
@@ -192,13 +193,17 @@ Picking a harness-catalogued provider then shows its models to select from:
   2 of 13 · space toggle · type to filter · enter confirm · esc cancel
 ```
 
-Then it asks you to rank your selected models into `simple`/`complex` tiers per
-role — pre-sorted by a cached Artificial Analysis catalog (`sonata catalog
+Then it asks you to rank your selected models into `simple`, `normal` and
+`complex` tiers per role — pre-sorted by a cached Artificial Analysis catalog
+(`sonata catalog
 update`, with a free key from [artificialanalysis.ai](https://artificialanalysis.ai))
 when one exists, or built-in defaults otherwise. `complex` is ordered by raw
-capability and `simple` by capability **per task-dollar**, so demanding work
-goes to the strongest model you picked and grunt work to the one that returns
-the most per dollar rather than merely the cheapest. Set `avoid_gateways` in
+capability. `normal` is ordered by capability **per task-dollar** without a cost
+cap, while `simple` uses that same value order under a cost cap of 12 times the
+best-value model's cost per task. Thus `simple` is a cost-capped prefix of
+`normal`: demanding work goes to the strongest model you picked, ordinary work
+gets the best value, and grunt work stays within the cheaper fallback chain. Set
+`avoid_gateways` in
 `sonata.toml` to rank a particular gateway's models last without dropping them
 as fallbacks. It then asks whether the config
 applies to this project or the whole machine, writes `sonata.toml`, generates
@@ -283,21 +288,28 @@ that suits it:
 
 > "Use code-simple to convert these callbacks to async/await."
 
+> "Use code-normal to add this flag and its tests."
+
 > "Get review-complex to look at the auth refactor."
 
-Judging `simple` vs `complex` is a call you make per task — mechanical,
-well-specified, single-file work is `simple`; cross-cutting, ambiguous, or
-design-sensitive work is `complex`. When unsure, use `-complex`. The
-`sonata-loop` skill `sonata init` installs (`skills/loop/SKILL.md`) drives
-this across a whole feature: plan, route each task to a tier, gate behind
-review, escalate a task to `complex` after two failed reviews at `simple`.
+Choose a tier by the task, not its size: `simple` is specified closely enough
+that the diff can be written without asking a question; `normal` is the default
+when you know what to change but need to fit it into the surrounding code;
+`complex` needs a design decision or the meaning of done is ambiguous. Size is
+not difficulty: a large mechanical change is `simple`, while a three-line
+interface decision is `complex`. When unsure, use `-normal`; a task that fails
+review is re-run one tier up. The `sonata-loop` skill `sonata init` installs
+(`skills/loop/SKILL.md`) drives this across a whole feature: plan, route each task
+to a tier, gate behind review, and escalate `simple` to `normal` to `complex`
+after repeated failures.
 
 They compose with everything Claude Code already does — parallel fan-out,
 workflows, and `isolation: "worktree"`.
 
 ## How it works
 
-`sonata init` generates one agent per role × difficulty tier — `code-simple`,
+`sonata init` generates one agent per role × present tier — up to 12 agents
+across `simple`, `normal` and `complex` — such as `code-simple`, `code-normal`,
 `code-complex`, `review-simple`, and so on. Each agent's frontmatter names a
 router alias (`model: sonata-code-simple`), not a specific model:
 
