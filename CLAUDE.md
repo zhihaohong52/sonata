@@ -770,6 +770,14 @@ The `claude` harness adapter is the simplest adapter: it runs headless `claude -
   the wording changes. `--watch` polls until something moves. Its first run
   immediately caught a failing CI check that a manual sweep had missed.
 
+- **Never request a re-review after fixing findings.** Push the fix, reply on
+  each thread saying what changed, resolve the thread — that is the whole
+  response. No `@coderabbitai review` comment: the reply and the resolve
+  already answer the finding, and a re-review request adds a round trip plus a
+  top-level comment to a PR whose threads are the record. The bot re-reads a
+  pushed head on its own where that matters. Resolving is not optional — a
+  finding fixed but left open reads as outstanding to the next reader.
+
 - **Non-trivial work goes through a PR; docs and trivial fixes may go direct to
   `main`.** "Non-trivial" means anything touching money (pricing, the ledger,
   `[budget]`), security, routing, or config parsing — the paths where a plausible
