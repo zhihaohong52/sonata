@@ -160,6 +160,62 @@ complex = ["terra@max", "luna@max", "terra@xhigh"]
   warning — it is a valid config, and saying otherwise would nag every install
   that predates this.
 
+## Tier selection: the hard part
+
+Three tiers are worth nothing if the dispatching model picks one of them for
+everything. Measured on this machine's ledger over 30 days, it already does:
+
+| tier | requests | share | priced spend |
+|---|---|---|---|
+| complex | 12,448 | 74% | $260.39 (80%) |
+| simple | 4,271 | 26% | $64.56 |
+
+**The cause is a sentence sonata writes itself.** Every generated
+`description` ends "When unsure, use `-complex`", which instructs a model that
+is already loss-averse about under-powering a task to default upward. Adding a
+middle rung under that instruction produces a tier nothing selects.
+
+**Why that instruction was right, and no longer is.** Defaulting up is rational
+when escalation is expensive — a too-weak model burns a whole run and the
+caller has to notice and retry. But the `sonata-loop` skill already gates every
+task behind a review and re-runs at a higher tier on repeated failure, so
+escalation is automatic and bounded. Once recovery is cheap, defaulting up
+stops buying safety and only buys spend. **The default becomes `-normal`, and
+the descriptions say why starting lower is safe: a task that fails review is
+re-run a rung up.**
+
+**Adjectives do not discriminate; tests do.** The current wording — mechanical,
+cross-cutting, design-sensitive, ambiguous — are judgement calls, and a
+loss-averse reader resolves every one of them upward. Each tier therefore gets
+an *observable* criterion the model can actually evaluate against the task in
+front of it:
+
+- **simple** — the task is specified closely enough that the diff could be
+  written without asking a question. Typically one or two files, no interface
+  change. *Rename this symbol across the repo. Add the missing null check.
+  Port these twelve call sites to the new helper.*
+- **normal** — you know what to change but not exactly how; it requires reading
+  the surrounding code to fit in, and may touch several files, but the shape of
+  "done" is not in question. **This is the default.** *Add a flag to this
+  command and test it. Fix this failing test. Extract this duplicated logic.*
+- **complex** — the task requires a design decision that affects other
+  components, or is ambiguous about what "done" means, so the first job is
+  deciding what to build. *Design the retry semantics. This is slow and I don't
+  know why. Restructure how X and Y communicate.*
+
+The distinction to state plainly is **size is not difficulty**. A large
+mechanical change is `simple`; a three-line change that decides an interface is
+`complex`. Reading the current adjectives, a model maps "many files" onto
+"cross-cutting" and escalates, which is exactly backwards.
+
+**Verification is a measurement, not a review.** The ledger records the alias
+per request, so `sonata usage --by tier` gives the distribution before and
+after. The success criterion is that `normal` carries a real share and
+`complex`'s share falls — not that the wording reads well. If the split is
+unchanged a month after shipping, the descriptions failed and the next lever is
+structural (for example, resolving the unsuffixed `sonata-<role>` alias to
+`normal` so the lazy path is the middle one).
+
 ## Documentation and prompt surfaces
 
 Two of these are behaviour rather than prose, and are listed first because
