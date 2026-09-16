@@ -8,6 +8,17 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- **A local build reports `0.9.1-dev-<yyyymmdd-hhmmss>`.** `npm run build` now
+  stamps `dist/build-info.json` with the build time, the commit, and whether the
+  worktree was dirty, and `sonata --version` reports it. A development install's
+  manifest version is whatever the last release set, so every clone at every
+  commit claimed the same number — and `sonata` on PATH runs `dist/`, not
+  `src/`, which is how a fix lands and appears not to. The stamp never touches
+  `package.json`, is skipped on CI, and is excluded from the published tarball
+  (CI fails the pack check if one appears).
+
 ### Changed
 
 - **`sonata init` ranks only AA models with a published cost per task.** Per-token

@@ -100,5 +100,11 @@ runs:
             console.error("Missing from tarball:", missing.join(", "));
             process.exit(1);
           }
+          // A local build stamps dist/build-info.json, and shipping one would
+          // make every published install report a "-dev" version.
+          if (files.includes("dist/build-info.json")) {
+            console.error("Tarball carries dist/build-info.json — a local build stamp must never publish.");
+            process.exit(1);
+          }
           console.log("Tarball contains all " + required.length + " required files.");
         '
