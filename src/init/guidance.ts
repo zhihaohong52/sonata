@@ -35,6 +35,13 @@ export const GUIDANCE_END = '<!-- sonata:end -->';
  * a defect in the agent rather than a missing routing step. Telling the reader
  * what that error means is the difference between a fixable setup problem and
  * an apparently broken feature.
+ *
+ * The `model`-argument caveat is here for a related reason: the *caller* is
+ * what passes it, and this block is the only text the calling session reads
+ * unconditionally. The generated agent's own warning arrives too late — by the
+ * time its body is in context, the override has already taken effect. That
+ * failure is completely silent, which is what makes stating it worth the
+ * lines.
  */
 export function guidanceBlock(): string {
   return [
@@ -51,6 +58,17 @@ export function guidanceBlock(): string {
     'contained (one file, a clear spec, bulk edits); `complex` is cross-cutting,',
     'ambiguous, design-sensitive, or needs sustained reasoning. When unsure, use',
     '`-complex`.',
+    '',
+    'Dispatch them with **no `model` argument**. Each agent pins its routed model',
+    "in frontmatter, and the Agent tool's own `model` parameter overrides that — so",
+    'passing one runs the agent on a Claude model that never reaches the router.',
+    'Nothing errors and nothing warns: every `review-*` dispatch quietly becomes',
+    "Claude reviewing Claude, which is the one thing this lane exists to prevent.",
+    'Choosing the tier **is** the model choice.',
+    '',
+    'The same applies inside a tier agent: when one fans out, it should delegate',
+    "to another tier agent, not to Claude's own `Plan`, `Explore` or",
+    '`general-purpose`. A plan is `plan-complex` or `plan-simple`.',
     '',
     'If a tier agent fails with `model_not_found`, the session is **not routed** —',
     'that is a setup problem, not a broken agent. Run `sonata doctor`, and start',

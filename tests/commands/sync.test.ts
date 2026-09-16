@@ -141,6 +141,47 @@ describe('tierAgentMarkdown', () => {
     expect(md).toMatch(/^tools: Read, Grep, Glob, Agent, Task, Workflow$/m);
   });
 
+  it('warns against a model argument in both the description and the body', () => {
+    // The description is what the *dispatching* model reads while choosing an
+    // agent; by the time the body is in context the override has happened.
+    const md = tierAgentMarkdown({ role: 'code', tier: 'complex' });
+    const description = /^description: (.+)$/m.exec(md)?.[1] ?? '';
+    expect(description).toContain('no `model` argument');
+    expect(md.split('---')[2]).toContain('no `model` argument');
+  });
+
+  it('keeps the description a plain YAML scalar', () => {
+    // Claude Code parses the frontmatter as YAML, where ": " inside an
+    // unquoted scalar is a mapping, not text — so the warning cannot be
+    // punctuated with a colon however naturally it reads.
+    for (const md of [
+      tierAgentMarkdown({ role: 'code', tier: 'simple' }),
+      tierAgentMarkdown({ role: 'explore' }),
+      nativeAgentMarkdown({ role: 'code', model: 'flash' }),
+    ]) {
+      const description = /^description: (.+)$/m.exec(md)?.[1] ?? '';
+      expect(description).not.toBe('');
+      expect(description).not.toContain(': ');
+      expect(description.startsWith('`')).toBe(false);
+    }
+  });
+
+  it('tells a write-capable tier agent to fan out inside the lane', () => {
+    // The gap this closes: the delegation guard sat only on read-only roles,
+    // so `code-complex` — the agent most able to fan out — was told nothing,
+    // and one called Claude's own `Plan` (2026-09-16), ending the lane.
+    const md = tierAgentMarkdown({ role: 'code', tier: 'complex' });
+    expect(md).toContain('## Fanning out');
+    expect(md).toContain('plan-complex');
+    expect(md).not.toContain('## Delegating');
+  });
+
+  it('keeps the read-only delegation guard alongside the fan-out rule', () => {
+    const md = tierAgentMarkdown({ role: 'explore' });
+    expect(md).toContain('## Fanning out');
+    expect(md).toContain('## Delegating');
+  });
+
   it('leaves a write-capable tier agent unrestricted', () => {
     const md = tierAgentMarkdown({ role: 'code', tier: 'simple' });
     expect(md).not.toMatch(/^tools:/m);

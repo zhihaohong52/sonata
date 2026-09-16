@@ -154,6 +154,13 @@ describe('mergeGuidance', () => {
 });
 
 describe('guidanceBlock', () => {
+  it('tells the caller not to pass a model argument', () => {
+    // The caller is what passes it, and this block is the only text a calling
+    // session reads unconditionally — the agent's own warning arrives after
+    // the override has already taken effect.
+    expect(guidanceBlock()).toContain('no `model` argument');
+  });
+
   it('is delimited by the markers mergeGuidance looks for', () => {
     const block = guidanceBlock();
     expect(block.startsWith(GUIDANCE_BEGIN)).toBe(true);
