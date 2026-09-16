@@ -7,6 +7,7 @@ import type { InitState } from '../tui-ink/types.js';
 import type { NativeCandidate } from './helpers.js';
 import type { CredentialSource } from '../config.js';
 import type { NativeGatewayAuth } from '../config.js';
+import type { TierLists } from '../config.js';
 import { tierAgentNames, parseConfig } from '../config.js';
 import { litellmRequired } from '../native/providers.js';
 import { expandCandidates, loadAaCatalog, proposeTiers, unpinnedVariants } from '../catalog.js';
@@ -188,15 +189,26 @@ export function plan(
     const proposal = proposeTiers(
       nativeKeys, catalog, gatewayNames, avoidedKeysOf(nativeByKey, avoidGateways), upstreamFor);
     const saved = state.tiers?.[role] ?? configForScope?.tiers?.[role];
+    const savedLists = saved as TierLists | undefined;
     // A saved bare key with variants is re-proposed as its levels, at the
     // rank the proposal gives each — the same treatment as a new model.
     // Deduplicated, because `reconcileTierList` inserts each `added` entry
     // it does not already hold and would insert a repeated one twice.
-    const added = (tier: 'simple' | 'complex') =>
-      [...new Set([...addedKeys, ...unpinnedVariants(saved?.[tier], catalog, gatewayNames, upstreamFor)])];
+    const added = (tier: 'simple' | 'normal' | 'complex') =>
+      [...new Set([...addedKeys, ...unpinnedVariants(savedLists?.[tier], catalog, gatewayNames, upstreamFor)])];
+    const reconcile = (tier: 'simple' | 'normal' | 'complex', proposed: string[]) => {
+      const repairs = added(tier);
+      // When every saved entry is a bare, catalog-scored key, reconciliation
+      // has no kept entries and returns its fallback verbatim. Include repairs
+      // in that fallback too, or the simple tier can drop a refused candidate
+      // that the init run must pin before loadConfig will accept it.
+      return reconcileTierList(savedLists?.[tier], validTierKeys(savedLists?.[tier]),
+        [...new Set([...proposed, ...repairs])], repairs);
+    };
     return [role, {
-      simple: reconcileTierList(saved?.simple, validTierKeys(saved?.simple), proposal.simple, added('simple')),
-      complex: reconcileTierList(saved?.complex, validTierKeys(saved?.complex), proposal.complex, added('complex')),
+      simple: reconcile('simple', proposal.simple),
+      normal: reconcile('normal', proposal.normal),
+      complex: reconcile('complex', proposal.complex),
     }];
   }));
 
