@@ -9,7 +9,6 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 ## [Unreleased]
 
 ### Added
-
 - **A third tier, `normal`, ranked by capability per task-dollar.**
   `[tiers.<role>]` accepts an optional `normal` list beside `simple` and
   `complex`, and each tier is now one pure sort key: `complex` by capability,
@@ -30,17 +29,36 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   escalates `simple` → `normal` → `complex` and stops after two failures at
   `complex`, which is what makes starting at a lower tier cheap to correct.
 
-- **A local build reports `0.9.1-dev-<yyyymmdd-hhmmss>`.** `npm run build` now
+- **A local build reports `0.9.1+dev.<yyyymmdd-hhmmss>`.** `npm run build` now
   stamps `dist/build-info.json` with the build time, the commit, and whether the
   worktree was dirty, and `sonata --version` reports it. A development install's
   manifest version is whatever the last release set, so every clone at every
   commit claimed the same number — and `sonata` on PATH runs `dist/`, not
   `src/`, which is how a fix lands and appears not to. The stamp never touches
   `package.json`, is skipped on CI, and is excluded from the published tarball
-  (CI fails the pack check if one appears).
+  (CI fails the pack check if one appears). The stamp is semver build metadata,
+  after a `+`: the first form used `-dev-`, a prerelease, which sorts *below*
+  its own release — so a build made from newer code announced itself as older,
+  backwards on the one question the stamp exists to answer.
+
+- A local web UI on the router at `http://localhost:4100/`, served by
+  every `sonata serve`. Lists routed sessions and `sonata dispatch` runs in one
+  list with their logs, and a usage dashboard by model, role, tier, effort,
+  gateway, session or project — all filterable by project and session. It is
+  read-only, loopback-only and GET-only, and computes no figure of its own: the
+  numbers come from the same functions `sonata usage` and `sonata status` use,
+  so the page cannot disagree with the CLI or with `[budget] daily_usd`. A
+  dispatch run's usage reads "not observable" rather than `0`, because such a
+  run never transits the router. The page is served at `/` as well as the
+  original `/__sonata/`; the JSON API stays under `/__sonata/api/`. Nothing
+  else about the proxy changes — a bare `POST /` is not intercepted. Every
+  read the UI makes is asynchronous and bounded (day files outside the queried
+  window are never opened, run reports are never read to test their presence,
+  and a transcript's tail is read through a file handle rather than loading the
+  whole file), because the router is on the request path of every native
+  agent.
 
 ### Changed
-
 - **Every generated agent says not to pass a `model` argument, and the managed
   `CLAUDE.md` block says it to the caller.** The Agent tool's `model` parameter
   takes precedence over an agent's frontmatter, so passing one runs sonata's
@@ -68,31 +86,11 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   offer, and `sonata agents` preserves them on a no-op edit.
 
 ### Fixed
-
 - Preserve the recorded `routerPid` when LiteLLM orphan cleanup runs. Lazy
   startup and a losing `sonata serve` instance could otherwise remove the
   router's state record, leaving `sonata restart` unable to stop the daemon;
   startup cleanup now runs only after the router wins its port bind, and
   `stopServe` already refuses before killing an unpaired LiteLLM pid.
-
-### Added
-
-- A local web UI on the router at `http://localhost:4100/`, served by
-  every `sonata serve`. Lists routed sessions and `sonata dispatch` runs in one
-  list with their logs, and a usage dashboard by model, role, tier, effort,
-  gateway, session or project — all filterable by project and session. It is
-  read-only, loopback-only and GET-only, and computes no figure of its own: the
-  numbers come from the same functions `sonata usage` and `sonata status` use,
-  so the page cannot disagree with the CLI or with `[budget] daily_usd`. A
-  dispatch run's usage reads "not observable" rather than `0`, because such a
-  run never transits the router. The page is served at `/` as well as the
-  original `/__sonata/`; the JSON API stays under `/__sonata/api/`. Nothing
-  else about the proxy changes — a bare `POST /` is not intercepted. Every
-  read the UI makes is asynchronous and bounded (day files outside the queried
-  window are never opened, run reports are never read to test their presence,
-  and a transcript's tail is read through a file handle rather than loading the
-  whole file), because the router is on the request path of every native
-  agent.
 
 ## [0.9.1] - 2026-09-14
 

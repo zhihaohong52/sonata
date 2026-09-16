@@ -24,16 +24,25 @@ export interface BuildInfo {
  * A published install has no stamp and reports the manifest version unchanged
  * — that number is the truth there, and appending anything to it would make
  * `sonata --version` disagree with npm. A local build reports
- * `<version>-dev-<timestamp>`, because the manifest version of a development
+ * `<version>+dev.<timestamp>`, because the manifest version of a development
  * install is whatever the last release set and says nothing about the code
  * actually running: two clones at different commits both claim `0.9.1`.
  *
- * `+dirty` rides on the end when the worktree was not clean, since that is
+ * **Build metadata, not a prerelease.** The first version of this emitted
+ * `<version>-dev-<timestamp>`, which is a valid semver *prerelease* — and a
+ * prerelease sorts *below* its release, so a build made from code newer than
+ * 0.9.1 announced itself as older than 0.9.1. Anything that compared them
+ * would have got the answer backwards, which is the one question the stamp
+ * exists to answer. Metadata after `+` is ignored for precedence entirely, so
+ * the string says "0.9.1 plus these local changes" and claims nothing about
+ * what version is coming next.
+ *
+ * `.dirty` rides on the end when the worktree was not clean, since that is
  * exactly the build whose commit does not describe it.
  */
 export function stampedVersion(version: string, info?: BuildInfo): string {
   if (info === undefined) return version;
-  return `${version}-dev-${info.builtAt}${info.dirty ? '+dirty' : ''}`;
+  return `${version}+dev.${info.builtAt}${info.dirty ? '.dirty' : ''}`;
 }
 
 /**
