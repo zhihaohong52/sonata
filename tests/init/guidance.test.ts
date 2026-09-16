@@ -154,6 +154,14 @@ describe('mergeGuidance', () => {
 });
 
 describe('guidanceBlock', () => {
+  it('names three tiers and makes normal the default', () => {
+    const block = guidanceBlock().replace(/\s+/g, ' ');
+    expect(block).toContain('`code-simple`, `code-normal`, `code-complex`');
+    expect(block).toContain('`-normal` is the default');
+    expect(block).toContain('Size is not difficulty');
+    expect(block).not.toContain('When unsure, use `-complex`');
+  });
+
   it('tells a tier agent to fan out only to other tier agents', () => {
     // Asserted separately from the no-model rule: they are different failures
     // — one runs the agent itself on Claude, the other hands its *subagent* to
