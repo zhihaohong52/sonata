@@ -226,14 +226,17 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         ? {}
         : data.declaredPricingProviders?.[state.configScope] ?? {};
       const candidateByKey = new Map(candidates.map((candidate) => [candidate.key, candidate] as const));
-      const upstreamForModels = (key: string): string | readonly string[] => {
-        const candidate = candidateByKey.get(key);
-        if (candidate === undefined) return key;
-        return catalogSpellingsForGateway(
+      // Resolution needs only the gateway and the id, so a candidate minted by
+      // the live /models refresh resolves exactly like a startup one.
+      const upstreamForCandidate = (candidate: { gateway: string; id: string }): string | readonly string[] =>
+        catalogSpellingsForGateway(
           modelsDev,
           { name: candidate.gateway, auth: data.gatewayAuth?.[candidate.gateway], pricingProvider: pricingProviders[candidate.gateway] },
           candidate.id,
         );
+      const upstreamForModels = (key: string): string | readonly string[] => {
+        const candidate = candidateByKey.get(key);
+        return candidate === undefined ? key : upstreamForCandidate(candidate);
       };
       // A catalog-backed init offers only models AA can rank on its per-task
       // scale. Hand-added uncosted entries still route, but belong outside this
@@ -263,7 +266,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         keys={{ ...data.storedKeys, ...state.byokKeys }}
         aa={catalog}
         gatewayNames={gatewayNames}
-        upstreamFor={upstreamForModels}
+        upstreamForCandidate={upstreamForCandidate}
         fetchModels={data.fetchModels ?? defaultFetchModels}
         initialSelected={new Set(state.nativeKeys)}
         onSubmit={(keys, live) => {

@@ -18,7 +18,14 @@ export interface ModelsStepProps {
   /** Cached AA rankings used only to filter newly offered model rows. */
   aa?: AaCatalog;
   gatewayNames?: readonly string[];
-  upstreamFor?: (key: string) => string | readonly string[];
+  /**
+   * Resolved AA spellings for a candidate, taken from its own gateway and id.
+   * Keyed by *candidate*, not by key: `mergeLiveCandidates` mints a key for a
+   * gateway added this run, which a startup-built key→candidate map cannot
+   * resolve — it would hand back the key unchanged and the row would look
+   * uncosted purely because its gateway is new.
+   */
+  upstreamForCandidate?: (candidate: CandidateOption) => string | readonly string[];
   fetchModels?: typeof defaultFetchModels;
   /** Selected keys, plus what each gateway's own /models endpoint reported. */
   onSubmit: (keys: string[], live: Record<string, string[]>) => void;
@@ -76,7 +83,7 @@ export function refreshableGateways(
 export function ModelsStep(props: ModelsStepProps): React.ReactElement {
   const {
     candidates, addedGateways = [], gatewayBaseUrls, gatewayAuth, keys, initialSelected,
-    aa, gatewayNames = [], upstreamFor, fetchModels = defaultFetchModels, onSubmit, onBack, onCancel,
+    aa, gatewayNames = [], upstreamForCandidate, fetchModels = defaultFetchModels, onSubmit, onBack, onCancel,
   } = props;
   const targets = refreshableGateways(candidates, gatewayBaseUrls, gatewayAuth, keys, addedGateways);
   const [live, setLive] = useState<Record<string, string[]> | undefined>(
@@ -126,9 +133,17 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
   }
 
   const merged = mergeLiveCandidates(candidates, live);
+  // Gateways added this run are absent from the startup list, so their prefix
+  // would survive `normalizeModelName` and the lookup would miss.
+  const names = [...new Set([...gatewayNames, ...merged.map((candidate) => candidate.gateway)])];
   const costed = aa === undefined
     ? merged
-    : merged.filter((candidate) => hasTaskCost(candidate.key, aa, gatewayNames, upstreamFor));
+    : merged.filter((candidate) => hasTaskCost(
+      candidate.key,
+      aa,
+      names,
+      upstreamForCandidate === undefined ? undefined : () => upstreamForCandidate(candidate),
+    ));
   const offered = costed;
   const excluded = merged.filter((candidate) => !costed.includes(candidate));
   const refreshed = Object.keys(live).length;

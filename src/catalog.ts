@@ -514,7 +514,12 @@ export function hasTaskCost(
   upstreamFor: UpstreamFor = identityUpstream,
 ): boolean {
   // Without a cache there is no exclusion data; preserve the built-in path.
-  return aa === undefined || scoreFor(candidate, aa, providers, upstreamFor)?.costPerTask !== undefined;
+  if (aa === undefined) return true;
+  // Finite, not merely present: a hand-edited or foreign-written cache can
+  // carry `null`, a string or a NaN, and `.toFixed(3)` on the ranking label
+  // throws on the first two while the third ranks on a meaningless number.
+  const cost = scoreFor(candidate, aa, providers, upstreamFor)?.costPerTask;
+  return typeof cost === 'number' && Number.isFinite(cost);
 }
 
 /** Keep only candidates AA can compare on its dollars-per-task scale. */
@@ -824,8 +829,13 @@ export function loadAaCatalog(home: string): AaCatalog | undefined {
       ) {
         // An unknown level is a hand-edit or a foreign writer; the score is
         // still good, so keep the row and drop only the field.
-        const { effort, ...rest } = entry as AaEntry;
-        models[name] = effort !== undefined && isEffort(effort) ? { ...rest, effort } : rest;
+        const { effort, costPerTask, ...rest } = entry as AaEntry;
+        // Same treatment as `effort`: the row's score is still good, so drop
+        // only the malformed field and let the model read as uncosted.
+        const kept: AaEntry = typeof costPerTask === 'number' && Number.isFinite(costPerTask)
+          ? { ...rest, costPerTask }
+          : rest;
+        models[name] = effort !== undefined && isEffort(effort) ? { ...kept, effort } : kept;
       }
     }
     if (Object.keys(models).length === 0) return undefined;

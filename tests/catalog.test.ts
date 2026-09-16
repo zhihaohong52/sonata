@@ -7,7 +7,7 @@ import {
   normalizeModelName, lookupModel, proposeTiers, loadAaCatalog, aaCatalogPath,
   aaCatalogAgeDays, aaLookupNames, catalogCoverage, SIMPLE_COST_CEILING,
   catalogFamily, expandCandidates, hasEffortVariants, unpinnedVariants, candidateLabel,
-  unpinnedCandidates, assertEffortsPinned,
+  unpinnedCandidates, assertEffortsPinned, hasTaskCost,
   type AaCatalog,
 } from '../src/catalog.js';
 import { plan, type CredentialProbe } from '../src/init/plan.js';
@@ -262,6 +262,31 @@ describe('loadAaCatalog', () => {
     expect(loaded).toBeDefined();
     expect(Object.keys(loaded!.models)).toEqual(['good']);
     expect(loaded!.models.good.codingIndex).toBe(60);
+  });
+
+  it('drops a malformed cost-per-task and keeps the row as uncosted', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-catalog-'));
+    const path = aaCatalogPath(home);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      fetchedAt: 'x',
+      models: {
+        costed: { codingIndex: 60, blendedPriceUsd: 1.2, costPerTask: 0.4 },
+        nullCost: { codingIndex: 60, blendedPriceUsd: 1.2, costPerTask: null },
+        stringCost: { codingIndex: 60, blendedPriceUsd: 1.2, costPerTask: '0.4' },
+        infiniteCost: { codingIndex: 60, blendedPriceUsd: 1.2, costPerTask: Infinity },
+      },
+    }));
+    const aa = loadAaCatalog(home)!;
+    // The row survives — only the unusable field goes.
+    expect(Object.keys(aa.models).sort()).toEqual(['costed', 'infiniteCost', 'nullCost', 'stringCost']);
+    expect(aa.models.costed.costPerTask).toBe(0.4);
+    for (const name of ['nullCost', 'stringCost', 'infiniteCost']) {
+      expect(aa.models[name].costPerTask).toBeUndefined();
+      // Uncosted, so it is never offered and `.toFixed(3)` is never reached.
+      expect(hasTaskCost(name, aa)).toBe(false);
+    }
+    expect(hasTaskCost('costed', aa)).toBe(true);
   });
 
   it('keeps family and effort, and drops an effort that is not a known level', () => {
