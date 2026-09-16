@@ -1,9 +1,10 @@
 # Roadmap to 1.0
 
-Source of record: [Sonata 1.0 Roadmap](https://claude.ai/code/artifact/bc30e9cb-aac7-473c-a79a-a26d8f882c8b)
-(a claude.ai Artifact, private). This page mirrors its content and tracks
-shipped-status against it — update both when an item lands, since the
-artifact isn't otherwise linked from anywhere in this repo.
+**This page is the source of record.** It previously mirrored a private
+claude.ai Artifact, which meant every landed item had to be written twice and
+the copy nobody could see was the authority. Dropped on 2026-09-17: a roadmap
+that lives beside the code it describes is the one that gets updated when the
+code moves.
 
 Assembled originally from the working tree at `9bf46e5`, `CHANGELOG.md`
 history, and the [2026-08-18 architecture review](reviews/2026-08-18-architecture-review.md).
