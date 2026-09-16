@@ -19,7 +19,13 @@
 - The ceiling multiplier must be **>= 1**, so the anchor always clears its own cap and `simple` is never empty.
 - Never fall back from a `-normal` alias to another tier. An alias that cannot resolve returns `undefined`.
 - Do not weaken or delete an existing test. Where one encodes two-tier behaviour, it changes because behaviour changed — say so in the commit.
-- `npm test` and `npm run typecheck` pass before every commit. `sonata` on PATH runs `dist/`, so `npm run build` before any manual CLI check.
+- `npm test` and `npm run typecheck` pass **at integration**, not necessarily at
+  every commit. Widening `TIER_NAMES` in Task 1 is a type error in
+  `src/commands/agents.ts`, `src/commands/sync.ts` and
+  `src/tui-ink/agents-app.tsx` until Tasks 5 and 8 land — measured, 7 errors. A
+  task commits when its **own** tests pass and typecheck reports no error *in
+  the files it owns*; the wave owner runs the full suite once the wave closes.
+  Do not reach into another task's file to silence a type error. `sonata` on PATH runs `dist/`, so `npm run build` before any manual CLI check.
 - Tests need no API keys; use the fixtures in `tests/fixtures/aa/`.
 - **Mutation-check every new assertion before committing it.** Delete or soften
   the behaviour it covers, confirm the test fails, restore, confirm it passes.
@@ -39,7 +45,7 @@
 | `src/commands/sync.ts` | generate `<role>-normal` agents; rewrite tier descriptions | 5 |
 | `src/init/guidance.ts` | the managed `CLAUDE.md` block names three tiers | 6 |
 | `src/tui-ink/app.tsx`, `src/tui-ink/app-state.ts` | 12 ranking screens; bulk accept covers three tiers | 7 |
-| `src/commands/agents.ts`, `src/commands/doctor.ts` | editor rows and doctor reporting | 8 |
+| `src/commands/agents.ts`, `src/tui-ink/agents-app.tsx`, `src/commands/doctor.ts` | editor rows, the editor TUI, doctor reporting | 8 |
 | `skills/loop/SKILL.md` | escalation ladder gains a rung | 9 |
 | `CLAUDE.md`, `README.md`, `docs/guide/*`, `docs/HANDOFF.md`, `CHANGELOG.md` | prose | 10 |
 
@@ -706,7 +712,7 @@ git commit -m "feat(init): rank three tiers per role in the wizard"
 ### Task 8: The agents editor and doctor know the third tier
 
 **Files:**
-- Modify: `src/commands/agents.ts:29` (`Tier`), `:84-88`, `:153`, `:166`, `:258`, `:272-274`; `src/commands/doctor.ts`
+- Modify: `src/commands/agents.ts:29` (`Tier`), `:84-88`, `:153`, `:166`, `:258`, `:272-274`; `src/tui-ink/agents-app.tsx:32,37,42` (`TierRow`, and the `lists[tier]` index — widening `Tier` makes these three a type error until the row type carries `normal`); `src/commands/doctor.ts`
 - Test: `tests/commands/agents.test.ts`, `tests/commands/doctor.test.ts`
 
 **Interfaces:**
