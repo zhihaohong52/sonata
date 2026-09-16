@@ -18,6 +18,7 @@ import { banner, isInteractive, confirm } from './tui.js';
 import { pruneAgents } from './detect.js';
 import type { HookScope } from './settings.js';
 import { homedir } from 'node:os';
+import { readBuildInfo, stampedVersion } from './build-info.js';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove } from './commands/auth.js';
@@ -100,6 +101,10 @@ function packageRoot(): string {
  */
 function versionLines(): string[] {
   const root = packageRoot();
+  // The stamp sits beside the executing file, not at the package root: that is
+  // `dist/` for an installed or linked build and `src/` under `npm run dev`,
+  // which is never stamped — so the answer describes the code that ran.
+  const info = readBuildInfo(fileURLToPath(new URL('.', import.meta.url)));
   let version = 'unknown';
   try {
     const raw = readFileSync(join(root, 'package.json'), 'utf8');
@@ -111,7 +116,11 @@ function versionLines(): string[] {
   } catch {
     // An unreadable manifest still leaves the path worth printing.
   }
-  return [version, root];
+  const lines = [stampedVersion(version, info), root];
+  // The commit is a second line rather than more suffix: the version is what
+  // gets quoted in a bug report, and it stays readable.
+  if (info !== undefined) lines.push(`built ${info.builtAt} from ${info.commit}${info.dirty ? ' (dirty)' : ''}`);
+  return lines;
 }
 
 export async function main(argv: string[]): Promise<number> {
