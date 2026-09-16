@@ -12,7 +12,7 @@
  * Skipped on CI, so nothing a release builds carries a `-dev` suffix.
  */
 import { execFileSync } from 'node:child_process';
-import { writeFileSync, existsSync } from 'node:fs';
+import { writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,7 +21,13 @@ const dist = join(root, 'dist');
 
 // `npm publish` runs the build through prepublishOnly, and the tarball ships
 // dist/ — a stamp written there would reach users as a `-dev` version.
-if (process.env.CI !== undefined || process.env.SONATA_RELEASE_BUILD !== undefined) process.exit(0);
+if (process.env.CI !== undefined || process.env.SONATA_RELEASE_BUILD !== undefined) {
+  // tsc does not clean dist/, so a stamp left by an earlier local build would
+  // survive this one and make a release build report someone else's `-dev`
+  // timestamp. Skipping must mean unstamped, not "whatever was there".
+  rmSync(join(dist, 'build-info.json'), { force: true });
+  process.exit(0);
+}
 if (!existsSync(dist)) process.exit(0);
 
 const git = (...args) => {
