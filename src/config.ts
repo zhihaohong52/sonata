@@ -24,7 +24,7 @@ export function isReadOnlyRole(role: string): boolean {
 
 export interface ModelConfig { harness: string; id: string }
 
-export const TIER_NAMES = ['simple', 'complex'] as const;
+export const TIER_NAMES = ['simple', 'normal', 'complex'] as const;
 
 /**
  * Whether a role's two tier lists are element-wise identical — the single
@@ -38,9 +38,14 @@ export const TIER_NAMES = ['simple', 'complex'] as const;
  * `sonata init`'s confirm summary, which counts them. The third had rebuilt it
  * differently and so promised twice the files `sync` went on to write.
  */
-export function tiersCollapse(lists: { simple: string[]; complex: string[] }): boolean {
-  return lists.simple.length === lists.complex.length &&
-    lists.simple.every((key, index) => key === lists.complex[index]);
+export function tiersCollapse(lists: TierLists): boolean {
+  const present = [lists.simple, lists.normal, lists.complex].filter(
+    (list): list is string[] => list !== undefined,
+  );
+  const [first, ...rest] = present;
+  if (first === undefined) return false;
+  return rest.every((list) =>
+    list.length === first.length && list.every((key, index) => key === first[index]));
 }
 
 /**
@@ -77,7 +82,7 @@ export interface UnifiedModelConfig {
   price?: PriceConfig;
 }
 
-export interface TierLists { simple: string[]; complex: string[] }
+export interface TierLists { simple: string[]; normal?: string[]; complex: string[] }
 
 export interface TierRoute {
   key: string;
@@ -396,12 +401,21 @@ export function parseConfig(text: string): SonataConfig {
       }
       const d = def as Record<string, unknown>;
       const simple = d.simple;
+      const normal = d.normal;
       const complex = d.complex;
       if (!Array.isArray(simple) || simple.length === 0 || !simple.every((key) => typeof key === 'string') ||
           !Array.isArray(complex) || complex.length === 0 || !complex.every((key) => typeof key === 'string')) {
         throw new Error(`sonata.toml: tiers.${role} needs non-empty string lists "simple" and "complex".`);
       }
-      for (const [tier, keys] of [['simple', simple], ['complex', complex]] as const) {
+      // Absent is valid — a config predating the third tier. Present means it
+      // must satisfy exactly what the other two do.
+      if (normal !== undefined &&
+          (!Array.isArray(normal) || normal.length === 0 || !normal.every((key) => typeof key === 'string'))) {
+        throw new Error(`sonata.toml: tiers.${role}.normal must be a non-empty list of model keys, or absent.`);
+      }
+      const lists: [string, string[]][] = [['simple', simple], ['complex', complex]];
+      if (normal !== undefined) lists.push(['normal', normal as string[]]);
+      for (const [tier, keys] of lists) {
         for (const candidate of keys) {
           // `<key>@<effort>`: the level is validated here, the key below.
           let key: string;
@@ -424,7 +438,7 @@ export function parseConfig(text: string): SonataConfig {
           }
         }
       }
-      tiers[role] = { simple, complex };
+      tiers[role] = { simple, complex, ...(normal === undefined ? {} : { normal: normal as string[] }) };
     }
     // Tier lists own all routing choices. Keeping either legacy generator next
     // to them would generate two incompatible sets of agents from one config.
@@ -794,7 +808,10 @@ export function resolveTierAlias(
   // ordered equality: both ranking and membership are part of the contract.
   const hasExplicitTier = rest !== role;
   if (!hasExplicitTier && !tiersCollapse(lists)) return undefined;
-  const keys = tier === 'simple' ? lists.simple : lists.complex;
+  const keys = tier === 'simple' ? lists.simple : tier === 'normal' ? lists.normal : lists.complex;
+  // A role with no `normal` cannot serve a `-normal` alias, and must not quietly
+  // serve a different one instead.
+  if (keys === undefined) return undefined;
   const routes = keys.map((candidate): TierRoute => {
     const { key, effort } = splitCandidate(candidate);
     const model = config.unifiedModels[key];
@@ -949,7 +966,11 @@ export function tierAgentNames(tiers: NonNullable<SonataConfig['tiers']>): strin
   const names: string[] = [];
   for (const [role, lists] of Object.entries(tiers)) {
     if (tiersCollapse(lists)) names.push(role);
-    else names.push(...TIER_NAMES.map((tier) => `${role}-${tier}`));
+    // Only the tiers the role defines. `cmdSync` writes no `-normal` agent for
+    // a role without a `normal` list, so naming one here would make
+    // `staleAgents` treat a left-over `<role>-normal.md` as expected — an
+    // orphan file whose alias `resolveTierAlias` refuses, reported by nothing.
+    else names.push(...TIER_NAMES.filter((tier) => lists[tier] !== undefined).map((tier) => `${role}-${tier}`));
   }
   return names;
 }

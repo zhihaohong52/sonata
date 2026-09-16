@@ -63,7 +63,78 @@ describe('lookupModel', () => {
   });
 });
 
+/** Order-preserving containment: every element of `sub`, in `full`'s order. */
+const isSubsequence = (sub: readonly string[], full: readonly string[]): boolean => {
+  let at = 0;
+  for (const key of full) if (key === sub[at]) at++;
+  return at === sub.length;
+};
+
 describe('proposeTiers', () => {
+  const threeTierAa: AaCatalog = { fetchedAt: '2026-09-16T00:00:00Z', models: {
+    // One family at several efforts: capability nearly flat, cost spread wide.
+    'flash-low':  { codingIndex: 44, blendedPriceUsd: 1, costPerTask: 0.010 },
+    'flash-high': { codingIndex: 63, blendedPriceUsd: 1, costPerTask: 0.044 },
+    'pro-max':    { codingIndex: 77, blendedPriceUsd: 1, costPerTask: 1.399 },
+  } };
+
+  it('ranks normal by value and complex by capability', () => {
+    const p = proposeTiers(['flash-low', 'flash-high', 'pro-max'], threeTierAa);
+    expect(p.normal).toEqual(['flash-low', 'flash-high', 'pro-max']);
+    expect(p.complex).toEqual(['pro-max', 'flash-high', 'flash-low']);
+  });
+
+  it('makes simple a cost-capped subsequence of normal', () => {
+    // 12 x $0.010 = $0.120, so pro-max is out and the order is normal's.
+    const p = proposeTiers(['flash-low', 'flash-high', 'pro-max'], threeTierAa);
+    expect(p.simple).toEqual(['flash-low', 'flash-high']);
+    // A subsequence, not a prefix: value is not monotonic in cost, so the
+    // filter can skip an over-ceiling candidate and keep a cheaper one behind
+    // it. Asserted as order-preserving containment rather than as a prefix,
+    // which held only because this fixture happens to be monotonic.
+    expect(isSubsequence(p.simple, p.normal)).toBe(true);
+  });
+
+  it('skips an over-ceiling candidate rather than truncating at it', () => {
+    // Constructed to break the prefix reading: `x` outranks `y` on value but
+    // sits over the cap, so `simple` skips it and keeps `y`. Truncating at the
+    // first over-ceiling candidate would make `simple` a true prefix and drop
+    // `y` — a qualifying cheap model — which is the opposite of what the cheap
+    // tier is for.
+    const aa: AaCatalog = { fetchedAt: 'x', models: {
+      a1: { codingIndex: 44, blendedPriceUsd: 1, costPerTask: 0.010 },
+      x: { codingIndex: 60, blendedPriceUsd: 1, costPerTask: 0.150 },
+      y: { codingIndex: 45, blendedPriceUsd: 1, costPerTask: 0.120 },
+    } };
+    const p = proposeTiers(['a1', 'x', 'y'], aa);
+    expect(p.normal).toEqual(['a1', 'x', 'y']);
+    expect(p.simple).toEqual(['a1', 'y']);
+    expect(isSubsequence(p.simple, p.normal)).toBe(true);
+  });
+
+  it('always admits the anchor, so simple is never empty', () => {
+    // Every model expensive: the cap is 12x the best-value model's own cost,
+    // and that model therefore always clears it.
+    const dear: AaCatalog = { fetchedAt: 'x', models: {
+      'a': { codingIndex: 70, blendedPriceUsd: 1, costPerTask: 9.5 },
+      'b': { codingIndex: 60, blendedPriceUsd: 1, costPerTask: 40 },
+    } };
+    const p = proposeTiers(['a', 'b'], dear);
+    expect(p.simple.length).toBeGreaterThan(0);
+    expect(p.simple[0]).toBe(p.normal[0]);
+  });
+
+  it('diverges from normal on a heterogeneous set', () => {
+    // Capability varies at similar cost, which is what makes the tiers differ.
+    const mixed: AaCatalog = { fetchedAt: 'x', models: {
+      'glm':  { codingIndex: 58, blendedPriceUsd: 1, costPerTask: 0.05 },
+      'luna': { codingIndex: 76, blendedPriceUsd: 1, costPerTask: 0.11 },
+    } };
+    const p = proposeTiers(['glm', 'luna'], mixed);
+    expect(p.normal[0]).toBe('glm');
+    expect(p.complex[0]).toBe('luna');
+  });
+
   it('excludes models without an AA cost-per-task from both tiers', () => {
     const aa: AaCatalog = {
       fetchedAt: '2026-09-15T00:00:00Z',
@@ -74,6 +145,7 @@ describe('proposeTiers', () => {
     };
     expect(proposeTiers(['uncosted', 'costed'], aa)).toEqual({
       simple: ['costed'],
+      normal: ['costed'],
       complex: ['costed'],
     });
   });
@@ -94,9 +166,14 @@ describe('proposeTiers', () => {
     // complex = most capable first, cost only breaking ties
     expect(tiers.complex[0]).toBe('gpt-5.6-terra');
     expect(tiers.complex).toContain('deepseek-v4-pro');
-    // The 45 and 42 scores fall below the relative capability floor, while
-    // the remaining task-costed candidates stay ordered by value.
-    expect(tiers.simple).toEqual(['deepseek-v4-pro', 'gpt-5.6-terra']);
+    // The retired capability floor no longer removes capable models from
+    // simple; it is the cost-capped subsequence of the value-ranked normal tier.
+    expect(tiers.normal).toEqual([
+      'deepseek-v4-flash', 'gpt-5.6-luna', 'deepseek-v4-pro', 'gpt-5.6-terra',
+    ]);
+    expect(tiers.simple).toEqual([
+      'deepseek-v4-flash', 'gpt-5.6-luna', 'deepseek-v4-pro',
+    ]);
   });
 
   it('ranks the simple tier by capability per cost, not by capability', () => {
@@ -127,50 +204,47 @@ describe('proposeTiers', () => {
     expect(proposeTiers(['better-coder', 'better-agent'], aa).complex[0]).toBe('better-agent');
   });
 
-  it('excludes a cheap but weak model from the simple tier', () => {
-    // Without the floor, a model that is very cheap and very weak wins on
-    // ratio alone and grunt work silently degrades.
+  it('allows a cheap but weak model when it leads on value', () => {
+    // The capability floor is intentionally retired: simple is a cost-capped
+    // subsequence of normal, so a very cheap model can lead on capability per dollar.
     const aa: AaCatalog = {
       fetchedAt: '2026-08-25T00:00:00Z',
       models: {
         'strong': { codingIndex: 60, blendedPriceUsd: 1, agenticIndex: 60, costPerTask: 0.5 },
         'near-strong': { codingIndex: 55, blendedPriceUsd: 1, agenticIndex: 55, costPerTask: 0.1 },
-        'junk': { codingIndex: 20, blendedPriceUsd: 1, agenticIndex: 20, costPerTask: 0.001 },
+        'junk': { codingIndex: 40, blendedPriceUsd: 1, agenticIndex: 40, costPerTask: 0.001 },
       },
     };
     const tiers = proposeTiers(['strong', 'near-strong', 'junk'], aa);
-    expect(tiers.simple[0]).toBe('near-strong');
-    expect(tiers.simple).not.toContain('junk');
+    expect(tiers.normal[0]).toBe('junk');
+    expect(tiers.simple).toEqual(['junk']);
   });
 
-  it('a model too weak to enter the simple tier cannot set its cost ceiling', () => {
-    // The ceiling is a `Math.min`, so unlike the capability floor's `Math.max`
-    // one very cheap model drags it down for everyone. Measured over every
-    // selected model, `junk` at $0.001/task set a $0.012 ceiling that nothing
-    // eligible could clear: `simple` came back empty and fell back to mirroring
-    // `complex`, so the tier stopped discriminating at exactly the moment its
-    // gate was strictest. `lavish` is the witness — capable and above the
-    // floor, but genuinely too dear for grunt work, so it belongs in `complex`
-    // and not in `simple`. The fallback would have carried it in.
+  it('anchors the simple ceiling to the best-value model', () => {
+    // The cap is anchored to the best-value capable model, not to a
+    // capability-floor survivor. Here `junk` leads on value and its $0.001
+    // cost sets the $0.012 cap, so the simple tier contains its prefix only.
     const aa: AaCatalog = {
       fetchedAt: '2026-08-25T00:00:00Z',
       models: {
         'strong': { codingIndex: 60, blendedPriceUsd: 1, agenticIndex: 60, costPerTask: 0.5 },
         'value': { codingIndex: 55, blendedPriceUsd: 1, agenticIndex: 55, costPerTask: 0.1 },
         'lavish': { codingIndex: 58, blendedPriceUsd: 1, agenticIndex: 58, costPerTask: 8 },
-        'junk': { codingIndex: 20, blendedPriceUsd: 1, agenticIndex: 20, costPerTask: 0.001 },
+        'junk': { codingIndex: 40, blendedPriceUsd: 1, agenticIndex: 40, costPerTask: 0.001 },
       },
     };
     const tiers = proposeTiers(['strong', 'value', 'lavish', 'junk'], aa);
-    // Ceiling is min($0.50, $0.10, $8.00) x 12 = $1.20 — `junk` does not vote.
-    expect(tiers.simple).toEqual(['value', 'strong']);
+    expect(tiers.normal[0]).toBe('junk');
+    expect(tiers.simple).toEqual(['junk']);
     expect(tiers.complex).toContain('lavish');
   });
 
   it('never returns an empty complex list when any model exists', () => {
     const tiers = proposeTiers(['mystery-model-9000']);
     expect(tiers.complex).toEqual(['mystery-model-9000']);
-    // no cheap models: simple mirrors complex so the tier still resolves
+    // no catalog costs: normal is empty and simple falls back to it so the
+    // tier still resolves.
+    expect(tiers.normal).toEqual(['mystery-model-9000']);
     expect(tiers.simple).toEqual(['mystery-model-9000']);
   });
 
@@ -399,10 +473,9 @@ describe('proposeTiers — avoided gateways', () => {
     expect(proposeTiers(['good', 'best'], aa).complex).toEqual(['best', 'good']);
   });
 
-  it('measures the simple floor over models that can actually lead', () => {
-    // With the strongest model avoided, keeping it in the floor calculation
-    // could raise the bar until nothing preferred qualifies — inverting the
-    // setting's intent.
+  it('anchors simple to a preferred model when one can lead', () => {
+    // An avoided model must not set the cost anchor for preferred models;
+    // avoidance changes preference, not whether the fallback remains available.
     const wide: AaCatalog = {
       fetchedAt: '2026-08-25T00:00:00Z',
       models: {
@@ -905,16 +978,17 @@ describe('candidateLabel', () => {
 
 
 describe('proposeTiers — effort variants', () => {
-  it('ranks variants as candidates: complex by capability, simple by value above the floor', () => {
+  it('ranks variants as candidates: complex by capability, normal and simple by value', () => {
     const tiers = proposeTiers(['gpt-5.6-luna', 'gpt-5.6-terra', 'deepseek-v4-flash'], FAMILY_AA);
     // terra@max 43.7 edges luna@max 42.7 — within the 1.0 tie margin, so
     // price decides: luna@max ($0.178) beats terra@max ($1.399).
     expect(tiers.complex.slice(0, 3)).toEqual(['gpt-5.6-luna@max', 'gpt-5.6-terra@max', 'deepseek-v4-flash@none']);
-    // Floor = 0.75 × 43.7 = 32.8: luna@high (35.6) clears it and leads on
-    // value; luna@low (17.9) does not, whatever its cost.
-    expect(tiers.simple[0]).toBe('gpt-5.6-luna@high');
-    expect(tiers.simple).not.toContain('gpt-5.6-luna@low');
-    expect(tiers.simple).toContain('gpt-5.6-luna@xhigh');
+    // The floor is retired: normal sorts every capable level by value, and
+    // simple filters that order at 12x the best-value level's cost.
+    expect(tiers.normal[0]).toBe('gpt-5.6-luna@low');
+    expect(tiers.simple).toEqual([
+      'gpt-5.6-luna@low', 'gpt-5.6-luna@high', 'gpt-5.6-luna@xhigh',
+    ]);
   });
 
   it('demotes every variant of an avoided model, by bare key', () => {
@@ -933,6 +1007,7 @@ describe('proposeTiers — effort variants', () => {
     };
     expect(proposeTiers(['top-and-dear', 'cheap-and-good'], aa)).toEqual({
       complex: ['top-and-dear', 'cheap-and-good'],
+      normal: ['cheap-and-good', 'top-and-dear'],
       simple: ['cheap-and-good', 'top-and-dear'],
     });
   });

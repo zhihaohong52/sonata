@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { nativeTomlFor, tomlKey } from '../../src/init/toml.js';
+import { nativeTomlFor, replaceTiersBlock, tomlKey } from '../../src/init/toml.js';
 import { parseConfig, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL } from '../../src/config.js';
 import type { NativeCandidate } from '../../src/commands/init.js';
 
@@ -33,6 +33,33 @@ describe('tomlKey', () => {
 describe('nativeTomlFor', () => {
   const cand = (gw: string, id: string): NativeCandidate => ({
     key: `${gw}-${id}`, gateway: gw, id, contextWindow: 128000, baseUrl: `https://${gw}.example/v1`,
+  });
+
+  it('writes a normal tier and reads it back', () => {
+    // The round trip is the test that matters: init rewrites the whole file,
+    // so a key it reads but does not write back is deleted on the next run.
+    const c = cand('acme', 'sprinter');
+    const toml = nativeTomlFor(
+      { code: [c] },
+      {},
+      { code: { simple: ['acme-sprinter'], normal: ['acme-sprinter', 'acme-sprinter@high'], complex: ['acme-sprinter@high'] } },
+    );
+    expect(parseConfig(toml).tiers?.code).toEqual({
+      simple: ['acme-sprinter'],
+      normal: ['acme-sprinter', 'acme-sprinter@high'],
+      complex: ['acme-sprinter@high'],
+    });
+  });
+
+  it('omits normal entirely when a role has none', () => {
+    const c = cand('acme', 'sprinter');
+    const toml = nativeTomlFor(
+      { code: [c] },
+      {},
+      { code: { simple: ['acme-sprinter'], complex: ['acme-sprinter@high'] } },
+    );
+    expect(toml).not.toContain('normal =');
+    expect(parseConfig(toml).tiers?.code.normal).toBeUndefined();
   });
 
   it('writes an effort-pinned tier candidate back verbatim', () => {
@@ -367,5 +394,37 @@ describe('nativeTomlFor — settings init must not silently drop', () => {
     expect(toml).not.toContain('pricing_provider');
     expect(toml).not.toContain('.price');
     expect(parseConfig(toml).native!.gateways.acme.pricingProvider).toBeUndefined();
+  });
+});
+
+
+describe('replaceTiersBlock — normal tier', () => {
+  const existingToml = [
+    'schema_version = 1',
+    '',
+    '[native.gateways."acme"]',
+    'base_url = "https://acme.example/v1"',
+    '',
+    '[models."acme-a"]',
+    'gateway = "acme"',
+    'id = "a"',
+    'context_window = 128000',
+    '',
+    '[models."acme-b"]',
+    'gateway = "acme"',
+    'id = "b"',
+    'context_window = 128000',
+    '',
+    '[tiers.code]',
+    'simple = ["acme-a"]',
+    'complex = ["acme-b"]',
+    '',
+  ].join('\n');
+
+  it('round-trips a normal tier', () => {
+    const rewritten = replaceTiersBlock(existingToml, {
+      code: { simple: ['acme-a'], normal: ['acme-a', 'acme-b'], complex: ['acme-b'] },
+    });
+    expect(parseConfig(rewritten).tiers?.code.normal).toEqual(['acme-a', 'acme-b']);
   });
 });

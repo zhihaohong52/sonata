@@ -7,8 +7,8 @@ Worth knowing before you depend on this:
   `model/list` (JSON-RPC over stdio), with a real response captured in
   `tests/fixtures/codex/model-list.json`.
 - **Nested agents are unbounded and unattributed.** A generated agent can
-  spawn further agents, and nothing counts depth — a `code-complex` agent can
-  call `Agent(subagent_type: "code-complex")` on itself. Read-only roles are
+  spawn further agents, and nothing counts depth — a `code-normal` agent can
+  call `Agent(subagent_type: "code-normal")` on itself. Read-only roles are
   told to delegate only to other read-only roles, but that is prompt text:
   `tools:` frontmatter grants tools, not permitted argument values. `sonata
   usage` attributes spend per session rather than to the dispatch that caused
@@ -36,3 +36,5 @@ Worth knowing before you depend on this:
   status < 500; once a response starts streaming there is no mid-stream
   failover to the next candidate. A candidate that fails cools down for 60
   seconds so a repeated request doesn't retry a model that just failed.
+
+- **`normal` is optional.** A config may keep only `simple` and `complex`, preserving its previous behavior; adding `normal` provides the uncapped value-ranked choice. `simple` remains a cost-capped prefix of `normal`, so the tiers can agree on a homogeneous model family.

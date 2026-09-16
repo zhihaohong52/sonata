@@ -56,6 +56,14 @@ describe('plan — the config it emits', () => {
     expect(back.avoidGateways).toEqual(['flaky-gw']);
   });
 
+  it('emits a normal tier for every role', () => {
+    const p = plan(env(), state, noCredentials, opts);
+    const tiers = parseConfig(p.configToml).tiers!;
+    // The whole feature is unreachable if init never writes the list.
+    expect(tiers.code!.normal).toBeDefined();
+    expect(tiers.code!.normal!.length).toBeGreaterThan(0);
+  });
+
   it('emits a config that parses and defines every model its tiers name', () => {
     const p = plan(env(), state, noCredentials, opts);
     const back = parseConfig(p.configToml);
