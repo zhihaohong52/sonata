@@ -111,6 +111,33 @@ to try any of it. Freeze last.
   judgement calls for the maintainer, not work items — which is why they are
   recorded here rather than as a fifteenth row.
 
+## After the fourteen items — surface added since the checklist emptied
+
+The item list was complete at 0.6.0 (2026-09-03). Eight releases have shipped
+since, and none of them was a roadmap item: every one **added surface** rather
+than closing a gap. That matters here, because the 1.0 gate asks what you would
+regret freezing, and each of these is another thing that would be frozen.
+
+| Since | What it added | Why it is not a roadmap item |
+|---|---|---|
+| 0.7.x | Multi-tenant routing — one router per machine, per-request tenant resolution | The roadmap assumed one router per project; running two projects proved that wrong |
+| 0.8.x | `sonata route auto`, the session/subagent hook pair, `sonata agents` as an editor | Routing without losing Remote Control, and a second writer of `sonata.toml` |
+| 0.9.0 | Reasoning-effort tiers — the `<key>@<effort>` candidate grammar | AA scores each effort level separately, so a bare key ranks on one row and runs at another |
+| 0.9.1 | Per-model context windows, pricing repairs | — |
+| unreleased | A local web UI on the router; the `normal` tier; `sonata init` ranking only AA task-costed models | Each is a new surface: an HTTP server, a config key, and a change to what the wizard offers |
+
+**The direction of travel is the argument against tagging 1.0 now.** `[tiers.<role>]`
+gained a key on 2026-09-16 — exactly the kind of thing a frozen contract would
+have made expensive — and the tier-selection wording was rewritten the same day
+on the strength of a ledger measurement (74% of tiered requests went to
+`complex`) that nobody could have predicted before the data existed. Both are
+arguments the gate already makes: the exposure that would tell you what to
+freeze has not happened yet, and the shape is still moving without it.
+
+**The gate itself is unchanged.** Still two ways to move it, both judgement
+calls for the maintainer: an external bug report arriving and being answered,
+or a decision that exposure so far is enough.
+
 ## Explicitly not in 1.0
 
 Naming these is half the value of the plan. Each has been considered and
