@@ -143,11 +143,18 @@ describe('tierAgentMarkdown', () => {
 
   it('warns against a model argument in both the description and the body', () => {
     // The description is what the *dispatching* model reads while choosing an
-    // agent; by the time the body is in context the override has happened.
-    const md = tierAgentMarkdown({ role: 'code', tier: 'complex' });
-    const description = /^description: (.+)$/m.exec(md)?.[1] ?? '';
-    expect(description).toContain('no `model` argument');
-    expect(md.split('---')[2]).toContain('no `model` argument');
+    // agent; by the time the body is in context the override has happened. So
+    // both placements are asserted, on both generators that pin a model — a
+    // native agent's frontmatter is overridden just as silently as a tier
+    // agent's, and nothing else here would fail if its warning were dropped.
+    for (const md of [
+      tierAgentMarkdown({ role: 'code', tier: 'complex' }),
+      nativeAgentMarkdown({ role: 'code', model: 'flash' }),
+    ]) {
+      const description = /^description: (.+)$/m.exec(md)?.[1] ?? '';
+      expect(description).toContain('no `model` argument');
+      expect(md.split('---')[2]).toContain('no `model` argument');
+    }
   });
 
   it('keeps the description a plain YAML scalar', () => {
