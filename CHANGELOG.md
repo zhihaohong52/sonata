@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-16
+
 ### Added
 - **A third tier, `normal`, ranked by capability per task-dollar.**
   `[tiers.<role>]` accepts an optional `normal` list beside `simple` and
