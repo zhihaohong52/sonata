@@ -622,6 +622,19 @@ credential_source = "opencode"
 
 
 describe('optional normal tier', () => {
+  const withTiers = (lists: { simple: string[]; normal?: string[]; complex: string[] }): string => {
+    const keys = [...new Set([...lists.simple, ...(lists.normal ?? []), ...lists.complex])];
+    const models = keys.map((k) => `[models."${k}"]\ngateway = "gw"\nid = "${k}"`).join('\n');
+    const normal = lists.normal === undefined ? '' : `normal = [${lists.normal.map((k) => `"${k}"`).join(', ')}]\n`;
+    return `${models}
+[native.gateways."gw"]
+base_url = "https://example.test/v1"
+[tiers.code]
+simple = [${lists.simple.map((k) => `"${k}"`).join(', ')}]
+${normal}complex = [${lists.complex.map((k) => `"${k}"`).join(', ')}]
+`;
+  };
+
   it('accepts a config with no normal tier', () => {
     const config = parseConfig(`
 [models."a"]
@@ -679,6 +692,28 @@ simple = ["a"]
 normal = ["nope"]
 complex = ["a"]
 `)).toThrow(/unknown model "nope"/);
+  });
+
+  it('resolves a normal alias to its own list', () => {
+    const config = parseConfig(withTiers({ simple: ['a'], normal: ['b'], complex: ['c'] }));
+    expect(resolveTierAlias(config, 'sonata-code-normal')?.routes.map((r) => r.key)).toEqual(['b']);
+  });
+
+  it('returns undefined for a normal alias on a config without one', () => {
+    // Never substitute another tier: serving a different ranking than the alias
+    // names is silent, and the caller has no way to see it happened.
+    const config = parseConfig(withTiers({ simple: ['a'], complex: ['c'] }));
+    expect(resolveTierAlias(config, 'sonata-code-normal')).toBeUndefined();
+  });
+
+  it('still resolves the unsuffixed alias when all three lists match', () => {
+    const config = parseConfig(withTiers({ simple: ['a'], normal: ['a'], complex: ['a'] }));
+    expect(resolveTierAlias(config, 'sonata-code')?.tier).toBe('complex');
+  });
+
+  it('refuses the unsuffixed alias when normal differs', () => {
+    const config = parseConfig(withTiers({ simple: ['a'], normal: ['a', 'b'], complex: ['a'] }));
+    expect(resolveTierAlias(config, 'sonata-code')).toBeUndefined();
   });
 
   it('collapses only when every present list is identical', () => {

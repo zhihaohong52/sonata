@@ -808,7 +808,10 @@ export function resolveTierAlias(
   // ordered equality: both ranking and membership are part of the contract.
   const hasExplicitTier = rest !== role;
   if (!hasExplicitTier && !tiersCollapse(lists)) return undefined;
-  const keys = tier === 'simple' ? lists.simple : lists.complex;
+  const keys = tier === 'simple' ? lists.simple : tier === 'normal' ? lists.normal : lists.complex;
+  // A role with no `normal` cannot serve a `-normal` alias, and must not quietly
+  // serve a different one instead.
+  if (keys === undefined) return undefined;
   const routes = keys.map((candidate): TierRoute => {
     const { key, effort } = splitCandidate(candidate);
     const model = config.unifiedModels[key];
