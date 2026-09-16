@@ -28,7 +28,7 @@ import { findLitellm } from '../native/litellm.js';
 import { litellmRequired } from '../native/providers.js';
 import { litellmStatus, type InstallerDeps } from '../native/litellm-venv.js';
 import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm.js';
-import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, loadAaCatalog } from '../catalog.js';
+import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, hasTaskCost, loadAaCatalog } from '../catalog.js';
 import { loadModelsDev } from '../modelsdev.js';
 import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
@@ -304,7 +304,18 @@ export async function cmdDoctor(
       const bareKeys = [...new Set(tiered.map((candidate) => splitCandidate(candidate).key))];
       const { unscored: unscoredKeys } = catalogCoverage(bareKeys, catalog, gateways, resolver);
       const unscored = unscoredKeys.map(upstream);
-      checks.push(unscored.length > 0
+      const uncosted = bareKeys
+        .filter((key) => !unscoredKeys.includes(key) && !hasTaskCost(key, catalog, gateways, resolver))
+        .map(upstream);
+      checks.push(uncosted.length > 0
+        ? {
+            name: 'model rankings',
+            ok: true,
+            detail: `${uncosted.length} of ${bareKeys.length} configured models have no AA cost-per-task `
+              + `(${uncosted.slice(0, 3).join(', ')}${uncosted.length > 3 ? ', …' : ''}) — `
+              + 'not offered by `sonata init`; add by hand to sonata.toml if intentional',
+          }
+        : unscored.length > 0
         ? {
             name: 'model rankings',
             ok: true,

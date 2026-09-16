@@ -4,7 +4,7 @@ import { MultiSelect } from './components/multi-select.js';
 import { RankedSelect } from './components/ranked-select.js';
 import { ProvidersStep } from './components/providers-step.js';
 import { ModelsStep } from './components/models-step.js';
-import { candidateLabel, expandCandidates, loadAaCatalog, proposeTiers, unpinnedVariants } from '../catalog.js';
+import { candidateLabel, expandCandidates, hasTaskCost, loadAaCatalog, proposeTiers, taskCostedCandidates, unpinnedVariants } from '../catalog.js';
 import { loadModelsDev } from '../modelsdev.js';
 import { catalogSpellingsForGateway } from '../pricing.js';
 import {
@@ -219,6 +219,31 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     }
     case 2: {
       const candidates = candidatesForProviders(data.candidates, data.providers, state.providerKeys);
+      const catalog = loadAaCatalog(data.home);
+      const gatewayNames = [...new Set(candidates.map((candidate) => candidate.gateway))];
+      const modelsDev = loadModelsDev(data.home);
+      const pricingProviders = state.configScope === undefined
+        ? {}
+        : data.declaredPricingProviders?.[state.configScope] ?? {};
+      const candidateByKey = new Map(candidates.map((candidate) => [candidate.key, candidate] as const));
+      // Resolution needs only the gateway and the id, so a candidate minted by
+      // the live /models refresh resolves exactly like a startup one.
+      const upstreamForCandidate = (candidate: { gateway: string; id: string }): string | readonly string[] =>
+        catalogSpellingsForGateway(
+          modelsDev,
+          { name: candidate.gateway, auth: data.gatewayAuth?.[candidate.gateway], pricingProvider: pricingProviders[candidate.gateway] },
+          candidate.id,
+        );
+      const upstreamForModels = (key: string): string | readonly string[] => {
+        const candidate = candidateByKey.get(key);
+        return candidate === undefined ? key : upstreamForCandidate(candidate);
+      };
+      // A catalog-backed init offers only models AA can rank on its per-task
+      // scale. Hand-added uncosted entries still route, but belong outside this
+      // proposal flow rather than being silently ranked on token prices.
+      const offeredCandidates = catalog === undefined
+        ? candidates
+        : candidates.filter((candidate) => hasTaskCost(candidate.key, catalog, gatewayNames, upstreamForModels));
       // A provider added this run exists only in `state`: `data.candidates`
       // and `data.gatewayBaseUrls` were both computed at startup. Without
       // these two, the gateway whose key was just typed is never asked what it
@@ -239,6 +264,9 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         gatewayBaseUrls={{ ...data.gatewayBaseUrls, ...addedBaseUrls }}
         gatewayAuth={data.gatewayAuth ?? {}}
         keys={{ ...data.storedKeys, ...state.byokKeys }}
+        aa={catalog}
+        gatewayNames={gatewayNames}
+        upstreamForCandidate={upstreamForCandidate}
         fetchModels={data.fetchModels ?? defaultFetchModels}
         initialSelected={new Set(state.nativeKeys)}
         onSubmit={(keys, live) => {
@@ -317,10 +345,6 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       // The tier editor ranks every config entry, including harness-only
       // routes. They cannot enter nativeKeys, but must be offered so a saved
       // pin remains repairable in this writer too.
-      const rankableKeys = [...new Set([
-        ...(state.nativeKeys ?? []),
-        ...Object.keys(harnessOnlyUpstreams),
-      ])];
       // Preserve the native universe that withholds temporarily deselected
       // routes, then add harness-only config entries to it.
       const pickerUniverseKeys = [...new Set([
@@ -350,6 +374,10 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
           id,
         );
       };
+      const rankableKeys = taskCostedCandidates([...new Set([
+        ...(state.nativeKeys ?? []),
+        ...Object.keys(harnessOnlyUpstreams),
+      ])], catalog, gateways, upstreamFor);
       const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways, avoided, upstreamFor);
       const expand = (keys: string[]) => expandCandidates(keys, catalog, gateways, upstreamFor);
       // A model native-selected this run that no prior run ever ranked for
@@ -371,13 +399,20 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       // not already hold, so a level named twice would be inserted twice.
       const addedKeys = [...new Set([...globalAddedKeys, ...tierVariants])];
       const initialRanked = initialRankedFor(savedForScreen, proposal[tier], addedKeys);
+      const excluded = catalog === undefined ? [] : [...new Set([
+        ...(state.nativeKeys ?? []),
+        ...Object.keys(harnessOnlyUpstreams),
+      ])].filter((key) => !taskCostedCandidates([key], catalog, gateways, upstreamFor).length);
+      const excludedNotice = excluded.length > 0
+        ? ` · excluded ${excluded.join(', ')} — AA publishes no cost-per-task; add by hand to sonata.toml`
+        : '';
       const footer = catalog
-        ? `rankings: Artificial Analysis (fetched ${catalog.fetchedAt}) — artificialanalysis.ai`
+        ? `rankings: Artificial Analysis (fetched ${catalog.fetchedAt}) — artificialanalysis.ai${excludedNotice}`
         : 'rankings: built-in defaults — refresh with sonata catalog update';
       return <RankedSelect
         key={`${role}-${tier}`}
         title={`${role}: ${tier} models`}
-        items={tierPickerKeys(expand(rankableKeys), initialRanked, expand(pickerUniverseKeys))
+        items={tierPickerKeys(expand(rankableKeys), initialRanked, [])
           .map((candidate) => ({ value: candidate, label: candidateLabel(candidate, catalog, gateways, upstreamFor) }))}
         initialRanked={initialRanked}
         footer={footer}

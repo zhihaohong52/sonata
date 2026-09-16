@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { parseConfig, loadConfig } from '../../src/config.js';
 import { aaCatalogPath } from '../../src/catalog.js';
-import { agentRows, cmdAgents, itemLabel, rankableCandidates, rankableKeys, renderAgents, writeTiers } from '../../src/commands/agents.js';
+import { agentRows, cmdAgents, editorCandidates, itemLabel, rankableCandidates, rankableKeys, renderAgents, writeTiers } from '../../src/commands/agents.js';
 import { tierRows } from '../../src/tui-ink/agents-app.js';
 
 const toml = [
@@ -123,6 +123,30 @@ describe('writeTiers', () => {
       review: { simple: ['acme-big@high'], complex: ['acme-big@high'] },
     })).toThrow(/tiers\.code\.simple "acme-big"/);
     expect(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).toBe(before);
+  });
+
+  it('keeps an uncosted saved model in the editor and writes byte-identical TOML', async () => {
+    const catalog = aaCatalogPath(home);
+    mkdirSync(dirname(catalog), { recursive: true });
+    writeFileSync(catalog, JSON.stringify({
+      fetchedAt: '2026-09-15T00:00:00Z',
+      models: {
+        big: { codingIndex: 71, agenticIndex: 42, blendedPriceUsd: 0.45, costPerTask: 0.18 },
+        small: { codingIndex: 60, agenticIndex: 36, blendedPriceUsd: 0.2 },
+      },
+    }));
+    const before = readFileSync(join(cwd, 'sonata.toml'), 'utf8');
+    let seen: string[] = [];
+    await cmdAgents({ cwd, home }, {
+      out: () => {},
+      edit: async ({ items, config }) => {
+        seen = items.map((item) => item.value);
+        return config.tiers;
+      },
+    });
+    expect(seen).toContain('acme-small');
+    expect(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).toBe(before);
+    expect(editorCandidates(parseConfig(before), JSON.parse(readFileSync(catalog, 'utf8')))).toContain('acme-small');
   });
 
   // The reason this edits text instead of round-tripping through
@@ -274,7 +298,7 @@ describe('agents — effort variants', () => {
 
   it('offers every scored level of a model as an editor item', () => {
     const config = parseConfig(toml);
-    expect(rankableCandidates(config, familyCatalog as never)).toEqual(['acme-big@high', 'acme-big@max', 'acme-small', 'kimi']);
+    expect(rankableCandidates(config, familyCatalog as never)).toEqual(['acme-big@high', 'acme-big@max']);
     expect(rankableCandidates(config, undefined)).toEqual(['acme-big', 'acme-small', 'kimi']);
     expect(itemLabel(config, 'acme-big@high', familyCatalog as never)).toMatch(/^acme-big @high\s+36\.0\s+\$0\.040\/task\s+acme\/big/);
   });

@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../extended-context.js';
 import { configPath, loadConfig, parseConfig, TIER_NAMES, tiersCollapse, type SonataConfig } from '../config.js';
-import { assertEffortsPinned, candidateLabel, expandCandidates, loadAaCatalog, type AaCatalog } from '../catalog.js';
+import { assertEffortsPinned, candidateLabel, expandCandidates, hasTaskCost, loadAaCatalog, type AaCatalog } from '../catalog.js';
 import { replaceTiersBlock } from '../init/toml.js';
 import { loadModelsDev, type ModelsDevCache } from '../modelsdev.js';
 import { configUpstreamFor } from '../pricing.js';
@@ -179,7 +179,12 @@ export function writeTiers(
     }
   }
 
-  const next = replaceTiersBlock(text, tiers);
+  const currentTiers = parseConfig(text).tiers ?? {};
+  // A no-op confirmation must preserve the file byte-for-byte, including
+  // harmless formatting choices outside the ranking itself.
+  const next = JSON.stringify(currentTiers) === JSON.stringify(tiers)
+    ? text
+    : replaceTiersBlock(text, tiers);
   // Reject an unsafe ranking before it can replace the working file.
   const nextConfig = parseConfig(next);
   assertEffortsPinned(nextConfig, loadAaCatalog(opts.home), configUpstreamFor(nextConfig, loadModelsDev(opts.home)));
@@ -237,8 +242,21 @@ function upstreamOf(config: SonataConfig, modelsDev?: ModelsDevCache) {
  * wizard's tier screens apply, so the two editors offer the same rows.
  */
 export function rankableCandidates(config: SonataConfig, aa?: AaCatalog, modelsDev?: ModelsDevCache): string[] {
-  return expandCandidates(
-    rankableKeys(config), aa, Object.keys(config.native?.gateways ?? {}), upstreamOf(config, modelsDev));
+  const gateways = Object.keys(config.native?.gateways ?? {});
+  const upstream = upstreamOf(config, modelsDev);
+  return expandCandidates(rankableKeys(config), aa, gateways, upstream)
+    .filter((candidate) => hasTaskCost(candidate, aa, gateways, upstream));
+}
+
+/**
+ * The editor's rows include every saved tier entry, even when the current AA
+ * catalog would exclude it. RankedSelect drops missing initial values, so
+ * omitting a hand-added uncosted model would delete it on a no-op write.
+ */
+export function editorCandidates(config: SonataConfig, aa?: AaCatalog, modelsDev?: ModelsDevCache): string[] {
+  const rows = rankableCandidates(config, aa, modelsDev);
+  const saved = Object.values(config.tiers ?? {}).flatMap((tiers) => [...tiers.simple, ...tiers.complex]);
+  return [...new Set([...rows, ...saved])];
 }
 
 export function loadAgentsView(opts: AgentsOptions): { config: SonataConfig; rows: AgentRow[] } {
@@ -292,7 +310,7 @@ export async function cmdAgents(
   const next = await io.edit({
     config,
     initialTiers: config.tiers,
-    items: rankableCandidates(config, catalog, modelsDev)
+    items: editorCandidates(config, catalog, modelsDev)
       .map((candidate) => ({ value: candidate, label: itemLabel(config, candidate, catalog, modelsDev) })),
   });
   if (next === undefined) {
