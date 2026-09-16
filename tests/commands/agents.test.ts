@@ -47,6 +47,14 @@ beforeEach(() => {
 });
 
 describe('agentRows', () => {
+  it('lists a normal row for a role that has one', () => {
+    const config = parseConfig(toml.replace(
+      'complex = ["acme-big"]\n\n[tiers.review]',
+      'normal = ["acme-small", "acme-big"]\ncomplex = ["acme-big"]\n\n[tiers.review]',
+    ));
+    expect(agentRows(config).map((row) => row.agent)).toContain('code-normal');
+  });
+
   it('is agent-shaped: a role whose lists match collapses to one row', () => {
     const rows = agentRows(parseConfig(toml));
     expect(rows.map((r) => r.agent)).toEqual(['code-simple', 'code-complex', 'review']);
@@ -125,7 +133,12 @@ describe('writeTiers', () => {
     expect(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).toBe(before);
   });
 
-  it('keeps an uncosted saved model in the editor and writes byte-identical TOML', async () => {
+  it('keeps an uncosted saved model in the normal tier and writes byte-identical TOML', async () => {
+    const normalToml = toml.replace(
+      'complex = ["acme-big"]\n\n[tiers.review]',
+      'normal = ["acme-small"]\ncomplex = ["acme-big"]\n\n[tiers.review]',
+    );
+    writeFileSync(join(cwd, 'sonata.toml'), normalToml);
     const catalog = aaCatalogPath(home);
     mkdirSync(dirname(catalog), { recursive: true });
     writeFileSync(catalog, JSON.stringify({

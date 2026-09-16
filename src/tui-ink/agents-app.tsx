@@ -13,14 +13,14 @@
 import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { RankedSelect } from './components/ranked-select.js';
-import { TIER_NAMES, tiersCollapse, type SonataConfig } from '../config.js';
+import { TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
 import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../extended-context.js';
 
-export type Tiers = Record<string, { simple: string[]; complex: string[] }>;
+export type Tiers = Record<string, TierLists>;
 
 export interface TierRow {
   role: string;
-  tier: 'simple' | 'complex';
+  tier: 'simple' | 'normal' | 'complex';
   keys: string[];
   /** The agent file this row ends up in — collapsed pairs share one. */
   agent: string;
@@ -31,16 +31,20 @@ export interface TierRow {
 export function tierRows(config: SonataConfig, tiers: Tiers): TierRow[] {
   return Object.entries(tiers).flatMap(([role, lists]) => {
     const collapsed = tiersCollapse(lists);
-    return TIER_NAMES.map((tier) => ({
-      role,
-      tier,
-      keys: lists[tier],
-      agent: collapsed ? role : `${role}-${tier}`,
-      extendedContext: collapsed
-        ? tierQualifiesForExtendedContext(config, lists.simple)
-          && tierQualifiesForExtendedContext(config, lists.complex)
-        : tierQualifiesForExtendedContext(config, lists[tier]),
-    }));
+    return TIER_NAMES.flatMap((tier) => {
+      const keys = lists[tier];
+      if (keys === undefined) return [];
+      return [{
+        role,
+        tier,
+        keys,
+        agent: collapsed ? role : `${role}-${tier}`,
+        extendedContext: collapsed
+          ? tierQualifiesForExtendedContext(config, lists.simple)
+            && tierQualifiesForExtendedContext(config, lists.complex)
+          : tierQualifiesForExtendedContext(config, keys),
+      }];
+    });
   });
 }
 

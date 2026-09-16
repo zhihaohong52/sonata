@@ -91,7 +91,7 @@ export function agentRows(config: SonataConfig): AgentRow[] {
     }
     for (const tier of TIER_NAMES) {
       const keys = lists[tier];
-      if (tier === 'normal' || keys === undefined) continue;
+      if (keys === undefined) continue;
       rows.push({
         agent: `${role}-${tier}`,
         role,

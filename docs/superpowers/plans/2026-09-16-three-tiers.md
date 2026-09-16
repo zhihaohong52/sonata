@@ -45,6 +45,7 @@
 | `src/commands/sync.ts` | generate `<role>-normal` agents; rewrite tier descriptions | 5 |
 | `src/init/guidance.ts` | the managed `CLAUDE.md` block names three tiers | 6 |
 | `src/tui-ink/app.tsx`, `src/tui-ink/app-state.ts` | 12 ranking screens; bulk accept covers three tiers | 7 |
+| `src/init/plan.ts` | assembles the config `sonata init` writes — must emit `normal` | 11 |
 | `src/commands/agents.ts`, `src/tui-ink/agents-app.tsx`, `src/commands/doctor.ts` | editor rows, the editor TUI, doctor reporting | 8 |
 | `skills/loop/SKILL.md` | escalation ladder gains a rung | 9 |
 | `CLAUDE.md`, `README.md`, `docs/guide/*`, `docs/HANDOFF.md`, `CHANGELOG.md` | prose | 10 |
@@ -821,6 +822,76 @@ ladder has no rung that cannot be reached.
 ```bash
 git add skills/loop/SKILL.md
 git commit -m "feat(loop): escalate simple -> normal -> complex"
+```
+
+---
+
+### Task 11: `plan()` emits the normal tier
+
+Added during execution. Without this the feature ships dead: the parser
+accepts a `normal` tier, the router resolves it, `sync` generates its agents
+and the editor edits it — but `sonata init`, the only thing that creates a
+config, never writes one. Every other task's tests stay green regardless,
+because each proves its own layer in isolation.
+
+**Files:**
+- Modify: `src/init/plan.ts:187-200`
+- Test: `tests/init/plan.test.ts`, and repair `tests/catalog.test.ts:844`
+
+**Interfaces:**
+- Consumes: `TierProposal` with three lists (Task 3), `TierLists` (Task 1)
+- Produces: `plan(...).configToml` carrying a `[tiers.<role>] normal` list
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+it('writes a normal tier for every role', () => {
+  const planned = plan(env, state, noCredentials, { cwd: '/repo', home, packageRoot: '/pkg' });
+  const tiers = parseConfig(planned.configToml).tiers!;
+  // The whole feature is unreachable if init never writes the list.
+  expect(tiers.code!.normal).toBeDefined();
+  expect(tiers.code!.normal!.length).toBeGreaterThan(0);
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `npx vitest run tests/init/plan.test.ts -t normal`
+Expected: FAIL — `tiers.code.normal` is `undefined`.
+
+- [ ] **Step 3: Implement**
+
+Widen `added` to the three-tier union and emit the third list, reconciled the
+same way as the other two:
+
+```ts
+    const added = (tier: 'simple' | 'normal' | 'complex') =>
+      [...new Set([...addedKeys, ...unpinnedVariants(saved?.[tier], catalog, gatewayNames, upstreamFor)])];
+    return [role, {
+      simple: reconcileTierList(saved?.simple, validTierKeys(saved?.simple), proposal.simple, added('simple')),
+      normal: reconcileTierList(saved?.normal, validTierKeys(saved?.normal), proposal.normal, added('normal')),
+      complex: reconcileTierList(saved?.complex, validTierKeys(saved?.complex), proposal.complex, added('complex')),
+    }];
+```
+
+- [ ] **Step 4: Repair `tests/catalog.test.ts:844`**
+
+That test asserts every effort-unpinned candidate is offered a pin by `plan()`
+and by the agents editor. It fails because retiring the capability floor
+changed which candidates `proposal.simple` holds, so the repair path stopped
+offering a pin for one of them. Diagnose it before changing it: print
+`emitted.code.simple` and compare against `refused`. If the repair path is
+genuinely no longer offering a pin, that is a **defect in this branch**, not a
+stale expectation — fix `plan.ts`, not the assertion. Only adjust the test if
+the fixture's own premise changed.
+
+- [ ] **Step 5: Run and commit**
+
+Run: `npx vitest run tests/init/ tests/catalog.test.ts && npm run typecheck`
+
+```bash
+git add src/init/plan.ts tests/init/plan.test.ts tests/catalog.test.ts
+git commit -m "fix(init): write the normal tier into the config init generates"
 ```
 
 ---
