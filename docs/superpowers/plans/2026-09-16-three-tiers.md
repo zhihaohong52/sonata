@@ -875,6 +875,14 @@ git commit -m "docs: three tiers, and why normal is the default"
 
 ---
 
+## Loose ends found during execution
+
+- `src/init/guidance.ts:76` still reads "A plan is `plan-complex` or `plan-simple`"
+  — the fan-out rule, written when there were two tiers. It is outside Task 6's
+  scope (that task replaced the tier-matching paragraph only) and outside Task
+  10's (prose files, not source). The wave owner fixes it at integration, or it
+  ships describing a tier set that no longer exists.
+
 ## Verification after all tasks
 
 - [ ] `npm test` and `npm run typecheck` pass.
