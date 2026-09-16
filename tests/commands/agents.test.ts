@@ -136,7 +136,7 @@ describe('writeTiers', () => {
   it('keeps an uncosted saved model in the normal tier and writes byte-identical TOML', async () => {
     const normalToml = toml.replace(
       'complex = ["acme-big"]\n\n[tiers.review]',
-      'normal = ["acme-small"]\ncomplex = ["acme-big"]\n\n[tiers.review]',
+      'normal = ["acme-small", "acme-big"]\ncomplex = ["acme-big"]\n\n[tiers.review]',
     );
     writeFileSync(join(cwd, 'sonata.toml'), normalToml);
     const catalog = aaCatalogPath(home);
@@ -154,7 +154,12 @@ describe('writeTiers', () => {
       out: () => {},
       edit: async ({ items, config }) => {
         seen = items.map((item) => item.value);
-        return config.tiers;
+        const available = new Set(seen);
+        return Object.fromEntries(Object.entries(config.tiers!).map(([role, lists]) => [role, {
+          simple: lists.simple.filter((key) => available.has(key)),
+          complex: lists.complex.filter((key) => available.has(key)),
+          ...(lists.normal === undefined ? {} : { normal: lists.normal.filter((key) => available.has(key)) }),
+        }]));
       },
     });
     expect(seen).toContain('acme-small');

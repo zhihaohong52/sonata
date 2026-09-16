@@ -85,13 +85,14 @@ export function agentRows(config: SonataConfig): AgentRow[] {
         // A collapsed alias serves both lists, so it may claim only the window
         // both can honour — the same rule `sync` applies.
         extendedContext: tierQualifiesForExtendedContext(config, lists.simple)
+          && (lists.normal === undefined || tierQualifiesForExtendedContext(config, lists.normal))
           && tierQualifiesForExtendedContext(config, lists.complex),
       });
       continue;
     }
     for (const tier of TIER_NAMES) {
       const keys = lists[tier];
-      if (tier === 'normal' || keys === undefined) continue;
+      if (keys === undefined) continue;
       rows.push({
         agent: `${role}-${tier}`,
         role,

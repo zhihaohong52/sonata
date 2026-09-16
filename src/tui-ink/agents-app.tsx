@@ -41,6 +41,7 @@ export function tierRows(config: SonataConfig, tiers: Tiers): TierRow[] {
         agent: collapsed ? role : `${role}-${tier}`,
         extendedContext: collapsed
           ? tierQualifiesForExtendedContext(config, lists.simple)
+            && (lists.normal === undefined || tierQualifiesForExtendedContext(config, lists.normal))
             && tierQualifiesForExtendedContext(config, lists.complex)
           : tierQualifiesForExtendedContext(config, keys),
       }];
