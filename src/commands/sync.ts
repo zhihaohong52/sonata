@@ -295,6 +295,19 @@ Focus on ${blurb}.${delegating}
 `;
 }
 
+/**
+ * The agent file for one role x tier — or for a role whose tiers collapse.
+ *
+ * The `description` matters more than the body: it is what the dispatching
+ * model reads while *choosing* an agent, so both the tier criterion and the
+ * no-`model`-argument warning live there as well as below the frontmatter. By
+ * the time the body is in context, the choice has already been made.
+ *
+ * `availableTiers` and `planTiers` are what keep the generated prompt honest.
+ * Naming a tier the config does not define points a dispatch at an agent
+ * `cmdSync` never wrote and `resolveTierAlias` refuses — silent, since nothing
+ * on that path fails loudly.
+ */
 export function tierAgentMarkdown(spec: {
   role: string;
   tier?: 'simple' | 'normal' | 'complex';

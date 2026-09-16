@@ -643,6 +643,28 @@ function valueOf(r: { index: number; price: number }): number {
   return r.index / Math.max(r.price, 0.01);
 }
 
+/**
+ * Rank a role's selected models into the three tiers.
+ *
+ * Each tier is one sort key over the two quantities AA publishes — a coding
+ * index and a cost per task. `complex` takes capability, cost breaking a
+ * near-tie; `normal` takes capability per task-dollar; `simple` is `normal`
+ * filtered to a cost cap, so it never sorts independently and cannot disagree
+ * with `normal` about order.
+ *
+ * Only candidates AA prices per task are considered (`taskCostedCandidates`),
+ * because capability-per-token and capability-per-task are different units and
+ * ranking across them is an arithmetic error, not a judgement.
+ *
+ * Three properties are deliberate and easy to undo by accident:
+ * `simple` is a *subsequence* of `normal`, not a prefix — value is not
+ * monotonic in cost; the cap is anchored to the best-value model, which
+ * therefore always clears it, so `simple` is never empty on any config; and
+ * there is no capability floor, because a floor makes the value ranking
+ * collapse into the cost ranking and `normal` becomes a copy of `simple`.
+ *
+ * Avoided gateways are demoted rather than excluded, and never set either bar.
+ */
 export function proposeTiers(
   modelKeys: string[],
   aa?: AaCatalog,
