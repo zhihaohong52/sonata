@@ -248,6 +248,29 @@ describe('tierAgentMarkdown', () => {
     expect(md).toContain('resolves to the same ranked models');
   });
 
+  it('never names a tier the role does not define', () => {
+    // `normal` is optional so existing configs need no migration, and this
+    // repository's own sonata.toml is exactly this shape. Naming `*-normal`
+    // here points the delegation at an alias `resolveTierAlias` refuses and
+    // `cmdSync` never wrote — silent at generation, dead at dispatch.
+    const md = tierAgentMarkdown({
+      role: 'code',
+      tier: 'complex',
+      availableTiers: ['simple', 'complex'],
+      planTiers: ['simple', 'complex'],
+    });
+    expect(md).toContain('`*-simple`');
+    expect(md).not.toContain('`*-normal`');
+    expect(md).not.toContain('`plan-normal`');
+    expect(md).toContain('`plan-simple`');
+  });
+
+  it('becomes a leaf when no defined tier sits below it', () => {
+    const md = tierAgentMarkdown({ role: 'code', tier: 'complex', availableTiers: ['complex'] });
+    expect(md).toContain('Do not spawn another sonata tier agent');
+    expect(md).not.toContain('Delegate downward only');
+  });
+
   it('caps fan-out width as well as depth', () => {
     // The descent alone still allowed 12 siblings from one node, which is
     // what the measured review-complex actually did (8 same-tier + 4 claude).

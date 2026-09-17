@@ -159,6 +159,22 @@ const FANOUT_LIMIT = 3;
  * proportionate. This asks for a lookup instead, which is the difference
  * between a guard a model can follow and one it can rationalise past.
  *
+ * `available` is the role's own configured tiers, and intersecting with it is
+ * not optional. `cmdSync` writes an agent only for a tier the config defines,
+ * and `normal` is optional precisely so existing configs need no migration —
+ * so a role holding `simple` and `complex` alone (this repository's own config
+ * among them) would otherwise have its `complex` agent told to delegate to
+ * `*-normal`, an alias `resolveTierAlias` refuses and `cmdSync` never wrote.
+ * That is the same silent failure `tierChoice` already guards against, and it
+ * fails in the worst direction: nothing errors at generation time, and the
+ * delegation dies at dispatch.
+ *
+ * Narrowing can only ever under-name. The `*-` wildcard spans roles, so a
+ * tier this role lacks might still exist on another, and intersecting with
+ * this role's tiers can withhold a delegation that would have worked. That is
+ * the safe side: under-naming costs one rung of precision, while over-naming
+ * points at an agent that does not exist.
+ *
  * A collapsed agent (no tier in its name) is generated only when every one of
  * the role's present lists is element-wise identical, so each tier resolves to
  * the same ranked candidates. "Down" does not exist for it: delegating would
@@ -166,9 +182,9 @@ const FANOUT_LIMIT = 3;
  * makes it a leaf, which is also what makes it safe for a *higher* agent to
  * call — a leaf cannot extend the chain.
  */
-function tiersBelow(own: Tier | undefined): readonly Tier[] {
+function tiersBelow(own: Tier | undefined, available: readonly Tier[]): readonly Tier[] {
   if (own === undefined) return [];
-  return TIER_NAMES.slice(0, TIER_NAMES.indexOf(own));
+  return TIER_NAMES.slice(0, TIER_NAMES.indexOf(own)).filter((tier) => available.includes(tier));
 }
 
 /** `a`, `a` or `b`, `a`, `b` or `c` — an Oxford-free list for prose. */
@@ -193,8 +209,8 @@ function orList(items: readonly string[]): string {
  * out to scoped sub-explorers is the pattern that makes a broad search
  * affordable, and removing the capability to bound it would cost that.
  */
-function fanOut(planTiers: readonly Tier[], ownTier: Tier | undefined): string {
-  const below = tiersBelow(ownTier);
+function fanOut(planTiers: readonly Tier[], ownTier: Tier | undefined, available: readonly Tier[]): string {
+  const below = tiersBelow(ownTier, available);
 
   const leaf = below.length === 0;
   const descent = leaf
@@ -259,12 +275,24 @@ function toolsForRole(role: string): string {
  * The fan-out guidance for a role: the lane rule for everyone, plus the
  * read-only-delegation rule for the roles that need it.
  */
-function delegatingForRole(role: string, planTiers: readonly Tier[], ownTier: Tier | undefined): string {
+function delegatingForRole(role: string, planTiers: readonly Tier[], ownTier: Tier | undefined, available: readonly Tier[]): string {
   const readOnly = isReadOnlyRole(role) ? `\n\n${DELEGATING}` : '';
   const scoping = role === 'review' ? `\n\n${REVIEW_SCOPE}` : '';
-  return `\n\n${fanOut(planTiers, ownTier)}${scoping}${readOnly}`;
+  return `\n\n${fanOut(planTiers, ownTier, available)}${scoping}${readOnly}`;
 }
 
+/**
+ * The agent file for one legacy per-model harness route.
+ *
+ * Generated only for a config with no `[tiers]`: a tiered config skips this
+ * path entirely. The agent is a forwarding wrapper, not a worker — it runs on
+ * `haiku`, holds only the three `sonata dispatch` Bash permissions, and its
+ * whole job is to launch the run and return the report. The body is mostly
+ * shell-quoting procedure because the task must reach the model as a file or
+ * on stdin: a task carrying backticks or `$(...)` spliced into a command line
+ * would be corrupted or would hijack it, and the wrapper has no tool to escape
+ * it safely.
+ */
 export function agentMarkdown(spec: AgentSpec): string {
   const name = `${spec.role}-${spec.model}`;
   const blurb = ROLE_BLURB[spec.role] ?? spec.role;
@@ -393,10 +421,20 @@ Your final message must end with a line naming the run:
 }
 
 
+/**
+ * The agent file for one legacy per-model *native* route.
+ *
+ * The native counterpart of `agentMarkdown`: the model runs inside Claude
+ * Code's own loop through the router rather than in a harness, so the file
+ * pins the model in frontmatter and carries no dispatch commands. Like
+ * `agentMarkdown` it is generated only for an untiered config, and it names
+ * its routing precondition because an unrouted session fails with
+ * `model_not_found` at `api.anthropic.com`, which reads as a broken agent.
+ */
 export function nativeAgentMarkdown(spec: { role: string; model: string }): string {
   const blurb = ROLE_BLURB[spec.role] ?? spec.role;
   const tools = toolsForRole(spec.role);
-  const delegating = delegatingForRole(spec.role, TIER_NAMES, undefined);
+  const delegating = delegatingForRole(spec.role, TIER_NAMES, undefined, TIER_NAMES);
 
   return `---
 name: native-${spec.role}-${spec.model}
@@ -450,7 +488,7 @@ export function tierAgentMarkdown(spec: {
   const model = spec.extendedContext === true ? `${alias}${EXTENDED_CONTEXT_SUFFIX}` : alias;
   const tools = toolsForRole(spec.role);
   const available = spec.availableTiers ?? TIER_NAMES;
-  const delegating = delegatingForRole(spec.role, spec.planTiers ?? TIER_NAMES, tier);
+  const delegating = delegatingForRole(spec.role, spec.planTiers ?? TIER_NAMES, tier, available);
   const description = tier === undefined
     ? `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`
     : `Runs ${blurb} on a ranked list of foreign models (${tier} tier), natively inside Claude Code's loop. ${TIER_CRITERION[tier]} Size is not difficulty — a large mechanical change is simple, a three-line change that decides an interface is complex. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`;
@@ -486,6 +524,19 @@ export interface SyncResult {
   skipped: string[];
 }
 
+/**
+ * Regenerate the `.claude/agents` files from `sonata.toml`.
+ *
+ * The sole writer of the agent files, and a reader — never a writer — of the
+ * config: `sonata init` and `sonata agents` own that file, so a regeneration
+ * can never cost a setting. When `[tiers]` is present it generates only tier
+ * agents, one per role x present tier, or a single unsuffixed agent for a role
+ * whose present lists are element-wise identical; legacy per-model generation
+ * is skipped entirely rather than merged, so the two shapes cannot both appear.
+ *
+ * `--prune` removes sonata-marked files the current config no longer names.
+ * Only marked files are ever removed: an agent someone wrote by hand survives.
+ */
 export function cmdSync(opts: SyncOptions): SyncResult {
   const config = loadConfig(opts.cwd, opts.home);
   mkdirSync(opts.agentsDir, { recursive: true });
