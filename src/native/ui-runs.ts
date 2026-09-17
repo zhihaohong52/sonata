@@ -46,16 +46,17 @@ export const PROJECT_CACHE_MS = 5000;
 export const MAX_RUN_ROWS = 500;
 
 /**
- * The ceiling on the *cached* unfiltered list, as opposed to one response.
+ * The ceiling on one project's contribution to the cached list.
  *
- * `MAX_RUN_ROWS` bounds what a request returns; without this, the list it is
- * filtered from was unbounded — every run in every discovered project, held
- * for one cache window in the router process. Set well above `MAX_RUN_ROWS`
- * so a filter for a quiet project still has its own runs to find: the cap must
- * never become "the newest N globally", which is the failure the
- * filter-before-cap order exists to prevent.
+ * `MAX_RUN_ROWS` bounds what a request returns; this bounds what the cache
+ * holds, applied **per project** as the scan collects it. A single ceiling on
+ * the combined list was tried and is wrong in the same way capping before
+ * filtering is: one busy project's newest runs would evict a quiet project's
+ * rows entirely, and a filter for the quiet project would then answer empty
+ * with `truncated: false`. The cap is `MAX_RUN_ROWS` because no single
+ * response can show more of one project than that anyway.
  */
-export const MAX_CACHED_RUN_ROWS = MAX_RUN_ROWS * MAX_PROJECT_DIRS;
+export const MAX_CACHED_RUN_ROWS_PER_PROJECT = MAX_RUN_ROWS;
 
 export interface RunRow {
   kind: 'run';
@@ -240,6 +241,13 @@ async function allRunRows(deps: UiDeps): Promise<RunRow[]> {
 
   for (const cwd of dirs) {
     const project = resolve(cwd);
+    // Where this project's rows start, so the cap below applies to *it* rather
+    // than to the combined list. A global trim is the same error as capping
+    // before filtering: one busy project's newest runs would evict a quiet
+    // project's runs entirely, and a filter for the quiet one would answer
+    // empty with `truncated: false` — an answer that is both wrong and
+    // confident.
+    const startOfProject = out.length;
     let summaries: RunSummary[];
     try {
       summaries = await uiRunSummaries(cwd);
@@ -254,23 +262,28 @@ async function allRunRows(deps: UiDeps): Promise<RunRow[]> {
         usage: null, usageReason: RUN_USAGE_REASON,
       });
     }
+    // Newest first within the project, then capped. `MAX_RUN_ROWS` is a
+    // response cap, so a project holding more than that can never show all of
+    // them in one answer anyway; what this protects is the *other* projects'
+    // presence in the cache.
+    if (out.length - startOfProject > MAX_CACHED_RUN_ROWS_PER_PROJECT) {
+      const mine = out.splice(startOfProject, out.length - startOfProject);
+      mine.sort(
+        (a, b) => (Date.parse(b.started ?? '') || 0) - (Date.parse(a.started ?? '') || 0) || a.id.localeCompare(b.id),
+      );
+      out.push(...mine.slice(0, MAX_CACHED_RUN_ROWS_PER_PROJECT));
+    }
   }
 
   out.sort(
     (a, b) => (Date.parse(b.started ?? '') || 0) - (Date.parse(a.started ?? '') || 0) || a.id.localeCompare(b.id),
   );
-  // Bounded before it is cached, not after. `MAX_RUN_ROWS` caps a *response*,
-  // so the unfiltered list it is taken from had no ceiling at all: every run
-  // across up to `MAX_PROJECT_DIRS` projects, held for a `PROJECT_CACHE_MS`
-  // window, inside the process that proxies every native agent's requests.
-  // The bound is deliberately generous — `MAX_RUN_ROWS` per discovered project
-  // rather than in total — because a global cap here would reintroduce the bug
-  // the filter-then-cap order exists to prevent: the newest N *globally* would
-  // be all a quiet project's filter could ever see. Capping per discovery key
-  // is safe; capping per filter is not.
-  const bounded = out.length <= MAX_CACHED_RUN_ROWS ? out : out.slice(0, MAX_CACHED_RUN_ROWS);
-  if (cache === entry && entry !== undefined) entry.rows = bounded;
-  return bounded;
+  // The cache is bounded per project, in the loop above, rather than here.
+  // Trimming the combined list would let one busy project evict another's rows
+  // entirely — the same failure as capping before filtering, which the
+  // filter-then-cap order exists to prevent.
+  if (cache === entry && entry !== undefined) entry.rows = out;
+  return out;
 }
 
 /**

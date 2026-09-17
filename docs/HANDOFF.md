@@ -16,8 +16,9 @@ going looking.
 **0.10.0 (2026-09-17)** was the largest cut since 0.6.0: a third tier
 (`normal`), the tier-selection rewrite, a local web UI on the router,
 per-task-only ranking, the model-override and fan-out warnings, and dev build
-stamps. The only open issue is #41 — two hardening guards on the UI's run
-cache, neither a live defect.
+stamps. Two issues are open, neither a live defect: **#41** (two hardening
+guards on the UI's run cache — fixed in PR #48) and **#47** (harness-lane token
+counts, deferred from #38's design and needing its own spec).
 
 ## The tier set is three, not two (2026-09-16)
 
@@ -52,10 +53,12 @@ split has not moved, the next lever is structural rather than more wording.
   fixes from PR #32, so a release can be cut whenever the user wants one.
 - **npm**: `@zhihaohong52/sonata@0.8.3`, `latest`, published 2026-09-12 from
   the pushed tag with every `release.yml` step green and provenance signed.
-- **1975 tests across 101 files**, typecheck and build clean, verified on the
+- **2239 tests across 111 files**, typecheck and build clean, verified on the
   merged tree.
-- **Zero open issues, zero open PRs.** #29, #30 and #31 were opened and closed
-  on 2026-09-14 by PR #32; see the sections below for what each one turned out
+- **Open issues: #41 and #47**, both named at the top of this file; neither is
+  a live defect. This line read "zero open issues" for two releases after that
+  stopped being true — it describes 2026-09-14, when #29, #30 and #31 were
+  opened and closed by PR #32; see the sections below for what each turned out
   to be.
 - **All fourteen roadmap items remain ✅**, each named with the release it
   shipped in. `docs/roadmap.md` explains *why* each is shaped as it is; nothing

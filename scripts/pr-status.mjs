@@ -46,7 +46,7 @@ const ACTIONABLE = /\*\*Actionable comments posted:\s*(\d+)\*\*/i;
  * to resolve, so counting threads alone reports the PR clean while a warning
  * sits in the comment. That is the failure this script was written for.
  */
-const FAILED_CHECKS = /###\s*❌\s*Failed checks \((\d+)\s/i;
+const FAILED_CHECKS = /###\s*❌\s*Failed checks\s*\((\d+)\s*[^)]*\)/i;
 /** The repository is below the star threshold, so no review ran at all. */
 const NO_AUTO_REVIEW = /does not receive automatic reviews/i;
 
@@ -74,9 +74,13 @@ function prState(number) {
   ]));
   // Reviews, not just comments: the actionable-comment count lives in a review
   // body, and a PR's verdict cannot be read without it.
+  // `--paginate --slurp`: the endpoint returns 30 reviews per page in
+  // chronological order, and CodeRabbit posts several per push — so on a busy
+  // PR the newest review, the one carrying the verdict, is not on page one.
+  // Reading page one alone silently graded a PR on a stale review.
   const reviews = JSON.parse(gh([
-    'api', `repos/zhihaohong52/sonata/pulls/${number}/reviews`,
-  ]));
+    'api', '--paginate', '--slurp', `repos/zhihaohong52/sonata/pulls/${number}/reviews`,
+  ])).flat();
   return { view, threads, comments, reviews };
 }
 

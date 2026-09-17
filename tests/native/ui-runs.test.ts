@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { projectDirs, projectDiscovery, runRows, uiRunSummaries, clearUiRunCache, RUN_USAGE_REASON, MAX_PROJECT_DIRS, MAX_PROJECT_CANDIDATES, MAX_RUN_ROWS, PROJECT_CACHE_MS } from '../../src/native/ui-runs.js';
+import { projectDirs, projectDiscovery, runRows, uiRunSummaries, clearUiRunCache, RUN_USAGE_REASON, MAX_PROJECT_DIRS, MAX_PROJECT_CANDIDATES, MAX_RUN_ROWS, MAX_CACHED_RUN_ROWS_PER_PROJECT, PROJECT_CACHE_MS } from '../../src/native/ui-runs.js';
 import { summarizeRuns } from '../../src/commands/runs.js';
 
 let home: string;
@@ -392,6 +392,24 @@ describe('discovery is bounded by attempts, not only by acceptances', () => {
   it('says nothing was truncated when discovery completed', async () => {
     expect(projectDiscovery(deps()).truncated).toBe(false);
     expect((await runRows(deps(), all)).discoveryTruncated).toBe(false);
+  });
+
+  it('does not let a busy project evict a quiet one from the cache', async () => {
+    // The cache bound is per project, not global. A single ceiling on the
+    // combined list is the same failure as capping before filtering: projB's
+    // one older run would be evicted by projA's newer ones, and a filter for
+    // projB would answer empty with `truncated: false` — wrong, and confident.
+    for (let i = 0; i < MAX_CACHED_RUN_ROWS_PER_PROJECT + 20; i++) {
+      // Every one of these is newer than projB's only run.
+      makeRun(projA, `busy${String(i).padStart(3, '0')}`, {
+        role: 'code', model: 'flash', startedAt: `2026-09-16T${String(i % 24).padStart(2, '0')}:00:00.000Z`,
+      });
+    }
+    clearUiRunCache();
+    const quiet = await runRows(deps(), { project: projB });
+    // projB's only run is older than every one of projA's, so a global cap
+    // would have evicted it and answered empty.
+    expect(quiet.rows.map((row) => row.id)).toContain('ccc333');
   });
 
   it('hands every caller its own array, so a mutation cannot reach the cache', async () => {
