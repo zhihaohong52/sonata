@@ -64,6 +64,12 @@ thing this lane exists to prevent.
 That section's goal still applies; the tier is how you meet it. **Choosing
 `-simple`, `-normal` or `-complex` is the model selection.** Omit `model`.
 
+The same substitution applies to `superpowers:dispatching-parallel-agents`,
+whose examples dispatch `general-purpose`: use tier agents instead, or the
+foreign-model lane ends silently. Through sonata, concurrency is also bounded
+by the gateway rather than by how independent the tasks are — seven agents on
+one subscription produced three upstream crashes and a tier exhaustion.
+
 ## When not to loop
 
 A single contained change does not need the loop — dispatch one `code-*`
