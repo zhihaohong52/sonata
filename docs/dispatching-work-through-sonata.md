@@ -74,6 +74,53 @@ Give the reviewer the invariants to hunt and tell it to say plainly when a
 category is clean. Otherwise a review of correct code produces plausible
 suggestions rather than a finding of nothing.
 
+## Parallel dispatch is bounded by the gateway, not by the work
+
+Generic parallel-dispatch guidance — including
+`superpowers:dispatching-parallel-agents` — decides concurrency from the
+*tasks*: independent problem domains, no shared state, fan out. Through sonata
+that is only half the question, because agents that share nothing in the
+repository still share one upstream.
+
+Measured 2026-09-16 while executing an eleven-task plan with seven agents on a
+single `codex-oauth` gateway: **three agents died mid-run** on an upstream
+`400 — No tool output found for function call`, and a fourth hit **529 with
+every native candidate exhausted**. Task independence bought nothing there;
+the tier's eleven candidates were all effort variants of two models behind one
+subscription, so they queued behind each other, failed, and cooled down
+together. The work survived only because each agent committed before it
+crashed, and the one that did not had its work verified and committed by hand.
+
+So pick concurrency from what the *gateway* can carry:
+
+- Count the distinct upstreams, not the distinct tasks. Eleven ranked
+  candidates on one subscription is one upstream.
+- A tier that exhausts returns 529 naming `sonata dispatch --tier`, which is
+  the harness lane — a real fallback, but it runs outside the router and its
+  tokens never reach the ledger.
+- Expect crashes rather than preventing them: have every agent commit its own
+  work, scoped to the files it owns, so a death costs one agent's turn rather
+  than the wave.
+
+Two rules made a shared checkout safe for seven concurrent agents, and both are
+worth keeping whatever the concurrency:
+
+**Give every agent exclusive file ownership**, and say so in its prompt —
+"modify only these paths; if the task seems to need another, stop and report
+it". Seven agents produced no merge conflict under that rule.
+
+**Never `git add -A`.** Each agent stages only its own paths. This is written
+here because the one place it was violated in that session was the coordinator's
+own commit, which swept up another agent's in-flight edits and a stray scratch
+file, and split one task's history across two commits under a misleading
+message.
+
+**Substitute tier agents for `general-purpose`.** That skill's examples all
+dispatch `general-purpose`, which runs on Claude and ends the foreign-model
+lane silently — the subagent works, reports, and looks exactly like a routed
+one. Dispatch `code-*`, `review-*`, `explore-*` or `plan-*` instead, and omit
+the `model` argument: the tier is the model choice.
+
 ## Model notes
 
 `grok-4.5` did not complete either review dispatched to it — one hit the 1800s
