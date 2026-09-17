@@ -90,38 +90,170 @@ writes to the repository through it. Nothing enforces this but you.
 `;
 
 /**
+ * What a reviewer does with a request larger than a review.
+ *
+ * The 2026-09-17 incident was not only a fan-out failure — it started as a
+ * scoping one. The reviewer was handed nine numbered deep-trace areas across a
+ * 14-commit change (freeze coverage on every dispatch path, crash-recovery
+ * states, interactions with send rollback, soft-delete, retry_stage,
+ * concurrency) and treated that as a work breakdown. The dispatcher afterwards
+ * answered three of the nine itself with `grep`, in about a minute: a third of
+ * what was delegated never needed a model at all.
+ *
+ * So the instruction is to *narrow and say so*, not to cover everything asked.
+ * A reviewer silently expanding to fill its brief is what turns a review into
+ * a research assignment, and a partial review that names what it did not cover
+ * is worth more than a broad one that ran out of budget — the failure mode
+ * here is a review that spends heavily and reports nothing, which is precisely
+ * what happened.
+ */
+const REVIEW_SCOPE = `## Scoping the review
+
+Review what you were given; do not grow to fill the request. If it names more
+areas than you can examine properly, **pick the ones that genuinely need
+judgement, review those, and state plainly which you did not cover** — a
+partial review that names its gaps is useful, and a broad one that runs out of
+room is not.
+
+Anything a \`grep\` answers is not a review question. Answer it yourself
+directly rather than delegating it: a dispatcher who sent nine such areas out
+later answered three of them by hand in about a minute.
+
+Report findings. Do not fix, and do not open a plan for fixing.
+`;
+
+/**
+ * How many subagents one generated agent may spawn across its whole run.
+ *
+ * The descent bounds depth; this bounds width, and the incident needed both.
+ * The `review-complex` measured on 2026-09-17 made 12 Agent calls from a
+ * single node — 8 same-tier reviewers and 4 to `claude` — so a depth rule
+ * alone would still have allowed 12 siblings, each re-reading the same diff,
+ * spec and plan from scratch.
+ *
+ * Three is chosen to be countable rather than optimal. A model cannot track a
+ * token budget it never sees, but it can count to three, and the rule has to
+ * survive being read by the same loss-averse reader that resolved "keep
+ * fan-out proportionate" as licence to split a nine-item list. Combined with
+ * the descent it bounds a `complex` run at 3 `normal` children and 9 `simple`
+ * grandchildren, with exactly one node ever running at the dearest tier.
+ */
+const FANOUT_LIMIT = 3;
+
+/**
+ * The tiers a tier agent may delegate to: strictly cheaper ones, in rank order.
+ *
+ * This is the only thing bounding fan-out depth, and it exists because nothing
+ * else did. Measured 2026-09-17 from another repository: one dispatched
+ * `review-complex` made 8 further `review-complex` calls and 4 to `claude`,
+ * and its children spawned again — a tree whose leaves hit a $200 gateway cap,
+ * initially misread as three retries of one review. Every node independently
+ * re-read the same diff, spec and plan, each paying that repository's very
+ * large `CLAUDE.md` on the way in.
+ *
+ * A strict descent terminates by construction: `complex` reaches `normal` and
+ * `simple`, `normal` reaches `simple`, `simple` reaches nothing, so no chain
+ * runs deeper than two hops and every hop is cheaper than the one above it.
+ * The rule it replaces — "keep fan-out proportionate" — asked for a judgement
+ * call, and a model holding a nine-item list judged that splitting it was
+ * proportionate. This asks for a lookup instead, which is the difference
+ * between a guard a model can follow and one it can rationalise past.
+ *
+ * `available` is the role's own configured tiers, and intersecting with it is
+ * not optional. `cmdSync` writes an agent only for a tier the config defines,
+ * and `normal` is optional precisely so existing configs need no migration —
+ * so a role holding `simple` and `complex` alone (this repository's own config
+ * among them) would otherwise have its `complex` agent told to delegate to
+ * `*-normal`, an alias `resolveTierAlias` refuses and `cmdSync` never wrote.
+ * That is the same silent failure `tierChoice` already guards against, and it
+ * fails in the worst direction: nothing errors at generation time, and the
+ * delegation dies at dispatch.
+ *
+ * Narrowing can only ever under-name. The `*-` wildcard spans roles, so a
+ * tier this role lacks might still exist on another, and intersecting with
+ * this role's tiers can withhold a delegation that would have worked. That is
+ * the safe side: under-naming costs one rung of precision, while over-naming
+ * points at an agent that does not exist.
+ *
+ * A collapsed agent (no tier in its name) is generated only when every one of
+ * the role's present lists is element-wise identical, so each tier resolves to
+ * the same ranked candidates. "Down" does not exist for it: delegating would
+ * buy the same models for the price of another subagent. Returning no tiers
+ * makes it a leaf, which is also what makes it safe for a *higher* agent to
+ * call — a leaf cannot extend the chain.
+ */
+function tiersBelow(own: Tier | undefined, available: readonly Tier[]): readonly Tier[] {
+  if (own === undefined) return [];
+  return TIER_NAMES.slice(0, TIER_NAMES.indexOf(own)).filter((tier) => available.includes(tier));
+}
+
+/** `a`, `a` or `b`, `a`, `b` or `c` — an Oxford-free list for prose. */
+function orList(items: readonly string[]): string {
+  return items.join(items.length === 2 ? ' or ' : ', ').replace(/, ([^,]*)$/, ' or $1');
+}
+
+/**
  * The fan-out rule, on every generated agent rather than read-only ones.
  *
- * A tier agent that delegates to \`Plan\`, \`Explore\` or \`general-purpose\` hands
+ * A tier agent that delegates to `Plan`, `Explore` or `general-purpose` hands
  * the work back to Claude, which ends the foreign-model lane silently — the
  * subagent runs, reports, and looks exactly like a routed one. Observed
- * 2026-09-16: a \`code-complex\` agent called \`Plan\` (Opus). The old guard said
+ * 2026-09-16: a `code-complex` agent called `Plan` (Opus). The old guard said
  * nothing about this and sat only on read-only roles, so the agent most able
  * to fan out was the one told least.
  *
- * It is prompt text because nothing stronger exists: Claude Code's \`tools:\`
+ * It is prompt text because nothing stronger exists: Claude Code's `tools:`
  * frontmatter grants tools, not permitted argument values, so it can withhold
- * \`Agent\` entirely but cannot constrain which \`subagent_type\` is passed to it.
+ * `Agent` entirely but cannot constrain which `subagent_type` is passed to it.
+ * Withholding it outright was considered and rejected — `explore-*` fanning
+ * out to scoped sub-explorers is the pattern that makes a broad search
+ * affordable, and removing the capability to bound it would cost that.
  */
-function fanOut(planTiers: readonly Tier[]): string {
+function fanOut(planTiers: readonly Tier[], ownTier: Tier | undefined, available: readonly Tier[]): string {
+  const below = tiersBelow(ownTier, available);
+
+  const leaf = below.length === 0;
+  const descent = leaf
+    ? `**Do not spawn another sonata tier agent.**
+${ownTier === undefined
+      ? 'Every tier of this role resolves to the same ranked models, so delegating\nwould buy nothing and cost a whole subagent.'
+      : 'You are the cheapest tier; there is nothing below you to delegate to.'}
+Whatever is left, do yourself.`
+    : `**Delegate downward only.** You may spawn ${orList(below.map((tier) => `\`*-${tier}\``))} agents.
+Never your own tier (\`*-${ownTier}\`), and never one above it — a \`${ownTier}\` agent
+spawning \`${ownTier}\` agents has no stopping point, and each one re-reads from
+scratch everything you have already read.`;
+
   // Named from the `plan` role's own config, not this role's: their
   // availability is independent, and naming an agent sonata did not generate
-  // sends the delegation nowhere.
-  const plans = planTiers.length === 0
-    ? '`plan`'
-    : planTiers.map((tier) => `\`plan-${tier}\``).join(planTiers.length === 2 ? ' or ' : ', ').replace(/, ([^,]*)$/, ' or $1');
+  // sends the delegation nowhere. A collapsed `plan` (no tiers) is reachable
+  // from any tier because it is a leaf — it cannot extend the chain.
+  const reachablePlans = planTiers.length === 0
+    ? ['`plan`']
+    : planTiers.filter((tier) => below.includes(tier)).map((tier) => `\`plan-${tier}\``);
+  const plan = reachablePlans.length === 0
+    ? `Need a plan? ${leaf ? 'Work it out yourself — nothing sits below you.' : 'No plan agent sits below your tier — work it out yourself.'}`
+    : `Need a plan? That is ${orList(reachablePlans)}, not \`Plan\`.`;
+
   return `## Fanning out
 
-When you delegate, delegate to a **sonata tier agent** — the \`code-*\`,
+${descent}
+
+${leaf ? 'Should you delegate anyway' : 'When you do delegate'}, delegate to a **sonata tier agent** — the \`code-*\`,
 \`review-*\`, \`explore-*\` and \`plan-*\` agents this config generates. Do not call
 Claude's own \`Plan\`, \`Explore\`, \`Task\` or \`general-purpose\` agents: they run on
 Claude, which silently ends the foreign-model lane this run exists to provide.
-Need a plan? That is ${plans}, not \`Plan\`.
+${plan}
 
 ${NO_MODEL_ARG}
 
-Keep fan-out proportionate: every subagent spends tokens your caller pays for, and
-nothing bounds how deep this nests.
+**Spawn at most ${FANOUT_LIMIT} subagents in your entire run**, and count them as you go.
+Every one spends tokens your caller pays for and inherits this repository's
+\`CLAUDE.md\` before it reads a word of its own task, so all of them re-read
+everything you already have. Scope each to files you name. A numbered list of
+independent questions is a prompt to answer yourself, not a work breakdown to
+split: if it does not fit in ${FANOUT_LIMIT} agents, it does not fit, and saying so is
+the correct result.
 `;
 }
 
@@ -143,11 +275,24 @@ function toolsForRole(role: string): string {
  * The fan-out guidance for a role: the lane rule for everyone, plus the
  * read-only-delegation rule for the roles that need it.
  */
-function delegatingForRole(role: string, planTiers: readonly Tier[]): string {
+function delegatingForRole(role: string, planTiers: readonly Tier[], ownTier: Tier | undefined, available: readonly Tier[]): string {
   const readOnly = isReadOnlyRole(role) ? `\n\n${DELEGATING}` : '';
-  return `\n\n${fanOut(planTiers)}${readOnly}`;
+  const scoping = role === 'review' ? `\n\n${REVIEW_SCOPE}` : '';
+  return `\n\n${fanOut(planTiers, ownTier, available)}${scoping}${readOnly}`;
 }
 
+/**
+ * The agent file for one legacy per-model harness route.
+ *
+ * Generated only for a config with no `[tiers]`: a tiered config skips this
+ * path entirely. The agent is a forwarding wrapper, not a worker — it runs on
+ * `haiku`, holds only the three `sonata dispatch` Bash permissions, and its
+ * whole job is to launch the run and return the report. The body is mostly
+ * shell-quoting procedure because the task must reach the model as a file or
+ * on stdin: a task carrying backticks or `$(...)` spliced into a command line
+ * would be corrupted or would hijack it, and the wrapper has no tool to escape
+ * it safely.
+ */
 export function agentMarkdown(spec: AgentSpec): string {
   const name = `${spec.role}-${spec.model}`;
   const blurb = ROLE_BLURB[spec.role] ?? spec.role;
@@ -276,10 +421,20 @@ Your final message must end with a line naming the run:
 }
 
 
+/**
+ * The agent file for one legacy per-model *native* route.
+ *
+ * The native counterpart of `agentMarkdown`: the model runs inside Claude
+ * Code's own loop through the router rather than in a harness, so the file
+ * pins the model in frontmatter and carries no dispatch commands. Like
+ * `agentMarkdown` it is generated only for an untiered config, and it names
+ * its routing precondition because an unrouted session fails with
+ * `model_not_found` at `api.anthropic.com`, which reads as a broken agent.
+ */
 export function nativeAgentMarkdown(spec: { role: string; model: string }): string {
   const blurb = ROLE_BLURB[spec.role] ?? spec.role;
   const tools = toolsForRole(spec.role);
-  const delegating = delegatingForRole(spec.role, TIER_NAMES);
+  const delegating = delegatingForRole(spec.role, TIER_NAMES, undefined, TIER_NAMES);
 
   return `---
 name: native-${spec.role}-${spec.model}
@@ -333,7 +488,7 @@ export function tierAgentMarkdown(spec: {
   const model = spec.extendedContext === true ? `${alias}${EXTENDED_CONTEXT_SUFFIX}` : alias;
   const tools = toolsForRole(spec.role);
   const available = spec.availableTiers ?? TIER_NAMES;
-  const delegating = delegatingForRole(spec.role, spec.planTiers ?? TIER_NAMES);
+  const delegating = delegatingForRole(spec.role, spec.planTiers ?? TIER_NAMES, tier, available);
   const description = tier === undefined
     ? `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`
     : `Runs ${blurb} on a ranked list of foreign models (${tier} tier), natively inside Claude Code's loop. ${TIER_CRITERION[tier]} Size is not difficulty — a large mechanical change is simple, a three-line change that decides an interface is complex. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`;
@@ -369,6 +524,19 @@ export interface SyncResult {
   skipped: string[];
 }
 
+/**
+ * Regenerate the `.claude/agents` files from `sonata.toml`.
+ *
+ * The sole writer of the agent files, and a reader — never a writer — of the
+ * config: `sonata init` and `sonata agents` own that file, so a regeneration
+ * can never cost a setting. When `[tiers]` is present it generates only tier
+ * agents, one per role x present tier, or a single unsuffixed agent for a role
+ * whose present lists are element-wise identical; legacy per-model generation
+ * is skipped entirely rather than merged, so the two shapes cannot both appear.
+ *
+ * `--prune` removes sonata-marked files the current config no longer names.
+ * Only marked files are ever removed: an agent someone wrote by hand survives.
+ */
 export function cmdSync(opts: SyncOptions): SyncResult {
   const config = loadConfig(opts.cwd, opts.home);
   mkdirSync(opts.agentsDir, { recursive: true });

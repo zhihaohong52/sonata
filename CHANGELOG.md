@@ -10,6 +10,24 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- Tier-agent fan-out is now bounded by a strict tier descent: `complex` may
+  delegate to `normal` and `simple`, `normal` to `simple`, and `simple` to
+  nothing. A collapsed agent (all of a role's tiers identical) is a leaf, since
+  every tier resolves to the same ranked models. Previously the only bound was
+  "keep fan-out proportionate", and a `review-complex` given a nine-item list
+  judged that splitting it was proportionate: it spawned 8 further
+  `review-complex` agents plus 4 `claude` ones, whose children spawned again,
+  and the tree's leaves exhausted a $200 gateway budget. A descent terminates
+  by construction and every hop is cheaper than the one above it.
+- Fan-out width is capped alongside depth: an agent may spawn at most 3
+  subagents across its whole run. The descent alone still permitted 12 siblings
+  from one node, which is what the measured `review-complex` did.
+- `review-*` agents are told to narrow scope rather than grow to fill the
+  request, to name what they did not cover, and to answer `grep`-shaped
+  questions themselves instead of delegating them.
+- The managed `CLAUDE.md` block now names its audience. It is injected into
+  every subagent, and its fan-out paragraph read from inside one as standing
+  permission to spawn more — the reviewer above had followed it correctly.
 - A saved `[tiers]` list now absorbs new reasoning-effort variants of models it
   already holds. When the `<key>@<effort>` grammar shipped, every model gained
   `@low`/`@max`/etc. candidates — new candidate *keys* but not new *models* —
@@ -20,9 +38,6 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   fresh proposal, held 44 over 12 — `complex` has no cost cap and should be the
   largest list, yet was the smallest. A variant qualifies only when its bare key
   is already kept, so a model deliberately removed from a tier stays removed.
-
-### Fixed
-
 - **`scripts/pr-status.mjs` reads the verdict where it actually is.** It parsed
   only issue comments, and CodeRabbit's authoritative count —
   `**Actionable comments posted: N**` — lives in a *review* body, so every PR
