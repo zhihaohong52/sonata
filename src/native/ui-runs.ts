@@ -45,6 +45,19 @@ export const PROJECT_CACHE_MS = 5000;
  */
 export const MAX_RUN_ROWS = 500;
 
+/**
+ * The ceiling on one project's contribution to the cached list.
+ *
+ * `MAX_RUN_ROWS` bounds what a request returns; this bounds what the cache
+ * holds, applied **per project** as the scan collects it. A single ceiling on
+ * the combined list was tried and is wrong in the same way capping before
+ * filtering is: one busy project's newest runs would evict a quiet project's
+ * rows entirely, and a filter for the quiet project would then answer empty
+ * with `truncated: false`. The cap is `MAX_RUN_ROWS` because no single
+ * response can show more of one project than that anyway.
+ */
+export const MAX_CACHED_RUN_ROWS_PER_PROJECT = MAX_RUN_ROWS;
+
 export interface RunRow {
   kind: 'run';
   id: string;
@@ -228,6 +241,13 @@ async function allRunRows(deps: UiDeps): Promise<RunRow[]> {
 
   for (const cwd of dirs) {
     const project = resolve(cwd);
+    // Where this project's rows start, so the cap below applies to *it* rather
+    // than to the combined list. A global trim is the same error as capping
+    // before filtering: one busy project's newest runs would evict a quiet
+    // project's runs entirely, and a filter for the quiet one would answer
+    // empty with `truncated: false` — an answer that is both wrong and
+    // confident.
+    const startOfProject = out.length;
     let summaries: RunSummary[];
     try {
       summaries = await uiRunSummaries(cwd);
@@ -242,11 +262,26 @@ async function allRunRows(deps: UiDeps): Promise<RunRow[]> {
         usage: null, usageReason: RUN_USAGE_REASON,
       });
     }
+    // Newest first within the project, then capped. `MAX_RUN_ROWS` is a
+    // response cap, so a project holding more than that can never show all of
+    // them in one answer anyway; what this protects is the *other* projects'
+    // presence in the cache.
+    if (out.length - startOfProject > MAX_CACHED_RUN_ROWS_PER_PROJECT) {
+      const mine = out.splice(startOfProject, out.length - startOfProject);
+      mine.sort(
+        (a, b) => (Date.parse(b.started ?? '') || 0) - (Date.parse(a.started ?? '') || 0) || a.id.localeCompare(b.id),
+      );
+      out.push(...mine.slice(0, MAX_CACHED_RUN_ROWS_PER_PROJECT));
+    }
   }
 
   out.sort(
     (a, b) => (Date.parse(b.started ?? '') || 0) - (Date.parse(a.started ?? '') || 0) || a.id.localeCompare(b.id),
   );
+  // The cache is bounded per project, in the loop above, rather than here.
+  // Trimming the combined list would let one busy project evict another's rows
+  // entirely — the same failure as capping before filtering, which the
+  // filter-then-cap order exists to prevent.
   if (cache === entry && entry !== undefined) entry.rows = out;
   return out;
 }
@@ -281,7 +316,15 @@ export async function runRows(
   // The filter is applied on the READ side of the cache, never baked into the
   // cached value -- otherwise the first filter to warm it would poison it for
   // every other filter.
-  const all = await allRunRows(deps);
+  // A copy. Nothing mutates this today — `route()` spreads it before it
+  // reaches the response — but the safety then lives at the call site rather
+  // than at the source, and a future caller that sorts or splices in place
+  // would corrupt the shared cache for every later request. The symptom would
+  // be one project's rows appearing under another's filter: the cross-key leak
+  // #38's review caught twice, once in the keying and once in the async
+  // write-back. A `slice()` on a bounded list is cheap beside the filesystem
+  // scan that produced it.
+  const all = (await allRunRows(deps)).slice();
   const matched = filters.project === undefined
     ? all
     : (() => {

@@ -8,6 +8,29 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- **`scripts/pr-status.mjs` reads the verdict where it actually is.** It parsed
+  only issue comments, and CodeRabbit's authoritative count —
+  `**Actionable comments posted: N**` — lives in a *review* body, so every PR
+  reported "no recognisable verdict — findings outstanding", clean ones
+  included. A guard that always cries wolf stops being read. It now reconciles
+  that count against unresolved threads (N findings all resolved is clean), and
+  surfaces failed pre-merge checks from the walkthrough, which have no thread to
+  resolve and were previously invisible — the docstring-coverage warning on #46
+  is the case in point. The star-threshold notice is checked *after* the
+  actionable count, because the walkthrough carries it even on a PR that was
+  reviewed.
+
+- **The router UI's run cache is bounded and no longer shared by reference**
+  (#41). `MAX_RUN_ROWS` caps a response, so the unfiltered list it filtered from
+  had no ceiling: every run across up to 200 projects, held in the process that
+  proxies every native agent's requests. It is now capped per discovery key —
+  never per filter, which would make a quiet project's filter show the newest N
+  globally — and each caller gets its own array, so a future caller sorting in
+  place cannot corrupt the cache and leak one project's rows under another's
+  filter.
+
 ## [0.10.0] - 2026-09-16
 
 ### Added
