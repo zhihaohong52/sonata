@@ -10,6 +10,19 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- A saved `[tiers]` list now absorbs new reasoning-effort variants of models it
+  already holds. When the `<key>@<effort>` grammar shipped, every model gained
+  `@low`/`@max`/etc. candidates — new candidate *keys* but not new *models* —
+  so nothing re-selected them and `reconcileTierList` had no way to merge them.
+  A tier written before that feature could never gain them. Measured on a real
+  machine config: `simple` and `complex` predated the grammar and held 11 and
+  12 entries over 5 and 6 models, while `normal`, added later and seeded from a
+  fresh proposal, held 44 over 12 — `complex` has no cost cap and should be the
+  largest list, yet was the smallest. A variant qualifies only when its bare key
+  is already kept, so a model deliberately removed from a tier stays removed.
+
+### Fixed
+
 - **`scripts/pr-status.mjs` reads the verdict where it actually is.** It parsed
   only issue comments, and CodeRabbit's authoritative count —
   `**Actionable comments posted: N**` — lives in a *review* body, so every PR
