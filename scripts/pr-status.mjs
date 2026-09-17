@@ -59,6 +59,15 @@ function openPrNumbers() {
     .map((pr) => pr.number);
 }
 
+/**
+ * Everything one PR's verdict depends on, in four calls.
+ *
+ * Threads, comments and reviews are all fetched because a finding can be in
+ * any of them: an inline thread, a walkthrough comment (where pre-merge checks
+ * live and there is nothing to resolve), or a review body (where the
+ * actionable count is). Reading fewer than all three is how this script
+ * reported every PR as unverdicted for weeks.
+ */
 function prState(number) {
   const view = JSON.parse(gh([
     'pr', 'view', String(number), '--json',
@@ -84,6 +93,14 @@ function prState(number) {
   return { view, threads, comments, reviews };
 }
 
+/**
+ * Read the bot's verdict, or say plainly that there is not one.
+ *
+ * Never returns "clean" from an absence. A missing review, an unrecognised
+ * wording, a rate limit and a repository below the review threshold are each
+ * reported as outstanding with their own message, because the failure this
+ * script exists to prevent is a PR merged past a finding nobody read.
+ */
 function verdictOf(comments, reviews, unresolved) {
   const bot = comments.filter((c) => c.user?.login === BOT);
   const botReviews = (reviews ?? []).filter((r) => r.user?.login === BOT && String(r.body ?? '') !== '');
@@ -148,6 +165,7 @@ function verdictOf(comments, reviews, unresolved) {
   return { text: 'no recognisable verdict — read the comment', outstanding: true, at };
 }
 
+/** One PR's status block, and whether it is clean enough to merge. */
 function report(number) {
   const { view, threads, comments, reviews } = prState(number);
   const unresolved = threads.filter((t) => !t.isResolved);
