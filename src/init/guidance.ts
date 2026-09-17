@@ -36,6 +36,16 @@ export const GUIDANCE_END = '<!-- sonata:end -->';
  * what that error means is the difference between a fixable setup problem and
  * an apparently broken feature.
  *
+ * The audience line is load-bearing for the same reason. This block is
+ * injected into every *subagent* as well as the session, and its
+ * fan-out-inside-the-lane paragraph reads, from inside a subagent, as standing
+ * permission to spawn more. Measured 2026-09-17 in another repository: one
+ * dispatched `review-complex` spawned 8 further `review-complex` agents and 4
+ * `claude` ones, and its children spawned again — a tree that exhausted a $200
+ * gateway cap. The reviewer had followed this paragraph correctly; the
+ * paragraph was never addressed to it. Naming the audience costs three lines
+ * and removes the misread.
+ *
  * The `model`-argument caveat is here for a related reason: the *caller* is
  * what passes it, and this block is the only text the calling session reads
  * unconditionally. The generated agent's own warning arrives too late — by the
@@ -77,9 +87,14 @@ export function guidanceBlock(): string {
     "Claude reviewing Claude, which is the one thing this lane exists to prevent.",
     'Choosing the tier **is** the model choice.',
     '',
-    'The same applies inside a tier agent: when one fans out, it should delegate',
-    "to another tier agent, not to Claude's own `Plan`, `Explore` or",
-    '`general-purpose`. A plan is `plan-simple`, `plan-normal` or `plan-complex`.',
+    '**This section addresses the session dispatching agents, not an agent reading',
+    'it inside its own run.** `CLAUDE.md` is injected into every subagent, so a',
+    'tier agent sees this text too — it is not an instruction to that agent to fan',
+    'out. Each generated agent carries its own `## Fanning out` rule, which binds',
+    'it to delegating *downward only* (`complex` may reach `normal` and `simple`,',
+    '`normal` may reach `simple`, `simple` may reach nothing). Fanning a task out',
+    'is your decision to make here, where the agent count is visible, by',
+    'dispatching several scoped agents yourself.',
     '',
     'If a tier agent fails with `model_not_found`, the session is **not routed** —',
     'that is a setup problem, not a broken agent. Run `sonata doctor`, and start',

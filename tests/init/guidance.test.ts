@@ -162,14 +162,21 @@ describe('guidanceBlock', () => {
     expect(block).not.toContain('When unsure, use `-complex`');
   });
 
-  it('tells a tier agent to fan out only to other tier agents', () => {
+  it('names its audience, so a subagent does not read it as licence to fan out', () => {
     // Asserted separately from the no-model rule: they are different failures
     // — one runs the agent itself on Claude, the other hands its *subagent* to
     // Claude — so an assertion resting on the shared wording would survive
     // deleting either one.
+    //
+    // This block is injected into every subagent, and its earlier wording
+    // ("when one fans out, it should delegate to another tier agent") read
+    // from inside a subagent as permission to spawn. Measured 2026-09-17: one
+    // review-complex spawned 8 more, whose leaves exhausted a $200 cap.
     const block = guidanceBlock().replace(/\s+/g, ' ');
-    expect(block).toContain('when one fans out, it should delegate');
-    expect(block).toContain('`plan-simple`, `plan-normal` or `plan-complex`');
+    expect(block).toContain('addresses the session dispatching agents');
+    expect(block).toContain('it is not an instruction to that agent to fan out');
+    expect(block).toContain('downward only');
+    expect(block).not.toContain('when one fans out, it should delegate');
   });
 
   it('tells the caller not to pass a model argument', () => {
