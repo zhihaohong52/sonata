@@ -824,7 +824,10 @@ The `claude` harness adapter is the simplest adapter: it runs headless `claude -
   finding on #23 was nearly merged past. The script reads mergeability, CI
   checks, threads *and* the latest bot verdict, exits non-zero unless all four
   are clean, and reports "no recognisable verdict" rather than guessing when
-  the wording changes. `--watch` polls until something moves. Opening a PR is
+  the wording changes. **Keep `--watch=60` running for as long as any PR is
+  open** rather than checking back by hand: it prints only when something moves
+  and stops itself when every open PR is clean, so a quiet watch costs nothing
+  and a review landing two minutes after you stopped looking is not missed. Opening a PR is
   not the end of the task — a review lands within a minute, and #48 was
   reported as finished while carrying four unresolved findings and two failed
   pre-merge checks. Its first run
