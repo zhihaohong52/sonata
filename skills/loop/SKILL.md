@@ -46,6 +46,24 @@ the task text directly as the trailing argument).
    whole change. Keep the final gate at `review-complex` even when the tasks
    used a lower tier; findings loop back through step 3.
 
+## If you are also running `superpowers:subagent-driven-development`
+
+The two do the same shape of work — plan, dispatch, review, escalate — and
+combine fine: take its review protocol (scoped re-reviews, bounded fix rounds,
+a fresh implementer when one gets stuck) and this skill's tier routing.
+
+**One instruction in it must be overridden here.** Its Model Selection section
+says to always specify the model explicitly when dispatching a subagent. For a
+sonata tier agent that is wrong, and wrong silently: the agent pins its routed
+model in frontmatter, the Agent tool's own `model` parameter takes precedence
+over frontmatter, and passing one runs sonata's prompt and tools on a Claude
+model that never reaches the router. Nothing errors and nothing warns — every
+`review-*` dispatch quietly becomes Claude reviewing Claude, which is the one
+thing this lane exists to prevent.
+
+That section's goal still applies; the tier is how you meet it. **Choosing
+`-simple`, `-normal` or `-complex` is the model selection.** Omit `model`.
+
 ## When not to loop
 
 A single contained change does not need the loop — dispatch one `code-*`
