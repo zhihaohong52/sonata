@@ -32,6 +32,34 @@ const BOT = 'coderabbitai[bot]';
 const CLEAN = /I found (?:no|zero) (?:new )?issues?|No new issues? found|found no issue/i;
 const FINDING = /I found (?:\d+|one|two|three|several)\b|blocking case/i;
 const NOT_RUN = /Review rate limited|Action not completed/i;
+/**
+ * The count CodeRabbit puts at the top of a *review* body. This is the
+ * authoritative signal and the script missed it for months: it read only issue
+ * comments, where the walkthrough lives, and the walkthrough does not carry
+ * this line. Every PR therefore reported "no recognisable verdict — findings
+ * outstanding", including clean ones, which is how a guard stops being read.
+ */
+const ACTIONABLE = /\*\*Actionable comments posted:\s*(\d+)\*\*/i;
+/**
+ * Pre-merge checks the walkthrough reports outside any thread — docstring
+ * coverage, title and description checks. A finding here has no review thread
+ * to resolve, so counting threads alone reports the PR clean while a warning
+ * sits in the comment. That is the failure this script was written for.
+ */
+const FAILED_CHECKS = /###\s*❌\s*Failed checks\s*\((\d+)\s*[^)]*\)/i;
+/** The repository is below the star threshold, so no review ran at all. */
+const NO_AUTO_REVIEW = /does not receive automatic reviews/i;
+/**
+ * The commit the walkthrough describes.
+ *
+ * The comment is edited in place on every push, so its timestamp says when it
+ * was last touched and nothing about what it covers: measured on #48, a
+ * walkthrough updated at 06:49 still described a commit from 06:34, two pushes
+ * back. Without this the pre-merge warnings it carries are reported as current
+ * when they may already be fixed — the same "always fires" failure that made
+ * the old verdict line unreadable.
+ */
+const REVIEWED_UP_TO = /up to `([0-9a-f]{5,40})`/i;
 
 function gh(args) {
   return execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
@@ -42,6 +70,15 @@ function openPrNumbers() {
     .map((pr) => pr.number);
 }
 
+/**
+ * Everything one PR's verdict depends on, in four calls.
+ *
+ * Threads, comments and reviews are all fetched because a finding can be in
+ * any of them: an inline thread, a walkthrough comment (where pre-merge checks
+ * live and there is nothing to resolve), or a review body (where the
+ * actionable count is). Reading fewer than all three is how this script
+ * reported every PR as unverdicted for weeks.
+ */
 function prState(number) {
   const view = JSON.parse(gh([
     'pr', 'view', String(number), '--json',
@@ -55,35 +92,105 @@ function prState(number) {
   const comments = JSON.parse(gh([
     'api', `repos/zhihaohong52/sonata/issues/${number}/comments`,
   ]));
-  return { view, threads, comments };
+  // Reviews, not just comments: the actionable-comment count lives in a review
+  // body, and a PR's verdict cannot be read without it.
+  // `--paginate --slurp`: the endpoint returns 30 reviews per page in
+  // chronological order, and CodeRabbit posts several per push — so on a busy
+  // PR the newest review, the one carrying the verdict, is not on page one.
+  // Reading page one alone silently graded a PR on a stale review.
+  const reviews = JSON.parse(gh([
+    'api', '--paginate', '--slurp', `repos/zhihaohong52/sonata/pulls/${number}/reviews`,
+  ])).flat();
+  return { view, threads, comments, reviews };
 }
 
-function verdictOf(comments) {
+/**
+ * Read the bot's verdict, or say plainly that there is not one.
+ *
+ * Never returns "clean" from an absence. A missing review, an unrecognised
+ * wording, a rate limit and a repository below the review threshold are each
+ * reported as outstanding with their own message, because the failure this
+ * script exists to prevent is a PR merged past a finding nobody read.
+ */
+function verdictOf(comments, reviews, unresolved, head) {
   const bot = comments.filter((c) => c.user?.login === BOT);
-  if (bot.length === 0) return { text: 'no review yet', outstanding: true, at: undefined };
-  const last = bot[bot.length - 1];
-  const body = String(last.body ?? '');
-  const at = last.created_at;
+  const botReviews = (reviews ?? []).filter((r) => r.user?.login === BOT && String(r.body ?? '') !== '');
+  if (bot.length === 0 && botReviews.length === 0) {
+    return { text: 'no review yet', outstanding: true, at: undefined };
+  }
 
-  // A finding is checked first and a clean verdict second; a comment can carry
-  // both when the bot answers one point and raises another.
-  const finding = FINDING.exec(body);
-  if (finding && !CLEAN.test(body)) return { text: finding[0], outstanding: true, at };
-  const clean = CLEAN.exec(body);
-  if (clean) return { text: clean[0], outstanding: false, at };
-  if (NOT_RUN.test(body)) return { text: 'review did not run (rate limited)', outstanding: true, at };
+  const lastComment = bot[bot.length - 1];
+  const commentBody = String(lastComment?.body ?? '');
+  const at = lastComment?.created_at;
+
+  // The authoritative signal. `Actionable comments posted: N` counts inline
+  // findings, each of which becomes a review thread — so it is reconciled
+  // against the unresolved count rather than read alone: N findings all
+  // resolved is a clean PR, and reporting it as outstanding is what trained
+  // everyone to ignore this line.
+  const lastReview = botReviews[botReviews.length - 1];
+  const actionable = ACTIONABLE.exec(String(lastReview?.body ?? ''));
+  const checks = FAILED_CHECKS.exec(commentBody);
+  const failedChecks = checks === undefined || checks === null ? 0 : Number(checks[1]);
+  // Whether those checks describe the commit that would be merged. Reported
+  // rather than discarded: "unknown for this head" is not "clean", but a
+  // warning that may already be fixed reads differently from one that stands.
+  const upTo = REVIEWED_UP_TO.exec(commentBody)?.[1];
+  const staleNote = upTo !== undefined && head !== undefined && !String(head).startsWith(upTo)
+    ? ` — describes ${upTo}, head is ${String(head).slice(0, upTo.length)}, so it may already be fixed`
+    : '';
+
+  if (actionable !== null && actionable !== undefined) {
+    const posted = Number(actionable[1]);
+    const reviewedAt = lastReview.submitted_at ?? at;
+    if (failedChecks > 0) {
+      return {
+        text: `${posted} actionable, ${unresolved} unresolved · ${failedChecks} failed pre-merge check(s) — in the walkthrough, not a thread${staleNote}`,
+        outstanding: true,
+        at: reviewedAt,
+      };
+    }
+    if (posted === 0) return { text: 'no actionable comments', outstanding: false, at: reviewedAt };
+    if (unresolved === 0) {
+      return { text: `${posted} actionable, all resolved`, outstanding: false, at: reviewedAt };
+    }
+    return { text: `${posted} actionable, ${unresolved} unresolved`, outstanding: true, at: reviewedAt };
+  }
+
+  // No review body at all. Say which kind of absence it is, because the fix
+  // differs: a rate limit clears on its own, a repo below the star threshold
+  // needs a review run by hand. Checked *after* the actionable count, not
+  // before: the walkthrough carries this notice even on a PR that was
+  // reviewed, so reading it first reported a fully reviewed PR as unreviewed.
+  if (NO_AUTO_REVIEW.test(commentBody)) {
+    return { text: 'no automatic review on this repo — run one by hand', outstanding: true, at };
+  }
+
+  // Older wording, kept because a PR reviewed before the format changed still
+  // has to be readable. A finding is checked first and a clean verdict second;
+  // a comment can carry both when the bot answers one point and raises another.
+  const finding = FINDING.exec(commentBody);
+  if (finding && !CLEAN.test(commentBody)) return { text: finding[0], outstanding: true, at };
+  const clean = CLEAN.exec(commentBody);
+  if (clean) {
+    return failedChecks > 0
+      ? { text: `${clean[0]}, but ${failedChecks} failed pre-merge check(s)`, outstanding: true, at }
+      : { text: clean[0], outstanding: false, at };
+  }
+  if (NOT_RUN.test(commentBody)) return { text: 'review did not run (rate limited)', outstanding: true, at };
   // No recognised verdict is itself the finding: the wording may have changed,
   // and silently reporting "clean" is the failure this script exists to stop.
   return { text: 'no recognisable verdict — read the comment', outstanding: true, at };
 }
 
+/** One PR's status block, and whether it is clean enough to merge. */
 function report(number) {
-  const { view, threads, comments } = prState(number);
+  const { view, threads, comments, reviews } = prState(number);
   const unresolved = threads.filter((t) => !t.isResolved);
   const checks = (view.statusCheckRollup ?? [])
     .map((c) => `${c.name ?? c.context}=${c.conclusion ?? c.state}`);
   const failing = checks.filter((c) => !/=(SUCCESS|NEUTRAL|SKIPPED)$/.test(c));
-  const verdict = verdictOf(comments);
+  const verdict = verdictOf(comments, reviews, unresolved.length, view.headRefOid);
 
   const clean = view.mergeable === 'MERGEABLE'
     && view.mergeStateStatus === 'CLEAN'

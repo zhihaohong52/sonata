@@ -1,17 +1,24 @@
-# Handoff — sonata after 0.8.3
+# Handoff — sonata after 0.10.0
 
 Originally written 2026-09-04 at the end of the 0.6.0 session; the state
 section was rewritten 2026-09-12 after 0.8.3. Read this before starting new
 work. It records what is done, what is deliberately *not* done, what to pick
 up if you want work, and the traps that have cost previous sessions real time.
 
-**The short version:** every roadmap item is built, shipped and released. For
-most of this file's life there was no queued task. The one that existed —
-**PR 2 and PR 3 of the effort-tier spec** — was written on 2026-09-14 and sits
-**unpushed on `feat/effort-router`**; see the Effort-level tier candidates
-section below for what landed and what is still open on it. Everything else
-remains a judgement call that belongs to the user; read the 1.0 gate section
-before going looking.
+**The short version:** every roadmap item is built, shipped and released, and
+**nothing is queued**. The effort-tier work this file used to name as the one
+open task shipped as #34 and is in 0.9.0; the sentence naming it as unpushed
+survived two releases and sent at least one session looking for work that was
+already merged, which is the failure this file exists to prevent. What remains
+is judgement calls that belong to the user; read the 1.0 gate section before
+going looking.
+
+**0.10.0 (2026-09-17)** was the largest cut since 0.6.0: a third tier
+(`normal`), the tier-selection rewrite, a local web UI on the router,
+per-task-only ranking, the model-override and fan-out warnings, and dev build
+stamps. Two issues are open, neither a live defect: **#41** (two hardening
+guards on the UI's run cache — fixed in PR #48) and **#47** (harness-lane token
+counts, deferred from #38's design and needing its own spec).
 
 ## The tier set is three, not two (2026-09-16)
 
@@ -46,10 +53,12 @@ split has not moved, the next lever is structural rather than more wording.
   fixes from PR #32, so a release can be cut whenever the user wants one.
 - **npm**: `@zhihaohong52/sonata@0.8.3`, `latest`, published 2026-09-12 from
   the pushed tag with every `release.yml` step green and provenance signed.
-- **1975 tests across 101 files**, typecheck and build clean, verified on the
+- **2239 tests across 111 files**, typecheck and build clean, verified on the
   merged tree.
-- **Zero open issues, zero open PRs.** #29, #30 and #31 were opened and closed
-  on 2026-09-14 by PR #32; see the sections below for what each one turned out
+- **Open issues: #41 and #47**, both named at the top of this file; neither is
+  a live defect. This line read "zero open issues" for two releases after that
+  stopped being true — it describes 2026-09-14, when #29, #30 and #31 were
+  opened and closed by PR #32; see the sections below for what each turned out
   to be.
 - **All fourteen roadmap items remain ✅**, each named with the release it
   shipped in. `docs/roadmap.md` explains *why* each is shaped as it is; nothing
@@ -91,8 +100,8 @@ Read `CHANGELOG.md` for the detail. The shape of it:
 
 ## The 1.0 gate is not an item list — read this before inventing work
 
-**One task is queued** — PR 2 and PR 3 of the effort-tier spec, deferred to a
-later session by the user on 2026-09-14. That section is above. Everything in
+**Nothing is queued.** The effort-tier PRs this once named shipped as #34 in
+0.9.0. Everything in
 *this* section is about why "nothing left to build" still does not mean "time
 to tag", which is a separate question and was true before the effort-tier work
 existed.

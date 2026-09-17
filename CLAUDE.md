@@ -817,14 +817,20 @@ The `claude` harness adapter is the simplest adapter: it runs headless `claude -
 
 ## Conventions
 
-- **Poll PR state with `node scripts/pr-status.mjs`, and never merge on a
+- **Run `node scripts/pr-status.mjs <n>` the moment a PR is opened, and never merge on a
   thread count alone.** CodeRabbit posts some findings as **plain issue
   comments** rather than review threads, so a PR can report "0 unresolved
   threads" while a P1 sits in the comment body — which is how a blocking
   finding on #23 was nearly merged past. The script reads mergeability, CI
   checks, threads *and* the latest bot verdict, exits non-zero unless all four
   are clean, and reports "no recognisable verdict" rather than guessing when
-  the wording changes. `--watch` polls until something moves. Its first run
+  the wording changes. **Keep `--watch=60` running for as long as any PR is
+  open** rather than checking back by hand: it prints only when something moves
+  and stops itself when every open PR is clean, so a quiet watch costs nothing
+  and a review landing two minutes after you stopped looking is not missed. Opening a PR is
+  not the end of the task — a review lands within a minute, and #48 was
+  reported as finished while carrying four unresolved findings and two failed
+  pre-merge checks. Its first run
   immediately caught a failing CI check that a manual sweep had missed.
 
 - **Never request a re-review after fixing findings.** Push the fix, reply on
