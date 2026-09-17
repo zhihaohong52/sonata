@@ -207,8 +207,57 @@ describe('tierAgentMarkdown', () => {
     // and one called Claude's own `Plan` (2026-09-16), ending the lane.
     const md = tierAgentMarkdown({ role: 'code', tier: 'complex' });
     expect(md).toContain('## Fanning out');
-    expect(md).toContain('plan-complex');
+    expect(md).toContain('plan-normal');
     expect(md).not.toContain('## Delegating');
+  });
+
+  it('lets complex delegate to the two tiers below it, and not to its own', () => {
+    const md = tierAgentMarkdown({ role: 'review', tier: 'complex' });
+    expect(md).toContain('`*-simple`');
+    expect(md).toContain('`*-normal`');
+    // The measured failure: one review-complex spawned 8 more review-complex
+    // agents, whose leaves exhausted a $200 gateway cap.
+    expect(md).toContain('Never your own tier (`*-complex`)');
+    expect(md).toContain('plan-simple');
+    expect(md).toContain('plan-normal');
+    expect(md).not.toContain('`plan-complex`');
+  });
+
+  it('lets normal delegate only to simple', () => {
+    const md = tierAgentMarkdown({ role: 'review', tier: 'normal' });
+    expect(md).toContain('`*-simple`');
+    expect(md).not.toContain('`*-normal` agents');
+    expect(md).toContain('Never your own tier (`*-normal`)');
+    expect(md).toContain('`plan-simple`');
+    expect(md).not.toContain('`plan-normal`');
+  });
+
+  it('makes the cheapest tier a leaf', () => {
+    const md = tierAgentMarkdown({ role: 'review', tier: 'simple' });
+    expect(md).toContain('Do not spawn another sonata tier agent');
+    expect(md).toContain('nothing below you to delegate to');
+    expect(md).not.toContain('Delegate downward only');
+  });
+
+  it('makes a collapsed agent a leaf, since every tier resolves the same', () => {
+    // A collapsed agent is generated only when the role's tier lists are
+    // element-wise identical, so delegating buys the same models for the
+    // price of a subagent. Being a leaf is also what makes it safe to call.
+    const md = tierAgentMarkdown({ role: 'review' });
+    expect(md).toContain('Do not spawn another sonata tier agent');
+    expect(md).toContain('resolves to the same ranked models');
+  });
+
+  it('names no plan agent when none sits below the tier', () => {
+    const md = tierAgentMarkdown({ role: 'code', tier: 'normal', planTiers: ['complex'] });
+    expect(md).toContain('No plan agent sits below your tier');
+  });
+
+  it('keeps a collapsed plan role reachable from any tier', () => {
+    // A collapsed `plan` is a leaf, so calling it cannot extend the chain.
+    const md = tierAgentMarkdown({ role: 'code', tier: 'normal', planTiers: [] });
+    expect(md).toContain('`plan`');
+    expect(md).not.toContain('No plan agent sits below your tier');
   });
 
   it('keeps the read-only delegation guard alongside the fan-out rule', () => {
