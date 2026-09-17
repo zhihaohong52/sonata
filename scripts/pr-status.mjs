@@ -49,6 +49,17 @@ const ACTIONABLE = /\*\*Actionable comments posted:\s*(\d+)\*\*/i;
 const FAILED_CHECKS = /###\s*❌\s*Failed checks\s*\((\d+)\s*[^)]*\)/i;
 /** The repository is below the star threshold, so no review ran at all. */
 const NO_AUTO_REVIEW = /does not receive automatic reviews/i;
+/**
+ * The commit the walkthrough describes.
+ *
+ * The comment is edited in place on every push, so its timestamp says when it
+ * was last touched and nothing about what it covers: measured on #48, a
+ * walkthrough updated at 06:49 still described a commit from 06:34, two pushes
+ * back. Without this the pre-merge warnings it carries are reported as current
+ * when they may already be fixed — the same "always fires" failure that made
+ * the old verdict line unreadable.
+ */
+const REVIEWED_UP_TO = /up to `([0-9a-f]{5,40})`/i;
 
 function gh(args) {
   return execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
@@ -101,7 +112,7 @@ function prState(number) {
  * reported as outstanding with their own message, because the failure this
  * script exists to prevent is a PR merged past a finding nobody read.
  */
-function verdictOf(comments, reviews, unresolved) {
+function verdictOf(comments, reviews, unresolved, head) {
   const bot = comments.filter((c) => c.user?.login === BOT);
   const botReviews = (reviews ?? []).filter((r) => r.user?.login === BOT && String(r.body ?? '') !== '');
   if (bot.length === 0 && botReviews.length === 0) {
@@ -121,13 +132,20 @@ function verdictOf(comments, reviews, unresolved) {
   const actionable = ACTIONABLE.exec(String(lastReview?.body ?? ''));
   const checks = FAILED_CHECKS.exec(commentBody);
   const failedChecks = checks === undefined || checks === null ? 0 : Number(checks[1]);
+  // Whether those checks describe the commit that would be merged. Reported
+  // rather than discarded: "unknown for this head" is not "clean", but a
+  // warning that may already be fixed reads differently from one that stands.
+  const upTo = REVIEWED_UP_TO.exec(commentBody)?.[1];
+  const staleNote = upTo !== undefined && head !== undefined && !String(head).startsWith(upTo)
+    ? ` — describes ${upTo}, head is ${String(head).slice(0, upTo.length)}, so it may already be fixed`
+    : '';
 
   if (actionable !== null && actionable !== undefined) {
     const posted = Number(actionable[1]);
     const reviewedAt = lastReview.submitted_at ?? at;
     if (failedChecks > 0) {
       return {
-        text: `${posted} actionable, ${unresolved} unresolved · ${failedChecks} failed pre-merge check(s) — in the walkthrough, not a thread`,
+        text: `${posted} actionable, ${unresolved} unresolved · ${failedChecks} failed pre-merge check(s) — in the walkthrough, not a thread${staleNote}`,
         outstanding: true,
         at: reviewedAt,
       };
@@ -172,7 +190,7 @@ function report(number) {
   const checks = (view.statusCheckRollup ?? [])
     .map((c) => `${c.name ?? c.context}=${c.conclusion ?? c.state}`);
   const failing = checks.filter((c) => !/=(SUCCESS|NEUTRAL|SKIPPED)$/.test(c));
-  const verdict = verdictOf(comments, reviews, unresolved.length);
+  const verdict = verdictOf(comments, reviews, unresolved.length, view.headRefOid);
 
   const clean = view.mergeable === 'MERGEABLE'
     && view.mergeStateStatus === 'CLEAN'
