@@ -841,6 +841,19 @@ The `claude` harness adapter is the simplest adapter: it runs headless `claude -
   pushed head on its own where that matters. Resolving is not optional — a
   finding fixed but left open reads as outstanding to the next reader.
 
+- **Close issues with a keyword, and name pull requests as `PR #n`.** GitHub
+  closes an issue when a merged PR's *description* carries `Closes #n` /
+  `Fixes #n` / `Resolves #n`; a bare `#n` only links it, which is how #41
+  stayed open through the PR that fixed it and had to be closed by hand. And a
+  bare `#n` meaning a *pull* request is read as a linked issue — on #48 that
+  produced an "out of scope changes" warning saying the PR did not implement
+  issue #45, when the description meant PR #45. Both habits live in
+  `.github/pull_request_template.md`, which is the only place they get read at
+  the moment they matter. A duplicate closes with
+  `gh issue close <n> --reason duplicate`, which records it as a duplicate
+  rather than as done; there is no built-in duplicate *detector*, and at this
+  repository's issue volume a bot for it would cost more than it saves.
+
 - **Non-trivial work goes through a PR; docs and trivial fixes may go direct to
   `main`.** "Non-trivial" means anything touching money (pricing, the ledger,
   `[budget]`), security, routing, or config parsing — the paths where a plausible
