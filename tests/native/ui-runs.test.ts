@@ -393,4 +393,18 @@ describe('discovery is bounded by attempts, not only by acceptances', () => {
     expect(projectDiscovery(deps()).truncated).toBe(false);
     expect((await runRows(deps(), all)).discoveryTruncated).toBe(false);
   });
+
+  it('hands every caller its own array, so a mutation cannot reach the cache', async () => {
+    // The hazard is not today's code — `route()` copies before responding — it
+    // is that the safety lives at the call site. A future caller sorting or
+    // splicing in place would corrupt the shared cache, and the symptom would
+    // be one project's rows under another's filter: the cross-key leak #38's
+    // review caught twice.
+    const first = await runRows(deps(), all);
+    first.rows.length = 0;
+    first.rows.push({ id: 'poisoned' } as never);
+    const second = await runRows(deps(), all);
+    expect(second.rows.some((row) => row.id === 'poisoned')).toBe(false);
+    expect(second.rows.length).toBeGreaterThan(0);
+  });
 });

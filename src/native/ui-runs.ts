@@ -45,6 +45,18 @@ export const PROJECT_CACHE_MS = 5000;
  */
 export const MAX_RUN_ROWS = 500;
 
+/**
+ * The ceiling on the *cached* unfiltered list, as opposed to one response.
+ *
+ * `MAX_RUN_ROWS` bounds what a request returns; without this, the list it is
+ * filtered from was unbounded — every run in every discovered project, held
+ * for one cache window in the router process. Set well above `MAX_RUN_ROWS`
+ * so a filter for a quiet project still has its own runs to find: the cap must
+ * never become "the newest N globally", which is the failure the
+ * filter-before-cap order exists to prevent.
+ */
+export const MAX_CACHED_RUN_ROWS = MAX_RUN_ROWS * MAX_PROJECT_DIRS;
+
 export interface RunRow {
   kind: 'run';
   id: string;
@@ -247,8 +259,18 @@ async function allRunRows(deps: UiDeps): Promise<RunRow[]> {
   out.sort(
     (a, b) => (Date.parse(b.started ?? '') || 0) - (Date.parse(a.started ?? '') || 0) || a.id.localeCompare(b.id),
   );
-  if (cache === entry && entry !== undefined) entry.rows = out;
-  return out;
+  // Bounded before it is cached, not after. `MAX_RUN_ROWS` caps a *response*,
+  // so the unfiltered list it is taken from had no ceiling at all: every run
+  // across up to `MAX_PROJECT_DIRS` projects, held for a `PROJECT_CACHE_MS`
+  // window, inside the process that proxies every native agent's requests.
+  // The bound is deliberately generous — `MAX_RUN_ROWS` per discovered project
+  // rather than in total — because a global cap here would reintroduce the bug
+  // the filter-then-cap order exists to prevent: the newest N *globally* would
+  // be all a quiet project's filter could ever see. Capping per discovery key
+  // is safe; capping per filter is not.
+  const bounded = out.length <= MAX_CACHED_RUN_ROWS ? out : out.slice(0, MAX_CACHED_RUN_ROWS);
+  if (cache === entry && entry !== undefined) entry.rows = bounded;
+  return bounded;
 }
 
 /**
@@ -281,7 +303,15 @@ export async function runRows(
   // The filter is applied on the READ side of the cache, never baked into the
   // cached value -- otherwise the first filter to warm it would poison it for
   // every other filter.
-  const all = await allRunRows(deps);
+  // A copy. Nothing mutates this today — `route()` spreads it before it
+  // reaches the response — but the safety then lives at the call site rather
+  // than at the source, and a future caller that sorts or splices in place
+  // would corrupt the shared cache for every later request. The symptom would
+  // be one project's rows appearing under another's filter: the cross-key leak
+  // #38's review caught twice, once in the keying and once in the async
+  // write-back. A `slice()` on a bounded list is cheap beside the filesystem
+  // scan that produced it.
+  const all = (await allRunRows(deps)).slice();
   const matched = filters.project === undefined
     ? all
     : (() => {
