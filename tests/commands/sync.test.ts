@@ -248,6 +248,30 @@ describe('tierAgentMarkdown', () => {
     expect(md).toContain('resolves to the same ranked models');
   });
 
+  it('caps fan-out width as well as depth', () => {
+    // The descent alone still allowed 12 siblings from one node, which is
+    // what the measured review-complex actually did (8 same-tier + 4 claude).
+    for (const tier of ['simple', 'normal', 'complex'] as const) {
+      const md = tierAgentMarkdown({ role: 'code', tier });
+      expect(md).toContain('**Spawn at most 3 subagents in your entire run**');
+      expect(md).toContain('if it does not fit in 3 agents, it does not fit');
+    }
+  });
+
+  it('tells a reviewer to narrow scope and name its gaps', () => {
+    const md = tierAgentMarkdown({ role: 'review', tier: 'complex' });
+    expect(md).toContain('## Scoping the review');
+    expect(md).toContain('do not grow to fill the request');
+    expect(md).toContain('state plainly which you did not cover');
+    expect(md).toContain('Anything a `grep` answers is not a review question');
+  });
+
+  it('scopes only the review role', () => {
+    for (const role of ['code', 'explore', 'plan']) {
+      expect(tierAgentMarkdown({ role, tier: 'complex' })).not.toContain('## Scoping the review');
+    }
+  });
+
   it('names no plan agent when none sits below the tier', () => {
     const md = tierAgentMarkdown({ role: 'code', tier: 'normal', planTiers: ['complex'] });
     expect(md).toContain('No plan agent sits below your tier');

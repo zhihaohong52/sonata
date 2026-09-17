@@ -19,6 +19,12 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   `review-complex` agents plus 4 `claude` ones, whose children spawned again,
   and the tree's leaves exhausted a $200 gateway budget. A descent terminates
   by construction and every hop is cheaper than the one above it.
+- Fan-out width is capped alongside depth: an agent may spawn at most 3
+  subagents across its whole run. The descent alone still permitted 12 siblings
+  from one node, which is what the measured `review-complex` did.
+- `review-*` agents are told to narrow scope rather than grow to fill the
+  request, to name what they did not cover, and to answer `grep`-shaped
+  questions themselves instead of delegating them.
 - The managed `CLAUDE.md` block now names its audience. It is injected into
   every subagent, and its fan-out paragraph read from inside one as standing
   permission to spawn more — the reviewer above had followed it correctly.

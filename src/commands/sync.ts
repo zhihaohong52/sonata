@@ -90,6 +90,57 @@ writes to the repository through it. Nothing enforces this but you.
 `;
 
 /**
+ * What a reviewer does with a request larger than a review.
+ *
+ * The 2026-09-17 incident was not only a fan-out failure — it started as a
+ * scoping one. The reviewer was handed nine numbered deep-trace areas across a
+ * 14-commit change (freeze coverage on every dispatch path, crash-recovery
+ * states, interactions with send rollback, soft-delete, retry_stage,
+ * concurrency) and treated that as a work breakdown. The dispatcher afterwards
+ * answered three of the nine itself with `grep`, in about a minute: a third of
+ * what was delegated never needed a model at all.
+ *
+ * So the instruction is to *narrow and say so*, not to cover everything asked.
+ * A reviewer silently expanding to fill its brief is what turns a review into
+ * a research assignment, and a partial review that names what it did not cover
+ * is worth more than a broad one that ran out of budget — the failure mode
+ * here is a review that spends heavily and reports nothing, which is precisely
+ * what happened.
+ */
+const REVIEW_SCOPE = `## Scoping the review
+
+Review what you were given; do not grow to fill the request. If it names more
+areas than you can examine properly, **pick the ones that genuinely need
+judgement, review those, and state plainly which you did not cover** — a
+partial review that names its gaps is useful, and a broad one that runs out of
+room is not.
+
+Anything a \`grep\` answers is not a review question. Answer it yourself
+directly rather than delegating it: a dispatcher who sent nine such areas out
+later answered three of them by hand in about a minute.
+
+Report findings. Do not fix, and do not open a plan for fixing.
+`;
+
+/**
+ * How many subagents one generated agent may spawn across its whole run.
+ *
+ * The descent bounds depth; this bounds width, and the incident needed both.
+ * The `review-complex` measured on 2026-09-17 made 12 Agent calls from a
+ * single node — 8 same-tier reviewers and 4 to `claude` — so a depth rule
+ * alone would still have allowed 12 siblings, each re-reading the same diff,
+ * spec and plan from scratch.
+ *
+ * Three is chosen to be countable rather than optimal. A model cannot track a
+ * token budget it never sees, but it can count to three, and the rule has to
+ * survive being read by the same loss-averse reader that resolved "keep
+ * fan-out proportionate" as licence to split a nine-item list. Combined with
+ * the descent it bounds a `complex` run at 3 `normal` children and 9 `simple`
+ * grandchildren, with exactly one node ever running at the dearest tier.
+ */
+const FANOUT_LIMIT = 3;
+
+/**
  * The tiers a tier agent may delegate to: strictly cheaper ones, in rank order.
  *
  * This is the only thing bounding fan-out depth, and it exists because nothing
@@ -180,10 +231,13 @@ ${plan}
 
 ${NO_MODEL_ARG}
 
-Every subagent spends tokens your caller pays for, and inherits this
-repository's \`CLAUDE.md\` before it reads a word of its own task. Scope each one
-to files you name; a numbered list of independent questions is a prompt you
-should answer yourself, not split.
+**Spawn at most ${FANOUT_LIMIT} subagents in your entire run**, and count them as you go.
+Every one spends tokens your caller pays for and inherits this repository's
+\`CLAUDE.md\` before it reads a word of its own task, so all of them re-read
+everything you already have. Scope each to files you name. A numbered list of
+independent questions is a prompt to answer yourself, not a work breakdown to
+split: if it does not fit in ${FANOUT_LIMIT} agents, it does not fit, and saying so is
+the correct result.
 `;
 }
 
@@ -207,7 +261,8 @@ function toolsForRole(role: string): string {
  */
 function delegatingForRole(role: string, planTiers: readonly Tier[], ownTier: Tier | undefined): string {
   const readOnly = isReadOnlyRole(role) ? `\n\n${DELEGATING}` : '';
-  return `\n\n${fanOut(planTiers, ownTier)}${readOnly}`;
+  const scoping = role === 'review' ? `\n\n${REVIEW_SCOPE}` : '';
+  return `\n\n${fanOut(planTiers, ownTier)}${scoping}${readOnly}`;
 }
 
 export function agentMarkdown(spec: AgentSpec): string {
