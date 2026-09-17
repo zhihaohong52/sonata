@@ -70,6 +70,14 @@ foreign-model lane ends silently. Through sonata, concurrency is also bounded
 by the gateway rather than by how independent the tasks are — seven agents on
 one subscription produced three upstream crashes and a tier exhaustion.
 
+**When you dispatch agents in parallel, give every one of them this rule:**
+stage the paths you own, commit them, and touch nothing else. No `git stash`
+in any form — the stash stack is repository-wide and is shared even by
+separate worktrees, so one agent's stash can be popped into another's tree and
+vanish from its own. No `git add -A`, `git reset --hard`, `git checkout -- .`,
+`git clean -fd`, or branch switching. See
+`docs/dispatching-work-through-sonata.md` for the measurements behind this.
+
 ## When not to loop
 
 A single contained change does not need the loop — dispatch one `code-*`

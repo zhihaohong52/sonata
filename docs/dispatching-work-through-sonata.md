@@ -102,6 +102,51 @@ So pick concurrency from what the *gateway* can carry:
   work, scoped to the files it owns, so a death costs one agent's turn rather
   than the wave.
 
+### Never let an agent run `git stash` — worktrees do not save you
+
+`refs/stash` is a single repository-wide ref, so the stash stack is shared by
+every linked worktree. Verified 2026-09-17 on a scratch repo: agent 1 ran
+`git stash` in worktree `wt1`; agent 2, in worktree `wt2` on a *different
+branch*, saw that entry in `git stash list`, popped it, and ended up holding
+agent 1's edits — which were gone from agent 1's tree and dropped from the
+stack. Neither agent did anything wrong, and nothing errored.
+
+So isolation by worktree is not a defence here. Put the prohibition in every
+agent prompt, whichever layout you use, along with the other repository-global
+or neighbour-destroying commands:
+
+- `git stash` (any form) — shared stack, as above
+- `git reset --hard`, `git checkout -- .`, `git clean -fd` — discard whatever
+  uncommitted work other agents have in a shared tree
+- `git add -A`, `git commit -a` — stage a neighbour's in-flight edits into your
+  commit
+- `git checkout <branch>` in a shared checkout — moves every agent's HEAD
+
+The positive form is one line: **stage the paths you own, commit them, and
+touch nothing else.**
+
+### Shared checkout or one worktree per agent?
+
+Default to a **shared checkout with exclusive file ownership**, and reach for
+worktrees only when the tasks are genuinely disjoint.
+
+The reason is that plans are less independent than they look. In the
+eleven-task run above, task 1 widened a shared type and that was a compile
+error in three files owned by tasks 5, 8 and a file no task owned — 7 errors
+in total. In a shared tree the owning agents fixed them as they landed, and
+every later agent verified against an integrated state. In separate worktrees
+each of those agents would have been staring at errors it was forbidden to fix,
+in files it could not see being repaired, and the integration would have
+happened at merge time with nobody watching.
+
+Worktrees earn their cost when tasks touch genuinely separate subsystems, share
+no types, and each wants to run a long suite without seeing a neighbour's
+half-applied change. The costs are real: `npm install` per worktree, N merges
+instead of none, and — specific to this repository — `sonata.toml` is untracked,
+so a worktree borrows the main checkout's config (`mainWorktreeDir`), while
+`.claude/settings.local.json` cannot be borrowed at all and routing must be set
+up in the worktree itself.
+
 Two rules made a shared checkout safe for seven concurrent agents, and both are
 worth keeping whatever the concurrency:
 
