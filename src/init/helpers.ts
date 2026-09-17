@@ -381,6 +381,22 @@ export function reconcilePerRoleModels(
  * hand-tuned ranking survives untouched; only where the new arrival goes is
  * computed. A model `fallback` has no opinion on (e.g. harness-only, absent
  * from the catalog) still falls back to the end.
+ *
+ * A saved list also absorbs **new effort variants of models it already
+ * holds**, which `added` cannot express. When the `<key>@<effort>` grammar
+ * shipped, every model gained `@low`/`@max`/etc. candidates: new *candidate
+ * keys*, but not new *models*, so nothing re-selected them and nothing merged
+ * them. A list written before that feature could therefore never gain them.
+ * Measured on a real machine config 2026-09-17 — `simple` and `complex`
+ * predated the grammar and held 11 and 12 entries over 5 and 6 models, while
+ * `normal`, added later and so seeded from a fresh proposal, held 44 over 12.
+ * `complex` has no cost cap and should be the *largest* list; it was the
+ * smallest.
+ *
+ * This deliberately cannot resurrect a model removed from a tier on purpose.
+ * A variant qualifies only when its bare key is already in `kept`, so removing
+ * a model removes its levels with it — and deleting a model from a tier is how
+ * "not for this tier" is expressed today.
  */
 export function reconcileTierList(
   saved: string[] | undefined,
@@ -390,7 +406,16 @@ export function reconcileTierList(
 ): string[] {
   const kept = (saved ?? []).filter((key) => validKeys.has(key));
   if (kept.length === 0) return fallback;
-  const extra = added.filter((key) => validKeys.has(key) && !kept.includes(key));
+  const keptModels = new Set(kept.map((key) => splitCandidate(key).key));
+  // Drawn from `fallback` so each variant lands at its proposal rank like any
+  // other arrival, rather than behind candidates it beats.
+  const variants = fallback.filter((key) => (
+    validKeys.has(key)
+    && !kept.includes(key)
+    && !added.includes(key)
+    && keptModels.has(splitCandidate(key).key)
+  ));
+  const extra = [...added.filter((key) => validKeys.has(key) && !kept.includes(key)), ...variants];
   if (extra.length === 0) return kept;
   const rank = new Map(fallback.map((key, i) => [key, i]));
   const rankOf = (key: string): number => rank.get(key) ?? Infinity;

@@ -2311,3 +2311,50 @@ describe('dedupeOauthProviders', () => {
     expect(dedupeOauthProviders(copilot, auth)).toHaveLength(1);
   });
 });
+
+describe('reconcileTierList absorbing effort variants', () => {
+  // Measured 2026-09-17 on a real machine config: `simple` and `complex`
+  // predated the `<key>@<effort>` grammar and held 11 and 12 entries over 5
+  // and 6 models, while `normal` — added later, so seeded from a fresh
+  // proposal — held 44 over 12. `complex` has no cost cap and should be the
+  // largest list; it was the smallest. Nothing could ever merge the new
+  // variants in, because they are new candidate keys but not new models, so
+  // `added` never named them.
+  const proposal = ['astra@max', 'astra@low', 'flash@high', 'flash@low', 'other@max'];
+  const valid = new Set(proposal);
+
+  it('merges a kept model\'s new levels at their proposal rank', () => {
+    const out = reconcileTierList(['astra@low', 'flash@high'], valid, proposal, []);
+    // astra@max leads because the proposal ranks it above astra@low — a
+    // variant appended to the end would be tried only after every existing
+    // candidate had failed.
+    expect(out).toEqual(['astra@max', 'astra@low', 'flash@high', 'flash@low']);
+  });
+
+  it('never resurrects a model deliberately removed from the tier', () => {
+    // Deleting a model from a tier is how "not for this tier" is expressed,
+    // so a merge that undoes it on every `sonata init` would be worse than
+    // the bug — it would silently override a deliberate choice.
+    const out = reconcileTierList(['astra@low'], valid, proposal, []);
+    expect(out).toEqual(['astra@max', 'astra@low']);
+    expect(out.some((key) => key.startsWith('flash'))).toBe(false);
+    expect(out).not.toContain('other@max');
+  });
+
+  it('leaves a saved list alone when it already holds every level', () => {
+    const saved = ['astra@max', 'astra@low'];
+    expect(reconcileTierList(saved, new Set(saved), saved, [])).toEqual(saved);
+  });
+
+  it('does not reorder the ranking a user tuned by hand', () => {
+    const out = reconcileTierList(['flash@high', 'astra@low'], valid, proposal, []);
+    // `flash@high` stays ahead of `astra@low` although the proposal disagrees.
+    expect(out.indexOf('flash@high')).toBeLessThan(out.indexOf('astra@low'));
+  });
+
+  it('still merges an explicitly added model, and does not double it', () => {
+    const out = reconcileTierList(['astra@low'], valid, proposal, ['other@max']);
+    expect(out).toContain('other@max');
+    expect(out.filter((key) => key === 'other@max')).toHaveLength(1);
+  });
+});
