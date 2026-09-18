@@ -67,6 +67,16 @@ describe('plan — the config it emits', () => {
     },
   } as never;
 
+  it('carries an existing [budget] through a whole init', () => {
+    // The sibling failure a nativeTomlFor test alone cannot catch: the writer
+    // emits the key correctly but the call site never passes it. Only a
+    // round-trip through the real plan proves the wiring.
+    const p = plan(
+      env({ configsByScope: { project: { ...existing, budget: { dailyUsd: 25 } } as never } }),
+      state, noCredentials, opts);
+    expect(parseConfig(p.configToml).budget).toEqual({ dailyUsd: 25 });
+  });
+
   it('keeps a hand-ordered tier by default', () => {
     // Stickiness is deliberate: a hand-tuned ranking must survive an ordinary
     // `sonata init`, which is why a saved list wins over a fresh proposal.

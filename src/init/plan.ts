@@ -230,7 +230,7 @@ export function plan(
   // writer would otherwise delete — `pricing_provider` and every `[price]`
   // block. Both were read on load and written back by nobody, so each
   // `sonata init` silently un-priced the gateway.
-  const configToml = nativeTomlFor(nativeRoleModels, state.credentialSources ?? {}, tiers, migratedModels, chosenNative, configForScope?.run, avoidGateways, configForScope);
+  const configToml = nativeTomlFor(nativeRoleModels, state.credentialSources ?? {}, tiers, migratedModels, chosenNative, configForScope?.run, avoidGateways, configForScope, configForScope?.budget);
 
   // ---- notices (key check) ----
   const notices: string[] = [];

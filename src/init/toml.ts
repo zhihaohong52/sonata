@@ -77,6 +77,17 @@ export function nativeTomlFor(
    * `avoid_gateways` is written back.
    */
   existing?: Pick<SonataConfig, 'native' | 'unifiedModels'>,
+  /**
+   * The spend cap being preserved, read only because this writer would
+   * otherwise destroy it.
+   *
+   * `[budget]` was read in nine places and written by none, so a hand-added
+   * cap survived exactly until the next `sonata init`. That loss is the least
+   * visible one available: a cap's only effect is a refusal that has not
+   * happened yet, so a deleted cap is indistinguishable from a working one
+   * until the spend arrives.
+   */
+  existingBudget?: SonataConfig['budget'],
 ): string {
   const allModels = new Map<string, NativeCandidate>();
   for (const cands of Object.values(roleModels)) {
@@ -120,6 +131,14 @@ export function nativeTomlFor(
   // would re-propose the ordering the user avoided.
   if (avoidGateways.length > 0) {
     lines.push(`avoid_gateways = [${avoidGateways.map(tomlKey).join(', ')}]`, '');
+  }
+
+  // Its own table, emitted before every other header for the same reason
+  // `avoid_gateways` must be bare: a key written after a [table] header binds
+  // to that table. Absent stays absent — `costOf` charges an absent dimension
+  // at 0, so a zero here would turn "no cap" into a cap of $0.
+  if (existingBudget !== undefined) {
+    lines.push('[budget]', `daily_usd = ${existingBudget.dailyUsd}`, '');
   }
 
   for (const [gateway, { baseUrl, auth, wireFormat }] of gateways) {
@@ -274,14 +293,31 @@ function openDelimiterAfter(line: string): '"""' | "'''" | undefined {
   return open;
 }
 
-export function replaceTiersBlock(
+/**
+ * Replace one table (or family of tables) in place, leaving every other byte
+ * where it was.
+ *
+ * Extracted from `replaceTiersBlock` so a second writer does not reimplement
+ * the two things here that are easy to get wrong: a multiline string's
+ * contents are content rather than structure, so a `[table]` inside one
+ * neither opens a table nor ends the one being dropped; and the replacement
+ * lands where the old table began rather than at the end of a file someone
+ * has ordered.
+ *
+ * `matches` is given each header line and decides whether the table it opens
+ * is being replaced. A predicate rather than a name, because a family
+ * (`[tiers.code]`, `[tiers.review]`) and a single table (`[budget]`) need
+ * different tests, and both spellings — bare and quoted — name one table.
+ *
+ * An empty `block` removes the table outright.
+ */
+export function replaceBlock(
   toml: string,
-  tiers: Record<string, TierLists>,
+  matches: (line: string) => boolean,
+  block: string[],
 ): string {
   const lines = toml.split('\n');
   const isHeader = (line: string): boolean => /^\s*\[/.test(line);
-  // The segment may be bare or quoted; `["tiers".code]` names the same table.
-  const isTierHeader = (line: string): boolean => /^\s*\[\s*(?:tiers|"tiers"|'tiers')\s*[.\]]/.test(line);
 
   const kept: string[] = [];
   let insertAt: number | undefined;
@@ -301,7 +337,7 @@ export function replaceTiersBlock(
       continue;
     }
     inString = openDelimiterAfter(line);
-    if (isHeader(line)) dropping = isTierHeader(line);
+    if (isHeader(line)) dropping = matches(line);
     if (!dropping) {
       kept.push(line);
       continue;
@@ -311,13 +347,6 @@ export function replaceTiersBlock(
     insertAt ??= kept.length;
   }
 
-  const block = Object.entries(tiers).flatMap(([role, lists]) => [
-    `[tiers.${tomlKey(role)}]`,
-    `simple = [${lists.simple.map(tomlKey).join(', ')}]`,
-    ...(lists.normal === undefined ? [] : [`normal = [${lists.normal.map(tomlKey).join(', ')}]`]),
-    `complex = [${lists.complex.map(tomlKey).join(', ')}]`,
-    '',
-  ]);
 
   if (insertAt === undefined) {
     // No `[tiers]` at all. Appending is the only safe placement: these are
@@ -327,4 +356,29 @@ export function replaceTiersBlock(
     return [...kept, ...tail, ...block].join('\n');
   }
   return [...kept.slice(0, insertAt), ...block, ...kept.slice(insertAt)].join('\n');
+}
+
+/**
+ * Replace the `[tiers.*]` tables with the given rankings.
+ *
+ * `sonata agents` is the second writer of `sonata.toml`, and this is why it is
+ * safe to be: it edits only these tables, so a setting the writer cannot
+ * represent is impossible to lose. Round-tripping through `nativeTomlFor`
+ * instead would rebuild the file from a reconstructed model and delete
+ * whatever that reconstruction cannot recover.
+ */
+export function replaceTiersBlock(
+  toml: string,
+  tiers: Record<string, TierLists>,
+): string {
+  // The segment may be bare or quoted; `["tiers".code]` names the same table.
+  const isTierHeader = (line: string): boolean => /^\s*\[\s*(?:tiers|"tiers"|'tiers')\s*[.\]]/.test(line);
+  const block = Object.entries(tiers).flatMap(([role, lists]) => [
+    `[tiers.${tomlKey(role)}]`,
+    `simple = [${lists.simple.map(tomlKey).join(', ')}]`,
+    ...(lists.normal === undefined ? [] : [`normal = [${lists.normal.map(tomlKey).join(', ')}]`]),
+    `complex = [${lists.complex.map(tomlKey).join(', ')}]`,
+    '',
+  ]);
+  return replaceBlock(toml, isTierHeader, block);
 }
