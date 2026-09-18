@@ -269,7 +269,7 @@ describe('aggregate — completed streams that reported no prompt tokens', () =>
   const zero = { input: 0, output: 7, cacheRead: 0, cacheCreation: 0 };
 
   it('counts a completed row with output but no prompt tokens', () => {
-    const report = aggregate([row({ tokens: zero })], undefined, 'model');
+    const report = aggregate([row({ tokens: zero })], 'model', {});
     expect(report.noPromptTokens.requests).toBe(1);
     expect(report.noPromptTokens.output).toBe(7);
   });
@@ -279,19 +279,19 @@ describe('aggregate — completed streams that reported no prompt tokens', () =>
     // would flag almost every healthy Claude request. That mistake was made
     // once while diagnosing this and inverted the conclusion entirely.
     const cached = { input: 0, output: 7, cacheRead: 4096, cacheCreation: 0 };
-    expect(aggregate([row({ tokens: cached })], undefined, 'model').noPromptTokens.requests).toBe(0);
+    expect(aggregate([row({ tokens: cached })], 'model', {}).noPromptTokens.requests).toBe(0);
   });
 
   it('ignores an incomplete stream, which is expected to report nothing', () => {
     // An aborted stream never delivers usage. That is ordinary, and flagging
     // it would bury the real signal: most zero-prompt rows in a real ledger
     // are incomplete ones.
-    expect(aggregate([row({ tokens: zero, complete: false })], undefined, 'model').noPromptTokens.requests).toBe(0);
+    expect(aggregate([row({ tokens: zero, complete: false })], 'model', {}).noPromptTokens.requests).toBe(0);
   });
 
   it('ignores a row that produced no output either', () => {
     // Nothing was generated, so nothing was under-counted.
     const nothing = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
-    expect(aggregate([row({ tokens: nothing })], undefined, 'model').noPromptTokens.requests).toBe(0);
+    expect(aggregate([row({ tokens: nothing })], 'model', {}).noPromptTokens.requests).toBe(0);
   });
 });
