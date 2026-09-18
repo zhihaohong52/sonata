@@ -16,6 +16,7 @@ import { cmdInit, isCancellation } from './commands/init.js';
 import { initLogDir } from './commands/init-log.js';
 import { banner, isInteractive, confirm } from './tui.js';
 import { pruneAgents } from './detect.js';
+import { shouldLaunchTui } from './tui-ink/launch.js';
 import type { HookScope } from './settings.js';
 import { homedir } from 'node:os';
 import { readBuildInfo, stampedVersion } from './build-info.js';
@@ -37,6 +38,7 @@ import { readRows } from './ledger.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
 
+  sonata tui       open the config TUI (a bare sonata does the same on a terminal)
   sonata init      set up sonata in this project (interactive)
   sonata --version         print the running version and the install it ran from
   sonata doctor [--json]   check tmux, harnesses, auth and versions
@@ -127,6 +129,14 @@ function versionLines(): string[] {
 
 export async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
+
+  // Before the help branch, so a bare command reaches it and `--help` never
+  // does. Without a TTY this is false and the caller gets today's help and
+  // today's exit code, which is what keeps this a pure addition.
+  if (shouldLaunchTui(command, process.stdout.isTTY === true, process.stdin.isTTY === true)) {
+    const { runConfigTui } = await import('./tui-ink/app-config.js');
+    return runConfigTui({ cwd: process.cwd() });
+  }
 
   if (!command || command === 'help' || command === '--help' || command === '-h') {
     console.log(USAGE);

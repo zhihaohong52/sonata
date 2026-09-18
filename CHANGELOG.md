@@ -10,6 +10,15 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Added
 
+- `sonata tui` — a persistent config TUI, which a bare `sonata` also opens on a
+  terminal. It boots into a health check, shows `doctor`'s findings as its home
+  screen so a problem is opened rather than looked up, and edits
+  `[budget] daily_usd`. Without a TTY on **both** stdin and stdout, `sonata`
+  prints help and exits 2 exactly as before — Ink's `useInput` needs raw mode
+  on stdin, so `sonata < /dev/null` from a terminal would otherwise crash
+  instead of printing help. Writes go through targeted block replacement and
+  are parsed before they are written, so nothing outside the edited table moves.
+
 - `sonata init --repropose-tiers` discards saved `[tiers]` rankings and
   re-ranks from the catalog. A saved list is otherwise sticky forever, so a
   tier written before the catalog changed could never be re-proposed.
@@ -24,6 +33,12 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   seeded from a fresh proposal, so the lists were computed in different eras.
 
 ### Fixed
+
+- `sonata init` no longer deletes a hand-added `[budget] daily_usd`.
+  `nativeTomlFor` preserved `[run]`, `pricing_provider` and `[price]` but had
+  no budget parameter at all, so a cap survived only until the next rewrite.
+  Its loss was invisible by construction: a cap's only effect is a refusal that
+  has not happened yet, so a deleted one reads exactly like a working one.
 
 - Tier-agent fan-out is now bounded by a strict tier descent: `complex` may
   delegate to `normal` and `simple`, `normal` to `simple`, and `simple` to
