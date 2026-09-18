@@ -875,6 +875,27 @@ The `claude` harness adapter is the simplest adapter: it runs headless `claude -
   counted) went straight to `main` unreviewed and had to be rewound onto a
   branch afterwards to get a review at all.
 
+- **Batch work into omnibus PRs, and trigger the review only once everything
+  has landed.** Because this repository gets no automatic reviews (above), each
+  PR costs a hand-typed `@coderabbitai review` against a limited free-tier
+  allowance, so one PR carrying five changes buys five changes' worth of review
+  for one request where five PRs would have spent five. That is the whole
+  reason; it is a rate-limit adaptation, not a claim that large PRs review
+  better.
+
+  **The sequencing is the part that matters.** The bot reviews a *single head*
+  and will not refresh on its own, so any commit pushed after the trigger rides
+  in unreviewed. Measured: #52 was merged with its review two commits behind,
+  and #53 with one. Land every commit first, trigger once, then push nothing
+  but review fixes — and when a review fix *is* pushed, say so, because that
+  head is now unreviewed too.
+
+  **The cost is real and is accepted rather than denied.** A PR carrying five
+  unrelated changes is harder to review than five carrying one, and #52 was
+  already judged too broad at five while it was open. The mitigation is a
+  description that separates the changes and states what was verified for each,
+  not a claim that the size does not matter.
+
 - **Harness-specific knowledge stays inside its adapter** — never in the CLI or `sonata dispatch`.
 - **Evidence over inference** for harness behaviour: a captured fixture in `tests/fixtures/panes/` beats a plausible regex.
 - **Tests need no API keys** — the suite runs against a fake harness (scripted binary replaying a normal run, a crash, a captured approval prompt, a hang the watchdog kills, a clean exit with no report, and a harness-written report).
