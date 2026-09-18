@@ -28,7 +28,7 @@ import { findLitellm } from '../native/litellm.js';
 import { litellmRequired } from '../native/providers.js';
 import { litellmStatus, type InstallerDeps } from '../native/litellm-venv.js';
 import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm.js';
-import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, hasTaskCost, loadAaCatalog } from '../catalog.js';
+import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, hasTaskCost, loadAaCatalog, proposeTiers } from '../catalog.js';
 import { loadModelsDev } from '../modelsdev.js';
 import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
@@ -66,6 +66,49 @@ function cmp(a: [number, number, number], b: [number, number, number]): number {
 }
 
 /** Supports ranges of the form ">=X.Y.Z <A.B.C". */
+/**
+ * Versions of the `claude` binary known to be broken, and why.
+ *
+ * A blocklist rather than a `supportedVersions` bound, because the shape of
+ * the fact is "this one build is broken", not "everything below X". A range
+ * cannot say it: `<2.1.275` would reject 2.1.276, which carries the fix.
+ * Naming the reason is the point — the range check can only report "outside
+ * tested range", which tells a reader nothing about what will happen.
+ *
+ * 2.1.275 answered **every** request with a 400 naming
+ * `Input tag 'advisor_20260301'` whenever `ANTHROPIC_BASE_URL` pointed at a
+ * proxy or gateway. Sonata's entire native path works by pointing that
+ * variable at its own router, so on that build every routed request dies, and
+ * the 400 names neither the cause nor the fix — the same failure shape as the
+ * Codex `System messages are not allowed` and Azure `is not a 'regex'` 400s
+ * documented in CLAUDE.md, each of which read as a sonata or model fault.
+ */
+const CLAUDE_KNOWN_BAD: Record<string, string> = {
+  '2.1.275': "every request through a proxy fails with 400 `Input tag 'advisor_20260301'`"
+    + ' — sonata routes through its own proxy, so nothing works. Upgrade to 2.1.276',
+};
+
+/**
+ * Why this `claude` version is unusable with sonata, or `undefined`.
+ *
+ * The argument may carry the noise `claude --version` prints
+ * ("2.1.276 (Claude Code)"), so the triple is matched rather than compared.
+ */
+export function knownBadVersion(version: string): string | undefined {
+  const triple = /^\s*(\d+\.\d+\.\d+)/.exec(version)?.[1];
+  return triple === undefined ? undefined : CLAUDE_KNOWN_BAD[triple];
+}
+
+/**
+ * Whether `actual` satisfies a range of ANDed `>=` and `<` bounds.
+ *
+ * Deliberately tiny — sonata compares harness versions and nothing more, so a
+ * semver dependency would be a supply-chain surface bought for one comparison.
+ *
+ * It has no alternation, which is why a *known-bad* build cannot be expressed
+ * here: excluding one version needs `>=a <bad || >bad <c`, and there is no
+ * `||`. `CLAUDE_KNOWN_BAD` carries those instead, and can say why.
+ */
 export function checkVersion(actual: string, range: string): boolean {
   const a = triple(actual);
   for (const part of range.trim().split(/\s+/)) {
@@ -79,6 +122,35 @@ export function checkVersion(actual: string, range: string): boolean {
 }
 
 export interface Check { name: string; ok: boolean; detail: string }
+
+/**
+ * Saved `simple` candidates the current proposal would cap out of that tier.
+ *
+ * `simple` is `normal` filtered by a cost ceiling anchored on the config's own
+ * best-value model, so a candidate the proposal still ranks in `normal` but no
+ * longer puts in `simple` is one the ceiling now excludes. Asking the proposal
+ * rather than recomputing the ceiling is deliberate: two implementations of
+ * that arithmetic would eventually disagree, and the one in `proposeTiers` is
+ * the one that decides what gets written.
+ *
+ * Why this needs reporting at all: a saved tier list is sticky, so a `simple`
+ * written before the catalog changed can never be re-ranked. Measured
+ * 2026-09-18 on a real config, `simple` led with a candidate 4.5x dearer per
+ * task than `normal`'s leader and reached one 34x dearer by rank 4 — the tier
+ * split inverted, with the cheap tier the expensive one. Nothing surfaced it,
+ * because a wrong ranking produces no error; it just quietly costs more.
+ *
+ * Membership only, never order: which candidates a tier holds is the cap's
+ * business, while the order among them is the user's to tune by hand. A key
+ * the proposal does not rank at all — hand-added, or unscored by the catalog —
+ * is ignored, since reporting it would assert a cost nothing knows.
+ */
+export function overCeilingSimple(
+  savedSimple: readonly string[],
+  proposed: { simple: readonly string[]; normal: readonly string[] },
+): string[] {
+  return savedSimple.filter((key) => !proposed.simple.includes(key) && proposed.normal.includes(key));
+}
 
 export function staleMcpRegistration(cwd: string, home: string): string | undefined {
   for (const path of [join(cwd, '.mcp.json'), join(home, '.claude.json')]) {
@@ -341,6 +413,45 @@ export async function cmdDoctor(
             ok: true,
             detail: `${count} models · all ${bareKeys.length} tiered models scored · fetched ${catalog.fetchedAt}`,
           });
+
+      // A saved tier list is sticky — `reconcileTierList` merges only newly
+      // selected models into it — so a `simple` written before the catalog
+      // changed can never be re-ranked, and nothing else would ever say so.
+      // Advisory rather than a failure: the config routes fine, it just routes
+      // the cheap tier to dear models, which is a wrong ordering rather than
+      // an error. That is exactly the failure mode the freshness check above
+      // exists for, and it is invisible for the same reason.
+      {
+        const stale = Object.entries(config.tiers ?? {})
+          .map(([role, lists]) => {
+            const proposal = proposeTiers(
+              [...new Set(Object.keys(config.unifiedModels ?? {}))],
+              catalog, gateways, new Set(config.avoidGateways ?? []), resolver,
+            );
+            return [role, overCeilingSimple(lists.simple, proposal)] as const;
+          })
+          .filter(([, over]) => over.length > 0);
+        if (stale.length > 0) {
+          // Roles usually share one ranking, so naming each separately
+          // repeats the same list four times in a line meant to be read.
+          const sets = new Map<string, string[]>();
+          for (const [role, over] of stale) {
+            const key = over.join(',');
+            sets.set(key, [...(sets.get(key) ?? []), role]);
+          }
+          const named = [...sets].map(([over, roles]) => {
+            const list = over.split(',');
+            return `${roles.join(', ')}: ${list.slice(0, 2).join(', ')}${list.length > 2 ? ', …' : ''}`;
+          });
+          checks.push({
+            name: 'tier freshness',
+            ok: true,
+            detail: `simple holds candidates the cost cap would now exclude — ${named.join('; ')}. `
+              + 'The saved ranking predates the current catalog and is never re-proposed; '
+              + 're-rank with `sonata init --repropose-tiers`',
+          });
+        }
+      }
       // A catalog written before effort levels existed has no `family` on any
       // row, so the refusal cannot fire and nothing here could show it: a
       // config with an unpinned candidate loads for months and then stops
@@ -845,17 +956,41 @@ export async function cmdDoctor(
     });
   }
 
+  // The *client*, checked separately from the harnesses. The loop below covers
+  // `claude` only when the config names it as a harness, while every native
+  // dispatch runs inside whatever Claude Code the user is already running — so
+  // a broken client breaks the primary lane and nothing above would say so.
+  // Reported only when the build is known bad: sonata does not otherwise have
+  // a tested range for the client, and inventing one would fail every future
+  // release.
+  try {
+    const { stdout } = await run('claude', ['--version'], { env: { ...process.env } });
+    const broken = knownBadVersion(stdout.trim());
+    if (broken !== undefined) {
+      checks.push({ name: 'claude code (client)', ok: false, detail: `${stdout.trim()} — ${broken}` });
+    }
+  } catch {
+    // No `claude` on PATH is not a sonata problem: `sonata dispatch` works
+    // without it, and a session that has one is running it already.
+  }
+
   for (const name of harnesses) {
     const adapter = getAdapter(name);
     try {
       const env = { ...process.env, PATH: `${process.env.HOME}/.opencode/bin:${process.env.PATH}` };
       const { stdout } = await run(adapter.versionCommand[0], adapter.versionCommand.slice(1), { env });
       const version = stdout.trim();
-      const ok = checkVersion(version, adapter.supportedVersions);
+      // A known-bad build fails even when it sits inside the tested range:
+      // `supportedVersions` says which versions were exercised, which is a
+      // different question from whether this one is broken.
+      const broken = name === 'claude' ? knownBadVersion(version) : undefined;
+      const ok = broken === undefined && checkVersion(version, adapter.supportedVersions);
       checks.push({
         name,
         ok,
-        detail: ok ? version : `${version} outside tested range ${adapter.supportedVersions}`,
+        detail: broken !== undefined
+          ? `${version} — ${broken}`
+          : ok ? version : `${version} outside tested range ${adapter.supportedVersions}`,
       });
 
       // Version alone does not mean usable: a harness can be installed, current

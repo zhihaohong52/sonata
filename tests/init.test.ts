@@ -42,7 +42,7 @@ import {
   type NativeCandidate,
 } from '../src/commands/init.js';
 import { reconcilePerRoleModels, reconcileTierList } from '../src/commands/init.js';
-import { providersForHarnesses } from '../src/tui-ink/app-state.js';
+import { providersForHarnesses, initialRankedFor } from '../src/tui-ink/app-state.js';
 import { readSettings, writeSettings, installHook, hookCommand } from '../src/settings.js';
 import { writeSonataKey } from '../src/native/credentials.js';
 import { credentialDir, credentialFileFor } from '../src/native/oauth-login.js';
@@ -2356,5 +2356,24 @@ describe('reconcileTierList absorbing effort variants', () => {
     const out = reconcileTierList(['astra@low'], valid, proposal, ['other@max']);
     expect(out).toContain('other@max');
     expect(out.filter((key) => key === 'other@max')).toHaveLength(1);
+  });
+});
+
+describe('initialRankedFor with repropose', () => {
+  it('returns the proposal verbatim, ignoring the saved ranking', () => {
+    // The wizard's seeding site. It must agree with the scripted path, or
+    // `--yes` and the interactive run write different configs from the same
+    // flag — which is the divergence this flag exists to remove, not add.
+    expect(initialRankedFor(['c', 'a'], ['a', 'b', 'c'], [], true)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('still honours a saved ranking without the flag', () => {
+    expect(initialRankedFor(['c', 'a'], ['a', 'b', 'c'], [], false)[0]).toBe('c');
+  });
+
+  it('defaults to honouring the saved ranking', () => {
+    // Every existing caller omits the argument, so the default is what keeps
+    // this a pure addition.
+    expect(initialRankedFor(['c', 'a'], ['a', 'b', 'c'])[0]).toBe('c');
   });
 });

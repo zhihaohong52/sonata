@@ -16,6 +16,7 @@ import { cmdInit, isCancellation } from './commands/init.js';
 import { initLogDir } from './commands/init-log.js';
 import { banner, isInteractive, confirm } from './tui.js';
 import { pruneAgents } from './detect.js';
+import { shouldLaunchTui } from './tui-ink/launch.js';
 import type { HookScope } from './settings.js';
 import { homedir } from 'node:os';
 import { readBuildInfo, stampedVersion } from './build-info.js';
@@ -37,6 +38,7 @@ import { readRows } from './ledger.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
 
+  sonata tui       open the config TUI (a bare sonata does the same on a terminal)
   sonata init      set up sonata in this project (interactive)
   sonata --version         print the running version and the install it ran from
   sonata doctor [--json]   check tmux, harnesses, auth and versions
@@ -75,6 +77,8 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
     --scope project|global|skip   where to install the permission hook
     --guidance project|global|skip   where to write the "prefer tier agents" CLAUDE.md block
     --prune                    delete stale sonata agent files
+    --repropose-tiers          discard saved [tiers] rankings and re-rank from
+                               the catalog (a hand-tuned order is otherwise kept)
 `;
 
 /** `--wait` wins; otherwise use the configured tail window. */
@@ -123,8 +127,39 @@ function versionLines(): string[] {
   return lines;
 }
 
+/**
+ * Parse argv and run one command, returning the process exit code.
+ *
+ * Branch order is load-bearing. The TUI check comes first so a bare `sonata`
+ * reaches it, and is written so `--help` never can. `tui` is then refused
+ * explicitly when the streams are not a terminal, because it is named in
+ * `USAGE` and would otherwise reach the unknown-command handler and contradict
+ * this CLI's own help.
+ */
 export async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
+
+  // Before the help branch, so a bare command reaches it and `--help` never
+  // does. Without a TTY this is false and the caller gets today's help and
+  // today's exit code, which is what keeps this a pure addition.
+  const tty = process.stdout.isTTY === true && process.stdin.isTTY === true;
+  if (shouldLaunchTui(command, process.stdout.isTTY === true, process.stdin.isTTY === true)) {
+    const { runConfigTui } = await import('./tui-ink/app-config.js');
+    return runConfigTui({ cwd: process.cwd() });
+  }
+
+  // `tui` is named in USAGE, so it must not reach the unknown-command handler
+  // when the TUI cannot be drawn: `sonata tui | cat` answered
+  // `sonata: unknown command "tui"`, which contradicts this CLI's own help and
+  // sends the reader hunting a typo they did not make. A bare `sonata` needs no
+  // such branch — it is already the help branch below.
+  if (command === 'tui' && !tty) {
+    console.error(
+      'sonata tui needs a terminal: stdout and stdin must both be a TTY, and one of them is a pipe or file here.\n'
+      + 'Run `sonata tui` directly in a terminal, or use the individual commands (`sonata doctor`, `sonata agents`).',
+    );
+    return 2;
+  }
 
   if (!command || command === 'help' || command === '--help' || command === '-h') {
     console.log(USAGE);
@@ -152,6 +187,7 @@ export async function main(argv: string[]): Promise<number> {
         // No default: `undefined` means "unanswered", which lets cmdInit fall
         // through to the interactive prompt. `false` would suppress it.
         prune: { type: 'boolean' },
+        'repropose-tiers': { type: 'boolean', default: false },
       },
     });
 
@@ -195,6 +231,7 @@ export async function main(argv: string[]): Promise<number> {
         guidance,
         configScope,
         prune: values.prune,
+        reproposeTiers: values['repropose-tiers'] === true,
       });
       if (res.cancelled) return 1;
       return res.problems.some((p) => p.severity === 'error') ? 1 : 0;

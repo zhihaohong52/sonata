@@ -42,6 +42,8 @@ export async function interactiveState(
     scope?: 'project' | 'global' | 'skip';
     routing?: 'project' | 'global' | 'skip';
     guidance?: 'project' | 'global' | 'skip';
+    /** Discard saved `[tiers]` rankings and re-rank from the catalog. */
+    reproposeTiers?: boolean;
   },
   log: InitLog,
 ): Promise<{ state: InitState; nativeByKey: Map<string, NativeCandidate>; cancelled: boolean }> {
@@ -50,12 +52,18 @@ export async function interactiveState(
   const existingConfigPath = configPath(opts.cwd, opts.home);
   const resolvedScope: ConfigScope = existingConfigPath === configPathFor('global', opts.cwd, opts.home)
     ? 'global' : 'project';
+  // Set on every state the wizard can adopt, not only the first: changing the
+  // config scope mid-run swaps in `initialStateByScope[scope]`, and a flag
+  // present on one but not the other would silently stop applying.
+  const repropose = opts.reproposeTiers === true;
   const initialState = env.configsByScope[resolvedScope]
-    ? deriveInitState(env.configsByScope[resolvedScope]!, resolvedScope, env.offered)
-    : { configScope: resolvedScope };
+    ? { ...deriveInitState(env.configsByScope[resolvedScope]!, resolvedScope, env.offered), reproposeTiers: repropose }
+    : { configScope: resolvedScope, reproposeTiers: repropose };
   const initialStateByScope: Partial<Record<ConfigScope, InitState>> = {};
   for (const scope of ['project', 'global'] as const) {
-    if (env.configsByScope[scope]) initialStateByScope[scope] = deriveInitState(env.configsByScope[scope]!, scope, env.offered);
+    if (env.configsByScope[scope]) {
+      initialStateByScope[scope] = { ...deriveInitState(env.configsByScope[scope]!, scope, env.offered), reproposeTiers: repropose };
+    }
   }
   // The gateway names each scope's config declares. Kept beside the state
   // derived from the same config, and read from `[native.gateways]` — the
