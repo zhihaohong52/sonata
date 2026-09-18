@@ -683,6 +683,26 @@ old body
     expect(outdatedAgents(dir, planned)).toContain(first.name);
   });
 
+  it('plans the legacy per-model agents too, so untiered configs are covered', () => {
+    // Found by the final review gate. `plannedAgents` returned [] whenever
+    // `config.tiers` was absent, while `cmdSync` still wrote legacy per-model
+    // agents through its other branch — so an untiered config could carry
+    // bodies from an older generator and `doctor` would compare nothing and
+    // report nothing. A freshness check with a silent blind spot is the exact
+    // failure it exists to prevent.
+    const legacy = parseConfig(`
+schema_version = 1
+[models."kimi"]
+harness = "opencode"
+id = "openrouter/kimi"
+[generate.roles]
+code = ["kimi"]
+`);
+    const names = plannedAgents(legacy).map((a) => a.name);
+    expect(names).toContain('code-kimi');
+    expect(plannedAgents(legacy).every((a) => a.content.length > 0)).toBe(true);
+  });
+
   it('reports nothing when every agent matches what sonata would write', () => {
     const dir = mkdtempSync(join(tmpdir(), 'sonata-current-'));
     const planned = plannedAgents(config());

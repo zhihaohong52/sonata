@@ -524,6 +524,34 @@ export interface SyncResult {
   skipped: string[];
 }
 
+/**
+ * The legacy per-model agents, for a config with no `[tiers]`.
+ *
+ * Mirrors `cmdSync`'s legacy branch exactly, including its wrapper rule: a
+ * native model gets a `native-<role>-<model>` agent plus a `<role>-<model>`
+ * wrapper, and the wrapper is skipped when a harness-based agent already
+ * claims that name. Getting that skip wrong here would make `doctor` report a
+ * file `sync` never writes.
+ */
+function legacyPlannedAgents(config: SonataConfig): PlannedAgent[] {
+  const out: PlannedAgent[] = [];
+  const wanted = generatedAgents(config);
+  for (const { role, model } of wanted) {
+    out.push({
+      name: `${role}-${model}`,
+      content: agentMarkdown({ role, model, harness: config.models[model].harness }),
+    });
+  }
+  for (const { role, model } of generatedNativeAgents(config)) {
+    out.push({ name: `native-${role}-${model}`, content: nativeAgentMarkdown({ role, model }) });
+    const wrapperName = `${role}-${model}`;
+    if (!wanted.some((a) => `${a.role}-${a.model}` === wrapperName)) {
+      out.push({ name: wrapperName, content: agentMarkdown({ role, model, harness: 'claude' }) });
+    }
+  }
+  return out;
+}
+
 /** One agent `sync` would write: its bare name and the exact bytes. */
 export interface PlannedAgent { name: string; content: string }
 
@@ -539,7 +567,11 @@ export interface PlannedAgent { name: string; content: string }
  * per-model path instead.
  */
 export function plannedAgents(config: SonataConfig): PlannedAgent[] {
-  if (config.tiers === undefined) return [];
+  // An untiered config takes `cmdSync`'s legacy branch, which still writes
+  // per-model agents — so returning nothing here gave the freshness check a
+  // silent blind spot on exactly the configs least likely to have been synced
+  // recently. Found by the final review gate.
+  if (config.tiers === undefined) return legacyPlannedAgents(config);
   const tiersOf = (role: string): readonly Tier[] => {
     const lists = config.tiers?.[role];
     if (lists === undefined || tiersCollapse(lists)) return [];
