@@ -1,5 +1,5 @@
 /** The screens this phase of the config TUI has. */
-export type Step = 'checking' | 'overview' | 'budget' | 'models' | 'providers' | 'tiers';
+export type Step = 'checking' | 'overview' | 'budget' | 'models' | 'providers' | 'tiers' | 'keys';
 
 /**
  * Where a keypress moves the TUI.
@@ -18,5 +18,6 @@ export function nextStep(step: Step, key: string): Step {
   if (step === 'overview' && key === 'm') return 'models';
   if (step === 'overview' && key === 'p') return 'providers';
   if (step === 'overview' && key === 't') return 'tiers';
+  if (step === 'overview' && key === 'k') return 'keys';
   return step;
 }

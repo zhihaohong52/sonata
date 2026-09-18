@@ -7,6 +7,7 @@ describe('nextStep', () => {
     expect(nextStep('overview', 'm')).toBe('models');
     expect(nextStep('overview', 'p')).toBe('providers');
     expect(nextStep('overview', 't')).toBe('tiers');
+    expect(nextStep('overview', 'k')).toBe('keys');
   });
 
   it('returns to the overview from a screen', () => {
@@ -14,6 +15,7 @@ describe('nextStep', () => {
     expect(nextStep('models', 'escape')).toBe('overview');
     expect(nextStep('providers', 'escape')).toBe('overview');
     expect(nextStep('tiers', 'escape')).toBe('overview');
+    expect(nextStep('keys', 'escape')).toBe('overview');
   });
 
   it('ignores an unknown key', () => {
