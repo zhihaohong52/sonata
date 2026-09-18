@@ -141,6 +141,7 @@ export function scriptedState(
       nativeKeys,
       roles,
       credentialSources,
+      reproposeTiers: opts.reproposeTiers === true,
       routing: opts.routing ?? 'project',
     guidance: opts.guidance ?? 'project',
       hookScope: opts.scope ?? (env.existingHookScope ? 'skip' : 'project'),

@@ -75,6 +75,8 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
     --scope project|global|skip   where to install the permission hook
     --guidance project|global|skip   where to write the "prefer tier agents" CLAUDE.md block
     --prune                    delete stale sonata agent files
+    --repropose-tiers          discard saved [tiers] rankings and re-rank from
+                               the catalog (a hand-tuned order is otherwise kept)
 `;
 
 /** `--wait` wins; otherwise use the configured tail window. */
@@ -152,6 +154,7 @@ export async function main(argv: string[]): Promise<number> {
         // No default: `undefined` means "unanswered", which lets cmdInit fall
         // through to the interactive prompt. `false` would suppress it.
         prune: { type: 'boolean' },
+        'repropose-tiers': { type: 'boolean', default: false },
       },
     });
 
@@ -195,6 +198,7 @@ export async function main(argv: string[]): Promise<number> {
         guidance,
         configScope,
         prune: values.prune,
+        reproposeTiers: values['repropose-tiers'] === true,
       });
       if (res.cancelled) return 1;
       return res.problems.some((p) => p.severity === 'error') ? 1 : 0;

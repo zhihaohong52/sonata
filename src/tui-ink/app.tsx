@@ -398,7 +398,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       // Deduplicated: `reconcileTierList` inserts every `added` entry it does
       // not already hold, so a level named twice would be inserted twice.
       const addedKeys = [...new Set([...globalAddedKeys, ...tierVariants])];
-      const initialRanked = initialRankedFor(savedForScreen, proposal[tier], addedKeys);
+      const initialRanked = initialRankedFor(savedForScreen, proposal[tier], addedKeys, state.reproposeTiers === true);
       const excluded = catalog === undefined ? [] : [...new Set([
         ...(state.nativeKeys ?? []),
         ...Object.keys(harnessOnlyUpstreams),

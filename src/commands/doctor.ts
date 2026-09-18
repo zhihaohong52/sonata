@@ -28,7 +28,7 @@ import { findLitellm } from '../native/litellm.js';
 import { litellmRequired } from '../native/providers.js';
 import { litellmStatus, type InstallerDeps } from '../native/litellm-venv.js';
 import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm.js';
-import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, hasTaskCost, loadAaCatalog } from '../catalog.js';
+import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, hasTaskCost, loadAaCatalog, proposeTiers } from '../catalog.js';
 import { loadModelsDev } from '../modelsdev.js';
 import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
@@ -79,6 +79,35 @@ export function checkVersion(actual: string, range: string): boolean {
 }
 
 export interface Check { name: string; ok: boolean; detail: string }
+
+/**
+ * Saved `simple` candidates the current proposal would cap out of that tier.
+ *
+ * `simple` is `normal` filtered by a cost ceiling anchored on the config's own
+ * best-value model, so a candidate the proposal still ranks in `normal` but no
+ * longer puts in `simple` is one the ceiling now excludes. Asking the proposal
+ * rather than recomputing the ceiling is deliberate: two implementations of
+ * that arithmetic would eventually disagree, and the one in `proposeTiers` is
+ * the one that decides what gets written.
+ *
+ * Why this needs reporting at all: a saved tier list is sticky, so a `simple`
+ * written before the catalog changed can never be re-ranked. Measured
+ * 2026-09-18 on a real config, `simple` led with a candidate 4.5x dearer per
+ * task than `normal`'s leader and reached one 34x dearer by rank 4 — the tier
+ * split inverted, with the cheap tier the expensive one. Nothing surfaced it,
+ * because a wrong ranking produces no error; it just quietly costs more.
+ *
+ * Membership only, never order: which candidates a tier holds is the cap's
+ * business, while the order among them is the user's to tune by hand. A key
+ * the proposal does not rank at all — hand-added, or unscored by the catalog —
+ * is ignored, since reporting it would assert a cost nothing knows.
+ */
+export function overCeilingSimple(
+  savedSimple: readonly string[],
+  proposed: { simple: readonly string[]; normal: readonly string[] },
+): string[] {
+  return savedSimple.filter((key) => !proposed.simple.includes(key) && proposed.normal.includes(key));
+}
 
 export function staleMcpRegistration(cwd: string, home: string): string | undefined {
   for (const path of [join(cwd, '.mcp.json'), join(home, '.claude.json')]) {
@@ -341,6 +370,45 @@ export async function cmdDoctor(
             ok: true,
             detail: `${count} models · all ${bareKeys.length} tiered models scored · fetched ${catalog.fetchedAt}`,
           });
+
+      // A saved tier list is sticky — `reconcileTierList` merges only newly
+      // selected models into it — so a `simple` written before the catalog
+      // changed can never be re-ranked, and nothing else would ever say so.
+      // Advisory rather than a failure: the config routes fine, it just routes
+      // the cheap tier to dear models, which is a wrong ordering rather than
+      // an error. That is exactly the failure mode the freshness check above
+      // exists for, and it is invisible for the same reason.
+      {
+        const stale = Object.entries(config.tiers ?? {})
+          .map(([role, lists]) => {
+            const proposal = proposeTiers(
+              [...new Set(Object.keys(config.unifiedModels ?? {}))],
+              catalog, gateways, new Set(config.avoidGateways ?? []), resolver,
+            );
+            return [role, overCeilingSimple(lists.simple, proposal)] as const;
+          })
+          .filter(([, over]) => over.length > 0);
+        if (stale.length > 0) {
+          // Roles usually share one ranking, so naming each separately
+          // repeats the same list four times in a line meant to be read.
+          const sets = new Map<string, string[]>();
+          for (const [role, over] of stale) {
+            const key = over.join(',');
+            sets.set(key, [...(sets.get(key) ?? []), role]);
+          }
+          const named = [...sets].map(([over, roles]) => {
+            const list = over.split(',');
+            return `${roles.join(', ')}: ${list.slice(0, 2).join(', ')}${list.length > 2 ? ', …' : ''}`;
+          });
+          checks.push({
+            name: 'tier freshness',
+            ok: true,
+            detail: `simple holds candidates the cost cap would now exclude — ${named.join('; ')}. `
+              + 'The saved ranking predates the current catalog and is never re-proposed; '
+              + 're-rank with `sonata init --repropose-tiers`',
+          });
+        }
+      }
       // A catalog written before effort levels existed has no `family` on any
       // row, so the refusal cannot fire and nothing here could show it: a
       // config with an unpinned candidate loads for months and then stops

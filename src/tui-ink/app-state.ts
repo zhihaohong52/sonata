@@ -256,8 +256,11 @@ export function initialRankedFor(
   saved: string[] | undefined,
   proposal: string[],
   added: readonly string[] = [],
+  repropose = false,
 ): string[] {
-  if (saved === undefined || saved.length === 0) return proposal;
+  // Defaulted so every existing caller is unchanged: this is an opt-out from
+  // stickiness, not a change to it.
+  if (repropose || saved === undefined || saved.length === 0) return proposal;
   const validKeys = new Set([...saved, ...proposal]);
   return reconcileTierList(saved, validKeys, proposal, added);
 }

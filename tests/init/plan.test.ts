@@ -56,6 +56,44 @@ describe('plan — the config it emits', () => {
     expect(back.avoidGateways).toEqual(['flaky-gw']);
   });
 
+  // The real scenario for both tests below: an EXISTING config being re-run.
+  // With no saved models, every model counts as newly added and is merged at
+  // its proposal rank, which swamps any saved order — so a harness without
+  // this cannot tell stickiness from a fresh proposal at all.
+  const existing = {
+    unifiedModels: {
+      'acme-fast': { gateway: 'acme', id: 'fast' },
+      'flaky-slow': { gateway: 'flaky-gw', id: 'slow' },
+    },
+  } as never;
+
+  it('keeps a hand-ordered tier by default', () => {
+    // Stickiness is deliberate: a hand-tuned ranking must survive an ordinary
+    // `sonata init`, which is why a saved list wins over a fresh proposal.
+    const p = plan(
+      env({ configsByScope: { project: existing } }),
+      { ...state, tiers: { code: { simple: ['flaky-slow'], complex: ['flaky-slow'] } } },
+      noCredentials, opts);
+    expect(parseConfig(p.configToml).tiers!.code.simple).toEqual(['flaky-slow']);
+  });
+
+  it('discards a saved ranking when reproposeTiers is set', () => {
+    // The gap this closes: a saved list could never be re-proposed, so a
+    // `simple` written before the catalog changed stayed frozen forever.
+    // Measured on a real config — `simple` led with a candidate 4.5x dearer
+    // per task than `normal`'s, which is the tier split exactly inverted.
+    const saved = { code: { simple: ['flaky-slow'], complex: ['flaky-slow'] } };
+    const e = env({ configsByScope: { project: existing } });
+    const sticky = plan(e, { ...state, tiers: saved }, noCredentials, opts);
+    const fresh = plan(e, { ...state, tiers: saved, reproposeTiers: true }, noCredentials, opts);
+
+    // The flag must actually change the outcome.
+    expect(parseConfig(fresh.configToml).tiers!.code)
+      .not.toEqual(parseConfig(sticky.configToml).tiers!.code);
+    // And it must restore the candidate stickiness had frozen out.
+    expect(parseConfig(fresh.configToml).tiers!.code.simple).toContain('acme-fast');
+  });
+
   it('emits a normal tier for every role', () => {
     const p = plan(env(), state, noCredentials, opts);
     const tiers = parseConfig(p.configToml).tiers!;

@@ -8,6 +8,21 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- `sonata init --repropose-tiers` discards saved `[tiers]` rankings and
+  re-ranks from the catalog. A saved list is otherwise sticky forever, so a
+  tier written before the catalog changed could never be re-proposed.
+  Stickiness stays the default, because a hand-tuned ranking surviving an
+  ordinary `init` is the property it exists to provide.
+- `sonata doctor` reports a `simple` tier holding candidates the cost cap would
+  now exclude, naming them and `--repropose-tiers`. Measured on a real config:
+  `simple` led with a candidate 4.5x dearer per task than `normal`'s leader and
+  reached one 34x dearer by rank 4 — the tier split inverted, with the cheap
+  tier the expensive one, and nothing reporting it. `simple` and `complex`
+  predated the current catalog and were sticky; `normal`, added later, had been
+  seeded from a fresh proposal, so the lists were computed in different eras.
+
 ### Fixed
 
 - Tier-agent fan-out is now bounded by a strict tier descent: `complex` may

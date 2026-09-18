@@ -189,7 +189,11 @@ export function plan(
     const proposal = proposeTiers(
       nativeKeys, catalog, gatewayNames, avoidedKeysOf(nativeByKey, avoidGateways), upstreamFor);
     const saved = state.tiers?.[role] ?? configForScope?.tiers?.[role];
-    const savedLists = saved as TierLists | undefined;
+    // `--repropose-tiers` is expressed by forgetting the saved lists entirely,
+    // rather than by a second ranking path: every downstream step then takes
+    // the branch a config with no saved tiers already takes, which is the one
+    // that produced a correct `normal`.
+    const savedLists = state.reproposeTiers === true ? undefined : (saved as TierLists | undefined);
     // A saved bare key with variants is re-proposed as its levels, at the
     // rank the proposal gives each — the same treatment as a new model.
     // Deduplicated, because `reconcileTierList` inserts each `added` entry
