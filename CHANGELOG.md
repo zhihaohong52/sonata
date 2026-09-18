@@ -10,6 +10,14 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Added
 
+- `sonata usage` reports completed streams that produced output but no prompt
+  tokens, beside the total rather than inside it. Measured on a real ledger,
+  226 requests over 7 days were priced on their output alone because the prompt
+  count never arrived — `openrouter-z-ai-glm-5.3-flash` on 77 of 77 completed
+  streams, though OpenRouter's own API returns `prompt_tokens` for that model
+  in a plain stream. Sonata cannot invent the count, but it can decline to
+  present the result as complete: the same rule unpriced volume already
+  follows, and it matters because `[budget]` counts priced spend.
 - `sonata tui` — a persistent config TUI, which a bare `sonata` also opens on a
   terminal. It boots into a health check, shows `doctor`'s findings as its home
   screen so a problem is opened rather than looked up, and edits
@@ -34,6 +42,10 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- OpenRouter routes through LiteLLM's own `openrouter` provider instead of the
+  generic `openai` fallback. `PROVIDER_FOR_GATEWAY` never named it, so a known
+  vendor with a first-class LiteLLM provider reached the fallback its own
+  comment reserves for the unknown.
 - `sonata doctor` names a Claude Code build known to be broken with sonata,
   rather than reporting it as inside the tested range. 2.1.275 failed **every**
   request with a 400 naming `Input tag 'advisor_20260301'` whenever
