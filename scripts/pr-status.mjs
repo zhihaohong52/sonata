@@ -17,6 +17,7 @@
  * unresolved threads and no outstanding findings; 1 otherwise. That makes it
  * usable as a gate: `node scripts/pr-status.mjs && gh pr merge …`.
  */
+import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const BOT = 'coderabbitai[bot]';
@@ -235,21 +236,75 @@ function main() {
     return run().every((r) => r.clean) ? 0 : 1;
   }
 
-  let previous = run().map((r) => r.fingerprint).join('\n');
+  const state = { previous: run().map((r) => r.fingerprint).join('\n'), failures: 0 };
   console.log(`watching every ${intervalMs / 1000}s — Ctrl-C to stop\n`);
   const timer = setInterval(() => {
-    const results = targets.map(report);
-    const now = results.map((r) => r.fingerprint).join('\n');
-    if (now === previous) return;
-    previous = now;
-    console.log(`${new Date().toISOString()}  change detected\n`);
-    for (const r of results) console.log(`${r.text}\n`);
-    if (results.every((r) => r.clean)) {
-      console.log('all clean');
-      clearInterval(timer);
-    }
+    const outcome = watchTick({
+      poll: () => targets.map(report),
+      state,
+      log: (line) => console.log(line),
+      maxFailures: MAX_WATCH_FAILURES,
+    });
+    if (outcome === 'stop') clearInterval(timer);
   }, intervalMs);
   return 0;
 }
 
-process.exitCode = main();
+/**
+ * How many consecutive failed polls end the watch.
+ *
+ * A blip should not stop it; a revoked token or a deleted repository should
+ * not be retried in silence for hours.
+ */
+export const MAX_WATCH_FAILURES = 5;
+
+/**
+ * One poll of the watch loop: `'continue'` to keep watching, `'stop'` to end.
+ *
+ * Extracted and exported so the failure path is testable, and — critically —
+ * so a throw cannot escape into `setInterval`. It previously could: a
+ * transient `gh` error became an uncaught exception that killed the process
+ * while `process.exitCode` was already 0, so the watch exited *successfully*
+ * having stopped watching. Seen twice in one session, both ending
+ * `error connecting to api.github.com` then `[exited with code 0]`.
+ *
+ * That is the worst available failure for this tool, because the conventions
+ * say to keep a watch running for as long as a PR is open: a watch that has
+ * silently died looks exactly like one reporting a quiet PR.
+ *
+ * A failure is therefore announced rather than swallowed, the counter resets
+ * on success so blips hours apart never accumulate, and the give-up is stated.
+ */
+export function watchTick({ poll, state, log, maxFailures }) {
+  let results;
+  try {
+    results = poll();
+  } catch (error) {
+    state.failures += 1;
+    const why = error instanceof Error ? error.message.split('\n')[0] : String(error);
+    if (state.failures >= maxFailures) {
+      log(`${new Date().toISOString()}  giving up after ${state.failures} failed polls — ${why}`);
+      return 'stop';
+    }
+    log(`${new Date().toISOString()}  poll failed (${state.failures}/${maxFailures}), still watching — ${why}`);
+    return 'continue';
+  }
+  state.failures = 0;
+  const now = results.map((r) => r.fingerprint).join('\n');
+  if (now === state.previous) return 'continue';
+  state.previous = now;
+  log(`${new Date().toISOString()}  change detected\n`);
+  for (const r of results) log(`${r.text}\n`);
+  if (results.every((r) => r.clean)) {
+    log('all clean');
+    return 'stop';
+  }
+  return 'continue';
+}
+
+// Only run the CLI when invoked as the program, so a test can import
+// `watchTick` without the script polling GitHub on import — the same hazard
+// `invokedAsProgram` guards in `src/cli.ts`.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exitCode = main();
+}

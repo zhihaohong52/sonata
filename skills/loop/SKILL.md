@@ -46,6 +46,29 @@ the task text directly as the trailing argument).
    whole change. Keep the final gate at `review-complex` even when the tasks
    used a lower tier; findings loop back through step 3.
 
+## Tell every agent to stop and ask rather than guess
+
+Put this in each dispatch, in as many words: **if you are stuck, blocked, or
+the task is ambiguous, stop and hand back with the specific question instead of
+guessing.**
+
+Handing back early is nearly free, and it loses nothing: `SendMessage` resumes
+*the same agent* with its context intact, so an answer costs one round trip
+rather than a fresh run. Guessing is the expensive path — a dispatch that
+churns on an ambiguity burns its whole budget and usually produces work that
+has to be redone anyway. Measured on one task that could not write to the
+repository: the agent explored and reasoned for three minutes and 76,000
+tokens before reporting that it had changed nothing.
+
+Two things make the ask cheap enough to be worth asking for:
+
+- **A fail-fast probe.** Have the agent attempt the smallest real action first
+  — writing one line to the file it will need — and stop immediately if that is
+  refused. The same blocked task cost a few hundred tokens the second time.
+- **Hand over what you already know.** A reproduction, a measured number, the
+  exact call site. Anything a `grep` settles is not worth a dispatch, and
+  re-deriving it is the most common way a run wastes its budget.
+
 ## If you are also running `superpowers:subagent-driven-development`
 
 The two do the same shape of work — plan, dispatch, review, escalate — and
