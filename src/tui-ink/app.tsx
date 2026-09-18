@@ -345,12 +345,20 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       // The tier editor ranks every config entry, including harness-only
       // routes. They cannot enter nativeKeys, but must be offered so a saved
       // pin remains repairable in this writer too.
-      // Preserve the native universe that withholds temporarily deselected
-      // routes, then add harness-only config entries to it.
-      const pickerUniverseKeys = [...new Set([
-        ...known.map((candidate) => candidate.key),
-        ...Object.keys(harnessOnlyUpstreams),
-      ])];
+      //
+      // The third argument to tierPickerKeys is only the native universe: a
+      // saved key absent from the current ranking is withheld when it still
+      // has a native route, but preserved when it is harness-only. Excluding
+      // currently selected native keys is also deliberate. Cost-filtered
+      // selected keys (AA has no cost-per-task for them) are absent from
+      // rankableKeys and must remain fallback rows, just like the agents
+      // editor's no-op preservation rule.
+      const selectedNativeKeys = new Set(state.nativeKeys ?? []);
+      const nativePickerUniverseKeys = [...new Set(
+        known
+          .filter((candidate) => !selectedNativeKeys.has(candidate.key))
+          .map((candidate) => candidate.key),
+      )];
       const idsByKey = new Map([
         ...known.map((candidate) => [candidate.key, candidate.id] as const),
         ...Object.entries(harnessOnlyUpstreams),
@@ -412,7 +420,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       return <RankedSelect
         key={`${role}-${tier}`}
         title={`${role}: ${tier} models`}
-        items={tierPickerKeys(expand(rankableKeys), initialRanked, [])
+        items={tierPickerKeys(expand(rankableKeys), initialRanked, expand(nativePickerUniverseKeys))
           .map((candidate) => ({ value: candidate, label: candidateLabel(candidate, catalog, gateways, upstreamFor) }))}
         initialRanked={initialRanked}
         footer={footer}
@@ -435,7 +443,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
                 // the startup set, bulk acceptance would withhold different
                 // keys from the screens it stands in for, and the two paths are
                 // required to write a byte-identical config.
-                pickerUniverseKeys,
+                nativePickerUniverseKeys,
                 globalAddedKeys,
                 expand,
                 (savedTier) => unpinnedVariants(savedTier, catalog, gateways, upstreamFor),
