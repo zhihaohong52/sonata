@@ -1,15 +1,15 @@
 import React from 'react';
 import { Box, Text } from 'ink';
-import { configPath, loadConfig } from '../../config.js';
+import { loadConfigForScreen } from './screen-config.js';
 import { gatewaysServingNothing, providerRows } from './provider-rows.js';
 
 /** Show configured gateways, their transport, and the models using them. */
 export function ProvidersScreen({ cwd, home }: { cwd: string; home: string }): React.ReactElement {
-  const path = configPath(cwd, home);
-  if (path === null) {
-    return <Box flexDirection="column"><Text>no sonata.toml</Text><Box marginTop={1}><Text dimColor>esc back</Text></Box></Box>;
+  const loaded = loadConfigForScreen(cwd, home);
+  if (!loaded.ok) {
+    return <Box flexDirection="column"><Text color="yellow">{loaded.message}</Text><Box marginTop={1}><Text dimColor>esc back</Text></Box></Box>;
   }
-  const rows = providerRows(loadConfig(cwd, home));
+  const rows = providerRows(loaded.config);
   const empty = new Set(gatewaysServingNothing(rows));
   return (
     <Box flexDirection="column">
