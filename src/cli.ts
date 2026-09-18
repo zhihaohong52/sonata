@@ -605,6 +605,16 @@ export async function main(argv: string[]): Promise<number> {
     if (report.covered.requests > 0) {
       console.log(`covered        $${report.covered.totalUsd.toFixed(2)}  ~ subscription — work valued at list, not billed per token`);
     }
+    if (report.noPromptTokens.requests > 0) {
+      // Beside the total, never inside it. These completed and produced
+      // output, so they are priced — on their output alone, because the
+      // prompt count never arrived. Silence here would present an
+      // under-count as a measurement.
+      console.log(
+        `no prompt count ${report.noPromptTokens.requests} completed requests · ${report.noPromptTokens.output} out `
+        + '— upstream reported no prompt tokens, so their cost counts output only',
+      );
+    }
     if (report.unpriced.requests > 0) {
       console.log(`unpriced       ${report.unpriced.requests} requests · ${report.unpriced.input} in · ${report.unpriced.output} out`);
     }
