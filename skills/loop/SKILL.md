@@ -34,8 +34,12 @@ the task text directly as the trailing argument).
    advice, not binding) and dispatch `code-simple`, `code-normal` or
    `code-complex` with a self-contained task description — name the files to
    touch and the files to leave alone; never say "see the plan".
-3. **Gate.** After each task, dispatch `review-simple` on the diff. Findings →
-   dispatch a fix at the same tier, then re-review.
+3. **Gate.** After each task, dispatch `review-simple` on the diff. For each
+   finding, **decide the fix yourself first**, then dispatch the execution at
+   the lowest tier that approach allows — usually `-simple`, since nothing is
+   left to decide — and re-review. See *Decide the fix before dispatching it*
+   below; a fix dispatched undecided is what buys a `-complex` agent to make a
+   judgement you were better placed to make.
    - **Escalation rule:** a task that fails review twice re-runs one tier up,
      from scratch — `simple` to `normal`, `normal` to `complex`. A task that
      fails twice at `complex` stops and is reported, not re-run: another
@@ -45,6 +49,43 @@ the task text directly as the trailing argument).
 4. **Final gate.** When every task passed, dispatch `review-complex` over the
    whole change. Keep the final gate at `review-complex` even when the tasks
    used a lower tier; findings loop back through step 3.
+
+## Decide the fix before dispatching it, and the tier drops
+
+After a review round, work out **how** each finding should be fixed before
+handing it to an agent. Then dispatch the execution, not the diagnosis.
+
+This is a tier lever, and the biggest one available. A task's difficulty is
+"how much has to be decided", so a fix whose approach is already settled is
+`-simple` however many files it touches — the same rule as *size is not
+difficulty*, applied to the thing you control. Dispatching an undecided fix
+buys a `-complex` agent to make a judgement you were better placed to make
+anyway: you have the review, the diff and the reproduction; the agent has a
+prompt.
+
+It is also where the expensive failures come from. Measured on one task,
+handed out with the approach left open: the agent narrowed a settings fixture
+to `Record<string, string>`, which made a test's "ignores anything else" case
+unexpressible, and narrowed a ledger fixture so a deliberately malformed price
+became a valid one — editing around a comment that said why it was malformed.
+Both tests then asserted nothing about what they were named for. Neither was
+reported; both were found by running the suite. Those were design decisions
+made badly, not execution mistakes, and the dispatch is what invited them.
+
+So the division of labour is:
+
+- **You decide**: the shape of the fix, which file it belongs in, what the type
+  or interface should be, and what must not change.
+- **The agent executes**: writes it, tests it, and reports — at `-simple` where
+  it would otherwise have been `-normal` or `-complex`.
+
+Hand over what you already know with it: the reproduction, the measured
+numbers, the exact call site. Re-deriving those is the most common way a run
+wastes its budget, and it is work you have already paid for.
+
+If you cannot decide the approach, that is the signal to dispatch `plan-*` or
+to investigate yourself first — not to give a `code-complex` agent an open
+question and hope.
 
 ## Tell every agent to stop and ask rather than guess
 
