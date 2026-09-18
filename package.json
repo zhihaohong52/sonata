@@ -41,7 +41,8 @@
     "test": "vitest run",
     "dev": "tsx src/cli.ts",
     "prepublishOnly": "npm run build && npm test",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.test.json"
   },
   "engines": {
     "node": ">=22"

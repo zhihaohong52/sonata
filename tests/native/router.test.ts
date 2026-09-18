@@ -3,9 +3,28 @@ import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodeProp
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
 
-function fakeFetch(record: any[]) {
-  return async (url: string, init: any) => {
-    record.push({ url, headers: init.headers });
+/**
+ * What a recorded call keeps: the URL, and the headers the router chose.
+ *
+ * Headers are normalised to a plain record because `HeadersInit` is a union
+ * (a `Headers`, a pair array, or a record) that cannot be indexed, while every
+ * assertion here asks about one header by name. Normalising once in the
+ * fixture keeps the assertions readable and independent of which shape the
+ * router happens to pass.
+ */
+interface FetchCall { url: string; headers: Record<string, string> }
+
+/**
+ * A `fetch` stand-in typed as the real one.
+ *
+ * `RouterDeps.fetch` is `typeof fetch`, so the fixture has to satisfy that
+ * signature rather than the narrower one a given test happens to use — the
+ * router may call it with a `Request` or a `URL`, and a fixture typed
+ * `(url: string, init: any)` both hides that and accepts anything.
+ */
+function fakeFetch(record: FetchCall[]): typeof fetch {
+  return async (input: RequestInfo | URL, init?: RequestInit) => {
+    record.push({ url: String(input), headers: Object.fromEntries(new Headers(init?.headers)) });
     return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
   };
 }
@@ -14,7 +33,7 @@ const base = { litellmBase: 'http://lite', litellmKey: 'sk-local', anthropicBase
 
 describe('routeRequest', () => {
   it('routes a claude- model to anthropic with client headers forwarded', async () => {
-    const rec: any[] = [];
+    const rec: FetchCall[] = [];
     await routeRequest(
       { method: 'POST', url: '/v1/messages', headers: { authorization: 'Bearer usr', 'x-api-key': 'k' },
         body: Buffer.from(JSON.stringify({ model: 'claude-sonnet-5' })) },
@@ -25,7 +44,7 @@ describe('routeRequest', () => {
   });
 
   it('routes a foreign model to litellm with the local key', async () => {
-    const rec: any[] = [];
+    const rec: FetchCall[] = [];
     await routeRequest(
       { method: 'POST', url: '/v1/messages', headers: { authorization: 'Bearer usr', 'x-api-key': 'k' },
         body: Buffer.from(JSON.stringify({ model: 'deepseek-v4-flash' })) },
@@ -37,7 +56,7 @@ describe('routeRequest', () => {
   });
 
   it('passes a bodyless request through to anthropic', async () => {
-    const rec: any[] = [];
+    const rec: FetchCall[] = [];
     await routeRequest(
       { method: 'GET', url: '/v1/models', headers: {}, body: Buffer.alloc(0) },
       { ...base, fetch: fakeFetch(rec) },
@@ -58,7 +77,7 @@ describe('routeRequest', () => {
     // A respawned litellm child is not listening yet for a brief window;
     // without this gate a request landing there gets connection-refused
     // instead of the answer it would have gotten moments later.
-    const rec: any[] = [];
+    const rec: FetchCall[] = [];
     let released: () => void = () => {};
     const ready = new Promise<void>((resolve) => { released = resolve; });
     let readyAwaited = false;
@@ -314,7 +333,7 @@ describe('tier alias routing', () => {
     // a rank for the name, the model must fall through to the ordinary
     // litellm/anthropic path rather than being answered 400. A native model
     // key could legitimately begin `sonata-`.
-    const rec: any[] = [];
+    const rec: FetchCall[] = [];
     const res = await routeRequest(req('sonata-nope-simple'), {
       fetch: fakeFetch(rec),
       litellmBase: 'http://litellm', litellmKey: 'k',
@@ -1821,7 +1840,7 @@ describe('stripForeignThinking', () => {
 
 describe('the UI does not disturb the proxy', () => {
   it('routes API requests through the proxy and handles UI writes locally', async () => {
-    const rec: any[] = [];
+    const rec: FetchCall[] = [];
     const ui = { home: '/tmp/nowhere', port: 0 };
     const server = createRouterServer({
       ...base,

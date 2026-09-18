@@ -22,6 +22,7 @@ const planFor = (): InitPlan => ({
     '[tiers.code]', 'simple = ["acme-fast"]', 'complex = ["acme-fast"]', '',
   ].join('\n'),
   keysToStore: [],
+  installLitellm: false,
   hook: { scope: 'skip' },
   skillPath: join(cwd, '.claude', 'skills', 'sonata-loop', 'SKILL.md'),
   guidance: { scope: 'skip' },

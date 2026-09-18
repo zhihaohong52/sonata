@@ -536,8 +536,8 @@ describe('duplicateKeys', () => {
 
 describe('preTickedNative', () => {
   const candidates: NativeCandidate[] = [
-    { key: 'opencode-deepseek-v4-flash', gateway: 'opencode', id: 'deepseek-v4-flash', contextWindow: 128000, baseUrl: 'https://opencode.ai/api/v1' },
-    { key: 'acme-grok-4.5', gateway: 'acme', id: 'grok-4.5', contextWindow: 128000, baseUrl: 'https://gateway.acme.example/v1' },
+    { key: 'opencode-deepseek-v4-flash', gateway: 'opencode', id: 'deepseek-v4-flash', contextWindow: 128000, baseUrl: 'https://opencode.ai/api/v1', auth: 'api-key' },
+    { key: 'acme-grok-4.5', gateway: 'acme', id: 'grok-4.5', contextWindow: 128000, baseUrl: 'https://gateway.acme.example/v1', auth: 'api-key' },
   ];
 
   it('ticks a candidate whose key matches an existing native model', () => {
@@ -2276,7 +2276,7 @@ describe('reconcileTierList', () => {
 });
 
 describe('dedupeOauthProviders', () => {
-  const offered = [
+  const offered: import('../src/detect.js').ProviderSummary[] = [
     { harness: 'codex', provider: 'codex', key: 'codex/codex', count: 6 },
     { harness: 'opencode', provider: 'openai', key: 'opencode/openai', count: 13 },
     { harness: 'opencode', provider: 'acme', key: 'opencode/acme', count: 23 },

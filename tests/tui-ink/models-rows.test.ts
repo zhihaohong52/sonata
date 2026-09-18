@@ -2,8 +2,25 @@ import { describe, it, expect } from 'vitest';
 import { modelRows, modelsUntiered } from '../../src/tui-ink/screens/models-rows.js';
 import type { SonataConfig } from '../../src/config.js';
 
+/**
+ * A loaded config carrying only what these rows read.
+ *
+ * `run` is spelled out rather than left `{}` because `SonataConfig` requires
+ * every window — `parseConfig` defaults them, so a loaded config always has
+ * them, and a fixture that omits them is describing a config that cannot
+ * exist.
+ */
 const config = (unifiedModels: SonataConfig['unifiedModels'], tiers: SonataConfig['tiers']): SonataConfig => ({
-  models: {}, unifiedModels, tiers,
+  models: {},
+  unifiedModels,
+  tiers,
+  generate: { roles: {} },
+  run: {
+    tailWindowSeconds: 20,
+    stallTimeoutSeconds: 120,
+    runTimeoutSeconds: 1800,
+    dispatchWindowSeconds: 1500,
+  },
 });
 
 describe('modelRows', () => {

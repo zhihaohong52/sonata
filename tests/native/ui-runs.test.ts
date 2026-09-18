@@ -406,7 +406,7 @@ describe('discovery is bounded by attempts, not only by acceptances', () => {
       });
     }
     clearUiRunCache();
-    const quiet = await runRows(deps(), { project: projB });
+    const quiet = await runRows(deps(), { project: projB, sinceMs: 0 });
     // projB's only run is older than every one of projA's, so a global cap
     // would have evicted it and answered empty.
     expect(quiet.rows.map((row) => row.id)).toContain('ccc333');

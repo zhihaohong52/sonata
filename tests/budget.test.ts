@@ -15,7 +15,7 @@ function row(ts: string, price: LedgerPrice, over: Partial<LedgerRow> = {}): Led
     upstream: 'litellm',
     status: 200,
     complete: true,
-    tokens: { input: 10, output: 10 },
+    tokens: { input: 10, output: 10, cacheRead: 0, cacheCreation: 0 },
     price,
     attempts: [],
     ...over,

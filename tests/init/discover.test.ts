@@ -49,13 +49,13 @@ describe('discover', () => {
     tmux: { installed: true, version: '3.4', problems: [] },
     harnesses: [
       {
-        name: 'opencode', installed: true, version: '1.18.16', problems: [],
+        name: 'opencode', installed: true, version: '1.18.16', supported: true, problems: [],
         refs: [{ harness: 'opencode', provider: 'shared-gw', id: 'a', ref: 'shared-gw/a' }],
         authedProviders: ['shared-gw'],
         providerBaseUrls: { 'shared-gw': 'https://shared.example/v1' },
       },
       {
-        name: 'pi', installed: true, version: '0.9.0', problems: [],
+        name: 'pi', installed: true, version: '0.9.0', supported: true, problems: [],
         refs: [{ harness: 'pi', provider: 'shared-gw', id: 'a', ref: 'shared-gw/a' }],
         authedProviders: ['shared-gw'],
         providerBaseUrls: { 'shared-gw': 'https://shared.example/v1' },
