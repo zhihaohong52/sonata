@@ -276,11 +276,31 @@ export function routingFailureDetail(input: {
 }
 
 
+/** The running Claude Code version, or `undefined` when there is no `claude`. */
+async function defaultClaudeVersion(): Promise<string | undefined> {
+  try {
+    const { stdout } = await run('claude', ['--version'], { env: { ...process.env } });
+    return stdout.trim();
+  } catch {
+    return undefined;
+  }
+}
+
 export async function cmdDoctor(
   opts: {
     cwd: string; home?: string; packageRoot?: string; now?: () => Date;
     /** Test seam: what to probe the machine with for the litellm check. */
     installerDeps?: InstallerDeps;
+    /**
+     * Test seam: the running Claude Code version, for the known-bad check.
+     *
+     * Injectable because the default spawns `claude --version`, which costs
+     * ~0.7s — paid on every `sonata doctor`, and 36 times over in this
+     * command's own tests, where it added ~3s for a value none of them are
+     * about. A test that does not care passes `() => undefined` and spawns
+     * nothing.
+     */
+    claudeVersion?: () => Promise<string | undefined>;
   },
 ): Promise<{ ok: boolean; checks: Check[] }> {
   const home = opts.home ?? homedir();
@@ -964,10 +984,10 @@ export async function cmdDoctor(
   // a tested range for the client, and inventing one would fail every future
   // release.
   try {
-    const { stdout } = await run('claude', ['--version'], { env: { ...process.env } });
-    const broken = knownBadVersion(stdout.trim());
-    if (broken !== undefined) {
-      checks.push({ name: 'claude code (client)', ok: false, detail: `${stdout.trim()} — ${broken}` });
+    const version = await (opts.claudeVersion ?? defaultClaudeVersion)();
+    const broken = version === undefined ? undefined : knownBadVersion(version);
+    if (version !== undefined && broken !== undefined) {
+      checks.push({ name: 'claude code (client)', ok: false, detail: `${version} — ${broken}` });
     }
   } catch {
     // No `claude` on PATH is not a sonata problem: `sonata dispatch` works

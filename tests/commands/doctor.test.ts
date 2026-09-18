@@ -13,6 +13,15 @@ vi.mock('../../src/native/litellm.js', () => ({
   findLitellm: () => '/usr/local/bin/litellm',
 }));
 
+/**
+ * Spread into every `cmdDoctor` call so none of them spawns `claude --version`.
+ *
+ * The default probe costs ~0.7s, and this file calls `cmdDoctor` 36 times —
+ * about 3s of the file's runtime spent resolving a value no test here asserts
+ * on. The one test that *is* about a known-bad client injects its own version.
+ */
+const NO_CLIENT = { claudeVersion: async () => undefined };
+
 describe('checkVersion', () => {
   it('accepts a version inside the supported range', () => {
     expect(checkVersion('1.18.15', '>=1.18.0 <2.0.0')).toBe(true);
@@ -48,7 +57,7 @@ code = ["m"]
   });
 
   const check = async (name: string) =>
-    (await cmdDoctor({ cwd, home })).checks.find((c) => c.name === name);
+    (await cmdDoctor({ ...NO_CLIENT, cwd, home })).checks.find((c) => c.name === name);
 
   it('reports the machine config path when that is what it used', async () => {
     mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
@@ -116,7 +125,7 @@ code = ["a"]
     return { cwd, home };
   };
   const check = async (cwd: string, home: string, name: string) =>
-    (await cmdDoctor({ cwd, home })).checks.find((c) => c.name === name);
+    (await cmdDoctor({ ...NO_CLIENT, cwd, home })).checks.find((c) => c.name === name);
 
   it('flags an agent naming a model the config does not define', async () => {
     const { cwd, home } = setup();
@@ -138,7 +147,7 @@ code = ["a"]
     const { cwd, home } = setup();
     writeFileSync(join(cwd, '.claude', 'agents', 'code-a.md'),
       `---\nname: code-a\ntools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)\n---\n${MARKER}`);
-    const res = await cmdDoctor({ cwd, home, packageRoot: '/pkg' });
+    const res = await cmdDoctor({ ...NO_CLIENT, cwd, home, packageRoot: '/pkg' });
     for (const name of ['agents', 'agent tools']) {
       expect(res.checks.find((c) => c.name === name)?.ok).toBe(true);
     }
@@ -179,7 +188,7 @@ code = ["m"]
   it('blocks when a generated agent still names the polling tools', async () => {
     writeAgent('code-old.md', 'mcp__legacy__run, mcp__legacy__tail, mcp__legacy__approve');
 
-    const { checks } = await cmdDoctor({ cwd, home });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
     const check = checks.find((c) => c.name === 'agent tools')!;
     expect(check.ok).toBe(false);
     expect(check.detail).toBe('1 wrapper(s) still call removed MCP tools and will fail mid-dispatch — run `sonata sync`');
@@ -191,7 +200,7 @@ code = ["m"]
     // using dispatch/wait/approve rather than the older run/tail names.
     writeAgent('code-old.md', 'mcp__sonata__dispatch, mcp__sonata__wait, mcp__sonata__approve');
 
-    const { checks } = await cmdDoctor({ cwd, home });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
     const check = checks.find((c) => c.name === 'agent tools')!;
     expect(check.ok).toBe(false);
     expect(check.detail).toContain('removed MCP tools');
@@ -200,7 +209,7 @@ code = ["m"]
   it('passes when every agent names the current tools', async () => {
     writeAgent('code-new.md', 'Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
 
-    const { checks } = await cmdDoctor({ cwd, home });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
     expect(checks.find((c) => c.name === 'agent tools')!.ok).toBe(true);
   });
 });
@@ -222,7 +231,7 @@ explore = ["a"]
     const cfg = join(home, '.config', 'opencode', 'opencode.json');
     writeFileSync(cfg, JSON.stringify({ agent: { explore: { disable: true } } }));
 
-    const c = (await cmdDoctor({ cwd, home })).checks.find((x) => x.name === 'opencode agents');
+    const c = (await cmdDoctor({ ...NO_CLIENT, cwd, home })).checks.find((x) => x.name === 'opencode agents');
     // A disabled read-only agent silently becomes the write-capable `build`,
     // so this is corrected rather than merely reported.
     expect(c?.detail).toContain('explore');
@@ -237,7 +246,7 @@ explore = ["a"]
     writeFileSync(join(home, '.config', 'opencode', 'opencode.json'),
       JSON.stringify({ agent: { general: { disable: true } } }));
 
-    const c = (await cmdDoctor({ cwd, home })).checks.find((x) => x.name === 'opencode agents');
+    const c = (await cmdDoctor({ ...NO_CLIENT, cwd, home })).checks.find((x) => x.name === 'opencode agents');
     // `general` is not an agent sonata dispatches to; leave the user's choice alone.
     expect(c?.ok).toBe(true);
   });
@@ -289,7 +298,7 @@ code = ["deepseek-v4-flash"]
       status: 'ok', sonata: true, multiTenant: true, tenants: [{ id: 'aaaaaaaaaaaa', configPath: join(cwd, 'sonata.toml') }],
     }), { status: 200 })) as unknown as typeof fetch;
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       expect(checks.find((c) => c.name === 'serve health')).toEqual({ name: 'serve health', ok: true, detail: `up · 1 project(s): ${join(cwd, 'sonata.toml')}` });
     } finally { globalThis.fetch = originalFetch; }
   });
@@ -299,7 +308,7 @@ code = ["deepseek-v4-flash"]
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({ sonata: true, multiTenant: true, tenants: [{ id: 'bbbbbbbbbbbb', configPath: null }] }), { status: 200 })) as unknown as typeof fetch;
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       expect(checks.find((c) => c.name === 'serve health')).toEqual({ name: 'serve health', ok: true, detail: 'up · 1 project(s): ?' });
     } finally { globalThis.fetch = originalFetch; }
   });
@@ -309,7 +318,7 @@ code = ["deepseek-v4-flash"]
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({ sonata: true, multiTenant: true, tenants: null }), { status: 200 })) as unknown as typeof fetch;
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       expect(checks.find((c) => c.name === 'serve health')).toMatchObject({ ok: false, detail: expect.stringContaining('health payload could not be read') });
       expect(checks.find((c) => c.name === 'serve health')?.detail).toContain('sonata restart');
       expect(checks.find((c) => c.name === 'serve health')?.detail).not.toContain('not running');
@@ -319,7 +328,7 @@ code = ["deepseek-v4-flash"]
   it('warns on whitespace around a project ports table header', async () => {
     const { cwd, home } = setup();
     writeFileSync(join(cwd, 'sonata.toml'), `${NATIVE}\n  [ native.ports ]\nrouter = 4101\n`);
-    const { checks } = await cmdDoctor({ cwd, home });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
     expect(checks.find((c) => c.name === 'project ports')?.ok).toBe(true);
   });
 
@@ -328,7 +337,7 @@ code = ["deepseek-v4-flash"]
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({ status: 'ok', sonata: true, configPath: '/x' }), { status: 200 })) as unknown as typeof fetch;
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       expect(checks.find((c) => c.name === 'serve health')).toMatchObject({ ok: false, detail: expect.stringContaining('sonata restart') });
     } finally { globalThis.fetch = originalFetch; }
   });
@@ -336,7 +345,7 @@ code = ["deepseek-v4-flash"]
   it('warns on a project [native.ports], which the machine router ignores', async () => {
     const { cwd, home } = setup();
     writeFileSync(join(cwd, 'sonata.toml'), `${NATIVE}\n[native.ports]\nrouter = 4101\nlitellm = 4001\n`);
-    const { checks } = await cmdDoctor({ cwd, home });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
     expect(checks.find((c) => c.name === 'project ports')).toEqual({
       name: 'project ports', ok: true,
       detail: `${join(cwd, 'sonata.toml')} sets [native.ports], which is ignored — one router serves every project on the machine ports; delete the table`,
@@ -349,7 +358,7 @@ code = ["deepseek-v4-flash"]
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       // The state, and the repair for that state — not "not found", which was
       // the same sentence for six different causes.
       expect(checks.find((c) => c.name === 'litellm')).toMatchObject({
@@ -381,7 +390,7 @@ credential_source = "codex"
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       const text = checks.map((check) => check.detail).join('\n');
       expect(text).toContain('codex: credential from codex');
       expect(text).toMatch(/no credential.*codex login/s);
@@ -407,7 +416,7 @@ credential_source = "sonata"
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       const text = checks.map((check) => check.detail).join('\n');
       expect(text).toContain('codex: credential from sonata');
       expect(text).not.toMatch(/no credential|no ChatGPT login/);
@@ -433,7 +442,7 @@ credential_source = "sonata"
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       expect(checks.find((c) => c.name === 'key source: acme')).toEqual({
         name: 'key source: acme', ok: true, detail: 'acme: credential from sonata',
       });
@@ -456,7 +465,7 @@ credential_source = "sonata"
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       expect(checks.find((c) => c.name === 'key source: acme')).toEqual({
         name: 'key source: acme', ok: false,
         detail: 'acme: credential from sonata\n  ! acme: no credential from sonata — ' +
@@ -479,7 +488,7 @@ credential_source = "opencode"
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       expect(checks.find((c) => c.name === 'key source: acme')).toEqual({
         name: 'key source: acme', ok: false,
         detail: 'acme: credential from opencode\n  ! acme: no credential from opencode — ' +
@@ -504,7 +513,7 @@ credential_source = "opencode"
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       const text = checks.map((check) => check.detail).join('\n');
       expect(text).toContain('codex: credential from opencode');
       expect(text).toMatch(/no credential from opencode.*log into opencode with a ChatGPT account/s);
@@ -524,7 +533,7 @@ credential_source = "opencode"
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       const text = checks.map((check) => check.detail).join('\n');
       expect(text).toContain('github-copilot: credential from opencode');
       expect(text).toMatch(/no credential from opencode.*log into opencode with a GitHub Copilot account/s);
@@ -552,7 +561,7 @@ credential_source = "opencode"
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => new Response('{}', { status: 200, headers: { 'x-oauth-scopes': 'read:user' } });
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       const text = checks.map((check) => check.detail).join('\n');
       expect(text).toContain('github-copilot: credential from opencode');
       expect(text).toMatch(/no credential from opencode.*log into opencode with a GitHub Copilot account/s);
@@ -569,7 +578,7 @@ credential_source = "opencode"
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       const c = checks.find((x) => x.name === 'routed sessions');
       expect(c).toBeDefined();
       expect(c?.ok).toBe(false);
@@ -588,7 +597,7 @@ credential_source = "opencode"
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       const c = checks.find((x) => x.name === 'routed sessions');
       expect(c?.ok).toBe(true);
       expect(c?.detail).toContain('http://localhost:4100');
@@ -633,7 +642,7 @@ complex = ["flash"]
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      const { checks } = await cmdDoctor({ cwd, home, now: () => now });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, now: () => now });
       return checks;
     } finally {
       globalThis.fetch = originalFetch;
@@ -645,7 +654,7 @@ complex = ["flash"]
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      return await cmdDoctor({ cwd, home, now: () => now });
+      return await cmdDoctor({ ...NO_CLIENT, cwd, home, now: () => now });
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -934,7 +943,7 @@ router = 4100
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       const c = checks.find((x) => x.name === 'tier routing');
       expect(c?.ok).toBe(false);
     } finally {
@@ -966,7 +975,7 @@ router = 4100
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       expect(checks.find((x) => x.name === 'tier routing')).toBeUndefined();
     } finally {
       globalThis.fetch = originalFetch;
@@ -1014,7 +1023,7 @@ router = 4200
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      const { checks } = await cmdDoctor({ cwd, home, packageRoot: '/pkg' });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, packageRoot: '/pkg' });
       expect(checks.find((x) => x.name === 'tier routing')?.ok).toBe(false);
     } finally {
       globalThis.fetch = originalFetch;
@@ -1059,7 +1068,7 @@ router = 4200
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
-      const { checks } = await cmdDoctor({ cwd, home, packageRoot: '/pkg' });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, packageRoot: '/pkg' });
       expect(checks.find((x) => x.name === 'tier routing')).toBeUndefined();
     } finally {
       globalThis.fetch = originalFetch;
@@ -1074,7 +1083,7 @@ router = 4200
     // by `route session-start` and is reported as such above.
     globalThis.fetch = async () => new Response(JSON.stringify({ sonata: true, multiTenant: true, tenants: [] }), { status: 200 });
     try {
-      const { checks } = await cmdDoctor({ cwd, home });
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
       expect(checks.find((c) => c.name === 'serve health')).toEqual({
         name: 'serve health', ok: true, detail: 'up · 0 project(s)',
       });
@@ -1210,7 +1219,7 @@ provider = "anthropic"
     // "not installed" reads as a fault. For a config no gateway routes through
     // litellm, its absence is the correct state.
     const { cwd, home } = setup(ANTHROPIC_ONLY);
-    const { checks } = await cmdDoctor({ cwd, home, installerDeps: USABLE_PYTHON });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, installerDeps: USABLE_PYTHON });
     const check = checks.find((c) => c.name === 'litellm');
     expect(check?.ok).toBe(true);
     expect(check?.detail).toMatch(/no gateway/i);
@@ -1220,7 +1229,7 @@ provider = "anthropic"
     // Naming an unused binary beside "not needed" only invites the question of
     // whether it is about to be used.
     const { cwd, home } = setup(ANTHROPIC_ONLY);
-    const { checks } = await cmdDoctor({ cwd, home, installerDeps: USABLE_PYTHON });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, installerDeps: USABLE_PYTHON });
     expect(checks.find((c) => c.name === 'litellm (PATH)')).toBeUndefined();
   });
 });
@@ -1243,7 +1252,7 @@ base_url = "https://gateway.example/v1"
 `);
     mkdirSync(join(cwd, '.claude', 'agents'), { recursive: true });
     const { checks } = await cmdDoctor({
-      cwd, home, installerDeps: { which: () => undefined, pythonVersion: () => '3.9.6' },
+      ...NO_CLIENT, cwd, home, installerDeps: { which: () => undefined, pythonVersion: () => '3.9.6' },
     });
     const check = checks.find((c) => c.name === 'litellm');
     expect(check?.ok).toBe(false);
@@ -1265,7 +1274,7 @@ describe('cmdDoctor — gateway pricing', () => {
 
   const pricingCheck = async (toml: string) => {
     writeFileSync(join(cwd, 'sonata.toml'), toml);
-    return (await cmdDoctor({ cwd, home })).checks.find((c) => c.name === 'gateway pricing');
+    return (await cmdDoctor({ ...NO_CLIENT, cwd, home })).checks.find((c) => c.name === 'gateway pricing');
   };
 
   const config = (gatewayExtra: string, modelExtra = '') => `
