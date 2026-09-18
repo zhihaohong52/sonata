@@ -858,7 +858,17 @@ The `claude` harness adapter is the simplest adapter: it runs headless `claude -
   `main`.** "Non-trivial" means anything touching money (pricing, the ledger,
   `[budget]`), security, routing, or config parsing — the paths where a plausible
   wrong value is worse than an error, and where a second reader is the control
-  that catches it. CodeRabbit reviews PRs on this repository. Direct-to-`main`
+  that catches it. **CodeRabbit does not review this repository
+  automatically** — it skips repositories with fewer than 10 stars, saying so
+  in its own comment — so a PR opened here gets **no review at all** until
+  someone asks for one with a `@coderabbitai review` comment. That is what
+  `pr-status.mjs`'s "no automatic review on this repo — run one by hand" means;
+  it is an accurate reading, not a parsing failure, and it was misread as a
+  stale verdict for most of a session. It also narrows the standing
+  no-re-review rule below: that rule assumes the bot re-reads a pushed head on
+  its own, which here it never does, so a *first* review must be requested by
+  hand and a head pushed after a review stays unreviewed until it is.
+  Direct-to-`main`
   stays fine for `CHANGELOG.md`, `docs/`, and one-line fixes. This is written
   down because it was learned the expensive way: the models.dev pricing
   overhaul (9 commits, +1302/-382, every one of them about how money is
