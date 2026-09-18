@@ -6,12 +6,14 @@ describe('nextStep', () => {
     expect(nextStep('overview', 'b')).toBe('budget');
     expect(nextStep('overview', 'm')).toBe('models');
     expect(nextStep('overview', 'p')).toBe('providers');
+    expect(nextStep('overview', 't')).toBe('tiers');
   });
 
   it('returns to the overview from a screen', () => {
     expect(nextStep('budget', 'escape')).toBe('overview');
     expect(nextStep('models', 'escape')).toBe('overview');
     expect(nextStep('providers', 'escape')).toBe('overview');
+    expect(nextStep('tiers', 'escape')).toBe('overview');
   });
 
   it('ignores an unknown key', () => {
