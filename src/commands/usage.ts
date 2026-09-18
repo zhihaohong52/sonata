@@ -58,6 +58,25 @@ export interface UsageReport {
   buckets: UsageBucket[];
   pricedTotalUsd: number;
   unpriced: { requests: number; input: number; output: number };
+  /**
+   * Completed streams that produced output but reported no prompt tokens.
+   *
+   * Reported beside the total, never folded into it — the same rule unpriced
+   * volume follows, because such a request is priced on its output alone and
+   * so understates what it cost. Measured 2026-09-18:
+   * `openrouter-z-ai-glm-5.3-flash` did this on 77 of 77 completed streams,
+   * while OpenRouter's own API returns `prompt_tokens` for that model in a
+   * plain stream — the count is lost upstream of sonata, which cannot invent
+   * it but can decline to present the result as complete.
+   *
+   * Prompt tokens means input **plus** both cache buckets. Anthropic puts
+   * most of them in `cacheRead`, so counting `input` alone would flag nearly
+   * every healthy Claude request; that mistake was made once while diagnosing
+   * this and inverted the conclusion. An *incomplete* stream is excluded too:
+   * it never delivers usage, which is ordinary, and including it would bury
+   * the real signal under thousands of aborted requests.
+   */
+  noPromptTokens: { requests: number; output: number };
   covered: { requests: number; totalUsd: number };
   failedAttempts: FailedAttempt[];
   priceCacheAgeMs?: number;
@@ -160,6 +179,7 @@ export function aggregate(
   const buckets = new Map<string, UsageBucket>();
   const unpriced = { requests: 0, input: 0, output: 0 };
   const covered = { requests: 0, totalUsd: 0 };
+  const noPromptTokens = { requests: 0, output: 0 };
   const failed = new Map<string, { count: number; statuses: Set<number> }>();
   let pricedTotalUsd = 0;
 
@@ -171,6 +191,15 @@ export function aggregate(
     bucket.requests += 1;
     bucket.input += row.tokens.input;
     bucket.output += row.tokens.output;
+    // Prompt tokens means input plus both cache buckets: Anthropic reports
+    // most of them as cache reads, so `input` alone would flag healthy
+    // traffic. Only a *completed* stream that generated output counts — an
+    // aborted one never delivers usage, and that is ordinary.
+    const prompt = row.tokens.input + row.tokens.cacheRead + row.tokens.cacheCreation;
+    if (row.complete && prompt === 0 && row.tokens.output > 0) {
+      noPromptTokens.requests += 1;
+      noPromptTokens.output += row.tokens.output;
+    }
     // `totalUsd` of 0 is a real price (a free tier). Only `source: 'none'`
     // means unknown, and an unknown must never sum as zero.
     if (row.price.source === 'none' || row.price.totalUsd === undefined) {
@@ -214,6 +243,7 @@ export function aggregate(
     ),
     pricedTotalUsd,
     unpriced,
+    noPromptTokens,
     covered,
     failedAttempts: [...failed.entries()]
       .map(([key, { count, statuses }]) => ({ key, count, statuses: [...statuses].sort((a, b) => a - b) }))

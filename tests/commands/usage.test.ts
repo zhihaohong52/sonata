@@ -253,3 +253,45 @@ code = ["m"]
     expect(projectResolver(home)(gone)).toBe(gone);
   });
 });
+
+describe('aggregate — completed streams that reported no prompt tokens', () => {
+  // Measured 2026-09-18: `openrouter-z-ai-glm-5.3-flash` recorded 0 prompt
+  // tokens on 77 of 77 COMPLETED 200 streams, while OpenRouter's own API
+  // returns `prompt_tokens` for that model in a plain stream. The count is
+  // lost in translation upstream of sonata, so the request is priced on output
+  // alone — and at this traffic's ~240:1 prompt:output ratio that understates
+  // spend by about two orders of magnitude. `[budget]` counts priced spend, so
+  // the cap cannot see it either.
+  //
+  // Sonata cannot invent the tokens. It can refuse to present the result as
+  // complete, which is the same honesty rule unpriced volume already follows:
+  // a total that treats "unknown" as zero is worse than no total.
+  const zero = { input: 0, output: 7, cacheRead: 0, cacheCreation: 0 };
+
+  it('counts a completed row with output but no prompt tokens', () => {
+    const report = aggregate([row({ tokens: zero })], undefined, 'model');
+    expect(report.noPromptTokens.requests).toBe(1);
+    expect(report.noPromptTokens.output).toBe(7);
+  });
+
+  it('does not count a row whose prompt tokens arrived as cache reads', () => {
+    // Anthropic puts most prompt tokens in `cacheRead`; counting only `input`
+    // would flag almost every healthy Claude request. That mistake was made
+    // once while diagnosing this and inverted the conclusion entirely.
+    const cached = { input: 0, output: 7, cacheRead: 4096, cacheCreation: 0 };
+    expect(aggregate([row({ tokens: cached })], undefined, 'model').noPromptTokens.requests).toBe(0);
+  });
+
+  it('ignores an incomplete stream, which is expected to report nothing', () => {
+    // An aborted stream never delivers usage. That is ordinary, and flagging
+    // it would bury the real signal: most zero-prompt rows in a real ledger
+    // are incomplete ones.
+    expect(aggregate([row({ tokens: zero, complete: false })], undefined, 'model').noPromptTokens.requests).toBe(0);
+  });
+
+  it('ignores a row that produced no output either', () => {
+    // Nothing was generated, so nothing was under-counted.
+    const nothing = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+    expect(aggregate([row({ tokens: nothing })], undefined, 'model').noPromptTokens.requests).toBe(0);
+  });
+});

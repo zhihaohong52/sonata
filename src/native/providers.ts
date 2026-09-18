@@ -11,10 +11,10 @@ import type { NativeGatewayConfig, SonataConfig } from '../config.js';
  * `thought_signature` is the worked example, and losing it is what let a
  * permanently-400ing model absorb its whole tier (roadmap item 13).
  */
-export type LitellmProvider = 'openai' | 'anthropic' | 'gemini' | 'deepseek' | 'mistral' | 'groq';
+export type LitellmProvider = 'openai' | 'anthropic' | 'gemini' | 'deepseek' | 'mistral' | 'groq' | 'openrouter';
 
 export const LITELLM_PROVIDERS: readonly LitellmProvider[] =
-  ['openai', 'anthropic', 'gemini', 'deepseek', 'mistral', 'groq'];
+  ['openai', 'anthropic', 'gemini', 'deepseek', 'mistral', 'groq', 'openrouter'];
 
 /**
  * Gateways whose dialect is known.
@@ -30,6 +30,16 @@ export const PROVIDER_FOR_GATEWAY: Record<string, LitellmProvider> = {
   mistral: 'mistral',
   groq: 'groq',
   anthropic: 'anthropic',
+  // A known vendor with a first-class LiteLLM provider, so it must not reach
+  // the `openai` fallback below. Falling through cost real accounting:
+  // measured 2026-09-18, `openrouter-z-ai-glm-5.3-flash` recorded 0 prompt
+  // tokens on 77 of 77 *completed* streams, while OpenRouter's own API returns
+  // `prompt_tokens` for that model in a plain stream with no flag set — so the
+  // count is lost in the generic OpenAI-compat translation and the request is
+  // priced on output alone. At this traffic's ~240:1 prompt:output ratio that
+  // understates spend by about two orders of magnitude, and `[budget]` counts
+  // priced spend, so the cap cannot see it either.
+  openrouter: 'openrouter',
 };
 
 /** `openai` is the fallback for the unknown, never the default for a known vendor. */

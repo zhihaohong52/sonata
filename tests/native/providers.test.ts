@@ -14,8 +14,24 @@ describe('providerForBaseUrl', () => {
     expect(providerForBaseUrl('my-corp-proxy')).toBe('openai');
   });
 
+  it('routes a known vendor to its own provider, not the openai fallback', () => {
+    // `openai` is documented as the fallback for the *unknown*, never the
+    // default for a known vendor — and OpenRouter is one, with a first-class
+    // LiteLLM provider. Falling through cost real accounting: measured
+    // 2026-09-18, `openrouter-z-ai-glm-5.3-flash` recorded 0 prompt tokens on
+    // 77 of 77 completed streams, while OpenRouter's own API returns
+    // `prompt_tokens` for that model in a plain stream with no flag set. The
+    // count is lost in the generic OpenAI-compat translation, so the request
+    // is priced on output alone.
+    expect(providerForBaseUrl('openrouter')).toBe('openrouter');
+  });
+
   it('only names providers LiteLLM actually has', () => {
-    const known = new Set(['openai', 'anthropic', 'gemini', 'deepseek', 'mistral', 'groq']);
+    // Deliberate double entry: this list is a second copy, so adding a
+    // provider to the table means confirming it exists rather than assuming.
+    // Each was checked against sonata's own pinned venv (1.98.0) with
+    // `litellm.provider_list` — `openrouter` is `LlmProviders.OPENROUTER`.
+    const known = new Set(['openai', 'anthropic', 'gemini', 'deepseek', 'mistral', 'groq', 'openrouter']);
     for (const p of Object.values(PROVIDER_FOR_GATEWAY)) expect(known).toContain(p);
   });
 });
