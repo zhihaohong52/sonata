@@ -6,6 +6,7 @@ import { nextStep, type Step } from './steps.js';
 import { OverviewScreen } from './screens/overview.js';
 import { BudgetScreen } from './screens/budget.js';
 import { ModelsScreen } from './screens/models.js';
+import { ProvidersScreen } from './screens/providers.js';
 
 /**
  * The config TUI.
@@ -52,6 +53,7 @@ function ConfigTui({ cwd, home }: { cwd: string; home: string }): React.ReactEle
   if (step === 'checking') return <Text>checking…</Text>;
   if (step === 'budget') return <BudgetScreen cwd={cwd} home={home} />;
   if (step === 'models') return <ModelsScreen cwd={cwd} home={home} />;
+  if (step === 'providers') return <ProvidersScreen cwd={cwd} home={home} />;
   return (
     <Box flexDirection="column">
       <OverviewScreen checks={checks} />
