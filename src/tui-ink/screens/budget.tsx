@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
-import { configPath, loadConfig } from '../../config.js';
+import { configPath } from '../../config.js';
+import { loadConfigForScreen } from './screen-config.js';
 import { writeBudget } from './budget-write.js';
 
 /** Edit `[budget] daily_usd` — the only config value with a direct dollar consequence. */
@@ -9,16 +10,18 @@ export function BudgetScreen({ cwd, home }: { cwd: string; home: string }): Reac
   // `NoConfigError` when there is none — so the null check comes first and the
   // read is guarded rather than defaulted.
   const path = configPath(cwd, home);
+  const loaded = loadConfigForScreen(cwd, home);
   const [draft, setDraft] = useState<string>(() => {
-    if (path === null) return '';
-    const current = loadConfig(cwd, home).budget;
+    if (!loaded.ok) return '';
+    const current = loaded.config.budget;
     return current === undefined ? '' : String(current.dailyUsd);
   });
   const [note, setNote] = useState('');
 
   useInput((input, key) => {
     if (key.return) {
-      if (path === null) { setNote('no sonata.toml — run sonata init first'); return; }
+      if (!loaded.ok) { setNote(loaded.message); return; }
+      if (path === null) { setNote('no sonata.toml — run `sonata init` first'); return; }
       const trimmed = draft.trim();
       if (trimmed === '') { writeBudget(path, undefined); setNote('cap removed'); return; }
       const value = Number(trimmed);
@@ -42,8 +45,9 @@ export function BudgetScreen({ cwd, home }: { cwd: string; home: string }): Reac
         <Text dimColor>Counts priced volume on the native path only.</Text>
         <Text dimColor>A `sonata dispatch` run never transits the router.</Text>
       </Box>
-      {note !== '' && <Box marginTop={1}><Text color="yellow">{note}</Text></Box>}
-      <Box marginTop={1}><Text dimColor>enter save · esc back</Text></Box>
+      {!loaded.ok && <Box marginTop={1}><Text color="yellow">{loaded.message}</Text></Box>}
+      {note !== '' && loaded.ok && <Box marginTop={1}><Text color="yellow">{note}</Text></Box>}
+      <Box marginTop={1}><Text dimColor>{loaded.ok ? 'enter save · esc back' : 'esc back'}</Text></Box>
     </Box>
   );
 }

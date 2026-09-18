@@ -1,15 +1,15 @@
 import React from 'react';
 import { Box, Text } from 'ink';
-import { configPath, loadConfig } from '../../config.js';
+import { loadConfigForScreen } from './screen-config.js';
 import { modelRows, modelsUntiered } from './models-rows.js';
 
 /** Show every configured model and whether a tier can reach it. */
 export function ModelsScreen({ cwd, home }: { cwd: string; home: string }): React.ReactElement {
-  const path = configPath(cwd, home);
-  if (path === null) {
-    return <Box flexDirection="column"><Text>no sonata.toml</Text><Box marginTop={1}><Text dimColor>esc back</Text></Box></Box>;
+  const loaded = loadConfigForScreen(cwd, home);
+  if (!loaded.ok) {
+    return <Box flexDirection="column"><Text color="yellow">{loaded.message}</Text><Box marginTop={1}><Text dimColor>esc back</Text></Box></Box>;
   }
-  const rows = modelRows(loadConfig(cwd, home));
+  const rows = modelRows(loaded.config);
   const untiered = new Set(modelsUntiered(rows));
   return (
     <Box flexDirection="column">
