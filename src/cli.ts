@@ -133,9 +133,23 @@ export async function main(argv: string[]): Promise<number> {
   // Before the help branch, so a bare command reaches it and `--help` never
   // does. Without a TTY this is false and the caller gets today's help and
   // today's exit code, which is what keeps this a pure addition.
+  const tty = process.stdout.isTTY === true && process.stdin.isTTY === true;
   if (shouldLaunchTui(command, process.stdout.isTTY === true, process.stdin.isTTY === true)) {
     const { runConfigTui } = await import('./tui-ink/app-config.js');
     return runConfigTui({ cwd: process.cwd() });
+  }
+
+  // `tui` is named in USAGE, so it must not reach the unknown-command handler
+  // when the TUI cannot be drawn: `sonata tui | cat` answered
+  // `sonata: unknown command "tui"`, which contradicts this CLI's own help and
+  // sends the reader hunting a typo they did not make. A bare `sonata` needs no
+  // such branch — it is already the help branch below.
+  if (command === 'tui' && !tty) {
+    console.error(
+      'sonata tui needs a terminal: stdout and stdin must both be a TTY, and one of them is a pipe or file here.\n'
+      + 'Run `sonata tui` directly in a terminal, or use the individual commands (`sonata doctor`, `sonata agents`).',
+    );
+    return 2;
   }
 
   if (!command || command === 'help' || command === '--help' || command === '-h') {
