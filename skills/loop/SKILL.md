@@ -48,7 +48,49 @@ the task text directly as the trailing argument).
      the findings to the user.
 4. **Final gate.** When every task passed, dispatch `review-complex` over the
    whole change. Keep the final gate at `review-complex` even when the tasks
-   used a lower tier; findings loop back through step 3.
+   used a lower tier; findings loop back through step 3. **Do not review it
+   yourself instead** — see *The final gate stays foreign* below.
+
+## The final gate stays foreign; you write its brief
+
+You will be tempted to run the final review yourself. You have the whole
+session in context — every decision, every measurement, every constraint you
+set — where a fresh `review-complex` has only a diff. Do it anyway, and do not
+substitute yourself for it.
+
+The reason is the reason the lane exists: a different model family reviewing
+Claude's work. An orchestrator reviewing its own orchestration re-validates its
+own reasoning, and it is indistinguishable from a real review from the outside
+— which is exactly what the `model`-argument bug produced by accident, a
+session's worth of "foreign-model reviews" that were Claude reviewing Claude.
+
+**What each catches is different, measured over one session.** The foreign
+gates found a constant rebuilt at a new call site, a fix whose tests did not
+cover the production call site at all (the bug could be reinstated with all 158
+tests still green), a CLI contradicting its own help text, and a crash on an
+invalid config. The orchestrator found two tests silently gutted by an agent
+and not reported, a subprocess regression that had just been introduced, and a
+type that had been describing a shape the code does not produce.
+
+That split is not luck. **You catch execution and verification failures** —
+claims that are not so, tests that stopped testing what they are named for,
+work reported as done that was not. **The gate catches correctness and design
+problems in code you are too close to**, because you wrote or specified it and
+will re-derive the same conclusion when you read it again.
+
+So do both, and do not confuse them:
+
+- **Verify every claim yourself.** Re-run the suite, re-read the diff, redo the
+  proof an agent said it produced. That is verification, not review, and it
+  does not substitute for the gate.
+- **Write the gate's brief.** Name what to scrutinise, hand over the
+  reproduction and the measured numbers, and say what is already settled so it
+  is not re-derived. A brief is where your context belongs — it is what turns a
+  generic review into a specific one, and it costs one paragraph.
+- **Do not tell it what you already suspect** when you want an independent
+  check on a specific worry. Asking it to "confirm or refute" a finding you
+  hand over is fine and cheap; staying silent is what tells you whether the
+  gate would have found it alone.
 
 ## Decide the fix before dispatching it, and the tier drops
 
