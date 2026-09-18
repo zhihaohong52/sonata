@@ -170,6 +170,30 @@ export function labelOf(
   }
 }
 
+/**
+ * Fold ledger rows into one report, bucketed by `by`.
+ *
+ * Three quantities are kept apart rather than summed, because each means
+ * something different and merging them makes the total lie:
+ *
+ * - **priced** spend is money owed, and is what `pricedTotalUsd` reports;
+ * - **covered** work is subscription-backed — valued at list, never billed per
+ *   token — so folding it into spend made the cost column disagree with the
+ *   report's own priced total;
+ * - **unpriced** volume is a rate nobody published. Counting it as zero would
+ *   under-report silently, which is worse than reporting no total at all.
+ *
+ * `noPromptTokens` follows the same rule for a fourth case: a completed stream
+ * that produced output but reported no prompt count is priced on its output
+ * alone, so it is surfaced beside the total rather than inside it.
+ *
+ * Buckets sort by priced **plus** covered, so a bucket that is entirely
+ * subscription work is still the largest thing in the report and does not sink
+ * to the bottom on a cost column of 0.
+ *
+ * `sessions` and the optional `resolve` exist for the `project` dimension,
+ * which has to map a session id back to the directory that produced it.
+ */
 export function aggregate(
   rows: LedgerRow[],
   by: UsageDimension,
