@@ -55,6 +55,22 @@ function priceLines(parent: string, price: PriceConfig): string[] {
   return lines;
 }
 
+/**
+ * Render the whole of `sonata.toml`.
+ *
+ * **This is the sole writer of the entire file, so anything it does not emit
+ * is deleted.** A setting `parseConfig` reads and this function does not write
+ * survives exactly until the next `sonata init`. That bit `pricing_provider`
+ * and every `[price]` block — one rewrite flipped a gateway from priced to
+ * unpriced between two requests 64 seconds apart — and it bit `[budget]`,
+ * whose loss is invisible because a cap's only effect is a refusal that has
+ * not happened yet.
+ *
+ * Hence the trailing parameters: they exist only to carry settings forward
+ * that this writer would otherwise destroy. Add a round-trip test through
+ * `parseConfig` for any new config key; asserting on the emitted text cannot
+ * catch the sibling failure where the key is written into the wrong table.
+ */
 export function nativeTomlFor(
   roleModels: Record<string, NativeCandidate[]>,
   credentialSources: Record<string, CredentialSource> = {},

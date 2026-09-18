@@ -168,6 +168,19 @@ function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWiza
   );
 }
 
+/**
+ * The `sonata init` wizard.
+ *
+ * Owns the screen for its whole lifetime and serializes nothing: BYOK keys
+ * live in `InitState.byokKeys` in memory only, so a cancelled run leaves no
+ * credential behind, and `cmdInit` writes them to the store after the confirm
+ * gate.
+ *
+ * It must not unmount and hand off to a `src/tui.ts` prompt. Ink unrefs stdin
+ * on unmount, so a prompt waiting on a keystroke is not work node knows about
+ * and the process exits 0 mid-prompt with no error — which is what once made
+ * every prompt after this wizard die the instant it was drawn.
+ */
 export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElement {
   const [step, setStep] = useState(0);
   const [state, setState] = useState<InitState>(data.initialState ?? {});

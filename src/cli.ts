@@ -127,6 +127,15 @@ function versionLines(): string[] {
   return lines;
 }
 
+/**
+ * Parse argv and run one command, returning the process exit code.
+ *
+ * Branch order is load-bearing. The TUI check comes first so a bare `sonata`
+ * reaches it, and is written so `--help` never can. `tui` is then refused
+ * explicitly when the streams are not a terminal, because it is named in
+ * `USAGE` and would otherwise reach the unknown-command handler and contradict
+ * this CLI's own help.
+ */
 export async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
 

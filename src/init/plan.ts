@@ -65,6 +65,18 @@ export interface InitPlan {
   summary: string[];
 }
 
+/**
+ * Turn a resolved `InitState` into every write `sonata init` will perform.
+ *
+ * One value, computed before anything touches the disk, so `apply` is pure
+ * I/O and the confirm screen can describe exactly what is about to happen.
+ * A plan built from an invalid state is a plan nobody should see, which is why
+ * `validate` runs first.
+ *
+ * Both front ends — the wizard and `--yes` — reach this with the same shape,
+ * so a flag honoured by only one of them would make them write different
+ * configs from one command.
+ */
 export function plan(
   env: InitEnvironment,
   state: InitState,

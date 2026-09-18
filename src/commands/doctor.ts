@@ -99,6 +99,16 @@ export function knownBadVersion(version: string): string | undefined {
   return triple === undefined ? undefined : CLAUDE_KNOWN_BAD[triple];
 }
 
+/**
+ * Whether `actual` satisfies a range of ANDed `>=` and `<` bounds.
+ *
+ * Deliberately tiny — sonata compares harness versions and nothing more, so a
+ * semver dependency would be a supply-chain surface bought for one comparison.
+ *
+ * It has no alternation, which is why a *known-bad* build cannot be expressed
+ * here: excluding one version needs `>=a <bad || >bad <c`, and there is no
+ * `||`. `CLAUDE_KNOWN_BAD` carries those instead, and can say why.
+ */
 export function checkVersion(actual: string, range: string): boolean {
   const a = triple(actual);
   for (const part of range.trim().split(/\s+/)) {
