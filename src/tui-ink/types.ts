@@ -11,6 +11,22 @@ export interface InitState {
   roles?: string[];
   perRoleModels?: Record<string, string[]>; // legacy role -> model keys
   tiers?: Record<string, { simple: string[]; complex: string[] }>;
+  /**
+   * Discard every saved `[tiers]` ranking and seed from a fresh proposal.
+   *
+   * A saved list is otherwise sticky forever: `reconcileTierList` merges only
+   * newly selected models into it, so a tier written before the catalog
+   * changed can never be re-ranked. Measured on a real config, `simple` had
+   * frozen while `normal` — added later, and so seeded from a fresh proposal —
+   * held the current ranking, leaving `simple` leading with a candidate 4.5x
+   * dearer per task than `normal`'s: the tier split exactly inverted.
+   *
+   * Stickiness stays the default, because a hand-tuned ranking surviving an
+   * ordinary `init` is the property it exists to provide. This is the opt-out,
+   * and it lives on `InitState` so the wizard and `--yes` cannot disagree
+   * about it.
+   */
+  reproposeTiers?: boolean;
   hookScope?: HookScope;
   /**
    * BYOK provider -> the API key typed in the wizard.

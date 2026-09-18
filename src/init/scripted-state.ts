@@ -29,6 +29,14 @@ import { addByokCandidates } from './candidates.js';
 import type { InitState } from '../tui-ink/types.js';
 import type { InitEnvironment } from './discover.js';
 
+/**
+ * The `--yes` front end: flags and the existing config, no prompts.
+ *
+ * Returns the same `InitState` the wizard produces, which is the whole point —
+ * CI and scripted installs take this path, and the two must agree about what
+ * they would write. Anything that changes the outcome therefore belongs on
+ * `InitState` rather than inside one front end.
+ */
 export function scriptedState(
   env: InitEnvironment,
   opts: InitOptions,
@@ -141,6 +149,7 @@ export function scriptedState(
       nativeKeys,
       roles,
       credentialSources,
+      reproposeTiers: opts.reproposeTiers === true,
       routing: opts.routing ?? 'project',
     guidance: opts.guidance ?? 'project',
       hookScope: opts.scope ?? (env.existingHookScope ? 'skip' : 'project'),

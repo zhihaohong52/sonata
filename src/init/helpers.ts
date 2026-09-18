@@ -156,6 +156,14 @@ export interface InitOptions {
   credentialSource?: string[];
   prune?: boolean;
   /**
+   * Discard saved `[tiers]` rankings and re-rank from the catalog.
+   *
+   * Carried on the shared opts so both front ends receive it and put it on the
+   * one `InitState` they each build — a flag honoured by only one of them
+   * would make `--yes` and the wizard write different configs.
+   */
+  reproposeTiers?: boolean;
+  /**
    * Test seam for the LiteLLM install. The suite must not reach PyPI: 46
    * init tests were silently running `uv pip install` on any machine that
    * had uv, which made the suite's behaviour a function of `which uv`.

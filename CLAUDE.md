@@ -877,3 +877,49 @@ The `claude` harness adapter is the simplest adapter: it runs headless `claude -
   killed at the run timeout. `fg %1 >/dev/null 2>&1` runs, reports success, and leaves the job stopped anyway;
   only the unredirected `fg %1` actually hands over. Both verified against the same wrapper.
 - **`sonata dispatch` relays; it must never reason about or parse harness output.** It reads run state (`state`, `degraded`, `report`) from `cmdRun`/`cmdWait` and decides only whether to try the next ranked candidate — the same discipline the old MCP wrapper agent followed, now enforced by there being no LLM in that loop at all.
+
+<!-- sonata:begin -->
+## Subagent lane
+
+When this session is routed, execute implementation through the sonata tier
+agents (`code-simple`, `code-normal`, `code-complex`, `review-*`, `explore-*`, `plan-*`)
+rather than Claude's own general-purpose subagents. That is what sonata is
+for: cheap models for mechanical work, and a different model family reviewing
+Claude's own code.
+
+Match the tier to the work. `-simple` is writable without asking a question
+(one or two files, no interface change). `-normal` is the default: you know
+what to change but not exactly how. `-complex` needs a design decision, or
+"done" is still ambiguous.
+
+**Your config decides which of those exist** — `sonata agents` lists them, and
+a config written before the `normal` tier has only `-simple` and `-complex`.
+Where there is no `-normal`, prefer `-simple` for work you could write without
+asking a question and `-complex` for the rest; where a role's tiers are
+identical, sonata generates one agent named for the role alone.
+
+Size is not difficulty — a large mechanical change is `simple`, a three-line
+change that decides an interface is `complex`. Start at the tier the task
+needs rather than a rung higher: a task that fails review is re-run one tier
+up, so starting low is cheap to correct.
+
+Dispatch them with **no `model` argument**. Each agent pins its routed model
+in frontmatter, and the Agent tool's own `model` parameter overrides that — so
+passing one runs the agent on a Claude model that never reaches the router.
+Nothing errors and nothing warns: every `review-*` dispatch quietly becomes
+Claude reviewing Claude, which is the one thing this lane exists to prevent.
+Choosing the tier **is** the model choice.
+
+**This section addresses the session dispatching agents, not an agent reading
+it inside its own run.** `CLAUDE.md` is injected into every subagent, so a
+tier agent sees this text too — it is not an instruction to that agent to fan
+out. Each generated agent carries its own `## Fanning out` rule, which binds
+it to delegating *downward only* (`complex` may reach `normal` and `simple`,
+`normal` may reach `simple`, `simple` may reach nothing). Fanning a task out
+is your decision to make here, where the agent count is visible, by
+dispatching several scoped agents yourself.
+
+If a tier agent fails with `model_not_found`, the session is **not routed** —
+that is a setup problem, not a broken agent. Run `sonata doctor`, and start
+the session with `sonata code` (or `sonata route on` before launching).
+<!-- sonata:end -->

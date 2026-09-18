@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { nativeTomlFor, replaceTiersBlock, tomlKey } from '../../src/init/toml.js';
+import { replaceBlock, nativeTomlFor, replaceTiersBlock, tomlKey } from '../../src/init/toml.js';
 import { parseConfig, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL } from '../../src/config.js';
 import type { NativeCandidate } from '../../src/commands/init.js';
 
@@ -33,6 +33,34 @@ describe('tomlKey', () => {
 describe('nativeTomlFor', () => {
   const cand = (gw: string, id: string): NativeCandidate => ({
     key: `${gw}-${id}`, gateway: gw, id, contextWindow: 128000, baseUrl: `https://${gw}.example/v1`,
+  });
+
+  it('preserves [budget] across a rewrite', () => {
+    // `sonata init` is the sole writer of the whole file, so a key it does not
+    // emit is deleted. `src/init/` held no non-comment reference to `budget`
+    // at all: nativeTomlFor preserved [run], pricing_provider and [price], and
+    // had neither a budget parameter nor an emission path. A cap's only
+    // visible effect is a refusal that has not happened yet, so a silently
+    // deleted one reads exactly like one that is working.
+    const c = cand('acme', 'sprinter');
+    const toml = nativeTomlFor(
+      { code: [c] }, {}, { code: { simple: [c.key], complex: [c.key] } },
+      {}, [c], undefined, [], undefined, { dailyUsd: 25 },
+    );
+    expect(parseConfig(toml).budget).toEqual({ dailyUsd: 25 });
+  });
+
+  it('emits no [budget] table when the config has no cap', () => {
+    // Absent must stay absent. `costOf` charges an absent dimension at 0, so
+    // emitting a zero would turn "no cap" into a cap of $0 and refuse
+    // every request.
+    const c = cand('acme', 'sprinter');
+    const toml = nativeTomlFor(
+      { code: [c] }, {}, { code: { simple: [c.key], complex: [c.key] } },
+      {}, [c], undefined, [], undefined, undefined,
+    );
+    expect(toml).not.toContain('[budget]');
+    expect(parseConfig(toml).budget).toBeUndefined();
   });
 
   it('writes a normal tier and reads it back', () => {
@@ -426,5 +454,45 @@ describe('replaceTiersBlock — normal tier', () => {
       code: { simple: ['acme-a'], normal: ['acme-a', 'acme-b'], complex: ['acme-b'] },
     });
     expect(parseConfig(rewritten).tiers?.code.normal).toEqual(['acme-a', 'acme-b']);
+  });
+});
+
+describe('replaceBlock', () => {
+  const isBudget = (line: string): boolean =>
+    /^\s*\[\s*(?:budget|"budget"|'budget')\s*\]/.test(line);
+
+  it('replaces a table in place, leaving every other byte alone', () => {
+    const toml = '# mine\n[budget]\ndaily_usd = 5\n\n[run]\ntail_window_seconds = 20\n';
+    const out = replaceBlock(toml, isBudget, ['[budget]', 'daily_usd = 25', '']);
+    expect(out).toContain('daily_usd = 25');
+    expect(out).not.toContain('daily_usd = 5');
+    expect(out).toContain('# mine');
+    expect(out).toContain('tail_window_seconds = 20');
+    // Reinserted where it was, not appended after [run]: a file someone has
+    // ordered must stay in that order.
+    expect(out.indexOf('[budget]')).toBeLessThan(out.indexOf('[run]'));
+  });
+
+  it('appends when the table is absent', () => {
+    const toml = '[run]\ntail_window_seconds = 20\n';
+    const out = replaceBlock(toml, isBudget, ['[budget]', 'daily_usd = 25', '']);
+    expect(out).toContain('[budget]');
+    expect(out).toContain('tail_window_seconds = 20');
+  });
+
+  it('removes the table when given an empty block', () => {
+    const toml = '[budget]\ndaily_usd = 5\n\n[run]\ntail_window_seconds = 20\n';
+    const out = replaceBlock(toml, isBudget, []);
+    expect(out).not.toContain('[budget]');
+    expect(out).toContain('tail_window_seconds = 20');
+  });
+
+  it('does not treat a table name inside a multiline string as structure', () => {
+    // A line within a string is content, never structure: it neither opens a
+    // table nor ends the one being dropped.
+    const toml = 'note = """\n[budget]\ndaily_usd = 1\n"""\n\n[run]\ntail_window_seconds = 20\n';
+    const out = replaceBlock(toml, isBudget, ['[budget]', 'daily_usd = 25', '']);
+    expect(out).toContain('daily_usd = 1');
+    expect(out).toContain('daily_usd = 25');
   });
 });

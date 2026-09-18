@@ -8,7 +8,49 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- `sonata tui` — a persistent config TUI, which a bare `sonata` also opens on a
+  terminal. It boots into a health check, shows `doctor`'s findings as its home
+  screen so a problem is opened rather than looked up, and edits
+  `[budget] daily_usd`. Without a TTY on **both** stdin and stdout, `sonata`
+  prints help and exits 2 exactly as before — Ink's `useInput` needs raw mode
+  on stdin, so `sonata < /dev/null` from a terminal would otherwise crash
+  instead of printing help. Writes go through targeted block replacement and
+  are parsed before they are written, so nothing outside the edited table moves.
+
+- `sonata init --repropose-tiers` discards saved `[tiers]` rankings and
+  re-ranks from the catalog. A saved list is otherwise sticky forever, so a
+  tier written before the catalog changed could never be re-proposed.
+  Stickiness stays the default, because a hand-tuned ranking surviving an
+  ordinary `init` is the property it exists to provide.
+- `sonata doctor` reports a `simple` tier holding candidates the cost cap would
+  now exclude, naming them and `--repropose-tiers`. Measured on a real config:
+  `simple` led with a candidate 4.5x dearer per task than `normal`'s leader and
+  reached one 34x dearer by rank 4 — the tier split inverted, with the cheap
+  tier the expensive one, and nothing reporting it. `simple` and `complex`
+  predated the current catalog and were sticky; `normal`, added later, had been
+  seeded from a fresh proposal, so the lists were computed in different eras.
+
 ### Fixed
+
+- `sonata doctor` names a Claude Code build known to be broken with sonata,
+  rather than reporting it as inside the tested range. 2.1.275 failed **every**
+  request with a 400 naming `Input tag 'advisor_20260301'` whenever
+  `ANTHROPIC_BASE_URL` pointed at a proxy — which is exactly how the native
+  path works — and was fixed in 2.1.276. A blocklist rather than a version
+  bound, because `<2.1.275` would also reject the build carrying the fix, and
+  because a bound can only say "outside tested range" while the reason is what
+  a reader needs. The *client* is checked separately from the harnesses: the
+  harness loop covers `claude` only when the config names it as a harness,
+  while every native dispatch runs inside whatever Claude Code is already
+  running.
+
+- `sonata init` no longer deletes a hand-added `[budget] daily_usd`.
+  `nativeTomlFor` preserved `[run]`, `pricing_provider` and `[price]` but had
+  no budget parameter at all, so a cap survived only until the next rewrite.
+  Its loss was invisible by construction: a cap's only effect is a refusal that
+  has not happened yet, so a deleted one reads exactly like a working one.
 
 - Tier-agent fan-out is now bounded by a strict tier descent: `complex` may
   delegate to `normal` and `simple`, `normal` to `simple`, and `simple` to

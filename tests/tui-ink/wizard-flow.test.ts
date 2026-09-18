@@ -272,6 +272,54 @@ describe('a tier screen for a config whose gateway this session never offered', 
     expect([...offeredRows(w.lastFrame()!)].sort()).toEqual([...expected].sort());
   });
 
+  it('does not re-offer a deselected native key but preserves a saved harness key', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-wizard-deselected-'));
+    const w = renderWizard({
+      home,
+      harnesses: [{ name: 'opencode', installed: true }],
+      providers: [{ key: 'opencode/acme', harness: 'opencode', provider: 'acme', count: 2 }],
+      candidates: [
+        { key: 'acme-kept', gateway: 'acme', id: 'kept', label: 'opencode/acme/kept' },
+        { key: 'acme-deselected', gateway: 'acme', id: 'deselected', label: 'opencode/acme/deselected' },
+      ],
+      roles: ['code'],
+      byokProviders: [],
+      storedKeys: {},
+      fetchModels: async () => ({ outcome: 'ok', models: [] }),
+      declaredGatewayNames: { project: ['acme'] },
+      harnessOnlyUpstreams: { project: { saved: 'codex-model' } },
+      initialStateByScope: {
+        project: {
+          configScope: 'project',
+          providerKeys: ['opencode/acme'],
+          nativeKeys: ['acme-kept'],
+          roles: ['code'],
+          tiers: {
+            code: {
+              simple: ['acme-deselected', 'saved'],
+              complex: ['acme-deselected', 'saved'],
+            },
+          },
+        },
+      },
+    });
+
+    await walkToFirstTier(w);
+    await w.press(ENTER);
+    expect(w.lastFrame()).toContain('code: simple models');
+    await w.press(ENTER);
+    expect(w.lastFrame()).toContain('code: normal models');
+    await w.press(ENTER);
+    expect(w.lastFrame()).toContain('code: complex models');
+    await w.press(ENTER);
+    expect(w.lastFrame()).toContain('Summary');
+    await w.press(ENTER);
+
+    const tiers = w.result()?.state.tiers?.code;
+    expect(tiers?.simple).not.toContain('acme-deselected');
+    expect(tiers?.simple).toContain('saved');
+  });
+
   it('loses the second effort level without the declared name, which is the bug', async () => {
     home = mkdtempSync(join(tmpdir(), 'sonata-wizard-home-'));
     const path = aaCatalogPath(home);
