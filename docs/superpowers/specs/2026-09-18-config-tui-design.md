@@ -50,8 +50,9 @@ check `src/init/` first.
 Bare `sonata` renders the TUI. Three guards:
 
 - **TTY only.** No TTY — CI, a SessionStart hook, a pipe — prints today's help
-  and exits 0, unchanged. Without this, `sonata` inside a hook renders Ink into
-  a pipe.
+  and exits with today's code, unchanged: **2** for a bare `sonata`, 0 for an
+  explicit `--help`. (`main` returns `command ? 0 : 2`.) Without this, `sonata`
+  inside a hook renders Ink into a pipe.
 - **`--help` / `-h`** always prints help, TTY or not.
 - **`sonata tui`** names it explicitly, so the behaviour is addressable and
   testable without depending on argv being empty.
@@ -109,7 +110,10 @@ function, so screen behaviour is provable without a TTY — the same discipline
    in no tier at all.
 4. **Providers** — gateways, their auth kind, and what they serve.
 5. **Keys** — stored credentials, add and remove.
-6. **Actions** — `catalog update`, `sync`, `litellm install`, `route on/auto`.
+6. **Budget** — `[budget] daily_usd`, the one config value with a direct dollar
+   consequence and currently the least reachable: nothing in sonata writes it,
+   so it can only be hand-edited.
+7. **Actions** — `catalog update`, `sync`, `litellm install`, `route on/auto`.
 
 Each lands independently and is useful alone. Shared state is factored out as
 each screen arrives, not after: the failure to avoid is two state models that
@@ -126,6 +130,7 @@ replacement**, never a full rewrite:
 Tiers screen   -> replaceBlock('tiers.*')     (generalised from replaceTiersBlock)
 Models screen  -> replaceBlock('models.*')
 Providers      -> replaceBlock('native.gateways.*')
+Budget screen  -> replaceBlock('budget')
 Keys           -> credential store, never the TOML
 ```
 
@@ -186,7 +191,26 @@ Cancel must leave no partial state: an action either completes or is a no-op.
   unchanged must not alter the file. This is the property that caught the
   bulk-accept divergence in the wizard, and it is the cheapest guard against a
   writer that silently drops what it cannot represent.
-- **The TTY guard.** Bare `sonata` without a TTY prints help and exits 0.
+- **The TTY guard.** Bare `sonata` without a TTY prints help and exits 2;
+  `sonata --help` exits 0, TTY or not. Both codes are today's, and asserting
+  them is what keeps this a pure addition.
+
+### `[budget]` is destroyed by the current writer
+
+`src/init/` contains no non-comment reference to `budget`. `nativeTomlFor`
+takes an `existingRun` to preserve `[run]` and an `existing` config to preserve
+`pricing_provider` and `[price]`, and has neither a budget parameter nor an
+emission path — so **a hand-added `[budget]` block is deleted by the next
+`sonata init`.** It is the same bug that un-priced a gateway, still live, and
+it never got the round-trip test that fix's note asks for on every config key.
+
+Its failure is the least visible one available. A cap's only effect is a
+refusal that has not happened yet, so a silently deleted cap is
+indistinguishable from a working one until the spend arrives.
+
+Preserving it is therefore a task in this plan, ahead of the screen that edits
+it: a Budget screen writing a value the next `sonata init` deletes would be
+worse than no screen at all.
 
 ## Open questions
 
