@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { main } from '../src/cli.js';
-import { cmdDoctor, overCeilingSimple, type Check } from '../src/commands/doctor.js';
+import { cmdDoctor, overCeilingSimple, knownBadVersion, type Check } from '../src/commands/doctor.js';
 
 vi.mock('../src/commands/doctor.js', async () => {
   const actual = await vi.importActual<typeof import('../src/commands/doctor.js')>(
@@ -89,5 +89,32 @@ describe('overCeilingSimple', () => {
       ['luna@high', 'luna@low'],
       { simple: ['luna@low', 'luna@high'], normal: ['luna@low', 'luna@high'] },
     )).toEqual([]);
+  });
+});
+
+describe('knownBadVersion', () => {
+  // Claude Code 2.1.275 failed EVERY request with a 400 naming
+  // `Input tag 'advisor_20260301'` whenever `ANTHROPIC_BASE_URL` pointed at a
+  // proxy or gateway, fixed in 2.1.276. The whole native path works by
+  // pointing that variable at sonata's router, so on that one build every
+  // routed request dies — and an opaque 400 from a proxied request reads as a
+  // sonata or model fault, exactly like the Codex "System messages are not
+  // allowed" and Azure "is not a 'regex'" 400s already documented here.
+  it('names the reason for a known-bad version', () => {
+    expect(knownBadVersion('2.1.275')).toMatch(/advisor_20260301/);
+    expect(knownBadVersion('2.1.275')).toMatch(/2\.1\.276/);
+  });
+
+  it('clears the fixed version and the ones before it', () => {
+    // A range cannot express this: `<2.1.275` would also reject 2.1.276.
+    expect(knownBadVersion('2.1.276')).toBeUndefined();
+    expect(knownBadVersion('2.1.274')).toBeUndefined();
+    expect(knownBadVersion('2.2.0')).toBeUndefined();
+  });
+
+  it('tolerates a version string with surrounding noise', () => {
+    // `claude --version` prints "2.1.276 (Claude Code)".
+    expect(knownBadVersion('2.1.275 (Claude Code)')).toMatch(/advisor_20260301/);
+    expect(knownBadVersion('2.1.276 (Claude Code)')).toBeUndefined();
   });
 });

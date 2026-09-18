@@ -34,6 +34,18 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- `sonata doctor` names a Claude Code build known to be broken with sonata,
+  rather than reporting it as inside the tested range. 2.1.275 failed **every**
+  request with a 400 naming `Input tag 'advisor_20260301'` whenever
+  `ANTHROPIC_BASE_URL` pointed at a proxy — which is exactly how the native
+  path works — and was fixed in 2.1.276. A blocklist rather than a version
+  bound, because `<2.1.275` would also reject the build carrying the fix, and
+  because a bound can only say "outside tested range" while the reason is what
+  a reader needs. The *client* is checked separately from the harnesses: the
+  harness loop covers `claude` only when the config names it as a harness,
+  while every native dispatch runs inside whatever Claude Code is already
+  running.
+
 - `sonata init` no longer deletes a hand-added `[budget] daily_usd`.
   `nativeTomlFor` preserved `[run]`, `pricing_provider` and `[price]` but had
   no budget parameter at all, so a cap survived only until the next rewrite.

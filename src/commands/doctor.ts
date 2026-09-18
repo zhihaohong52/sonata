@@ -66,6 +66,39 @@ function cmp(a: [number, number, number], b: [number, number, number]): number {
 }
 
 /** Supports ranges of the form ">=X.Y.Z <A.B.C". */
+/**
+ * Versions of the `claude` binary known to be broken, and why.
+ *
+ * A blocklist rather than a `supportedVersions` bound, because the shape of
+ * the fact is "this one build is broken", not "everything below X". A range
+ * cannot say it: `<2.1.275` would reject 2.1.276, which carries the fix.
+ * Naming the reason is the point — the range check can only report "outside
+ * tested range", which tells a reader nothing about what will happen.
+ *
+ * 2.1.275 answered **every** request with a 400 naming
+ * `Input tag 'advisor_20260301'` whenever `ANTHROPIC_BASE_URL` pointed at a
+ * proxy or gateway. Sonata's entire native path works by pointing that
+ * variable at its own router, so on that build every routed request dies, and
+ * the 400 names neither the cause nor the fix — the same failure shape as the
+ * Codex `System messages are not allowed` and Azure `is not a 'regex'` 400s
+ * documented in CLAUDE.md, each of which read as a sonata or model fault.
+ */
+const CLAUDE_KNOWN_BAD: Record<string, string> = {
+  '2.1.275': "every request through a proxy fails with 400 `Input tag 'advisor_20260301'`"
+    + ' — sonata routes through its own proxy, so nothing works. Upgrade to 2.1.276',
+};
+
+/**
+ * Why this `claude` version is unusable with sonata, or `undefined`.
+ *
+ * The argument may carry the noise `claude --version` prints
+ * ("2.1.276 (Claude Code)"), so the triple is matched rather than compared.
+ */
+export function knownBadVersion(version: string): string | undefined {
+  const triple = /^\s*(\d+\.\d+\.\d+)/.exec(version)?.[1];
+  return triple === undefined ? undefined : CLAUDE_KNOWN_BAD[triple];
+}
+
 export function checkVersion(actual: string, range: string): boolean {
   const a = triple(actual);
   for (const part of range.trim().split(/\s+/)) {
@@ -913,17 +946,41 @@ export async function cmdDoctor(
     });
   }
 
+  // The *client*, checked separately from the harnesses. The loop below covers
+  // `claude` only when the config names it as a harness, while every native
+  // dispatch runs inside whatever Claude Code the user is already running — so
+  // a broken client breaks the primary lane and nothing above would say so.
+  // Reported only when the build is known bad: sonata does not otherwise have
+  // a tested range for the client, and inventing one would fail every future
+  // release.
+  try {
+    const { stdout } = await run('claude', ['--version'], { env: { ...process.env } });
+    const broken = knownBadVersion(stdout.trim());
+    if (broken !== undefined) {
+      checks.push({ name: 'claude code (client)', ok: false, detail: `${stdout.trim()} — ${broken}` });
+    }
+  } catch {
+    // No `claude` on PATH is not a sonata problem: `sonata dispatch` works
+    // without it, and a session that has one is running it already.
+  }
+
   for (const name of harnesses) {
     const adapter = getAdapter(name);
     try {
       const env = { ...process.env, PATH: `${process.env.HOME}/.opencode/bin:${process.env.PATH}` };
       const { stdout } = await run(adapter.versionCommand[0], adapter.versionCommand.slice(1), { env });
       const version = stdout.trim();
-      const ok = checkVersion(version, adapter.supportedVersions);
+      // A known-bad build fails even when it sits inside the tested range:
+      // `supportedVersions` says which versions were exercised, which is a
+      // different question from whether this one is broken.
+      const broken = name === 'claude' ? knownBadVersion(version) : undefined;
+      const ok = broken === undefined && checkVersion(version, adapter.supportedVersions);
       checks.push({
         name,
         ok,
-        detail: ok ? version : `${version} outside tested range ${adapter.supportedVersions}`,
+        detail: broken !== undefined
+          ? `${version} — ${broken}`
+          : ok ? version : `${version} outside tested range ${adapter.supportedVersions}`,
       });
 
       // Version alone does not mean usable: a harness can be installed, current

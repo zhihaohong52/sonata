@@ -1,4 +1,4 @@
-import type { SonataConfig } from '../../config.js';
+import { TIER_NAMES, type SonataConfig } from '../../config.js';
 import { splitCandidate } from '../../effort.js';
 
 /** One configured model as the models screen draws it. */
@@ -14,7 +14,12 @@ export interface ModelRow { key: string; route: string; tiers: string[] }
 export function modelRows(config: SonataConfig): ModelRow[] {
   const tiersByKey = new Map<string, string[]>();
   for (const [role, lists] of Object.entries(config.tiers ?? {})) {
-    for (const tier of ['simple', 'normal', 'complex'] as const) {
+    // `TIER_NAMES` rather than a literal: this repository has a documented
+    // failure where a constant rebuilt at a new call site drifts from its
+    // definition — `tiersCollapse` was rebuilt three times and one copy was
+    // wrong, promising 8 agent files where `sync` wrote 4. A literal here
+    // would silently omit any tier later added to the enum.
+    for (const tier of TIER_NAMES) {
       const candidates = lists[tier];
       if (candidates === undefined) continue;
       for (const candidate of candidates) {
