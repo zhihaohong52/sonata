@@ -23,7 +23,7 @@ export function OverviewScreen({ checks }: { checks: readonly Check[] }): React.
           </Text>
         ))}
       </Box>
-      <Box marginTop={1}><Text dimColor>b budget · q quit</Text></Box>
+      <Box marginTop={1}><Text dimColor>b budget · m models · q quit</Text></Box>
     </Box>
   );
 }

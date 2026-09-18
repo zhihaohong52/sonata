@@ -4,10 +4,12 @@ import { nextStep } from '../../src/tui-ink/steps.js';
 describe('nextStep', () => {
   it('opens the budget screen from the overview', () => {
     expect(nextStep('overview', 'b')).toBe('budget');
+    expect(nextStep('overview', 'm')).toBe('models');
   });
 
   it('returns to the overview from a screen', () => {
     expect(nextStep('budget', 'escape')).toBe('overview');
+    expect(nextStep('models', 'escape')).toBe('overview');
   });
 
   it('ignores an unknown key', () => {
