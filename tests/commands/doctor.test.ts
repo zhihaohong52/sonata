@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { checkVersion, cmdDoctor, staleMcpRegistration, routingFailureDetail } from '../../src/commands/doctor.js';
@@ -1342,3 +1342,37 @@ id = "gpt-5.6-sol"
   });
 });
 
+describe('doctor survives an unreadable agent file', () => {
+  // `outdatedAgents` deliberately propagates anything that is not ENOENT or
+  // ENOTDIR, so an unreadable file is not silently treated as "not ours".
+  // That is right for the function and wrong for the caller: unguarded, it
+  // made `sonata doctor` reject outright — and doctor is the command you run
+  // *when* the filesystem is in an odd state, so dying is the one thing it
+  // must not do. Reported as a check, which loses nothing and keeps the other
+  // twenty checks readable.
+  it('reports the unreadable file instead of throwing', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-perm-home-'));
+    const cwd = mkdtempSync(join(tmpdir(), 'sonata-perm-'));
+    mkdirSync(join(cwd, '.claude', 'agents'), { recursive: true });
+    writeFileSync(join(cwd, 'sonata.toml'), [
+      'schema_version = 1',
+      '[models."m1"]', 'gateway = "gw"', 'id = "x-1"',
+      '[native.gateways."gw"]', 'base_url = "https://example.test/v1"',
+      '[tiers.code]', 'simple = ["m1"]', 'complex = ["m1"]',
+    ].join('\n'));
+    const agent = join(cwd, '.claude', 'agents', 'code-simple.md');
+    writeFileSync(agent, 'x');
+    chmodSync(agent, 0o000);
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      // Whichever check notices first, the contract is the same: doctor
+      // returns, says it could not read the file, and keeps every other check.
+      const row = checks.find((c) => /could not be read/i.test(c.detail));
+      expect(row, 'expected a check naming the unreadable file').toBeDefined();
+      expect(row?.ok).toBe(false);
+      expect(checks.length).toBeGreaterThan(5);
+    } finally {
+      chmodSync(agent, 0o600);
+    }
+  });
+});

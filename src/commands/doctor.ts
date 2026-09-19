@@ -685,7 +685,25 @@ export async function cmdDoctor(
   // project whose agents had been generated two hours earlier went on running
   // the unbounded agent, and nothing said so.
   {
-    const outdated = outdatedAgents(agentsDir, plannedAgents(config));
+    // `outdatedAgents` deliberately propagates anything that is not ENOENT or
+    // ENOTDIR, so an unreadable file is never silently treated as "not ours".
+    // That is right for the function and wrong to leave unhandled here: doctor
+    // is the command you run *when* the filesystem is in an odd state, so it
+    // must report the problem rather than die of it. Measured: a mode-000
+    // agent file made `sonata doctor` reject outright, losing the other twenty
+    // checks along with it.
+    let outdated: string[] = [];
+    try {
+      outdated = outdatedAgents(agentsDir, plannedAgents(config));
+    } catch (error: unknown) {
+      checks.push({
+        name: 'agent freshness',
+        ok: false,
+        detail: `an agent file could not be read, so sonata cannot tell whether it is current — `
+          + `${error instanceof Error ? error.message : String(error)}`,
+      });
+      outdated = [];
+    }
     if (outdated.length > 0) {
       checks.push({
         name: 'agent freshness',
@@ -907,19 +925,40 @@ export async function cmdDoctor(
     }
   }
 
-  const wrappers = existsSync(agentsDir)
-    ? readdirSync(agentsDir).filter((f) => f.endsWith('.md')).filter((f) =>
-        readFileSync(join(agentsDir, f), 'utf8')
-          .includes('forwarding wrapper around the sonata runtime'))
-    : [];
-  const withBash = wrappers.filter((f) =>
-    /^tools:\s*Bash\s*$/m.test(readFileSync(join(agentsDir, f), 'utf8')));
+  // Read once per file, and never throw. This read was unguarded, so a single
+  // unreadable agent file — mode 000, a broken symlink, a directory sonata
+  // cannot traverse — made `sonata doctor` reject outright and take its other
+  // twenty checks with it. Doctor is the command you run *when* the filesystem
+  // is in an odd state, so it has to report what it cannot read rather than
+  // die of it. The same file was also being read three times over.
+  const unreadable: string[] = [];
+  const agentText = new Map<string, string>();
+  if (existsSync(agentsDir)) {
+    for (const f of readdirSync(agentsDir).filter((name) => name.endsWith('.md'))) {
+      try {
+        agentText.set(f, readFileSync(join(agentsDir, f), 'utf8'));
+      } catch {
+        unreadable.push(f);
+      }
+    }
+  }
+  if (unreadable.length > 0) {
+    checks.push({
+      name: 'agent files',
+      ok: false,
+      detail: `${unreadable.length} agent file(s) could not be read, so sonata cannot check them: `
+        + `${unreadable.slice(0, 3).join(', ')}${unreadable.length > 3 ? ', …' : ''}`,
+    });
+  }
+  const wrappers = [...agentText.keys()].filter((f) =>
+    agentText.get(f)!.includes('forwarding wrapper around the sonata runtime'));
+  const withBash = wrappers.filter((f) => /^tools:\s*Bash\s*$/m.test(agentText.get(f)!));
   // Catches both generations of removed MCP tool names: run/tail (pre-dispatch
   // rename) and dispatch/wait/approve (the MCP server itself, removed when the
   // Bash CLI replaced it) — an upgrade from either still has wrappers naming
   // tools that no longer exist.
   const stalePolling = wrappers.filter((f) =>
-    /mcp__[^_\s]+__(run|tail|dispatch|wait|approve)\b/.test(readFileSync(join(agentsDir, f), 'utf8')));
+    /mcp__[^_\s]+__(run|tail|dispatch|wait|approve)\b/.test(agentText.get(f)!));
   checks.push(stalePolling.length === 0
     ? { name: 'agent tools', ok: withBash.length === 0, detail: withBash.length === 0
         ? 'no wrapper grants Bash'

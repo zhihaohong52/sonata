@@ -118,3 +118,4 @@ describe('knownBadVersion', () => {
     expect(knownBadVersion('2.1.276 (Claude Code)')).toBeUndefined();
   });
 });
+
