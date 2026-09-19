@@ -2697,7 +2697,7 @@ daily_usd = 0.5
 `);
     appendRow(home, {
       ts: new Date().toISOString(), ms: 1, alias: 'sonata-code-simple', upstream: 'litellm',
-      status: 200, complete: true, tokens: { input: 1, output: 1 },
+      status: 200, complete: true, tokens: { input: 1, output: 1, cacheRead: 0, cacheCreation: 0 },
       price: { source: 'model', totalUsd: 9 }, attempts: [],
     });
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));

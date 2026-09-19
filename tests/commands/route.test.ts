@@ -33,6 +33,25 @@ import type { Settings, HookEntry } from '../../src/settings.js';
 import { readSettings } from '../../src/settings.js';
 import { loadConfig } from '../../src/config.js';
 
+/**
+ * A settings object as one is actually read off disk.
+ *
+ * `env` takes `unknown` values, not `string`, because `Settings` is
+ * `Record<string, unknown>` and a settings file is parsed JSON — it can hold a
+ * number where a string belongs. `routeEnv`'s `typeof v === 'string'` guard
+ * exists for exactly that. Typing this parameter as `Record<string, string>`
+ * made the non-string case unexpressible and silently turned the test below
+ * into one that asserted nothing about it.
+ */
+function settings(env: Record<string, unknown> = {}): Settings {
+  return { env };
+}
+
+function envOf(value: Settings): Record<string, unknown> {
+  const env = value.env;
+  return env !== undefined && typeof env === 'object' && env !== null ? env as Record<string, unknown> : {};
+}
+
 const NATIVE_TOML = `
 [native.models."deepseek"]
 gateway = "g"
@@ -216,12 +235,15 @@ describe('ensureServeCommand', () => {
 
 describe('routeEnv', () => {
   it('reads string env entries and ignores anything else', () => {
-    const settings: Settings = { env: { A: '1', N: 5 as unknown as string } };
-    expect(routeEnv(settings)).toEqual({ A: '1' });
+    // `N` is a number on purpose: this is the "anything else" the name means,
+    // and a settings file really can contain one.
+    const inputSettings: Settings = settings({ A: '1', N: 5 });
+    expect(routeEnv(inputSettings)).toEqual({ A: '1' });
   });
 
   it('returns an empty map without an env block', () => {
-    expect(routeEnv({})).toEqual({});
+    // The env block must be absent to exercise the missing-field branch.
+    expect(routeEnv({} as Settings)).toEqual({});
   });
 });
 
@@ -236,24 +258,24 @@ describe('custom headers', () => {
 
   it('route on writes the header at project scope and route off removes only it', () => {
     writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
-    const on = planRouteOn({ env: { ANTHROPIC_CUSTOM_HEADERS: 'X-Team: blue' } }, loadConfig(cwd, home), PACKAGE_ROOT, 'project', { routerPort: 4100, projectCwd: cwd });
-    expect(on.settings.env?.ANTHROPIC_CUSTOM_HEADERS).toBe(`X-Team: blue\nx-sonata-project: ${cwd}`);
+    const on = planRouteOn(settings({ ANTHROPIC_CUSTOM_HEADERS: 'X-Team: blue' }), loadConfig(cwd, home), PACKAGE_ROOT, 'project', { routerPort: 4100, projectCwd: cwd });
+    expect(envOf(on.settings).ANTHROPIC_CUSTOM_HEADERS).toBe(`X-Team: blue\nx-sonata-project: ${cwd}`);
     const off = planRouteOff(on.settings, PACKAGE_ROOT);
-    expect(off.settings.env?.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: blue');
-    expect(off.settings.env?.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(envOf(off.settings).ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: blue');
+    expect(envOf(off.settings).ANTHROPIC_BASE_URL).toBeUndefined();
   });
 
   it('route on at global scope strips a stale sonata header and is idempotent', () => {
     writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
     const on = planRouteOn(
-      { env: { ANTHROPIC_CUSTOM_HEADERS: 'X-Team: blue\nx-sonata-project: /p/old' } },
+      settings({ ANTHROPIC_CUSTOM_HEADERS: 'X-Team: blue\nx-sonata-project: /p/old' }),
       loadConfig(cwd, home),
       PACKAGE_ROOT,
       'global',
       { routerPort: 4100 },
     );
-    expect(on.settings.env?.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: blue');
-    expect(on.settings.env?.ANTHROPIC_CUSTOM_HEADERS).not.toContain('x-sonata-project:');
+    expect(envOf(on.settings).ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: blue');
+    expect(envOf(on.settings).ANTHROPIC_CUSTOM_HEADERS).not.toContain('x-sonata-project:');
 
     const twice = planRouteOn(on.settings, loadConfig(cwd, home), PACKAGE_ROOT, 'global', { routerPort: 4100 });
     expect(twice.changed).toBe(false);
@@ -263,11 +285,11 @@ describe('custom headers', () => {
 describe('planRouteOn', () => {
   it('adds the routing env and a SessionStart hook to an empty settings file', () => {
     const config = loadNativeConfig();
-    const plan = planRouteOn({}, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
+    const plan = planRouteOn(settings(), config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
 
     expect(plan.changed).toBe(true);
-    expect(plan.settings.env?.ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
-    expect(plan.settings.env?.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBe('64000');
+    expect(envOf(plan.settings).ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
+    expect(envOf(plan.settings).CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBe('64000');
     expect(plan.settings.hooks?.SessionStart).toBeDefined();
     const hook = (plan.settings.hooks!.SessionStart as HookEntry[]).flatMap((e) => e.hooks);
     expect(hook.map((h) => h.command)).toContain(ensureServeCommand(PACKAGE_ROOT, 4100));
@@ -278,8 +300,8 @@ describe('planRouteOn', () => {
   // when the config still held a sub-1M model would survive a config that no
   // longer has one — and keep constraining every bare alias in the session.
   it('drops a stale context floor when the config no longer needs one', () => {
-    const small = planRouteOn({}, loadNativeConfig(), PACKAGE_ROOT, 'project', { routerPort: 4100 });
-    expect(small.settings.env?.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBe('64000');
+    const small = planRouteOn(settings(), loadNativeConfig(), PACKAGE_ROOT, 'project', { routerPort: 4100 });
+    expect(envOf(small.settings).CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBe('64000');
 
     const allLarge = {
       native: {
@@ -290,14 +312,14 @@ describe('planRouteOn', () => {
       unifiedModels: {},
     } as never;
     const after = planRouteOn(small.settings, allLarge, PACKAGE_ROOT, 'project', { routerPort: 4100 });
-    expect(after.settings.env?.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBeUndefined();
+    expect(envOf(after.settings).CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBeUndefined();
     // The rest of the routing env is untouched.
-    expect(after.settings.env?.ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
+    expect(envOf(after.settings).ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
   });
 
   it('is a no-op when already routed', () => {
     const config = loadNativeConfig();
-    const once = planRouteOn({}, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
+    const once = planRouteOn(settings(), config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
     const twice = planRouteOn(once.settings, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
     expect(twice.changed).toBe(false);
   });
@@ -311,7 +333,7 @@ describe('planRouteOn', () => {
 
   it('installs the --global marker in the hook command at global scope', () => {
     const config = loadNativeConfig();
-    const plan = planRouteOn({}, config, PACKAGE_ROOT, 'global', { routerPort: 4100 });
+    const plan = planRouteOn(settings(), config, PACKAGE_ROOT, 'global', { routerPort: 4100 });
     const hook = (plan.settings.hooks!.SessionStart as HookEntry[]).flatMap((e) => e.hooks);
     expect(hook.map((h) => h.command)).toContain(ensureServeCommand(PACKAGE_ROOT, 4100, 'global'));
   });
@@ -321,17 +343,17 @@ describe('planRouteOn', () => {
     const settings: Settings = { env: { ANTHROPIC_BASE_URL: 'http://localhost:9999' } };
     const plan = planRouteOn(settings, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
     expect(plan.changed).toBe(true);
-    expect(plan.settings.env?.ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
+    expect(envOf(plan.settings).ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
   });
 
   it('preserves unrelated env vars while routing', () => {
     const config = loadNativeConfig();
-    const plan = planRouteOn({ env: { CUSTOM: 'keep' } }, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
-    expect(plan.settings.env?.CUSTOM).toBe('keep');
+    const plan = planRouteOn(settings({ CUSTOM: 'keep' }), config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
+    expect(envOf(plan.settings).CUSTOM).toBe('keep');
   });
 
   it('throws when the config has no native table', () => {
-    expect(() => planRouteOn({}, { native: undefined } as never, PACKAGE_ROOT, 'project', { routerPort: 4100 })).toThrow(/no \[native\] table/);
+    expect(() => planRouteOn(settings(), { native: undefined } as never, PACKAGE_ROOT, 'project', { routerPort: 4100 })).toThrow(/no \[native\] table/);
   });
 });
 
@@ -344,24 +366,24 @@ describe('planRouteOff', () => {
 
   it('removes the routing env and its hook, preserving other env and hooks', () => {
     const config = loadNativeConfig();
-    const on = planRouteOn({ env: { CUSTOM: 'keep' } }, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
+    const on = planRouteOn(settings({ CUSTOM: 'keep' }), config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
     const off = planRouteOff(on.settings, PACKAGE_ROOT);
 
     expect(off.changed).toBe(true);
-    expect(off.settings.env?.ANTHROPIC_BASE_URL).toBeUndefined();
-    expect(off.settings.env?.CUSTOM).toBe('keep');
+    expect(envOf(off.settings).ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(envOf(off.settings).CUSTOM).toBe('keep');
     expect(off.settings.hooks?.SessionStart ?? []).toHaveLength(0);
   });
 
   it('drops the env block when routing leaves nothing else in it', () => {
     const config = loadNativeConfig();
-    const on = planRouteOn({}, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
+    const on = planRouteOn(settings(), config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
     const off = planRouteOff(on.settings, PACKAGE_ROOT);
     expect('env' in off.settings).toBe(false);
   });
 
   it('is a no-op when not routed', () => {
-    const off = planRouteOff({ env: { CUSTOM: 'keep' } }, PACKAGE_ROOT);
+    const off = planRouteOff(settings({ CUSTOM: 'keep' }), PACKAGE_ROOT);
     expect(off.changed).toBe(false);
   });
 });
@@ -369,7 +391,7 @@ describe('planRouteOff', () => {
 describe('routeStatus', () => {
   it('reports on when env and hook both match the router', () => {
     const config = loadNativeConfig();
-    const on = planRouteOn({}, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
+    const on = planRouteOn(settings(), config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
     const status = routeStatus(on.settings, config, PACKAGE_ROOT);
     expect(status.on).toBe(true);
     expect(status.port).toBe(4100);
@@ -444,14 +466,14 @@ describe('cmdRoute', () => {
     await cmdRoute('auto', opts);
 
     const withLiveSession = JSON.parse(readFileSync(file, 'utf8')) as Settings;
-    expect(withLiveSession.env?.ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
+    expect(envOf(withLiveSession).ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
     expect(autoInstalled(withLiveSession, PACKAGE_ROOT)).toBe(true);
 
     writeSessions(routeSessionsFile(cwd), []);
     await cmdRoute('auto', opts);
 
     const withoutLiveSession = JSON.parse(readFileSync(file, 'utf8')) as Settings;
-    expect(withoutLiveSession.env?.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(envOf(withoutLiveSession).ANTHROPIC_BASE_URL).toBeUndefined();
     expect(autoInstalled(withoutLiveSession, PACKAGE_ROOT)).toBe(true);
   });
 });
@@ -500,18 +522,18 @@ describe('planRouteAuto / planRouteManual', () => {
     const on = planRouteOn(auto.settings, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
     const off = planRouteOff(on.settings, PACKAGE_ROOT);
     expect(autoInstalled(off.settings, PACKAGE_ROOT)).toBe(true);
-    expect(off.settings.env?.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(envOf(off.settings).ANTHROPIC_BASE_URL).toBeUndefined();
   });
 
   it('clears persistent route-on state when switching to auto — sessions must launch clean', () => {
     const config = loadNativeConfig();
     // Simulate `route on` having left persistent routing + its ensure-serve hook.
-    const on = planRouteOn({}, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
-    expect(on.settings.env?.ANTHROPIC_BASE_URL).toBeDefined();
+    const on = planRouteOn(settings(), config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
+    expect(envOf(on.settings).ANTHROPIC_BASE_URL).toBeDefined();
 
     const auto = planRouteAuto(on.settings, PACKAGE_ROOT);
     // The old persistent env and ensure-serve hook are gone...
-    expect(auto.settings.env?.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(envOf(auto.settings).ANTHROPIC_BASE_URL).toBeUndefined();
     expect(auto.changed).toBe(true);
     // ...and both auto lifecycle hooks are installed.
     expect(autoInstalled(auto.settings, PACKAGE_ROOT)).toBe(true);
@@ -523,11 +545,11 @@ describe('planRouteAuto / planRouteManual', () => {
 
   it('preserves persistent route-on state while registered auto sessions are live', () => {
     const config = loadNativeConfig();
-    const on = planRouteOn({}, config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
+    const on = planRouteOn(settings(), config, PACKAGE_ROOT, 'project', { routerPort: 4100 });
 
     const auto = planRouteAuto(on.settings, PACKAGE_ROOT, 'project', true);
 
-    expect(auto.settings.env?.ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
+    expect(envOf(auto.settings).ANTHROPIC_BASE_URL).toBe('http://localhost:4100');
     expect(autoInstalled(auto.settings, PACKAGE_ROOT)).toBe(true);
   });
 });
@@ -1235,9 +1257,9 @@ describe('route on — the project hint travels with its authorisation', () => {
     writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
     const token = ensureRouterToken(home);
 
-    const on = planRouteOn({ env: { ANTHROPIC_CUSTOM_HEADERS: 'X-Team: blue' } }, loadConfig(cwd, home), PACKAGE_ROOT, 'project',
+    const on = planRouteOn(settings({ ANTHROPIC_CUSTOM_HEADERS: 'X-Team: blue' }), loadConfig(cwd, home), PACKAGE_ROOT, 'project',
       { routerPort: 4100, projectCwd: cwd, projectHintToken: token });
-    const headers = on.settings.env!.ANTHROPIC_CUSTOM_HEADERS!;
+    const headers = String(envOf(on.settings).ANTHROPIC_CUSTOM_HEADERS);
     expect(headers).toContain('X-Team: blue');
     expect(headers).toContain(`x-sonata-project: ${cwd}`);
     expect(headers).toContain(`x-sonata-token: ${token}`);
@@ -1246,19 +1268,19 @@ describe('route on — the project hint travels with its authorisation', () => {
     // so both sonata lines are rewritten as a pair.
     const again = planRouteOn(on.settings, loadConfig(cwd, home), PACKAGE_ROOT, 'project',
       { routerPort: 4100, projectCwd: cwd, projectHintToken: 'rotated' });
-    const rewritten = again.settings.env!.ANTHROPIC_CUSTOM_HEADERS!;
+    const rewritten = String(envOf(again.settings).ANTHROPIC_CUSTOM_HEADERS);
     expect(rewritten).toContain('x-sonata-token: rotated');
     expect(rewritten).not.toContain(token);
     expect(rewritten.match(/x-sonata-project:/g)).toHaveLength(1);
 
     // `route off` removes both and keeps the user's own header.
     const off = planRouteOff(again.settings, PACKAGE_ROOT);
-    expect(off.settings.env?.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: blue');
+    expect(envOf(off.settings).ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: blue');
   });
 
   it('writes no token at global scope, where there is no one project to name', () => {
     writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
-    const on = planRouteOn({}, loadConfig(cwd, home), PACKAGE_ROOT, 'global', { routerPort: 4100 });
-    expect(on.settings.env?.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+    const on = planRouteOn(settings(), loadConfig(cwd, home), PACKAGE_ROOT, 'global', { routerPort: 4100 });
+    expect(envOf(on.settings).ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
   });
 });

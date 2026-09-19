@@ -13,6 +13,24 @@ let home: string;
 beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'sonata-ledger-')); });
 afterEach(() => { rmSync(home, { recursive: true, force: true }); });
 
+/**
+ * A row as a ledger file can actually hold it: arbitrary JSON.
+ *
+ * `readRows` parses lines off disk, so its real input is not `LedgerRow` — it
+ * is whatever JSON is in the file, including shapes no writer would produce.
+ * A `Partial<LedgerRow>` cannot express those, and narrowing to it silently
+ * turns a malformed-input test into a well-formed one: a `price: null` becomes
+ * `undefined` (which `JSON.stringify` drops entirely) and a price missing
+ * `totalUsd` becomes a valid one, so the reader keeps both and the test fails
+ * for the wrong reason.
+ *
+ * Every field the reader defends against is evidence its input is wider than
+ * the writer's type.
+ */
+function persistedRow(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return { ...row(), ...over };
+}
+
 function row(over: Partial<LedgerRow> = {}): LedgerRow {
   return {
     ts: '2026-08-27T04:12:07.881Z', ms: 100,
@@ -103,8 +121,8 @@ describe('appendRow / readRows', () => {
     const path = ledgerPathFor(home, new Date('2026-08-27T04:12:07.881Z'));
     // aggregate() dereferences price.source, so a null/malformed price must be
     // rejected here rather than throw downstream.
-    writeFileSync(path, `${readFileSync(path, 'utf8')}${JSON.stringify(row({ ts: '2026-08-27T05:55:00.000Z', alias: 'null-price', price: null }))}\n`);
-    writeFileSync(path, `${readFileSync(path, 'utf8')}${JSON.stringify(row({ ts: '2026-08-27T05:56:00.000Z', alias: 'bad-price', price: { source: 'model' } }))}\n`);
+    writeFileSync(path, `${readFileSync(path, 'utf8')}${JSON.stringify(persistedRow({ ts: '2026-08-27T05:55:00.000Z', alias: 'null-price', price: null }))}\n`);
+    writeFileSync(path, `${readFileSync(path, 'utf8')}${JSON.stringify(persistedRow({ ts: '2026-08-27T05:56:00.000Z', alias: 'bad-price', price: { source: 'model' } }))}\n`);
     const back = readRows(home, 0, Date.parse('2026-08-27T06:00:00Z'));
     expect(back).toHaveLength(1);
     expect(back[0].alias).toBe('sonata-code-simple');

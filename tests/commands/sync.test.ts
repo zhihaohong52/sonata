@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { agentMarkdown, cmdSync, nativeAgentMarkdown, tierAgentMarkdown, TIER_AGENT_MARKER } from '../../src/commands/sync.js';
+import { agentMarkdown, cmdSync, nativeAgentMarkdown, outdatedAgents, plannedAgents, tierAgentMarkdown, TIER_AGENT_MARKER } from '../../src/commands/sync.js';
+import { parseConfig, type SonataConfig } from '../../src/config.js';
 
 let cwd: string;
 
@@ -638,5 +639,89 @@ complex = ["simple-model"]
       'review-deepseek-v4-flash.md',
       'review-kimi-k3.md',
     ]);
+  });
+});
+
+describe('plannedAgents / outdatedAgents', () => {
+  // The gap this closes, measured 2026-09-18: PR #50 bounded tier-agent
+  // fan-out, and the insurance repository went on running the OLD unbounded
+  // `review-complex` — the one whose only guard was "keep fan-out
+  // proportionate", which spawned 8 children and exhausted a $200 cap. Its
+  // agent files were generated 00:14, two hours before the fix merged, and
+  // nothing ever said so: `staleAgents` compares FILENAMES, so an agent whose
+  // body is from an older sonata is invisible.
+  const config = (): SonataConfig => parseConfig(`
+schema_version = 1
+[models."m1"]
+gateway = "gw"
+id = "x-1"
+[native.gateways."gw"]
+base_url = "https://example.test/v1"
+[tiers.code]
+simple = ["m1"]
+complex = ["m1"]
+`);
+
+  it('plans one entry per agent it would write, with its content', () => {
+    const planned = plannedAgents(config());
+    expect(planned.length).toBeGreaterThan(0);
+    for (const entry of planned) {
+      expect(entry.name).toMatch(/^[a-z]+(-(simple|normal|complex))?$/);
+      expect(entry.content).toContain('## Fanning out');
+    }
+  });
+
+  it('reports an agent whose body differs from what sonata would write now', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sonata-outdated-'));
+    const planned = plannedAgents(config());
+    const first = planned[0]!;
+    // A body from an older sonata: sonata-marked, so it is one of ours, but
+    // missing the guidance the current generator emits.
+    writeFileSync(join(dir, `${first.name}.md`), `${TIER_AGENT_MARKER}
+old body
+`);
+    expect(outdatedAgents(dir, planned)).toContain(first.name);
+  });
+
+  it('plans the legacy per-model agents too, so untiered configs are covered', () => {
+    // Found by the final review gate. `plannedAgents` returned [] whenever
+    // `config.tiers` was absent, while `cmdSync` still wrote legacy per-model
+    // agents through its other branch — so an untiered config could carry
+    // bodies from an older generator and `doctor` would compare nothing and
+    // report nothing. A freshness check with a silent blind spot is the exact
+    // failure it exists to prevent.
+    const legacy = parseConfig(`
+schema_version = 1
+[models."kimi"]
+harness = "opencode"
+id = "openrouter/kimi"
+[generate.roles]
+code = ["kimi"]
+`);
+    const names = plannedAgents(legacy).map((a) => a.name);
+    expect(names).toContain('code-kimi');
+    expect(plannedAgents(legacy).every((a) => a.content.length > 0)).toBe(true);
+  });
+
+  it('reports nothing when every agent matches what sonata would write', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sonata-current-'));
+    const planned = plannedAgents(config());
+    for (const entry of planned) writeFileSync(join(dir, `${entry.name}.md`), entry.content);
+    expect(outdatedAgents(dir, planned)).toEqual([]);
+  });
+
+  it('ignores an agent file sonata does not own', () => {
+    // A hand-written agent sharing a generated name is never overwritten by
+    // `sync`, so reporting it as outdated would tell the user to run a command
+    // that would deliberately not fix it.
+    const dir = mkdtempSync(join(tmpdir(), 'sonata-handwritten-'));
+    const planned = plannedAgents(config());
+    writeFileSync(join(dir, `${planned[0]!.name}.md`), 'mine, no marker\n');
+    expect(outdatedAgents(dir, planned)).toEqual([]);
+  });
+
+  it('ignores an agent that is absent rather than outdated', () => {
+    // `sync` will write it; that is a different report from "stale body".
+    expect(outdatedAgents(mkdtempSync(join(tmpdir(), 'sonata-empty-')), plannedAgents(config()))).toEqual([]);
   });
 });
