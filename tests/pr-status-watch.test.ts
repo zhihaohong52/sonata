@@ -28,6 +28,23 @@ describe('watchTick', () => {
     expect(out.join(' ')).toMatch(/api\.github\.com/);
   });
 
+  it('survives a throwing first poll', () => {
+    const state = { previous: null, failures: 0 };
+    expect(() => watchTick({
+      poll: () => { throw new Error('first poll failed'); },
+      state, log: () => {}, maxFailures: 3,
+    })).not.toThrow();
+    expect(state.failures).toBe(1);
+  });
+
+  it('stops when the first poll is already clean', () => {
+    const state = { previous: null, failures: 0 };
+    expect(watchTick({
+      poll: () => [{ fingerprint: 'clean', text: 'PR #1', clean: true }],
+      state, log: () => {}, maxFailures: 3,
+    })).toBe('stop');
+  });
+
   it('gives up after repeated failures rather than spinning forever', () => {
     // A revoked token or a removed repo fails every time. Retrying silently
     // for hours is not better than stopping and saying why.

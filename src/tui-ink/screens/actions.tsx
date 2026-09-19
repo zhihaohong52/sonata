@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { join } from 'node:path';
 import { Box, Text, useInput } from 'ink';
 import { cmdSync } from '../../commands/sync.js';
@@ -8,7 +8,7 @@ import { actionRows, staleNames, summariseSync } from './action-rows.js';
 export function ActionsScreen({ cwd, home }: { cwd: string; home: string }): React.ReactElement {
   const [message, setMessage] = useState<string>();
   const [updating, setUpdating] = useState(false);
-  const [generation, setGeneration] = useState(0);
+  const requestId = useRef(0);
   useInput((input) => {
     if (input === 's') {
       try {
@@ -24,15 +24,14 @@ export function ActionsScreen({ cwd, home }: { cwd: string; home: string }): Rea
       catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
     }
     if (input === 'c') {
-      const current = generation + 1;
-      setGeneration(current);
+      const current = ++requestId.current;
       setUpdating(true);
       void cmdCatalogUpdate(home).then((result) => {
-        if (current !== generation + 1) return;
+        if (current !== requestId.current) return;
         setMessage(JSON.stringify(result));
         setUpdating(false);
       }).catch((error: unknown) => {
-        if (current !== generation + 1) return;
+        if (current !== requestId.current) return;
         setMessage(error instanceof Error ? error.message : String(error));
         setUpdating(false);
       });

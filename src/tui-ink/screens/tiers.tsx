@@ -41,8 +41,6 @@ export function TiersScreen(
   const [error, setError] = useState<string>();
 
   if (!loaded.ok) return <Message text={loaded.message} />;
-  if (error !== undefined) return <Message text={error} />;
-
   const { config } = loaded;
   const aa = loadAaCatalog(home);
   const modelsDev = loadModelsDev(home);
@@ -52,7 +50,9 @@ export function TiersScreen(
   }));
 
   return (
-    <AgentsApp
+    <>
+      {error !== undefined ? <Message text={error} /> : null}
+      <AgentsApp
       config={config}
       initialTiers={config.tiers ?? {}}
       items={items}
@@ -65,6 +65,7 @@ export function TiersScreen(
           setError(cause instanceof Error ? cause.message : String(cause));
         }
       }}
-    />
+      />
+    </>
   );
 }

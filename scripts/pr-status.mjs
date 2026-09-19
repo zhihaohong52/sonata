@@ -236,8 +236,15 @@ function main() {
     return run().every((r) => r.clean) ? 0 : 1;
   }
 
-  const state = { previous: run().map((r) => r.fingerprint).join('\n'), failures: 0 };
+  const state = { previous: null, failures: 0 };
   console.log(`watching every ${intervalMs / 1000}s — Ctrl-C to stop\n`);
+  const first = watchTick({
+    poll: run,
+    state,
+    log: (line) => console.log(line),
+    maxFailures: MAX_WATCH_FAILURES,
+  });
+  if (first === 'stop') return 0;
   const timer = setInterval(() => {
     const outcome = watchTick({
       poll: () => targets.map(report),

@@ -267,7 +267,7 @@ alongside the hooks, invoked as `/sonata:loop <feature description>`:
 2. **Route** — for each task, judge difficulty with the tier heuristic and
    dispatch `code-simple` or `code-complex`.
 3. **Gate** — after each task, dispatch `review-simple` on the diff. On
-   findings: dispatch a fix (same tier), re-review. **Escalation rule:** a
+   findings: decide the fix tier, dispatch at the lowest tier that approach allows, then re-review. The `skills/loop/SKILL.md` file is the source of record for this loop behaviour. **Escalation rule:** a
    task that fails review twice at `simple` re-runs at `complex`. **Loop
    bound:** at most 3 fix iterations per task, then surface to the user.
 4. **Final gate** — `review-complex` over the whole change before reporting

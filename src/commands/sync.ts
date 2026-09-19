@@ -5,7 +5,7 @@ import { generatedAgents, generatedNativeAgents, expectedAgentNames, isReadOnlyR
 
 /** One of the tiers a role can define. */
 type Tier = (typeof TIER_NAMES)[number];
-import { isSonataAgent, staleAgents } from '../detect.js';
+import { isSonataAgentText, staleAgents } from '../detect.js';
 import { TIER_AGENT_MARKER } from '../agent-markers.js';
 import { ROLE_BLURB } from '../roles.js';
 
@@ -629,8 +629,16 @@ export function outdatedAgents(agentsDir: string, planned: readonly PlannedAgent
   return planned
     .filter(({ name, content }) => {
       const path = join(agentsDir, `${name}.md`);
-      if (!existsSync(path) || !isSonataAgent(path)) return false;
-      return readFileSync(path, 'utf8') !== content;
+      let existing: string;
+      try {
+        existing = readFileSync(path, 'utf8');
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+        throw error;
+      }
+      if (!isSonataAgentText(existing)) return false;
+      return existing !== content;
     })
     .map(({ name }) => name);
 }
@@ -669,7 +677,7 @@ export function cmdSync(opts: SyncOptions): SyncResult {
     // precisely the drift `tiersCollapse` demonstrated.
     for (const { name, content } of plannedAgents(config)) {
       const path = join(opts.agentsDir, `${name}.md`);
-      if (existsSync(path) && !isSonataAgent(path)) {
+      if (existsSync(path) && !isSonataAgentText(readFileSync(path, 'utf8'))) {
         skipped.push(path);
         continue;
       }

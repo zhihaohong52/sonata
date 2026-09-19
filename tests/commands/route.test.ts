@@ -242,7 +242,8 @@ describe('routeEnv', () => {
   });
 
   it('returns an empty map without an env block', () => {
-    expect(routeEnv(settings())).toEqual({});
+    // The env block must be absent to exercise the missing-field branch.
+    expect(routeEnv({} as Settings)).toEqual({});
   });
 });
 
