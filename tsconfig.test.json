@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    // Lets a test import `scripts/*.mjs` (pr-status, release) without
+    // type-checking those scripts themselves: they are plain Node dev tools,
+    // and the point here is checking the tests that import them.
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx"]
+}

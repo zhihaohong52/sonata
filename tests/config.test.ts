@@ -562,7 +562,7 @@ litellm = 4101
 [native.gateways.codex]
 auth = "codex-oauth"
 credential_source = "${source}"
-`, '/tmp/x');
+`);
       expect(config.native!.gateways.codex.credentialSource).toBe(source);
     }
   });
@@ -575,7 +575,7 @@ router = 4100
 litellm = 4101
 [native.gateways.codex]
 auth = "codex-oauth"
-`, '/tmp/x');
+`);
     expect(config.native!.gateways.codex.credentialSource).toBeUndefined();
   });
 
@@ -588,7 +588,7 @@ litellm = 4101
 [native.gateways.codex]
 auth = "codex-oauth"
 credential_source = "keychain"
-`, '/tmp/x')).toThrow(/unknown credential_source "keychain".*sonata, codex, opencode/s);
+`)).toThrow(/unknown credential_source "keychain".*sonata, codex, opencode/s);
   });
 
   it('refuses codex as the source for an api-key gateway', () => {
@@ -602,7 +602,7 @@ litellm = 4101
 [native.gateways.openrouter]
 base_url = "https://openrouter.ai/api/v1"
 credential_source = "codex"
-`, '/tmp/x')).toThrow(/cannot take its credential from codex/);
+`)).toThrow(/cannot take its credential from codex/);
   });
 
   it('allows opencode as the source for an api-key gateway', () => {
@@ -615,7 +615,7 @@ litellm = 4101
 [native.gateways.openrouter]
 base_url = "https://openrouter.ai/api/v1"
 credential_source = "opencode"
-`, '/tmp/x');
+`);
     expect(config.native!.gateways.openrouter.credentialSource).toBe('opencode');
   });
 });

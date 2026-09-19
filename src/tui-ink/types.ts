@@ -10,7 +10,17 @@ export interface InitState {
   nativeKeys?: string[];          // selected native model keys
   roles?: string[];
   perRoleModels?: Record<string, string[]>; // legacy role -> model keys
-  tiers?: Record<string, { simple: string[]; complex: string[] }>;
+  /**
+   * The ranking captured per role, by tier.
+   *
+   * `normal` is optional because a config written before the three-tier work
+   * has only `simple` and `complex`, and `resolveTierAlias` treats an absent
+   * `normal` as valid rather than empty. It was missing from this type
+   * entirely until type-checking reached the tests: the wizard has been
+   * writing `normal` tiers since the feature shipped, so the type has been
+   * describing a shape the code does not produce.
+   */
+  tiers?: Record<string, { simple: string[]; normal?: string[]; complex: string[] }>;
   /**
    * Discard every saved `[tiers]` ranking and seed from a fresh proposal.
    *

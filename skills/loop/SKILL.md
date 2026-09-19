@@ -34,8 +34,12 @@ the task text directly as the trailing argument).
    advice, not binding) and dispatch `code-simple`, `code-normal` or
    `code-complex` with a self-contained task description — name the files to
    touch and the files to leave alone; never say "see the plan".
-3. **Gate.** After each task, dispatch `review-simple` on the diff. Findings →
-   dispatch a fix at the same tier, then re-review.
+3. **Gate.** After each task, dispatch `review-simple` on the diff. For each
+   finding, **decide the fix yourself first**, then dispatch the execution at
+   the lowest tier that approach allows — usually `-simple`, since nothing is
+   left to decide — and re-review. See *Decide the fix before dispatching it*
+   below; a fix dispatched undecided is what buys a `-complex` agent to make a
+   judgement you were better placed to make.
    - **Escalation rule:** a task that fails review twice re-runs one tier up,
      from scratch — `simple` to `normal`, `normal` to `complex`. A task that
      fails twice at `complex` stops and is reported, not re-run: another
@@ -44,7 +48,109 @@ the task text directly as the trailing argument).
      the findings to the user.
 4. **Final gate.** When every task passed, dispatch `review-complex` over the
    whole change. Keep the final gate at `review-complex` even when the tasks
-   used a lower tier; findings loop back through step 3.
+   used a lower tier; findings loop back through step 3. **Do not review it
+   yourself instead** — see *The final gate stays foreign* below.
+
+## The final gate stays foreign; you write its brief
+
+You will be tempted to run the final review yourself. You have the whole
+session in context — every decision, every measurement, every constraint you
+set — where a fresh `review-complex` has only a diff. Do it anyway, and do not
+substitute yourself for it.
+
+The reason is the reason the lane exists: a different model family reviewing
+Claude's work. An orchestrator reviewing its own orchestration re-validates its
+own reasoning, and it is indistinguishable from a real review from the outside
+— which is exactly what the `model`-argument bug produced by accident, a
+session's worth of "foreign-model reviews" that were Claude reviewing Claude.
+
+**What each catches is different, measured over one session.** The foreign
+gates found a constant rebuilt at a new call site, a fix whose tests did not
+cover the production call site at all (the bug could be reinstated with all 158
+tests still green), a CLI contradicting its own help text, and a crash on an
+invalid config. The orchestrator found two tests silently gutted by an agent
+and not reported, a subprocess regression that had just been introduced, and a
+type that had been describing a shape the code does not produce.
+
+That split is not luck. **You catch execution and verification failures** —
+claims that are not so, tests that stopped testing what they are named for,
+work reported as done that was not. **The gate catches correctness and design
+problems in code you are too close to**, because you wrote or specified it and
+will re-derive the same conclusion when you read it again.
+
+So do both, and do not confuse them:
+
+- **Verify every claim yourself.** Re-run the suite, re-read the diff, redo the
+  proof an agent said it produced. That is verification, not review, and it
+  does not substitute for the gate.
+- **Write the gate's brief.** Name what to scrutinise, hand over the
+  reproduction and the measured numbers, and say what is already settled so it
+  is not re-derived. A brief is where your context belongs — it is what turns a
+  generic review into a specific one, and it costs one paragraph.
+- **Do not tell it what you already suspect** when you want an independent
+  check on a specific worry. Asking it to "confirm or refute" a finding you
+  hand over is fine and cheap; staying silent is what tells you whether the
+  gate would have found it alone.
+
+## Decide the fix before dispatching it, and the tier drops
+
+After a review round, work out **how** each finding should be fixed before
+handing it to an agent. Then dispatch the execution, not the diagnosis.
+
+This is a tier lever, and the biggest one available. A task's difficulty is
+"how much has to be decided", so a fix whose approach is already settled is
+`-simple` however many files it touches — the same rule as *size is not
+difficulty*, applied to the thing you control. Dispatching an undecided fix
+buys a `-complex` agent to make a judgement you were better placed to make
+anyway: you have the review, the diff and the reproduction; the agent has a
+prompt.
+
+It is also where the expensive failures come from. Measured on one task,
+handed out with the approach left open: the agent narrowed a settings fixture
+to `Record<string, string>`, which made a test's "ignores anything else" case
+unexpressible, and narrowed a ledger fixture so a deliberately malformed price
+became a valid one — editing around a comment that said why it was malformed.
+Both tests then asserted nothing about what they were named for. Neither was
+reported; both were found by running the suite. Those were design decisions
+made badly, not execution mistakes, and the dispatch is what invited them.
+
+So the division of labour is:
+
+- **You decide**: the shape of the fix, which file it belongs in, what the type
+  or interface should be, and what must not change.
+- **The agent executes**: writes it, tests it, and reports — at `-simple` where
+  it would otherwise have been `-normal` or `-complex`.
+
+Hand over what you already know with it: the reproduction, the measured
+numbers, the exact call site. Re-deriving those is the most common way a run
+wastes its budget, and it is work you have already paid for.
+
+If you cannot decide the approach, that is the signal to dispatch `plan-*` or
+to investigate yourself first — not to give a `code-complex` agent an open
+question and hope.
+
+## Tell every agent to stop and ask rather than guess
+
+Put this in each dispatch, in as many words: **if you are stuck, blocked, or
+the task is ambiguous, stop and hand back with the specific question instead of
+guessing.**
+
+Handing back early is nearly free, and it loses nothing: `SendMessage` resumes
+*the same agent* with its context intact, so an answer costs one round trip
+rather than a fresh run. Guessing is the expensive path — a dispatch that
+churns on an ambiguity burns its whole budget and usually produces work that
+has to be redone anyway. Measured on one task that could not write to the
+repository: the agent explored and reasoned for three minutes and 76,000
+tokens before reporting that it had changed nothing.
+
+Two things make the ask cheap enough to be worth asking for:
+
+- **A fail-fast probe.** Have the agent attempt the smallest real action first
+  — writing one line to the file it will need — and stop immediately if that is
+  refused. The same blocked task cost a few hundred tokens the second time.
+- **Hand over what you already know.** A reproduction, a measured number, the
+  exact call site. Anything a `grep` settles is not worth a dispatch, and
+  re-deriving it is the most common way a run wastes its budget.
 
 ## If you are also running `superpowers:subagent-driven-development`
 

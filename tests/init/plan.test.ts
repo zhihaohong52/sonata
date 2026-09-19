@@ -159,7 +159,7 @@ describe('plan — the agent count it promises', () => {
     ['tiers as the fixture reconciles them', state.tiers],
   ] as const) {
     it(`promises exactly what sync will write, for ${name}`, () => {
-      const p = plan(env(), { ...state, tiers }, noCredentials, opts);
+      const p = plan(env(), { ...state, tiers: { code: { simple: [...tiers.code.simple], complex: [...tiers.code.complex] } } }, noCredentials, opts);
       const written = tierAgentNames(parseConfig(p.configToml).tiers!);
       expect(promisedAgentCount(p.summary)).toBe(written.length);
     });

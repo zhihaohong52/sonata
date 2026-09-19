@@ -16,8 +16,8 @@ function makeEnv(overrides: Partial<InitEnvironment> = {}): InitEnvironment {
       { harness: 'opencode', provider: 'deepseek', key: 'opencode/deepseek', count: 3 },
     ],
     allNativeCandidates: [
-      { key: 'openrouter-kimi-k3', gateway: 'openrouter', id: 'kimi-k3', contextWindow: 128000, auth: 'api-key' },
-      { key: 'deepseek-deepseek-v4-flash', gateway: 'deepseek', id: 'deepseek-v4-flash', contextWindow: 128000, auth: 'api-key' },
+      { key: 'openrouter-kimi-k3', gateway: 'openrouter', id: 'kimi-k3', contextWindow: 128000, baseUrl: 'https://example.test/v1', auth: 'api-key' },
+      { key: 'deepseek-deepseek-v4-flash', gateway: 'deepseek', id: 'deepseek-v4-flash', contextWindow: 128000, baseUrl: 'https://example.test/v1', auth: 'api-key' },
     ],
     providerBaseUrls: { openrouter: 'https://openrouter.ai/v1', deepseek: 'https://api.deepseek.com' },
     gatewayAuth: new Map([['openrouter', 'api-key'], ['deepseek', 'api-key']]),

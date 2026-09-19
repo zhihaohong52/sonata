@@ -19,7 +19,7 @@ beforeEach(() => {
 const detect = async () => ({
   tmux: { installed: true, version: '3.4', problems: [] },
   harnesses: [{
-    name: 'opencode', installed: true, version: '1.18.16', problems: [],
+    name: 'opencode', installed: true, version: '1.18.16', supported: true, problems: [],
     refs: [{ harness: 'opencode', provider: 'acme', id: 'fast', ref: 'acme/fast' }],
     authedProviders: ['acme'],
     providerBaseUrls: { acme: 'https://acme.example/v1' },
