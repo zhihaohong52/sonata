@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-09-20
+
 ### Fixed
 
 - `sonata init` no longer refuses to run on a machine with no harness
