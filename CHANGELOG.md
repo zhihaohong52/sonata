@@ -8,6 +8,26 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- `sonata init` no longer refuses to run on a machine with no harness
+  installed. `detectOpenCode` reported an absent opencode as an `error` — a
+  leftover from when opencode was the only harness, and the one blocking
+  problem in the preflight on such a machine, so the BYOK path that exists
+  precisely for it could never be reached. It is now reported the way pi,
+  codex and reasonix already report their own absence: not as a problem, with
+  the per-harness status line and the existing "no harness reported a usable
+  model provider" warning carrying the news.
+
+### Changed
+
+- Bumped vitest to 4.x, clearing seven Dependabot advisories (one critical,
+  one high, five moderate) against vitest, vite and esbuild. All were
+  dev-only — sonata's runtime dependencies are unaffected and nothing shipped
+  in the published tarball ever carried them. `restoreAllMocks` no longer
+  resets `vi.fn()` module mocks in vitest 3+, so `tests/cli-status.test.ts`
+  clears mock history explicitly.
+
 ## [0.11.0] - 2026-09-19
 
 ### Added
