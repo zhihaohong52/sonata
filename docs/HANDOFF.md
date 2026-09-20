@@ -1,24 +1,135 @@
-# Handoff — sonata after 0.10.0
+# Handoff — sonata after 0.11.0
 
-Originally written 2026-09-04 at the end of the 0.6.0 session; the state
-section was rewritten 2026-09-12 after 0.8.3. Read this before starting new
-work. It records what is done, what is deliberately *not* done, what to pick
-up if you want work, and the traps that have cost previous sessions real time.
+Originally written 2026-09-04 at the end of the 0.6.0 session; rewritten
+2026-09-12 after 0.8.3, and the top section again 2026-09-19 after 0.11.0.
+Read this before starting new work. It records what is done, what is
+deliberately *not* done, what to pick up if you want work, and the traps that
+have cost previous sessions real time.
 
-**The short version:** every roadmap item is built, shipped and released, and
-**nothing is queued**. The effort-tier work this file used to name as the one
-open task shipped as #34 and is in 0.9.0; the sentence naming it as unpushed
-survived two releases and sent at least one session looking for work that was
-already merged, which is the failure this file exists to prevent. What remains
-is judgement calls that belong to the user; read the 1.0 gate section before
-going looking.
+## 0.11.0 (2026-09-19) — read this part first
 
-**0.10.0 (2026-09-17)** was the largest cut since 0.6.0: a third tier
-(`normal`), the tier-selection rewrite, a local web UI on the router,
-per-task-only ranking, the model-override and fan-out warnings, and dev build
-stamps. Two issues are open, neither a live defect: **#41** (two hardening
-guards on the UI's run cache — fixed in PR #48) and **#47** (harness-lane token
-counts, deferred from #38's design and needing its own spec).
+Published to npm, provenance signed. It is the config TUI plus four user
+reports, all of which turned out to be real defects.
+
+**What shipped.** `sonata tui` (a bare `sonata` opens it on a terminal), with
+health, budget, models, providers, tiers, keys and actions screens;
+`sonata init --repropose-tiers`; three new `doctor` checks; and the OpenRouter
+provider fix. The bundled `sonata-loop` skill gained three rules — `skills/`
+ships in the tarball, so those reach every install.
+
+**Four user reports, four real bugs.** Worth knowing because each was reported
+as "a weird quirk" and none was:
+
+- *"simple has stronger agents than normal"* — the tier split was **inverted**.
+  `simple` led with a candidate 4.5x dearer per task than `normal`'s and reached
+  one 34x dearer by rank 4. A saved tier list is sticky, so `simple` and
+  `complex` were frozen from before the `@effort` grammar while `normal`, added
+  later, was seeded fresh. Two eras in one config. Fixed by
+  `--repropose-tiers` plus a doctor check that names candidates the cost cap
+  would now exclude.
+- *"deleted gateway models still appear when ranking"* — two bugs. The ranking
+  screen passed `[]` as its universe so nothing was ever recognised as
+  natively-routable, and bulk-accept (`A`) was separately dropping
+  selected-but-**uncosted** models. The fix is a universe of known native
+  candidates *minus* the selected ones.
+- *"`openrouter-z-ai-glm-5.3-flash` shows 0 input tokens"* — OpenRouter returns
+  `prompt_tokens` fine; the count dies in LiteLLM's generic OpenAI-compat
+  translation, and `PROVIDER_FOR_GATEWAY` never named `openrouter` so a known
+  vendor used the fallback its own comment reserves for the unknown.
+- *"`review-complex` goes on and on, spawning many child review subagents"* —
+  **not the agent misbehaving.** That project's agent files predated the
+  fan-out bounds by two hours and still carried the old prompt. See the next
+  section; this is the most important thing in the release.
+
+## A generated agent prompt does not reach a project until `sonata sync` runs *there*
+
+This is the trap most likely to cost the next session real time, because it is
+invisible and it makes a shipped fix look like it did not work.
+
+`.claude/agents/*.md` are generated. A fix to the generator changes nothing in
+any existing project until someone runs `sonata sync` in that project. Until
+0.11.0 nothing reported it: `staleAgents` compares **filenames**, so an agent
+that keeps its name and carries an older sonata's body was invisible.
+
+Measured 2026-09-18. PR #50 bounded tier-agent fan-out after one
+`review-complex` spawned eight children and exhausted a $200 gateway budget. A
+project whose agents were generated **00:14**, two hours before that merge at
+**02:34**, went on running the unbounded prompt — and its user reported exactly
+the behaviour the fix had removed.
+
+`sonata doctor` now says so (`agent freshness`), and `plannedAgents` is shared
+by `cmdSync` and `doctor` so the two cannot disagree about what sonata writes.
+**If a prompt-level fix appears not to have worked, check the agent file's
+body before doubting the fix.**
+
+Note the bounds are prompt text. `tools:` frontmatter grants tools, not
+permitted argument values, so a model can still ignore them. Real enforcement
+needs a PreToolUse hook on the Agent tool that can identify its calling agent,
+which has never been probed. If the behaviour recurs on *current* agents, that
+is the signal the hook is worth building.
+
+## Open, in the order I would take it
+
+1. **17 test type errors.** `tsconfig.test.json` and `npm run typecheck:tests`
+   exist; tests were never type-checked before 0.11.0, and turning it on found
+   69 errors — including `InitState.tiers` typed without `normal` while the
+   wizard had been writing `normal` tiers since the three-tier release. 52 are
+   fixed. `typecheck:tests` is deliberately **not** part of `typecheck` until
+   the rest are zero.
+
+   **Read this before touching them.** A fixture's type must describe what the
+   code can actually receive, not the happy path. Narrowing one past reality
+   silently destroys the test: typing a settings `env` as
+   `Record<string, string>` made `routeEnv`'s *"ignores anything else"* case
+   unexpressible; typing a ledger row as `Partial<LedgerRow>` turned
+   `price: null` into `undefined` and a malformed price into a valid one; and
+   the same factory later made a test named for an **absent** `env` block pass
+   `{ env: {} }`. Three instances in one branch. Every `typeof`,
+   `Array.isArray`, null-guard or `try/catch` in the code under test is
+   evidence its real input is wider than the type you are about to write.
+
+2. **`[budget]` and `avoid_gateways` on the machine config** — proposed and
+   declined-by-silence, not forgotten. Measured over 7 days: anexto took ~$48
+   priced while codex work showed ~$27 **covered** (subscription, free at the
+   margin). `daily_usd = 15` in the *machine* config would bound the metered
+   lane and ignore covered work automatically, since the cap counts priced
+   volume only; `avoid_gateways = ["anexto"]` would demote metered models below
+   subscription ones without excluding them. This is the user's file and the
+   user's money — **ask, do not apply**.
+
+3. **Issue #47** (harness-lane token counts) — still parked, deliberately. It
+   wants a spec, not a patch: per-harness readers would put harness knowledge
+   outside the adapter boundary, two clocks and two identities need
+   reconciling, and it needs a decision on whether `[budget]` should bound
+   spend it can never refuse. Its own text says it is not urgent.
+
+4. **`e2e.test.ts` is now the suite's critical path** (~23s of a ~30s wall),
+   after the `doctor` fix took that file from 17.1s to 8.7s. Lower value than
+   the above; it is doing real tmux work.
+
+## Traps this session paid for, that are not obvious
+
+- **`sonata usage` can under-report.** A completed stream that reports no
+  prompt tokens is priced on its **output alone** — 226 such requests over 7
+  days on one machine. `sonata usage` now reports them beside the total rather
+  than folding them in, but the cost figure for those rows is still low by
+  roughly the prompt:output ratio.
+- **CodeRabbit does not review this repository automatically** (under 10
+  stars). A PR gets **no review at all** until someone posts
+  `@coderabbitai review`, and a head pushed after a review stays unreviewed.
+  `pr-status.mjs`'s "no automatic review on this repo" is accurate, not a
+  parsing failure — it was misread as a stale verdict for most of a session.
+- **`pr-status.mjs --watch` used to exit 0 having stopped watching.** Fixed,
+  but the shape is worth remembering: a guard that dies silently is
+  indistinguishable from a guard reporting all-clear.
+- **`sonata doctor` no longer dies of a file it cannot read.** It used to: one
+  mode-000 agent file made it reject outright and lose its other twenty checks.
+  Doctor is the command you run *when* the filesystem is odd.
+- **Verify an agent's "confirmed failing first" claim.** Three dispatches in a
+  row reported "No test suite found" as their red step — an empty probe file,
+  which proves nothing. Ask for an **assertion** failure, and re-derive the
+  proof yourself when it matters: twice this session an agent's fix was right
+  and its test could not have caught a regression.
 
 ## The tier set is three, not two (2026-09-16)
 
