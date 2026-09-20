@@ -22,7 +22,10 @@ import {
   type AvailableCredentials,
   type ProviderOption,
 } from '../app-state.js';
-import { isOauthGatewayAuth, type NativeGatewayAuth } from '../../config.js';
+import { isAnthropicRoutedName, isOauthGatewayAuth, type NativeGatewayAuth } from '../../config.js';
+import { proposePricingProvider } from '../../pricing.js';
+import type { ModelsDevCache } from '../../modelsdev.js';
+import { loginGateway as defaultLoginGateway, type LoginResult } from '../../native/oauth-login.js';
 import { fetchModels as defaultFetchModels } from '../../native/models.js';
 import type { InitState } from '../types.js';
 
@@ -73,6 +76,8 @@ export interface ProvidersStepProps {
   gatewayAuth: Record<string, NativeGatewayAuth>;
   storedKeys: Record<string, string>;
   fetchModels?: typeof defaultFetchModels;
+  modelsDevCache?: ModelsDevCache;
+  loginGateway?: typeof defaultLoginGateway;
   state: InitState;
   onChange: (updater: (current: InitState) => InitState) => void;
   onContinue: () => void;
@@ -90,8 +95,70 @@ type Screen =
   | { kind: 'custom-format'; name: string; url: string }
   | { kind: 'credential-choice'; provider: ProviderOption }
   | { kind: 'login'; provider: ProviderOption }
+  | { kind: 'oauth-models'; provider: ProviderOption; ids: string[] }
   | { kind: 'key-entry'; provider: ProviderOption }
   | { kind: 'byok'; name: string; url: string };
+
+/**
+ * Resolve the models.dev catalogue without making OAuth credentials look like
+ * API keys.
+ *
+ * Read from `providers` (the priced map) rather than `names`, which lists more.
+ * models.dev carries models it has not costed, and on `openai` those are the
+ * four image models — not something a tier can dispatch to. Priced-only also
+ * matches how the rest of sonata treats a model: the budget, the ledger and
+ * tier ranking all need a rate. The cost is that an uncosted *chat* model on
+ * some other provider is dropped silently, which is the better failure than
+ * offering a model no tier can rank or bill.
+ */
+export function oauthModelIds(
+  cache: ModelsDevCache | undefined,
+  gateway: string,
+  auth: NativeGatewayAuth,
+): string[] {
+  const provider = proposePricingProvider(gateway, auth)?.[0];
+  if (provider === undefined || cache?.providers[provider] === undefined) return [];
+  return Object.keys(cache.providers[provider]).filter((id) => !isAnthropicRoutedName(id));
+}
+
+export function parseOAuthModelIds(value: string): string[] {
+  return [...new Set(value.split(',').map((id) => id.trim()).filter((id) => id !== '' && !isAnthropicRoutedName(id)))];
+}
+
+export interface OAuthModelsStepProps {
+  provider: string;
+  modelIds: string[];
+  onSubmit: (ids: string[]) => void;
+  onBack: () => void;
+  onCancel: () => void;
+}
+
+/** OAuth has no bearer key and no usable `/models` endpoint, so it goes straight to this picker. */
+export function OAuthModelsStep({ provider, modelIds, onSubmit, onBack, onCancel }: OAuthModelsStepProps): React.ReactElement {
+  if (modelIds.length === 0) {
+    return (
+      <TextInput
+        key={`providers-oauth-ids-${provider}`}
+        title={`Model ids for ${provider} (comma-separated)`}
+        hint="models.dev has no cached list — enter ids by hand"
+        validate={(value) => parseOAuthModelIds(value).length > 0 ? undefined : 'Enter at least one model id.'}
+        onSubmit={(value) => onSubmit(parseOAuthModelIds(value))}
+        onBack={onBack}
+        onCancel={onCancel}
+      />
+    );
+  }
+  return (
+    <MultiSelect
+      key={`providers-oauth-models-${provider}`}
+      title={`Models for ${provider}`}
+      items={modelIds.map((id) => ({ value: id, label: id }))}
+      onSubmit={onSubmit}
+      onBack={onBack}
+      onCancel={onCancel}
+    />
+  );
+}
 
 /**
  * Replaces the old flat "log in / import from codex / import from opencode /
@@ -102,7 +169,7 @@ type Screen =
 export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
   const {
     home, harnesses, providers, byokProviders, credentialAvailability, gatewayAuth, storedKeys,
-    fetchModels = defaultFetchModels, state, onChange, onContinue, onBack, onCancel,
+    fetchModels = defaultFetchModels, modelsDevCache, loginGateway, state, onChange, onContinue, onBack, onCancel,
   } = props;
   const [screen, setScreen] = useState<Screen>({ kind: 'menu' });
   const [problem, setProblem] = useState<string | undefined>(undefined);
@@ -370,6 +437,7 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
         home={home}
         gateway={provider.provider}
         auth={auth}
+        {...(loginGateway === undefined ? {} : { loginGateway })}
         onDone={(result) => {
           if (result.ok) {
             onChange((current) => ({
@@ -377,12 +445,37 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
               providerKeys: [...new Set([...(current.providerKeys ?? []), provider.key])],
               credentialSources: { ...current.credentialSources, [provider.provider]: 'sonata' },
             }));
-            setScreen({ kind: 'menu' });
+            setScreen({
+              kind: 'oauth-models',
+              provider,
+              ids: oauthModelIds(modelsDevCache, provider.provider, auth),
+            });
           } else {
             setProblem(result.problem ?? 'Login failed.');
             setScreen({ kind: 'credential-choice', provider });
           }
         }}
+      />
+    );
+  }
+
+  if (screen.kind === 'oauth-models') {
+    const { provider, ids } = screen;
+    return (
+      <OAuthModelsStep
+        key={`providers-oauth-models-${provider.provider}`}
+        provider={provider.provider}
+        modelIds={ids}
+        onSubmit={(selected) => {
+          onChange((current) => applyStep({
+            ...current,
+            providerKeys: [...new Set([...(current.providerKeys ?? []), provider.key])],
+            credentialSources: { ...current.credentialSources, [provider.provider]: 'sonata' },
+          }, 5, { provider: provider.provider, ids: selected }));
+          setScreen({ kind: 'menu' });
+        }}
+        onBack={() => setScreen({ kind: 'login', provider })}
+        onCancel={onCancel}
       />
     );
   }

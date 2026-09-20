@@ -19,7 +19,15 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   codex CLI and no opencode present. Only the route to it was missing.
   `PROVIDER_OAUTH_AUTHS` now records which providers *can* authenticate by
   OAuth, kept deliberately separate from `oauthProvidersFor`, which answers
-  the different question of which credentials already *exist*.
+  the different question of which credentials already *exist*. Completing the
+  login then offers that gateway's models from the models.dev catalogue sonata
+  already caches — the same source opencode builds its own catalogue from —
+  since an OAuth gateway has no bearer key and its endpoint is not
+  OpenAI-shaped, so the live `/models` refresh skips it and the credential
+  would otherwise be recorded with no model to use it. Reserved `claude-` ids
+  are filtered out, because the router sends that prefix to Anthropic and
+  `parseConfig` refuses them; a cache that knows nothing about the provider
+  falls back to entering ids by hand rather than an empty picker.
 - A BYOK gateway chosen as OAuth no longer takes a metered `base_url`. The
   well-known URL for `openai`/`codex` is `api.openai.com`, which a ChatGPT
   subscription reaches only to be refused with `insufficient_quota` after
