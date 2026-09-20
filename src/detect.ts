@@ -330,11 +330,14 @@ export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
       supported: false,
       refs: [],
       authedProviders: [],
-      problems: [{
-        severity: 'error',
-        message: 'opencode is not installed',
-        fix: 'curl -fsSL https://opencode.ai/install | bash',
-      }],
+      // Absence is not a problem, matching pi, codex and reasonix below. It was
+      // an error from when opencode was the only harness, and it outlived that:
+      // on a machine with no harness at all it was the one blocking error in
+      // `sonata init`'s preflight, so the BYOK path — which exists precisely
+      // for that machine, and which `discover.ts` downgrades to a warning two
+      // lines below — could never be reached. The absence is still reported,
+      // by the per-harness status line and by that warning.
+      problems: [],
     };
   }
 

@@ -42,6 +42,10 @@ function cell(over: Record<string, unknown> = {}) {
 
 describe('sonata status CLI wiring', () => {
   afterEach(() => {
+    // `restoreAllMocks` restores `vi.spyOn` spies only (vitest 3 narrowed it),
+    // so the module mocks above keep their call history without this — which a
+    // `not.toHaveBeenCalled()` assertion reads as a real call.
+    vi.clearAllMocks();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
