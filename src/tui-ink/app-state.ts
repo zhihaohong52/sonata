@@ -1,7 +1,7 @@
 import { byokCandidateKey } from '../native/models.js';
 import { splitCandidate } from '../effort.js';
 import { reconcileTierList } from '../init/helpers.js';
-import { TIER_NAMES, type CredentialSource } from '../config.js';
+import { TIER_NAMES, isOauthGatewayAuth, type CredentialSource, type NativeGatewayAuth } from '../config.js';
 import type { TierProposal } from '../catalog.js';
 import type { InitState } from './types.js';
 
@@ -24,6 +24,17 @@ export function byokProviderKey(name: string): string {
 /** The provider name behind a `byok/<name>` picker key, or undefined. */
 export function byokProviderName(key: string): string | undefined {
   return key.startsWith('byok/') ? key.slice('byok/'.length) : undefined;
+}
+
+export type ByokProviderRoute = 'byok' | 'credential-choice' | 'login';
+
+/** Choose the credential flow for a known BYOK provider. */
+export function byokProviderRoute(
+  auth: NativeGatewayAuth | undefined,
+  keyEntryAvailable: boolean | undefined,
+): ByokProviderRoute {
+  if (auth === undefined || !isOauthGatewayAuth(auth)) return 'byok';
+  return keyEntryAvailable ? 'credential-choice' : 'login';
 }
 
 export interface ByokModelsValue {

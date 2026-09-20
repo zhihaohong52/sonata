@@ -12,6 +12,7 @@ import {
   applyStep,
   byokProviderKey,
   byokProviderName,
+  byokProviderRoute,
   configuredProviderNames,
   importableProviders,
   importHint,
@@ -119,7 +120,15 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
   const routeToProvider = (provider: ProviderOption) => {
     if (provider.harness === 'byok') {
       const known = byokProviders.find((p) => p.name === provider.provider);
-      if (known !== undefined) setScreen({ kind: 'byok', name: known.name, url: known.url });
+      if (known === undefined) return;
+      const byokOption = { ...provider, key: byokProviderKey(provider.provider) };
+      const route = byokProviderRoute(
+        gatewayAuth[provider.provider],
+        credentialAvailability[provider.provider]?.keyEntryAvailable,
+      );
+      if (route === 'credential-choice') setScreen({ kind: route, provider: byokOption });
+      else if (route === 'login') setScreen({ kind: route, provider: byokOption });
+      else setScreen({ kind: route, name: known.name, url: known.url });
       return;
     }
     const auth = gatewayAuth[provider.provider];

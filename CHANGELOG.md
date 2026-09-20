@@ -8,6 +8,30 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- `sonata init`'s Add provider flow can now reach ChatGPT OAuth. Every BYOK
+  row was routed straight to key entry, so a provider offered without a
+  harness — which is every provider on a machine with none installed — could
+  only ever be an API key. The capability was already there and already
+  worked: sonata's `CHATGPT_CLIENT_ID` is the same OAuth app opencode uses,
+  and the device flow runs standalone from sonata's own LiteLLM venv with no
+  codex CLI and no opencode present. Only the route to it was missing.
+  `PROVIDER_OAUTH_AUTHS` now records which providers *can* authenticate by
+  OAuth, kept deliberately separate from `oauthProvidersFor`, which answers
+  the different question of which credentials already *exist*.
+- A BYOK gateway chosen as OAuth no longer takes a metered `base_url`. The
+  well-known URL for `openai`/`codex` is `api.openai.com`, which a ChatGPT
+  subscription reaches only to be refused with `insufficient_quota` after
+  passing auth — a failure that reads as a missing key. The URL is still
+  correct for a real API key, so it is the OAuth case that now resolves to
+  its own implied endpoint rather than the entry being removed.
+- `sonata auth login` no longer ignores sonata's own LiteLLM venv. It
+  resolved the interpreter with `command -v litellm`, so on a machine with no
+  pip-installed litellm the login failed with `pip install 'litellm[proxy]'`
+  even though `sonata litellm install` had already provisioned the managed
+  venv. It now prefers the managed path and names the right command.
+
 ## [0.11.1] - 2026-09-20
 
 ### Fixed

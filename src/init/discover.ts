@@ -30,7 +30,7 @@ import {
 import { migrateLegacyConfig } from '../normalize.js';
 import { wellKnownProviders } from '../native/models.js';
 import { byokProviderKey } from '../tui-ink/app-state.js';
-import { oauthProvidersFor, nativeCandidatesFrom, configNativeCandidates, gatewayNamesOf, avoidedKeysOf, dedupeOauthProviders, type NativeCandidate, configPathFor, defaultDetector, OPENCODE_RANGE } from './helpers.js';
+import { oauthProvidersFor, PROVIDER_OAUTH_AUTHS, nativeCandidatesFrom, configNativeCandidates, gatewayNamesOf, avoidedKeysOf, dedupeOauthProviders, type NativeCandidate, configPathFor, defaultDetector, OPENCODE_RANGE } from './helpers.js';
 import type { Detector, ConfigScope, Detection, InitOptions } from './helpers.js';
 
 export interface InitEnvironment {
@@ -184,6 +184,12 @@ export async function discover(
     for (const [gateway, gatewayConfig] of Object.entries(config?.native?.gateways ?? {})) {
       gatewayAuth.set(gateway, gatewayConfig.auth);
     }
+  }
+  // Capability is known from the provider name, while oauthProviders is only
+  // evidence of an existing credential. Keeping these separate lets Add
+  // provider offer OAuth login before the user has logged in.
+  for (const [gateway, auth] of Object.entries(PROVIDER_OAUTH_AUTHS)) {
+    if (!gatewayAuth.has(gateway)) gatewayAuth.set(gateway, auth);
   }
   for (const [gateway, auth] of oauthProviders) gatewayAuth.set(gateway, auth);
   const detectedNativeCandidates = nativeCandidatesFrom(allRefs, providerBaseUrls, oauthProviders);

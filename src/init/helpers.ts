@@ -51,6 +51,17 @@ export type ConfigScope = 'project' | 'global';
  * Copilot entitlement. So two providers resolving to the same kind are the
  * same upstream, reached twice.
  */
+/** Provider names that can offer an OAuth authentication method even when no
+ * existing credential is present. This is capability metadata, not evidence
+ * that the user is logged in; keep it separate from oauthProvidersFor.
+ */
+export const PROVIDER_OAUTH_AUTHS: Readonly<Record<string, NativeGatewayAuth>> = {
+  openai: 'codex-oauth',
+  'openai-codex': 'codex-oauth',
+  codex: 'codex-oauth',
+  'github-copilot': 'copilot-oauth',
+};
+
 const OAUTH_CANONICAL_PROVIDER: Record<string, string> = {
   'codex-oauth': 'codex',
   'copilot-oauth': 'github-copilot',
