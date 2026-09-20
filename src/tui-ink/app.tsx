@@ -5,7 +5,8 @@ import { RankedSelect } from './components/ranked-select.js';
 import { ProvidersStep } from './components/providers-step.js';
 import { ModelsStep } from './components/models-step.js';
 import { candidateLabel, expandCandidates, hasTaskCost, loadAaCatalog, proposeTiers, taskCostedCandidates, unpinnedVariants } from '../catalog.js';
-import { loadModelsDev } from '../modelsdev.js';
+import { loadModelsDev, type ModelsDevCache } from '../modelsdev.js';
+import { loginGateway as defaultLoginGateway } from '../native/oauth-login.js';
 import { catalogSpellingsForGateway } from '../pricing.js';
 import {
   applyStep,
@@ -86,6 +87,10 @@ export interface WizardData {
   harnessOnlyUpstreams?: Partial<Record<'project' | 'global', Record<string, string>>>;
   /** Injected so tests never reach the network. */
   fetchModels?: typeof defaultFetchModels;
+  /** Cached models.dev catalogue, injected so provider screens stay pure. */
+  modelsDevCache?: ModelsDevCache;
+  /** OAuth login seam for the provider wizard. */
+  loginGateway?: typeof defaultLoginGateway;
   initialState?: InitState;
   initialStateByScope?: Partial<Record<'project' | 'global', InitState>>;
 }
@@ -217,6 +222,8 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         gatewayAuth={data.gatewayAuth ?? {}}
         storedKeys={data.storedKeys}
         fetchModels={data.fetchModels ?? defaultFetchModels}
+        modelsDevCache={data.modelsDevCache ?? loadModelsDev(data.home)}
+        loginGateway={data.loginGateway}
         state={state}
         onChange={setState}
         onContinue={() => {

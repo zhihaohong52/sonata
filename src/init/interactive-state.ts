@@ -157,7 +157,7 @@ export async function interactiveState(
   for (const provider of result.state.customProviders ?? []) {
     byokUrls.set(provider.name, provider.url);
   }
-  addByokCandidates(nativeByKey, byokUrls, result.state.byokModels ?? {}, result.state.customWireFormats);
+  addByokCandidates(nativeByKey, byokUrls, result.state.byokModels ?? {}, result.state.customWireFormats, env.gatewayAuth);
   addLiveCandidates(env, nativeByKey, result.state.liveModels ?? {});
   rewriteOauthToApiKey(nativeByKey, result.state.byokKeys ?? {});
   const credentialSources = result.state.credentialSources ?? {};

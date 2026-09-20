@@ -5,6 +5,7 @@ import {
   applyStep,
   byokProviderKey,
   byokProviderName,
+  byokProviderRoute,
   candidatesForProviders,
   mergeLiveCandidates,
   addProviderCatalog,
@@ -131,6 +132,15 @@ describe('BYOK providers', () => {
     expect(byokProviderKey('deepseek')).toBe('byok/deepseek');
     expect(byokProviderName('byok/deepseek')).toBe('deepseek');
     expect(byokProviderName('opencode-groq')).toBeUndefined();
+  });
+
+  it.each([
+    ['non-OAuth gateway uses model picker', 'api-key', undefined, 'byok'],
+    ['OAuth gateway with API-key target offers choice', 'codex-oauth', true, 'credential-choice'],
+    ['OAuth gateway without API-key target goes to login', 'codex-oauth', false, 'login'],
+    ['unknown gateway uses model picker', undefined, false, 'byok'],
+  ] as const)('%s', (_label, auth, keyEntryAvailable, expected) => {
+    expect(byokProviderRoute(auth, keyEntryAvailable)).toBe(expected);
   });
 
   it('records byok models into byokModels and nativeKeys', () => {

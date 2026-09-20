@@ -11,6 +11,15 @@ const oauth = (key: string, gateway: string, id: string, baseUrl: string): Nativ
   ({ key, gateway, id, contextWindow: 128000, baseUrl, auth: 'codex-oauth' });
 
 describe('addByokCandidates', () => {
+  it('uses the selected OAuth auth and provider backend URL', () => {
+    const nativeByKey = new Map<string, NativeCandidate>();
+    addByokCandidates(nativeByKey, new Map([['openai', 'https://api.openai.com/v1']]),
+      { openai: ['gpt-5.6'] }, {}, new Map([['openai', 'codex-oauth']]));
+    expect(nativeByKey.get('openai-gpt-5.6')).toMatchObject({
+      auth: 'codex-oauth', baseUrl: 'https://chatgpt.com/backend-api/codex',
+    });
+  });
+
   it('falls back to WELL_KNOWN_PROVIDER_URLS when the caller did not pass a URL for the gateway', () => {
     // plan() passes env.providerBaseUrls (a live-detected subset); a
     // --providers byok/<x> row whose gateway no harness has surfaced must
