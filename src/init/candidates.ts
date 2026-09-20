@@ -18,7 +18,7 @@
  * candidate whose auth had just been flipped to `api-key`, so the config
  * got a route that authenticates and then 401s. Single source lives here.
  */
-import { isOauthGatewayAuth } from '../config.js';
+import { isOauthGatewayAuth, oauthGatewayBaseUrl, type NativeGatewayAuth } from '../config.js';
 import { WELL_KNOWN_PROVIDER_URLS } from '../detect.js';
 import { byokCandidateKey } from '../native/models.js';
 import type { NativeCandidate } from './helpers.js';
@@ -49,15 +49,18 @@ export function addByokCandidates(
   byokUrls: ReadonlyMap<string, string>,
   byokModels: Record<string, string[]>,
   wireFormats: Record<string, 'anthropic'> = {},
+  gatewayAuth: ReadonlyMap<string, NativeGatewayAuth> = new Map(),
 ): void {
   for (const [gateway, ids] of Object.entries(byokModels)) {
     const baseUrl = byokUrls.get(gateway) ?? WELL_KNOWN_PROVIDER_URLS[gateway];
     if (baseUrl === undefined) continue;
     const wireFormat = wireFormats[gateway];
+    const auth = gatewayAuth.get(gateway) ?? 'api-key';
     for (const id of ids) {
       const key = byokCandidateKey(gateway, id);
       nativeByKey.set(key, {
-        key, gateway, id, contextWindow: 128000, baseUrl, auth: 'api-key',
+        key, gateway, id, contextWindow: 128000,
+        baseUrl: isOauthGatewayAuth(auth) ? oauthGatewayBaseUrl(auth) : baseUrl, auth,
         ...(wireFormat !== undefined ? { wireFormat } : {}),
       });
     }

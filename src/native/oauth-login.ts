@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { NativeGatewayAuth } from '../config.js';
+import { managedLitellmPath } from './litellm-venv.js';
 
 export interface LoginProgress {
   /** A line LiteLLM printed - includes the verification URL and user code. */
@@ -61,9 +62,15 @@ function scriptFor(auth: NativeGatewayAuth): string {
  * The interpreter that owns `litellm` is the one named in its shebang - a bare
  * `python3` may be a different install with no litellm on its path.
  */
-export function resolveInterpreter(): string {
-  const path = execFileSync('sh', ['-c', 'command -v litellm'], { encoding: 'utf8' }).trim();
-  if (path === '') throw new Error('litellm is not installed');
+export function resolveInterpreter(home: string, which?: (bin: string) => string | undefined): string {
+  const managed = managedLitellmPath(home);
+  const path = existsSync(managed)
+    ? managed
+    : (which ?? ((bin: string) => {
+      const result = execFileSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' }).trim();
+      return result === '' ? undefined : result;
+    }))('litellm');
+  if (path === undefined) throw new Error('litellm is not installed');
   const first = readFileSync(path, 'utf8').split('\n', 1)[0] ?? '';
   if (!first.startsWith('#!')) throw new Error(`litellm at ${path} has no interpreter line`);
   return first.slice(2).trim();
@@ -80,9 +87,9 @@ export async function loginGateway(opts: {
 }): Promise<LoginResult> {
   let interpreter: string;
   try {
-    interpreter = opts.interpreter ?? resolveInterpreter();
+    interpreter = opts.interpreter ?? resolveInterpreter(opts.home);
   } catch (err) {
-    return { ok: false, problem: `${(err as Error).message}. Install it: pip install 'litellm[proxy]'` };
+    return { ok: false, problem: `${(err as Error).message}. Install it: sonata litellm install` };
   }
 
   const dir = credentialDir(opts.home, opts.gateway);

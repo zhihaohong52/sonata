@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { credentialDir, loginGateway } from '../../src/native/oauth-login.js';
+import { credentialDir, loginGateway, resolveInterpreter } from '../../src/native/oauth-login.js';
 
 const FAKE = join(process.cwd(), 'tests/fixtures/litellm/fake-authenticator.mjs');
 
@@ -72,7 +72,29 @@ describe('loginGateway', () => {
     expect(result.ok).toBe(false);
   });
 
-  it('fails with install guidance when litellm is absent', async () => {
+  it('prefers the managed LiteLLM interpreter', () => {
+    const script = join(home, '.config', 'sonata', 'litellm', 'bin', 'litellm');
+    mkdirSync(join(home, '.config', 'sonata', 'litellm', 'bin'), { recursive: true });
+    writeFileSync(script, '#!/managed/python\n');
+    expect(resolveInterpreter(home)).toBe('/managed/python');
+  });
+
+  it('falls back to the PATH LiteLLM interpreter when managed LiteLLM is absent', () => {
+    const script = join(home, 'path-litellm');
+    writeFileSync(script, '#!/path/litellm-python\n');
+    expect(resolveInterpreter(home, () => script)).toBe('/path/litellm-python');
+  });
+
+  it('fails when LiteLLM is absent', () => {
+    expect(() => resolveInterpreter(home, () => undefined)).toThrow('litellm is not installed');
+  });
+
+  // Kept at the `loginGateway` level as well as the resolver's: the resolver
+  // throws, and it is this try/catch that has to turn that into a reportable
+  // problem rather than an exception escaping the command. Testing only
+  // `resolveInterpreter` leaves that conversion uncovered, and it is the part
+  // the user actually sees.
+  it('reports install guidance naming sonata litellm install', async () => {
     const result = await loginGateway({
       home, gateway: 'codex', auth: 'codex-oauth', progress, interpreter: '/nonexistent/python',
     });

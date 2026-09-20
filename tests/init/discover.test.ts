@@ -45,6 +45,22 @@ describe('discover', () => {
     expect(env.existingHookScope).toBeUndefined();
   });
 
+  it('seeds OAuth capability for a known provider before login exists', async () => {
+    const env = await discover({ cwd, home, packageRoot: cwd, detect: detector }, () => {});
+    expect(env.gatewayAuth.get('openai')).toBe('codex-oauth');
+    expect(env.gatewayAuth.get('github-copilot')).toBe('copilot-oauth');
+  });
+
+  it('preserves configured gateway auth over capability defaults', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), [
+      '[native.gateways."openai"]',
+      'base_url = "https://proxy.example/v1"',
+      'auth = "api-key"',
+    ].join('\n'));
+    const env = await discover({ cwd, home, packageRoot: cwd, detect: detector }, () => {});
+    expect(env.gatewayAuth.get('openai')).toBe('api-key');
+  });
+
   const twoHarnessDetector = async () => ({
     tmux: { installed: true, version: '3.4', problems: [] },
     harnesses: [
