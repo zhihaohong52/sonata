@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-09-20
+
 ### Fixed
 
 - `sonata init`'s Add provider flow can now reach ChatGPT OAuth. Every BYOK
