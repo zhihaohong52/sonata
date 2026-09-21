@@ -1,5 +1,6 @@
 import type { HarnessAdapter, LaunchPlan, PlanInput } from './types.js';
 import { isReadOnlyRole } from '../config.js';
+import { wireEffort } from '../effort.js';
 
 /**
  * Empty, and that is the finding rather than an omission.
@@ -82,7 +83,9 @@ function buildScript(input: PlanInput): LaunchPlan {
   // Safe to place before the positional message: `opencode run --help` on
   // 1.18.29 declares `--variant` as `[string]`, unlike `-f`, which is `[array]`
   // and greedily eats the next positional — the bug the note below exists for.
-  if (input.effort !== undefined) flags.push(`--variant ${input.effort}`);
+  // `default` passes no `--variant`, so opencode uses the model's own default.
+  const variant = wireEffort(input.effort);
+  if (variant !== undefined) flags.push(`--variant ${variant}`);
 
   // `-f` is declared as an array option, so it greedily consumes any following
   // positional. The message MUST come before `-f` or opencode treats the prompt

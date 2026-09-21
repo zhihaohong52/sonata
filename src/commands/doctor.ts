@@ -29,7 +29,7 @@ import { findLitellm } from '../native/litellm.js';
 import { litellmRequired } from '../native/providers.js';
 import { litellmStatus, type InstallerDeps } from '../native/litellm-venv.js';
 import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm.js';
-import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, hasTaskCost, loadAaCatalog, proposeTiers } from '../catalog.js';
+import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, catalogFamily, hasTaskCost, loadAaCatalog, normalizedFor, proposeTiers } from '../catalog.js';
 import { loadModelsDev } from '../modelsdev.js';
 import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
@@ -159,6 +159,38 @@ export function overCeilingSimple(
   proposed: { simple: readonly string[]; normal: readonly string[] },
 ): string[] {
   return savedSimple.filter((key) => !proposed.simple.includes(key) && proposed.normal.includes(key));
+}
+
+/**
+ * Tier candidates pinned `@none` that the catalog says were never evaluated
+ * at a level at all — so the pin means "disable reasoning" on a model whose
+ * score was measured with reasoning on.
+ *
+ * Returns key → the roles holding it.
+ *
+ * Only a POSITIVE catalog statement counts. A model the catalog does not
+ * score says nothing about its levels, and a model that genuinely has a
+ * `none` variant is correctly pinned — flagging either would report a fault
+ * that is not there, on a config the user may have tuned by hand.
+ */
+export function strandedNoneCandidates(
+  tiers: Record<string, { simple: string[]; normal?: string[]; complex: string[] }>,
+  familyOf: (key: string) => { variants: ReadonlyMap<string, unknown> } | undefined,
+): Map<string, Set<string>> {
+  const stranded = new Map<string, Set<string>>();
+  for (const [role, lists] of Object.entries(tiers)) {
+    for (const list of [lists.simple, lists.normal ?? [], lists.complex]) {
+      for (const candidate of list) {
+        const { key, effort } = splitCandidate(candidate);
+        if (effort !== 'none') continue;
+        const fam = familyOf(key);
+        if (fam === undefined || fam.variants.has('none')) continue;
+        if (!fam.variants.has('default')) continue;
+        stranded.set(key, (stranded.get(key) ?? new Set()).add(role));
+      }
+    }
+  }
+  return stranded;
 }
 
 export function staleMcpRegistration(cwd: string, home: string): string | undefined {
@@ -481,6 +513,32 @@ export async function cmdDoctor(
           });
         }
       }
+      // A saved `@none` is only ever correct when the catalog says AA
+      // evaluated that model with reasoning explicitly OFF. Where the catalog
+      // now says `default` — AA stated no level — the entry predates that
+      // distinction, and sonata is ranking the model on its reasoning-on
+      // score while sending `reasoning_effort: none`. Most models degrade
+      // silently under that; one whose endpoint mandates reasoning 400s every
+      // request, which is how this was found. Nothing re-proposes a saved
+      // ranking, so it is said outright.
+      {
+        const stranded = strandedNoneCandidates(
+          config.tiers ?? {},
+          (key) => catalogFamily(normalizedFor(key, gateways, resolver), catalog),
+        );
+        if (stranded.size > 0) {
+          const named = [...stranded].map(([key, roles]) => `${key} (${[...roles].sort().join(', ')})`);
+          checks.push({
+            name: 'effort freshness',
+            ok: false,
+            detail: `${stranded.size} model(s) are pinned @none but the catalog states no level for them, `
+              + 'so they are ranked on a reasoning score and then asked not to reason — '
+              + `${named.slice(0, 3).join('; ')}${named.length > 3 ? `; and ${named.length - 3} more` : ''}. `
+              + 'A model whose endpoint mandates reasoning fails every request this way. '
+              + 'Re-rank with `sonata init --repropose-tiers`, or edit the entries to `@default`',
+          });
+        }
+      }
       // A catalog written before effort levels existed has no `family` on any
       // row, so the refusal cannot fire and nothing here could show it: a
       // config with an unpinned candidate loads for months and then stops
@@ -492,6 +550,21 @@ export async function cmdDoctor(
           name: 'effort levels',
           ok: true,
           detail: 'catalog has no effort levels — run `sonata catalog update` to enable the check',
+        });
+      } else if (!Object.values(catalog.models).some((entry) => entry.effort === 'default')) {
+        // A catalog written before the none/default split recorded "AA stated
+        // no level" as `none`, so it still proposes `@none` for every such
+        // model and the `effort freshness` check above can never fire. The
+        // test is airtight rather than heuristic: `default` is a new enum
+        // member that nothing could write before this change, and on a real
+        // catalog 235 of 315 families take it — so its total absence means
+        // the cache predates the fix, and its presence means it does not.
+        checks.push({
+          name: 'effort levels',
+          ok: true,
+          detail: 'catalog predates the none/default split, so models AA states no level for are '
+            + 'still recorded as reasoning-off — run `sonata catalog update`, then '
+            + '`sonata init --repropose-tiers`',
         });
       }
     }

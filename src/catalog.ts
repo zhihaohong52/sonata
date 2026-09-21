@@ -394,7 +394,7 @@ const identityUpstream: UpstreamFor = (key) => key;
  * first spelling that scores wins, so a later one can only add a score where
  * there was none, never move a model that already matches.
  */
-function normalizedFor(key: string, providers: readonly string[], upstreamFor: UpstreamFor): string[] {
+export function normalizedFor(key: string, providers: readonly string[], upstreamFor: UpstreamFor): string[] {
   const upstream = upstreamFor(key);
   const spellings = typeof upstream === 'string' ? [upstream] : upstream;
   // Each spelling is offered stripped of the configured gateway names, then

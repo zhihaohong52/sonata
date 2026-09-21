@@ -153,10 +153,15 @@ describe('cmdCatalogUpdate — effort variants', () => {
     // A level-ending slug follows AA's convention: its family is the slug
     // with the level suffix removed, even when that could be a natural name.
     expect(models['summit-high']).toMatchObject({ family: 'summit', effort: 'high' });
-    // A parenthetical that is not a level states no level, which is itself a
-    // level: the row is its own family at `none`, so the key is pinnable and
-    // cannot silently run at the gateway's default.
-    expect(models['plodder']).toMatchObject({ family: 'plodder', effort: 'none' });
+    // A parenthetical that is not a level means AA STATED no level — which is
+    // not the same fact as "reasoning was off", and recording it as `none`
+    // made sonata rank a model on its reasoning-on score and then send
+    // `reasoning_effort: none`. It is `default`: still its own family, still
+    // pinnable, still never bare — but it runs the model as it ships.
+    expect(models['plodder']).toMatchObject({ family: 'plodder', effort: 'default' });
+    // And the explicit spelling still means what it says, or the distinction
+    // this pair encodes would be lost again.
+    expect(models['sprinter-non-reasoning']).toMatchObject({ effort: 'none' });
   });
 });
 

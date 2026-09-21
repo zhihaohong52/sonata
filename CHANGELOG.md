@@ -10,6 +10,52 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **A model Artificial Analysis states no effort level for is no longer
+  recorded as "reasoning off".** `parseAaEffort` already told the two apart —
+  returning `none` only for an explicit `Non-Reasoning` — and the catalog then
+  coerced `undefined` to `none`, throwing the distinction away. Measured on a
+  real catalog: **235 of 315 families** were `none` on that coercion alone,
+  among them `claude-4-5-sonnet-thinking`, `claude-4-5-haiku-reasoning` and
+  `gemini-2-5-pro` — models ranked on a reasoning score and then sent
+  `reasoning_effort: none`, which is exactly the mismatch the `@<effort>`
+  grammar exists to prevent. Most degraded silently. `glm-5.3-flash` failed
+  loudly, its endpoint answering `Reasoning is mandatory for this endpoint and
+  cannot be disabled` to every request, so all 24 of its ranked entries 400d
+  unconditionally.
+
+  Such a row is now recorded `@default` — send no `reasoning_effort` at all,
+  which is both what AA measured and what "as it ships" means. It stays a
+  family of one and is still never offered bare, so a candidate continues to
+  name the level it will run at. After refreshing, the same catalog reports
+  225 `default` against 73 genuinely `none`.
+
+  `default` is deliberately **not** sent as the literal string, although
+  LiteLLM's own signature accepts one: the `direct` transport bypasses LiteLLM
+  and posts to an Anthropic-native gateway that has no `reasoning_effort`
+  field at all, so omitting is the only behaviour correct on both transports.
+  `wireEffort` is the single definition the router and all four adapters share
+  — codex passes no `-c model_reasoning_effort`, opencode no `--variant`, pi
+  no `--thinking` (distinct from `none`, which maps to pi's `off` and actively
+  disables thinking).
+- **A fourth capability-400 signature: `Reasoning is mandatory`.** The safety
+  net for configs already written with `@none`, which stay that way until
+  their owner re-proposes tiers. A true capability failure by the definition
+  the list uses: the request is well-formed and the next candidate serves it.
+- **`sonata doctor` reports both halves.** `effort freshness` names tier
+  entries pinned `@none` that the catalog states no level for, and only on a
+  positive catalog statement — an unscored model says nothing, and a model
+  that genuinely has a `none` variant is correctly pinned. `effort levels`
+  additionally detects a catalog cache written before the split, since the fix
+  is otherwise invisible until `sonata catalog update` runs; the test is
+  airtight rather than heuristic, because `default` is a new enum member
+  nothing could have written before.
+
+### Changed
+
+- `EFFORT_LEVELS` gains `default`, the one member that is not wire vocabulary.
+
+### Fixed
+
 - **The router retries every candidate-specific status, instead of an
   allow-list.** The set was `{5xx, 429, 401, 403}`, which was wrong in one
   direction only: every status nobody had enumerated counted as fatal, so a
