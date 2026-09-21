@@ -1859,6 +1859,48 @@ litellm = 4000
     expect(result.killed).toBe(true);
   });
 
+  it('escalates to SIGKILL when a recorded pid ignores SIGTERM', async () => {
+    // The measured case, 2026-09-21: LiteLLM blocked on an interactive
+    // ChatGPT device-code login does not act on SIGTERM — it sits in its
+    // 15-minute poll. `sonata restart` waited out its window and threw,
+    // leaving the process alive and the port unusable, so the next restart
+    // added another one. Six were found on one machine, oldest six hours.
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
+
+    const termed: number[] = [];
+    const killed: number[] = [];
+    // Alive until SIGKILL lands, which is exactly what SIGTERM-deaf means.
+    const dead = new Set<number>();
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, sleep: async () => {},
+      kill: (pid) => termed.push(pid),
+      forceKill: (pid) => { killed.push(pid); dead.add(pid); },
+      isAlive: (pid) => !dead.has(pid),
+      timeoutMs: 0,
+    });
+
+    expect(termed).toEqual([111, 222]);
+    expect(killed).toEqual([111, 222]);
+    expect(result.killed).toBe(true);
+  });
+
+  it('still reports failure for a pid that survives even SIGKILL', async () => {
+    // SIGKILL is not refusable, so this is an unkillable-state pid (uninterruptible
+    // I/O, say). It must still be reported rather than looped on forever — and
+    // the message must say SIGKILL was tried, or the obvious next step looks
+    // like the one already taken.
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111 }));
+
+    const err = await stopServe({
+      cwd, home, probeHealth: sonataHealth, sleep: async () => {},
+      kill: () => {}, forceKill: () => {}, isAlive: () => true, timeoutMs: 0,
+    }).catch((e) => e as Error);
+
+    expect((err as Error).message).toMatch(/did not respond to SIGKILL/);
+  });
+
   it('ignores another port\'s record rather than killing that daemon', async () => {
     // The reason state is keyed by port at all. One global file meant the
     // second project's daemon overwrote the first's pids, and a restart in
