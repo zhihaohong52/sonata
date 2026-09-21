@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { parseConfig, tierAgentNames } from '../../src/config.js';
+import { parseConfig, tierAgentNames, type SonataConfig } from '../../src/config.js';
 import { plan, type CredentialProbe } from '../../src/init/plan.js';
 import { litellmRequired } from '../../src/native/providers.js';
 import { aaCatalogPath } from '../../src/catalog.js';
@@ -60,19 +60,22 @@ describe('plan — the config it emits', () => {
   // With no saved models, every model counts as newly added and is merged at
   // its proposal rank, which swamps any saved order — so a harness without
   // this cannot tell stickiness from a fresh proposal at all.
+  // Deliberately a partial config: these tests care only about the saved
+  // models, and `as unknown as SonataConfig` says that, where the previous
+  // `as never` said nothing and made the value unspreadable below.
   const existing = {
     unifiedModels: {
       'acme-fast': { gateway: 'acme', id: 'fast' },
       'flaky-slow': { gateway: 'flaky-gw', id: 'slow' },
     },
-  } as never;
+  } as unknown as SonataConfig;
 
   it('carries an existing [budget] through a whole init', () => {
     // The sibling failure a nativeTomlFor test alone cannot catch: the writer
     // emits the key correctly but the call site never passes it. Only a
     // round-trip through the real plan proves the wiring.
     const p = plan(
-      env({ configsByScope: { project: { ...existing, budget: { dailyUsd: 25 } } as never } }),
+      env({ configsByScope: { project: { ...existing, budget: { dailyUsd: 25 } } as SonataConfig } }),
       state, noCredentials, opts);
     expect(parseConfig(p.configToml).budget).toEqual({ dailyUsd: 25 });
   });

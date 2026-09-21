@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { discover } from '../../src/init/discover.js';
+import type { Detector } from '../../src/init/discover.js';
 
 let home: string;
 let cwd: string;
@@ -11,7 +12,7 @@ beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), 'sonata-disc-cwd-'));
 });
 
-const detector = async () => ({
+const detector: Detector = async () => ({
   tmux: { installed: true, version: '3.4', problems: [] },
   harnesses: [],
 });
@@ -61,7 +62,7 @@ describe('discover', () => {
     expect(env.gatewayAuth.get('openai')).toBe('api-key');
   });
 
-  const twoHarnessDetector = async () => ({
+  const twoHarnessDetector: Detector = async () => ({
     tmux: { installed: true, version: '3.4', problems: [] },
     harnesses: [
       {

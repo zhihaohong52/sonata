@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { cmdInit } from '../../src/commands/init.js';
 import { discover } from '../../src/init/discover.js';
+import type { Detector } from '../../src/init/discover.js';
 import { scriptedState } from '../../src/init/scripted-state.js';
 import { plan } from '../../src/init/plan.js';
 import { loadConfig } from '../../src/config.js';
@@ -16,7 +17,7 @@ beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), 'sonata-run-cwd-'));
 });
 
-const detect = async () => ({
+const detect: Detector = async () => ({
   tmux: { installed: true, version: '3.4', problems: [] },
   harnesses: [{
     name: 'opencode', installed: true, version: '1.18.16', supported: true, problems: [],

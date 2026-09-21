@@ -226,6 +226,11 @@ function killPid(pid: number | undefined): void {
   try { process.kill(pid); } catch { /* already dead */ }
 }
 
+function forcePid(pid: number | undefined): void {
+  if (typeof pid !== 'number' || pid <= 0) return;
+  try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
+}
+
 function killRecordedOrphan(home: string, routerPort: number): void {
   const found = readServeStateFrom(home, routerPort);
   killPid(found?.state.litellmPid);
@@ -320,9 +325,21 @@ export async function defaultWaitForLitellm(
             'master key — it belongs to another sonata daemon, and every request routed through it ' +
             'would fail authentication. Give this project its own `[native.ports] litellm` port, ' +
             'or stop the other daemon with `sonata restart` in the project that owns it.'
-          : `sonata serve: litellm did not come up on port ${port} within 30s — ` +
-            'it may have failed to bind (another litellm running?) or failed to start. ' +
-            'Check `litellm --config` by hand.',
+          // The old wording named only "failed to bind (another litellm
+          // running?)", which is the rarer cause and sends the reader to
+          // `lsof`. The common one is an OAuth credential whose refresh token
+          // has expired: LiteLLM falls back to an INTERACTIVE device-code
+          // login and blocks there, so uvicorn never binds and the prompt is
+          // printed into a daemon log nobody is reading. Measured twice on
+          // 2026-09-21, and it cost two sessions ~40 minutes each because the
+          // message pointed away from the log line that named the cause.
+          : `sonata serve: litellm did not come up on port ${port} within 30s. ` +
+            'Most often an OAuth credential has expired and litellm is blocked on an ' +
+            'interactive sign-in it cannot complete — look for "Sign in with ChatGPT using ' +
+            'device code" or "re-login required" earlier in this log, and fix it with ' +
+            '`sonata auth login <gateway>` (or `codex login` for a gateway with ' +
+            '`credential_source = "codex"`). Otherwise it failed to bind or failed to ' +
+            'start; check `litellm --config` by hand.',
       );
     }
     await sleep(500);
@@ -1179,7 +1196,29 @@ export async function cmdServe(
     // in-process caller: before eager startup moved after `listen`, this path
     // could only fail before a socket existed.
     stopping = true;
-    child?.kill();
+    // SIGTERM then SIGKILL, not SIGTERM alone. A LiteLLM that failed to come
+    // up is frequently one BLOCKED on an interactive device-code login — the
+    // expired-ChatGPT-credential case — and such a child ignores SIGTERM for
+    // the whole of its 15-minute poll. It was therefore orphaned here (PPID 1)
+    // on every failed startup, while `rmSync(tempDir)` below pulled its config
+    // out from under it. Six such orphans were found on one machine on
+    // 2026-09-21, oldest six hours, none holding the port it was started for,
+    // each one making the next `sonata restart` look like it had failed too.
+    //
+    // Killing is unconditional and needs no grace period: this child never
+    // became ready, so it is serving nothing and has nothing to flush.
+    const dying = child;
+    if (dying !== undefined) {
+      const exited = new Promise<void>((resolve) => {
+        if (dying.onExit) dying.onExit(() => resolve());
+        else resolve();
+      });
+      dying.kill();
+      if (await raceTimeout(exited, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep)) {
+        console.error('sonata serve: litellm did not exit after SIGTERM — sending SIGKILL');
+        (dying.forceKill ?? dying.kill).call(dying);
+      }
+    }
     // Clear the record while this process still owns the bound port. A
     // replacement cannot have written a new record until after close begins.
     if (router?.listening === true) clearFailedRouterRecord(opts.home, ports.router);
@@ -1336,6 +1375,8 @@ export interface StopDeps {
   timeoutMs?: number;
   /** Test seam — production default is `process.kill`. */
   kill?: (pid: number) => void;
+  /** Test seam — production default is `process.kill(pid, 'SIGKILL')`. */
+  forceKill?: (pid: number) => void;
   /** Test seam — production default checks the OS for the pid. */
   isAlive?: (pid: number) => boolean;
   /**
@@ -1413,6 +1454,35 @@ export async function stopServe(
     );
   }
 
+  // `isSonataRouter(port)` proves a sonata router answers here; it does NOT
+  // prove that `state.routerPid` is the process answering. A record survives
+  // a daemon that was SIGKILLed or died hard, and the OS reuses pids — so a
+  // stale record can name a number now belonging to something else entirely,
+  // and signalling it would kill an unrelated process while the real router
+  // kept running. The SIGKILL escalation below raised the cost of getting
+  // that wrong from "a signal it can ignore" to "a process that dies", which
+  // is what makes the check worth its weight now.
+  //
+  // Refused only on POSITIVE evidence of a mismatch. `findPortPid` answers
+  // `undefined` for any failure or ambiguity — no `lsof`, no permission, two
+  // holders — and treating "cannot tell" as "mismatch" would refuse every
+  // restart on a machine without lsof, breaking the working case to guard the
+  // rare one. Unknown therefore proceeds exactly as before.
+  // `findPortPid` answers a string (it is otherwise only printed). A value
+  // that is not a clean positive integer is treated as "cannot tell", same as
+  // undefined, rather than compared as NaN — which would mismatch always.
+  const holderRaw = findPortPid(port);
+  const holderNum = holderRaw === undefined ? Number.NaN : Number(holderRaw);
+  const holder = Number.isInteger(holderNum) && holderNum > 0 ? holderNum : undefined;
+  if (holder !== undefined && state.routerPid !== holder) {
+    throw new Error(
+      `sonata restart: ${serveStatePath(opts.home, port)} records router pid ${state.routerPid}, ` +
+      `but port ${port} is held by pid ${holder}. Refusing to signal a pid that does not own the ` +
+      'port — the record is stale and its number may since have been reused by an unrelated ' +
+      `process. Check the holder, then stop it yourself and run \`sonata serve --daemon\`:\n  kill ${holder}`,
+    );
+  }
+
   const kill = opts.kill ?? killPid;
   const isAlive = opts.isAlive ?? defaultIsAlive;
   const pids = [state.routerPid, state.litellmPid].filter((pid): pid is number => pid !== undefined);
@@ -1429,13 +1499,37 @@ export async function stopServe(
   // never stops answering and this used to time out reporting failure even
   // though the kill had already succeeded. Checking the specific pids
   // sidesteps that race entirely.
+  // Escalate rather than give up. A LiteLLM blocked on an interactive
+  // device-code login does not act on SIGTERM — it sits in its 15-minute
+  // poll — so the old code waited out the timeout and threw, leaving the
+  // process alive, the port unusable, and the user with an error naming no
+  // remedy. Every later `sonata restart` then added another one: six were
+  // found on one machine on 2026-09-21, the oldest six hours old, none of
+  // them holding the port they were started for.
+  //
+  // SIGKILL is safe *here* in a way it is not in general: these are pids
+  // sonata itself recorded as its own router and its own litellm child, the
+  // router pid has just been checked against the port's actual holder above,
+  // and the user has asked for them to be replaced. The same escalation
+  // already guards the in-process restart path.
   const deadline = now() + timeoutMs;
+  const forceKill = opts.forceKill ?? forcePid;
+  let escalated = false;
   while (pids.some((pid) => isAlive(pid))) {
     if (now() > deadline) {
       const stillAlive = pids.filter((pid) => isAlive(pid));
+      if (!escalated) {
+        escalated = true;
+        for (const pid of stillAlive) forceKill(pid);
+        // One more window, so SIGKILL is actually observed to land before
+        // reporting a failure it may well have just fixed.
+        await sleep(300);
+        if (!pids.some((pid) => isAlive(pid))) break;
+        continue;
+      }
       throw new Error(
         `sonata restart: killed the recorded process(es) but pid(s) ${stillAlive.join(', ')} ` +
-        `are still running after ${Math.round(timeoutMs / 1000)}s.`,
+        `are still running after ${Math.round(timeoutMs / 1000)}s and did not respond to SIGKILL.`,
       );
     }
     await sleep(300);

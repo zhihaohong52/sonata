@@ -33,6 +33,7 @@ describe('tomlKey', () => {
 describe('nativeTomlFor', () => {
   const cand = (gw: string, id: string): NativeCandidate => ({
     key: `${gw}-${id}`, gateway: gw, id, contextWindow: 128000, baseUrl: `https://${gw}.example/v1`,
+    auth: 'api-key',
   });
 
   it('preserves [budget] across a rewrite', () => {
