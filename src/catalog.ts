@@ -67,6 +67,29 @@ export const SIMPLE_COST_CEILING = 12;
 export const AA_CAPABILITY_TIE_MARGIN = 1.0;
 
 /**
+ * The capability *class* a score falls in — the margin applied transitively.
+ *
+ * "Within the margin" cannot be asked pairwise. Tolerance is not transitive:
+ * with scores 52.1, 51.5 and 51.0 the first two are a tie and so are the last
+ * two, but 52.1 and 51.0 are 1.1 apart and rank outright. Add prices running
+ * the other way (3.0, 2.0, 1.0) and the comparator cycles — B beats A on
+ * price, C beats B on price, A beats C on capability. Measured on exactly
+ * that fixture: six input permutations produced THREE different orderings of
+ * the same three candidates, so the tier a user got depended on the order
+ * their models happened to be declared in.
+ *
+ * Quantising first makes the comparison an integer equality, which cannot
+ * cycle. The cost is a boundary: two scores either side of a class edge are
+ * separated even when closer together than the margin. That is the standard
+ * trade for bucketing, and it is the safe direction — it can only ever rank
+ * by capability where the old code ranked by price, never produce an order
+ * that depends on input.
+ */
+export function capabilityClass(index: number): number {
+  return Math.round(index / AA_CAPABILITY_TIE_MARGIN);
+}
+
+/**
  * How far below the most capable candidate `complex` will go to pay less.
  *
  * NOT a wider `AA_CAPABILITY_TIE_MARGIN`, and the distinction is the whole
@@ -818,7 +841,7 @@ export function proposeTiers(
     // before, so the tier never drops to a genuinely weaker model to save
     // money — it declines to pay for the top of an effort ladder.
     const ia = bandedIndex(a); const ib = bandedIndex(b);
-    const gap = Math.abs(ib - ia) <= AA_CAPABILITY_TIE_MARGIN ? 0 : ib - ia;
+    const gap = capabilityClass(ib) - capabilityClass(ia);
     const byPrice = ra.price - rb.price;
     // Real capability breaks an equal price, AFTER the band has had its say.
     // The band exists to trade capability for money; where there is no money
@@ -838,7 +861,7 @@ export function proposeTiers(
   // dollar is one comparable unit rather than a mix of work and token prices.
   const byValue = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
-    if (ra.price === rb.price && Math.abs(rb.index - ra.index) <= AA_CAPABILITY_TIE_MARGIN) {
+    if (ra.price === rb.price && capabilityClass(ra.index) === capabilityClass(rb.index)) {
       return avoidance(a, b) || byLevel(a, b);
     }
     return avoidance(a, b) || valueOf(rb) - valueOf(ra) || rb.index - ra.index || byLevel(a, b);

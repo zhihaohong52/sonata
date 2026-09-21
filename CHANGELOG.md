@@ -103,6 +103,19 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   band. Where prices are equal it defers to real capability, since with no
   money to save there is nothing to trade.
 
+- **The capability tolerance is applied as a class, not pairwise.** "Within
+  the margin" cannot be asked pairwise: tolerance is not transitive. With
+  scores 52.1, 51.5 and 51.0 the first two tie and so do the last two, but
+  52.1 and 51.0 are 1.1 apart and rank outright; prices running the other way
+  close the loop. Measured on exactly that fixture — six input permutations
+  produced **three different orderings** of the same three candidates, so the
+  tier a user got depended on the order their models happened to be declared
+  in. Quantising to a `capabilityClass` first makes the comparison an integer
+  equality, which cannot cycle. The cost is a boundary: two scores either side
+  of a class edge are separated even when closer together than the margin —
+  the standard trade for bucketing, and the safe direction, since it can only
+  rank by capability where the old code ranked by price.
+
   The band is applied as a scalar per candidate rather than as a special case
   inside the comparator. The first implementation did the latter and was not
   transitive — it produced a real 3-cycle

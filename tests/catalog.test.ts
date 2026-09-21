@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { parseConfig } from '../src/config.js';
 import {
+  capabilityClass,
   normalizeModelName, lookupModel, proposeTiers, loadAaCatalog, aaCatalogPath,
   aaCatalogAgeDays, aaLookupNames, catalogCoverage, SIMPLE_COST_CEILING,
   catalogFamily, expandCandidates, hasEffortVariants, unpinnedVariants, candidateLabel,
@@ -1056,6 +1057,45 @@ describe('proposeTiers — the complex cost band', () => {
     expect(proposeTiers(['m'], samePrice).complex[0]).toBe('m@low');
   });
 
+  it('orders identically for every permutation of CHAINED near-ties', () => {
+    // The cycle a pairwise tolerance allows, and the one the earlier
+    // permutation test could not catch because its fixture did not chain.
+    // 52.1 ~ 51.5 and 51.5 ~ 51.0 are both inside the 1.0 margin, but
+    // 52.1 - 51.0 = 1.1 is outside it, so capability ranks that pair
+    // outright. Prices running the other way then close the loop:
+    //   B > A on price, C > B on price, A > C on capability.
+    // Measured before `capabilityClass`: six permutations produced THREE
+    // different orderings of the same three candidates, so the tier a user
+    // got depended on the order their models happened to be declared in.
+    const chained: AaCatalog = {
+      fetchedAt: '2026-09-21T00:00:00Z',
+      models: {
+        A: { codingIndex: 70, blendedPriceUsd: 1, intelligenceIndex: 52.1, costPerTask: 3.0, family: 'A', effort: 'max' },
+        B: { codingIndex: 70, blendedPriceUsd: 1, intelligenceIndex: 51.5, costPerTask: 2.0, family: 'B', effort: 'max' },
+        C: { codingIndex: 70, blendedPriceUsd: 1, intelligenceIndex: 51.0, costPerTask: 1.0, family: 'C', effort: 'max' },
+      },
+    };
+    const permutations = [
+      ['A', 'B', 'C'], ['A', 'C', 'B'], ['B', 'A', 'C'],
+      ['B', 'C', 'A'], ['C', 'A', 'B'], ['C', 'B', 'A'],
+    ];
+    const orders = new Set(permutations.map((p) => proposeTiers(p, chained).complex.join(' > ')));
+    expect([...orders]).toHaveLength(1);
+    // And the same holds for the value tiers, which share the margin.
+    expect(new Set(permutations.map((p) => proposeTiers(p, chained).normal.join(' > ')))).toHaveProperty('size', 1);
+  });
+
+  it('compares capability by class, so the tolerance cannot cycle', () => {
+    // The property directly: equality of an integer class is transitive,
+    // where "within 1.0 of each other" is not.
+    expect(capabilityClass(52.1)).toBe(capabilityClass(51.5));
+    expect(capabilityClass(51.5)).not.toBe(capabilityClass(51.0));
+    // The accepted cost of bucketing: a pair closer than the margin can still
+    // land either side of a class edge, and is then ranked by capability.
+    // That is the safe direction — it never makes the order input-dependent.
+    expect(capabilityClass(51.4)).not.toBe(capabilityClass(51.6));
+  });
+
   it('orders identically however the input is shuffled', () => {
     // The band's first implementation compared "same family, both in band?"
     // inside the comparator, which is NOT transitive: it produced a real
@@ -1079,15 +1119,21 @@ describe('proposeTiers — effort variants', () => {
     //   luna  best 42.7 -> @max (42.7, $0.178) and @xhigh (39.5, $0.085) in
     //                      band; @high (35.6, gap 7.1) and @low are not
     //   terra best 43.7 -> @max ($1.399) and @high (37.6, gap 6.1) in band
-    // luna@xhigh is therefore "as capable as luna gets" at $0.085 and leads,
-    // then luna@max ($0.178). terra@high is credited 43.7, and 43.7 vs 42.7
-    // is inside the 1.0 tie margin, so price keeps both luna rungs ahead of
-    // it — but 43.7 vs deepseek's 41.7 is a real 2.0 edge, so terra@high
-    // takes third outright.
+    // Ranking is then by capability CLASS (`capabilityClass`), not by a
+    // pairwise tolerance, so that the comparator cannot cycle. terra's banded
+    // 43.7 and luna's 42.7 land in classes 44 and 43, so terra leads outright
+    // and its cheaper in-band rung (@high, $0.338) comes first. deepseek's
+    // 41.7 is class 42, behind both.
     //
-    // The band is a per-ladder claim, never a cross-model one: it never says
-    // "prefer a cheaper, genuinely weaker MODEL".
-    expect(tiers.complex.slice(0, 3)).toEqual(['gpt-5.6-luna@xhigh', 'gpt-5.6-luna@max', 'gpt-5.6-terra@high']);
+    // 43.7 vs 42.7 is exactly the margin, so the two were a *tie* under the
+    // old pairwise test and price put luna first. Separating them is the
+    // accepted cost of bucketing, and it is the safe direction: it ranks by
+    // capability where the old code ranked by price, and never makes the
+    // order depend on input.
+    //
+    // The band itself stays a per-ladder claim, never a cross-model one: it
+    // never says "prefer a cheaper, genuinely weaker MODEL".
+    expect(tiers.complex.slice(0, 3)).toEqual(['gpt-5.6-terra@high', 'gpt-5.6-terra@max', 'gpt-5.6-luna@xhigh']);
     // The floor is retired: normal sorts every capable level by value, and
     // simple filters that order at 12x the best-value level's cost.
     expect(tiers.normal[0]).toBe('gpt-5.6-luna@low');
