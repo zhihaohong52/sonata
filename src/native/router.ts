@@ -392,8 +392,22 @@ export const TIER_CAPABILITY_400_THRESHOLD = 3;
  *
  * A 400 that really is candidate-specific reaches the fallback through
  * `CAPABILITY_400_SIGNATURES`, on captured evidence, never on a guess.
+ *
+ * 405 and 415 are the protocol-level members of the same class. The router
+ * forwards the caller's method and content type unchanged, so a request that
+ * reaches `/v1/messages` with an unsupported method earns a request-wide 405
+ * from every candidate alike; retrying it would walk the whole tier, cool
+ * every candidate, and turn a precise "method not allowed" into a generic
+ * 529 saying the models are overloaded — which is the opposite of true and
+ * sends the reader to the wrong place entirely.
+ *
+ * 413 is deliberately NOT here although it looks like a sibling. "Payload too
+ * large" is a limit that *differs per model*: the next candidate may have a
+ * larger context window and serve the identical request. That is the whole
+ * distinction this set encodes — not "a 4xx about the request", but "an
+ * answer that every candidate would give".
  */
-export const TERMINAL_STATUSES: ReadonlySet<number> = new Set([400, 422]);
+export const TERMINAL_STATUSES: ReadonlySet<number> = new Set([400, 405, 415, 422]);
 
 /**
  * 400 bodies that mean "this candidate cannot serve requests of this shape",

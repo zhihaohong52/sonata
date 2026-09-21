@@ -499,7 +499,7 @@ describe('tier alias routing', () => {
     },
   );
 
-  it.each([400, 422])('%i is terminal — returned as-is, tier not burned', async (status) => {
+  it.each([400, 405, 415, 422])('%i is terminal — returned as-is, tier not burned', async (status) => {
     // The other half of the contract. A malformed request is malformed at
     // every candidate, so retrying would cost a round trip each, discard the
     // body that names the offending field, and cool the whole tier — which

@@ -1454,6 +1454,35 @@ export async function stopServe(
     );
   }
 
+  // `isSonataRouter(port)` proves a sonata router answers here; it does NOT
+  // prove that `state.routerPid` is the process answering. A record survives
+  // a daemon that was SIGKILLed or died hard, and the OS reuses pids — so a
+  // stale record can name a number now belonging to something else entirely,
+  // and signalling it would kill an unrelated process while the real router
+  // kept running. The SIGKILL escalation below raised the cost of getting
+  // that wrong from "a signal it can ignore" to "a process that dies", which
+  // is what makes the check worth its weight now.
+  //
+  // Refused only on POSITIVE evidence of a mismatch. `findPortPid` answers
+  // `undefined` for any failure or ambiguity — no `lsof`, no permission, two
+  // holders — and treating "cannot tell" as "mismatch" would refuse every
+  // restart on a machine without lsof, breaking the working case to guard the
+  // rare one. Unknown therefore proceeds exactly as before.
+  // `findPortPid` answers a string (it is otherwise only printed). A value
+  // that is not a clean positive integer is treated as "cannot tell", same as
+  // undefined, rather than compared as NaN — which would mismatch always.
+  const holderRaw = findPortPid(port);
+  const holderNum = holderRaw === undefined ? Number.NaN : Number(holderRaw);
+  const holder = Number.isInteger(holderNum) && holderNum > 0 ? holderNum : undefined;
+  if (holder !== undefined && state.routerPid !== holder) {
+    throw new Error(
+      `sonata restart: ${serveStatePath(opts.home, port)} records router pid ${state.routerPid}, ` +
+      `but port ${port} is held by pid ${holder}. Refusing to signal a pid that does not own the ` +
+      'port — the record is stale and its number may since have been reused by an unrelated ' +
+      `process. Check the holder, then stop it yourself and run \`sonata serve --daemon\`:\n  kill ${holder}`,
+    );
+  }
+
   const kill = opts.kill ?? killPid;
   const isAlive = opts.isAlive ?? defaultIsAlive;
   const pids = [state.routerPid, state.litellmPid].filter((pid): pid is number => pid !== undefined);
@@ -1478,10 +1507,11 @@ export async function stopServe(
   // found on one machine on 2026-09-21, the oldest six hours old, none of
   // them holding the port they were started for.
   //
-  // SIGKILL is safe *here* in a way it is not in general, because these are
-  // only ever pids sonata itself recorded as its own router and its own
-  // litellm child, and the user has just asked for them to be replaced.
-  // The same escalation already guards the in-process restart path.
+  // SIGKILL is safe *here* in a way it is not in general: these are pids
+  // sonata itself recorded as its own router and its own litellm child, the
+  // router pid has just been checked against the port's actual holder above,
+  // and the user has asked for them to be replaced. The same escalation
+  // already guards the in-process restart path.
   const deadline = now() + timeoutMs;
   const forceKill = opts.forceKill ?? forcePid;
   let escalated = false;

@@ -18,7 +18,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   on its first because anexto answered `Budget exceeded: 200.0409 >= 200.0000`
   (402), while the codex and openrouter candidates behind it had their own
   accounts, their own caps, and were never tried. It is now a deny-list:
-  everything `>= 400` retries except `TERMINAL_STATUSES` = `{400, 422}`, which
+  everything `>= 400` retries except `TERMINAL_STATUSES` =
+  `{400, 405, 415, 422}`, which
   describe the *request* and would be rejected identically everywhere. That
   also picks up 404 "model not found", 408, 413 "payload too large" and 451,
   each terminal before now for no reason but omission. Keeping 400/422
@@ -26,7 +27,18 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   naming the offending field, answers a generic 529, and cools every candidate
   in the tier — so concurrent agents that were fine start failing too. A 400
   that *is* candidate-specific still falls through via the capability
-  fingerprints, on captured evidence only.
+  fingerprints, on captured evidence only. 413 is deliberately *not* terminal
+  although it looks like a sibling: "payload too large" is a limit that
+  differs per model, and the next candidate may have a larger context window
+  and serve the identical request.
+- **`sonata restart` refuses to signal a recorded pid that does not own the
+  port.** `isSonataRouter` proves a sonata router answers, not that the
+  recorded pid is the one answering — a record outlives a daemon that died
+  hard, and the OS reuses pid numbers. With the SIGKILL escalation above that
+  went from "a signal a stranger can ignore" to "a process that dies". Refused
+  only on positive evidence of a mismatch: `findPortPid` answers undefined for
+  every failure and ambiguity, and treating "cannot tell" as "mismatch" would
+  refuse every restart on a machine without `lsof`.
 - **A third capability-400 signature: `No tool output found for function
   call`.** The Codex backend's answer when the Responses `input` holds a
   `function_call` with no matching `function_call_output` — the pairing is lost
