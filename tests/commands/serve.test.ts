@@ -1780,7 +1780,11 @@ litellm = 4000
     const killed: number[] = [];
 
     const result = await stopServe({
-      cwd, home, probeHealth: sonataHealth, kill: (pid) => killed.push(pid), sleep: async () => {},
+      cwd, home, probeHealth: sonataHealth,
+      // The recorded router pid must own the port, so the seam has to agree
+      // with the fixture — otherwise the real `lsof` on the developer's
+      // machine answers about a real router and the guard refuses.
+      findPortPid: () => '111', kill: (pid) => killed.push(pid), sleep: async () => {},
       isAlive: () => false,
     });
 
@@ -1836,7 +1840,11 @@ litellm = 4000
     mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
     writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111 }));
     const result = await stopServe({
-      cwd, home, probeHealth: sonataHealth, kill: () => {}, sleep: async () => {},
+      cwd, home, probeHealth: sonataHealth,
+      // The recorded router pid must own the port, so the seam has to agree
+      // with the fixture — otherwise the real `lsof` on the developer's
+      // machine answers about a real router and the guard refuses.
+      findPortPid: () => '111', kill: () => {}, sleep: async () => {},
       now: (() => { let t = 0; return () => (t += 1000); })(), timeoutMs: 2000,
       isAlive: () => true,
     }).catch((e) => e as Error);
@@ -1852,11 +1860,127 @@ litellm = 4000
     writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
 
     const result = await stopServe({
-      cwd, home, probeHealth: sonataHealth, kill: () => {}, sleep: async () => {},
+      cwd, home, probeHealth: sonataHealth,
+      // The recorded router pid must own the port, so the seam has to agree
+      // with the fixture — otherwise the real `lsof` on the developer's
+      // machine answers about a real router and the guard refuses.
+      findPortPid: () => '111', kill: () => {}, sleep: async () => {},
       isAlive: () => false,
     });
 
     expect(result.killed).toBe(true);
+  });
+
+  it('refuses to signal a recorded pid that does not own the port', async () => {
+    // `isSonataRouter` proves a sonata router answers, not that the RECORDED
+    // pid is the one answering. A record outlives a daemon that died hard,
+    // and the OS reuses pid numbers — so a stale record can name a number
+    // belonging to something else entirely. Before the SIGKILL escalation
+    // that meant a signal the stranger could ignore; now it means a process
+    // that dies, which is why this guard earns its place.
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
+
+    const signalled: number[] = [];
+    const err = await stopServe({
+      cwd, home, probeHealth: sonataHealth, sleep: async () => {},
+      kill: (pid) => signalled.push(pid),
+      forceKill: (pid) => signalled.push(pid),
+      isAlive: () => false,
+      findPortPid: () => '999',
+    }).catch((e) => e as Error);
+
+    expect((err as Error).message).toMatch(/records router pid 111.*held by pid 999/s);
+    // Nothing was signalled, and the record is left for the user to inspect.
+    expect(signalled).toEqual([]);
+    expect(existsSync(serveStatePath(home, 4100))).toBe(true);
+  });
+
+  it('proceeds when the port holder cannot be determined', async () => {
+    // `findPortPid` answers undefined for every failure and ambiguity — no
+    // lsof, no permission, two holders. Treating "cannot tell" as a mismatch
+    // would refuse every restart on a machine without lsof, breaking the
+    // working case to guard the rare one, so unknown proceeds as before.
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
+
+    const killed: number[] = [];
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, sleep: async () => {},
+      kill: (pid) => killed.push(pid), isAlive: () => false,
+      findPortPid: () => undefined,
+    });
+
+    expect(killed).toEqual([111, 222]);
+    expect(result.killed).toBe(true);
+  });
+
+  it('treats an unparseable port holder as unknown, not as a mismatch', async () => {
+    // The seam answers a string. A non-numeric one compared as a number is
+    // NaN, which mismatches everything — so a garbled `lsof` line would
+    // refuse every restart rather than falling back to the old behaviour.
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111 }));
+
+    const killed: number[] = [];
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, sleep: async () => {},
+      kill: (pid) => killed.push(pid), isAlive: () => false,
+      findPortPid: () => 'not-a-pid',
+    });
+
+    expect(killed).toEqual([111]);
+    expect(result.killed).toBe(true);
+  });
+
+  it('escalates to SIGKILL when a recorded pid ignores SIGTERM', async () => {
+    // The measured case, 2026-09-21: LiteLLM blocked on an interactive
+    // ChatGPT device-code login does not act on SIGTERM — it sits in its
+    // 15-minute poll. `sonata restart` waited out its window and threw,
+    // leaving the process alive and the port unusable, so the next restart
+    // added another one. Six were found on one machine, oldest six hours.
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
+
+    const termed: number[] = [];
+    const killed: number[] = [];
+    // Alive until SIGKILL lands, which is exactly what SIGTERM-deaf means.
+    const dead = new Set<number>();
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth,
+      // The recorded router pid must own the port, so the seam has to agree
+      // with the fixture — otherwise the real `lsof` on the developer's
+      // machine answers about a real router and the guard refuses.
+      findPortPid: () => '111', sleep: async () => {},
+      kill: (pid) => termed.push(pid),
+      forceKill: (pid) => { killed.push(pid); dead.add(pid); },
+      isAlive: (pid) => !dead.has(pid),
+      timeoutMs: 0,
+    });
+
+    expect(termed).toEqual([111, 222]);
+    expect(killed).toEqual([111, 222]);
+    expect(result.killed).toBe(true);
+  });
+
+  it('still reports failure for a pid that survives even SIGKILL', async () => {
+    // SIGKILL is not refusable, so this is an unkillable-state pid (uninterruptible
+    // I/O, say). It must still be reported rather than looped on forever — and
+    // the message must say SIGKILL was tried, or the obvious next step looks
+    // like the one already taken.
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111 }));
+
+    const err = await stopServe({
+      cwd, home, probeHealth: sonataHealth,
+      // The recorded router pid must own the port, so the seam has to agree
+      // with the fixture — otherwise the real `lsof` on the developer's
+      // machine answers about a real router and the guard refuses.
+      findPortPid: () => '111', sleep: async () => {},
+      kill: () => {}, forceKill: () => {}, isAlive: () => true, timeoutMs: 0,
+    }).catch((e) => e as Error);
+
+    expect((err as Error).message).toMatch(/did not respond to SIGKILL/);
   });
 
   it('ignores another port\'s record rather than killing that daemon', async () => {

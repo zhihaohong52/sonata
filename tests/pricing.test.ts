@@ -541,6 +541,11 @@ describe('proposePricingProvider', () => {
       new Date('2026-09-14T00:00:00.000Z'), cache,
     );
     expect(price.source).toBe('models-dev');
+    // Narrowed by a guard, not a cast: `LedgerPrice`'s `none` member carries
+    // no `totalUsd`, and `expect` does not narrow. A cast would read
+    // `undefined` off an unpriced result and compare it to 3, failing for a
+    // reason that names neither the source nor the rate.
+    if (price.source === 'none') throw new Error('expected a priced result');
     expect(price.totalUsd).toBe(3);
   });
 });

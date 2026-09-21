@@ -240,6 +240,47 @@ describe('tier alias routing', () => {
     expect(seen[seen.length - 1]).toBe('default/luna');
   });
 
+  it('fingerprints the Codex backend losing a tool result, across differing call ids', async () => {
+    // Captured across four serve logs (2026-08-29, 09-10, 09-16, 09-18): 28
+    // occurrences over 12 distinct `call_id`s, every one on a bare
+    // `gpt-5.6-*`/`gpt-6-astra` model group — the codex-oauth gateway — and
+    // never on an api-key gateway serving the same tiers. The pairing between
+    // an assistant `function_call` and its `function_call_output` is lost in
+    // LiteLLM's translation onto the Responses API.
+    //
+    // The `call_id` differs between conversations and the signature stops
+    // short of it deliberately: the counter keys by fingerprint, so a
+    // signature carrying the id would start a fresh run of one on every
+    // conversation and never reach the threshold. This test varies the id on
+    // each attempt for exactly that reason — matching only the stable prefix
+    // is what makes the cooldown reachable.
+    const toolOutput400 = (callId: string) => JSON.stringify({
+      error: {
+        message:
+          'litellm.BadRequestError: ChatgptException - ' +
+          JSON.stringify({ error: { message: `No tool output found for function call ${callId}.` } }),
+      },
+    });
+    let n = 0;
+    const seen: string[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return model === 'default/flash'
+          ? new Response(toolOutput400(`call_varies${n++}`), { status: 400 })
+          : new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    };
+    for (let i = 0; i < TIER_CAPABILITY_400_THRESHOLD - 1; i++) {
+      expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(400);
+    }
+    expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
+    expect(seen[seen.length - 1]).toBe('default/luna');
+  });
+
   it('cools the candidate and falls through once the same capability 400 repeats', async () => {
     const seen: string[] = [];
     const deps = {
@@ -403,6 +444,85 @@ describe('tier alias routing', () => {
     });
     expect(res.status).toBe(200);
     expect(seen).toEqual(['default/flash', 'default/luna']);
+  });
+
+  it('402 (gateway budget exhausted) falls back to the next candidate and cools that gateway down', async () => {
+    // Measured 2026-09-21: a tier of 42 candidates stopped dead on its first
+    // one because anexto answered `policy_budget_exceeded` (200.0409 >=
+    // 200.0000). The codex and openrouter candidates behind it had their own
+    // accounts and their own caps, and were never tried — a gateway's billing
+    // state says nothing about the next gateway's. Same reasoning as 401/403
+    // above, and stronger: a budget cap is known to persist, so the cooldown
+    // is what stops every later request paying a round trip to be refused.
+    const BUDGET_402 = JSON.stringify({
+      error: { message: 'litellm.APIError: OpenAIException - Budget exceeded: team acme budget exceeded: 200.0409 >= 200.0000' },
+    });
+    const seen: string[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return model === 'default/flash'
+          ? new Response(BUDGET_402, { status: 402 })
+          : new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    };
+    expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
+    expect(seen).toEqual(['default/flash', 'default/luna']);
+    // Cooled: a later request in the window does not pay the refusal again.
+    await routeRequest(req('sonata-code-simple'), deps);
+    expect(seen).toEqual(['default/flash', 'default/luna', 'default/luna']);
+  });
+
+  it.each([404, 408, 413, 451, 409, 418])(
+    '%i (candidate-specific) falls back to the next candidate',
+    async (status) => {
+      // The deny-list's whole point: these were all terminal under the old
+      // allow-list, for no reason other than nobody having enumerated them.
+      // The next candidate is a different model, on a different gateway, with
+      // a different context window, in a different jurisdiction — a 404
+      // "model not found", a 413 "too large" or a 451 says nothing about it.
+      const seen: string[] = [];
+      const res = await routeRequest(req('sonata-code-simple'), {
+        fetch: (async (_url: string, init: RequestInit) => {
+          const model = (JSON.parse(init.body as string) as { model: string }).model;
+          seen.push(model);
+          return new Response('nope', { status: model === 'default/flash' ? status : 200 });
+        }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTier: () => ROUTES,
+      });
+      expect(res.status).toBe(200);
+      expect(seen).toEqual(['default/flash', 'default/luna']);
+    },
+  );
+
+  it.each([400, 405, 415, 422])('%i is terminal — returned as-is, tier not burned', async (status) => {
+    // The other half of the contract. A malformed request is malformed at
+    // every candidate, so retrying would cost a round trip each, discard the
+    // body that names the offending field, and cool the whole tier — which
+    // breaks concurrent requests that had nothing wrong with them.
+    const seen: string[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return new Response(`bad ${status}`, { status });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    };
+    const res = await routeRequest(req('sonata-code-simple'), deps);
+    expect(res.status).toBe(status);
+    // The caller gets the real body, not a generic 529.
+    expect(await bodyText(res.body)).toBe(`bad ${status}`);
+    // Exactly one candidate tried, and it is NOT cooled: the next request
+    // reaches it again, because nothing about the candidate was wrong.
+    expect(seen).toEqual(['default/flash']);
+    await routeRequest(req('sonata-code-simple'), deps);
+    expect(seen).toEqual(['default/flash', 'default/flash']);
   });
 
   it('logs the resolution step', async () => {
@@ -1364,11 +1484,17 @@ describe('routeRequest — the project hint is authorised, not merely trusted', 
   });
 
   it('ignores the hint when the token is absent, wrong, or empty', async () => {
-    for (const headers of [
+    // Annotated rather than cast, so the first case sends the token header
+    // genuinely ABSENT. Inferring the array gives the first element an
+    // `x-sonata-token?: undefined` member, and a cast papering over that
+    // would let the case named for an absent header send a present-but-
+    // undefined one — a different request, and the one this case is about.
+    const cases: Record<string, string>[] = [
       { [SONATA_PROJECT_HEADER]: '/p/theirs' },
       { [SONATA_PROJECT_HEADER]: '/p/theirs', [SONATA_TOKEN_HEADER]: 'guessed' },
       { [SONATA_PROJECT_HEADER]: '/p/theirs', [SONATA_TOKEN_HEADER]: '' },
-    ]) {
+    ];
+    for (const headers of cases) {
       seen.length = 0;
       clearCooldowns();
       const res = await routeRequest(req(headers), deps);

@@ -381,10 +381,39 @@ export const TIER_COOLDOWN_MS = 60_000;
 export const TIER_CAPABILITY_400_THRESHOLD = 3;
 
 /**
+ * Statuses that are NOT retried against the next candidate, because they
+ * describe the request rather than the candidate.
+ *
+ * 400 (bad request) and 422 (unprocessable) both mean the body sonata built
+ * is wrong, so every candidate would reject it identically. Returning the
+ * status hands the caller the error body that names the offending field;
+ * retrying would throw that away, answer 529 instead, and cool the whole
+ * tier — breaking concurrent requests that had nothing wrong with them.
+ *
+ * A 400 that really is candidate-specific reaches the fallback through
+ * `CAPABILITY_400_SIGNATURES`, on captured evidence, never on a guess.
+ *
+ * 405 and 415 are the protocol-level members of the same class. The router
+ * forwards the caller's method and content type unchanged, so a request that
+ * reaches `/v1/messages` with an unsupported method earns a request-wide 405
+ * from every candidate alike; retrying it would walk the whole tier, cool
+ * every candidate, and turn a precise "method not allowed" into a generic
+ * 529 saying the models are overloaded — which is the opposite of true and
+ * sends the reader to the wrong place entirely.
+ *
+ * 413 is deliberately NOT here although it looks like a sibling. "Payload too
+ * large" is a limit that *differs per model*: the next candidate may have a
+ * larger context window and serve the identical request. That is the whole
+ * distinction this set encodes — not "a 4xx about the request", but "an
+ * answer that every candidate would give".
+ */
+export const TERMINAL_STATUSES: ReadonlySet<number> = new Set([400, 405, 415, 422]);
+
+/**
  * 400 bodies that mean "this candidate cannot serve requests of this shape",
  * as opposed to "this request was malformed".
  *
- * Two entries, because two have been measured.
+ * Three entries, because three have been measured.
  *
  * `thought_signature` — Gemini 3 returns one on each function call and requires
  * it echoed back, and LiteLLM does not preserve it, so every multi-turn
@@ -403,6 +432,31 @@ export const TIER_CAPABILITY_400_THRESHOLD = 3;
  * fallback plus the 529 that names `sonata dispatch` — where a bare 400 kills
  * the subagent outright with a message naming neither cause nor remedy.
  *
+ * `No tool output found for function call` — the Codex backend's answer when
+ * the Responses `input` it was handed holds a `function_call` with no
+ * `function_call_output` carrying the same `call_id`. Sonata sends a
+ * well-formed Anthropic transcript: the pairing is lost inside LiteLLM's
+ * translation onto the Responses API, whose own source carries a pile of
+ * repair heuristics for this exact mismatch (`_ensure_tool_results_have_
+ * corresponding_tool_calls`), so the remaining hole is upstream and is not
+ * yet located. Listed on the same terms as the entry above — survivable
+ * rather than fatal, until it is.
+ *
+ * Captured across four serve logs (2026-08-29, 09-10, 09-16, 09-18): 28
+ * occurrences over 12 distinct `call_id`s, and **every one** on a bare
+ * `gpt-5.6-*`/`gpt-6-astra` model group — the codex-oauth gateway, reached at
+ * `chatgpt.com/backend-api/codex/responses`. Not once on an api-key gateway,
+ * although `anexto-*`, `google-*` and `openrouter-*` candidates were serving
+ * the same tiers throughout. That is what makes it a candidate-shape failure
+ * and not a malformed request: another candidate serves the identical
+ * transcript.
+ *
+ * It is also self-sustaining, which is why returning it is worse than cooling
+ * it. The failing turn is never completed, so the next turn re-sends the same
+ * transcript: one log has the identical `call_id` refused six times in a row.
+ * Without a cooldown the conversation is wedged on that candidate until the
+ * agent dies — two tier agents did, reported 2026-09-21.
+ *
  * Guessing at "equivalent" signatures would break this repo's evidence-over-
  * inference rule, and the cost of a wrong guess is asymmetric: a signature
  * that matches too broadly cools healthy candidates on ordinary client errors,
@@ -412,6 +466,7 @@ export const TIER_CAPABILITY_400_THRESHOLD = 3;
 const CAPABILITY_400_SIGNATURES = [
   'thought_signature',
   'System messages are not allowed',
+  'No tool output found for function call',
 ] as const;
 
 /** Module-level so a cooling-down key stays cool across requests. Test seam: `clearCooldowns()`. */
@@ -1016,16 +1071,45 @@ async function routeTierRequest(
         deps,
       )
       : await forwardToLitellm(body, headers, { ...req, body }, deps);
-    // 429 is treated as a failure alongside 5xx (not as one of "our" 4xx
-    // mistakes to return as-is): it's the upstream saying it's overloaded,
-    // exactly the transient case ranked fallback exists for. 401/403 are also
-    // retried — they are credential failures specific to THIS candidate's
-    // gateway (an expired or rejected key), so a later candidate on a
-    // different gateway with a working credential is worth trying, and they
-    // must not take down every tier that ranks the affected gateway first.
-    // Every other 4xx (e.g. 400) means the request itself was wrong, which
-    // retrying can't fix.
-    if (response.status >= 500 || response.status === 429 || response.status === 401 || response.status === 403) {
+    // Retry by default; only a request that is wrong *everywhere* is terminal.
+    //
+    // This is a deny-list on purpose, and it used to be an allow-list of
+    // {5xx, 429, 401, 403}. The allow-list kept being wrong in one direction
+    // only: every status nobody had thought of was treated as fatal, so a
+    // failure specific to ONE candidate took down a tier that existed
+    // precisely to survive it. 402 was the measured case (below), but 404
+    // "model not found", 408, 413 "payload too large" and 451 are all the
+    // same shape — the next candidate is a different model on a different
+    // gateway with a different context window in a different jurisdiction,
+    // and none of those answers carries over. Defaulting to retry means a
+    // status nobody has seen yet costs one extra round trip instead of the
+    // whole tier.
+    //
+    // `TERMINAL_STATUSES` is what genuinely does carry over: 400 and 422 say
+    // the request sonata built is malformed, and it will be just as malformed
+    // at every candidate. Retrying those would be strictly worse than
+    // returning them — it discards the one error body that names the bad
+    // field, replaces it with a generic 529, spends a round trip per
+    // candidate, and (the real damage) cools every candidate in the tier, so
+    // concurrent agents that were fine start failing too. A 400 that IS
+    // candidate-specific still falls through: that is what the capability
+    // fingerprints below are for, and they are deliberately the only way in.
+    //
+    // 402 measured 2026-09-21 on two machines: a tier holding 42 candidates
+    // stopped dead on the first one because anexto answered `Budget exceeded:
+    // 200.0409 >= 200.0000`, while the codex and openrouter candidates ranked
+    // behind it had their own accounts, their own caps, and were never tried.
+    // The consumer saw a bare 402 and four dead dispatches; the only
+    // workaround was hand-reordering `[tiers]` per role. It is also the one
+    // retried status *known* to persist rather than merely suspected to, so
+    // the cooldown is doing real work: later requests skip that gateway
+    // instead of paying a round trip to be refused again. This is NOT
+    // sonata's own `[budget]` cap, which refuses before forwarding and never
+    // reaches this branch.
+    //
+    // Only >= 400 is considered: a 3xx never arrives (fetch follows
+    // redirects) and a 2xx that is not 200 — 204, say — is a success.
+    if (response.status >= 400 && !TERMINAL_STATUSES.has(response.status)) {
       await drainBody(response.body);
       attempts.push({ key: route.key, status: response.status });
       cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
@@ -1042,12 +1126,20 @@ async function routeTierRequest(
     // capability failure repeated `TIER_CAPABILITY_400_THRESHOLD` times in a
     // row cools the candidate; anything else is returned to the caller, who is
     // the only one able to tell a genuine client error from a broken model.
-    if (response.status === 400) {
+    // Every terminal status lands here, not just 400. They share the ending —
+    // the body is handed back and the candidate stops being preferred — and
+    // only 400 carries the capability fingerprint. Letting 422 fall past this
+    // block instead would `stickySet` it, pinning the conversation to the
+    // candidate that just refused it and preferring that candidate again on
+    // the very next turn.
+    if (TERMINAL_STATUSES.has(response.status)) {
       // Buffered because deciding requires reading the body, and the body is a
       // one-shot iterable — handing the caller the drained original would give
       // them an empty error. This mirrors the 500 path in `forwardToLitellm`.
       const bodyBuf = await bufferBody(response.body);
-      const fingerprint = capability400Fingerprint(bodyBuf.toString());
+      const fingerprint = response.status === 400
+        ? capability400Fingerprint(bodyBuf.toString())
+        : undefined;
       const counterKey = fingerprint === undefined ? undefined : `${cool} ${fingerprint}`;
 
       if (counterKey !== undefined) {
