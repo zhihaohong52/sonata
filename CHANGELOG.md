@@ -57,6 +57,23 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   whatever the gateway defaults to. Same "two eras in one config" shape as the
   inverted tier split in 0.11.0.
 
+- **`schema_version` bumps to 2, because `@default` is a forward-breaking
+  config value.** A config carrying it is unloadable by any sonata predating
+  it, and unstamped that failure reads `unknown effort level "default" — one
+  of none, minimal, …`: it blames the value, names no remedy, and takes down
+  the **whole** config, so every tier in the project dies rather than the one
+  rung. Measured 2026-09-21 after a config was hand-edited to `@default`
+  while the router still ran pre-`@default` code. Stamped v2 the same file
+  refuses with `schema_version is 2, but this sonata understands up to 1 —
+  upgrade sonata`, which is true and actionable; that refusal already ships in
+  0.11.2, so the bump reaches installs in the wild. No transform is needed in
+  either direction — a v1 file cannot contain the value.
+- `sonata doctor` no longer suggests hand-editing to `@default` without
+  saying what it costs: the entry needs this sonata version everywhere the
+  config is read, **including a router still running older code**, so the
+  advice now leads with `--repropose-tiers` (which stamps the file) and names
+  `sonata restart`.
+
 ### Changed
 
 - `EFFORT_LEVELS` gains `default`, the one member that is not wire vocabulary.

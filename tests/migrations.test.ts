@@ -131,3 +131,25 @@ describe('nativeTomlFor — schema stamp', () => {
     expect(toml.indexOf(SCHEMA_VERSION_KEY)).toBeLessThan(toml.indexOf('['));
   });
 });
+
+describe('v2 — the @default grammar', () => {
+  it('stamps a written config v2, so an older sonata refuses it legibly', () => {
+    // The forward direction is the one that bit. `@default` is a new grammar
+    // value, so a config carrying it is unloadable by any sonata predating
+    // it — and without a stamp that failure reads `unknown effort level
+    // "default"`, which blames the value, names no remedy, and takes down the
+    // WHOLE config rather than the one rung. Measured 2026-09-21 against a
+    // router still running pre-@default code.
+    expect(CURRENT_SCHEMA_VERSION).toBe(2);
+    expect(() => applyMigrations({ schema_version: CURRENT_SCHEMA_VERSION + 1 }))
+      .toThrow(/understands up to 2 — upgrade sonata/);
+  });
+
+  it('needs no transform, and walks a v0/v1 file forward regardless', () => {
+    // A v1 file cannot contain `@default`, so there is nothing to rewrite;
+    // the bump exists for the refusal above, not for reading old files.
+    for (const raw of [{}, { schema_version: 1 }]) {
+      expect(applyMigrations({ ...raw })[SCHEMA_VERSION_KEY]).toBe(2);
+    }
+  });
+});

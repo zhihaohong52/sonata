@@ -535,7 +535,11 @@ export async function cmdDoctor(
               + 'so they are ranked on a reasoning score and then asked not to reason — '
               + `${named.slice(0, 3).join('; ')}${named.length > 3 ? `; and ${named.length - 3} more` : ''}. `
               + 'A model whose endpoint mandates reasoning fails every request this way. '
-              + 'Re-rank with `sonata init --repropose-tiers`, or edit the entries to `@default`',
+              + 'Fix with `sonata init --repropose-tiers`, which also stamps the config so an older '
+              + 'sonata refuses it legibly. Hand-editing to `@default` works too, but `@default` '
+              + 'needs this sonata version everywhere the config is read — including a router still '
+              + 'running older code, which rejects the whole file, not just the entry '
+              + '(run `sonata restart` after).',
           });
         }
       }
