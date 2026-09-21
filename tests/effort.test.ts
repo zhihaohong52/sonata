@@ -1,14 +1,34 @@
 import { describe, it, expect } from 'vitest';
 import {
-  EFFORT_LEVELS, isEffort, splitCandidate, joinCandidate, parseAaEffort, aaEffortSuffix,
+  EFFORT_LEVELS, isEffort, splitCandidate, joinCandidate, parseAaEffort, aaEffortSuffix, wireEffort,
 } from '../src/effort.js';
 
 describe('EFFORT_LEVELS', () => {
-  it('is the wire enum, weakest first', () => {
-    expect(EFFORT_LEVELS).toEqual(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+  it('is the candidate grammar, weakest first, with `default` outside the order', () => {
+    expect(EFFORT_LEVELS).toEqual(['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
     expect(isEffort('xhigh')).toBe(true);
+    expect(isEffort('default')).toBe(true);
     expect(isEffort('XHIGH')).toBe(false);
     expect(isEffort('turbo')).toBe(false);
+  });
+});
+
+describe('wireEffort', () => {
+  it('sends every real level as itself', () => {
+    for (const level of ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const) {
+      expect(wireEffort(level)).toBe(level);
+    }
+  });
+
+  it('sends nothing for `default`, and keeps it distinct from `none`', () => {
+    // The whole point of the member. `none` is a wire value that DISABLES
+    // reasoning; `default` sends no field at all and runs the model as it
+    // ships. Collapsing the two is the bug this exists to fix — it made
+    // sonata rank a model on its reasoning-on score and then ask it not to
+    // reason, which `glm-5.3-flash` rejects outright.
+    expect(wireEffort('default')).toBeUndefined();
+    expect(wireEffort(undefined)).toBeUndefined();
+    expect(wireEffort('none')).toBe('none');
   });
 });
 

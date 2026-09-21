@@ -122,13 +122,22 @@ function modelIdentity(entry: Record<string, unknown>): { name: string; family?:
   if (source === undefined) return undefined;
   const name = normalizeModelName(source);
   const effort = display === undefined ? undefined : parseAaEffort(display);
-  // A row whose display name carries no level parenthetical was scored with
-  // no reasoning level in play, so it is recorded at `none` — a family of
-  // one. Offered bare instead, the key would rank on that score and then run
-  // at whatever the gateway defaults to, which is the mismatch the
-  // `@<effort>` grammar exists to prevent. The slug carries no suffix to
-  // strip, so the family is the key itself.
-  if (effort === undefined) return { name, family: name, effort: 'none' };
+  // A row whose display name carries no level parenthetical means AA STATED
+  // no level — not that reasoning was off. Those are different facts, and
+  // recording the second as `none` made sonata rank a model on its
+  // reasoning-on score and then send `reasoning_effort: none`, which is the
+  // exact mismatch the `@<effort>` grammar exists to prevent. Measured on a
+  // real catalog: 235 of 315 families were `none` on this coercion alone,
+  // among them `claude-4-5-sonnet-thinking`, `claude-4-5-haiku-reasoning`
+  // and `gemini-2-5-pro`. Most degraded silently; `glm-5.3-flash` 400d every
+  // request, its endpoint refusing to run with reasoning disabled.
+  //
+  // It is recorded at `default` — send no `reasoning_effort` at all — which
+  // is both what AA measured and what "as it ships" means. Still a family of
+  // one, and still never offered bare, so the key continues to name the
+  // level it will run at. The slug carries no suffix to strip, so the family
+  // is the key itself.
+  if (effort === undefined) return { name, family: name, effort: 'default' };
   // AA reserves a terminal slug suffix for the effort level. If a natural
   // model name ends in that word, shortening only this variant safely splits
   // it from the default row rather than merging the two families.

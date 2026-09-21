@@ -16,7 +16,7 @@
  */
 
 /** The shape this sonata writes and understands. */
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 /** The top-level key carrying the stamp. */
 export const SCHEMA_VERSION_KEY = 'schema_version';
@@ -41,11 +41,23 @@ export interface Migration {
  * it. Inventing a transform here to make the chain look busy would risk the
  * one path that already works.
  *
- * What the chain buys is the *next* change: a breaking one appends
- * `{ from: 1, to: 2, migrate }` and bumps `CURRENT_SCHEMA_VERSION`, and every
- * file already on disk walks forward on its next load. `applyMigrations` takes
- * the list as a parameter so composition is proven by tests against a
- * synthetic chain rather than asserted about an empty one.
+ * **v2 adds `@default` to the candidate grammar** and needs no transform
+ * either — a v1 file cannot contain the value, so there is nothing to
+ * rewrite. The bump is not for reading old files: it is for the *forward*
+ * direction, which is the one that bit. A config carrying `@default` is
+ * unloadable by any sonata predating it, and without a stamp that failure
+ * reads `unknown effort level "default" — one of none, minimal, …`, which
+ * blames the value and names no remedy. Worse, it takes down the WHOLE
+ * config, so every tier in the project dies rather than the one rung.
+ * Measured 2026-09-21: exactly that, after a config was hand-edited to
+ * `@default` while the router still ran pre-`@default` code.
+ *
+ * Stamped v2, the same file instead refuses with "this sonata understands up
+ * to 1 — upgrade sonata", which is true and actionable. That refusal already
+ * exists in released 0.11.2, so the bump reaches installs in the wild.
+ *
+ * `applyMigrations` takes the list as a parameter so composition is proven by
+ * tests against a synthetic chain rather than asserted about an empty one.
  */
 export const MIGRATIONS: readonly Migration[] = [];
 

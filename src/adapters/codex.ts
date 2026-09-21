@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput } from './types.js';
 import type { ModelRef } from '../types.js';
 import { isReadOnlyRole } from '../config.js';
+import { wireEffort } from '../effort.js';
 
 const run = promisify(execFile);
 
@@ -193,7 +194,10 @@ function buildScript(input: PlanInput): LaunchPlan {
   // the launch, which the ranked dispatch already reads as "try the next
   // candidate".
   const common = [`-m ${shellQuote(input.modelId)}`];
-  if (input.effort !== undefined) common.push(`-c model_reasoning_effort="${input.effort}"`);
+  // `default` means "as the model ships", so no flag is passed at all — codex
+  // then uses its own configured default, which is the request.
+  const codexEffort = wireEffort(input.effort);
+  if (codexEffort !== undefined) common.push(`-c model_reasoning_effort="${codexEffort}"`);
 
   let invocation: string;
   if (interactive) {
