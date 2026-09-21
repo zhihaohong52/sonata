@@ -775,6 +775,21 @@ describe('unpinnedCandidates / assertEffortsPinned', () => {
     );
   });
 
+  it('refuses a bare candidate in `normal` too', () => {
+    // `normal` was added after this refusal and the loop was never widened,
+    // so a bare key there alone slipped through the very check that stops a
+    // candidate ranking on one row's score and then running at whatever the
+    // gateway defaults to. Same "two eras in one config" shape as the
+    // inverted tier split.
+    const config = parseConfig(PINNABLE
+      .replace('simple = ["luna", "flash"]', 'simple = ["luna@high", "flash@none"]')
+      .replace('complex = ["luna@max", "flash"]', 'complex = ["luna@max", "flash@none"]')
+      .replace('complex = ["luna@max"', 'normal = ["luna"]\ncomplex = ["luna@max"'));
+    expect(unpinnedCandidates(config, FAMILY_AA).map((u) => [u.tier, u.key]))
+      .toEqual([['normal', 'luna']]);
+    expect(() => assertEffortsPinned(config, FAMILY_AA)).toThrow(/tiers\.code\.normal "luna"/);
+  });
+
   it('is silent with no catalog, and for a fully pinned config', () => {
     const config = parseConfig(PINNABLE);
     expect(() => assertEffortsPinned(config, undefined)).not.toThrow();
@@ -869,7 +884,11 @@ describe('effort pinning — every editor can repair what loadConfig refuses', (
     const emitted = parseConfig(planned.configToml).tiers!;
 
     for (const { role, tier, key } of refused) {
-      expect(pinned(emitted[role]![tier], key)).toBe(true);
+      // `normal` is optional, so the tier may legitimately be absent; the
+      // assertion is about a tier that exists holding a pinned key.
+      const list = emitted[role]![tier];
+      expect(list).toBeDefined();
+      expect(pinned(list!, key)).toBe(true);
       expect(pinned(rankableCandidates(config, FAMILY_AA), key)).toBe(true);
     }
     // The point of the pin: what `plan` emits loads. A pin that clears the

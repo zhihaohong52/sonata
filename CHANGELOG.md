@@ -50,6 +50,13 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   airtight rather than heuristic, because `default` is a new enum member
   nothing could have written before.
 
+- **The bare-candidate refusal now covers the `normal` tier.** It iterated
+  `simple` and `complex` only: `normal` was added after the refusal and the
+  loop was never widened, so a bare key there alone slipped past the very
+  check that stops a candidate ranking on one row's score and then running at
+  whatever the gateway defaults to. Same "two eras in one config" shape as the
+  inverted tier split in 0.11.0.
+
 ### Changed
 
 - `EFFORT_LEVELS` gains `default`, the one member that is not wire vocabulary.

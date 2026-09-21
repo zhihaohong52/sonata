@@ -318,7 +318,7 @@ export function catalogFamily(normalized: string | readonly string[], aa?: AaCat
 
 export interface UnpinnedCandidate {
   role: string;
-  tier: 'simple' | 'complex';
+  tier: 'simple' | 'normal' | 'complex';
   /** The bare config key as written in the tier list. */
   key: string;
   family: CatalogFamily;
@@ -341,8 +341,13 @@ export function unpinnedCandidates(
   const gateways = Object.keys(config.native?.gateways ?? {});
   const out: UnpinnedCandidate[] = [];
   for (const [role, lists] of Object.entries(config.tiers)) {
-    for (const tier of ['simple', 'complex'] as const) {
-      for (const candidate of lists[tier]) {
+    // `normal` is included, and was missing: it was added after this refusal
+    // and the loop was never widened, so a bare key in `normal` alone slipped
+    // through the very check that exists to stop a candidate ranking on one
+    // row's score and then running at the gateway's default. Guarded rather
+    // than indexed, because `normal` is optional and absent is valid.
+    for (const tier of ['simple', 'normal', 'complex'] as const) {
+      for (const candidate of lists[tier] ?? []) {
         const { key, effort } = splitCandidate(candidate);
         if (effort !== undefined) continue;
         const family = catalogFamily(normalizedFor(key, gateways, upstreamFor), aa);
