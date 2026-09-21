@@ -35,6 +35,14 @@ import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
 import { keyReport, resolveKeyFromSource } from '../native/credentials.js';
+
+/**
+ * How long `doctor` waits for LiteLLM's liveliness endpoint before calling it
+ * down. Short on purpose: a healthy local answer is immediate, and the point
+ * of the check is to notice a LiteLLM that is not serving — including one
+ * accepting connections without answering.
+ */
+const LITELLM_HEALTH_TIMEOUT_MS = 3000;
 import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
@@ -768,6 +776,46 @@ export async function cmdDoctor(
         } else {
           const tenants = (rawTenants as { configPath: string | null }[]).map((t) => t.configPath ?? '?');
           checks.push({ name: 'serve health', ok: true, detail: `up · ${tenants.length} project(s)${tenants.length > 0 ? `: ${tenants.join(', ')}` : ''}` });
+          // The router answering says nothing about the LiteLLM it proxies to.
+          // Measured 2026-09-21 on two machines: the router reported healthy
+          // and `doctor` printed `ok  serve health: up · 4 project(s)` while
+          // NOTHING was listening on the litellm port — several orphaned
+          // litellm processes existed, none of them bound. Every dispatch 502d
+          // and every candidate on all three gateways failed at once, which is
+          // the tell that the fault is local; but doctor said ok, so ~20
+          // minutes went into upstream capacity and model rankings instead of
+          // into `lsof`. A check that passes while every request fails is
+          // worse than no check, so this asks the litellm port directly.
+          if (litellmRequired(config)) {
+            const litellmPort = routerPorts(home).litellm;
+            let alive = false;
+            try {
+              // Bounded, because the failure this check exists to catch has a
+              // variant that ACCEPTS the connection and then never answers: a
+              // litellm wedged mid-request, or stopped (SIGSTOP), still has
+              // the kernel completing its TCP handshake from the listen
+              // backlog. An unbounded fetch there hangs `sonata doctor`
+              // itself — found by simulating exactly this while testing the
+              // check. A diagnostic that hangs on the fault it diagnoses is
+              // the one failure mode it must not have, so a non-answer inside
+              // the window is reported as down, which for every caller's
+              // purposes it is.
+              alive = (await fetch(`http://localhost:${litellmPort}/health/liveliness`, {
+                signal: AbortSignal.timeout(LITELLM_HEALTH_TIMEOUT_MS),
+              })).ok;
+            } catch { alive = false; }
+            checks.push(alive
+              ? { name: 'litellm health', ok: true, detail: `up on port ${litellmPort}` }
+              : {
+                name: 'litellm health',
+                ok: false,
+                detail: `this config routes through LiteLLM but nothing is answering on port ${litellmPort} — `
+                  + `every native request will fail 502 (or hang) while the router still reports healthy. `
+                  + 'Run `sonata restart`; if it keeps happening, check the newest log in '
+                  + '~/.config/sonata/logs/ for an expired OAuth credential blocking startup on an '
+                  + 'interactive sign-in.',
+              });
+          }
           // Same gate as `sonata status`: a router without the `ui` capability
           // is one built before the UI existed, and its URL would 404.
           if (healthReportsUi(body)) {
