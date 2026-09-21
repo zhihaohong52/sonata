@@ -8,6 +8,68 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- **The router retries every candidate-specific status, instead of an
+  allow-list.** The set was `{5xx, 429, 401, 403}`, which was wrong in one
+  direction only: every status nobody had enumerated counted as fatal, so a
+  failure specific to ONE candidate took down a tier that existed precisely to
+  survive it. Measured on two machines — a tier of 42 candidates stopped dead
+  on its first because anexto answered `Budget exceeded: 200.0409 >= 200.0000`
+  (402), while the codex and openrouter candidates behind it had their own
+  accounts, their own caps, and were never tried. It is now a deny-list:
+  everything `>= 400` retries except `TERMINAL_STATUSES` = `{400, 422}`, which
+  describe the *request* and would be rejected identically everywhere. That
+  also picks up 404 "model not found", 408, 413 "payload too large" and 451,
+  each terminal before now for no reason but omission. Keeping 400/422
+  terminal is deliberate: retrying a malformed request discards the error body
+  naming the offending field, answers a generic 529, and cools every candidate
+  in the tier — so concurrent agents that were fine start failing too. A 400
+  that *is* candidate-specific still falls through via the capability
+  fingerprints, on captured evidence only.
+- **A third capability-400 signature: `No tool output found for function
+  call`.** The Codex backend's answer when the Responses `input` holds a
+  `function_call` with no matching `function_call_output` — the pairing is lost
+  inside LiteLLM's translation. Captured across four serve logs: 28
+  occurrences over 12 distinct `call_id`s, every one on the codex-oauth
+  gateway and never on an api-key gateway serving the same tiers. It is
+  self-sustaining, since the failing turn never completes and the next turn
+  re-sends the same transcript, so it wedges a conversation until the agent
+  dies. Two did.
+- **`serve` no longer orphans a SIGTERM-deaf litellm.** One expired ChatGPT
+  refresh token is enough to start the pile: LiteLLM answers a 401 refresh by
+  falling back to an *interactive* device-code login and blocking in its
+  15-minute poll, so uvicorn never binds and the prompt is printed into a
+  daemon log nobody reads — and such a child ignores SIGTERM throughout. Six
+  orphans were found on one machine, oldest six hours, none holding the port
+  it was started for, each making the next `sonata restart` look like it had
+  failed too. `stopServe` now escalates to SIGKILL and says so when even that
+  fails; the failed-startup path escalates through the same idiom the
+  model-registry restart already used, instead of sending SIGTERM and then
+  deleting the child's config out from under it.
+- **The litellm startup-timeout message names the real cause.** It described
+  only "failed to bind (another litellm running?)", the rarer case, sending
+  the reader to `lsof`. It now names the expired-credential case first, quotes
+  the log lines to look for, and gives the remedy (`sonata auth login
+  <gateway>`, or `codex login` for `credential_source = "codex"`).
+- **`sonata doctor` checks the litellm port, not just the router.** It
+  reported `ok  serve health: up · 4 project(s)` while nothing was listening
+  on the litellm port and every dispatch was failing 502. The probe is bounded
+  at 3s, because the failure has a variant that accepts the connection and
+  never answers — an unbounded fetch hangs `doctor` on the very fault it
+  diagnoses.
+
+### Changed
+
+- `npm run typecheck` now type-checks the test suite too. `typecheck:tests`
+  existed but was excluded, so CI never ran it and the error count could only
+  grow; the last 17 are fixed and the two are folded into one command.
+- The three timeout-bound e2e tests moved to their own file. They were ~10.7s
+  of a ~21.4s file and every second is a deliberate wait for a configured
+  timeout to expire, so the only lever is running them beside the rest — a
+  file boundary, since vitest parallelises files. Suite wall time 25.4s →
+  18.8s, measured over five runs each.
+
 ## [0.11.2] - 2026-09-20
 
 ### Fixed
