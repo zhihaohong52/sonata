@@ -66,6 +66,38 @@ export const SIMPLE_COST_CEILING = 12;
  */
 export const AA_CAPABILITY_TIE_MARGIN = 1.0;
 
+/**
+ * How far below the most capable candidate `complex` will go to pay less.
+ *
+ * NOT a wider `AA_CAPABILITY_TIE_MARGIN`, and the distinction is the whole
+ * point of it being a separate constant. The tie margin is a claim about
+ * *measurement*: a gap that small is benchmark noise, so ordering by it is
+ * meaningless and cost may decide. This is a claim about *preference*: a gap
+ * this size is real and measured, and it is still worth trading for money.
+ * Folding the two together would make the code assert that a 7-point
+ * intelligence difference is experimental error, which is false.
+ *
+ * Within the band, the cheapest wins; outside it, capability wins outright.
+ * So `complex` still refuses to drop to a genuinely weaker model — it just
+ * declines to pay for the top of an effort ladder whose last rungs cost far
+ * more than they add.
+ *
+ * Measured 2026-09-21 on one project's `gpt-6-astra` ladder, where the top
+ * rung costs 4x the bottom for 15% more intelligence:
+ *
+ *   low     45.8  $0.8175      max      52.7  $3.2575
+ *   medium  49.6  $1.5406      xhigh    52.4  $2.3088
+ *   high    50.9  $1.7253
+ *
+ * At 7 the band admits `low` and the tier leads with it, 2.8x cheaper than
+ * the `xhigh` it previously chose. The risk this trades against is the
+ * `SIMPLE_CAPABILITY_FLOOR` lesson: a tier whose rule stops discriminating
+ * collapses into a neighbour. It does not here — at 7, `complex` leads with
+ * `astra@low` while `normal` leads with `luna@low`, a different model — but
+ * that is the property to check before widening it further.
+ */
+export const COMPLEX_COST_BAND = 7;
+
 export interface CatalogEntry {
   capable: boolean;
   source: 'curated' | 'aa' | 'default';
@@ -134,6 +166,35 @@ export interface AaEntry {
  */
 export function capabilityOf(entry: AaEntry): number {
   return entry.agenticIndex ?? entry.codingIndex ?? entry.intelligenceIndex ?? 0;
+}
+
+/**
+ * Capability as the `complex` tier measures it: reasoning first.
+ *
+ * `complex` is the one tier defined by judgement rather than throughput —
+ * "needs a design decision affecting other components, or is ambiguous about
+ * what done means" — and the agentic index does not describe that. It
+ * describes driving tools in a loop, which every tier does equally.
+ *
+ * The two disagree materially rather than academically. Measured 2026-09-21
+ * over one project's 22 complex candidates: on the agentic index
+ * `glm-5.3-flash` (50.9), `gpt-5.6-sol@max` (50.2) and `gpt-6-astra@max`
+ * (51.0) all sit inside `AA_CAPABILITY_TIE_MARGIN`, so the tie-break decided
+ * the top of the tier — and the tie-break is *cost*, in the one tier
+ * deliberately left cost-uncapped. The cheapest of the three led. On the
+ * intelligence index the same three are 41.8 / 47.0 / 52.7, a 10.9 spread
+ * the margin cannot swallow, so the ranking is decided by the measurement
+ * rather than by the price.
+ *
+ * `simple` and `normal` keep `capabilityOf`: they are value tiers, ranked on
+ * capability per task-dollar, and throughput is the right numerator there.
+ * Coverage is not a constraint — on the rows `init` actually offers (those
+ * publishing a per-task cost), intelligence is present on 100% and agentic on
+ * 95% — so the fallbacks exist for the odd unscored row, not as a per-role
+ * choice.
+ */
+export function reasoningOf(entry: AaEntry): number {
+  return entry.intelligenceIndex ?? entry.agenticIndex ?? entry.codingIndex ?? 0;
 }
 
 /**
@@ -628,10 +689,11 @@ function rank(
   aa?: AaCatalog,
   providers: readonly string[] = [],
   upstreamFor: UpstreamFor = identityUpstream,
+  metric: (entry: AaEntry) => number = capabilityOf,
 ): { index: number; price: number } {
   const scored = scoreFor(key, aa, providers, upstreamFor);
   return scored !== undefined
-    ? { index: capabilityOf(scored), price: scored.costPerTask ?? 0 }
+    ? { index: metric(scored), price: scored.costPerTask ?? 0 }
     : { index: AA_CAPABLE_CODING_INDEX, price: 0 };
 }
 
@@ -686,7 +748,11 @@ export function proposeTiers(
   // built-in proposal path usable because there is no exclusion data yet.
   const candidates = taskCostedCandidates(expandCandidates(modelKeys, aa, providers, upstreamFor), aa, providers, upstreamFor);
   const bareKey = (candidate: string): string => splitCandidate(candidate).key;
+  // Two rankers, because the tiers measure different things. `simple` and
+  // `normal` are value tiers and want throughput per dollar; `complex` is a
+  // judgement tier and wants reasoning. See `reasoningOf`.
   const rankOf = (k: string) => rank(k, aa, providers, upstreamFor);
+  const rankReasoning = (k: string) => rank(k, aa, providers, upstreamFor, reasoningOf);
   // An avoided model sorts after every non-avoided one, whatever it scores.
   // Demotion, not exclusion: the tier keeps it as a fallback candidate, so
   // avoiding a gateway costs preference rather than the depth a ranked list
@@ -707,11 +773,61 @@ export function proposeTiers(
     return effort === undefined ? -1 : EFFORT_LEVELS.indexOf(effort);
   };
   const byLevel = (a: string, b: string) => levelOf(b) - levelOf(a);
+  // The most capable candidate on offer, which anchors the cost band below.
+  // Computed over the whole candidate set rather than per comparison, so the
+  // band names one fixed reference and the comparator stays a total order —
+  // a band measured pairwise is not transitive and the sort result would
+  // depend on input order.
+  // Anchored PER MODEL, not across the whole candidate set. The band exists
+  // to decline the top of an effort ladder, which is a statement about one
+  // model's rungs — the same model, thinking harder, for more money. Applied
+  // globally it also says "prefer a cheaper, genuinely weaker MODEL", which
+  // is a different claim and not one `complex` should make: two models
+  // 2 points apart would rank by price, and the tier stops being about
+  // capability at all.
+  const familyBest = new Map<string, number>();
+  for (const candidate of candidates) {
+    const k = bareKey(candidate);
+    familyBest.set(k, Math.max(familyBest.get(k) ?? Number.NEGATIVE_INFINITY, rankReasoning(candidate).index));
+  }
+  /**
+   * The score `complex` ranks a candidate on: its own, except that a rung
+   * inside its family's band is credited with the family's best.
+   *
+   * Expressed as a SCALAR per candidate, not as a special case inside the
+   * comparator, and that is not a style choice. A comparator that asks
+   * "same family, and both in band?" is not transitive: on one real fixture
+   * it produced `deepseek > luna@xhigh > luna@max > deepseek`, a genuine
+   * 3-cycle, and a cyclic comparator makes the sort result depend on input
+   * order — so the tier silently differed run to run. Crediting the band
+   * up-front gives every candidate one number, which cannot cycle.
+   *
+   * What it says: rungs of one ladder within `COMPLEX_COST_BAND` of that
+   * ladder's top are all "as capable as this model gets", so price separates
+   * them. Everything else still ranks on what it actually scored.
+   */
+  const bandedIndex = (k: string): number => {
+    const own = rankReasoning(k).index;
+    const best = familyBest.get(bareKey(k)) ?? own;
+    return best - own <= COMPLEX_COST_BAND ? best : own;
+  };
   const byCapability = (a: string, b: string) => {
-    const ra = rankOf(a); const rb = rankOf(b);
-    const gap = Math.abs(rb.index - ra.index) <= AA_CAPABILITY_TIE_MARGIN ? 0 : rb.index - ra.index;
+    const ra = rankReasoning(a); const rb = rankReasoning(b);
+    // Inside the band every candidate counts as good enough, so price leads
+    // and capability only breaks a price tie. Outside it capability leads as
+    // before, so the tier never drops to a genuinely weaker model to save
+    // money — it declines to pay for the top of an effort ladder.
+    const ia = bandedIndex(a); const ib = bandedIndex(b);
+    const gap = Math.abs(ib - ia) <= AA_CAPABILITY_TIE_MARGIN ? 0 : ib - ia;
     const byPrice = ra.price - rb.price;
-    return avoidance(a, b) || gap || byPrice || byLevel(a, b);
+    // Real capability breaks an equal price, AFTER the band has had its say.
+    // The band exists to trade capability for money; where there is no money
+    // to save it has nothing to trade, and suppressing the difference would
+    // just pick the worse rung for nothing. Measured: two rungs of one model
+    // at an identical $0.50, scoring 74 and 72 — the band credited both with
+    // 74, the prices tied, and the level tie-break then chose the 72.
+    const realGap = rb.index - ra.index;
+    return avoidance(a, b) || gap || byPrice || realGap || byLevel(a, b);
   };
   // Simple work wants the most capability per dollar, capability breaking
   // ties. At one price, value *is* capability, so a score inside the tie

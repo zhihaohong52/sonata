@@ -76,6 +76,39 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Changed
 
+- **`complex` ranks on the intelligence index, not the agentic one.** It is
+  the one tier defined by judgement — "needs a design decision affecting other
+  components, or is ambiguous about what done means" — and the agentic index
+  measures driving tools in a loop, which every tier does equally. The two
+  disagree materially: over one project's 22 complex candidates,
+  `glm-5.3-flash` (50.9), `gpt-5.6-sol@max` (50.2) and `gpt-6-astra@max`
+  (51.0) all sat inside the 1.0 tie margin on agentic, so the tie-break
+  decided the top of the tier — and the tie-break is cost, in the one tier
+  deliberately left cost-uncapped, so the cheapest led. On intelligence the
+  same three are 41.8 / 47.0 / 52.7. `simple` and `normal` keep the agentic
+  index: they are value tiers, and throughput is the right numerator there.
+- **`COMPLEX_COST_BAND` (7) lets `complex` decline the top of an effort
+  ladder.** Rungs within 7 intelligence points of their own model's best
+  count as "as capable as this model gets", so price separates them. Measured
+  on `gpt-6-astra`, whose top rung costs 4x the bottom for 15% more
+  intelligence (low 45.8/$0.82 … max 52.7/$3.26): the tier now leads with
+  `@low`, 2.8x cheaper than the `@xhigh` it chose before, with the dearer
+  rungs kept behind it as fallbacks.
+
+  It is deliberately **not** a wider `AA_CAPABILITY_TIE_MARGIN`. That margin
+  is a claim about *measurement* — a gap that small is benchmark noise;
+  this is a claim about *preference* — a gap this size is real and still
+  worth trading for money. It is also strictly **per-ladder**: it never
+  prefers a cheaper, genuinely weaker model, and it does not reach past the
+  band. Where prices are equal it defers to real capability, since with no
+  money to save there is nothing to trade.
+
+  The band is applied as a scalar per candidate rather than as a special case
+  inside the comparator. The first implementation did the latter and was not
+  transitive — it produced a real 3-cycle
+  (`deepseek > luna@xhigh > luna@max > deepseek`), which makes the sort depend
+  on input order, so the tier differed run to run. A test now asserts the
+  ranking is identical under shuffled input.
 - `EFFORT_LEVELS` gains `default`, the one member that is not wire vocabulary.
 
 ### Fixed

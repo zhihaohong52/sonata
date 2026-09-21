@@ -996,12 +996,98 @@ describe('candidateLabel', () => {
 });
 
 
+describe('proposeTiers — the complex cost band', () => {
+  // One ladder whose top rungs cost far more than they add, modelled on the
+  // real gpt-6-astra numbers that prompted the band.
+  const LADDER: AaCatalog = {
+    fetchedAt: '2026-09-21T00:00:00Z',
+    models: {
+      'astra': { codingIndex: 77, blendedPriceUsd: 3, intelligenceIndex: 52.7, costPerTask: 3.2575, family: 'astra', effort: 'max' },
+      'astra-xhigh': { codingIndex: 76, blendedPriceUsd: 3, intelligenceIndex: 52.4, costPerTask: 2.3088, family: 'astra', effort: 'xhigh' },
+      'astra-low': { codingIndex: 75, blendedPriceUsd: 3, intelligenceIndex: 45.8, costPerTask: 0.8175, family: 'astra', effort: 'low' },
+    },
+  };
+
+  it('leads with the cheapest rung inside the band, keeping the rest as fallbacks', () => {
+    // 52.7 - 45.8 = 6.9, inside COMPLEX_COST_BAND (7): all three count as
+    // "as capable as this model gets", so price decides and @low leads at a
+    // quarter of @xhigh's cost. The dearer rungs stay ranked behind it.
+    const tiers = proposeTiers(['astra'], LADDER);
+    expect(tiers.complex[0]).toBe('astra@low');
+    expect(tiers.complex).toEqual(expect.arrayContaining(['astra@max', 'astra@xhigh']));
+  });
+
+  it('does not reach past the band to a genuinely weaker rung', () => {
+    // 52.7 - 44.0 = 8.7, outside the band. Cheapness stops buying the lead:
+    // the band declines to pay for the top of a ladder, it does not accept an
+    // arbitrarily worse model for money.
+    const far: AaCatalog = {
+      fetchedAt: LADDER.fetchedAt,
+      models: { ...LADDER.models, 'astra-low': { ...LADDER.models['astra-low'], intelligenceIndex: 44.0 } },
+    };
+    expect(proposeTiers(['astra'], far).complex[0]).not.toBe('astra@low');
+  });
+
+  it('never prefers a cheaper, genuinely weaker MODEL', () => {
+    // The band is a per-ladder claim. Two singleton families 5 apart are not
+    // rungs of one ladder, so capability still wins outright however cheap
+    // the weaker one is — the cross-model guarantee `complex` rests on.
+    const twoModels: AaCatalog = {
+      fetchedAt: LADDER.fetchedAt,
+      models: {
+        'strong': { codingIndex: 70, blendedPriceUsd: 3, intelligenceIndex: 52, costPerTask: 3.0, family: 'strong', effort: 'max' },
+        'weak': { codingIndex: 60, blendedPriceUsd: 0.1, intelligenceIndex: 47, costPerTask: 0.01, family: 'weak', effort: 'max' },
+      },
+    };
+    expect(proposeTiers(['strong', 'weak'], twoModels).complex[0]).toBe('strong@max');
+  });
+
+  it('lets real capability break an equal price', () => {
+    // The band trades capability for money; with no money to save it has
+    // nothing to trade, so suppressing the difference would pick the worse
+    // rung for nothing.
+    const samePrice: AaCatalog = {
+      fetchedAt: LADDER.fetchedAt,
+      models: {
+        'm': { codingIndex: 70, blendedPriceUsd: 1, intelligenceIndex: 50, costPerTask: 0.5, family: 'm', effort: 'high' },
+        'm-low': { codingIndex: 72, blendedPriceUsd: 1, intelligenceIndex: 52, costPerTask: 0.5, family: 'm', effort: 'low' },
+      },
+    };
+    expect(proposeTiers(['m'], samePrice).complex[0]).toBe('m@low');
+  });
+
+  it('orders identically however the input is shuffled', () => {
+    // The band's first implementation compared "same family, both in band?"
+    // inside the comparator, which is NOT transitive: it produced a real
+    // 3-cycle (deepseek > luna@xhigh > luna@max > deepseek), and a cyclic
+    // comparator makes the result depend on input order — so the tier
+    // silently differed run to run. Crediting the band as a scalar per
+    // candidate is what removes that, and this is the property that proves it.
+    const keys = ['gpt-5.6-luna', 'gpt-5.6-terra', 'deepseek-v4-flash'];
+    const expected = proposeTiers(keys, FAMILY_AA).complex;
+    for (const order of [[...keys].reverse(), [keys[1], keys[2], keys[0]], [keys[2], keys[0], keys[1]]]) {
+      expect(proposeTiers(order, FAMILY_AA).complex).toEqual(expected);
+    }
+  });
+});
+
 describe('proposeTiers — effort variants', () => {
   it('ranks variants as candidates: complex by capability, normal and simple by value', () => {
     const tiers = proposeTiers(['gpt-5.6-luna', 'gpt-5.6-terra', 'deepseek-v4-flash'], FAMILY_AA);
-    // terra@max 43.7 edges luna@max 42.7 — within the 1.0 tie margin, so
-    // price decides: luna@max ($0.178) beats terra@max ($1.399).
-    expect(tiers.complex.slice(0, 3)).toEqual(['gpt-5.6-luna@max', 'gpt-5.6-terra@max', 'deepseek-v4-flash@none']);
+    // COMPLEX_COST_BAND (7) reshapes this. Each ladder's rungs within 7 of
+    // its own top are credited with that top, so they compete on price:
+    //   luna  best 42.7 -> @max (42.7, $0.178) and @xhigh (39.5, $0.085) in
+    //                      band; @high (35.6, gap 7.1) and @low are not
+    //   terra best 43.7 -> @max ($1.399) and @high (37.6, gap 6.1) in band
+    // luna@xhigh is therefore "as capable as luna gets" at $0.085 and leads,
+    // then luna@max ($0.178). terra@high is credited 43.7, and 43.7 vs 42.7
+    // is inside the 1.0 tie margin, so price keeps both luna rungs ahead of
+    // it — but 43.7 vs deepseek's 41.7 is a real 2.0 edge, so terra@high
+    // takes third outright.
+    //
+    // The band is a per-ladder claim, never a cross-model one: it never says
+    // "prefer a cheaper, genuinely weaker MODEL".
+    expect(tiers.complex.slice(0, 3)).toEqual(['gpt-5.6-luna@xhigh', 'gpt-5.6-luna@max', 'gpt-5.6-terra@high']);
     // The floor is retired: normal sorts every capable level by value, and
     // simple filters that order at 12x the best-value level's cost.
     expect(tiers.normal[0]).toBe('gpt-5.6-luna@low');
