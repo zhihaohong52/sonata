@@ -1770,8 +1770,16 @@ context_window = 128000
     await cmdInit({
       installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', detect, write: () => {} });
 
-    expect(tuiMocks.data!.credentialAvailability.codex.codex).not.toBeNull();
-    expect(tuiMocks.data!.credentialAvailability.codex.opencode).not.toBeNull();
+    // Asserted defined before indexing rather than reached through `?.` —
+    // `expect(undefined).not.toBeNull()` passes, so an optional chain here
+    // would turn "the gateway has no availability entry at all" into a green
+    // test, which is the exact regression these two lines exist to catch.
+    const availability = tuiMocks.data!.credentialAvailability;
+    expect(availability).toBeDefined();
+    const codex = availability!.codex;
+    expect(codex).toBeDefined();
+    expect(codex!.codex).not.toBeNull();
+    expect(codex!.opencode).not.toBeNull();
   });
 
   it('falls back to the config-persisted base URL for a gateway no harness discovers anymore', async () => {
@@ -2306,7 +2314,8 @@ describe('dedupeOauthProviders', () => {
   });
 
   it('does not hide a provider that is itself the canonical name', () => {
-    const copilot = [{ harness: 'opencode', provider: 'github-copilot', key: 'opencode/github-copilot', count: 8 }];
+    const copilot: import('../src/detect.js').ProviderSummary[] = [
+      { harness: 'opencode', provider: 'github-copilot', key: 'opencode/github-copilot', count: 8 }];
     const auth = new Map([['github-copilot', 'copilot-oauth' as const]]);
     expect(dedupeOauthProviders(copilot, auth)).toHaveLength(1);
   });

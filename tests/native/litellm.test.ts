@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { envVarForGateway, litellmConfig, litellmConfigForTenants } from '../../src/native/litellm.js';
-import { CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL, parseConfig, type NativeConfig } from '../../src/config.js';
+import { CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL, parseConfig, type NativeConfig, type NativeGatewayConfig } from '../../src/config.js';
 
 describe('LiteLLM config', () => {
   it('emits one model_list entry per native model, keyed by env, never the key itself', () => {
@@ -215,12 +215,12 @@ describe('LiteLLM config — copilot-oauth gateways', () => {
 });
 
 describe('LiteLLM config — the provider prefix', () => {
-  const cfgFor = (gw: Record<string, unknown>, id: string) => litellmConfig({
-    models: { m: { gateway: 'gw', id } },
-    gateways: { gw: gw as never },
+  const cfgFor = (gw: NativeGatewayConfig, id: string) => litellmConfig({
+    models: { m: { gateway: 'gw', id, contextWindow: 128000 } },
+    gateways: { gw },
     ports: { router: 4100, litellm: 4000 },
     generate: {},
-  } as NativeConfig, 'sk');
+  }, 'sk');
 
   it('emits the gateway provider prefix, not a blanket openai/', () => {
     const e = cfgFor({ baseUrl: 'https://g/v1beta', auth: 'api-key', provider: 'gemini' }, 'gemini-2.5-flash');
@@ -231,11 +231,11 @@ describe('LiteLLM config — the provider prefix', () => {
     // A known vendor should not get `openai/` just because nobody typed a
     // provider — that reaches a compatibility shim rather than its native API.
     const e = litellmConfig({
-      models: { m: { gateway: 'google', id: 'gemini-2.5-flash' } },
+      models: { m: { gateway: 'google', id: 'gemini-2.5-flash', contextWindow: 128000 } },
       gateways: { google: { baseUrl: 'https://g/v1beta', auth: 'api-key' } },
       ports: { router: 4100, litellm: 4000 },
       generate: {},
-    } as NativeConfig, 'sk');
+    }, 'sk');
     expect(e.model_list[0].litellm_params.model).toBe('gemini/gemini-2.5-flash');
   });
 

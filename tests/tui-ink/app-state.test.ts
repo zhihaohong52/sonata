@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TIER_NAMES } from '../../src/config.js';
+import type { InitState } from '../../src/tui-ink/types.js';
 import {
   alreadyImportedKeys,
   applyStep,
@@ -548,7 +549,12 @@ describe('acceptRemainingTiers — effort variants', () => {
   });
 
   it('is indistinguishable from confirming every screen when effort expansion withholds a deselected variant', () => {
-    const state = {
+    // Annotated `InitState` rather than left to inference: the loop below
+    // reassigns `stepped` from `applyStep`, which returns the real type, and
+    // indexes `tiers` by a role read out of an array. An inferred literal
+    // types `tiers` as `{ code: ... }` and `roles` as a required `string[]`,
+    // so it describes this one fixture instead of what the code handles.
+    const state: InitState = {
       roles,
       nativeKeys: ['flash'],
       tiers: { code: { simple: ['luna@high'], normal: [], complex: ['flash'] } },
