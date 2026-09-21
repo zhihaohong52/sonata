@@ -525,6 +525,38 @@ describe('tier alias routing', () => {
     expect(seen).toEqual(['default/flash', 'default/flash']);
   });
 
+  it('fingerprints a model whose endpoint refuses reasoning_effort: none', async () => {
+    // Reported 2026-09-21: all 24 ranked entries for
+    // `openrouter-z-ai-glm-5.3-flash` were pinned `@none`, and its endpoint
+    // refuses to run with reasoning disabled, so every one 400d
+    // unconditionally. The root cause is fixed in the catalog (the level is
+    // now `default`, not `none`); this keeps configs already written that way
+    // survivable until their owner re-proposes tiers.
+    const MANDATORY_400 = JSON.stringify({
+      error: {
+        message: 'litellm.BadRequestError: OpenrouterException - '
+          + '{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled.","code":400}}',
+      },
+    });
+    const seen: string[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return model === 'default/flash'
+          ? new Response(MANDATORY_400, { status: 400 })
+          : new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    };
+    for (let i = 0; i < TIER_CAPABILITY_400_THRESHOLD - 1; i++) {
+      expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(400);
+    }
+    expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
+    expect(seen[seen.length - 1]).toBe('default/luna');
+  });
+
   it('logs the resolution step', async () => {
     const lines: string[] = [];
     await routeRequest(req('sonata-code-simple'), {

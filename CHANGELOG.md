@@ -10,6 +10,122 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **A model Artificial Analysis states no effort level for is no longer
+  recorded as "reasoning off".** `parseAaEffort` already told the two apart —
+  returning `none` only for an explicit `Non-Reasoning` — and the catalog then
+  coerced `undefined` to `none`, throwing the distinction away. Measured on a
+  real catalog: **235 of 315 families** were `none` on that coercion alone,
+  among them `claude-4-5-sonnet-thinking`, `claude-4-5-haiku-reasoning` and
+  `gemini-2-5-pro` — models ranked on a reasoning score and then sent
+  `reasoning_effort: none`, which is exactly the mismatch the `@<effort>`
+  grammar exists to prevent. Most degraded silently. `glm-5.3-flash` failed
+  loudly, its endpoint answering `Reasoning is mandatory for this endpoint and
+  cannot be disabled` to every request, so all 24 of its ranked entries 400d
+  unconditionally.
+
+  Such a row is now recorded `@default` — send no `reasoning_effort` at all,
+  which is both what AA measured and what "as it ships" means. It stays a
+  family of one and is still never offered bare, so a candidate continues to
+  name the level it will run at. After refreshing, the same catalog reports
+  225 `default` against 73 genuinely `none`.
+
+  `default` is deliberately **not** sent as the literal string, although
+  LiteLLM's own signature accepts one: the `direct` transport bypasses LiteLLM
+  and posts to an Anthropic-native gateway that has no `reasoning_effort`
+  field at all, so omitting is the only behaviour correct on both transports.
+  `wireEffort` is the single definition the router and all four adapters share
+  — codex passes no `-c model_reasoning_effort`, opencode no `--variant`, pi
+  no `--thinking` (distinct from `none`, which maps to pi's `off` and actively
+  disables thinking).
+- **A fourth capability-400 signature: `Reasoning is mandatory`.** The safety
+  net for configs already written with `@none`, which stay that way until
+  their owner re-proposes tiers. A true capability failure by the definition
+  the list uses: the request is well-formed and the next candidate serves it.
+- **`sonata doctor` reports both halves.** `effort freshness` names tier
+  entries pinned `@none` that the catalog states no level for, and only on a
+  positive catalog statement — an unscored model says nothing, and a model
+  that genuinely has a `none` variant is correctly pinned. `effort levels`
+  additionally detects a catalog cache written before the split, since the fix
+  is otherwise invisible until `sonata catalog update` runs; the test is
+  airtight rather than heuristic, because `default` is a new enum member
+  nothing could have written before.
+
+- **The bare-candidate refusal now covers the `normal` tier.** It iterated
+  `simple` and `complex` only: `normal` was added after the refusal and the
+  loop was never widened, so a bare key there alone slipped past the very
+  check that stops a candidate ranking on one row's score and then running at
+  whatever the gateway defaults to. Same "two eras in one config" shape as the
+  inverted tier split in 0.11.0.
+
+- **`schema_version` bumps to 2, because `@default` is a forward-breaking
+  config value.** A config carrying it is unloadable by any sonata predating
+  it, and unstamped that failure reads `unknown effort level "default" — one
+  of none, minimal, …`: it blames the value, names no remedy, and takes down
+  the **whole** config, so every tier in the project dies rather than the one
+  rung. Measured 2026-09-21 after a config was hand-edited to `@default`
+  while the router still ran pre-`@default` code. Stamped v2 the same file
+  refuses with `schema_version is 2, but this sonata understands up to 1 —
+  upgrade sonata`, which is true and actionable; that refusal already ships in
+  0.11.2, so the bump reaches installs in the wild. No transform is needed in
+  either direction — a v1 file cannot contain the value.
+- `sonata doctor` no longer suggests hand-editing to `@default` without
+  saying what it costs: the entry needs this sonata version everywhere the
+  config is read, **including a router still running older code**, so the
+  advice now leads with `--repropose-tiers` (which stamps the file) and names
+  `sonata restart`.
+
+### Changed
+
+- **`complex` ranks on the intelligence index, not the agentic one.** It is
+  the one tier defined by judgement — "needs a design decision affecting other
+  components, or is ambiguous about what done means" — and the agentic index
+  measures driving tools in a loop, which every tier does equally. The two
+  disagree materially: over one project's 22 complex candidates,
+  `glm-5.3-flash` (50.9), `gpt-5.6-sol@max` (50.2) and `gpt-6-astra@max`
+  (51.0) all sat inside the 1.0 tie margin on agentic, so the tie-break
+  decided the top of the tier — and the tie-break is cost, in the one tier
+  deliberately left cost-uncapped, so the cheapest led. On intelligence the
+  same three are 41.8 / 47.0 / 52.7. `simple` and `normal` keep the agentic
+  index: they are value tiers, and throughput is the right numerator there.
+- **`COMPLEX_COST_BAND` (7) lets `complex` decline the top of an effort
+  ladder.** Rungs within 7 intelligence points of their own model's best
+  count as "as capable as this model gets", so price separates them. Measured
+  on `gpt-6-astra`, whose top rung costs 4x the bottom for 15% more
+  intelligence (low 45.8/$0.82 … max 52.7/$3.26): the tier now leads with
+  `@low`, 2.8x cheaper than the `@xhigh` it chose before, with the dearer
+  rungs kept behind it as fallbacks.
+
+  It is deliberately **not** a wider `AA_CAPABILITY_TIE_MARGIN`. That margin
+  is a claim about *measurement* — a gap that small is benchmark noise;
+  this is a claim about *preference* — a gap this size is real and still
+  worth trading for money. It is also strictly **per-ladder**: it never
+  prefers a cheaper, genuinely weaker model, and it does not reach past the
+  band. Where prices are equal it defers to real capability, since with no
+  money to save there is nothing to trade.
+
+- **The capability tolerance is applied as a class, not pairwise.** "Within
+  the margin" cannot be asked pairwise: tolerance is not transitive. With
+  scores 52.1, 51.5 and 51.0 the first two tie and so do the last two, but
+  52.1 and 51.0 are 1.1 apart and rank outright; prices running the other way
+  close the loop. Measured on exactly that fixture — six input permutations
+  produced **three different orderings** of the same three candidates, so the
+  tier a user got depended on the order their models happened to be declared
+  in. Quantising to a `capabilityClass` first makes the comparison an integer
+  equality, which cannot cycle. The cost is a boundary: two scores either side
+  of a class edge are separated even when closer together than the margin —
+  the standard trade for bucketing, and the safe direction, since it can only
+  rank by capability where the old code ranked by price.
+
+  The band is applied as a scalar per candidate rather than as a special case
+  inside the comparator. The first implementation did the latter and was not
+  transitive — it produced a real 3-cycle
+  (`deepseek > luna@xhigh > luna@max > deepseek`), which makes the sort depend
+  on input order, so the tier differed run to run. A test now asserts the
+  ranking is identical under shuffled input.
+- `EFFORT_LEVELS` gains `default`, the one member that is not wire vocabulary.
+
+### Fixed
+
 - **The router retries every candidate-specific status, instead of an
   allow-list.** The set was `{5xx, 429, 401, 403}`, which was wrong in one
   direction only: every status nobody had enumerated counted as fatal, so a

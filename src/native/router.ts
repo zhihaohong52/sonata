@@ -7,7 +7,7 @@ import type { LedgerRow } from '../ledger.js';
 import { SONATA_PROJECT_HEADER, TenantError } from './tenants.js';
 import { SONATA_TOKEN_HEADER, projectHintAuthorised } from './router-token.js';
 import type { Transport } from './providers.js';
-import { joinCandidate, splitCandidate, type Effort } from '../effort.js';
+import { joinCandidate, splitCandidate, wireEffort, type Effort } from '../effort.js';
 import { createUsageCollector, type UsageTokens, usageFromJsonBody } from './usage.js';
 import { handleUiRequest, type UiDeps } from './ui.js';
 
@@ -351,7 +351,12 @@ export function withModel(body: Buffer, model: string): Buffer {
  * unpriced volume — recorded on the ledger row, never assumed applied.
  */
 export function withEffort(body: Buffer, effort: Effort | undefined): Buffer {
-  if (effort === undefined) return body;
+  // `default` means "as the model ships", so the body is left alone — no
+  // `reasoning_effort`, and `thinking` NOT stripped. Sending the literal
+  // string would be wrong on the direct transport, which posts to an
+  // Anthropic-native gateway that has no such field.
+  const wire = wireEffort(effort);
+  if (wire === undefined) return body;
   let payload: Record<string, unknown>;
   try {
     payload = JSON.parse(body.toString()) as Record<string, unknown>;
@@ -359,7 +364,7 @@ export function withEffort(body: Buffer, effort: Effort | undefined): Buffer {
     return body;
   }
   const { thinking: _thinking, output_config: outputConfig, ...rest } = payload;
-  const out: Record<string, unknown> = { ...rest, reasoning_effort: effort };
+  const out: Record<string, unknown> = { ...rest, reasoning_effort: wire };
   if (typeof outputConfig === 'object' && outputConfig !== null && !Array.isArray(outputConfig)) {
     const { effort: _effort, ...keptConfig } = outputConfig as Record<string, unknown>;
     if (Object.keys(keptConfig).length > 0) out.output_config = keptConfig;
@@ -413,7 +418,7 @@ export const TERMINAL_STATUSES: ReadonlySet<number> = new Set([400, 405, 415, 42
  * 400 bodies that mean "this candidate cannot serve requests of this shape",
  * as opposed to "this request was malformed".
  *
- * Three entries, because three have been measured.
+ * Four entries, because four have been measured.
  *
  * `thought_signature` — Gemini 3 returns one on each function call and requires
  * it echoed back, and LiteLLM does not preserve it, so every multi-turn
@@ -457,6 +462,22 @@ export const TERMINAL_STATUSES: ReadonlySet<number> = new Set([400, 405, 415, 42
  * Without a cooldown the conversation is wedged on that candidate until the
  * agent dies — two tier agents did, reported 2026-09-21.
  *
+ * `Reasoning is mandatory` — a model whose endpoint refuses to run with
+ * reasoning disabled, answering
+ * `Reasoning is mandatory for this endpoint and cannot be disabled` to any
+ * request carrying `reasoning_effort: none`. Reported 2026-09-21 against
+ * `openrouter-z-ai-glm-5.3-flash` on `sonata-review-complex` and
+ * `-review-normal`: all 24 of that model's ranked entries were pinned
+ * `@none`, so every one of them 400d unconditionally.
+ *
+ * The root cause is fixed elsewhere — the catalog was recording "AA stated
+ * no level" as `none` rather than `default`, so the model was never
+ * requested at a level it can serve. This entry is the safety net for the
+ * configs already written that way, which stay `@none` until their owner
+ * re-proposes tiers. It is a true capability failure by the definition at
+ * the top of this list: the request is well-formed, and the next candidate
+ * serves it.
+ *
  * Guessing at "equivalent" signatures would break this repo's evidence-over-
  * inference rule, and the cost of a wrong guess is asymmetric: a signature
  * that matches too broadly cools healthy candidates on ordinary client errors,
@@ -467,6 +488,7 @@ const CAPABILITY_400_SIGNATURES = [
   'thought_signature',
   'System messages are not allowed',
   'No tool output found for function call',
+  'Reasoning is mandatory',
 ] as const;
 
 /** Module-level so a cooling-down key stays cool across requests. Test seam: `clearCooldowns()`. */

@@ -345,7 +345,12 @@ describe('plan — effort variants', () => {
       if (candidate.startsWith('acme-fast')) expect(candidate).toMatch(/^acme-fast@(high|max)$/);
     }
     expect(back.tiers!.code.simple[0]).toBe('acme-fast@high');
-    expect(back.tiers!.code.complex[0]).toBe('acme-fast@max');
+    // `complex` leads with @high, not @max: the two are 6 apart (42 vs 36),
+    // inside COMPLEX_COST_BAND (7), so they count as equally capable for this
+    // model and the cheaper rung wins — $0.04 against $0.18. @max is still
+    // ranked, immediately behind it.
+    expect(back.tiers!.code.complex[0]).toBe('acme-fast@high');
+    expect(back.tiers!.code.complex).toContain('acme-fast@max');
   });
 
   it('re-proposes a saved bare candidate that now has variants instead of dropping it', () => {

@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput } from './types.js';
 import type { ModelRef } from '../types.js';
 import { isReadOnlyRole } from '../config.js';
-import type { Effort } from '../effort.js';
+import { wireEffort, type Effort } from '../effort.js';
 
 const run = promisify(execFile);
 
@@ -36,7 +36,7 @@ function shellQuote(s: string): string {
 }
 
 /** Pi spells "no thinking" as `off`; every other level matches sonata's enum. */
-export function piThinkingLevel(effort: Effort): string {
+export function piThinkingLevel(effort: Exclude<Effort, 'default'>): string {
   return effort === 'none' ? 'off' : effort;
 }
 
@@ -70,7 +70,10 @@ function buildScript(input: PlanInput): LaunchPlan {
   // it prints `Warning: Invalid thinking level "none"` and continues at its
   // own default, so an unmapped `none` would silently run WITH thinking, the
   // opposite of what was asked for, with nothing downstream able to see it.
-  if (input.effort !== undefined) flags.push(`--thinking ${piThinkingLevel(input.effort)}`);
+  // `default` passes no `--thinking`, so pi uses its own default. Distinct
+  // from `none`, which maps to pi's `off` and actively disables thinking.
+  const thinking = wireEffort(input.effort);
+  if (thinking !== undefined) flags.push(`--thinking ${piThinkingLevel(thinking)}`);
   // `--tools` is an allowlist, genuinely enforced: a read-only role gets only
   // the read-side tools and cannot write even in bypassPermissions.
   if (readOnly) flags.push('--tools read,grep,find,ls');

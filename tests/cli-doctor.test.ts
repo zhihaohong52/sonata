@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { main } from '../src/cli.js';
-import { cmdDoctor, overCeilingSimple, knownBadVersion, type Check } from '../src/commands/doctor.js';
+import { cmdDoctor, overCeilingSimple, strandedNoneCandidates, knownBadVersion, type Check } from '../src/commands/doctor.js';
 
 vi.mock('../src/commands/doctor.js', async () => {
   const actual = await vi.importActual<typeof import('../src/commands/doctor.js')>(
@@ -48,6 +48,48 @@ describe('sonata doctor CLI wiring', () => {
     const err = await main(['doctor', '--bogus']).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toBe(`Unknown option '--bogus'`);
+  });
+});
+
+describe('strandedNoneCandidates', () => {
+  const fam = (...levels: string[]) => ({ variants: new Map(levels.map((l) => [l, {}])) });
+  const tiers = (...c: string[]) => ({ code: { simple: c, complex: [] } });
+
+  it('flags a @none pin the catalog states no level for', () => {
+    // The measured case: all 24 ranked entries for glm-5.3-flash were @none
+    // while AA had stated no level at all, so the model was ranked on a
+    // reasoning score and then asked not to reason. Its endpoint refuses,
+    // and every request 400d.
+    const out = strandedNoneCandidates(tiers('glm-5.3-flash@none'), () => fam('default'));
+    expect([...out.keys()]).toEqual(['glm-5.3-flash']);
+    expect([...out.get('glm-5.3-flash')!]).toEqual(['code']);
+  });
+
+  it('leaves a model that genuinely has a none variant alone', () => {
+    // AA said `Non-Reasoning` for this one, so @none is exactly right and
+    // reporting it would invent a fault.
+    expect(strandedNoneCandidates(tiers('luna@none'), () => fam('none', 'low', 'max')).size).toBe(0);
+  });
+
+  it('says nothing about a model the catalog does not score', () => {
+    // An unscored key carries no statement about its levels. Guessing would
+    // flag every hand-added model on a thin catalog.
+    expect(strandedNoneCandidates(tiers('hand-added@none'), () => undefined).size).toBe(0);
+  });
+
+  it('ignores candidates pinned at any other level', () => {
+    const out = strandedNoneCandidates(tiers('luna@low', 'luna@max', 'luna'), () => fam('default'));
+    expect(out.size).toBe(0);
+  });
+
+  it('gathers every role holding the same stranded key', () => {
+    // Roles share one ranking, so a stranded model is normally in all four —
+    // reported once with its roles rather than four near-identical lines.
+    const out = strandedNoneCandidates({
+      code: { simple: ['glm@none'], complex: [] },
+      review: { simple: [], normal: ['glm@none'], complex: ['glm@none'] },
+    }, () => fam('default'));
+    expect([...out.get('glm')!].sort()).toEqual(['code', 'review']);
   });
 });
 
