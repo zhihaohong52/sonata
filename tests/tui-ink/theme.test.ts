@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { bar, band, columns, STATE, INK, MIN_BOARD } from '../../src/tui-ink/theme.js';
+import { bar, band, columns, STATE, INK, MIN_BOARD, MAX_BOARD } from '../../src/tui-ink/theme.js';
 
 describe('bar', () => {
   it('draws a shared-scale quantity, half cells included', () => {
@@ -64,6 +64,19 @@ describe('columns', () => {
       expect(c.name).toBeGreaterThanOrEqual(10);
       expect(c.bar).toBeGreaterThanOrEqual(0);
     }
+  });
+
+  it('stops growing at the measure limit, and sits left', () => {
+    // Past MAX_BOARD the name column stretches and the bar drifts away from
+    // the model it describes. Measured at 200 columns: a 145-wide name made
+    // the row read as two unrelated halves.
+    expect(columns(200).total).toBe(columns(MAX_BOARD).total);
+    expect(columns(MAX_BOARD).total).toBeLessThanOrEqual(MAX_BOARD);
+  });
+
+  it('shows status words only once there is room for them', () => {
+    expect(columns(88).showWord).toBe(true);
+    expect(columns(87).showWord).toBe(false);
   });
 
   it('holds the widest state mark and word without truncating them', () => {

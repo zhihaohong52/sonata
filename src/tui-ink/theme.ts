@@ -126,6 +126,16 @@ export function bar(fraction: number, width: number): { filled: string; track: s
  */
 export const MIN_BOARD = 72;
 
+/**
+ * The board stops growing here and sits left.
+ *
+ * A measure limit, for the same reason prose has one: past this the name
+ * column stretches and the bar drifts so far from the model it describes
+ * that the eye cannot carry one to the other. Measured at 200 columns, where
+ * the name ran 145 wide and the row read as two unrelated halves.
+ */
+export const MAX_BOARD = 120;
+
 /** Widest mark and word in `STATE`, which the status column must hold. */
 const MARK_W = Math.max(...Object.values(STATE).map((s) => s.mark.length));
 const WORD_W = Math.max(...Object.values(STATE).map((s) => s.word.length));
@@ -143,7 +153,7 @@ export interface BoardColumns {
 }
 
 export function columns(termWidth: number): BoardColumns {
-  const w = Math.max(40, termWidth);
+  const w = Math.min(Math.max(40, termWidth), MAX_BOARD);
   const showBar = w >= MIN_BOARD;
   const showWord = w >= 88;
   // Measured from STATE rather than guessed: a status column one cell short

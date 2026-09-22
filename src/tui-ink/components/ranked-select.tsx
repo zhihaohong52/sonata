@@ -164,12 +164,26 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
       )}
       <Text color={INK.RULE}>{'─'.repeat(col.total)}</Text>
       {footer !== undefined && <Text color={INK.MUTED}>{footer}</Text>}
-      <Text>
-        <Text color={INK.MUTED}>{'↑↓ move   space rank   [ ] reorder   '}</Text>
-        <Text color={INK.ACCENT}>enter</Text>
-        <Text color={INK.MUTED}>{' confirm'}</Text>
-        <Text color={INK.MUTED}>{onAcceptRest ? '   A accept all' : ''}{onBack ? '   ← back' : ''}{onCancel ? '   esc cancel' : ''}</Text>
-      </Text>
+      {/*
+        Wraps between key/action pairs, never inside one. At 40 columns the
+        single-Text version broke after "A" and orphaned "accept all" on the
+        next line, which reads as two different things. Keys are never DROPPED
+        to fit: a hidden action is worse than a second line.
+      */}
+      <Box flexWrap="wrap">
+        {([
+          ['↑↓', 'move'], ['space', 'rank'], ['[ ]', 'reorder'],
+          ['enter', 'confirm', true],
+          ...(onAcceptRest ? [['A', 'accept all']] : []),
+          ...(onBack ? [['←', 'back']] : []),
+          ...(onCancel ? [['esc', 'cancel']] : []),
+        ] as Array<[string, string, boolean?]>).map(([key, action, commits]) => (
+          <Text key={key}>
+            <Text color={commits === true ? INK.ACCENT : INK.MUTED}>{key}</Text>
+            <Text color={INK.MUTED}>{` ${action}   `}</Text>
+          </Text>
+        ))}
+      </Box>
     </Box>
   );
 }
