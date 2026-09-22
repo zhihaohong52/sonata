@@ -84,8 +84,14 @@ async function runInit(
   interactive: boolean,
 ): Promise<InitResult> {
   out('');
-  out(interactive ? banner() : '  sonata init');
-  out('');
+  // The banner is CLI chrome: it exists to name the tool when it takes over a
+  // terminal. A host has already drawn its own title, so printing it there
+  // puts six lines of ASCII art at the top of a screen whose job is to report
+  // what happened — which is what it did.
+  if (opts.host === undefined) {
+    out(interactive ? banner() : '  sonata init');
+    out('');
+  }
 
   // ---- discover ---------------------------------------------------------
   const env: InitEnvironment = await discover({

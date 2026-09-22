@@ -86,6 +86,10 @@ export function InitScreen({ cwd, home, onDone, onKeep }: {
   const [output, setOutput] = useState<string[]>([]);
   const [error, setError] = useState<string>();
   const [finished, setFinished] = useState(false);
+  // `undefined` until the run ends. Distinguishes "nothing was written
+  // because you cancelled" from "nothing was written because it failed",
+  // which the screen used to report identically as `done`.
+  const [cancelled, setCancelled] = useState<boolean>();
   // Insertion-ordered, so rows appear in the order the probes were started
   // rather than the order they happen to finish — a list that reorders under
   // the reader is harder to follow than a slow one.
@@ -121,12 +125,14 @@ export function InitScreen({ cwd, home, onDone, onKeep }: {
         }),
       },
     })
-      .then(() => {
+      .then((result) => {
         setOutput(lines);
+        setCancelled(result.cancelled === true);
         setFinished(true);
         // The closing lines name what to do next (`/reload-plugins`, `sonata
         // code`), and the screen they are on is discarded when the app exits.
-        onKeep?.(lines.filter((line) => line.trim() !== ''));
+        // A cancelled run has nothing worth carrying out to the shell.
+        if (result.cancelled !== true) onKeep?.(lines.filter((line) => line.trim() !== ''));
       })
       .catch((cause: unknown) => {
         // Rendered, not thrown. A throw here unmounts the shell and takes the
@@ -192,7 +198,9 @@ export function InitScreen({ cwd, home, onDone, onKeep }: {
   return (
     <Screen
       title="Setup"
-      note={error === undefined ? 'done' : 'did not finish'}
+      note={error !== undefined ? 'did not finish'
+        : cancelled === true ? 'cancelled — nothing written'
+        : 'done'}
       footer="enter back to sonata"
     >
       {output.filter((line) => line.trim() !== '').map((line, i) => (

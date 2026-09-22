@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { homedir } from 'node:os';
 import { Box, Text, render, useApp, useInput } from 'ink';
 import { cmdDoctor, type Check } from '../commands/doctor.js';
-import { nextStep, type Step } from './steps.js';
+import { afterCheck, nextStep, type Step } from './steps.js';
 import { OverviewScreen } from './screens/overview.js';
 import { BudgetScreen } from './screens/budget.js';
 import { ModelsScreen } from './screens/models.js';
@@ -58,6 +58,9 @@ function ConfigTui({ cwd, home, start, onKeep }: { cwd: string; home: string; st
   const [checks, setChecks] = useState<Check[]>([]);
   const [cursor, setCursor] = useState(0);
   const { toggle, name: themeName, palette } = useTheme();
+  // Whether the health check has already run once. A deep link is a boot
+  // destination, not a standing one — see `afterCheck`.
+  const booted = useRef(false);
 
   useEffect(() => {
     if (step !== 'checking') return;
@@ -66,7 +69,9 @@ function ConfigTui({ cwd, home, start, onKeep }: { cwd: string; home: string; st
       .then((result) => {
         if (cancelled) return;
         setChecks(result.checks);
-        setStep(start ?? 'overview');
+        const next = afterCheck(start, booted.current);
+        booted.current = true;
+        setStep(next);
       })
       .catch(() => {
         // A machine doctor cannot describe is still one the TUI must open on,
@@ -74,7 +79,9 @@ function ConfigTui({ cwd, home, start, onKeep }: { cwd: string; home: string; st
         // rather than leaving a spinner running forever.
         if (cancelled) return;
         setChecks([]);
-        setStep(start ?? 'overview');
+        const next = afterCheck(start, booted.current);
+        booted.current = true;
+        setStep(next);
       });
     return () => { cancelled = true; };
   }, [step, cwd, home, start]);

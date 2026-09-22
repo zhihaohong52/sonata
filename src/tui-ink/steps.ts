@@ -24,3 +24,25 @@ export function nextStep(step: Step, key: string): Step {
   if (step === 'overview' && key === 'i') return 'init';
   return step;
 }
+
+/**
+ * Where boot lands after the health check, given whether it has run before.
+ *
+ * `start` is a **deep link**: the screen `sonata status`, `sonata agents` or
+ * `sonata init` opens on. It applies once. Re-applying it is an infinite
+ * loop, and one that shipped: `init` finishes by routing back to `checking`
+ * so doctor re-runs against the machine it just changed, `checking` then read
+ * `start` again, and `sonata init` bounced straight back into Setup and
+ * re-probed every harness — reported as exactly that, a loop that would not
+ * exit.
+ *
+ * Once booted, every later pass through `checking` lands on the overview,
+ * which is the screen the app is actually for.
+ */
+export function afterCheck(start: Step | undefined, booted: boolean): Step {
+  if (booted || start === undefined) return 'overview';
+  // `checking` as a deep link would be a second loop, of a simpler kind: the
+  // check would complete and route straight back into itself.
+  if (start === 'checking') return 'overview';
+  return start;
+}
