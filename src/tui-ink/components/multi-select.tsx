@@ -109,8 +109,8 @@ export function MultiSelect<T>(props: MultiSelectProps<T>): React.ReactElement {
         between a usable list and an unusable one.
       */}
       <Text color={palette.MUTED}>
-        ↑↓ choose · space toggle{filterable ? ' · type to filter' : ''} · enter confirm
-        {onBack ? ' · ← back' : ''}{onCancel ? ' · esc cancel' : ''}
+        ↑↓ choose   space toggle{filterable ? '   type to filter' : ''}   enter confirm
+        {onBack ? '   ← back' : ''}{onCancel ? '   esc cancel' : ''}
       </Text>
     </Box>
   );

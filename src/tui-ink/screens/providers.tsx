@@ -2,7 +2,7 @@ import React from 'react';
 import { Text } from 'ink';
 import { STATE } from '../theme.js';
 import { usePalette } from '../theme-context.js';
-import { Message, Screen, count } from '../components/screen.js';
+import { Message, Screen, count, fit, ruleWidth } from '../components/screen.js';
 import { loadConfigForScreen } from './screen-config.js';
 import { gatewaysServingNothing, providerRows } from './provider-rows.js';
 
@@ -15,6 +15,7 @@ export function ProvidersScreen({ cwd, home }: { cwd: string; home: string }): R
   const rows = providerRows(loaded.config);
   const empty = new Set(gatewaysServingNothing(rows));
   const width = Math.max(...rows.map((row) => row.gateway.length), 7);
+  const rest = Math.max(12, ruleWidth() - 4 - width - 2);
 
   return (
     <Screen
@@ -34,8 +35,9 @@ export function ProvidersScreen({ cwd, home }: { cwd: string; home: string }): R
           <Text key={row.gateway}>
             <Text color={idle ? palette.MID : palette.MUTED}>{(idle ? STATE.held.mark : STATE.live.mark).padEnd(4)}</Text>
             <Text color={idle ? palette.MID : undefined}>{row.gateway.padEnd(width + 2)}</Text>
-            <Text color={palette.MUTED}>{`${row.auth}  ${row.transport}`}</Text>
-            <Text color={palette.MUTED}>{row.models.length === 0 ? '  no models' : `  ${row.models.join(', ')}`}</Text>
+            <Text color={palette.MUTED}>
+              {fit(`${row.auth}  ${row.transport}${row.models.length === 0 ? '  no models' : `  ${row.models.join(', ')}`}`, rest)}
+            </Text>
           </Text>
         );
       })}

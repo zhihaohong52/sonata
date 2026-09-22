@@ -3,7 +3,7 @@ import { Text } from 'ink';
 import { keyReport } from '../../native/credentials.js';
 import { STATE } from '../theme.js';
 import { usePalette } from '../theme-context.js';
-import { Message, Screen, count } from '../components/screen.js';
+import { Message, Screen, count, fit, ruleWidth } from '../components/screen.js';
 import { loadConfigForScreen } from './screen-config.js';
 import { keyRows, gatewaysMissingKeys } from './key-rows.js';
 
@@ -27,12 +27,13 @@ export function KeysScreen({ cwd, home }: { cwd: string; home: string }): React.
   const rows = keyRows(entries, keyReport(entries.map((e) => e.gateway), home));
   const missing = new Set(gatewaysMissingKeys(rows));
   const width = Math.max(...rows.map((row) => row.gateway.length), 7);
+  const rest = Math.max(12, ruleWidth() - 4 - width - 2);
 
   return (
     <Screen
       title="Keys"
       note={missing.size === 0 ? `${count(rows.length, 'gateway')}, all credentialed` : `${missing.size} of ${rows.length} need a credential`}
-      footer="esc back   ·   sonata auth add <gateway>"
+      footer="esc back   ·   add one with `sonata auth add <gateway>`"
     >
       {rows.length === 0 && (
         <Text color={palette.MUTED}>No gateways configured, so there is nothing to authenticate.</Text>
@@ -45,7 +46,7 @@ export function KeysScreen({ cwd, home }: { cwd: string; home: string }): React.
           <Text key={row.gateway}>
             <Text color={none ? palette.HIGH : palette.MUTED}>{(none ? STATE.cooled.mark : STATE.live.mark).padEnd(4)}</Text>
             <Text color={none ? palette.MID : undefined}>{row.gateway.padEnd(width + 2)}</Text>
-            <Text color={palette.MUTED}>{row.source}</Text>
+            <Text color={palette.MUTED}>{fit(row.source, rest)}</Text>
           </Text>
         );
       })}

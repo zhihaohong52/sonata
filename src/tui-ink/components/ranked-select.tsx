@@ -1,7 +1,7 @@
 import React, { useReducer } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import { rsInitial, rsOrder, rsReduce } from './ranked-select-state.js';
-import { STATE, bar, band, columns } from '../theme.js';
+import { STATE, bar, band, columns, usableWidth } from '../theme.js';
 import type { CandidateFacts } from '../../catalog.js';
 import { usePalette } from '../theme-context.js';
 
@@ -94,7 +94,7 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
   });
 
   const { stdout } = useStdout();
-  const col = columns(stdout?.columns ?? 80);
+  const col = columns(usableWidth(stdout?.columns ?? 80));
 
   // The scale is shared across every row on screen, because the reader's
   // question is comparative. A bar scaled to its own row's ceiling answers a
@@ -109,6 +109,13 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
     <Box flexDirection="column">
       <Box>
         <Text bold color={palette.TEXT}>{title}</Text>
+        {/* The count sits right of the head, where every other screen puts
+            its note: a ranking screen's one live fact is how many of the
+            offered models are actually in the list, and reading it off the
+            numerals means counting them. */}
+        <Text color={palette.MUTED}>
+          {`   ${state.ranked.length} of ${items.length} ranked`}
+        </Text>
       </Box>
       <Text color={palette.RULE}>{'─'.repeat(col.total)}</Text>
       {order.map((index, position) => {
@@ -132,11 +139,22 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
           : `${facts.key}${facts.effort ? ` @${facts.effort}` : ''}`;
 
         return (
-          <Box key={index}>
+          <React.Fragment key={index}>
+          <Box>
             <Text color={isLead ? palette.ACCENT : palette.MUTED} bold={isLead}>
               {`${(rank >= 0 ? String(rank + 1) : '·').padStart(3)} `}
             </Text>
-            <Text inverse={onCursor} color={rank < 0 && !onCursor ? palette.MUTED : undefined}>
+            {/* Struck, not merely dimmed. A dominated model stays ON the
+                board — something cheaper is at least as capable, so it will
+                never be reached first, and hiding it would lose the reason.
+                The strike says "ruled out" on the row itself, which is where
+                the judgement applies; `──○` in the status column says the
+                same thing in the stroke vocabulary. */}
+            <Text
+              inverse={onCursor}
+              strikethrough={stateName === 'dominated'}
+              color={rank < 0 && !onCursor ? palette.MUTED : palette.TEXT}
+            >
               {name.length > col.name ? `${name.slice(0, col.name - 1)}…` : name.padEnd(col.name)}
             </Text>
             {col.showBar && facts?.capability !== undefined && (
@@ -157,6 +175,15 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
               {' '}{mark.mark}{col.showWord ? ` ${mark.word}` : ''}
             </Text>
           </Box>
+          {/* The lead sits above a rule, apart from the rest. It is the one
+              row that answers "what runs if I dispatch right now", and in an
+              undifferentiated run of rows that question has to be answered by
+              finding the numeral 1. Drawn only when something follows it, so
+              a one-row list does not end in a rule against nothing. */}
+          {isLead && position + 1 < order.length && (
+            <Text color={palette.RULE}>{'┄'.repeat(col.total)}</Text>
+          )}
+          </React.Fragment>
         );
       })}
       {state.ranked.length === 0 && (

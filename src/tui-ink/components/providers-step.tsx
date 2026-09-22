@@ -64,7 +64,7 @@ function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: Choi
           {index === cursor ? '›' : ' '} {choice.label}
         </Text>
       ))}
-      <Text color={palette.MUTED}>↑↓ choose · enter confirm{onBack ? ' · ← back' : ''} · esc cancel</Text>
+      <Text color={palette.MUTED}>↑↓ choose   enter confirm{onBack ? '   ← back' : ''}   esc cancel</Text>
     </Box>
   );
 }

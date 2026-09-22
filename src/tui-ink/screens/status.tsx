@@ -4,7 +4,8 @@ import { readRows } from '../../ledger.js';
 import { recentRoutes, type RouteLine } from '../../commands/status.js';
 import { routerPorts } from '../../commands/ports.js';
 import { isSonataRouter, serveHealthUrl } from '../../commands/serve.js';
-import { STATE, columns } from '../theme.js';
+import { STATE, columns, usableWidth } from '../theme.js';
+import { fit } from '../components/screen.js';
 import { usePalette } from '../theme-context.js';
 import { agoLabel, STATUS_POLL_MS } from './status-poll.js';
 
@@ -65,8 +66,12 @@ export function StatusScreen({ cwd, home }: { cwd: string; home: string }): Reac
     return () => { cancelled = true; clearInterval(poll); clearInterval(clock); };
   }, [port, home, cwd]);
 
-  const col = columns(process.stdout.columns ?? 96);
+  const col = columns(usableWidth());
   const fresh = at === undefined ? 'sampling…' : `updated ${agoLabel(now - at)}`;
+  // 5 for the status code, the alias column, 4 for the stroke, and ~22 for the
+  // token counts — whatever is left is what the served model may occupy.
+  const aliasWidth = Math.min(26, col.name);
+  const servedWidth = Math.max(10, col.total - 5 - aliasWidth - 4 - 22);
 
   return (
     <Box flexDirection="column">
@@ -107,7 +112,7 @@ export function StatusScreen({ cwd, home }: { cwd: string; home: string }): Reac
               <Text color={palette.TEXT}>{line.alias.padEnd(Math.min(26, col.name))}</Text>
               <Text color={palette.MUTED}>{mark.mark} </Text>
               <Text color={failed ? palette.MUTED : palette.TEXT}>
-                {line.served ?? 'no candidate served'}
+                {fit(line.served ?? 'no candidate served', servedWidth)}
               </Text>
               <Text color={palette.MUTED}>{`  ${line.input} in / ${line.output} out`}</Text>
             </Box>

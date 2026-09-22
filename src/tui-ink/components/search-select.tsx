@@ -68,7 +68,7 @@ export function SearchSelect<T>({ title, items, onSubmit, onBack, onCancel }: Se
       })}
       {end < visible.length && <Text color={palette.MUTED}>  ↓ {visible.length - end} more</Text>}
       <Text color={palette.MUTED}>
-        ↑↓ choose · type to filter · enter confirm{onBack ? ' · ← back' : ''}{onCancel ? ' · esc cancel' : ''}
+        ↑↓ choose   type to filter   enter confirm{onBack ? '   ← back' : ''}{onCancel ? '   esc cancel' : ''}
       </Text>
     </Box>
   );

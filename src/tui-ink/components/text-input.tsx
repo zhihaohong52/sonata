@@ -63,7 +63,7 @@ export function TextInput(props: TextInputProps): React.ReactElement {
       <Text color={palette.TEXT}>❯ {render(state, mask)}</Text>
       {error !== undefined && <Text color={palette.HIGH}>{error}</Text>}
       <Text color={palette.MUTED}>
-        enter confirm{onBack ? ' · ← back (at the start of the line)' : ''}{onCancel ? ' · esc cancel' : ''}
+        enter confirm{onBack ? '   ← back (at the start of the line)' : ''}{onCancel ? '   esc cancel' : ''}
       </Text>
     </Box>
   );

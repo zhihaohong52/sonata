@@ -2,7 +2,7 @@ import React from 'react';
 import { Text } from 'ink';
 import { STATE } from '../theme.js';
 import { usePalette } from '../theme-context.js';
-import { Message, Screen, count } from '../components/screen.js';
+import { Message, Screen, count, fit, ruleWidth } from '../components/screen.js';
 import { loadConfigForScreen } from './screen-config.js';
 import { modelRows, modelsUntiered, summariseTiers } from './models-rows.js';
 
@@ -15,6 +15,9 @@ export function ModelsScreen({ cwd, home }: { cwd: string; home: string }): Reac
   const rows = modelRows(loaded.config);
   const untiered = new Set(modelsUntiered(rows));
   const width = Math.max(...rows.map((row) => row.key.length), 4);
+  // 4 for the stroke, 2 for the gap after the name: what is left is shared by
+  // the route and the tier summary, the two fields that actually grow.
+  const rest = Math.max(12, ruleWidth() - 4 - width - 2);
 
   return (
     <Screen
@@ -35,8 +38,7 @@ export function ModelsScreen({ cwd, home }: { cwd: string; home: string }): Reac
           <Text key={row.key}>
             <Text color={out ? palette.MID : palette.MUTED}>{(out ? STATE.held.mark : STATE.live.mark).padEnd(4)}</Text>
             <Text color={out ? palette.MID : undefined}>{row.key.padEnd(width + 2)}</Text>
-            <Text color={palette.MUTED}>{row.route}</Text>
-            <Text color={palette.MUTED}>{`  ${summariseTiers(row.tiers)}`}</Text>
+            <Text color={palette.MUTED}>{fit(`${row.route}  ${summariseTiers(row.tiers)}`, rest)}</Text>
           </Text>
         );
       })}

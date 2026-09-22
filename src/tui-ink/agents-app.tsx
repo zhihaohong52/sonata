@@ -16,7 +16,7 @@ import { RankedSelect } from './components/ranked-select.js';
 import { TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
 import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../extended-context.js';
 import { usePalette } from './theme-context.js';
-import { ruleWidth } from './components/screen.js';
+import { fit, ruleWidth } from './components/screen.js';
 import type { RankedSelectItem } from './components/ranked-select.js';
 
 export type Tiers = Record<string, TierLists>;
@@ -87,6 +87,7 @@ export function AgentsApp(props: AgentsAppProps): React.ReactElement {
   const [editing, setEditing] = useState<TierRow | undefined>(undefined);
 
   const rows = tierRows(config, tiers);
+  const selected = rows[cursor];
   const dirty = JSON.stringify(tiers) !== JSON.stringify(props.initialTiers);
 
   useInput((input, key) => {
@@ -123,7 +124,9 @@ export function AgentsApp(props: AgentsAppProps): React.ReactElement {
     <Box flexDirection="column">
       <Box>
         <Text bold color={palette.TEXT}>Tiers</Text>
-        <Text color={palette.MUTED}>{`   ${rows.length} of role \u00d7 tier${dirty ? ' · unsaved' : ''}`}</Text>
+        <Text color={palette.MUTED}>
+          {`   ${rows.length} ranked lists${dirty ? '   ·   unsaved changes' : ''}`}
+        </Text>
       </Box>
       <Text color={palette.RULE}>{'\u2500'.repeat(ruleWidth())}</Text>
       <Box marginTop={1} flexDirection="column">
@@ -146,13 +149,30 @@ export function AgentsApp(props: AgentsAppProps): React.ReactElement {
               {row.extendedContext ? EXTENDED_CONTEXT_SUFFIX : ''}
               </Text>
             </Text>
-            <Text color={palette.MUTED}>
-              {'      '}
-              {row.keys.length === 0 ? '(empty — every dispatch falls through to sonata dispatch)' : row.keys.join(' → ')}
-            </Text>
           </Box>
         ))}
       </Box>
+      {/* The chain belongs to the selected row only.
+
+          Drawn on every row it wrapped to three lines each — twelve rows of
+          role × tier became forty lines, so the header and the cursor
+          scrolled off the top and the screen could not say what was selected.
+          A wrapped row stops being a row, which is the rule `theme.ts`
+          states, and this screen broke it worst.
+          One line per row and the detail under the cursor keeps the whole
+          list on one screen, which is what makes it a list. */}
+      {selected !== undefined && (
+        <Box marginTop={1} flexDirection="column">
+          <Text color={palette.MUTED}>
+            {selected.keys.length === 0
+              ? 'empty — every dispatch falls through to `sonata dispatch`'
+              : fit(selected.keys.join(' → '), ruleWidth())}
+          </Text>
+          {selected.keys.length > 0 && (
+            <Text color={palette.MUTED}>{`${selected.keys.length} ranked, tried in this order`}</Text>
+          )}
+        </Box>
+      )}
       {/* `MID`, not a hardcoded yellow: yellow on the light palette is the
           vanishing text `theme.ts` exists to prevent, and it does not move
           with the toggle. */}

@@ -132,7 +132,7 @@ function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: Choi
           {index === cursor ? '›' : ' '} {choice.label}{choice.hint ? `  · ${choice.hint}` : ''}
         </Text>
       ))}
-      <Text color={palette.MUTED}>↑↓ choose · enter confirm{onBack ? ' · ← back' : ''} · esc cancel</Text>
+      <Text color={palette.MUTED}>↑↓ choose   enter confirm{onBack ? '   ← back' : ''}   esc cancel</Text>
     </Box>
   );
 }
@@ -171,7 +171,7 @@ function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWiza
           : 'none';
         return <Text key={role}>  {role}: {line}</Text>;
       })}
-      <Text color={palette.MUTED}>{hasModels ? 'enter confirm' : '← back to select models'} · ← back · esc cancel</Text>
+      <Text color={palette.MUTED}>{hasModels ? 'enter confirm' : '← back to select models'}   ← back   esc cancel</Text>
     </Box>
   );
 }

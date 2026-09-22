@@ -1,11 +1,11 @@
 import React from 'react';
 import { Box, Text } from 'ink';
-import { columns } from '../theme.js';
+import { columns, usableWidth } from '../theme.js';
 import { usePalette } from '../theme-context.js';
 
 /** How wide a rule should be drawn, bounded at both ends by `columns`. */
 export function ruleWidth(): number {
-  return columns(process.stdout.columns ?? 96).total;
+  return columns(usableWidth()).total;
 }
 
 /**
@@ -82,4 +82,24 @@ export function Message({ text, title = 'sonata' }: { text: string; title?: stri
  */
 export function count(n: number, noun: string, plural = `${noun}s`): string {
   return `${n} ${n === 1 ? noun : plural}`;
+}
+
+/**
+ * A field cut to fit, with an ellipsis where it was cut.
+ *
+ * `theme.ts` states the rule — "a row must never wrap; the board degrades by
+ * dropping columns" — and `columns()` implements it, but only the ranking
+ * board consulted it. The list screens joined model names and tier summaries
+ * unbounded, so the rule held exactly where the board was built first and
+ * nowhere else. A wrapped row stops being a row, which is the whole grammar.
+ *
+ * The ellipsis is load-bearing rather than decorative: silently truncating a
+ * list of model names produces a row that reads as complete and is not, which
+ * is the one failure worse than an ugly row.
+ */
+export function fit(text: string, width: number): string {
+  if (width <= 0) return '';
+  if (text.length <= width) return text;
+  if (width === 1) return '…';
+  return `${text.slice(0, width - 1)}…`;
 }

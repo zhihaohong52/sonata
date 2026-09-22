@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { loadAaCatalog } from '../../catalog.js';
 import { loadModelsDev } from '../../modelsdev.js';
-import { editorCandidates, itemLabel, writeTiers } from '../../commands/agents.js';
+import { editorCandidates, itemFacts, itemLabel, writeTiers } from '../../commands/agents.js';
 import { AgentsApp } from '../agents-app.js';
 import { Message } from '../components/screen.js';
 import { loadConfigForScreen } from './screen-config.js';
@@ -39,13 +39,19 @@ export function TiersScreen(
     label: itemLabel(config, candidate, aa, modelsDev),
   }));
 
+  // An error REPLACES the editor rather than sitting above it. As siblings,
+  // a refused write (`assertEffortsPinned` rejects a ranking that pins no
+  // effort level) drew the refusal over a live editor that still owned the
+  // keyboard, and the message's own "esc back" was not what esc did there.
+  if (error !== undefined) return <Message text={error} title="Tiers" />;
+
   return (
     <>
-      {error !== undefined ? <Message text={error} title="Tiers" /> : null}
       <AgentsApp
       config={config}
       initialTiers={config.tiers ?? {}}
       items={items}
+      factsFor={(candidate, tier) => itemFacts(config, candidate, tier, aa, modelsDev)}
       onDone={(tiers) => {
         if (tiers === undefined) { onBack(); return; }
         try {

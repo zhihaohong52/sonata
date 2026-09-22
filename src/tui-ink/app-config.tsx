@@ -13,7 +13,7 @@ import { ActionsScreen } from './screens/actions.js';
 import { StatusScreen } from './screens/status.js';
 import { InitScreen } from './screens/init.js';
 import { Menu, moveCursor, type MenuItem } from './components/menu.js';
-import { ThemeProvider, useTheme, usePalette } from './theme-context.js';
+import { Ground, ThemeProvider, useTheme } from './theme-context.js';
 
 /**
  * The menu, in the order a reader needs it: what is happening, then what is
@@ -130,47 +130,6 @@ function ConfigTui({ cwd, home, start }: { cwd: string; home: string; start?: St
       <Box marginTop={1}>
         <Text color={palette.MUTED}>{`↑↓ move   enter open   ^t ${themeName === 'dark' ? 'light' : 'dark'} theme   q quit`}</Text>
       </Box>
-    </Box>
-  );
-}
-
-/**
- * The screen's own ground.
- *
- * Ink draws on whatever the terminal already is, so without this the app is
- * ink floating on someone else's background — which is why the light theme
- * did not work: switching it only darkened the text on a still-dark
- * terminal, and the near-white selected band collided with the terminal's own
- * light foreground until the row vanished. Painting the ground is what makes
- * a theme a theme, and it is what claude-swap does (Textual fills `$background`
- * before any widget draws).
- *
- * Sized to the terminal so the fill reaches the edges: a Box wraps its content
- * otherwise, and a background that stops where the text stops is a rectangle
- * behind the words rather than a page.
- *
- * **One column short of the terminal, and that is load-bearing.** At exactly
- * `columns` Ink emits no background at all — measured on ink 7.1.1 in a
- * 60-column pane, where width 59 padded and filled every row and width 60
- * produced bare text with no fill on any of them. A full-width run of padding
- * would wrap onto the next line, so the trailing spaces that carry the colour
- * are trimmed, and trimming them removes the background with them. The
- * symptom is not a missing last column, it is a ragged page: rows that happen
- * to set their own background (the selected band) keep it and every other row
- * shows the terminal through. `minHeight` is one short of the row count for a
- * related reason — filling the final row scrolls the terminal by one line, so
- * the top of the app walks off the scrollback on every repaint.
- */
-function Ground({ children }: { children: React.ReactNode }): React.ReactElement {
-  const palette = usePalette();
-  return (
-    <Box
-      flexDirection="column"
-      backgroundColor={palette.BG}
-      width={Math.max(1, (process.stdout.columns ?? 80) - 1)}
-      minHeight={Math.max(1, (process.stdout.rows ?? 24) - 1)}
-    >
-      {children}
     </Box>
   );
 }

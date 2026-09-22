@@ -252,6 +252,24 @@ export interface BoardColumns {
   total: number;
 }
 
+/**
+ * How many columns a row may actually occupy.
+ *
+ * One short of the terminal, because that is how wide the painted ground is
+ * — see `Ground`, which cannot be full width or ink emits no background at
+ * all. A row sized to the *terminal* therefore overflows the ground by one
+ * cell and wraps, which turns every hairline into a rule plus a lone `─` on
+ * the next line. Measured at 96 columns, where every rule wrapped.
+ *
+ * One definition, used by `Ground` and by every caller of `columns()`, so the
+ * page and the rows drawn on it cannot disagree about the width.
+ */
+export const GROUND_INSET = 1;
+
+export function usableWidth(termWidth: number = process.stdout.columns ?? 96): number {
+  return Math.max(1, termWidth - GROUND_INSET);
+}
+
 export function columns(termWidth: number): BoardColumns {
   const w = Math.min(Math.max(40, termWidth), MAX_BOARD);
   const showBar = w >= MIN_BOARD;
