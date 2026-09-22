@@ -53,10 +53,13 @@ export function Screen({
   const palette = usePalette();
   return (
     <Box flexDirection="column">
-      <Box>
+      {/* One truncating line, not sibling Texts in a row Box: siblings wrap
+          inside their own cells when the row is too long, and a two-line
+          header pushes the screen down. See `StatusScreen`. */}
+      <Text wrap="truncate-end">
         <Text bold color={palette.TEXT}>{title}</Text>
         {note !== undefined && <Text color={palette.MUTED}>{`   ${note}`}</Text>}
-      </Box>
+      </Text>
       <Text color={palette.RULE}>{'─'.repeat(ruleWidth())}</Text>
       <Box flexDirection="column" marginTop={1}>{children}</Box>
       <Box marginTop={1}><Text color={palette.MUTED}>{footer}</Text></Box>

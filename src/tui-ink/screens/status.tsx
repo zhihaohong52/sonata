@@ -95,17 +95,40 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
   // scrolls this screen's own header away.
   const visible = routes === undefined
     ? []
-    : routes.slice(0, routesThatFit(routes.map((r) => 1 + r.attempts.length), process.stdout.rows ?? 24));
+    : routes.slice(0, routesThatFit(
+      routes.map((r) => 1 + r.attempts.length),
+      process.stdout.rows ?? 24,
+      // What the screen spends on itself: the two headings, their rules, the
+      // router line, two spacers and the footer — plus the two hint lines
+      // when the router is down, and one held back for the "N more" line.
+      // Counted exactly now that every line is guaranteed to be ONE line.
+      9 + (up === false ? 2 : 0) + 1,
+    ));
   const fresh = at === undefined ? 'sampling…' : `updated ${agoLabel(now - at)}`;
 
+  /*
+   * Every line below is ONE `<Text wrap="truncate-end">` with styled spans
+   * nested inside it, never a row of sibling `<Text>`s in a `<Box>`.
+   *
+   * Siblings in a row Box are laid out by flexbox, and when their total runs
+   * past the terminal each one shrinks and WRAPS inside its own cell — so one
+   * over-long row becomes two or three lines, the list outgrows the screen,
+   * and the header scrolls off the top. That is how this screen "did not
+   * render" below a certain width, twice: the column budget was right for
+   * wide terminals and its minimum sizes added up to more than a narrow one.
+   *
+   * A single Text truncates instead. The budget still decides what is worth
+   * showing; this makes sure being wrong about it can cost the end of a line
+   * and never the whole screen.
+   */
   return (
     <Box flexDirection="column">
-      <Box>
+      <Text wrap="truncate-end">
         <Text bold color={palette.TEXT}>router</Text>
         <Text color={palette.MUTED}>{`   ${fresh}`}</Text>
-      </Box>
+      </Text>
       <Text color={palette.RULE}>{'─'.repeat(ruleCells)}</Text>
-      <Text color={palette.TEXT}>
+      <Text wrap="truncate-end" color={palette.TEXT}>
         <Text color={up === true ? palette.ACCENT : palette.MUTED}>
           {up === undefined ? STATE.unscored.mark : up ? STATE.lead.mark : STATE.cooled.mark}
         </Text>
@@ -118,17 +141,19 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
         // wrapped at 80 columns and orphaned the word "why." on a line of its
         // own, directly under a board whose whole grammar is "nothing wraps".
         <Box flexDirection="column">
-          <Text color={palette.MID}>{'   start it with `sonata serve --daemon`'}</Text>
-          <Text color={palette.MUTED}>{'   or run `sonata doctor` to find out why'}</Text>
+          <Text wrap="truncate-end" color={palette.MID}>{'   start it with `sonata serve --daemon`'}</Text>
+          <Text wrap="truncate-end" color={palette.MUTED}>{'   or run `sonata doctor` to find out why'}</Text>
         </Box>
       )}
 
       <Box marginTop={1}>
-        <Text bold color={palette.TEXT}>routes, last hour</Text>
         {/* Which project axis is on screen, always stated: the two views look
             identical row by row, and mistaking one for the other is the bug
             this scoping exists to fix. */}
-        <Text color={palette.MUTED}>{global ? '   every project' : '   this project'}</Text>
+        <Text wrap="truncate-end">
+          <Text bold color={palette.TEXT}>routes, last hour</Text>
+          <Text color={palette.MUTED}>{global ? '   every project' : '   this project'}</Text>
+        </Text>
       </Box>
       <Text color={palette.RULE}>{'─'.repeat(ruleCells)}</Text>
       {routes === undefined && <Text color={palette.MUTED}>reading the ledger…</Text>}
@@ -158,7 +183,7 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
         const mark = failed ? STATE.cooled : STATE.live;
         return (
           <Box key={`${line.alias}-${i}`} flexDirection="column">
-            <Box>
+            <Text wrap="truncate-end">
               {sc.time && (
                 <Text color={palette.MUTED}>{`${localTime(line.ts).padEnd(8)} `}</Text>
               )}
@@ -181,14 +206,14 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
               {sc.tokens && (
                 <Text color={palette.MUTED}>{`${line.input} in / ${line.output} out`}</Text>
               )}
-            </Box>
+            </Text>
             {/* Failed attempts are why a dispatch died, so they are not a detail. */}
             {line.attempts.map((a) => (
-              <Box key={a.key}>
+              <Text key={a.key} wrap="truncate-end">
                 <Text color={palette.MUTED}>{'      '}</Text>
                 <Text color={palette.MUTED}>{STATE.cooled.mark} {a.key} </Text>
                 <Text color={palette.HIGH}>{a.status}</Text>
-              </Box>
+              </Text>
             ))}
           </Box>
         );
@@ -196,10 +221,10 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
       {routes !== undefined && visible.length < routes.length && (
         // Said plainly rather than silently truncated: a list that stops
         // without saying so reads as the whole list.
-        <Text color={palette.MUTED}>{`… ${routes.length - visible.length} more, not shown`}</Text>
+        <Text wrap="truncate-end" color={palette.MUTED}>{`… ${routes.length - visible.length} more, not shown`}</Text>
       )}
       <Box marginTop={1}>
-        <Text color={palette.MUTED}>{`g ${global ? 'this project' : 'every project'}   esc back`}</Text>
+        <Text wrap="truncate-end" color={palette.MUTED}>{`g ${global ? 'this project' : 'every project'}   esc back`}</Text>
       </Box>
     </Box>
   );

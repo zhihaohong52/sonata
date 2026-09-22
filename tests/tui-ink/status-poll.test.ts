@@ -48,10 +48,16 @@ describe('statusColumns', () => {
   it('keeps the whole row inside the terminal at every width', () => {
     // The property that actually matters. Fixed cells plus both name columns
     // must never exceed the page.
-    for (let width = 40; width <= 200; width += 1) {
+    //
+    // This test used to sweep from 40 and compare against `max(width, 40)` —
+    // it excused every narrow terminal, which is exactly where the budget's
+    // minimums added up to more than the page and every row wrapped. The
+    // screen shipped "not rendering below a certain width" twice with this
+    // test green. It now sweeps down to a width no one uses, with no excuse.
+    for (let width = 12; width <= 200; width += 1) {
       const c = statusColumns(width);
       const fixed = 4 + 4 + (c.time ? 9 : 0) + (c.gateway ? 12 : 0) + (c.tokens ? 20 : 0);
-      expect(fixed + c.alias + c.served).toBeLessThanOrEqual(Math.max(width, 40));
+      expect(fixed + c.alias + c.served).toBeLessThanOrEqual(width);
     }
   });
 });

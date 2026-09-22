@@ -81,14 +81,14 @@ export function statusColumns(width: number): StatusColumns {
   // status code, 4 for the stroke and its padding, and whatever the optional
   // columns take when present.
   const fixed = 4 + 4 + (time ? 9 : 0) + (gateway ? 12 : 0) + (tokens ? 20 : 0);
-  const names = Math.max(16, width - fixed);
-  return {
-    time,
-    tokens,
-    gateway,
-    alias: Math.max(8, Math.floor(names * 0.45)),
-    served: Math.max(8, names - Math.floor(names * 0.45) - 1),
-  };
+  // No minimum that can exceed what the terminal has. The previous version
+  // floored the names at 16 cells and each column at 8, which is right on a
+  // wide terminal and adds up to MORE than a narrow one — 24 cells of floor
+  // on a 19-cell page — so every row wrapped. The shares now come out of what
+  // is actually there, however little that is.
+  const names = Math.max(2, width - fixed);
+  const alias = Math.max(1, Math.floor(names * 0.45));
+  return { time, tokens, gateway, alias, served: Math.max(1, names - alias - 1) };
 }
 
 /**
