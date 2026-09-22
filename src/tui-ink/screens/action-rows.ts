@@ -1,11 +1,51 @@
 export interface ActionRow { key: string; label: string; runnable: boolean; note: string }
 
+/*
+ * Every row here runs.
+ *
+ * `install litellm` and `routing` were listed as unavailable on two reasons
+ * that were true while this screen was a leaf and are false now that `Setup`
+ * is a row in the same menu:
+ *
+ * - "a multi-minute install is indistinguishable from a hang inside a TUI" —
+ *   but the catalog action beside it already runs async behind a progress
+ *   line, and `Setup` runs the *real* LiteLLM installer from inside this same
+ *   shell. The shell already performs a multi-minute install; what it needed
+ *   was to say so while it happens, which is a running state, not a refusal.
+ * - "it edits Claude Code settings this screen does not own" — but init calls
+ *   `cmdRoute('auto', …)` in `apply.ts`, so the shell already edits them.
+ *
+ * Two rows advertising keys that did nothing, three lines above a row that
+ * does both, is the screen contradicting itself — and a menu whose entries
+ * cannot be actioned teaches the reader to stop trusting the menu.
+ */
+
+/*
+ * Every row here runs.
+ *
+ * `install litellm` and `routing` were listed as unavailable, on two reasons
+ * that were true when this screen was a leaf and are false now that `Setup`
+ * is a row in the same menu:
+ *
+ * - "a multi-minute install is indistinguishable from a hang inside a TUI" —
+ *   but the catalog action beside it already runs async behind a progress
+ *   line, and `Setup` runs the *real* LiteLLM installer from inside this same
+ *   shell. The shell already does a multi-minute install; what it needed was
+ *   to say so while it happens.
+ * - "it edits Claude Code settings this screen does not own" — but init calls
+ *   `cmdRoute('auto', …)` as part of apply, so the shell already edits them.
+ *
+ * Two rows advertising keys that did nothing, directly above a row that does
+ * both, is the screen contradicting itself. A menu whose entries cannot be
+ * actioned teaches the reader to stop trusting the menu.
+ */
+
 export function actionRows(): ActionRow[] {
   return [
     { key: 's', label: 'sync agents', runnable: true, note: 'regenerate .claude/agents from sonata.toml' },
     { key: 'c', label: 'update catalog', runnable: true, note: 'fetch model rankings and prices' },
-    { key: 'l', label: 'install litellm', runnable: false, note: 'run `sonata litellm install` — a multi-minute install is indistinguishable from a hang inside a TUI' },
-    { key: 'r', label: 'routing', runnable: false, note: 'run `sonata route auto` — it edits Claude Code settings this screen does not own' },
+    { key: 'l', label: 'install litellm', runnable: true, note: 'set up the pinned venv that translates for non-Anthropic gateways' },
+    { key: 'r', label: 'route this project', runnable: true, note: 'install the hooks that route plain `claude` sessions through sonata' },
   ];
 }
 

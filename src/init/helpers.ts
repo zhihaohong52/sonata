@@ -187,6 +187,12 @@ export interface InitOptions {
   /** Injected by tests so a suite never writes into the real log directory. */
   log?: InitLog;
   /**
+   * Progress for the discovery step, which spawns a subprocess per harness and
+   * can run for many seconds with nothing to show for it. A TUI host draws
+   * this live; the CLI ignores it and keeps its existing summary lines.
+   */
+  onProbe?: (name: string, state: 'probing' | 'done', detail?: string) => void;
+  /**
    * Who draws the interactive parts, when something other than a bare terminal
    * is drawing them.
    *

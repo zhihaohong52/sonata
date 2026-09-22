@@ -93,6 +93,7 @@ async function runInit(
     home: opts.home,
     packageRoot: opts.packageRoot,
     detect: opts.detect,
+    onProbe: opts.onProbe,
   }, out);
 
   if (env.problems.some((p) => p.severity === 'error')) {

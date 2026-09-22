@@ -314,6 +314,18 @@ export async function detectTmux(): Promise<{ installed: boolean; version?: stri
 export interface DetectEnv {
   home: string;
   supportedVersions: string;
+  /**
+   * Called as each harness probe starts and settles.
+   *
+   * Detection spawns a subprocess per harness and the whole step can run for
+   * many seconds. Without this the caller has one static line for all of it,
+   * which is indistinguishable from a hang — reported as `sonata init` being
+   * stuck on "Looking at what is installed", when it was working.
+   *
+   * Optional, and never awaited: progress reporting must not be able to fail
+   * or slow the thing it is reporting on.
+   */
+  onProbe?: (name: string, state: 'probing' | 'done', detail?: string) => void;
 }
 
 export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
@@ -509,7 +521,23 @@ export async function detectReasonix(_env: DetectEnv): Promise<HarnessStatus> {
 }
 
 export async function detectHarnesses(env: DetectEnv): Promise<HarnessStatus[]> {
-  return Promise.all([detectOpenCode(env), detectPi(env), detectCodex(env), detectReasonix(env)]);
+  // Parallel, and each one reports the moment it settles rather than when the
+  // slowest of the four does — which is the difference between a screen that
+  // fills in and a screen that sits still and then jumps.
+  const probes: Array<[string, Promise<HarnessStatus>]> = [
+    ['opencode', detectOpenCode(env)],
+    ['pi', detectPi(env)],
+    ['codex', detectCodex(env)],
+    ['reasonix', detectReasonix(env)],
+  ];
+  for (const [name] of probes) env.onProbe?.(name, 'probing');
+  return Promise.all(probes.map(async ([name, probe]) => {
+    const status = await probe;
+    env.onProbe?.(name, 'done', status.installed
+      ? `${status.refs.length} model${status.refs.length === 1 ? '' : 's'}`
+      : 'not installed');
+    return status;
+  }));
 }
 
 /** Where opencode keeps its own configuration. */

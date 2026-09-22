@@ -4,6 +4,10 @@ import { cmdInit } from '../../commands/init.js';
 import { InitWizard, type WizardData } from '../app.js';
 import type { TuiResult } from '../types.js';
 import { Screen } from '../components/screen.js';
+import { STATE } from '../theme.js';
+
+/** The widest stroke in `STATE`, so probe rows keep one column. */
+const MARK_WIDTH = Math.max(...Object.values(STATE).map((state) => state.mark.length));
 import { usePalette } from '../theme-context.js';
 
 /**
@@ -82,6 +86,10 @@ export function InitScreen({ cwd, home, onDone, onKeep }: {
   const [output, setOutput] = useState<string[]>([]);
   const [error, setError] = useState<string>();
   const [finished, setFinished] = useState(false);
+  // Insertion-ordered, so rows appear in the order the probes were started
+  // rather than the order they happen to finish — a list that reorders under
+  // the reader is harder to follow than a slow one.
+  const [probes, setProbes] = useState<Array<{ name: string; detail?: string }>>([]);
   const started = useRef(false);
 
   useEffect(() => {
@@ -96,6 +104,14 @@ export function InitScreen({ cwd, home, onDone, onKeep }: {
       home,
       packageRoot: new URL('../../..', import.meta.url).pathname,
       write: (line) => { lines.push(line); },
+      onProbe: (name, state, detail) => {
+        setProbes((current) => {
+          const next = current.some((p) => p.name === name)
+            ? current.map((p) => (p.name === name ? { name, detail } : p))
+            : [...current, { name, detail }];
+          return state === 'probing' && current.some((p) => p.name === name) ? current : next;
+        });
+      },
       host: {
         runTui: (data) => new Promise<TuiResult>((resolve) => {
           setPending({ kind: 'wizard', data, resolve });
@@ -148,6 +164,28 @@ export function InitScreen({ cwd, home, onDone, onKeep }: {
     return (
       <Screen title="Setup" note="nothing has been written yet" footer="">
         <Text color={palette.MUTED}>Looking at what is installed and what it can reach…</Text>
+        {/* Each harness is a subprocess, and the four together can run for a
+            long time. One static line for all of it reads as a hang — which
+            is exactly how this screen was reported. The stroke says whether a
+            probe is still out (`─ ─`) or has answered (`──`), so a slow step
+            is visibly a slow step. */}
+        {probes.length > 0 && (
+          <Box marginTop={1} flexDirection="column">
+            {probes.map((probe) => (
+              <Box key={probe.name}>
+                <Text color={probe.detail === undefined ? palette.MUTED : palette.ACCENT}>
+                  {/* Padded to the widest mark in STATE so the name column
+                      lands in the same place whichever state a row is in —
+                      a list whose columns shift as it fills is harder to
+                      read than one that simply fills. */}
+                  {`  ${(probe.detail === undefined ? STATE.cooled.mark : STATE.live.mark).padEnd(MARK_WIDTH)}  `}
+                </Text>
+                <Text color={palette.TEXT}>{probe.name.padEnd(12)}</Text>
+                <Text color={palette.MUTED}>{probe.detail ?? 'probing…'}</Text>
+              </Box>
+            ))}
+          </Box>
+        )}
       </Screen>
     );
   }
