@@ -30,16 +30,29 @@ function renderRanked(initialRanked?: string[]) {
      * than matching the line's tail. What these tests assert is the ORDER and
      * which rows are ranked; the columns after the name are the board's
      * business and have their own tests.
+     *
+     * The optional `▌` is the cursor's accent edge, which replaced Ink's
+     * `inverse` so the board highlights the way the menu does. It changes the
+     * line's leading character, where `inverse` changed only its colour.
      */
     rows: () => (app.lastFrame() ?? '')
       // eslint-disable-next-line no-control-regex
       .replace(/\u001B\[[0-9;]*m/g, '')
       .split('\n')
       .flatMap((line) => {
-        const m = /^\s*(\d+|·)\s+(\S+)/.exec(line);
+        const m = /^\s*▌?\s*(\d+|·)\s+(\S+)/.exec(line);
         return m !== null && ITEMS.some((item) => item.label === m[2]) ? [`${m[1]} ${m[2]}`] : [];
       }),
     submitted: () => submitted,
+    /** The name on the row carrying the cursor's accent edge. */
+    cursorRow: () => (app.lastFrame() ?? '')
+      // eslint-disable-next-line no-control-regex
+      .replace(/\u001B\[[0-9;]*m/g, '')
+      .split('\n')
+      .flatMap((line) => {
+        const m = /^\s*▌\s*(?:\d+|·)\s+(\S+)/.exec(line);
+        return m !== null ? [m[1]!] : [];
+      })[0],
   };
 }
 
@@ -50,6 +63,18 @@ describe('RankedSelect', () => {
     // swapped two numbers on rows that were nowhere near each other.
     const ui = renderRanked(['charlie', 'alpha']);
     expect(ui.rows()).toEqual(['1 charlie', '2 alpha', '· bravo', '· delta']);
+  });
+
+  it('marks the cursor with an accent edge, as the menu does', async () => {
+    // The board used Ink's `inverse` — a reversed block sharing nothing with
+    // the menu's highlight, so one app highlighted two different ways
+    // depending on which screen you were on. `▌` plus a band is claude-swap's
+    // `border-left: thick $primary` over `background: $surface`, and it is
+    // what `menu.tsx` already drew.
+    const ui = renderRanked(['charlie', 'alpha']);
+    expect(ui.cursorRow()).toBe('charlie');
+    await ui.press('\x1B[B');
+    expect(ui.cursorRow()).toBe('alpha');
   });
 
   it('[ promotes the highlighted row and takes the highlight with it', async () => {

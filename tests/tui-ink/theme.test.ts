@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { bar, band, columns, STATE, INK, MIN_BOARD, MAX_BOARD, costFraction } from '../../src/tui-ink/theme.js';
+import { bar, band, columns, STATE, INK, MIN_BOARD, MAX_BOARD } from '../../src/tui-ink/theme.js';
 
 describe('bar', () => {
   it('draws a shared-scale quantity, half cells included', () => {
@@ -92,42 +92,5 @@ describe('columns', () => {
     // palette rather than a set of inks hoping the terminal agrees with them.
     expect(INK.BG).toMatch(/^#[0-9a-f]{6}$/);
     expect(INK.TEXT).toMatch(/^#[0-9a-f]{6}$/);
-  });
-});
-
-describe('costFraction', () => {
-  it('puts the cheapest at 0 and the dearest at 1', () => {
-    expect(costFraction(0.01, 0.01, 1.4)).toBe(0);
-    expect(costFraction(1.4, 0.01, 1.4)).toBe(1);
-  });
-
-  it('spreads a wide range instead of collapsing it', () => {
-    // The real spread on a ranking screen: $0.0098 to $1.3987, 143x. On a
-    // LINEAR fraction every row but the top two rounds to near zero and the
-    // severity ramp shows one colour; on log they land across the range.
-    const mid = costFraction(0.1332, 0.0098, 1.3987);
-    expect(mid).toBeGreaterThan(0.4);
-    expect(mid).toBeLessThan(0.7);
-    // The same model linearly would be under a tenth of the way up.
-    expect(0.1332 / 1.3987).toBeLessThan(0.1);
-  });
-
-  it('is monotone in cost', () => {
-    const f = (c: number) => costFraction(c, 0.01, 10);
-    expect(f(0.05)).toBeLessThan(f(0.5));
-    expect(f(0.5)).toBeLessThan(f(5));
-  });
-
-  it('clamps anything outside the range rather than exceeding it', () => {
-    expect(costFraction(100, 0.01, 10)).toBe(1);
-    expect(costFraction(0.001, 0.01, 10)).toBe(0);
-  });
-
-  it('answers 0 for a degenerate or unusable range', () => {
-    // Every row at one price, a single row, or a missing/zero cost: there is
-    // no range to place anything within, so nothing is flagged.
-    expect(costFraction(0.5, 0.5, 0.5)).toBe(0);
-    expect(costFraction(0, 0.01, 10)).toBe(0);
-    expect(costFraction(0.5, 0, 0)).toBe(0);
   });
 });

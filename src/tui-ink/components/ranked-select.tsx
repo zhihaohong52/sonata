@@ -1,7 +1,7 @@
 import React, { useReducer } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import { dominatedRows, rsInitial, rsOrder, rsReduce } from './ranked-select-state.js';
-import { STATE, bar, band, columns, costFraction, usableWidth } from '../theme.js';
+import { STATE, bar, columns, usableWidth } from '../theme.js';
 import type { CandidateFacts } from '../../catalog.js';
 import { usePalette } from '../theme-context.js';
 
@@ -21,6 +21,17 @@ export interface RankedSelectProps<T> {
   title: string;
   items: Array<RankedSelectItem<T>>;
   initialRanked?: T[];
+  /**
+   * What the bar and the capability number measure on THIS screen.
+   *
+   * The board draws whichever metric its tier ranks by — `complex` orders on
+   * reasoning, the value tiers on agentic throughput — so the bar always
+   * explains the order it appears in. Nothing said which, though, so the one
+   * column carrying the comparison was unlabelled and a reader had to guess
+   * whether they were looking at intelligence or something else. Reported as
+   * exactly that question.
+   */
+  metric?: string;
   footer?: string;
   onSubmit: (ranked: T[]) => void;
   /**
@@ -42,7 +53,7 @@ function initialIndices<T>(items: Array<RankedSelectItem<T>>, initialRanked: T[]
 
 export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement {
   const palette = usePalette();
-  const { title, items, initialRanked, footer, onSubmit, onAcceptRest, onBack, onCancel } = props;
+  const { title, items, initialRanked, metric = 'capability', footer, onSubmit, onAcceptRest, onBack, onCancel } = props;
   const [state, dispatch] = useReducer(
     (current: ReturnType<typeof rsInitial>, action: Parameters<typeof rsReduce>[1]) => (
       rsReduce(current, action, items.length)
@@ -101,9 +112,6 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
   // question nobody asked.
   const scored = items.map((item) => item.facts).filter((f): f is CandidateFacts => f !== undefined);
   const maxCapability = Math.max(...scored.map((f) => f.capability ?? 0), 0);
-  const costs = scored.map((f) => f.costPerTask).filter((c): c is number => c !== undefined && c > 0);
-  const maxCost = Math.max(...costs, 0);
-  const minCost = costs.length > 0 ? Math.min(...costs) : 0;
 
   // Computed once per render over every row, not per row: dominance is a
   // property of the whole screen.
@@ -122,6 +130,17 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
         <Text color={palette.MUTED}>
           {`   ${state.ranked.length} of ${items.length} ranked`}
         </Text>
+      </Box>
+      {/* Column headers. The board's rows are dense and every column is a
+          different quantity; without this the bar, the number and the dollar
+          figure are three unlabelled things in a row. Drawn muted and above
+          the rule so it reads as a legend rather than as data. */}
+      <Box>
+        <Text color={palette.MUTED}>{'  # '}</Text>
+        <Text color={palette.MUTED}>{'model'.padEnd(col.name)}</Text>
+        {col.showBar && <Text color={palette.MUTED}>{metric.slice(0, col.bar).padEnd(col.bar)}</Text>}
+        <Text color={palette.MUTED}>{'$/task'.padStart(9)}</Text>
+        {col.showWord && <Text color={palette.MUTED}>{'  state'}</Text>}
       </Box>
       <Text color={palette.RULE}>{'─'.repeat(col.total)}</Text>
       {order.map((index, position) => {
@@ -154,8 +173,21 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
         return (
           <React.Fragment key={index}>
           <Box>
-            <Text color={isLead ? palette.ACCENT : palette.MUTED} bold={isLead}>
-              {`${(rank >= 0 ? String(rank + 1) : '·').padStart(3)} `}
+            {/* The accent edge, exactly as `menu.tsx` draws it and as
+                claude-swap's `border-left: thick $primary` does. The board
+                used Ink's `inverse` for its cursor — a reversed block that
+                shares nothing with the menu's highlight, so one app
+                highlighted two ways depending on which screen you were on.
+                It also spent the row's whole width on emphasis, which is why
+                a selected row read louder than the lead it was sitting next
+                to. */}
+            <Text color={palette.ACCENT}>{onCursor ? '▌' : ' '}</Text>
+            <Text
+              backgroundColor={onCursor ? palette.BAND : undefined}
+              color={isLead ? palette.ACCENT : palette.MUTED}
+              bold={isLead}
+            >
+              {`${(rank >= 0 ? String(rank + 1) : '·').padStart(2)} `}
             </Text>
             {/* Struck, not merely dimmed. A dominated model stays ON the
                 board — something cheaper is at least as capable, so it will
@@ -164,7 +196,7 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
                 the judgement applies; `──○` in the status column says the
                 same thing in the stroke vocabulary. */}
             <Text
-              inverse={onCursor}
+              backgroundColor={onCursor ? palette.BAND : undefined}
               strikethrough={stateName === 'dominated'}
               color={rank < 0 && !onCursor ? palette.MUTED : palette.TEXT}
             >
@@ -179,29 +211,39 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
                 the weakest reassuring-green: the scale ran backwards on the
                 one screen whose whole job is choosing a model. */}
             {col.showBar && facts?.capability !== undefined && (
-              <Text color={palette.TEXT}>
+              <Text backgroundColor={onCursor ? palette.BAND : undefined} color={palette.TEXT}>
                 <Text color={isLead ? palette.ACCENT : palette.TEXT}>{b.filled}</Text>
                 <Text color={palette.RULE}>{b.track}</Text>
               </Text>
             )}
             {col.showBar && facts?.capability === undefined && (
-              <Text color={palette.RULE}>{'─'.repeat(col.bar)}</Text>
+              <Text backgroundColor={onCursor ? palette.BAND : undefined} color={palette.RULE}>
+                {'─'.repeat(col.bar)}
+              </Text>
             )}
-            {/* Cost is where the severity ramp belongs, and it is what
-                `maxCost` was computed for — it had sat unused since the board
-                was written, which is the clue that the colour was attached to
-                the wrong column. Here "high" genuinely means "this is the
-                expensive end of what is on screen", so green/amber/red agree
-                with what a reader is worried about. Scaled to the screen's own
-                range, like the bar, because the question is comparative. */}
-            <Text color={facts?.costPerTask === undefined || maxCost <= 0
-              ? palette.MUTED
-              : band(costFraction(facts.costPerTask, minCost, maxCost), palette)}>
+            {/* Plain ink. There is no severity axis on this screen, and two
+                attempts to find one both inverted.
+                
+                Colouring the BAR by capability painted the strongest model
+                alarm-red. Moving the ramp to cost was no better: on `complex`
+                the lead is the most expensive candidate, so red would mark
+                the tier's own recommended choice as a problem — and the
+                meaning flips between tiers, since `simple` is cost-capped and
+                dear really is wrong there, while `complex` exists to pay. A
+                colour that means opposite things on two screens carries
+                nothing.
+                
+                This is a comparison screen, not a monitoring one: a model is
+                cheap or dear, weak or strong, and which of those is wanted is
+                the tier's business. `band()` belongs to spend against a
+                budget, where "high" means approaching a refusal, and that is
+                the one place it is true. */}
+            <Text backgroundColor={onCursor ? palette.BAND : undefined} color={palette.MUTED}>
               {facts?.costPerTask === undefined
                 ? '        —'
                 : `$${facts.costPerTask.toFixed(4)}`.padStart(9)}
             </Text>
-            <Text color={palette.MUTED}>
+            <Text backgroundColor={onCursor ? palette.BAND : undefined} color={palette.MUTED}>
               {' '}{mark.mark}{col.showWord ? ` ${mark.word}` : ''}
             </Text>
           </Box>

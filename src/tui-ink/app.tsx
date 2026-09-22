@@ -443,6 +443,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       return <RankedSelect
         key={`${role}-${tier}`}
         title={`${role}: ${tier} models`}
+        metric={tier === 'complex' ? 'intelligence' : 'agentic'}
         items={tierPickerKeys(expand(rankableKeys), initialRanked, expand(nativePickerUniverseKeys))
           .map((candidate) => ({
             value: candidate,

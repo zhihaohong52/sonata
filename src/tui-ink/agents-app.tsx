@@ -79,6 +79,19 @@ export interface AgentsAppProps {
   onDone: (tiers: Tiers | undefined) => void;
 }
 
+/**
+ * What the board's bar measures for a tier, in the reader's words.
+ *
+ * `complex` ranks on reasoning and the value tiers on tool-driving
+ * throughput, and the bar always draws whichever its tier ranks by so it
+ * explains the order it appears in. Naming it is what stops the column being
+ * three unlabelled quantities in a row — asked directly, "what does the bar
+ * mean?", which is the question a legend exists to prevent.
+ */
+export function metricLabel(tier: keyof TierLists): string {
+  return tier === 'complex' ? 'intelligence' : 'agentic';
+}
+
 export function AgentsApp(props: AgentsAppProps): React.ReactElement {
   const { config, items, factsFor, onDone } = props;
   const palette = usePalette();
@@ -103,6 +116,7 @@ export function AgentsApp(props: AgentsAppProps): React.ReactElement {
     return <RankedSelect
       key={`${editing.role}-${editing.tier}`}
       title={`${editing.role}: ${editing.tier} models — order is the fallback order`}
+      metric={metricLabel(editing.tier)}
       items={factsFor === undefined
         ? items
         : items.map((item) => ({ ...item, facts: factsFor(item.value, editing.tier) }))}

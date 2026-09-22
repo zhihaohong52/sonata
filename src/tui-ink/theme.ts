@@ -36,12 +36,21 @@
  * "orange" — the one change that lets the palette move without a sweep through
  * every component.
  *
- * `ACCENT` is warm terracotta, the same tone Claude Code uses. That is a
+ * `ACCENT` is warm terracotta — xterm 173, `#d7875f` — the tone Claude Code
+ * uses and the one claude-swap picked for the same reason. That is a
  * deliberate family resemblance rather than a borrowed look: sonata runs
  * *inside* Claude Code, and a tool that lives in another product's window
  * earns more by belonging than by asserting itself. It is spent on exactly two
  * things per screen — the lead service, and the key that commits — so it keeps
  * meaning something.
+ *
+ * The values here are claude-swap's, deliberately and exactly: its dark
+ * `ACCENT`/`FOREGROUND`/`BACKGROUND`, its `SURFACE` for the selected band, its
+ * `TRACK` for hairlines, and the matching light companions — including the
+ * deepened light accent `#954c2a`, which its own comment records as chosen for
+ * contrast against the *worst-case row background* rather than against the
+ * page. Two terminal tools sitting inside the same product should not disagree
+ * about what Claude's orange is.
  */
 export interface Palette {
   /** The screen's own ground. Painted once by the shell, under everything. */
@@ -90,8 +99,8 @@ export const DARK: Palette = {
   ACCENT: '#d7875f',
   TEXT: '#e8e4de',
   MUTED: '#8a8a8a',
-  RULE: '#3f3f3f',
-  BAND: '#2e2e2e',
+  RULE: '#3a3a3a',
+  BAND: '#1e1e1e',
   LOW: '#87af87',
   MID: '#d7af5f',
   HIGH: '#d75f5f',
@@ -109,14 +118,14 @@ export const DARK: Palette = {
  */
 export const LIGHT: Palette = {
   BG: '#faf7f2',
-  ACCENT: '#95492a',
+  ACCENT: '#954c2a',
   TEXT: '#2b2723',
   MUTED: '#635d55',
-  RULE: '#c9c1b4',
-  BAND: '#e6dccc',
-  LOW: '#2f6b34',
-  MID: '#7a5c14',
-  HIGH: '#9c2f24',
+  RULE: '#cec7ba',
+  BAND: '#efeae1',
+  LOW: '#3d6b3d',
+  MID: '#795911',
+  HIGH: '#ad3128',
 };
 
 export type ThemeName = 'dark' | 'light';
@@ -285,24 +294,3 @@ export function columns(termWidth: number): BoardColumns {
   return { name, bar: barWidth, showBar, showWord, total: RANK_W + name + barWidth + COST_W + status };
 }
 
-/**
- * Where a cost sits within the range on screen, on a log scale.
- *
- * Log, because cost is a ratio scale and this design treats it that way
- * everywhere else — the frontier's knee, its slopes, and the wasteful-tail
- * gate all measure cost in decades. A linear fraction does not survive the
- * spreads that actually occur: on a real ranking screen the cheapest model is
- * $0.0098 and the dearest $1.399, a 143x range, so every row but the top two
- * rounds to near zero and the severity ramp collapses to one colour.
- *
- * Returns 0 for the cheapest row and 1 for the dearest, so `band` spends its
- * three colours across the range actually present rather than across a range
- * the screen does not have.
- */
-export function costFraction(cost: number, min: number, max: number): number {
-  if (!(cost > 0) || !(min > 0) || !(max > 0)) return 0;
-  if (max <= min) return 0;
-  const span = Math.log10(max / min);
-  if (span === 0) return 0;
-  return Math.min(1, Math.max(0, Math.log10(cost / min) / span));
-}
