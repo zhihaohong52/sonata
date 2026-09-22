@@ -11,13 +11,19 @@ import { TiersScreen } from './screens/tiers.js';
 import { KeysScreen } from './screens/keys.js';
 import { ActionsScreen } from './screens/actions.js';
 import { StatusScreen } from './screens/status.js';
+import { InitScreen } from './screens/init.js';
 import { Menu, moveCursor, type MenuItem } from './components/menu.js';
 import { ThemeProvider, useTheme } from './theme-context.js';
 
 /**
  * The menu, in the order a reader needs it: what is happening, then what is
- * configured, then what can be done to it. Setup is absent because `sonata
- * init` still owns first run; it joins here when that flow moves in.
+ * configured, then what can be done to it.
+ *
+ * Setup sits last rather than first despite being what a new user needs, for
+ * the reason it is `opens`-marked: it rewrites `sonata.toml` whole, and a
+ * destructive row under the cursor's resting position is one stray enter away
+ * from running. Someone who has never run it reaches it from the overview's
+ * warning, which names it.
  */
 const MENU: ReadonlyArray<MenuItem<Step>> = [
   { value: 'status', label: 'Status' },
@@ -27,6 +33,7 @@ const MENU: ReadonlyArray<MenuItem<Step>> = [
   { value: 'keys', label: 'Keys', opens: true },
   { value: 'budget', label: 'Budget', opens: true },
   { value: 'actions', label: 'Actions', opens: true },
+  { value: 'init', label: 'Setup', opens: true },
 ];
 
 /**
@@ -72,6 +79,16 @@ function ConfigTui({ cwd, home, start }: { cwd: string; home: string; start?: St
   }, [step, cwd, home, start]);
 
   useInput((input, key) => {
+    // Setup draws its own screens and owns every key while it runs — including
+    // escape, which the branch below would otherwise read as "go back" and use
+    // to abandon a half-finished init, leaving `cmdInit` suspended on a
+    // promise nothing will ever resolve. `^t` stays live because a theme that
+    // cannot be corrected on the longest screen in the app is the one place
+    // the correction is most needed.
+    if (step === 'init') {
+      if (key.ctrl && input === 't') toggle();
+      return;
+    }
     // Ctrl-T anywhere: the detection in `resolveThemeName` is a guess most
     // terminals give it no evidence for, so the correction has to be one
     // keystroke away from wherever the reader noticed it was wrong.
@@ -102,6 +119,11 @@ function ConfigTui({ cwd, home, start }: { cwd: string; home: string; start?: St
   if (step === 'keys') return <KeysScreen cwd={cwd} home={home} />;
   if (step === 'actions') return <ActionsScreen cwd={cwd} home={home} />;
   if (step === 'status') return <StatusScreen cwd={cwd} home={home} />;
+  // Back to `checking`, not `overview`: init changes the machine this whole
+  // app is drawn against, and the tier-routing warning that may have been the
+  // reason for running it is answered by re-running doctor, not by returning
+  // to the stale result that prompted it.
+  if (step === 'init') return <InitScreen cwd={cwd} home={home} onDone={() => setStep('checking')} />;
   return (
     <Box flexDirection="column">
       <OverviewScreen checks={checks} items={MENU} cursor={cursor} />

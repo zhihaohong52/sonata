@@ -27,6 +27,7 @@ import { TIER_NAMES, type NativeGatewayAuth } from '../config.js';
 import { byokCandidateKey, fetchModels as defaultFetchModels } from '../native/models.js';
 import { ROLE_BLURB } from '../roles.js';
 import type { InitState, TuiResult } from './types.js';
+import { usePalette } from './theme-context.js';
 
 export interface WizardData {
   home: string;
@@ -112,6 +113,7 @@ interface ChoiceProps<T> {
 }
 
 function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: ChoiceProps<T>): React.ReactElement {
+  const palette = usePalette();
   const [cursor, setCursor] = useState(() => Math.max(0, choices.findIndex((choice) => choice.value === initial)));
 
   useInput((_, key) => {
@@ -130,12 +132,13 @@ function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: Choi
           {index === cursor ? '›' : ' '} {choice.label}{choice.hint ? `  · ${choice.hint}` : ''}
         </Text>
       ))}
-      <Text dimColor>↑↓ choose · enter confirm{onBack ? ' · ← back' : ''} · esc cancel</Text>
+      <Text color={palette.MUTED}>↑↓ choose · enter confirm{onBack ? ' · ← back' : ''} · esc cancel</Text>
     </Box>
   );
 }
 
 function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWizardProps['onDone']; onBack: () => void }): React.ReactElement {
+  const palette = usePalette();
   const hasModels = (state.nativeKeys?.length ?? 0) > 0;
   useInput((_, key) => {
     if (key.escape) onDone({ cancelled: true, state });
@@ -155,7 +158,7 @@ function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWiza
       <Text>Imported from: {state.harnesses?.join(', ') || 'no harness (native models only)'}</Text>
       <Text>Providers: {state.providerKeys?.join(', ') || 'none'}</Text>
       <Text>Models: {state.nativeKeys?.join(', ') || 'none'}</Text>
-      {!hasModels && <Text color="red">Select at least one model before continuing.</Text>}
+      {!hasModels && <Text color={palette.HIGH}>Select at least one model before continuing.</Text>}
       <Text>Roles: {state.roles?.join(', ') || 'none'}</Text>
       {(state.roles ?? []).map((role) => {
         const tiers = state.tiers?.[role];
@@ -168,7 +171,7 @@ function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWiza
           : 'none';
         return <Text key={role}>  {role}: {line}</Text>;
       })}
-      <Text dimColor>{hasModels ? 'enter confirm' : '← back to select models'} · ← back · esc cancel</Text>
+      <Text color={palette.MUTED}>{hasModels ? 'enter confirm' : '← back to select models'} · ← back · esc cancel</Text>
     </Box>
   );
 }

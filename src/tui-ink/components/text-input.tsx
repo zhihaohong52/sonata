@@ -1,6 +1,7 @@
 import React, { useReducer, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { tiInitial, tiReduce, type TextInputState } from './text-input-state.js';
+import { usePalette } from '../theme-context.js';
 
 export interface TextInputProps {
   title: string;
@@ -26,6 +27,7 @@ export interface TextInputProps {
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
 export function TextInput(props: TextInputProps): React.ReactElement {
+  const palette = usePalette();
   const { title, hint, mask = false, initial, validate, onSubmit, onBack, onCancel } = props;
   const [state, dispatch] = useReducer(tiReduce, undefined, () => tiInitial(initial));
   const [error, setError] = useState<string | undefined>(undefined);
@@ -57,10 +59,10 @@ export function TextInput(props: TextInputProps): React.ReactElement {
   return (
     <Box flexDirection="column">
       <Text bold>{title}</Text>
-      {hint !== undefined && <Text dimColor>{hint}</Text>}
+      {hint !== undefined && <Text color={palette.MUTED}>{hint}</Text>}
       <Text>❯ {render(state, mask)}</Text>
-      {error !== undefined && <Text color="red">{error}</Text>}
-      <Text dimColor>
+      {error !== undefined && <Text color={palette.HIGH}>{error}</Text>}
+      <Text color={palette.MUTED}>
         enter confirm{onBack ? ' · ← back (at the start of the line)' : ''}{onCancel ? ' · esc cancel' : ''}
       </Text>
     </Box>

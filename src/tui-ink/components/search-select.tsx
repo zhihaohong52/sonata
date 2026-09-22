@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { msVisible } from './multi-select-state.js';
+import { usePalette } from '../theme-context.js';
 
 export interface SearchSelectItem<T> {
   value: T;
@@ -23,6 +24,7 @@ const WINDOW_ROWS = 12;
  * several dozen entries, too many for a plain arrow-navigated `Choice`.
  */
 export function SearchSelect<T>({ title, items, onSubmit, onBack, onCancel }: SearchSelectProps<T>): React.ReactElement {
+  const palette = usePalette();
   const labels = items.map((item) => item.label);
   const [filter, setFilter] = useState('');
   const [cursor, setCursor] = useState(0);
@@ -52,8 +54,8 @@ export function SearchSelect<T>({ title, items, onSubmit, onBack, onCancel }: Se
     <Box flexDirection="column">
       <Text bold>{title}</Text>
       <Text>Filter: {filter}</Text>
-      <Text dimColor>{visible.length} of {items.length} shown</Text>
-      {start > 0 && <Text dimColor>  ↑ {start} more</Text>}
+      <Text color={palette.MUTED}>{visible.length} of {items.length} shown</Text>
+      {start > 0 && <Text color={palette.MUTED}>  ↑ {start} more</Text>}
       {Array.from({ length: end - start }, (_, offset) => {
         const row = start + offset;
         const index = visible[row]!;
@@ -64,8 +66,8 @@ export function SearchSelect<T>({ title, items, onSubmit, onBack, onCancel }: Se
           </Text>
         );
       })}
-      {end < visible.length && <Text dimColor>  ↓ {visible.length - end} more</Text>}
-      <Text dimColor>
+      {end < visible.length && <Text color={palette.MUTED}>  ↓ {visible.length - end} more</Text>}
+      <Text color={palette.MUTED}>
         ↑↓ choose · type to filter · enter confirm{onBack ? ' · ← back' : ''}{onCancel ? ' · esc cancel' : ''}
       </Text>
     </Box>

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import type { NativeGatewayAuth } from '../../config.js';
 import { loginGateway as defaultLoginGateway, type LoginResult } from '../../native/oauth-login.js';
+import { usePalette } from '../theme-context.js';
 
 export interface LoginScreenProps {
   home: string;
@@ -35,6 +36,7 @@ export function latestCode(lines: string[]): { url?: string; code?: string } {
 }
 
 export function LoginScreen({ home, gateway, auth, onDone, loginGateway = defaultLoginGateway }: LoginScreenProps): React.ReactElement {
+  const palette = usePalette();
   const [lines, setLines] = useState<string[]>([]);
   const [seconds, setSeconds] = useState(60);
   const [superseded, setSuperseded] = useState(false);
@@ -87,12 +89,12 @@ export function LoginScreen({ home, gateway, auth, onDone, loginGateway = defaul
   return (
     <Box flexDirection="column">
       {url !== undefined && <Text>Open {url} in your browser, then the code below</Text>}
-      {code !== undefined && <Text bold color="cyan">{code}</Text>}
+      {code !== undefined && <Text bold color={palette.ACCENT}>{code}</Text>}
       {auth === 'copilot-oauth' && code !== undefined && <Text>{seconds}s remaining</Text>}
-      {superseded && <Text color="yellow">A new code was issued — use the one above.</Text>}
+      {superseded && <Text color={palette.MID}>A new code was issued — use the one above.</Text>}
       {warning !== undefined && <Text>{warning}</Text>}
-      {code === undefined && <Text dimColor>Waiting for a device code...</Text>}
-      <Text dimColor>Esc to cancel</Text>
+      {code === undefined && <Text color={palette.MUTED}>Waiting for a device code...</Text>}
+      <Text color={palette.MUTED}>Esc to cancel</Text>
     </Box>
   );
 }

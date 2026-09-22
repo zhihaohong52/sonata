@@ -51,9 +51,47 @@ describe('shouldLaunchTui', () => {
     // checks: its whole output IS the list, it is what a broken machine runs,
     // and it is quoted in error messages a non-TTY reader must be able to
     // follow.
-    for (const command of ['doctor', 'init', 'serve', '--help', '-h', '--version']) {
+    for (const command of ['doctor', 'serve', '--help', '-h', '--version']) {
       expect(shouldLaunchTui(command, true, true)).toBe(false);
     }
+  });
+
+  describe('init', () => {
+    // `init` used to be in the list above. It moved deliberately: the wizard
+    // now runs *inside* the shell rather than mounting its own Ink app, so a
+    // bare `sonata init` on a terminal is a deep link like `status` is. What
+    // has not changed is the scripted path, and that is what these tests pin.
+
+    it('opens the shell for a bare interactive init', () => {
+      expect(shouldLaunchTui('init', true, true, [])).toBe(true);
+    });
+
+    it('stays scripted whenever argv tells it what to do', () => {
+      // Not just `--yes`: `--providers` without it is still a caller
+      // supplying the answers, and opening a screen to ask questions that
+      // have already been answered would hang a script on a prompt.
+      for (const flag of [['--yes'], ['-y'], ['--providers', 'codex/openai'], ['--models', 'a'],
+        ['--roles', 'code'], ['--config-scope', 'global'], ['--scope', 'project'],
+        ['--routing', 'skip'], ['--guidance', 'skip'], ['--prune']]) {
+        expect(shouldLaunchTui('init', true, true, flag)).toBe(false);
+      }
+    });
+
+    it('treats --flag=value the same as --flag value', () => {
+      expect(shouldLaunchTui('init', true, true, ['--config-scope=global'])).toBe(false);
+    });
+
+    it('still opens the shell for a flag that needs a wizard to mean anything', () => {
+      // `--repropose-tiers` re-seeds the ranking screens. Matching "any flag"
+      // rather than naming the scripting ones would send it down the scripted
+      // path, where it silently re-ranks with nobody watching.
+      expect(shouldLaunchTui('init', true, true, ['--repropose-tiers'])).toBe(true);
+    });
+
+    it('never opens it without a terminal, flags or not', () => {
+      expect(shouldLaunchTui('init', false, true, [])).toBe(false);
+      expect(shouldLaunchTui('init', true, false, [])).toBe(false);
+    });
   });
 });
 

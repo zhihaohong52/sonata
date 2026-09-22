@@ -3,6 +3,7 @@ import { Box, Text, useInput, useStdout } from 'ink';
 import { rsInitial, rsOrder, rsReduce } from './ranked-select-state.js';
 import { INK, STATE, bar, band, columns } from '../theme.js';
 import type { CandidateFacts } from '../../catalog.js';
+import { usePalette } from '../theme-context.js';
 
 export interface RankedSelectItem<T> {
   value: T;
@@ -40,6 +41,7 @@ function initialIndices<T>(items: Array<RankedSelectItem<T>>, initialRanked: T[]
 }
 
 export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement {
+  const palette = usePalette();
   const { title, items, initialRanked, footer, onSubmit, onAcceptRest, onBack, onCancel } = props;
   const [state, dispatch] = useReducer(
     (current: ReturnType<typeof rsInitial>, action: Parameters<typeof rsReduce>[1]) => (
@@ -134,7 +136,7 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
             <Text color={isLead ? INK.ACCENT : INK.MUTED} bold={isLead}>
               {`${(rank >= 0 ? String(rank + 1) : '·').padStart(3)} `}
             </Text>
-            <Text inverse={onCursor} dimColor={rank < 0 && !onCursor}>
+            <Text inverse={onCursor} color={rank < 0 && !onCursor ? palette.MUTED : undefined}>
               {name.length > col.name ? `${name.slice(0, col.name - 1)}…` : name.padEnd(col.name)}
             </Text>
             {col.showBar && facts?.capability !== undefined && (

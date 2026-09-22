@@ -64,7 +64,10 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   // — Ink repaints and the list prompts use the alternate buffer — so what is
   // on the terminal after a failed run is not what the run said.
   const out = (line: string): void => { print(line); log.line(line); };
-  const interactive = !opts.yes && isInteractive();
+  // A host draws its own screens, so it *is* interactive even where
+  // `isInteractive()` cannot tell — it checks this process's stdin, and inside
+  // the shell that has already been claimed by Ink.
+  const interactive = !opts.yes && (opts.host !== undefined || isInteractive());
   log.line(`cwd=${opts.cwd} home=${opts.home} interactive=${interactive} yes=${opts.yes ?? false}`);
   try {
     return await runInit(opts, out, log, interactive);
@@ -145,7 +148,8 @@ async function runInit(
   // a cleared screen, asking the user to approve a summary they could no longer
   // read. The prompt has to carry its own copy of what it is asking about.
   const writeQuestion = [...initPlan.summary, 'Write these changes?'].join('\n');
-  if (interactive && !(await confirm(writeQuestion, true))) {
+  const ask = opts.host?.confirm ?? confirm;
+  if (interactive && !(await ask(writeQuestion, true))) {
     out('  Nothing written.');
     return cancelledResult(env.problems, chosen.state, opts);
   }
@@ -153,7 +157,7 @@ async function runInit(
   // ---- apply ------------------------------------------------------------
   const applied = await apply(initPlan, opts, {
     out,
-    prune: opts.prune ?? (interactive ? async () => confirm('Delete them?', true) : false),
+    prune: opts.prune ?? (interactive ? async () => ask('Delete them?', true) : false),
     // The one place the real installer is wired in. `init` is the interactive,
     // foregrounded moment where a multi-minute install makes sense; every
     // other caller has to ask for it explicitly.

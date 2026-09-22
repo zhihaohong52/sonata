@@ -187,6 +187,74 @@ describe('cmdInit (non-interactive)', () => {
     expect(lines.join('\n')).toContain('routing');
   });
 
+  describe('hosted by the TUI shell', () => {
+    /**
+     * `sonata init` runs inside the unified shell, which cannot let it mount a
+     * second Ink app or drop to a `src/tui.ts` prompt: two Ink instances on one
+     * stdout corrupt each other silently, and Ink unrefs stdin on unmount, so a
+     * prompt after that exits the process 0 mid-question. `InitOptions.host`
+     * supplies both surfaces instead.
+     *
+     * What these pin is that the seam is actually *used* — a host that is
+     * accepted and then ignored would send the questions to a terminal nobody
+     * is reading, which is indistinguishable from a hang.
+     */
+    it('asks the host to confirm rather than the terminal, and honours a no', async () => {
+      const asked: string[] = [];
+      await cmdInit({
+        installLitellm: NO_INSTALL,
+        cwd, home, packageRoot: process.cwd(), detect, write,
+        providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
+        roles: ['code'], scope: 'project',
+        host: {
+          runTui: async (data) => ({
+            cancelled: false,
+            state: {
+              configScope: 'project',
+              providerKeys: ['opencode/opencode'],
+              nativeKeys: ['opencode-deepseek-v4-flash'],
+              roles: ['code'],
+              hookScope: 'project', routing: 'skip', guidance: 'skip',
+              tiers: data.initialState?.tiers,
+            },
+          }),
+          confirm: async (question) => { asked.push(question); return false; },
+        },
+      });
+
+      // The summary travels with the question: `src/tui.ts`'s own confirm
+      // draws in the alternate screen buffer and hid everything printed
+      // before it, so the prompt has to carry what it is asking about.
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toContain('Write these changes?');
+      // A refused confirm writes nothing at all.
+      expect(existsSync(join(cwd, 'sonata.toml'))).toBe(false);
+      expect(lines.join('\n')).toContain('Nothing written.');
+    });
+
+    it('is interactive because a host is present, without a TTY', async () => {
+      // `isInteractive()` inspects this process's stdin, which inside the
+      // shell has already been claimed by Ink — so the host's presence is
+      // what has to make the run interactive. Without this the wizard is
+      // skipped entirely and init writes whatever the flags happen to say.
+      let ran = false;
+      await cmdInit({
+        installLitellm: NO_INSTALL,
+        cwd, home, packageRoot: process.cwd(), detect, write,
+        providers: ['opencode/opencode'], models: ['opencode-deepseek-v4-flash'],
+        roles: ['code'], scope: 'project',
+        host: {
+          runTui: async (data) => {
+            ran = true;
+            return { cancelled: true, state: data.initialState ?? {} };
+          },
+          confirm: async () => false,
+        },
+      });
+      expect(ran).toBe(true);
+    });
+  });
+
   it('leaving routing disabled warns in doctor for a tiered config', async () => {
     await cmdInit({
       installLitellm: NO_INSTALL,

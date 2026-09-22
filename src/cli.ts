@@ -143,7 +143,7 @@ export async function main(argv: string[]): Promise<number> {
   // does. Without a TTY this is false and the caller gets today's help and
   // today's exit code, which is what keeps this a pure addition.
   const tty = process.stdout.isTTY === true && process.stdin.isTTY === true;
-  if (shouldLaunchTui(command, process.stdout.isTTY === true, process.stdin.isTTY === true)) {
+  if (shouldLaunchTui(command, process.stdout.isTTY === true, process.stdin.isTTY === true, rest)) {
     const { runConfigTui } = await import('./tui-ink/app-config.js');
     // A named command is a deep link into the one shell, not a separate app:
     // `sonata status` opens it on status, `sonata agents` on tiers. Without a
@@ -151,6 +151,7 @@ export async function main(argv: string[]): Promise<number> {
     // SessionStart hook depends on is untouched.
     const start = command === 'status' ? 'status' as const
       : command === 'agents' ? 'tiers' as const
+      : command === 'init' ? 'init' as const
       : undefined;
     return runConfigTui({ cwd: process.cwd(), start });
   }

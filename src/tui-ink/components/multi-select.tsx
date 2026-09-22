@@ -1,6 +1,7 @@
 import React, { useReducer } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { msInitial, msReduce, msVisible } from './multi-select-state.js';
+import { usePalette } from '../theme-context.js';
 
 export interface MultiSelectItem<T> {
   value: T;
@@ -26,6 +27,7 @@ function initialIndices<T>(items: Array<MultiSelectItem<T>>, initialSelected?: S
 }
 
 export function MultiSelect<T>(props: MultiSelectProps<T>): React.ReactElement {
+  const palette = usePalette();
   const { title, items, initialSelected, onSubmit, onBack, onCancel, filterable = true } = props;
   const labels = items.map((item) => item.label);
   const [state, dispatch] = useReducer(
@@ -77,10 +79,10 @@ export function MultiSelect<T>(props: MultiSelectProps<T>): React.ReactElement {
     <Box flexDirection="column">
       <Text bold>{title}</Text>
       {filterable && <Text>Filter: {state.filter}</Text>}
-      <Text dimColor>
+      <Text color={palette.MUTED}>
         {visible.length} of {items.length} shown · {state.selected.size} selected
       </Text>
-      {start > 0 && <Text dimColor>  ↑ {start} more</Text>}
+      {start > 0 && <Text color={palette.MUTED}>  ↑ {start} more</Text>}
       {Array.from({ length: end - start }, (_, offset) => {
         const row = start + offset;
         const isToggle = row === 0;
@@ -100,13 +102,13 @@ export function MultiSelect<T>(props: MultiSelectProps<T>): React.ReactElement {
           </Text>
         );
       })}
-      {end < rowCount && <Text dimColor>  ↓ {rowCount - end} more</Text>}
+      {end < rowCount && <Text color={palette.MUTED}>  ↓ {rowCount - end} more</Text>}
       {/*
         Filtering is on by default and the Filter field is drawn above, but the
         footer never said so — on the 396-model picker that is the difference
         between a usable list and an unusable one.
       */}
-      <Text dimColor>
+      <Text color={palette.MUTED}>
         ↑↓ choose · space toggle{filterable ? ' · type to filter' : ''} · enter confirm
         {onBack ? ' · ← back' : ''}{onCancel ? ' · esc cancel' : ''}
       </Text>
