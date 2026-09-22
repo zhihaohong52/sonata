@@ -1,6 +1,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import type { Check } from '../../commands/doctor.js';
+import { STATE } from '../theme.js';
 import { overviewRows, summarise } from './overview-rows.js';
 import { Menu, type MenuItem } from '../components/menu.js';
 import { usePalette } from '../theme-context.js';
@@ -28,7 +29,7 @@ export function OverviewScreen({
 
   return (
     <Box flexDirection="column">
-      <Text bold>sonata</Text>
+      <Text bold color={palette.TEXT}>sonata</Text>
       <Box marginTop={1} flexDirection="column">
         {rows.length === 0 && (
           <Text color={palette.MUTED}>
@@ -39,8 +40,15 @@ export function OverviewScreen({
         {rows.map((row) => (
           <Box key={row.name} flexDirection="column">
             <Box>
-              <Text color={palette.MID}>{'  ⚠  '}</Text>
-              <Text bold>{row.name}</Text>
+              {/* A stroke, not a glyph. `theme.ts` states the rule the first
+                  draft of this screen broke: ink only, no emoji standing in
+                  for an icon — and `⚠` is exactly that, on the one screen
+                  whose only content it marks. `STATE.cooled` already carries
+                  this meaning and is what `keys.tsx` reaches for in the same
+                  situation, so the home screen now speaks the same vocabulary
+                  as every screen it leads to. */}
+              <Text color={palette.MID}>{`  ${STATE.cooled.mark}  `}</Text>
+              <Text bold color={palette.TEXT}>{row.name}</Text>
             </Box>
             {row.detail !== '' && (
               // The fix belongs beside the fault: a finding that names the

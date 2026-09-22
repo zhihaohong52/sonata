@@ -87,7 +87,10 @@ describe('columns', () => {
     expect(120 - c.name - c.bar - 4 - 9).toBeGreaterThanOrEqual(widest);
   });
 
-  it('leaves the terminal foreground unset, so light themes stay readable', () => {
-    expect(INK.TEXT).toBeUndefined();
+  it('resolves a complete pair, ground and foreground both named', () => {
+    // `INK` is what non-React callers draw with, so it has to be a usable
+    // palette rather than a set of inks hoping the terminal agrees with them.
+    expect(INK.BG).toMatch(/^#[0-9a-f]{6}$/);
+    expect(INK.TEXT).toMatch(/^#[0-9a-f]{6}$/);
   });
 });

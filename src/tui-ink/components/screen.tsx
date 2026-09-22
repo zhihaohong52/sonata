@@ -44,7 +44,7 @@ export function Screen({
   return (
     <Box flexDirection="column">
       <Box>
-        <Text bold>{title}</Text>
+        <Text bold color={palette.TEXT}>{title}</Text>
         {note !== undefined && <Text color={palette.MUTED}>{`   ${note}`}</Text>}
       </Box>
       <Text color={palette.RULE}>{'─'.repeat(ruleWidth())}</Text>

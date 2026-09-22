@@ -29,7 +29,7 @@ function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: Choi
 
   return (
     <Box flexDirection="column">
-      <Text bold>{title}</Text>
+      <Text bold color={palette.TEXT}>{title}</Text>
       {choices.map((choice, index) => (
         <Text key={String(choice.value)} inverse={index === cursor}>
           {index === cursor ? '›' : ' '} {choice.label}
@@ -110,7 +110,7 @@ export function ByokStep(props: ByokStepProps): React.ReactElement {
   if (result === undefined) {
     return (
       <Box flexDirection="column">
-        <Text bold>{provider.name}</Text>
+        <Text bold color={palette.TEXT}>{provider.name}</Text>
         <Text color={palette.MUTED}>fetching models from {provider.url}…</Text>
       </Box>
     );

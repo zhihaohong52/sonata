@@ -71,11 +71,11 @@ export function StatusScreen({ cwd, home }: { cwd: string; home: string }): Reac
   return (
     <Box flexDirection="column">
       <Box>
-        <Text bold>router</Text>
+        <Text bold color={palette.TEXT}>router</Text>
         <Text color={palette.MUTED}>{`   ${fresh}`}</Text>
       </Box>
       <Text color={palette.RULE}>{'─'.repeat(col.total)}</Text>
-      <Text>
+      <Text color={palette.TEXT}>
         <Text color={up === true ? palette.ACCENT : palette.MUTED}>
           {up === undefined ? STATE.unscored.mark : up ? STATE.lead.mark : STATE.cooled.mark}
         </Text>
@@ -87,7 +87,7 @@ export function StatusScreen({ cwd, home }: { cwd: string; home: string }): Reac
         <Text color={palette.MID}>   Start it with `sonata serve --daemon`, or run `sonata doctor` to find out why.</Text>
       )}
 
-      <Box marginTop={1}><Text bold>routes, last hour</Text></Box>
+      <Box marginTop={1}><Text bold color={palette.TEXT}>routes, last hour</Text></Box>
       <Text color={palette.RULE}>{'─'.repeat(col.total)}</Text>
       {routes === undefined && <Text color={palette.MUTED}>reading the ledger…</Text>}
       {routes !== undefined && routes.length === 0 && (
@@ -104,9 +104,9 @@ export function StatusScreen({ cwd, home }: { cwd: string; home: string }): Reac
           <Box key={`${line.alias}-${i}`} flexDirection="column">
             <Box>
               <Text color={failed ? palette.HIGH : palette.MUTED}>{`${String(line.status).padStart(4)} `}</Text>
-              <Text>{line.alias.padEnd(Math.min(26, col.name))}</Text>
+              <Text color={palette.TEXT}>{line.alias.padEnd(Math.min(26, col.name))}</Text>
               <Text color={palette.MUTED}>{mark.mark} </Text>
-              <Text color={failed ? palette.MUTED : undefined}>
+              <Text color={failed ? palette.MUTED : palette.TEXT}>
                 {line.served ?? 'no candidate served'}
               </Text>
               <Text color={palette.MUTED}>{`  ${line.input} in / ${line.output} out`}</Text>

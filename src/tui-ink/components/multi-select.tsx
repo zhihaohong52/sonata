@@ -77,8 +77,8 @@ export function MultiSelect<T>(props: MultiSelectProps<T>): React.ReactElement {
 
   return (
     <Box flexDirection="column">
-      <Text bold>{title}</Text>
-      {filterable && <Text>Filter: {state.filter}</Text>}
+      <Text bold color={palette.TEXT}>{title}</Text>
+      {filterable && <Text color={palette.TEXT}>Filter: {state.filter}</Text>}
       <Text color={palette.MUTED}>
         {visible.length} of {items.length} shown · {state.selected.size} selected
       </Text>

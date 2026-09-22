@@ -58,7 +58,7 @@ function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: Choi
 
   return (
     <Box flexDirection="column">
-      <Text bold>{title}</Text>
+      <Text bold color={palette.TEXT}>{title}</Text>
       {choices.map((choice, index) => (
         <Text key={String(choice.value)} inverse={index === cursor}>
           {index === cursor ? '›' : ' '} {choice.label}

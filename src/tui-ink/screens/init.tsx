@@ -45,7 +45,7 @@ export function ConfirmScreen({ question, onAnswer }: { question: string; onAnsw
       {lines.slice(0, -1).map((line, i) => (
         <Text key={i} color={palette.MUTED}>{line}</Text>
       ))}
-      <Box marginTop={1}><Text bold>{prompt}</Text></Box>
+      <Box marginTop={1}><Text bold color={palette.TEXT}>{prompt}</Text></Box>
       <Box marginTop={1}>
         <Text color={choice ? palette.ACCENT : palette.MUTED}>{choice ? '▌ yes' : '  yes'}</Text>
         <Text color={!choice ? palette.ACCENT : palette.MUTED}>{!choice ? '   ▌ no' : '     no'}</Text>

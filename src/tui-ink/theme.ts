@@ -8,9 +8,19 @@
  *
  * Three constraints shape everything here, and each one rules something out:
  *
- * - **The background is the user's.** Nothing sets one. Every value below is a
- *   foreground ink chosen to hold on a light *and* a dark terminal, which is
- *   why there is no near-black and no near-white in the palette.
+ * - **The app paints its own ground.** Each palette is a *pair* — an explicit
+ *   background and an explicit foreground — and the shell fills the screen
+ *   with the background before anything draws on it.
+ *
+ *   This reverses the original rule, which was "the background is the user's,
+ *   nothing sets one". That rule made light mode structurally impossible:
+ *   with no ground of its own, switching to light could only darken the ink
+ *   on a still-dark terminal, which is harder to read rather than lighter.
+ *   Worse, `TEXT` was left `undefined` to inherit the terminal's foreground
+ *   while `BAND` was a near-white — so the selected row rendered the
+ *   terminal's light-grey text on a white band and vanished. A theme that
+ *   only restyles ink is not a theme; it is a request that the user's
+ *   terminal already match.
  * - **Colour is never the only carrier.** State is a stroke (see `STATE`), and
  *   colour merely agrees with it. Strip the colour and every screen still
  *   reads — which is what a 16-colour SSH session and a colour-blind reader
@@ -34,10 +44,18 @@
  * meaning something.
  */
 export interface Palette {
+  /** The screen's own ground. Painted once by the shell, under everything. */
+  BG: string;
   /** The lead row, the selected row's edge, and the committing key. Nothing else. */
   ACCENT: string;
-  /** Primary text, or `undefined` to use the terminal's own foreground. */
-  TEXT: string | undefined;
+  /**
+   * Primary text. Explicit, never inherited.
+   *
+   * Inheriting was the bug: a palette that sets `BAND` but not `TEXT` is
+   * asserting a background without knowing the foreground that will land on
+   * it, and the two were from different themes.
+   */
+  TEXT: string;
   /** Secondary text: units, provenance, unselected rows. */
   MUTED: string;
   /** Hairlines and the unfilled part of a bar. */
@@ -60,31 +78,45 @@ export interface Palette {
  * greens and ambers in particular have to darken considerably to hold against
  * a light ground.
  *
- * `TEXT` is `undefined` in both: Ink renders an unstyled `<Text>` in the
- * terminal's own foreground, which is the only value guaranteed to contrast
- * with the terminal's own background. Naming a hex is the surest way to
- * produce unreadable text on somebody's theme.
+ * Both are explicit pairs. An unstyled Ink `<Text>` renders in the *terminal's*
+ * foreground, which is the right answer only while the app draws on the
+ * terminal's background too — once the shell paints its own ground, an
+ * inherited foreground is a colour from somebody else's theme landing on
+ * this one. Every `<Text>` therefore names its role, and `TEXT` is the role
+ * for ordinary prose.
  */
 export const DARK: Palette = {
+  BG: '#141414',
   ACCENT: '#d7875f',
-  TEXT: undefined,
+  TEXT: '#e8e4de',
   MUTED: '#8a8a8a',
-  RULE: '#5a5a5a',
-  BAND: '#262626',
+  RULE: '#3f3f3f',
+  BAND: '#2e2e2e',
   LOW: '#87af87',
   MID: '#d7af5f',
   HIGH: '#d75f5f',
 };
 
+/**
+ * Light is not dark inverted, and its band goes the other way.
+ *
+ * On dark, an elevated surface is *lighter* than the ground; on light it must
+ * be *darker*, or the selected row is a paler smear on an already pale page.
+ * The accent is deepened rather than reused — terracotta that reads on
+ * charcoal is too pale to hold against near-white, and it has to survive on
+ * the band as well as on the ground, which is the worst case rather than the
+ * typical one.
+ */
 export const LIGHT: Palette = {
-  ACCENT: '#af5f28',
-  TEXT: undefined,
-  MUTED: '#6c6c6c',
-  RULE: '#a8a8a8',
-  BAND: '#eeeeee',
-  LOW: '#3f7f3f',
-  MID: '#8a6d1f',
-  HIGH: '#a33327',
+  BG: '#faf7f2',
+  ACCENT: '#95492a',
+  TEXT: '#2b2723',
+  MUTED: '#635d55',
+  RULE: '#c9c1b4',
+  BAND: '#e6dccc',
+  LOW: '#2f6b34',
+  MID: '#7a5c14',
+  HIGH: '#9c2f24',
 };
 
 export type ThemeName = 'dark' | 'light';

@@ -1,7 +1,7 @@
 import React, { useReducer } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import { rsInitial, rsOrder, rsReduce } from './ranked-select-state.js';
-import { INK, STATE, bar, band, columns } from '../theme.js';
+import { STATE, bar, band, columns } from '../theme.js';
 import type { CandidateFacts } from '../../catalog.js';
 import { usePalette } from '../theme-context.js';
 
@@ -108,9 +108,9 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
   return (
     <Box flexDirection="column">
       <Box>
-        <Text bold>{title}</Text>
+        <Text bold color={palette.TEXT}>{title}</Text>
       </Box>
-      <Text color={INK.RULE}>{'─'.repeat(col.total)}</Text>
+      <Text color={palette.RULE}>{'─'.repeat(col.total)}</Text>
       {order.map((index, position) => {
         const item = items[index];
         const rank = state.ranked.indexOf(index);
@@ -133,39 +133,39 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
 
         return (
           <Box key={index}>
-            <Text color={isLead ? INK.ACCENT : INK.MUTED} bold={isLead}>
+            <Text color={isLead ? palette.ACCENT : palette.MUTED} bold={isLead}>
               {`${(rank >= 0 ? String(rank + 1) : '·').padStart(3)} `}
             </Text>
             <Text inverse={onCursor} color={rank < 0 && !onCursor ? palette.MUTED : undefined}>
               {name.length > col.name ? `${name.slice(0, col.name - 1)}…` : name.padEnd(col.name)}
             </Text>
             {col.showBar && facts?.capability !== undefined && (
-              <Text>
-                <Text color={band(capFraction)}>{b.filled}</Text>
-                <Text color={INK.RULE}>{b.track}</Text>
+              <Text color={palette.TEXT}>
+                <Text color={band(capFraction, palette)}>{b.filled}</Text>
+                <Text color={palette.RULE}>{b.track}</Text>
               </Text>
             )}
             {col.showBar && facts?.capability === undefined && (
-              <Text color={INK.RULE}>{'─'.repeat(col.bar)}</Text>
+              <Text color={palette.RULE}>{'─'.repeat(col.bar)}</Text>
             )}
-            <Text color={INK.MUTED}>
+            <Text color={palette.MUTED}>
               {facts?.costPerTask === undefined
                 ? '        —'
                 : `$${facts.costPerTask.toFixed(4)}`.padStart(9)}
             </Text>
-            <Text color={INK.MUTED}>
+            <Text color={palette.MUTED}>
               {' '}{mark.mark}{col.showWord ? ` ${mark.word}` : ''}
             </Text>
           </Box>
         );
       })}
       {state.ranked.length === 0 && (
-        <Text color={INK.MID}>
+        <Text color={palette.MID}>
           Nothing ranked yet. Space adds a model; the order you add them is the order they are tried.
         </Text>
       )}
-      <Text color={INK.RULE}>{'─'.repeat(col.total)}</Text>
-      {footer !== undefined && <Text color={INK.MUTED}>{footer}</Text>}
+      <Text color={palette.RULE}>{'─'.repeat(col.total)}</Text>
+      {footer !== undefined && <Text color={palette.MUTED}>{footer}</Text>}
       {/*
         Wraps between key/action pairs, never inside one. At 40 columns the
         single-Text version broke after "A" and orphaned "accept all" on the
@@ -181,8 +181,8 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
           ...(onCancel ? [['esc', 'cancel']] : []),
         ] as Array<[string, string, boolean?]>).map(([key, action, commits]) => (
           <Text key={key}>
-            <Text color={commits === true ? INK.ACCENT : INK.MUTED}>{key}</Text>
-            <Text color={INK.MUTED}>{` ${action}   `}</Text>
+            <Text color={commits === true ? palette.ACCENT : palette.MUTED}>{key}</Text>
+            <Text color={palette.MUTED}>{` ${action}   `}</Text>
           </Text>
         ))}
       </Box>

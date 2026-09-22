@@ -15,6 +15,9 @@ import { Box, Text, useInput } from 'ink';
 import { RankedSelect } from './components/ranked-select.js';
 import { TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
 import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../extended-context.js';
+import { usePalette } from './theme-context.js';
+import { ruleWidth } from './components/screen.js';
+import type { RankedSelectItem } from './components/ranked-select.js';
 
 export type Tiers = Record<string, TierLists>;
 
@@ -54,12 +57,31 @@ export interface AgentsAppProps {
   initialTiers: Tiers;
   /** Every key that may be ranked, with a human label. */
   items: Array<{ value: string; label: string }>;
+  /**
+   * A candidate's measurements, for the tier currently being edited.
+   *
+   * A function rather than a field on `items`, because the metric depends on
+   * the tier: `complex` ranks on reasoning and the value tiers on throughput,
+   * so a number attached once at construction would explain the ordering on
+   * two screens out of three. `init` already computes it per tier screen for
+   * exactly this reason.
+   *
+   * Optional, so a caller with no catalog still opens the editor. Absent, the
+   * board renders every row through `RankedSelect`'s unscored branch — dashed
+   * track, `—` cost, "unranked" — which is right for a model the catalog
+   * cannot price and was wrong for *all* of them, which is what this repairs.
+   * `sonata agents` is the surface PRODUCT.md rates frequent, and it was
+   * drawing the checkbox list this redesign replaced while `init`, run about
+   * three times ever, drew the board.
+   */
+  factsFor?: (candidate: string, tier: keyof TierLists) => RankedSelectItem<string>['facts'];
   /** `undefined` means the user quit without saving. */
   onDone: (tiers: Tiers | undefined) => void;
 }
 
 export function AgentsApp(props: AgentsAppProps): React.ReactElement {
-  const { config, items, onDone } = props;
+  const { config, items, factsFor, onDone } = props;
+  const palette = usePalette();
   const [tiers, setTiers] = useState<Tiers>(props.initialTiers);
   const [cursor, setCursor] = useState(0);
   const [editing, setEditing] = useState<TierRow | undefined>(undefined);
@@ -80,9 +102,11 @@ export function AgentsApp(props: AgentsAppProps): React.ReactElement {
     return <RankedSelect
       key={`${editing.role}-${editing.tier}`}
       title={`${editing.role}: ${editing.tier} models — order is the fallback order`}
-      items={items}
+      items={factsFor === undefined
+        ? items
+        : items.map((item) => ({ ...item, facts: factsFor(item.value, editing.tier) }))}
       initialRanked={editing.keys}
-      footer="enter confirms · ← back without changing this list"
+      footer="enter confirm   \u2190 back without changing this list"
       onSubmit={(ranked) => {
         setTiers((current) => ({
           ...current,
@@ -97,25 +121,45 @@ export function AgentsApp(props: AgentsAppProps): React.ReactElement {
 
   return (
     <Box flexDirection="column">
-      <Text bold>sonata agents</Text>
-      <Text dimColor>{'↑↓ move · enter re-rank · w write · q quit without saving'}</Text>
+      <Box>
+        <Text bold color={palette.TEXT}>Tiers</Text>
+        <Text color={palette.MUTED}>{`   ${rows.length} of role \u00d7 tier${dirty ? ' · unsaved' : ''}`}</Text>
+      </Box>
+      <Text color={palette.RULE}>{'\u2500'.repeat(ruleWidth())}</Text>
       <Box marginTop={1} flexDirection="column">
         {rows.map((row, index) => (
           <Box key={`${row.role}-${row.tier}`} flexDirection="column">
-            <Text color={index === cursor ? 'cyan' : undefined}>
-              {index === cursor ? '❯ ' : '  '}
+            {/* Selection three ways, as `menu.tsx` draws it: an accent edge,
+                a band, and full-strength text against muted neighbours. The
+                `❯` + cyan this replaced carried it on colour alone, which is
+                nothing in a two-colour terminal. */}
+            <Text color={palette.TEXT}>
+              <Text color={palette.ACCENT}>{index === cursor ? '\u258c' : ' '}</Text>
+              <Text
+                backgroundColor={index === cursor ? palette.BAND : undefined}
+                color={index === cursor ? palette.TEXT : palette.MUTED}
+                bold={index === cursor}
+              >
+              {' '}
               {`${row.role}-${row.tier}`.padEnd(18)}
               {row.agent !== `${row.role}-${row.tier}` ? `→ ${row.agent}.md  ` : ''}
               {row.extendedContext ? EXTENDED_CONTEXT_SUFFIX : ''}
+              </Text>
             </Text>
-            <Text dimColor>
+            <Text color={palette.MUTED}>
               {'      '}
               {row.keys.length === 0 ? '(empty — every dispatch falls through to sonata dispatch)' : row.keys.join(' → ')}
             </Text>
           </Box>
         ))}
       </Box>
-      {dirty ? <Text color="yellow">{'\n  unsaved changes — w writes them, q discards'}</Text> : null}
+      {/* `MID`, not a hardcoded yellow: yellow on the light palette is the
+          vanishing text `theme.ts` exists to prevent, and it does not move
+          with the toggle. */}
+      {dirty ? <Text color={palette.MID}>{'\n  unsaved changes — w writes them, q discards'}</Text> : null}
+      <Box marginTop={1}>
+        <Text color={palette.MUTED}>{'\u2191\u2193 move   enter re-rank   w write   q quit without saving'}</Text>
+      </Box>
     </Box>
   );
 }

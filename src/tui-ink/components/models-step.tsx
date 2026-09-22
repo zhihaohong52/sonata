@@ -126,7 +126,7 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
   if (live === undefined) {
     return (
       <Box flexDirection="column">
-        <Text bold>Models</Text>
+        <Text bold color={palette.TEXT}>Models</Text>
         <Text color={palette.MUTED}>
           asking {targets.length} provider{targets.length === 1 ? '' : 's'} what {targets.length === 1 ? 'it serves' : 'they serve'}…
         </Text>

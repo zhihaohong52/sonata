@@ -126,7 +126,7 @@ function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: Choi
 
   return (
     <Box flexDirection="column">
-      <Text bold>{title}</Text>
+      <Text bold color={palette.TEXT}>{title}</Text>
       {choices.map((choice, index) => (
         <Text key={String(choice.value)} inverse={index === cursor}>
           {index === cursor ? '›' : ' '} {choice.label}{choice.hint ? `  · ${choice.hint}` : ''}
@@ -148,18 +148,18 @@ function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWiza
 
   return (
     <Box flexDirection="column">
-      <Text bold>Summary</Text>
-      <Text>Config scope: {state.configScope ?? 'none'}</Text>
+      <Text bold color={palette.TEXT}>Summary</Text>
+      <Text color={palette.TEXT}>Config scope: {state.configScope ?? 'none'}</Text>
       {/*
         This lists the harnesses imported *from*, not the ones installed — and
         the detection block directly above shows four of those, so a bare
         "none" read as "nothing was detected" when it meant "native models only".
       */}
-      <Text>Imported from: {state.harnesses?.join(', ') || 'no harness (native models only)'}</Text>
-      <Text>Providers: {state.providerKeys?.join(', ') || 'none'}</Text>
-      <Text>Models: {state.nativeKeys?.join(', ') || 'none'}</Text>
+      <Text color={palette.TEXT}>Imported from: {state.harnesses?.join(', ') || 'no harness (native models only)'}</Text>
+      <Text color={palette.TEXT}>Providers: {state.providerKeys?.join(', ') || 'none'}</Text>
+      <Text color={palette.TEXT}>Models: {state.nativeKeys?.join(', ') || 'none'}</Text>
       {!hasModels && <Text color={palette.HIGH}>Select at least one model before continuing.</Text>}
-      <Text>Roles: {state.roles?.join(', ') || 'none'}</Text>
+      <Text color={palette.TEXT}>Roles: {state.roles?.join(', ') || 'none'}</Text>
       {(state.roles ?? []).map((role) => {
         const tiers = state.tiers?.[role];
         const line = tiers

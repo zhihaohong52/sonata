@@ -88,11 +88,11 @@ export function LoginScreen({ home, gateway, auth, onDone, loginGateway = defaul
 
   return (
     <Box flexDirection="column">
-      {url !== undefined && <Text>Open {url} in your browser, then the code below</Text>}
+      {url !== undefined && <Text color={palette.TEXT}>Open {url} in your browser, then the code below</Text>}
       {code !== undefined && <Text bold color={palette.ACCENT}>{code}</Text>}
-      {auth === 'copilot-oauth' && code !== undefined && <Text>{seconds}s remaining</Text>}
+      {auth === 'copilot-oauth' && code !== undefined && <Text color={palette.TEXT}>{seconds}s remaining</Text>}
       {superseded && <Text color={palette.MID}>A new code was issued — use the one above.</Text>}
-      {warning !== undefined && <Text>{warning}</Text>}
+      {warning !== undefined && <Text color={palette.TEXT}>{warning}</Text>}
       {code === undefined && <Text color={palette.MUTED}>Waiting for a device code...</Text>}
       <Text color={palette.MUTED}>Esc to cancel</Text>
     </Box>

@@ -57,7 +57,7 @@ export function BudgetScreen({ cwd, home }: { cwd: string; home: string }): Reac
             says it takes typing, and an empty field with no caret reads as a
             value of zero rather than as an absent cap. */}
         <Text color={palette.ACCENT}>{draft === '' ? '' : '$'}</Text>
-        <Text bold>{draft === '' ? 'no cap' : draft}</Text>
+        <Text bold color={palette.TEXT}>{draft === '' ? 'no cap' : draft}</Text>
         <Text color={palette.ACCENT}>▏</Text>
       </Box>
       <Box marginTop={1} flexDirection="column">

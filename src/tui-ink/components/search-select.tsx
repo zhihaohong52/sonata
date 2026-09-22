@@ -52,8 +52,8 @@ export function SearchSelect<T>({ title, items, onSubmit, onBack, onCancel }: Se
 
   return (
     <Box flexDirection="column">
-      <Text bold>{title}</Text>
-      <Text>Filter: {filter}</Text>
+      <Text bold color={palette.TEXT}>{title}</Text>
+      <Text color={palette.TEXT}>Filter: {filter}</Text>
       <Text color={palette.MUTED}>{visible.length} of {items.length} shown</Text>
       {start > 0 && <Text color={palette.MUTED}>  ↑ {start} more</Text>}
       {Array.from({ length: end - start }, (_, offset) => {

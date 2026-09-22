@@ -58,9 +58,9 @@ export function TextInput(props: TextInputProps): React.ReactElement {
 
   return (
     <Box flexDirection="column">
-      <Text bold>{title}</Text>
+      <Text bold color={palette.TEXT}>{title}</Text>
       {hint !== undefined && <Text color={palette.MUTED}>{hint}</Text>}
-      <Text>❯ {render(state, mask)}</Text>
+      <Text color={palette.TEXT}>❯ {render(state, mask)}</Text>
       {error !== undefined && <Text color={palette.HIGH}>{error}</Text>}
       <Text color={palette.MUTED}>
         enter confirm{onBack ? ' · ← back (at the start of the line)' : ''}{onCancel ? ' · esc cancel' : ''}

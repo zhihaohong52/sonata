@@ -95,7 +95,7 @@ export function ActionsScreen({ cwd, home }: { cwd: string; home: string }): Rea
       )}
       {running !== undefined && <Box marginTop={1}><Text color={palette.ACCENT}>{running}</Text></Box>}
       {running === undefined && message !== undefined && (
-        <Box marginTop={1}><Text>{message}</Text></Box>
+        <Box marginTop={1}><Text color={palette.TEXT}>{message}</Text></Box>
       )}
     </Screen>
   );
