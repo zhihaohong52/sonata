@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import React from 'react';
 import { render } from 'ink-testing-library';
 import { RankedSelect } from '../../src/tui-ink/components/ranked-select.js';
-import { dominatedRows } from '../../src/tui-ink/components/ranked-select-state.js';
+import { boardWindow, dominatedRows } from '../../src/tui-ink/components/ranked-select-state.js';
 
 /** Lets Ink flush a render before the next keystroke is read. */
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
@@ -144,5 +144,37 @@ describe('dominatedRows', () => {
 
   it('is empty for a single row', () => {
     expect(dominatedRows([row(30, 0.10)]).size).toBe(0);
+  });
+});
+
+describe('boardWindow', () => {
+  it('draws everything when it fits', () => {
+    expect(boardWindow(0, 5, 10)).toEqual({ start: 0, end: 5 });
+  });
+
+  it('never draws more rows than the room, markers included', () => {
+    // The overflow this prevents: twelve candidates plus chrome outgrew a
+    // 22-row window and the TITLE scrolled off. The two `more` markers cost a
+    // line each and are budgeted, since forgetting them overflows by two.
+    for (let cursor = 0; cursor < 30; cursor += 1) {
+      const { start, end } = boardWindow(cursor, 30, 10);
+      const markers = (start > 0 ? 1 : 0) + (end < 30 ? 1 : 0);
+      expect(end - start + markers).toBeLessThanOrEqual(10);
+    }
+  });
+
+  it('keeps the cursor on screen wherever it goes', () => {
+    // `[` and `]` carry a row through the list; a window that did not follow
+    // would move the row being ranked out of sight.
+    for (let cursor = 0; cursor < 30; cursor += 1) {
+      const { start, end } = boardWindow(cursor, 30, 10);
+      expect(cursor).toBeGreaterThanOrEqual(start);
+      expect(cursor).toBeLessThan(end);
+    }
+  });
+
+  it('shows at least three rows on a very short terminal', () => {
+    const { start, end } = boardWindow(5, 30, 1);
+    expect(end - start).toBe(3);
   });
 });

@@ -131,3 +131,35 @@ export function dominatedRows(rows: ReadonlyArray<Measured | undefined>): Set<nu
   }
   return out;
 }
+
+/**
+ * Which rows of the board to draw, so it never outgrows the terminal.
+ *
+ * The board drew every row however short the window was. A role with a
+ * dozen candidates plus the head, the column header, three rules and a
+ * keymap that wraps on a narrow terminal is taller than a 22-row window, and
+ * what goes is the TOP — the title that says which role and tier is being
+ * ranked. Found while verifying resize: at 40 columns the key hints wrapped
+ * and the title scrolled away.
+ *
+ * The window follows the cursor, centred where it can be, so the row being
+ * moved is always on screen — `[` and `]` carry a row up and down the list,
+ * and a window that did not follow would move it out of sight. `room` is the
+ * number of lines left for rows after the chrome; at least three rows are
+ * always drawn, since fewer cannot show a row with its neighbours.
+ *
+ * The `↑`/`↓` markers are budgeted here rather than drawn on top: they cost a
+ * line each, and forgetting them is how a windowed list overflows by one or
+ * two.
+ */
+export function boardWindow(
+  cursor: number,
+  count: number,
+  room: number,
+): { start: number; end: number } {
+  if (count <= Math.max(room, 3)) return { start: 0, end: count };
+  // Two lines for the "more" markers the window will need.
+  const size = Math.max(3, room - 2);
+  const start = Math.max(0, Math.min(cursor - Math.floor(size / 2), count - size));
+  return { start, end: Math.min(count, start + size) };
+}

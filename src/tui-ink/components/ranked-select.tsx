@@ -1,6 +1,6 @@
 import React, { useReducer } from 'react';
-import { Box, Text, useInput, useStdout } from 'ink';
-import { dominatedRows, rsInitial, rsOrder, rsReduce } from './ranked-select-state.js';
+import { Box, Text, useInput, useWindowSize } from 'ink';
+import { boardWindow, dominatedRows, rsInitial, rsOrder, rsReduce } from './ranked-select-state.js';
 import { STATE, bar, columns, usableWidth } from '../theme.js';
 import type { CandidateFacts } from '../../catalog.js';
 import { usePalette } from '../theme-context.js';
@@ -104,8 +104,10 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
     }
   });
 
-  const { stdout } = useStdout();
-  const usable = usableWidth(stdout?.columns ?? 80);
+  // Width AND height, and subscribed: the board re-renders on a resize
+  // rather than keeping the size it was first drawn at.
+  const { columns: termColumns, rows } = useWindowSize();
+  const usable = usableWidth(termColumns);
   const col = columns(usable);
   // Never wider than the page: `columns` floors at 40 and a terminal can be
   // narrower, and a rule that wraps pushes the header off the screen.
@@ -122,6 +124,26 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
   const dominated = dominatedRows(items.map((item) => item.facts));
 
   const order = rsOrder(state, items.length);
+
+  // The keymap's pairs, built once so their width can be budgeted before
+  // they are drawn. The keymap wraps between pairs on a narrow terminal (a
+  // hidden action is worse than a second line), so the lines it takes are
+  // part of the chrome the rows must leave room for.
+  const keys = ([
+    ['↑↓', 'move'], ['space', 'rank'], ['[ ]', 'reorder'],
+    ['enter', 'confirm', true],
+    ...(onAcceptRest ? [['A', 'accept all']] : []),
+    ...(onBack ? [['←', 'back']] : []),
+    ...(onCancel ? [['esc', 'cancel']] : []),
+  ] as Array<[string, string, boolean?]>);
+  const keymapLines = Math.max(1, Math.ceil(
+    keys.reduce((sum, [key, action]) => sum + key.length + action.length + 4, 0) / Math.max(1, usable),
+  ));
+  // Head, column header, top rule, lead rule, bottom rule, keymap, the footer
+  // when present, the empty hint when shown. Ground's height is one short of
+  // the terminal's, so that line is spent too.
+  const chrome = 5 + keymapLines + (footer !== undefined ? 1 : 0) + (state.ranked.length === 0 ? 1 : 0) + 1;
+  const { start, end } = boardWindow(state.cursor, order.length, (rows ?? 24) - chrome);
 
   return (
     <Box flexDirection="column">
@@ -148,7 +170,9 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
         {col.showWord && <Text color={palette.MUTED}>{'  state'}</Text>}
       </Box>
       <Text color={palette.RULE}>{'─'.repeat(ruleCells)}</Text>
-      {order.map((index, position) => {
+      {start > 0 && <Text wrap="truncate-end" color={palette.MUTED}>{`  ↑ ${start} more`}</Text>}
+      {order.slice(start, end).map((index, offset) => {
+        const position = start + offset;
         const item = items[index];
         const rank = state.ranked.indexOf(index);
         const isLead = rank === 0;
@@ -263,13 +287,16 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
           </React.Fragment>
         );
       })}
+      {end < order.length && (
+        <Text wrap="truncate-end" color={palette.MUTED}>{`  ↓ ${order.length - end} more`}</Text>
+      )}
       {state.ranked.length === 0 && (
         <Text color={palette.MID}>
           Nothing ranked yet. Space adds a model; the order you add them is the order they are tried.
         </Text>
       )}
       <Text color={palette.RULE}>{'─'.repeat(ruleCells)}</Text>
-      {footer !== undefined && <Text color={palette.MUTED}>{footer}</Text>}
+      {footer !== undefined && <Text wrap="truncate-end" color={palette.MUTED}>{footer}</Text>}
       {/*
         Wraps between key/action pairs, never inside one. At 40 columns the
         single-Text version broke after "A" and orphaned "accept all" on the
@@ -277,13 +304,7 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
         to fit: a hidden action is worse than a second line.
       */}
       <Box flexWrap="wrap">
-        {([
-          ['↑↓', 'move'], ['space', 'rank'], ['[ ]', 'reorder'],
-          ['enter', 'confirm', true],
-          ...(onAcceptRest ? [['A', 'accept all']] : []),
-          ...(onBack ? [['←', 'back']] : []),
-          ...(onCancel ? [['esc', 'cancel']] : []),
-        ] as Array<[string, string, boolean?]>).map(([key, action, commits]) => (
+        {keys.map(([key, action, commits]) => (
           <Text key={key}>
             <Text color={commits === true ? palette.ACCENT : palette.MUTED}>{key}</Text>
             <Text color={palette.MUTED}>{` ${action}   `}</Text>

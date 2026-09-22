@@ -125,7 +125,7 @@ export function AgentsApp(props: AgentsAppProps): React.ReactElement {
         ? items
         : items.map((item) => ({ ...item, facts: factsFor(item.value, editing.tier) }))}
       initialRanked={editing.keys}
-      footer="enter confirm   \u2190 back without changing this list"
+      footer="enter confirm   ← back without changing this list"
       onSubmit={(ranked) => {
         setTiers((current) => ({
           ...current,
