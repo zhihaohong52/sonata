@@ -178,26 +178,84 @@ become wrong the first time the index rescaled.
 **3. The knee** — Kneedle on (log₁₀ cost, intelligence) normalised to the unit
 square: the frontier point furthest above the chord joining its endpoints.
 This reproduces Artificial Analysis's own published line exactly (12 points,
-knee at `mimo-v2-6-pro`), which is the check that validated the whole
-computation.
+knee at `mimo-v2-6-pro`), which is the check that validated the computation.
 
 The knee is **derived, not configured**. A new model lands on the frontier,
 the knee moves itself, and the tier boundary follows. There is no threshold to
 tune and none to go stale — which is the answer to "what if a new luna drops
 tomorrow and raises the frontier again."
 
+**Order matters: the knee is computed on the FULL frontier, before step 2's
+gate.** Kneedle measures against a chord between the frontier's endpoints, and
+the gate removes the far endpoint — so gating first moves the knee, and the
+knee would then inherit the gate's tuned fraction, destroying the one property
+that makes it trustworthy. Measured on the agentic frontier of a real config:
+the last rung is `glm-5.3-flash → astra@max` at **0.1 per decade** (+0.1
+capability for 12.9x the cost), and cutting it moves the knee from
+`glm-5.3-flash` ($0.2533) to `luna@medium` ($0.0156) — **16x apart**, on the
+model that leads the default tier. Knee first, gate second.
+
+### Each tier ranks on its own metric, so each has its own frontier
+
+`capabilityOf` (agentic) and `reasoningOf` (intelligence) already split this
+way, for measured reasons recorded in `catalog.ts`. The frontier and knee are
+therefore computed **per tier, on the metric that tier ranks by** — bounding a
+value tier with a knee derived from a metric it does not rank on is the same
+unit-mixing error as comparing `cost_per_task` with `blendedPriceUsd`.
+
+They genuinely differ. On one real config:
+
+| metric | knee | used by |
+|---|---|---|
+| agentic | `glm-5.3-flash` — $0.2533, 50.9 | `simple`, `normal` |
+| intelligence | `mimo-v2-6-pro` — $0.1332, 46.3 | `complex` |
+
 ### The tiers
 
-| tier | population | order |
-|---|---|---|
-| `simple` | everything, capped at `SIMPLE_COST_CEILING` (12x) × the best-value model's cost | capability per task-dollar |
-| `normal` | everything | capability per task-dollar |
-| `complex` | everything at least as capable as the knee | capability |
+| tier | metric | population | order |
+|---|---|---|---|
+| `simple` | agentic | capped at `SIMPLE_COST_CEILING` (12x) × the best-value cost | value |
+| `normal` | agentic | everything | **the knee, then value** |
+| `complex` | intelligence | everything | capability, knee-and-above first |
 
-`complex` is the strong end, and the knee bounds it **from below** so it cannot
-collapse into `normal`. `simple` stays a cost-capped subsequence of `normal`,
-anchored to a model that always clears its own cap, so it is never empty and
-needs no fallback rule.
+**`normal` leads with the knee, and that is the point of computing one.** The
+earlier draft used the knee only as a boundary, so the best balance point on
+the frontier led nothing and was merely a divider — the analysis was performed
+and then discarded. `normal` is the *default* tier and means "you know what to
+change but not exactly how"; leading it with the cheapest model available
+(agentic 16.1) is not a sensible default, and it also gave `simple` and
+`normal` the same lead, which is the collapse `SIMPLE_CAPABILITY_FLOOR` caused
+and was deleted for. The knee is exactly the model that answers "good enough,
+without paying for the top".
+
+The cost is real and stated: on the config measured, `normal`'s lead moves
+from `luna@low` ($0.0098, agentic 16.1) to `glm-5.3-flash` ($0.2533, agentic
+50.9) — **26x the price for 3.2x the capability**, on the tier that takes most
+traffic. `[budget] daily_usd` is what bounds the consequence.
+
+**`complex` puts the knee-and-above first, then everything below it**, rather
+than excluding below-knee models. The knee decides the *lead*, not membership:
+a tier that excluded them had five live candidates on a real config, so a
+provider-wide 402 — the failure that started this redesign — would exhaust it
+to the harness lane while `sol@xhigh` (44.0) and `terra@max` (42.1) sat
+unused. Gated rungs go last of all, after the below-knee tail: if everything
+better is cooling you would rather run `sol@xhigh` at $1.18 than `astra@max`
+at $3.26 for one more index point.
+
+### A consequence worth stating plainly
+
+Under per-tier metrics, **`mimo-v2-6-pro` leads no tier**, despite being the
+knee that validated this whole computation against AA's chart. It is the knee
+on the *intelligence* axis, and that axis belongs to `complex`, whose job is
+the strong end — so there its knee is a floor rather than a lead. On the
+*agentic* axis the value tiers rank by, the knee is `glm-5.3-flash`, and that
+is what leads `normal`.
+
+This is a real consequence of choosing per-tier metrics rather than a defect,
+but it is the kind of thing that looks like a defect later. The alternative —
+one intelligence frontier for all three tiers — would make `mimo` lead
+`normal`, at the price of ranking the value tiers by a metric they do not
+sort on.
 
 ### Dominated models need no special handling, and that is provable
 
@@ -221,30 +279,42 @@ because a capability sort would otherwise lead `complex` with exactly the rung
 the gate rejected. It is demoted rather than dropped, for the reason
 `avoid_gateways` demotes: avoiding something should cost preference, not depth.
 
-### Worked example: this repository's own config
+### Worked example: a real config
 
-`[models]` holds `gpt-5.6-luna` and `gpt-5.6-terra`, twelve effort variants.
+Seven families, 25 costed effort variants: `luna`, `terra`, `sol`, `astra`,
+`mimo-v2.6-pro`, `glm-5.3-flash`, `deepseek-v4.1-flash`.
 
 ```
-frontier   luna@low, luna@medium, luna@high, luna@xhigh, luna@max,
-           terra@xhigh, terra@max            (7 of 12)
-knee       luna@high
-tail cut   nothing — this ladder has no wasteful rungs
+agentic frontier    luna@low → luna@medium → luna@high → luna@xhigh
+                    → mimo → glm-5.3-flash → astra@max
+  knee              glm-5.3-flash   ($0.2533, agentic 50.9)
+  gate cuts         astra@max       (glm → astra@max is 0.1/decade)
 
-simple     luna@low → luna@medium → luna@none → luna@high → luna@xhigh
-normal     luna@low → luna@medium → luna@none → luna@high → luna@xhigh
-           → luna@max → …
-complex    terra@max → terra@xhigh → luna@max → luna@xhigh → terra@high
-           → luna@high
+intelligence frontier  luna@low → luna@medium → luna@high → luna@xhigh
+                       → mimo → astra@medium → astra@high → astra@xhigh
+                       → astra@max
+  knee                 mimo         ($0.1332, intelligence 46.3)
+  gate cuts            astra@max    (+0.3 for 41% more = 2.0/decade)
+
+simple    luna@low → luna@medium → luna@none → luna@high → luna@xhigh
+normal    glm-5.3-flash → luna@low → luna@medium → luna@none → luna@high → …
+complex   astra@xhigh → astra@high → astra@medium → sol@max → mimo
+          → astra@low → sol@xhigh → …
 ```
 
-`complex` is capability-monotone: 42.1, 38.0, 37.3, 34.6, 34.2, 32.1.
+Three distinct leads — cheap, balanced, strong — where the previous rules gave
+`simple` and `normal` the same one.
 
-The finding worth acting on is that **four of terra's six rungs are dead
-weight**: `luna@max` (37.3, $0.178) beats `terra@high` (34.2, $0.338) on both
-axes, and `terra@none`, `terra@low` and `terra@medium` are dominated likewise.
-The saved config ranks terra above luna in `complex` on the assumption that
-terra is the stronger family, and across most of its ladder that is false.
+`astra@max` is cut by the gate on **both** axes, for different reasons: on
+intelligence it buys +0.3 for 41% more, and on agentic it buys +0.1 for 12.9x
+more. That a single rung is independently rejected by two metrics is the
+clearest evidence the gate is measuring something real.
+
+The other finding is about `terra`: `luna@max` (agentic 42.1, $0.1783) beats
+`terra@high` (36.7, $0.3379) on both axes, and `terra@none`, `terra@low` and
+`terra@medium` are dominated likewise. **Four of terra's six rungs are dead
+weight**, while the saved config ranks terra above luna in `complex` on the
+assumption that terra is the stronger family.
 
 ### Why the frontier, and why not a ratio
 
@@ -282,9 +352,10 @@ unrepresentable, and the proof above means it needs no machinery to enforce.
 - Stale catalog: still ranks; `doctor` reports the age.
 - A model the catalog does not score: cannot be ranked, so it goes last as a
   fallback rather than vanishing.
-- **Fewer than three frontier points**: no knee is computed, and `complex`
-  falls back to plain capability order over everything. Kneedle needs a chord
-  to measure against, and two points are a chord.
+- **Fewer than three frontier points**: no knee is computed. `normal` falls
+  back to plain value order and `complex` to plain capability order over
+  everything. Kneedle needs a chord to measure against, and two points *are*
+  the chord, so every point sits on it.
 - **A zero cost per task** is treated as unscored rather than as free. Six
   models in the catalog report `0`, which makes `I/C` infinite and would put
   a model scoring 3.8 ahead of everything. Missing data is the likelier
