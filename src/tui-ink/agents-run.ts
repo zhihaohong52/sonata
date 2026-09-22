@@ -2,6 +2,7 @@ import React from 'react';
 import { render } from 'ink';
 import { AgentsApp, type Tiers } from './agents-app.js';
 import { Ground, ThemeProvider } from './theme-context.js';
+import { onAltScreen } from './alt-screen.js';
 import type { CandidateFacts } from '../catalog.js';
 import type { SonataConfig, TierLists } from '../config.js';
 
@@ -19,6 +20,7 @@ export async function runAgentsTui(input: {
   factsFor?: (candidate: string, tier: keyof TierLists) => CandidateFacts;
 }): Promise<Tiers | undefined> {
   let outcome: Tiers | undefined;
+  return onAltScreen(async () => {
   // Themed and grounded like the shell, because this renders the same
   // component the shell does: a screen that looked different depending on
   // which entry point opened it would be two designs wearing one name.
@@ -39,4 +41,5 @@ export async function runAgentsTui(input: {
   ));
   await instance.waitUntilExit();
   return outcome;
+  });
 }

@@ -37,7 +37,7 @@ export function ModelsScreen({ cwd, home }: { cwd: string; home: string }): Reac
         return (
           <Text key={row.key}>
             <Text color={out ? palette.MID : palette.MUTED}>{(out ? STATE.held.mark : STATE.live.mark).padEnd(4)}</Text>
-            <Text color={out ? palette.MID : undefined}>{row.key.padEnd(width + 2)}</Text>
+            <Text color={out ? palette.MID : palette.TEXT}>{row.key.padEnd(width + 2)}</Text>
             <Text color={palette.MUTED}>{fit(`${row.route}  ${summariseTiers(row.tiers)}`, rest)}</Text>
           </Text>
         );

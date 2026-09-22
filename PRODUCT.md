@@ -11,8 +11,8 @@ Impeccable's schema offers `web | ios | android | adaptive`. None applies.
 Sonata is a CLI whose interface is Ink — React reconciled onto a character
 grid. Recorded as `terminal` deliberately rather than mislabelled `web`,
 which would invite assumptions that cannot hold here: no CSS, no viewport, no
-pointer, no fonts of our choosing, and a background colour that belongs to the
-user rather than to us.
+pointer, no fonts of our choosing, and a colour space that is whatever the
+terminal emulator supports.
 -->
 
 ## Users
@@ -84,8 +84,17 @@ argument would silently defeat the routing.
 
 **Hard constraints, all four confirmed:**
 
-1. **Any terminal theme.** Never set a background. Colour must be legible on
-   light and dark, and meaning must survive its absence.
+1. **Any terminal theme.** The app paints its own ground and names its own
+   foreground, as an explicit pair per theme, so light and dark are two pages
+   rather than two sets of ink. Meaning must still survive colour's absence.
+
+   <!-- Reversed 2026-09-23, from "never set a background". That rule made a
+   light theme structurally impossible: with no ground of its own the app
+   could only darken the ink on a still-dark terminal, and the selected row —
+   a named near-white band under an inherited foreground — disappeared
+   outright. Measured, then fixed by giving each palette a BG/TEXT pair and
+   painting the page. The surviving half of the original constraint is the
+   half that was right: colour is never the only carrier. -->
 2. **SSH and tmux.** No truecolor assumption, no mouse. Degrades to 16 colours
    and keyboard only.
 3. **Narrow widths.** Usable in a split pane, not only full width. Columns

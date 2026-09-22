@@ -34,7 +34,7 @@ export function ProvidersScreen({ cwd, home }: { cwd: string; home: string }): R
         return (
           <Text key={row.gateway}>
             <Text color={idle ? palette.MID : palette.MUTED}>{(idle ? STATE.held.mark : STATE.live.mark).padEnd(4)}</Text>
-            <Text color={idle ? palette.MID : undefined}>{row.gateway.padEnd(width + 2)}</Text>
+            <Text color={idle ? palette.MID : palette.TEXT}>{row.gateway.padEnd(width + 2)}</Text>
             <Text color={palette.MUTED}>
               {fit(`${row.auth}  ${row.transport}${row.models.length === 0 ? '  no models' : `  ${row.models.join(', ')}`}`, rest)}
             </Text>

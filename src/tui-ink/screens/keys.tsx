@@ -45,7 +45,7 @@ export function KeysScreen({ cwd, home }: { cwd: string; home: string }): React.
         return (
           <Text key={row.gateway}>
             <Text color={none ? palette.HIGH : palette.MUTED}>{(none ? STATE.cooled.mark : STATE.live.mark).padEnd(4)}</Text>
-            <Text color={none ? palette.MID : undefined}>{row.gateway.padEnd(width + 2)}</Text>
+            <Text color={none ? palette.MID : palette.TEXT}>{row.gateway.padEnd(width + 2)}</Text>
             <Text color={palette.MUTED}>{fit(row.source, rest)}</Text>
           </Text>
         );

@@ -13,6 +13,7 @@ import { ActionsScreen } from './screens/actions.js';
 import { StatusScreen } from './screens/status.js';
 import { InitScreen } from './screens/init.js';
 import { Menu, moveCursor, type MenuItem } from './components/menu.js';
+import { onAltScreen } from './alt-screen.js';
 import { Ground, ThemeProvider, useTheme } from './theme-context.js';
 
 /**
@@ -48,7 +49,7 @@ const MENU: ReadonlyArray<MenuItem<Step>> = [
  * with no error, because there is no error. That is what once made every
  * prompt after the wizard die instantly. Every confirmation is a screen.
  */
-function ConfigTui({ cwd, home, start }: { cwd: string; home: string; start?: Step }): React.ReactElement {
+function ConfigTui({ cwd, home, start, onKeep }: { cwd: string; home: string; start?: Step; onKeep?: (lines: string[]) => void }): React.ReactElement {
   const { exit } = useApp();
   // `checking` always runs first: every screen is read against a machine the
   // health check has already described, and a deep link that skipped it would
@@ -123,7 +124,7 @@ function ConfigTui({ cwd, home, start }: { cwd: string; home: string; start?: St
   // app is drawn against, and the tier-routing warning that may have been the
   // reason for running it is answered by re-running doctor, not by returning
   // to the stale result that prompted it.
-  if (step === 'init') return <InitScreen cwd={cwd} home={home} onDone={() => setStep('checking')} />;
+  if (step === 'init') return <InitScreen cwd={cwd} home={home} onKeep={onKeep} onDone={() => setStep('checking')} />;
   return (
     <Box flexDirection="column">
       <OverviewScreen checks={checks} items={MENU} cursor={cursor} />
@@ -140,11 +141,21 @@ export async function runConfigTui(opts: { cwd: string; home?: string; start?: S
   // and `loadConfig` both demand one, and threading an optional down would put
   // the same `?? homedir()` in each screen.
   const home = opts.home ?? homedir();
-  const instance = render(
-    <ThemeProvider>
-      <Ground><ConfigTui cwd={opts.cwd} home={home} start={opts.start} /></Ground>
-    </ThemeProvider>,
-  );
-  await instance.waitUntilExit();
+  // What the user should still have after the screen is gone. The alternate
+  // buffer is discarded by definition, so anything worth keeping has to be
+  // printed to the real shell once it is restored — `sonata init`'s closing
+  // lines are the case that matters, since they name the next command to run.
+  const keep: string[] = [];
+  await onAltScreen(async () => {
+    const instance = render(
+      <ThemeProvider>
+        <Ground>
+          <ConfigTui cwd={opts.cwd} home={home} start={opts.start} onKeep={(lines) => keep.splice(0, keep.length, ...lines)} />
+        </Ground>
+      </ThemeProvider>,
+    );
+    await instance.waitUntilExit();
+  });
+  for (const line of keep) console.log(line);
   return 0;
 }

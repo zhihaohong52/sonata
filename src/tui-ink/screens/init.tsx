@@ -70,7 +70,13 @@ export function ConfirmScreen({ question, onAnswer }: { question: string; onAnsw
  * palette and outside the layout. The lines become the done screen, which is
  * where they were always headed.
  */
-export function InitScreen({ cwd, home, onDone }: { cwd: string; home: string; onDone: () => void }): React.ReactElement {
+export function InitScreen({ cwd, home, onDone, onKeep }: {
+  cwd: string;
+  home: string;
+  onDone: () => void;
+  /** Lines to print to the real shell once the alternate buffer is gone. */
+  onKeep?: (lines: string[]) => void;
+}): React.ReactElement {
   const palette = usePalette();
   const [pending, setPending] = useState<Pending>();
   const [output, setOutput] = useState<string[]>([]);
@@ -99,7 +105,13 @@ export function InitScreen({ cwd, home, onDone }: { cwd: string; home: string; o
         }),
       },
     })
-      .then(() => { setOutput(lines); setFinished(true); })
+      .then(() => {
+        setOutput(lines);
+        setFinished(true);
+        // The closing lines name what to do next (`/reload-plugins`, `sonata
+        // code`), and the screen they are on is discarded when the app exits.
+        onKeep?.(lines.filter((line) => line.trim() !== ''));
+      })
       .catch((cause: unknown) => {
         // Rendered, not thrown. A throw here unmounts the shell and takes the
         // reason with it — and `cmdInit` writes a log precisely because the

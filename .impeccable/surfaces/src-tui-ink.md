@@ -17,9 +17,11 @@ task or finding out why one failed.
 foreign model. Built for its author, but strangers are the goal — someone who
 found the package on npm and must reach a working routed agent alone.
 
-**Constraints that bind every screen:** never own the background; degrade to
-16 colours and keyboard only; readable in a split pane; never block in a hook.
-Colour is never the sole carrier of meaning.
+**Constraints that bind every screen:** own the ground and the foreground as
+an explicit pair (reversed 2026-09-23 from "never own the background", which
+made a light theme impossible — see PRODUCT.md); degrade to 16 colours and
+keyboard only; readable in a split pane; never block in a hook. Colour is
+never the sole carrier of meaning.
 
 **Unresolved:** whether `sonata tui`'s dashboard shares the board grammar or
 earns a second composition. Decide when that surface is built, not before.
