@@ -26,7 +26,8 @@ import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove } from './commands
 import { cmdServe, cmdRestart, startServeDaemon, isSonataRouter, sonataRouterReady, sonataRouterHasUi } from './commands/serve.js';
 import { routerPorts } from './commands/ports.js';
 import { cmdCode } from './commands/code.js';
-import { recentRoutes } from './commands/status.js';
+import { projectTenant, recentRoutes, scopeRows } from './commands/status.js';
+import { localTime } from './tui-ink/screens/status-poll.js';
 import { summarizeRuns } from './commands/runs.js';
 import { cmdRoute, cmdRouteSession, cmdRouteSettle, cmdRouteSubagent, type RouteAction } from './commands/route.js';
 import { cmdCatalogUpdate, validateAaKey } from './commands/catalog.js';
@@ -64,7 +65,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata usage     report native-path token and cost usage from the ledger
                    [--since 7d] [--by model|role|tier|effort|gateway|session|project]
                    [--project <dir>] [--session <id>] [--json]
-  sonata status    router health and the last hour of routes
+  sonata status    router health and this project's last hour of routes (--global: every project)
   sonata runs      list every run, with state and whether it wrote a report
 
   init flags (skip the prompts):
@@ -153,7 +154,11 @@ export async function main(argv: string[]): Promise<number> {
       : command === 'agents' ? 'tiers' as const
       : command === 'init' ? 'init' as const
       : undefined;
-    return runConfigTui({ cwd: process.cwd(), start });
+    return runConfigTui({
+      cwd: process.cwd(),
+      start,
+      statusGlobal: command === 'status' && rest.includes('--global'),
+    });
   }
 
   // `tui` is named in USAGE, so it must not reach the unknown-command handler
@@ -651,6 +656,7 @@ export async function main(argv: string[]): Promise<number> {
       options: {
         session: { type: 'string' },
         all: { type: 'boolean', default: false },
+        global: { type: 'boolean', default: false },
       },
     });
     if (values.session !== undefined && values.all) {
@@ -673,9 +679,22 @@ export async function main(argv: string[]): Promise<number> {
       if (up && await sonataRouterHasUi(port)) console.log(`sonata UI: http://localhost:${port}/`);
     }
 
-    // The last hour of routes by default, narrowed to the most recent session
-    // — unless --all asks for every session or --session names one specifically.
-    let rows = readRows(home, Date.now() - 3_600_000);
+    // Two independent axes. `--global` selects along PROJECT: without it only
+    // this project's rows are read, resolved the way the router resolves a
+    // tenant. `--all` / `--session` select along SESSION, within whatever the
+    // project axis left — so "the most recent session" now means the most
+    // recent one in THIS project, where it used to be computed across every
+    // project on the machine and could print another repository's session.
+    const tenant = values.global ? undefined : projectTenant(process.cwd(), home);
+    if (!values.global && tenant === undefined) {
+      console.log('no sonata.toml resolves here, so nothing is attributed to this project');
+      console.log('`sonata status --global` shows every project\'s routes');
+      return 0;
+    }
+    let rows = scopeRows(
+      readRows(home, Date.now() - 3_600_000),
+      values.global ? { global: true } : { global: false, tenant },
+    );
     if (values.all) {
       // keep every session's rows
     } else if (values.session !== undefined) {
@@ -697,12 +716,17 @@ export async function main(argv: string[]): Promise<number> {
     }
 
     const recent = recentRoutes(rows, 10);
+    console.log(values.global ? 'routes: every project' : `routes: this project (${process.cwd()})`);
     if (recent.length === 0) {
-      console.log('no routes in the last hour');
+      console.log(values.global
+        ? 'no routes in the last hour'
+        : 'no routes from this project in the last hour — `--global` shows every project');
     } else {
       for (const line of recent) {
-        const served = line.served ?? '(none — all candidates failed)';
-        console.log(`${line.status}  ${line.alias.padEnd(24)} -> ${served.padEnd(20)} ${line.input} in / ${line.output} out`);
+        const served = `${line.served ?? '(none — all candidates failed)'}${line.effort !== undefined ? `@${line.effort}` : ''}`;
+        const when = localTime(line.ts);
+        const via = line.gateway !== undefined ? ` via ${line.gateway}` : '';
+        console.log(`${when}  ${line.status}  ${line.alias.padEnd(24)} -> ${served.padEnd(24)}${via.padEnd(16)} ${line.input} in / ${line.output} out`);
         if (line.attempts.length > 0) {
           for (const a of line.attempts) console.log(`    attempt ${a.key}: ${a.status}`);
         }

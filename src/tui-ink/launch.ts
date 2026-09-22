@@ -30,6 +30,11 @@ export function shouldLaunchTui(
   // just `--yes`: `--providers` without `--yes` is still a caller telling init
   // what to do rather than asking to be asked.
   if (command === 'init') return !rest.some((arg) => SCRIPTED_INIT_FLAGS.has(arg.split('=')[0]!));
+  // The status screen has a PROJECT axis (`--global`, or `g` in place) but no
+  // SESSION axis. Opening it for `--session <id>` or `--all` would silently
+  // drop the selection the caller made and show something else under the
+  // same name, so those keep the plain output that honours them.
+  if (command === 'status') return !rest.some((arg) => SESSION_FLAGS.has(arg.split('=')[0]!));
   return command === undefined || TUI_COMMANDS.has(command);
 }
 
@@ -42,6 +47,9 @@ export function shouldLaunchTui(
  * still open one. A blanket `startsWith('--')` would have sent it down the
  * scripted path, where it silently re-ranks with nobody watching.
  */
+/** `sonata status` flags the screen cannot honour; see `shouldLaunchTui`. */
+const SESSION_FLAGS: ReadonlySet<string> = new Set(['--session', '--all']);
+
 const SCRIPTED_INIT_FLAGS: ReadonlySet<string> = new Set([
   '--yes', '-y', '--providers', '--models', '--roles',
   '--config-scope', '--scope', '--routing', '--guidance', '--prune',

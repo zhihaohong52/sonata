@@ -37,6 +37,19 @@ describe('shouldLaunchTui', () => {
     expect(shouldLaunchTui('agents', true, true)).toBe(true);
   });
 
+  it('opens status for --global, which the screen honours', () => {
+    expect(shouldLaunchTui('status', true, true, ['--global'])).toBe(true);
+  });
+
+  it('keeps status plain for a session selection the screen cannot honour', () => {
+    // The screen has a project axis and no session axis. Opening it for
+    // `--session <id>` would silently drop the selection and show something
+    // else under the same name.
+    expect(shouldLaunchTui('status', true, true, ['--session', 'abc'])).toBe(false);
+    expect(shouldLaunchTui('status', true, true, ['--all'])).toBe(false);
+    expect(shouldLaunchTui('status', true, true, ['--session=abc'])).toBe(false);
+  });
+
   it('keeps those same commands printing when either stream is not a TTY', () => {
     // The contract, not a courtesy: `sonata status` is read by scripts, and
     // both run inside SessionStart hooks where nothing can answer a screen.

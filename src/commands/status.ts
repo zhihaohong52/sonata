@@ -7,6 +7,50 @@
  * at the other, because the names are close enough to confuse.
  */
 import type { LedgerRow } from '../ledger.js';
+import { configPath } from '../config.js';
+import { canonicalConfigPath, tenantId } from '../native/tenants.js';
+
+/**
+ * The tenant a directory belongs to, resolved exactly as the router resolves
+ * one: the config `configPath` picks for it, canonicalised, hashed.
+ *
+ * Not a bare `cwd` comparison, which is what the TUI used and what the spec
+ * forbids. A linked worktree borrows its main checkout's config and shares
+ * its tenant id, so it must see that checkout's rows; a symlinked path is the
+ * same project under another spelling. Both fall out of using the router's own
+ * identity, and neither survives a string compare.
+ *
+ * `undefined` when no config resolves at all. Nothing can be attributed to
+ * "this project" then — the router answers such a request with a 400 and
+ * writes no row — so the caller says so rather than showing a list.
+ */
+export function projectTenant(cwd: string, home: string): string | undefined {
+  const path = configPath(cwd, home);
+  return path === null ? undefined : tenantId(canonicalConfigPath(path));
+}
+
+/**
+ * The rows `sonata status` is about: this project's, or every project's.
+ *
+ * The ledger is machine-wide and until this existed nothing filtered it by
+ * project. The CLI narrowed to "the most recent session" computed across
+ * every tenant, so inside one repository it could print another's session in
+ * full; the TUI compared `project === cwd` and let every *unattributed* row
+ * through as well. Measured on one machine's day: 5167 rows from one project
+ * and 857 from the repository the command was actually run in.
+ *
+ * Scoped on `tenant`, never on `project`. `project` is a cwd string, and two
+ * spellings of one repository produce two of them — which is exactly why the
+ * ledger grew a `tenant` field for the budget to sum on.
+ */
+export function scopeRows(
+  rows: readonly LedgerRow[],
+  scope: { global: true } | { global: false; tenant: string | undefined },
+): LedgerRow[] {
+  if (scope.global) return [...rows];
+  if (scope.tenant === undefined) return [];
+  return rows.filter((row) => row.tenant === scope.tenant);
+}
 
 export interface RouteLine {
   alias: string;

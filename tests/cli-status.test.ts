@@ -1,4 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { canonicalConfigPath, tenantId } from '../src/native/tenants.js';
 import { main } from '../src/cli.js';
 import { isSonataRouter, sonataRouterHasUi } from '../src/commands/serve.js';
 import { readRows } from '../src/ledger.js';
@@ -32,15 +36,34 @@ const readRowsMock = vi.mocked(readRows);
 const summarizeRunsMock = vi.mocked(summarizeRuns);
 const cmdRouteMock = vi.mocked(cmdRoute);
 
+/**
+ * A project of our own, so "this project" is known on any machine.
+ *
+ * `sonata status` now scopes to the tenant the working directory resolves to.
+ * Run from the repository, that depends on whether this checkout happens to
+ * have a `sonata.toml` (it is untracked — CI has none) and on the machine
+ * config of whoever runs the suite. A temp directory with its own config
+ * resolves to one fixed tenant everywhere.
+ */
+const PROJECT = mkdtempSync(join(tmpdir(), 'status-project-'));
+writeFileSync(join(PROJECT, 'sonata.toml'), 'schema_version = 1\n');
+const TENANT = tenantId(canonicalConfigPath(join(PROJECT, 'sonata.toml')));
+const OTHER = 'another-proj';
+
 function cell(over: Record<string, unknown> = {}) {
   return {
     ts: '2026-08-27T12:00:00.000Z', alias: 'sonata-code-simple', key: 'flash',
     status: 200, tokens: { input: 100, output: 10 }, attempts: [], session: 'sess-a',
+    tenant: TENANT,
     ...over,
   } as never;
 }
 
 describe('sonata status CLI wiring', () => {
+  beforeEach(() => {
+    vi.spyOn(process, 'cwd').mockReturnValue(PROJECT);
+  });
+
   afterEach(() => {
     // `restoreAllMocks` restores `vi.spyOn` spies only (vitest 3 narrowed it),
     // so the module mocks above keep their call history without this — which a
@@ -155,6 +178,101 @@ describe('sonata status CLI wiring', () => {
     expect(all).toContain('router: down');
     expect(all).toContain('flash');
     expect(isSonataRouterMock).toHaveBeenCalledWith(4100);
+  });
+
+  describe('project scoping', () => {
+    const quiet = () => {
+      routerPortsMock.mockReturnValue({ router: 4100, litellm: 4000 });
+      isSonataRouterMock.mockResolvedValue(false);
+    };
+    const output = async (args: string[]) => {
+      const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await main(['status', ...args]);
+      return spy.mock.calls.map(([l]) => String(l)).join('\n');
+    };
+
+    it('shows only this project by default', async () => {
+      quiet();
+      readRowsMock.mockReturnValue([
+        cell({ key: 'mine' }),
+        cell({ key: 'theirs', tenant: OTHER }),
+      ] as never);
+      const all = await output(['--all']);
+      expect(all).toContain('mine');
+      expect(all).not.toContain('theirs');
+      expect(all).toContain('routes: this project');
+    });
+
+    it('computes the most recent session within this project, not across the machine', async () => {
+      // The leak this fixes. Another project's session is the newest on the
+      // machine; the old default picked it and printed it in full from inside
+      // a repository it had nothing to do with.
+      quiet();
+      readRowsMock.mockReturnValue([
+        cell({ ts: '2026-08-27T12:00:00.000Z', session: 'mine-a', key: 'mine' }),
+        cell({ ts: '2026-08-27T15:00:00.000Z', session: 'theirs-a', key: 'theirs', tenant: OTHER }),
+      ] as never);
+      const all = await output([]);
+      expect(all).toContain('mine');
+      expect(all).not.toContain('theirs');
+    });
+
+    it('drops rows with no tenant rather than counting them as this project', async () => {
+      // The TUI used to let every unattributed row through, which is how its
+      // board filled with another context's passthrough traffic.
+      quiet();
+      readRowsMock.mockReturnValue([
+        cell({ key: 'mine' }),
+        cell({ key: 'unattributed', tenant: undefined }),
+      ] as never);
+      const all = await output(['--all']);
+      expect(all).not.toContain('unattributed');
+    });
+
+    it('--global shows every project', async () => {
+      quiet();
+      readRowsMock.mockReturnValue([
+        cell({ key: 'mine' }),
+        cell({ key: 'theirs', tenant: OTHER }),
+      ] as never);
+      const all = await output(['--global', '--all']);
+      expect(all).toContain('mine');
+      expect(all).toContain('theirs');
+      expect(all).toContain('routes: every project');
+    });
+
+    it('treats --global and --session as independent axes', async () => {
+      // `--global` picks along PROJECT, `--session` along SESSION. They combine
+      // rather than conflict — the spec is explicit that `--all` means every
+      // session, not every project, so the two must never be read as synonyms.
+      quiet();
+      readRowsMock.mockReturnValue([
+        cell({ session: 's1', key: 'mine' }),
+        cell({ session: 's2', key: 'theirs', tenant: OTHER }),
+      ] as never);
+      const all = await output(['--global', '--session', 's2']);
+      expect(all).toContain('theirs');
+      expect(all).not.toContain('mine');
+    });
+
+    it('says how to widen the view when this project has nothing', async () => {
+      quiet();
+      readRowsMock.mockReturnValue([cell({ key: 'theirs', tenant: OTHER })] as never);
+      const all = await output([]);
+      expect(all).toContain('no routes from this project');
+      expect(all).toContain('--global');
+    });
+
+    it('prints the provider, effort level and a local timestamp', async () => {
+      quiet();
+      readRowsMock.mockReturnValue([
+        cell({ key: 'gpt-5.6-terra', effort: 'max', gateway: 'codex', ts: '2026-08-27T12:00:00.000Z' }),
+      ] as never);
+      const all = await output(['--all']);
+      expect(all).toContain('gpt-5.6-terra@max');
+      expect(all).toContain('via codex');
+      expect(all).toMatch(/\d{2}:\d{2}:\d{2}/);
+    });
   });
 
   it('reports an unparseable machine config without reading the router', async () => {

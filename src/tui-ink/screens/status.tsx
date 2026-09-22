@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text, useInput } from 'ink';
 import { readRows } from '../../ledger.js';
-import { recentRoutes, type RouteLine } from '../../commands/status.js';
+import { projectTenant, recentRoutes, scopeRows, type RouteLine } from '../../commands/status.js';
 import { routerPorts } from '../../commands/ports.js';
 import { isSonataRouter, serveHealthUrl } from '../../commands/serve.js';
 import { STATE, columns, usableWidth } from '../theme.js';
@@ -20,7 +20,19 @@ import { agoLabel, localTime, routesThatFit, statusColumns, STATUS_POLL_MS } fro
  * Scoped to the project, like `sonata status` itself: the ledger is
  * machine-wide and a reader inside one project is not asking about another.
  */
-export function StatusScreen({ cwd, home }: { cwd: string; home: string }): React.ReactElement {
+export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
+  cwd: string;
+  home: string;
+  /** Start on every project's routes rather than this one's; `sonata status --global`. */
+  global?: boolean;
+}): React.ReactElement {
+  // Toggled in place with `g`, so widening the view is one keystroke rather
+  // than quitting and re-running with a flag.
+  const [global, setGlobal] = useState(initialGlobal);
+  // Resolved once: the tenant a directory maps to does not change while the
+  // screen is open, and resolving it walks the filesystem.
+  const [tenant] = useState(() => projectTenant(cwd, home));
+  useInput((input) => { if (input === 'g') setGlobal((g) => !g); });
   const [up, setUp] = useState<boolean | undefined>(undefined);
   const [routes, setRoutes] = useState<RouteLine[] | undefined>(undefined);
   const [at, setAt] = useState<number | undefined>(undefined);
@@ -42,8 +54,14 @@ export function StatusScreen({ cwd, home }: { cwd: string; home: string }): Reac
       if (cancelled) return;
       setUp(alive);
       try {
-        const rows = readRows(home, Date.now() - 3_600_000)
-          .filter((row) => row.project === undefined || row.project === cwd);
+        // The router's own identity for this directory, not `project === cwd`.
+        // The old compare failed from a subdirectory and a worktree, and it let
+        // every UNATTRIBUTED row through too — which is why this board was
+        // full of another context's passthrough traffic.
+        const rows = scopeRows(
+          readRows(home, Date.now() - 3_600_000),
+          global ? { global: true } : { global: false, tenant },
+        );
         setRoutes(recentRoutes(rows, 12));
       } catch {
         // An unreadable ledger is not a reason to show nothing: the router's
@@ -64,7 +82,7 @@ export function StatusScreen({ cwd, home }: { cwd: string; home: string }): Reac
     // fresh. Ticking the clock separately makes a stall visible.
     const clock = setInterval(() => { setNow(Date.now()); }, 1000);
     return () => { cancelled = true; clearInterval(poll); clearInterval(clock); };
-  }, [port, home, cwd]);
+  }, [port, home, cwd, global, tenant]);
 
   const usable = usableWidth();
   const col = columns(usable);
@@ -105,15 +123,34 @@ export function StatusScreen({ cwd, home }: { cwd: string; home: string }): Reac
         </Box>
       )}
 
-      <Box marginTop={1}><Text bold color={palette.TEXT}>routes, last hour</Text></Box>
+      <Box marginTop={1}>
+        <Text bold color={palette.TEXT}>routes, last hour</Text>
+        {/* Which project axis is on screen, always stated: the two views look
+            identical row by row, and mistaking one for the other is the bug
+            this scoping exists to fix. */}
+        <Text color={palette.MUTED}>{global ? '   every project' : '   this project'}</Text>
+      </Box>
       <Text color={palette.RULE}>{'─'.repeat(ruleCells)}</Text>
       {routes === undefined && <Text color={palette.MUTED}>reading the ledger…</Text>}
       {routes !== undefined && routes.length === 0 && (
         // An empty screen is an invitation, not a void: say what would put
         // something here rather than printing "none".
         <Box flexDirection="column">
-          <Text color={palette.MUTED}>Nothing routed from this project in the last hour.</Text>
-          <Text color={palette.MUTED}>Dispatch a tier agent and it appears here.</Text>
+          {!global && tenant === undefined ? (
+            <>
+              <Text color={palette.MUTED}>No sonata.toml resolves here, so nothing is attributed to this project.</Text>
+              <Text color={palette.MUTED}>Press g for every project's routes.</Text>
+            </>
+          ) : (
+            <>
+              <Text color={palette.MUTED}>
+                {global ? 'Nothing routed in the last hour.' : 'Nothing routed from this project in the last hour.'}
+              </Text>
+              <Text color={palette.MUTED}>
+                {global ? 'Dispatch a tier agent and it appears here.' : 'Press g for every project, or dispatch a tier agent.'}
+              </Text>
+            </>
+          )}
         </Box>
       )}
       {visible.map((line, i) => {
@@ -162,7 +199,7 @@ export function StatusScreen({ cwd, home }: { cwd: string; home: string }): Reac
         <Text color={palette.MUTED}>{`… ${routes.length - visible.length} more, not shown`}</Text>
       )}
       <Box marginTop={1}>
-        <Text color={palette.MUTED}>esc back</Text>
+        <Text color={palette.MUTED}>{`g ${global ? 'this project' : 'every project'}   esc back`}</Text>
       </Box>
     </Box>
   );
