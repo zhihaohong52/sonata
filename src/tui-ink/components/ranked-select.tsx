@@ -125,16 +125,17 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
 
   return (
     <Box flexDirection="column">
-      <Box>
+      {/* One truncating line, as every header in the shell now is: sibling
+          Texts in a row Box each shrink and wrap inside their own cell, which
+          split this head into a clipped title and a clipped count side by
+          side at 60 columns. The title leads: a count first would put a
+          numeral at column 0, where every ranked row below carries its rank,
+          and it would read as one. On a narrow terminal the count is what gets
+          cut, which the numerals down the left edge make up for. */}
+      <Text wrap="truncate-end">
         <Text bold color={palette.TEXT}>{title}</Text>
-        {/* The count sits right of the head, where every other screen puts
-            its note: a ranking screen's one live fact is how many of the
-            offered models are actually in the list, and reading it off the
-            numerals means counting them. */}
-        <Text color={palette.MUTED}>
-          {`   ${state.ranked.length} of ${items.length} ranked`}
-        </Text>
-      </Box>
+        <Text color={palette.MUTED}>{`   ${state.ranked.length} of ${items.length} ranked`}</Text>
+      </Text>
       {/* Column headers. The board's rows are dense and every column is a
           different quantity; without this the bar, the number and the dollar
           figure are three unlabelled things in a row. Drawn muted and above

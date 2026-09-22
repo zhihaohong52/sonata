@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { homedir } from 'node:os';
-import { Box, Text, render, useApp, useInput } from 'ink';
+import { Box, Text, render, useApp, useInput, useWindowSize } from 'ink';
 import { cmdDoctor, type Check } from '../commands/doctor.js';
 import { afterCheck, nextStep, type Step } from './steps.js';
 import { OverviewScreen } from './screens/overview.js';
@@ -58,6 +58,12 @@ function ConfigTui({ cwd, home, start, statusGlobal, onKeep }: { cwd: string; ho
   const [checks, setChecks] = useState<Check[]>([]);
   const [cursor, setCursor] = useState(0);
   const { toggle, name: themeName, palette } = useTheme();
+  // Subscribed only to be re-rendered by a resize. Every screen sizes itself
+  // from the terminal while rendering, and `Ground` re-rendering is not
+  // enough to reach them — its children element is the same object, so React
+  // stops there. Re-rendering the root hands every screen a fresh render, and
+  // with it the new width and height.
+  useWindowSize();
   // Whether the health check has already run once. A deep link is a boot
   // destination, not a standing one — see `afterCheck`.
   const booted = useRef(false);

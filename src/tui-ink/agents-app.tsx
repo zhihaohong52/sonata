@@ -11,7 +11,7 @@
  * screen cannot promise a file `sync` will not write.
  */
 import React, { useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, useWindowSize } from 'ink';
 import { RankedSelect } from './components/ranked-select.js';
 import { TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
 import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../extended-context.js';
@@ -95,6 +95,10 @@ export function metricLabel(tier: keyof TierLists): string {
 export function AgentsApp(props: AgentsAppProps): React.ReactElement {
   const { config, items, factsFor, onDone } = props;
   const palette = usePalette();
+  // Re-rendered on resize so the list and the ranking board recompute their
+  // widths; see `ConfigTui`, which does the same for the shell. This is the
+  // root when `sonata agents` renders on its own.
+  useWindowSize();
   const [tiers, setTiers] = useState<Tiers>(props.initialTiers);
   const [cursor, setCursor] = useState(0);
   const [editing, setEditing] = useState<TierRow | undefined>(undefined);

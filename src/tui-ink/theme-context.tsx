@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useMemo, useState } from 'react';
-import { Box } from 'ink';
+import { Box, useWindowSize } from 'ink';
 import { paletteFor, resolveThemeName, usableWidth, type Palette, type ThemeName } from './theme.js';
 
 interface ThemeValue {
@@ -74,12 +74,20 @@ export function usePalette(): Palette {
  */
 export function Ground({ children }: { children: React.ReactNode }): React.ReactElement {
   const palette = usePalette();
+  // Subscribed, never read once. Ink re-lays-out its existing tree on a resize
+  // but does not re-run a component unless its state changes, so a size read
+  // from `process.stdout` during render stays at whatever it was when the
+  // ground was first drawn. Shrinking the terminal then left a page wider
+  // than the window: every line wrapped, the header scrolled off, and the
+  // screen read as blank — reported as exactly that. `useWindowSize`
+  // re-renders on every resize.
+  const { columns, rows } = useWindowSize();
   return (
     <Box
       flexDirection="column"
       backgroundColor={palette.BG}
-      width={usableWidth(process.stdout.columns ?? 80)}
-      minHeight={Math.max(1, (process.stdout.rows ?? 24) - 1)}
+      width={usableWidth(columns)}
+      minHeight={Math.max(1, rows - 1)}
     >
       {children}
     </Box>
