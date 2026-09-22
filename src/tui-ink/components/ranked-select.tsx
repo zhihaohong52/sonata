@@ -1,6 +1,6 @@
 import React, { useReducer } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
-import { rsInitial, rsOrder, rsReduce } from './ranked-select-state.js';
+import { dominatedRows, rsInitial, rsOrder, rsReduce } from './ranked-select-state.js';
 import { STATE, bar, band, columns, usableWidth } from '../theme.js';
 import type { CandidateFacts } from '../../catalog.js';
 import { usePalette } from '../theme-context.js';
@@ -103,6 +103,10 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
   const maxCapability = Math.max(...scored.map((f) => f.capability ?? 0), 0);
   const maxCost = Math.max(...scored.map((f) => f.costPerTask ?? 0), 0);
 
+  // Computed once per render over every row, not per row: dominance is a
+  // property of the whole screen.
+  const dominated = dominatedRows(items.map((item) => item.facts));
+
   const order = rsOrder(state, items.length);
 
   return (
@@ -126,9 +130,16 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
         const facts = item.facts;
 
         // State is a stroke first; colour only ever agrees with it.
+        // `held`, not `dominated`, for a row the user simply did not rank:
+        // `held` means "kept out by hand", which is exactly what an unranked
+        // row is. `dominated` is now reserved for rows the catalog actually
+        // says are beaten on both axes.
         const stateName = facts === undefined || facts.costPerTask === undefined
           ? 'unscored'
-          : isLead ? 'lead' : rank >= 0 ? 'live' : 'dominated';
+          : isLead ? 'lead'
+          : rank >= 0 ? 'live'
+          : dominated.has(index) ? 'dominated'
+          : 'held';
         const mark = STATE[stateName];
 
         const capFraction = maxCapability > 0 ? (facts?.capability ?? 0) / maxCapability : 0;

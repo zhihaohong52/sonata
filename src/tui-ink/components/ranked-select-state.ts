@@ -93,3 +93,41 @@ export function rsReduce(state: RsState, action: RsAction, itemCount: number): R
     }
   }
 }
+
+/** A row's measurements, as far as dominance cares. */
+export interface Measured { capability?: number; costPerTask?: number }
+
+/**
+ * Which rows are genuinely Pareto-dominated: something else is at least as
+ * capable and costs no more.
+ *
+ * Computed rather than assumed. The board used to label **every unranked row**
+ * `dominated`, whose stated meaning in `theme.ts` is "something better and
+ * cheaper exists, so this will never be chosen first" — a claim about the
+ * catalog that the component had never checked. It only knew the row was not
+ * in the user's list. Deselecting a perfectly good model still called it
+ * standby, and on a real screen the label happened to be true, which is worse
+ * than being obviously wrong: it reads as verified.
+ *
+ * Same class as the OAuth gateway reported as needing a credential it cannot
+ * have. A row that says something about the world has to have looked.
+ *
+ * Only rows carrying both measurements take part. An unscored row cannot
+ * dominate (nothing is known about it) and cannot be dominated (there is
+ * nothing to compare), which is why it has a state of its own.
+ */
+export function dominatedRows(rows: ReadonlyArray<Measured | undefined>): Set<number> {
+  const out = new Set<number>();
+  const scored = rows
+    .map((row, index) => ({ index, row }))
+    .filter((entry): entry is { index: number; row: Measured } =>
+      entry.row?.capability !== undefined && entry.row?.costPerTask !== undefined);
+  for (const a of scored) {
+    const beaten = scored.some((b) => b.index !== a.index
+      && b.row.capability! >= a.row.capability!
+      && b.row.costPerTask! <= a.row.costPerTask!
+      && (b.row.capability! > a.row.capability! || b.row.costPerTask! < a.row.costPerTask!));
+    if (beaten) out.add(a.index);
+  }
+  return out;
+}

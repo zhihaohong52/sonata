@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import React from 'react';
 import { render } from 'ink-testing-library';
 import { RankedSelect } from '../../src/tui-ink/components/ranked-select.js';
+import { dominatedRows } from '../../src/tui-ink/components/ranked-select-state.js';
 
 /** Lets Ink flush a render before the next keystroke is read. */
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
@@ -80,5 +81,43 @@ describe('RankedSelect', () => {
     // Highlight followed bravo up, so `[` reorders what was just picked.
     await ui.press('[');
     expect(ui.rows()).toEqual(['1 bravo', '2 charlie', '· alpha', '· delta']);
+  });
+});
+
+describe('dominatedRows', () => {
+  const row = (capability: number, costPerTask: number) => ({ capability, costPerTask });
+
+  it('marks a row beaten on both axes', () => {
+    // luna@none vs luna@low on a real catalog: cheaper AND more capable.
+    const out = dominatedRows([row(21.0, 0.0098), row(15.5, 0.0101)]);
+    expect([...out]).toEqual([1]);
+  });
+
+  it('does not mark a row that is merely unranked', () => {
+    // The bug this replaces: the board called EVERY unranked row `dominated`,
+    // whose stated meaning is "something better and cheaper exists". It had
+    // never checked. A row nothing beats is `held` — kept out by hand.
+    const out = dominatedRows([row(20, 0.10), row(40, 0.50)]);
+    expect(out.size).toBe(0);
+  });
+
+  it('does not mark a row that is dearer but more capable', () => {
+    expect(dominatedRows([row(30, 0.10), row(50, 0.90)]).size).toBe(0);
+  });
+
+  it('marks a tie on capability at a higher price', () => {
+    // Equal capability, strictly more money: nothing to gain by choosing it.
+    expect([...dominatedRows([row(30, 0.10), row(30, 0.20)])]).toEqual([1]);
+  });
+
+  it('leaves unscored rows out entirely, in both directions', () => {
+    // An unscored row cannot dominate (nothing is known) and cannot be
+    // dominated (there is nothing to compare) — it has its own state.
+    const out = dominatedRows([undefined, { capability: 5 }, row(50, 0.01), row(10, 0.90)]);
+    expect([...out]).toEqual([3]);
+  });
+
+  it('is empty for a single row', () => {
+    expect(dominatedRows([row(30, 0.10)]).size).toBe(0);
   });
 });

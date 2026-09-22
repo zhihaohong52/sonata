@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EFFORT_LEVELS, isEffort, joinCandidate, splitCandidate, type Effort } from './effort.js';
 import type { SonataConfig } from './config.js';
+import { frontierIndices, keptAfterGate, kneeIndex, type Point } from './frontier.js';
 
 export const AA_ATTRIBUTION =
   'Model rankings by Artificial Analysis — https://artificialanalysis.ai';
@@ -89,37 +90,26 @@ export function capabilityClass(index: number): number {
   return Math.round(index / AA_CAPABILITY_TIE_MARGIN);
 }
 
-/**
- * How far below the most capable candidate `complex` will go to pay less.
+/*
+ * `COMPLEX_COST_BAND` is deleted.
  *
- * NOT a wider `AA_CAPABILITY_TIE_MARGIN`, and the distinction is the whole
- * point of it being a separate constant. The tie margin is a claim about
- * *measurement*: a gap that small is benchmark noise, so ordering by it is
- * meaningless and cost may decide. This is a claim about *preference*: a gap
- * this size is real and measured, and it is still worth trading for money.
- * Folding the two together would make the code assert that a 7-point
- * intelligence difference is experimental error, which is false.
+ * It credited a rung with its family's best score so rungs within 7 points of
+ * their ladder's top competed on price instead of capability. It was the
+ * source of two defects in a day: the credit leaked across families, so
+ * `sol@high` (really 42.3) was compared as 47.0 and beat `mimo` at 46.3
+ * despite costing more, and on one real config it placed five strictly
+ * dominated candidates above `mimo`. Expressed pairwise it was also not
+ * transitive, producing a genuine 3-cycle that made the sort depend on input
+ * order.
  *
- * Within the band, the cheapest wins; outside it, capability wins outright.
- * So `complex` still refuses to drop to a genuinely weaker model — it just
- * declines to pay for the top of an effort ladder whose last rungs cost far
- * more than they add.
- *
- * Measured 2026-09-21 on one project's `gpt-6-astra` ladder, where the top
- * rung costs 4x the bottom for 15% more intelligence:
- *
- *   low     45.8  $0.8175      max      52.7  $3.2575
- *   medium  49.6  $1.5406      xhigh    52.4  $2.3088
- *   high    50.9  $1.7253
- *
- * At 7 the band admits `low` and the tier leads with it, 2.8x cheaper than
- * the `xhigh` it previously chose. The risk this trades against is the
- * `SIMPLE_CAPABILITY_FLOOR` lesson: a tier whose rule stops discriminating
- * collapses into a neighbour. It does not here — at 7, `complex` leads with
- * `astra@low` while `normal` leads with `luna@low`, a different model — but
- * that is the property to check before widening it further.
+ * The frontier replaces it and needs no machinery to enforce the property the
+ * band kept breaking: a dominated candidate cannot outrank what dominates it,
+ * because a dominator is both more capable and better value, so either sort
+ * key already places it first. What the band was *invented* for — declining to
+ * pay for the top of an effort ladder — is now `keptAfterGate`, which asks
+ * whether the rung's marginal return justifies its marginal cost rather than
+ * whether its score is close to its family's best.
  */
-export const COMPLEX_COST_BAND = 7;
 
 export interface CatalogEntry {
   capable: boolean;
@@ -816,10 +806,6 @@ export function proposeTiers(
   // avoiding a gateway costs preference rather than the depth a ranked list
   // exists to provide.
   const avoidance = (a: string, b: string) => Number(avoided.has(bareKey(a))) - Number(avoided.has(bareKey(b)));
-  // Complex work wants the most capable model, cost breaking ties — including
-  // a near-tie: a capability gap within AA_CAPABILITY_TIE_MARGIN is treated as
-  // noise rather than a real edge, so price decides it the same as an exact
-  // tie would. A real edge (bigger than the margin) still wins outright.
   // When capability and price both tie, the higher effort level leads. The
   // levels of one model are the case: AA prices a level-less row per 1M
   // tokens, so every level shares one price, and adjacent levels sit inside
@@ -831,61 +817,91 @@ export function proposeTiers(
     return effort === undefined ? -1 : EFFORT_LEVELS.indexOf(effort);
   };
   const byLevel = (a: string, b: string) => levelOf(b) - levelOf(a);
-  // The most capable candidate on offer, which anchors the cost band below.
-  // Computed over the whole candidate set rather than per comparison, so the
-  // band names one fixed reference and the comparator stays a total order —
-  // a band measured pairwise is not transitive and the sort result would
-  // depend on input order.
-  // Anchored PER MODEL, not across the whole candidate set. The band exists
-  // to decline the top of an effort ladder, which is a statement about one
-  // model's rungs — the same model, thinking harder, for more money. Applied
-  // globally it also says "prefer a cheaper, genuinely weaker MODEL", which
-  // is a different claim and not one `complex` should make: two models
-  // 2 points apart would rank by price, and the tier stops being about
-  // capability at all.
-  const familyBest = new Map<string, number>();
-  for (const candidate of candidates) {
-    const k = bareKey(candidate);
-    familyBest.set(k, Math.max(familyBest.get(k) ?? Number.NEGATIVE_INFINITY, rankReasoning(candidate).index));
-  }
+
+  const capable = (k: string): boolean => lookupModel(k, aa, providers, upstreamFor).capable;
+  const perTask = (k: string): number | undefined => scoreFor(k, aa, providers, upstreamFor)?.costPerTask;
+
   /**
-   * The score `complex` ranks a candidate on: its own, except that a rung
-   * inside its family's band is credited with the family's best.
+   * The frontier geometry for one metric.
    *
-   * Expressed as a SCALAR per candidate, not as a special case inside the
-   * comparator, and that is not a style choice. A comparator that asks
-   * "same family, and both in band?" is not transitive: on one real fixture
-   * it produced `deepseek > luna@xhigh > luna@max > deepseek`, a genuine
-   * 3-cycle, and a cyclic comparator makes the sort result depend on input
-   * order — so the tier silently differed run to run. Crediting the band
-   * up-front gives every candidate one number, which cannot cycle.
+   * Computed per tier rather than once, because the tiers measure different
+   * things — `capabilityOf` is throughput and `reasoningOf` is judgement, a
+   * split `catalog.ts` already makes for measured reasons — and bounding a
+   * value tier with a knee derived from a metric it does not rank on is the
+   * same unit-mixing error as comparing a per-task cost with a per-token one.
+   * They genuinely differ: on one real config the agentic knee is
+   * `glm-5.3-flash` and the intelligence knee is `mimo-v2.6-pro`.
    *
-   * What it says: rungs of one ladder within `COMPLEX_COST_BAND` of that
-   * ladder's top are all "as capable as this model gets", so price separates
-   * them. Everything else still ranks on what it actually scored.
+   * The knee is taken from the FULL frontier and the gate applied after, never
+   * the reverse. `kneeIndex` records why: Kneedle measures against a chord
+   * between the endpoints, the gate removes the far endpoint, and a knee
+   * computed afterwards would inherit the gate's tuned fraction.
    */
-  const bandedIndex = (k: string): number => {
-    const own = rankReasoning(k).index;
-    const best = familyBest.get(bareKey(k)) ?? own;
-    return best - own <= COMPLEX_COST_BAND ? best : own;
+  const geometryFor = (metric: (entry: AaEntry) => number) => {
+    const pool = candidates.filter((k) => capable(k) && (perTask(k) ?? 0) > 0);
+    const points: Point[] = pool.map((k) => ({
+      capability: rank(k, aa, providers, upstreamFor, metric).index,
+      cost: perTask(k) ?? 0,
+    }));
+    const order = frontierIndices(points);
+    const frontier = order.map((i) => points[i]!);
+    const knee = frontier.length > 0 ? pool[order[kneeIndex(frontier)]!] : undefined;
+    const kept = keptAfterGate(frontier);
+    const wasteful = new Set(order.slice(kept).map((i) => pool[i]!));
+    return { knee, wasteful, kneeCapability: frontier.length > 0 ? frontier[kneeIndex(frontier)]!.capability : 0 };
   };
+
+  const valueGeometry = geometryFor(capabilityOf);
+  const powerGeometry = geometryFor(reasoningOf);
+
+  /**
+   * A gated rung sorts after every rung that pays, whatever it scores.
+   *
+   * Demotion rather than exclusion, exactly as `avoid_gateways` demotes: the
+   * tier keeps it as a last-resort candidate, so declining to pay for it costs
+   * preference rather than the depth a ranked list exists to provide. Ordered
+   * after the avoidance term, since a gate is sonata's judgement and avoidance
+   * is the user's.
+   */
+  const gateOrder = (set: ReadonlySet<string>) =>
+    (a: string, b: string) => Number(set.has(a)) - Number(set.has(b));
+
+  /**
+   * Dominated candidates need no term of their own, and that is provable: if X
+   * dominates Y then X is at least as capable AND costs no more, so `byValue`
+   * and `byCapability` both already place X first. Checked exhaustively
+   * against a real catalog — 1762 dominating pairs, zero violations under
+   * either key. An explicit demotion pass was not merely redundant, it
+   * introduced an inversion that ranked a weaker frontier rung above a
+   * stronger dominated one inside a capability-ordered tier.
+   */
   const byCapability = (a: string, b: string) => {
     const ra = rankReasoning(a); const rb = rankReasoning(b);
-    // Inside the band every candidate counts as good enough, so price leads
-    // and capability only breaks a price tie. Outside it capability leads as
-    // before, so the tier never drops to a genuinely weaker model to save
-    // money — it declines to pay for the top of an effort ladder.
-    const ia = bandedIndex(a); const ib = bandedIndex(b);
-    const gap = capabilityClass(ib) - capabilityClass(ia);
-    const byPrice = ra.price - rb.price;
-    // Real capability breaks an equal price, AFTER the band has had its say.
-    // The band exists to trade capability for money; where there is no money
-    // to save it has nothing to trade, and suppressing the difference would
-    // just pick the worse rung for nothing. Measured: two rungs of one model
-    // at an identical $0.50, scoring 74 and 72 — the band credited both with
-    // 74, the prices tied, and the level tie-break then chose the 72.
-    const realGap = rb.index - ra.index;
-    return avoidance(a, b) || gap || byPrice || realGap || byLevel(a, b);
+    return avoidance(a, b)
+      || gateOrder(powerGeometry.wasteful)(a, b)
+      // Knee-and-above leads; below-knee follows as fallback depth rather than
+      // being excluded. The knee decides the lead, not membership — excluding
+      // left one real config's `complex` with five live candidates, so a
+      // provider-wide 402 would exhaust it while capable models sat unused.
+      || Number(ra.index < powerGeometry.kneeCapability) - Number(rb.index < powerGeometry.kneeCapability)
+      // The tie margin survives the band's deletion, and it has to: the gate
+      // cannot reach this case. Measured — `qwen3.8-max` (58.4) outranked
+      // `glm-5.3-flash` (58.2) on a 0.2-point edge while costing 10.5x as
+      // much per task. Both sit on the frontier (dearer AND better), and a
+      // two-point frontier can never be gated, so raw capability order alone
+      // pays ten times over for a gap that is benchmark noise.
+      //
+      // Compared as a quantised CLASS rather than a pairwise tolerance,
+      // because a pairwise one is not transitive: it produced a genuine
+      // 3-cycle on a real fixture, which made the sort depend on input order
+      // and the tier differ run to run.
+      || capabilityClass(rb.index) - capabilityClass(ra.index)
+      || ra.price - rb.price
+      // A real capability edge breaks an equal price, after the class has had
+      // its say: where there is no money to save there is nothing to trade,
+      // and suppressing the difference would pick the worse rung for nothing.
+      || rb.index - ra.index
+      || byLevel(a, b);
   };
   // Simple work wants the most capability per dollar, capability breaking
   // ties. At one price, value *is* capability, so a score inside the tie
@@ -896,34 +912,60 @@ export function proposeTiers(
   // dollar is one comparable unit rather than a mix of work and token prices.
   const byValue = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
+    const gated = gateOrder(valueGeometry.wasteful)(a, b);
+    if (gated !== 0) return avoidance(a, b) || gated;
     if (ra.price === rb.price && capabilityClass(ra.index) === capabilityClass(rb.index)) {
       return avoidance(a, b) || byLevel(a, b);
     }
     return avoidance(a, b) || valueOf(rb) - valueOf(ra) || rb.index - ra.index || byLevel(a, b);
   };
 
-  const capable = (k: string): boolean => lookupModel(k, aa, providers, upstreamFor).capable;
-  const perTask = (k: string): number | undefined => scoreFor(k, aa, providers, upstreamFor)?.costPerTask;
-
   const complex = candidates.filter(capable).sort(byCapability);
-  const normal = candidates.filter(capable).sort(byValue);
+  const valueOrdered = candidates.filter(capable).sort(byValue);
+
+  /**
+   * `normal` leads with the knee, and that is the point of computing one.
+   *
+   * Used only as a boundary, the best balance point on the frontier led
+   * nothing — the analysis was performed and then discarded. `normal` is the
+   * *default* tier and means "you know what to change but not exactly how";
+   * leading it with the cheapest thing on offer is not a sensible default, and
+   * it also gave `simple` and `normal` the same lead, which is the collapse
+   * `SIMPLE_CAPABILITY_FLOOR` caused and was deleted for.
+   *
+   * An avoided or gated knee does not lead: those two judgements outrank this
+   * one, and promoting a model the user asked to avoid would make
+   * `avoid_gateways` a suggestion.
+   */
+  const knee = valueGeometry.knee;
+  const kneeLeads = knee !== undefined
+    && !avoided.has(bareKey(knee))
+    && !valueGeometry.wasteful.has(knee)
+    && valueOrdered.includes(knee);
+  const normal = kneeLeads
+    ? [knee!, ...valueOrdered.filter((k) => k !== knee)]
+    : valueOrdered;
 
   // Anchor the cap to the best-value model that can actually lead. Avoided
   // models remain fallbacks but must not raise the price paid by preferred ones.
-  const anchor = normal.find((k) => !avoided.has(bareKey(k))) ?? normal[0];
+  //
+  // Anchored on the VALUE order rather than on `normal`, because `normal` now
+  // leads with the knee — which is deliberately not the cheapest model, so
+  // using it would raise the cap by whatever the knee costs and let `simple`
+  // reach models it exists to exclude.
+  const anchor = valueOrdered.find((k) => !avoided.has(bareKey(k))) ?? valueOrdered[0];
   const anchorCost = anchor === undefined ? undefined : perTask(anchor);
   const ceiling = anchorCost === undefined ? undefined : anchorCost * SIMPLE_COST_CEILING;
-  // Filtering `normal` rather than sorting again is what stops `simple`
+  // Filtering the value order rather than sorting again is what stops `simple`
   // disagreeing with it about order: it never does its own sort.
   //
-  // The result is a **subsequence, not a prefix**. `normal` is ordered by
-  // value, and value is not monotonic in cost — a dearer model with a much
-  // better score outranks a cheap weak one — so an over-ceiling candidate can
-  // sit ahead of an under-ceiling one and the filter skips past it.
-  // Truncating at the first over-ceiling candidate would make it a true
-  // prefix and would drop the qualifying cheap models behind it, which is the
-  // opposite of what a cheap tier is for.
-  const simple = ceiling === undefined ? [] : normal.filter((k) => {
+  // The result is a **subsequence, not a prefix**. Value is not monotonic in
+  // cost — a dearer model with a much better score outranks a cheap weak one —
+  // so an over-ceiling candidate can sit ahead of an under-ceiling one and the
+  // filter skips past it. Truncating at the first over-ceiling candidate would
+  // drop the qualifying cheap models behind it, the opposite of what a cheap
+  // tier is for.
+  const simple = ceiling === undefined ? [] : valueOrdered.filter((k) => {
     const cost = perTask(k);
     return cost !== undefined && cost <= ceiling;
   });
