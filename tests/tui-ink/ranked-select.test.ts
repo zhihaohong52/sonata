@@ -21,13 +21,23 @@ function renderRanked(initialRanked?: string[]) {
     press: async (...keys: string[]) => {
       for (const key of keys) { app.stdin.write(key); await tick(); }
     },
-    /** The item labels in draw order, ranked marker included. */
+    /**
+     * The rank marker and name of each board row, in draw order.
+     *
+     * A row no longer ENDS with its name — it carries a bar, a cost and a
+     * status column after it — so this reads the two leading fields rather
+     * than matching the line's tail. What these tests assert is the ORDER and
+     * which rows are ranked; the columns after the name are the board's
+     * business and have their own tests.
+     */
     rows: () => (app.lastFrame() ?? '')
       // eslint-disable-next-line no-control-regex
       .replace(/\u001B\[[0-9;]*m/g, '')
       .split('\n')
-      .filter((line) => ITEMS.some((item) => line.endsWith(item.label)))
-      .map((line) => line.trim()),
+      .flatMap((line) => {
+        const m = /^\s*(\d+|·)\s+(\S+)/.exec(line);
+        return m !== null && ITEMS.some((item) => item.label === m[2]) ? [`${m[1]} ${m[2]}`] : [];
+      }),
     submitted: () => submitted,
   };
 }
@@ -38,18 +48,18 @@ describe('RankedSelect', () => {
     // marker, so a real screen read `· · · 1. 5. · · 2. 6. …` and reordering
     // swapped two numbers on rows that were nowhere near each other.
     const ui = renderRanked(['charlie', 'alpha']);
-    expect(ui.rows()).toEqual(['1. charlie', '2. alpha', '· bravo', '· delta']);
+    expect(ui.rows()).toEqual(['1 charlie', '2 alpha', '· bravo', '· delta']);
   });
 
   it('[ promotes the highlighted row and takes the highlight with it', async () => {
     const ui = renderRanked(['charlie', 'alpha']);
     await ui.press('\x1B[B');   // down onto rank 2 (alpha)
     await ui.press('[');
-    expect(ui.rows()).toEqual(['1. alpha', '2. charlie', '· bravo', '· delta']);
+    expect(ui.rows()).toEqual(['1 alpha', '2 charlie', '· bravo', '· delta']);
     // The cursor moved with the row, so a second press is not a round trip: it
     // is a no-op because alpha is now first.
     await ui.press('[');
-    expect(ui.rows()).toEqual(['1. alpha', '2. charlie', '· bravo', '· delta']);
+    expect(ui.rows()).toEqual(['1 alpha', '2 charlie', '· bravo', '· delta']);
     await ui.press('\r');
     expect(ui.submitted()).toEqual(['alpha', 'charlie']);
   });
@@ -57,18 +67,18 @@ describe('RankedSelect', () => {
   it('] demotes it again', async () => {
     const ui = renderRanked(['charlie', 'alpha']);
     await ui.press(']');        // cursor starts on rank 1
-    expect(ui.rows()).toEqual(['1. alpha', '2. charlie', '· bravo', '· delta']);
+    expect(ui.rows()).toEqual(['1 alpha', '2 charlie', '· bravo', '· delta']);
     await ui.press(']');        // charlie is last-ranked now: no-op
-    expect(ui.rows()).toEqual(['1. alpha', '2. charlie', '· bravo', '· delta']);
+    expect(ui.rows()).toEqual(['1 alpha', '2 charlie', '· bravo', '· delta']);
   });
 
   it('space lifts a row into the ranked block and the highlight follows it', async () => {
     const ui = renderRanked(['charlie']);
     await ui.press('\x1B[B', '\x1B[B');   // down twice: past alpha, onto bravo
     await ui.press(' ');
-    expect(ui.rows()).toEqual(['1. charlie', '2. bravo', '· alpha', '· delta']);
+    expect(ui.rows()).toEqual(['1 charlie', '2 bravo', '· alpha', '· delta']);
     // Highlight followed bravo up, so `[` reorders what was just picked.
     await ui.press('[');
-    expect(ui.rows()).toEqual(['1. bravo', '2. charlie', '· alpha', '· delta']);
+    expect(ui.rows()).toEqual(['1 bravo', '2 charlie', '· alpha', '· delta']);
   });
 });

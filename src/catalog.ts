@@ -667,6 +667,41 @@ export function unpinnedVariants(
  * that ordered them. Per-task cost where AA costed the model, else the
  * per-1M blend — labelled, because the two are different units.
  */
+/**
+ * The measured facts a board row draws, as fields rather than a padded string.
+ *
+ * `candidateLabel` below hand-padded these into one line, which made the row
+ * a formatting decision taken in the catalog rather than a layout decision
+ * taken by the screen. Columns cannot align across rows that way, and a
+ * narrow terminal cannot drop a column it cannot find.
+ *
+ * `capability` is reported on the metric the asking tier actually sorts by,
+ * passed in by the caller. The old label always printed `capabilityOf`
+ * (agentic) even after `complex` began ranking on intelligence, so the number
+ * on screen did not explain the order it appeared in.
+ */
+export interface CandidateFacts {
+  key: string;
+  effort?: Effort;
+  /** Undefined when the catalog does not score this model. */
+  capability?: number;
+  /** Undefined when AA publishes no cost per task; the row is then unrankable. */
+  costPerTask?: number;
+}
+
+export function candidateFacts(
+  candidate: string,
+  aa?: AaCatalog,
+  providers: readonly string[] = [],
+  upstreamFor: UpstreamFor = identityUpstream,
+  metric: (entry: AaEntry) => number = capabilityOf,
+): CandidateFacts {
+  const { key, effort } = splitCandidate(candidate);
+  const entry = scoreFor(candidate, aa, providers, upstreamFor);
+  if (entry === undefined) return { key, effort };
+  return { key, effort, capability: metric(entry), costPerTask: entry.costPerTask };
+}
+
 export function candidateLabel(
   candidate: string,
   aa?: AaCatalog,

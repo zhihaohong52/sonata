@@ -4,7 +4,7 @@ import { MultiSelect } from './components/multi-select.js';
 import { RankedSelect } from './components/ranked-select.js';
 import { ProvidersStep } from './components/providers-step.js';
 import { ModelsStep } from './components/models-step.js';
-import { candidateLabel, expandCandidates, hasTaskCost, loadAaCatalog, proposeTiers, taskCostedCandidates, unpinnedVariants } from '../catalog.js';
+import { candidateFacts, candidateLabel, capabilityOf, reasoningOf, expandCandidates, hasTaskCost, loadAaCatalog, proposeTiers, taskCostedCandidates, unpinnedVariants } from '../catalog.js';
 import { loadModelsDev, type ModelsDevCache } from '../modelsdev.js';
 import { loginGateway as defaultLoginGateway } from '../native/oauth-login.js';
 import { catalogSpellingsForGateway } from '../pricing.js';
@@ -441,7 +441,17 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         key={`${role}-${tier}`}
         title={`${role}: ${tier} models`}
         items={tierPickerKeys(expand(rankableKeys), initialRanked, expand(nativePickerUniverseKeys))
-          .map((candidate) => ({ value: candidate, label: candidateLabel(candidate, catalog, gateways, upstreamFor) }))}
+          .map((candidate) => ({
+            value: candidate,
+            label: candidateLabel(candidate, catalog, gateways, upstreamFor),
+            // Reported on the metric THIS tier sorts by, so the number on
+            // screen explains the order it appears in. `complex` ranks on
+            // reasoning; the value tiers rank on throughput.
+            facts: candidateFacts(
+              candidate, catalog, gateways, upstreamFor,
+              tier === 'complex' ? reasoningOf : capabilityOf,
+            ),
+          }))}
         initialRanked={initialRanked}
         footer={footer}
         onSubmit={(ranked) => {
