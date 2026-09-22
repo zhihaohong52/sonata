@@ -1,7 +1,7 @@
 import React, { useReducer } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import { dominatedRows, rsInitial, rsOrder, rsReduce } from './ranked-select-state.js';
-import { STATE, bar, band, columns, usableWidth } from '../theme.js';
+import { STATE, bar, band, columns, costFraction, usableWidth } from '../theme.js';
 import type { CandidateFacts } from '../../catalog.js';
 import { usePalette } from '../theme-context.js';
 
@@ -101,7 +101,9 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
   // question nobody asked.
   const scored = items.map((item) => item.facts).filter((f): f is CandidateFacts => f !== undefined);
   const maxCapability = Math.max(...scored.map((f) => f.capability ?? 0), 0);
-  const maxCost = Math.max(...scored.map((f) => f.costPerTask ?? 0), 0);
+  const costs = scored.map((f) => f.costPerTask).filter((c): c is number => c !== undefined && c > 0);
+  const maxCost = Math.max(...costs, 0);
+  const minCost = costs.length > 0 ? Math.min(...costs) : 0;
 
   // Computed once per render over every row, not per row: dominance is a
   // property of the whole screen.
@@ -168,16 +170,33 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
             >
               {name.length > col.name ? `${name.slice(0, col.name - 1)}…` : name.padEnd(col.name)}
             </Text>
+            {/* The bar carries magnitude by LENGTH, and its colour says only
+                whether this is the lead. It used to be drawn with
+                `band(capFraction)`, which is a SEVERITY ramp — green, amber,
+                red at 70% and 90% — built for spend against a budget, where
+                "high" is where sonata starts refusing. Capability is not
+                severity, so that painted the most capable model alarm-red and
+                the weakest reassuring-green: the scale ran backwards on the
+                one screen whose whole job is choosing a model. */}
             {col.showBar && facts?.capability !== undefined && (
               <Text color={palette.TEXT}>
-                <Text color={band(capFraction, palette)}>{b.filled}</Text>
+                <Text color={isLead ? palette.ACCENT : palette.TEXT}>{b.filled}</Text>
                 <Text color={palette.RULE}>{b.track}</Text>
               </Text>
             )}
             {col.showBar && facts?.capability === undefined && (
               <Text color={palette.RULE}>{'─'.repeat(col.bar)}</Text>
             )}
-            <Text color={palette.MUTED}>
+            {/* Cost is where the severity ramp belongs, and it is what
+                `maxCost` was computed for — it had sat unused since the board
+                was written, which is the clue that the colour was attached to
+                the wrong column. Here "high" genuinely means "this is the
+                expensive end of what is on screen", so green/amber/red agree
+                with what a reader is worried about. Scaled to the screen's own
+                range, like the bar, because the question is comparative. */}
+            <Text color={facts?.costPerTask === undefined || maxCost <= 0
+              ? palette.MUTED
+              : band(costFraction(facts.costPerTask, minCost, maxCost), palette)}>
               {facts?.costPerTask === undefined
                 ? '        —'
                 : `$${facts.costPerTask.toFixed(4)}`.padStart(9)}

@@ -284,3 +284,25 @@ export function columns(termWidth: number): BoardColumns {
   const name = Math.max(10, budget - barWidth);
   return { name, bar: barWidth, showBar, showWord, total: RANK_W + name + barWidth + COST_W + status };
 }
+
+/**
+ * Where a cost sits within the range on screen, on a log scale.
+ *
+ * Log, because cost is a ratio scale and this design treats it that way
+ * everywhere else — the frontier's knee, its slopes, and the wasteful-tail
+ * gate all measure cost in decades. A linear fraction does not survive the
+ * spreads that actually occur: on a real ranking screen the cheapest model is
+ * $0.0098 and the dearest $1.399, a 143x range, so every row but the top two
+ * rounds to near zero and the severity ramp collapses to one colour.
+ *
+ * Returns 0 for the cheapest row and 1 for the dearest, so `band` spends its
+ * three colours across the range actually present rather than across a range
+ * the screen does not have.
+ */
+export function costFraction(cost: number, min: number, max: number): number {
+  if (!(cost > 0) || !(min > 0) || !(max > 0)) return 0;
+  if (max <= min) return 0;
+  const span = Math.log10(max / min);
+  if (span === 0) return 0;
+  return Math.min(1, Math.max(0, Math.log10(cost / min) / span));
+}
