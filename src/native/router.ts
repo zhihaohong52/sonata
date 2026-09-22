@@ -535,6 +535,25 @@ function gatewayOf(route: TierRoute): string | undefined {
   return route.native?.gateway;
 }
 
+/**
+ * The key a gateway's cooldown is stored under.
+ *
+ * Tenant-scoped, like the candidate cooldowns beside it — and deliberately
+ * conservative rather than precise.
+ *
+ * The key store is machine-wide by gateway name, so two tenants naming
+ * `acme` DO share one credential (`litellm.ts`), which means a 401 or 402
+ * from one project's `acme` is usually true of the other's as well. Scoping
+ * per tenant therefore costs a rediscovery on the second project.
+ *
+ * It is still the right side to err on, because `base_url` is per config:
+ * two tenants naming `acme` may address entirely different services that
+ * merely share a name, where the shared key is valid for only one. A
+ * machine-wide cooldown would then silence a gateway that is perfectly
+ * healthy for the other project — a silent failure — while tenant scoping
+ * costs one extra round trip, which is visible and bounded by the 60s
+ * window.
+ */
 function providerCooldownKey(tenant: RouterTenant, gateway: string): string {
   return `${tenant.id}/${gateway}`;
 }
