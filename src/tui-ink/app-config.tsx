@@ -11,6 +11,23 @@ import { TiersScreen } from './screens/tiers.js';
 import { KeysScreen } from './screens/keys.js';
 import { ActionsScreen } from './screens/actions.js';
 import { StatusScreen } from './screens/status.js';
+import { Menu, moveCursor, type MenuItem } from './components/menu.js';
+import { ThemeProvider, useTheme } from './theme-context.js';
+
+/**
+ * The menu, in the order a reader needs it: what is happening, then what is
+ * configured, then what can be done to it. Setup is absent because `sonata
+ * init` still owns first run; it joins here when that flow moves in.
+ */
+const MENU: ReadonlyArray<MenuItem<Step>> = [
+  { value: 'status', label: 'Status' },
+  { value: 'models', label: 'Models', opens: true },
+  { value: 'providers', label: 'Providers', opens: true },
+  { value: 'tiers', label: 'Tiers', opens: true },
+  { value: 'keys', label: 'Keys', opens: true },
+  { value: 'budget', label: 'Budget', opens: true },
+  { value: 'actions', label: 'Actions', opens: true },
+];
 
 /**
  * The config TUI.
@@ -31,6 +48,8 @@ function ConfigTui({ cwd, home, start }: { cwd: string; home: string; start?: St
   // open on stale or absent state. `start` is where boot lands, not a bypass.
   const [step, setStep] = useState<Step>('checking');
   const [checks, setChecks] = useState<Check[]>([]);
+  const [cursor, setCursor] = useState(0);
+  const { toggle, name: themeName, palette } = useTheme();
 
   useEffect(() => {
     if (step !== 'checking') return;
@@ -53,8 +72,26 @@ function ConfigTui({ cwd, home, start }: { cwd: string; home: string; start?: St
   }, [step, cwd, home, start]);
 
   useInput((input, key) => {
-    if (step === 'overview' && (input === 'q' || key.escape)) { exit(); return; }
-    setStep((current) => nextStep(current, key.escape ? 'escape' : input));
+    // Ctrl-T anywhere: the detection in `resolveThemeName` is a guess most
+    // terminals give it no evidence for, so the correction has to be one
+    // keystroke away from wherever the reader noticed it was wrong.
+    if (key.ctrl && input === 't') { toggle(); return; }
+    if (step === 'checking') return;
+
+    if (step === 'overview') {
+      if (input === 'q' || key.escape) { exit(); return; }
+      if (key.upArrow) { setCursor((c) => moveCursor(c, MENU.length, 'up')); return; }
+      if (key.downArrow) { setCursor((c) => moveCursor(c, MENU.length, 'down')); return; }
+      if (key.return) { setStep(MENU[cursor]!.value); return; }
+      // The letter keys still work. They were the only way in before this
+      // screen had a cursor, they are in muscle memory and in the docs, and
+      // keeping them costs one line — removing a working shortcut to add a
+      // cursor would be a downgrade for everyone who already learnt it.
+      setStep((current) => nextStep(current, input));
+      return;
+    }
+    if (key.escape) { setStep('overview'); return; }
+    setStep((current) => nextStep(current, input));
   });
 
   if (step === 'checking') return <Text>checking…</Text>;
@@ -67,7 +104,10 @@ function ConfigTui({ cwd, home, start }: { cwd: string; home: string; start?: St
   if (step === 'status') return <StatusScreen cwd={cwd} home={home} />;
   return (
     <Box flexDirection="column">
-      <OverviewScreen checks={checks} />
+      <OverviewScreen checks={checks} items={MENU} cursor={cursor} />
+      <Box marginTop={1}>
+        <Text color={palette.MUTED}>{`↑↓ move   enter open   ^t ${themeName === 'dark' ? 'light' : 'dark'} theme   q quit`}</Text>
+      </Box>
     </Box>
   );
 }
@@ -78,7 +118,7 @@ export async function runConfigTui(opts: { cwd: string; home?: string; start?: S
   // and `loadConfig` both demand one, and threading an optional down would put
   // the same `?? homedir()` in each screen.
   const home = opts.home ?? homedir();
-  const instance = render(<ConfigTui cwd={opts.cwd} home={home} start={opts.start} />);
+  const instance = render(<ThemeProvider><ConfigTui cwd={opts.cwd} home={home} start={opts.start} /></ThemeProvider>);
   await instance.waitUntilExit();
   return 0;
 }

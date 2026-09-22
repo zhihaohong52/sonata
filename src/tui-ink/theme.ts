@@ -33,27 +33,95 @@
  * things per screen — the lead service, and the key that commits — so it keeps
  * meaning something.
  */
-export const INK = {
-  /** The lead service, and the committing key. Nothing else. */
-  ACCENT: '#d7875f',
-  /** Primary text. Deliberately not pure white: it must sit on a light theme too. */
-  TEXT: undefined as string | undefined,
-  /** Secondary text: units, provenance, inactive rows. */
-  MUTED: '#8a8a8a',
+export interface Palette {
+  /** The lead row, the selected row's edge, and the committing key. Nothing else. */
+  ACCENT: string;
+  /** Primary text, or `undefined` to use the terminal's own foreground. */
+  TEXT: string | undefined;
+  /** Secondary text: units, provenance, unselected rows. */
+  MUTED: string;
   /** Hairlines and the unfilled part of a bar. */
+  RULE: string;
+  /** The selected row's band. Bounded to one row — never a screen background. */
+  BAND: string;
+  /** Quantities, by band. */
+  LOW: string;
+  MID: string;
+  HIGH: string;
+}
+
+/**
+ * Dark and light are the same design at two lightnesses, not two designs.
+ *
+ * Every pair holds its role: `MUTED` stays clearly secondary against `TEXT`,
+ * `RULE` stays quieter than `MUTED`, and the three quantity bands stay
+ * distinguishable from each other and from the rules. What changes is
+ * lightness, because a hue that reads on charcoal disappears on paper — the
+ * greens and ambers in particular have to darken considerably to hold against
+ * a light ground.
+ *
+ * `TEXT` is `undefined` in both: Ink renders an unstyled `<Text>` in the
+ * terminal's own foreground, which is the only value guaranteed to contrast
+ * with the terminal's own background. Naming a hex is the surest way to
+ * produce unreadable text on somebody's theme.
+ */
+export const DARK: Palette = {
+  ACCENT: '#d7875f',
+  TEXT: undefined,
+  MUTED: '#8a8a8a',
   RULE: '#5a5a5a',
-  /** Quantities, by band. Desaturated so a full row of bars stays calm. */
+  BAND: '#262626',
   LOW: '#87af87',
   MID: '#d7af5f',
   HIGH: '#d75f5f',
-} as const;
+};
+
+export const LIGHT: Palette = {
+  ACCENT: '#af5f28',
+  TEXT: undefined,
+  MUTED: '#6c6c6c',
+  RULE: '#a8a8a8',
+  BAND: '#eeeeee',
+  LOW: '#3f7f3f',
+  MID: '#8a6d1f',
+  HIGH: '#a33327',
+};
+
+export type ThemeName = 'dark' | 'light';
 
 /**
- * `TEXT` is `undefined` on purpose: Ink renders an unstyled `<Text>` in the
- * terminal's own foreground, which is the only value guaranteed to contrast
- * with the terminal's own background. Naming a hex here would be the single
- * most likely way to produce unreadable text on somebody's light theme.
+ * Which way round the terminal is.
+ *
+ * Order matters, and each step is weaker evidence than the one before it:
+ *
+ * 1. An explicit choice (`SONATA_THEME`, or the in-app toggle passing a
+ *    value). The user saying so outranks any detection.
+ * 2. `COLORFGBG`, which several terminals set as `fg;bg` with ANSI indices.
+ *    A background of 7 or 15 is white-ish, so the terminal is light. It is
+ *    absent more often than present, which is why it cannot be the only test.
+ * 3. Dark, because it is the common default and because the dark palette's
+ *    mistake on a light terminal is muted text that is *harder* to read,
+ *    while the light palette's mistake on a dark one is text that vanishes.
+ *    Both are wrong; only one is recoverable by squinting.
  */
+export function resolveThemeName(env: NodeJS.ProcessEnv = process.env): ThemeName {
+  const explicit = env.SONATA_THEME?.trim().toLowerCase();
+  if (explicit === 'light' || explicit === 'dark') return explicit;
+  const fgbg = env.COLORFGBG;
+  if (fgbg !== undefined) {
+    const bg = fgbg.split(';').pop()?.trim();
+    if (bg === '7' || bg === '15') return 'light';
+    if (bg !== undefined && /^\d+$/.test(bg)) return 'dark';
+  }
+  return 'dark';
+}
+
+export function paletteFor(name: ThemeName): Palette {
+  return name === 'light' ? LIGHT : DARK;
+}
+
+/** The resolved palette for callers outside React. */
+export const INK: Palette = paletteFor(resolveThemeName());
 
 /**
  * Where a quantity sits, as a band rather than a number.
@@ -62,10 +130,10 @@ export const INK = {
  * starts refusing or escalating, so the colour and the program agree about
  * what is alarming. A band that disagreed with the code would be decoration.
  */
-export function band(fraction: number): string {
-  if (fraction >= 0.9) return INK.HIGH;
-  if (fraction >= 0.7) return INK.MID;
-  return INK.LOW;
+export function band(fraction: number, palette: Palette = INK): string {
+  if (fraction >= 0.9) return palette.HIGH;
+  if (fraction >= 0.7) return palette.MID;
+  return palette.LOW;
 }
 
 /**
