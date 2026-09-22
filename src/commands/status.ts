@@ -17,6 +17,31 @@ export interface RouteLine {
   status: number;
   input: number;
   output: number;
+  /**
+   * When the router served it, as the ledger's ISO stamp.
+   *
+   * The ledger has always recorded this and the view dropped it, so a reader
+   * could see *what* ran but never *when* — and "the last hour" is a
+   * different claim from "four seconds ago". Rendered in local time, because
+   * it is read by a person sitting at the machine; the ledger keeps UTC, for
+   * the reason `ledgerPathFor` records.
+   */
+  ts?: string;
+  /**
+   * Which gateway served it. The same model can be reachable through several,
+   * and when one is rate-limited or billing-capped the question is always
+   * "which provider was that" — recorded per row, never surfaced.
+   */
+  gateway?: string;
+  /**
+   * The reasoning-effort level the router sent, when the candidate pinned one.
+   *
+   * Present means it was SENT, not honoured: a provider with no effort
+   * control drops the field silently and the router cannot tell. Shown
+   * because two rows of one model at different levels are otherwise
+   * indistinguishable, which is exactly the case a reader is checking.
+   */
+  effort?: string;
 }
 
 export function recentRoutes(rows: LedgerRow[], limit: number): RouteLine[] {
@@ -30,5 +55,8 @@ export function recentRoutes(rows: LedgerRow[], limit: number): RouteLine[] {
       status: row.status,
       input: row.tokens.input,
       output: row.tokens.output,
+      ts: row.ts,
+      gateway: row.gateway,
+      effort: row.effort,
     }));
 }

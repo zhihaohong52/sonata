@@ -105,7 +105,11 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
   });
 
   const { stdout } = useStdout();
-  const col = columns(usableWidth(stdout?.columns ?? 80));
+  const usable = usableWidth(stdout?.columns ?? 80);
+  const col = columns(usable);
+  // Never wider than the page: `columns` floors at 40 and a terminal can be
+  // narrower, and a rule that wraps pushes the header off the screen.
+  const ruleCells = Math.min(col.total, usable);
 
   // The scale is shared across every row on screen, because the reader's
   // question is comparative. A bar scaled to its own row's ceiling answers a
@@ -142,7 +146,7 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
         <Text color={palette.MUTED}>{'$/task'.padStart(9)}</Text>
         {col.showWord && <Text color={palette.MUTED}>{'  state'}</Text>}
       </Box>
-      <Text color={palette.RULE}>{'─'.repeat(col.total)}</Text>
+      <Text color={palette.RULE}>{'─'.repeat(ruleCells)}</Text>
       {order.map((index, position) => {
         const item = items[index];
         const rank = state.ranked.indexOf(index);
@@ -253,7 +257,7 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
               finding the numeral 1. Drawn only when something follows it, so
               a one-row list does not end in a rule against nothing. */}
           {isLead && position + 1 < order.length && (
-            <Text color={palette.RULE}>{'┄'.repeat(col.total)}</Text>
+            <Text color={palette.RULE}>{'┄'.repeat(ruleCells)}</Text>
           )}
           </React.Fragment>
         );
@@ -263,7 +267,7 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
           Nothing ranked yet. Space adds a model; the order you add them is the order they are tried.
         </Text>
       )}
-      <Text color={palette.RULE}>{'─'.repeat(col.total)}</Text>
+      <Text color={palette.RULE}>{'─'.repeat(ruleCells)}</Text>
       {footer !== undefined && <Text color={palette.MUTED}>{footer}</Text>}
       {/*
         Wraps between key/action pairs, never inside one. At 40 columns the

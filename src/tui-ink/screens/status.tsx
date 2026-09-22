@@ -7,7 +7,7 @@ import { isSonataRouter, serveHealthUrl } from '../../commands/serve.js';
 import { STATE, columns, usableWidth } from '../theme.js';
 import { fit } from '../components/screen.js';
 import { usePalette } from '../theme-context.js';
-import { agoLabel, STATUS_POLL_MS } from './status-poll.js';
+import { agoLabel, localTime, routesThatFit, statusColumns, STATUS_POLL_MS } from './status-poll.js';
 
 /**
  * What the router just did, as a board.
@@ -66,12 +66,19 @@ export function StatusScreen({ cwd, home }: { cwd: string; home: string }): Reac
     return () => { cancelled = true; clearInterval(poll); clearInterval(clock); };
   }, [port, home, cwd]);
 
-  const col = columns(usableWidth());
+  const usable = usableWidth();
+  const col = columns(usable);
+  // Never wider than the painted page: `columns` floors at 40 cells and a
+  // terminal can be narrower, and a rule that wraps takes the header with it.
+  const ruleCells = Math.min(col.total, usable);
+  const sc = statusColumns(usable);
+  // Bounded by the terminal's HEIGHT as well as its width. A route costs one
+  // line plus one per failed attempt, so a burst of fallbacks otherwise
+  // scrolls this screen's own header away.
+  const visible = routes === undefined
+    ? []
+    : routes.slice(0, routesThatFit(routes.map((r) => 1 + r.attempts.length), process.stdout.rows ?? 24));
   const fresh = at === undefined ? 'sampling…' : `updated ${agoLabel(now - at)}`;
-  // 5 for the status code, the alias column, 4 for the stroke, and ~22 for the
-  // token counts — whatever is left is what the served model may occupy.
-  const aliasWidth = Math.min(26, col.name);
-  const servedWidth = Math.max(10, col.total - 5 - aliasWidth - 4 - 22);
 
   return (
     <Box flexDirection="column">
@@ -79,7 +86,7 @@ export function StatusScreen({ cwd, home }: { cwd: string; home: string }): Reac
         <Text bold color={palette.TEXT}>router</Text>
         <Text color={palette.MUTED}>{`   ${fresh}`}</Text>
       </Box>
-      <Text color={palette.RULE}>{'─'.repeat(col.total)}</Text>
+      <Text color={palette.RULE}>{'─'.repeat(ruleCells)}</Text>
       <Text color={palette.TEXT}>
         <Text color={up === true ? palette.ACCENT : palette.MUTED}>
           {up === undefined ? STATE.unscored.mark : up ? STATE.lead.mark : STATE.cooled.mark}
@@ -89,32 +96,54 @@ export function StatusScreen({ cwd, home }: { cwd: string; home: string }): Reac
         </Text>
       </Text>
       {up === false && (
-        <Text color={palette.MID}>   Start it with `sonata serve --daemon`, or run `sonata doctor` to find out why.</Text>
+        // Two short lines rather than one long one: as a single sentence it
+        // wrapped at 80 columns and orphaned the word "why." on a line of its
+        // own, directly under a board whose whole grammar is "nothing wraps".
+        <Box flexDirection="column">
+          <Text color={palette.MID}>{'   start it with `sonata serve --daemon`'}</Text>
+          <Text color={palette.MUTED}>{'   or run `sonata doctor` to find out why'}</Text>
+        </Box>
       )}
 
       <Box marginTop={1}><Text bold color={palette.TEXT}>routes, last hour</Text></Box>
-      <Text color={palette.RULE}>{'─'.repeat(col.total)}</Text>
+      <Text color={palette.RULE}>{'─'.repeat(ruleCells)}</Text>
       {routes === undefined && <Text color={palette.MUTED}>reading the ledger…</Text>}
       {routes !== undefined && routes.length === 0 && (
         // An empty screen is an invitation, not a void: say what would put
         // something here rather than printing "none".
-        <Text color={palette.MUTED}>
-          Nothing routed from this project in the last hour. Dispatch a tier agent and it appears here.
-        </Text>
+        <Box flexDirection="column">
+          <Text color={palette.MUTED}>Nothing routed from this project in the last hour.</Text>
+          <Text color={palette.MUTED}>Dispatch a tier agent and it appears here.</Text>
+        </Box>
       )}
-      {routes?.map((line, i) => {
+      {visible.map((line, i) => {
         const failed = line.served === undefined;
         const mark = failed ? STATE.cooled : STATE.live;
         return (
           <Box key={`${line.alias}-${i}`} flexDirection="column">
             <Box>
-              <Text color={failed ? palette.HIGH : palette.MUTED}>{`${String(line.status).padStart(4)} `}</Text>
-              <Text color={palette.TEXT}>{line.alias.padEnd(Math.min(26, col.name))}</Text>
-              <Text color={palette.MUTED}>{mark.mark} </Text>
+              {sc.time && (
+                <Text color={palette.MUTED}>{`${localTime(line.ts).padEnd(8)} `}</Text>
+              )}
+              <Text color={failed ? palette.HIGH : palette.MUTED}>{`${String(line.status).padStart(3)} `}</Text>
+              <Text color={palette.TEXT}>{fit(line.alias, sc.alias).padEnd(sc.alias)}</Text>
+              <Text color={palette.MUTED}>{` ${mark.mark} `}</Text>
               <Text color={failed ? palette.MUTED : palette.TEXT}>
-                {fit(line.served ?? 'no candidate served', servedWidth)}
+                {/* The effort level rides with the model it was sent to.
+                    Two rows of one model at different levels are otherwise
+                    indistinguishable, which is the case a reader checking a
+                    tier is actually looking at. */}
+                {fit(
+                  `${line.served ?? 'no candidate served'}${line.effort !== undefined ? `@${line.effort}` : ''}`,
+                  sc.served,
+                ).padEnd(sc.served)}
               </Text>
-              <Text color={palette.MUTED}>{`  ${line.input} in / ${line.output} out`}</Text>
+              {sc.gateway && (
+                <Text color={palette.MUTED}>{fit(line.gateway ?? '', 11).padEnd(12)}</Text>
+              )}
+              {sc.tokens && (
+                <Text color={palette.MUTED}>{`${line.input} in / ${line.output} out`}</Text>
+              )}
             </Box>
             {/* Failed attempts are why a dispatch died, so they are not a detail. */}
             {line.attempts.map((a) => (
@@ -127,6 +156,11 @@ export function StatusScreen({ cwd, home }: { cwd: string; home: string }): Reac
           </Box>
         );
       })}
+      {routes !== undefined && visible.length < routes.length && (
+        // Said plainly rather than silently truncated: a list that stops
+        // without saying so reads as the whole list.
+        <Text color={palette.MUTED}>{`… ${routes.length - visible.length} more, not shown`}</Text>
+      )}
       <Box marginTop={1}>
         <Text color={palette.MUTED}>esc back</Text>
       </Box>

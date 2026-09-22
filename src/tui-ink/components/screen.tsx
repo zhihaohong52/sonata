@@ -3,9 +3,19 @@ import { Box, Text } from 'ink';
 import { columns, usableWidth } from '../theme.js';
 import { usePalette } from '../theme-context.js';
 
-/** How wide a rule should be drawn, bounded at both ends by `columns`. */
+/**
+ * How wide a rule may be drawn.
+ *
+ * Clamped to the usable width as well as to `columns`, because `columns`
+ * floors its layout at 40 cells — deliberately, since a narrower board cannot
+ * hold its own columns — and a terminal *can* be narrower than that. Drawing
+ * a 40-cell rule on a 39-cell page wraps it, and a wrapped rule pushes the
+ * screen's header off the top. Measured at 40, 50 and 60 columns, where
+ * `sonata status` lost its header entirely and the rows ran together.
+ */
 export function ruleWidth(): number {
-  return columns(usableWidth()).total;
+  const usable = usableWidth();
+  return Math.min(columns(usable).total, usable);
 }
 
 /**
