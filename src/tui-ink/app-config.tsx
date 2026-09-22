@@ -10,6 +10,7 @@ import { ProvidersScreen } from './screens/providers.js';
 import { TiersScreen } from './screens/tiers.js';
 import { KeysScreen } from './screens/keys.js';
 import { ActionsScreen } from './screens/actions.js';
+import { StatusScreen } from './screens/status.js';
 
 /**
  * The config TUI.
@@ -23,8 +24,11 @@ import { ActionsScreen } from './screens/actions.js';
  * with no error, because there is no error. That is what once made every
  * prompt after the wizard die instantly. Every confirmation is a screen.
  */
-function ConfigTui({ cwd, home }: { cwd: string; home: string }): React.ReactElement {
+function ConfigTui({ cwd, home, start }: { cwd: string; home: string; start?: Step }): React.ReactElement {
   const { exit } = useApp();
+  // `checking` always runs first: every screen is read against a machine the
+  // health check has already described, and a deep link that skipped it would
+  // open on stale or absent state. `start` is where boot lands, not a bypass.
   const [step, setStep] = useState<Step>('checking');
   const [checks, setChecks] = useState<Check[]>([]);
 
@@ -35,7 +39,7 @@ function ConfigTui({ cwd, home }: { cwd: string; home: string }): React.ReactEle
       .then((result) => {
         if (cancelled) return;
         setChecks(result.checks);
-        setStep('overview');
+        setStep(start ?? 'overview');
       })
       .catch(() => {
         // A machine doctor cannot describe is still one the TUI must open on,
@@ -43,10 +47,10 @@ function ConfigTui({ cwd, home }: { cwd: string; home: string }): React.ReactEle
         // rather than leaving a spinner running forever.
         if (cancelled) return;
         setChecks([]);
-        setStep('overview');
+        setStep(start ?? 'overview');
       });
     return () => { cancelled = true; };
-  }, [step, cwd, home]);
+  }, [step, cwd, home, start]);
 
   useInput((input, key) => {
     if (step === 'overview' && (input === 'q' || key.escape)) { exit(); return; }
@@ -60,6 +64,7 @@ function ConfigTui({ cwd, home }: { cwd: string; home: string }): React.ReactEle
   if (step === 'tiers') return <TiersScreen cwd={cwd} home={home} onBack={() => setStep('overview')} />;
   if (step === 'keys') return <KeysScreen cwd={cwd} home={home} />;
   if (step === 'actions') return <ActionsScreen cwd={cwd} home={home} />;
+  if (step === 'status') return <StatusScreen cwd={cwd} home={home} />;
   return (
     <Box flexDirection="column">
       <OverviewScreen checks={checks} />
@@ -68,12 +73,12 @@ function ConfigTui({ cwd, home }: { cwd: string; home: string }): React.ReactEle
 }
 
 /** Render the TUI and resolve with the process exit code. */
-export async function runConfigTui(opts: { cwd: string; home?: string }): Promise<number> {
+export async function runConfigTui(opts: { cwd: string; home?: string; start?: Step }): Promise<number> {
   // Resolved once here so every screen takes a required `home`: `configPath`
   // and `loadConfig` both demand one, and threading an optional down would put
   // the same `?? homedir()` in each screen.
   const home = opts.home ?? homedir();
-  const instance = render(<ConfigTui cwd={opts.cwd} home={home} />);
+  const instance = render(<ConfigTui cwd={opts.cwd} home={home} start={opts.start} />);
   await instance.waitUntilExit();
   return 0;
 }

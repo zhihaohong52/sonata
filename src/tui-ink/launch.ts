@@ -21,5 +21,21 @@ export function shouldLaunchTui(
   // has a TTY stdout and a piped stdin, and checking stdout alone would crash
   // there instead of printing help.
   if (!stdoutIsTty || !stdinIsTty) return false;
-  return command === undefined || command === 'tui';
+  return command === undefined || TUI_COMMANDS.has(command);
 }
+
+/**
+ * Commands that open the shell rather than printing.
+ *
+ * Deep links into one app, not separate apps: `sonata status` opens it on the
+ * status screen, `sonata agents` on tiers. Both keep their plain output when
+ * either half of the terminal is missing, which is what a SessionStart hook,
+ * a pipe and CI all get — and `status` in particular is read by scripts, so
+ * that fallback is a contract, not a courtesy.
+ *
+ * `doctor` is deliberately absent. Its whole output is the check list, it is
+ * the command a broken machine runs, and it is quoted in error messages that
+ * a non-TTY reader has to be able to follow. The overview screen already
+ * renders the same checks for anyone who wants them in the shell.
+ */
+export const TUI_COMMANDS: ReadonlySet<string> = new Set(['tui', 'status', 'agents']);

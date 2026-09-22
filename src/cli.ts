@@ -145,7 +145,14 @@ export async function main(argv: string[]): Promise<number> {
   const tty = process.stdout.isTTY === true && process.stdin.isTTY === true;
   if (shouldLaunchTui(command, process.stdout.isTTY === true, process.stdin.isTTY === true)) {
     const { runConfigTui } = await import('./tui-ink/app-config.js');
-    return runConfigTui({ cwd: process.cwd() });
+    // A named command is a deep link into the one shell, not a separate app:
+    // `sonata status` opens it on status, `sonata agents` on tiers. Without a
+    // TTY neither reaches here at all, so the plain output every script and
+    // SessionStart hook depends on is untouched.
+    const start = command === 'status' ? 'status' as const
+      : command === 'agents' ? 'tiers' as const
+      : undefined;
+    return runConfigTui({ cwd: process.cwd(), start });
   }
 
   // `tui` is named in USAGE, so it must not reach the unknown-command handler

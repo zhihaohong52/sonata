@@ -30,7 +30,27 @@ describe('shouldLaunchTui', () => {
     expect(shouldLaunchTui('tui', false, true)).toBe(false);
   });
 
-  it('never launches for another command', () => {
+  it('opens the shell for the commands that are screens in it', () => {
+    // Deep links into one app rather than separate apps: `status` opens it on
+    // the status screen, `agents` on tiers.
+    expect(shouldLaunchTui('status', true, true)).toBe(true);
+    expect(shouldLaunchTui('agents', true, true)).toBe(true);
+  });
+
+  it('keeps those same commands printing when either stream is not a TTY', () => {
+    // The contract, not a courtesy: `sonata status` is read by scripts, and
+    // both run inside SessionStart hooks where nothing can answer a screen.
+    for (const command of ['status', 'agents']) {
+      expect(shouldLaunchTui(command, false, true)).toBe(false);
+      expect(shouldLaunchTui(command, true, false)).toBe(false);
+    }
+  });
+
+  it('never launches for another command, doctor included', () => {
+    // `doctor` is deliberately excluded even though the overview renders its
+    // checks: its whole output IS the list, it is what a broken machine runs,
+    // and it is quoted in error messages a non-TTY reader must be able to
+    // follow.
     for (const command of ['doctor', 'init', 'serve', '--help', '-h', '--version']) {
       expect(shouldLaunchTui(command, true, true)).toBe(false);
     }
