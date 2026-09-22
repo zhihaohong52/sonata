@@ -105,6 +105,17 @@ describe('tier alias routing', () => {
       { key: 'harness-only', harness: { harness: 'opencode', id: 'x/y' } },
     ],
   };
+  // Two GATEWAYS, for the account-level failures. A 401/402/403/429 is about
+  // the account behind a gateway, so falling through to another model on the
+  // SAME gateway is not failover — it is asking the same credential the same
+  // question again. These cases need a second gateway to have anywhere to go.
+  const ROUTES_2GW = {
+    role: 'code', tier: 'simple',
+    routes: [
+      { key: 'flash', native: { gateway: 'g', id: 'flash-1' } },
+      { key: 'luna', native: { gateway: 'h', id: 'luna-1' } },
+    ],
+  };
   const req = (model: string) => ({
     method: 'POST', url: '/v1/messages',
     headers: { 'content-type': 'application/json' },
@@ -407,7 +418,7 @@ describe('tier alias routing', () => {
         return new Response('rate limited', { status: model === 'default/flash' ? 429 : 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
-      resolveTier: () => ROUTES,
+      resolveTier: () => ROUTES_2GW,
     });
     expect(res.status).toBe(200);
     expect(seen).toEqual(['default/flash', 'default/luna']);
@@ -422,7 +433,7 @@ describe('tier alias routing', () => {
         return new Response('unauthorized', { status: model === 'default/flash' ? 401 : 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
-      resolveTier: () => ROUTES,
+      resolveTier: () => ROUTES_2GW,
     };
     expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
     expect(seen).toEqual(['default/flash', 'default/luna']);
@@ -440,7 +451,7 @@ describe('tier alias routing', () => {
         return new Response('forbidden', { status: model === 'default/flash' ? 403 : 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
-      resolveTier: () => ROUTES,
+      resolveTier: () => ROUTES_2GW,
     });
     expect(res.status).toBe(200);
     expect(seen).toEqual(['default/flash', 'default/luna']);
@@ -467,7 +478,7 @@ describe('tier alias routing', () => {
           : new Response('{}', { status: 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
-      resolveTier: () => ROUTES,
+      resolveTier: () => ROUTES_2GW,
     };
     expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
     expect(seen).toEqual(['default/flash', 'default/luna']);
@@ -555,6 +566,88 @@ describe('tier alias routing', () => {
     }
     expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
     expect(seen[seen.length - 1]).toBe('default/luna');
+  });
+
+  it('cools the whole gateway on an account-level refusal, skipping its other models', async () => {
+    // The win, and the reason this scope exists. Measured 2026-09-21: one
+    // project has 5 of its 11 native models on `anexto`, so an exhausted
+    // anexto budget cost FIVE separate 402 refusals per dispatch — each a
+    // round trip to be told the same thing about the same account.
+    //
+    // Here `flash` and `luna` share gateway `g` and `terra` is on `h`. One
+    // 402 from flash must skip luna outright and land on terra.
+    const routes = {
+      role: 'code', tier: 'simple',
+      routes: [
+        { key: 'flash', native: { gateway: 'g', id: 'flash-1' } },
+        { key: 'luna', native: { gateway: 'g', id: 'luna-1' } },
+        { key: 'terra', native: { gateway: 'h', id: 'terra-1' } },
+      ],
+    };
+    const seen: string[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return model === 'default/terra'
+          ? new Response('{}', { status: 200 })
+          : new Response('Budget exceeded', { status: 402 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => routes,
+    };
+    expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
+    // luna never asked: one refusal answered for its whole gateway.
+    expect(seen).toEqual(['default/flash', 'default/terra']);
+  });
+
+  it('does not cool the gateway for a failure that is about the model', async () => {
+    // The other half of the contract. A 500 says nothing about the account,
+    // so a sibling on the same gateway is still worth trying — the scope has
+    // to discriminate or it is just a blunter cooldown.
+    const routes = {
+      role: 'code', tier: 'simple',
+      routes: [
+        { key: 'flash', native: { gateway: 'g', id: 'flash-1' } },
+        { key: 'luna', native: { gateway: 'g', id: 'luna-1' } },
+      ],
+    };
+    const seen: string[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return model === 'default/flash'
+          ? new Response('boom', { status: 500 })
+          : new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => routes,
+    };
+    expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
+    expect(seen).toEqual(['default/flash', 'default/luna']);
+  });
+
+  it('names a cooling gateway in the exhaustion message', async () => {
+    // Without this, a tier whose every candidate sits on one cooled gateway
+    // reports "all native routes failed" with NO attempt recorded against
+    // them — which reads as a tier that has no candidates rather than one
+    // waiting out an account problem, and sends the reader to the config.
+    const routes = {
+      role: 'code', tier: 'simple',
+      routes: [
+        { key: 'flash', native: { gateway: 'g', id: 'flash-1' } },
+        { key: 'luna', native: { gateway: 'g', id: 'luna-1' } },
+      ],
+    };
+    const deps = {
+      fetch: (async () => new Response('no credit', { status: 402 })) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => routes,
+    };
+    const res = await routeRequest(req('sonata-code-simple'), deps);
+    expect(res.status).toBe(529);
+    expect(await bodyText(res.body)).toMatch(/skipped g: cooling down after an account-level refusal/);
   });
 
   it('logs the resolution step', async () => {

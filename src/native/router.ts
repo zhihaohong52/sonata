@@ -495,6 +495,51 @@ const CAPABILITY_400_SIGNATURES = [
 const cooldowns = new Map<string, number>();
 
 /**
+ * Cooling-down GATEWAYS, keyed `<tenantId>/<gateway>`.
+ *
+ * A separate map from `cooldowns` rather than a shared one with a prefix,
+ * because a gateway name and a model key share no namespace and a collision
+ * between them would be silent — one project's gateway called `flash` would
+ * cool another's model of that name.
+ *
+ * Some failures say nothing about the model and everything about the account
+ * behind it. An exhausted billing cap, a rejected key or a revoked token
+ * cannot be model-specific, so discovering them once per model is pure waste:
+ * measured 2026-09-21, one project has 5 of its 11 native models on `anexto`,
+ * so an exhausted `anexto` budget cost five separate 402 refusals per
+ * dispatch — each one a round trip to be told the same thing.
+ */
+const providerCooldowns = new Map<string, number>();
+
+/**
+ * Statuses that cool the whole gateway rather than the one candidate.
+ *
+ * 401/403 (the credential is rejected) and 402 (the account is out of money)
+ * are account-level by construction: no model on that gateway can serve while
+ * they hold.
+ *
+ * 429 is the uncertain member, and it is here because the alternative is
+ * worse in the case that has actually been measured. A gateway may rate-limit
+ * per key (provider-wide) or per model, and sonata has probed neither — so
+ * this is the one entry resting on inference rather than evidence. The cost of
+ * being wrong is bounded by `TIER_COOLDOWN_MS` (60s) and is asymmetric in the
+ * direction chosen: treating a per-model limit as provider-wide skips healthy
+ * siblings for a minute, while treating a provider-wide limit as per-model
+ * pays a refusal per model on every request until it lifts. Narrow this to
+ * `[401, 402, 403]` if a gateway is ever observed rate-limiting per model.
+ */
+const PROVIDER_SCOPED_STATUSES: ReadonlySet<number> = new Set([401, 402, 403, 429]);
+
+/** The gateway a candidate is served by, or undefined for a harness-only route. */
+function gatewayOf(route: TierRoute): string | undefined {
+  return route.native?.gateway;
+}
+
+function providerCooldownKey(tenant: RouterTenant, gateway: string): string {
+  return `${tenant.id}/${gateway}`;
+}
+
+/**
  * Consecutive identical capability 400s per candidate, keyed by candidate AND
  * fingerprint. Keying by candidate alone would let two different capability
  * failures add up to a cooldown neither one earned.
@@ -663,6 +708,7 @@ export function stripForeignThinking(body: Buffer): Buffer {
  */
 export function clearCooldowns(): void {
   cooldowns.clear();
+  providerCooldowns.clear();
   capability400Counts.clear();
   stickyCandidates.clear();
 }
@@ -1032,6 +1078,11 @@ async function routeTierRequest(
   const ranked = resolved.routes.filter((route) => route.native !== undefined);
   const attempts: { key: string; status: number }[] = [];
   let skippedUnavailableLitellm = false;
+  // Gateways skipped for being in their own cooldown. Named in the exhaustion
+  // message, because "all native routes failed" with no attempt recorded
+  // against them reads as a tier that has no candidates rather than one whose
+  // candidates are waiting out an account problem.
+  const skippedCoolingProviders = new Set<string>();
 
   // Which candidate already served this conversation, if any. Preferring it
   // keeps a multi-turn agent on one model, which is what stops its transcript
@@ -1062,6 +1113,18 @@ async function routeTierRequest(
     }
     const until = cooldowns.get(cool);
     if (until !== undefined && until > now()) continue;
+    // The gateway's own cooldown, checked alongside the candidate's. Skipped
+    // WITHOUT cooling the candidate: the model has done nothing wrong, and
+    // recording a failure against it here would let an account problem look
+    // like a broken model for a minute after the account recovered.
+    const gateway = gatewayOf(route);
+    if (gateway !== undefined) {
+      const providerUntil = providerCooldowns.get(providerCooldownKey(tenant, gateway));
+      if (providerUntil !== undefined && providerUntil > now()) {
+        skippedCoolingProviders.add(gateway);
+        continue;
+      }
+    }
 
     // Only the litellm path needs the string-flattened system form and the
     // sonata alias key rewritten in — a direct gateway has never heard of
@@ -1135,7 +1198,20 @@ async function routeTierRequest(
       await drainBody(response.body);
       attempts.push({ key: route.key, status: response.status });
       cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
-      deps.log?.(`router: ${route.key} failed (${response.status}), trying next`);
+      // An account-level refusal is about the gateway, not this model, so it
+      // cools the gateway too and every sibling on it is skipped rather than
+      // asked the same question again. The candidate is cooled as well: it
+      // did just fail, and the two expire together.
+      const failedGateway = gatewayOf(route);
+      if (failedGateway !== undefined && PROVIDER_SCOPED_STATUSES.has(response.status)) {
+        providerCooldowns.set(providerCooldownKey(tenant, failedGateway), now() + TIER_COOLDOWN_MS);
+        deps.log?.(
+          `router: ${route.key} failed (${response.status}) — account-level, ` +
+          `cooling gateway ${failedGateway} and skipping its other models`,
+        );
+      } else {
+        deps.log?.(`router: ${route.key} failed (${response.status}), trying next`);
+      }
       continue;
     }
     // A 400 usually means the request was wrong, which retrying cannot fix —
@@ -1249,12 +1325,16 @@ async function routeTierRequest(
     };
   }
   deps.log?.(`router: all native routes for ${label} failed`);
+  const cooling = skippedCoolingProviders.size > 0
+    ? ` (skipped ${[...skippedCoolingProviders].sort().join(', ')}: cooling down after an ` +
+      'account-level refusal — an expired key, a rejected credential or an exhausted budget)'
+    : '';
   return withUsageRecording({
     status: 529,
     headers: { 'content-type': 'application/json' },
     body: anthropicErrorBody(
       'overloaded_error',
-      `all native routes for ${label} failed; fall back with: ` +
+      `all native routes for ${label} failed${cooling}; fall back with: ` +
       `sonata dispatch --tier ${label} --task-file <path> (or trailing task text) — ` +
       'dispatch requires one of those; the router has no task text of its own to supply',
     ),

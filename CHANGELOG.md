@@ -10,6 +10,35 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **An account-level refusal cools the whole gateway, not just one candidate.**
+  A rejected credential (401/403) or an exhausted billing cap (402) cannot be
+  model-specific, so discovering it once per model is pure waste: measured
+  2026-09-21, one project has 5 of its 11 native models on `anexto`, and an
+  exhausted anexto budget cost five separate 402 refusals per dispatch — each
+  a round trip to be told the same thing about the same account. The first
+  refusal now cools the gateway and its remaining models are skipped.
+
+  Skipped *without* cooling those models: they have done nothing wrong, and
+  recording a failure against them would make an account problem look like a
+  broken model for a minute after the account recovered. Everything else,
+  including the capability-400 fingerprints, keeps the old per-candidate
+  scope — a 500 says nothing about the account, so a sibling on the same
+  gateway is still worth trying.
+
+  429 is the one member of that set resting on inference rather than
+  evidence: a gateway may rate-limit per key or per model and sonata has
+  probed neither. It is included because the error is bounded by the 60s
+  cooldown and asymmetric in the direction chosen — treating a per-model
+  limit as provider-wide skips healthy siblings for a minute, while the
+  reverse pays a refusal per model on every request until it lifts.
+
+  The 529 exhaustion message names any gateway skipped this way. Without it a
+  tier whose candidates all sit on one cooled gateway reports "all native
+  routes failed" with no attempt recorded against them, which reads as a tier
+  with no candidates rather than one waiting out an account problem.
+
+### Fixed
+
 - **A model Artificial Analysis states no effort level for is no longer
   recorded as "reasoning off".** `parseAaEffort` already told the two apart —
   returning `none` only for an explicit `Non-Reasoning` — and the catalog then
