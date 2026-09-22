@@ -25,3 +25,25 @@ export function summariseSync(result: { written: string[]; stale: string[]; skip
 export function staleNames(result: { stale: string[] }): string[] {
   return [...result.stale];
 }
+
+/**
+ * What a catalog update actually did, per source.
+ *
+ * `cmdCatalogUpdate` fetches two independent catalogs and **returns** each
+ * outcome rather than throwing, so one can fail while the other succeeds. A
+ * screen that only handled the promise rejection could therefore never report
+ * a failed half at all — the old one stringified the whole result, which is
+ * why the failure was visible and also why it read as a debug dump.
+ *
+ * Each source is named, because the two are not interchangeable: Artificial
+ * Analysis supplies the ranking and models.dev the prices, so "half of it
+ * worked" has different consequences depending on which half.
+ */
+export function summariseCatalog(result: {
+  aa: { models: number } | { error: Error };
+  modelsDev: { models: number } | { error: Error };
+}): string {
+  const part = (name: string, outcome: { models: number } | { error: Error }): string =>
+    'error' in outcome ? `${name} failed — ${outcome.error.message}` : `${name} ${outcome.models} models`;
+  return `${part('rankings', result.aa)} · ${part('prices', result.modelsDev)}`;
+}

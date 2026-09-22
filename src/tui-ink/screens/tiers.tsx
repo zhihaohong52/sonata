@@ -1,20 +1,10 @@
 import React, { useState } from 'react';
-import { Box, Text } from 'ink';
 import { loadAaCatalog } from '../../catalog.js';
 import { loadModelsDev } from '../../modelsdev.js';
 import { editorCandidates, itemLabel, writeTiers } from '../../commands/agents.js';
 import { AgentsApp } from '../agents-app.js';
+import { Message } from '../components/screen.js';
 import { loadConfigForScreen } from './screen-config.js';
-
-/** The error state and the no-config state render the same shape. */
-function Message({ text }: { text: string }): React.ReactElement {
-  return (
-    <Box flexDirection="column">
-      <Text color="yellow">{text}</Text>
-      <Box marginTop={1}><Text dimColor>esc back</Text></Box>
-    </Box>
-  );
-}
 
 /**
  * Re-rank a role's tiers, from inside the TUI.
@@ -40,7 +30,7 @@ export function TiersScreen(
   const loaded = loadConfigForScreen(cwd, home);
   const [error, setError] = useState<string>();
 
-  if (!loaded.ok) return <Message text={loaded.message} />;
+  if (!loaded.ok) return <Message text={loaded.message} title="Tiers" />;
   const { config } = loaded;
   const aa = loadAaCatalog(home);
   const modelsDev = loadModelsDev(home);
@@ -51,7 +41,7 @@ export function TiersScreen(
 
   return (
     <>
-      {error !== undefined ? <Message text={error} /> : null}
+      {error !== undefined ? <Message text={error} title="Tiers" /> : null}
       <AgentsApp
       config={config}
       initialTiers={config.tiers ?? {}}
