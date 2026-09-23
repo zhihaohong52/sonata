@@ -51,6 +51,15 @@ describe('apply', () => {
     expect(res.agentsWritten.map((p) => p.split('/').pop()).sort()).toEqual(['code.md']);
   });
 
+  it('reports whether it created the agents directory', async () => {
+    // Claude Code watches only agents directories that existed at session
+    // start, so init says "restart" for a new one and "reload" otherwise.
+    const opts = { cwd, home, packageRoot: resolve('.') };
+    const io = { out: () => {}, prune: false };
+    expect((await apply(planFor(), opts, io)).agentsDirCreated).toBe(true);
+    expect((await apply(planFor(), opts, io)).agentsDirCreated).toBe(false);
+  });
+
   it('asks before pruning and honours a refusal', async () => {
     let asked = false;
     const res = await apply(planFor(), { cwd, home, packageRoot: resolve('.') },

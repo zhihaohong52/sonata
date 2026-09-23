@@ -218,3 +218,29 @@ describe('the cached index version survives a round trip', () => {
     expect(loadAaCatalog(home)?.models.m.codingIndex).toBe(50);
   });
 });
+
+describe('cmdCatalogUpdate — a model AA has scored on intelligence only', () => {
+  it('stores no coding index rather than another scale under its name', async () => {
+    // Every model in its first days: `gpt-6-luna` arrived with an intelligence
+    // score and nothing else. Its 20.9 was stored as `codingIndex` and judged
+    // against a coding-scale threshold, and the model was dropped from
+    // `simple` and `normal`.
+    cmdAuthAdd({ home, gateway: 'artificialanalysis', key: 'synthetic-key' });
+    const fixture = aaFixture();
+    fixture.data = [{
+      name: 'OpenAI GPT-6 Luna (low)',
+      slug: 'openai/gpt-6-luna-low',
+      evaluations: { artificial_analysis_intelligence_index: 20.9 },
+      artificial_analysis_intelligence_index_cost: { total_cost: 1, cost_per_task: { total_cost: 0.0045 } },
+      pricing: { price_1m_input_tokens: 0.1, price_1m_output_tokens: 0.4 },
+    }];
+    await cmdCatalogUpdate(home, {
+      fetch: async (input) => (isModelsDev(input) ? response(modelsDevFixture()) : response(fixture)),
+      now: () => new Date('2026-09-23T00:00:00.000Z'),
+    });
+    const entries = Object.values(loadAaCatalog(home)!.models);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.codingIndex).toBeUndefined();
+    expect(entries[0]!.intelligenceIndex).toBe(20.9);
+  });
+});

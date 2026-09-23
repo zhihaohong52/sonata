@@ -518,6 +518,14 @@ export interface SyncOptions { cwd: string; agentsDir: string; home?: string }
 export interface SyncResult {
   /** Paths written. */
   written: string[];
+  /**
+   * The subset of `written` whose content actually changed, new files
+   * included. Every run rewrites every agent, so `written` alone cannot say
+   * whether Claude Code has anything new to load — and a ranking change never
+   * touches an agent file, since each names only its routed alias and the
+   * router reads the ranked list from `sonata.toml` per request.
+   */
+  changed?: string[];
   /** Filenames sonata wrote that the config no longer covers. Not deleted. */
   stale: string[];
   /** Paths sonata declined to overwrite because they already exist and are not sonata-owned. */
@@ -662,6 +670,7 @@ export function cmdSync(opts: SyncOptions): SyncResult {
 
   if (config.tiers !== undefined) {
     const written: string[] = [];
+    const changed: string[] = [];
     const skipped: string[] = [];
     // Read once, from the config: what the generated prompts may name. A role
     // that collapses generates one unsuffixed agent, so it offers no tier
@@ -681,11 +690,13 @@ export function cmdSync(opts: SyncOptions): SyncResult {
         skipped.push(path);
         continue;
       }
+      if (!existsSync(path) || readFileSync(path, 'utf8') !== content) changed.push(path);
       writeFileSync(path, content);
       written.push(path);
     }
     return {
       written,
+      changed,
       stale: staleAgents(opts.agentsDir, expectedAgentNames(config)),
       skipped,
     };

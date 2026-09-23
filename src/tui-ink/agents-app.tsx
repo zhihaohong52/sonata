@@ -88,8 +88,10 @@ export interface AgentsAppProps {
  * three unlabelled quantities in a row — asked directly, "what does the bar
  * mean?", which is the question a legend exists to prevent.
  */
-export function metricLabel(tier: keyof TierLists): string {
-  return tier === 'complex' ? 'intelligence' : 'agentic';
+export function metricLabel(_tier: keyof TierLists): string {
+  // Every tier ranks on intelligence now — see `proposeTiers` for why agentic
+  // was dropped. Kept as a function so the label has one definition.
+  return 'intelligence';
 }
 
 /** The Tiers editor: one row per role × tier, enter opens that list on the ranking board, `w` writes every changed list at once, `q` quits without saving. */
