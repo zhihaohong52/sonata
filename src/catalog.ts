@@ -133,7 +133,18 @@ export interface AaCatalog {
 }
 
 export interface AaEntry {
-  codingIndex: number;
+  /**
+   * AA's coding index, when AA has published one. Absent for a model AA has
+   * scored on intelligence only — which is every model in its first days.
+   *
+   * It used to be filled with whichever score the row DID have, so a new
+   * model's intelligence score (20.9 for `gpt-6-luna@low`) sat in this field
+   * and was judged against `AA_CAPABLE_CODING_INDEX`, a coding-scale
+   * threshold on which intelligence runs roughly half as high. The model
+   * failed it and was dropped from `simple` and `normal` entirely. Measured:
+   * 26 of 152 costed rows carried a stand-in, the frontier's knee among them.
+   */
+  codingIndex?: number;
   blendedPriceUsd: number;
   /** All absent in a cache written before these were collected. */
   intelligenceIndex?: number;
@@ -535,7 +546,11 @@ export function lookupModel(
   const scored = aaEntryFor(normalized, aa, effort);
   if (scored !== undefined) {
     return {
-      capable: scored.codingIndex >= AA_CAPABLE_CODING_INDEX,
+      // An unpublished coding index is UNKNOWN, not low. `undefined >= 40` is
+      // `false`, which read as "not capable" — the same direction as the
+      // stand-in bug above, reached from the other side. Unknown defaults to
+      // capable here as it does for an unscored model below.
+      capable: scored.codingIndex === undefined || scored.codingIndex >= AA_CAPABLE_CODING_INDEX,
       source: 'aa',
     };
   }
@@ -1027,7 +1042,10 @@ export function loadAaCatalog(home: string): AaCatalog | undefined {
       if (
         entry !== null &&
         typeof entry === 'object' &&
-        Number.isFinite(entry.codingIndex) &&
+        // At least one real score, not specifically a coding one: a coding
+        // index is optional now, and requiring it here would drop exactly
+        // the rows the stand-in bug was hiding — at load time instead.
+        [entry.codingIndex, entry.agenticIndex, entry.intelligenceIndex].some((v) => Number.isFinite(v)) &&
         Number.isFinite(entry.blendedPriceUsd)
       ) {
         // An unknown level is a hand-edit or a foreign writer; the score is

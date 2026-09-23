@@ -71,6 +71,34 @@ const isSubsequence = (sub: readonly string[], full: readonly string[]): boolean
   return at === sub.length;
 };
 
+describe('lookupModel — no published coding index', () => {
+  it('reads an unpublished coding index as unknown, not low', () => {
+    // `undefined >= 40` is false, which read as "not capable": the same
+    // exclusion the stand-in bug caused, reached from the other side.
+    const aa: AaCatalog = { fetchedAt: 'x', models: {
+      'gpt-6-luna': { intelligenceIndex: 20.9, blendedPriceUsd: 0.2, costPerTask: 0.0045 },
+    } };
+    expect(lookupModel('gpt-6-luna', aa)).toEqual({ capable: true, source: 'aa' });
+  });
+
+  it('still applies the threshold to a coding index AA did publish', () => {
+    const aa: AaCatalog = { fetchedAt: 'x', models: { weak: { codingIndex: 20, blendedPriceUsd: 0.2 } } };
+    expect(lookupModel('weak', aa).capable).toBe(false);
+  });
+
+  it('keeps a cached row that has only an intelligence score', () => {
+    // The loader required a coding index, which would have dropped exactly
+    // the rows the stand-in bug was hiding — at load time instead.
+    const home = mkdtempSync(join(tmpdir(), 'aa-intel-only-'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'catalog.json'), JSON.stringify({
+      fetchedAt: '2026-09-23T00:00:00Z',
+      models: { 'gpt-6-luna': { intelligenceIndex: 20.9, blendedPriceUsd: 0.2, costPerTask: 0.0045 } },
+    }));
+    expect(loadAaCatalog(home)?.models['gpt-6-luna']?.intelligenceIndex).toBe(20.9);
+  });
+});
+
 describe('proposeTiers', () => {
   const threeTierAa: AaCatalog = { fetchedAt: '2026-09-16T00:00:00Z', models: {
     // One family at several efforts: capability nearly flat, cost spread wide.
