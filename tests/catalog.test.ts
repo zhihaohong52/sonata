@@ -59,8 +59,10 @@ describe('lookupModel', () => {
       fetchedAt: '2026-08-25T00:00:00Z',
       models: { 'deepseek-v4-flash': { codingIndex: 10, blendedPriceUsd: 0.2 } },
     };
-    // AA says this model is below the capable threshold: not complex-eligible.
-    expect(lookupModel('deepseek-v4-flash', aa)).toMatchObject({ capable: false, source: 'aa' });
+    // AA's score is the source, whatever the curated table says. A low score
+    // no longer makes the model ineligible: the capable threshold is gone,
+    // and ranking demotes a weak model instead of removing it.
+    expect(lookupModel('deepseek-v4-flash', aa)).toMatchObject({ capable: true, source: 'aa' });
   });
 });
 
@@ -81,9 +83,18 @@ describe('lookupModel — no published coding index', () => {
     expect(lookupModel('gpt-6-luna', aa)).toEqual({ capable: true, source: 'aa' });
   });
 
-  it('still applies the threshold to a coding index AA did publish', () => {
-    const aa: AaCatalog = { fetchedAt: 'x', models: { weak: { codingIndex: 20, blendedPriceUsd: 0.2 } } };
-    expect(lookupModel('weak', aa).capable).toBe(false);
+  it('keeps a weak scored model as a fallback, ranked below the strong one', () => {
+    // What replaced the capable threshold. It excluded `weak` from every
+    // tier; now the frontier and the tier's sort put it last in `complex`
+    // and it stays reachable if everything above it is cooling down.
+    const aa: AaCatalog = { fetchedAt: 'x', models: {
+      weak:   { codingIndex: 20, intelligenceIndex: 12, blendedPriceUsd: 0.2, costPerTask: 0.05 },
+      strong: { codingIndex: 70, intelligenceIndex: 48, blendedPriceUsd: 0.5, costPerTask: 0.20 },
+    } };
+    expect(lookupModel('weak', aa).capable).toBe(true);
+    const tiers = proposeTiers(['weak', 'strong'], aa);
+    expect(tiers.complex).toEqual(['strong', 'weak']);
+    expect(tiers.normal).toContain('weak');
   });
 
   it('keeps a cached row that has only an intelligence score', () => {
@@ -371,7 +382,7 @@ describe('proposeTiers', () => {
     expect(tiers.complex).toEqual(['deepseek-v4-flash', 'gpt-5.6-luna']);
   });
 
-  it('ranks the all-below-threshold fallback rather than raw input order', () => {
+  it('ranks weak models by capability, not raw input order', () => {
     const aa: AaCatalog = {
       fetchedAt: '2026-08-25T00:00:00Z',
       models: {
@@ -380,8 +391,8 @@ describe('proposeTiers', () => {
         'kimi-k3': { codingIndex: 35, blendedPriceUsd: 0.4, costPerTask: 0.4 },
       },
     };
-    // None clears the capable threshold, so the fallback takes every key —
-    // and must still rank by index desc, not the order they were passed in.
+    // All three are weak (the threshold that once excluded them is gone);
+    // they must still rank by capability, not the order they were passed in.
     const tiers = proposeTiers(['gpt-5.6-luna', 'deepseek-v4-flash', 'kimi-k3'], aa);
     expect(tiers.complex).toEqual(['kimi-k3', 'gpt-5.6-luna', 'deepseek-v4-flash']);
   });

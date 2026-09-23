@@ -17,9 +17,20 @@ import { frontierIndices, keptAfterGate, kneeIndex, type Point } from './frontie
 export const AA_ATTRIBUTION =
   'Model rankings by Artificial Analysis — https://artificialanalysis.ai';
 
-/** Coding Index at or above this ⇒ complex-eligible. Chosen so today's
- * mid-tier coders (deepseek-v4-flash class) sit just above the line. */
-export const AA_CAPABLE_CODING_INDEX = 40;
+/**
+ * The capability an unscored model is ranked as: a mid-table stand-in, so a
+ * model the catalog does not know sorts among known ones rather than first or
+ * last.
+ *
+ * This used to be `AA_CAPABLE_CODING_INDEX`, a threshold that excluded any
+ * catalog-scored model with a coding index below 40 from every tier. It was
+ * removed: it gated on a score no tier ranks by, it excluded rather than
+ * demoted, it could not judge a new model (no coding index yet), and when
+ * every candidate failed it the fallback ranked them all anyway. Measured on
+ * the real catalog, the best of the 27 models it caught had under a third of
+ * the value of the model leading `simple`, so the frontier already sinks them.
+ */
+export const UNSCORED_PLACEHOLDER_INDEX = 40;
 
 /**
  * A model may cost at most this multiple of the cheapest *selected* model's
@@ -551,11 +562,11 @@ export function lookupModel(
   const scored = aaEntryFor(normalized, aa, effort);
   if (scored !== undefined) {
     return {
-      // An unpublished coding index is UNKNOWN, not low. `undefined >= 40` is
-      // `false`, which read as "not capable" — the same direction as the
-      // stand-in bug above, reached from the other side. Unknown defaults to
-      // capable here as it does for an unscored model below.
-      capable: scored.codingIndex === undefined || scored.codingIndex >= AA_CAPABLE_CODING_INDEX,
+      // Always eligible. A scored model's place is decided by the frontier and
+      // the tier's sort, which demote a weak model to the end of the list
+      // rather than removing it — see `UNSCORED_PLACEHOLDER_INDEX` for the
+      // threshold this replaced and why.
+      capable: true,
       source: 'aa',
     };
   }
@@ -763,7 +774,7 @@ function rank(
   const scored = scoreFor(key, aa, providers, upstreamFor);
   return scored !== undefined
     ? { index: metric(scored), price: scored.costPerTask ?? 0 }
-    : { index: AA_CAPABLE_CODING_INDEX, price: 0 };
+    : { index: UNSCORED_PLACEHOLDER_INDEX, price: 0 };
 }
 
 /**

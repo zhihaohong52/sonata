@@ -24,6 +24,11 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 - **Value ranking no longer floors prices at one cent.** Per-task costs below
   $0.01 were all treated as $0.01, which hid a 2.2x price difference between
   `gpt-6-luna@low` and `gpt-5.6-luna@low`. The cheaper one now leads `simple`.
+- **The capable threshold is removed.** Models with an Artificial Analysis
+  coding score under 40 were left out of every tier. The threshold checked a
+  score no tier ranks by and couldn't judge new models, which don't have a
+  coding score yet. Weak models now stay in the lists as fallbacks, and the
+  ranking places them below the models that beat them.
 - **`sonata init` asks for `/reload-plugins` only when an agent file changed.**
   A new ranking never changes an agent file: each agent names only its routed
   alias, and the router reads the ranked list from `sonata.toml` on every
