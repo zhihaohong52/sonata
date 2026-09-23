@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-23
+
 ### Added
 
 - **One terminal UI, reached from every command that has a screen.** Bare
