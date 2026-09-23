@@ -41,15 +41,16 @@ git push --follow-tags     # this is what publishes: the tag fires release.yml
 
 **Which number to bump, so it is a lookup rather than a debate.** Pre-1.0,
 semver's own rules say nothing — `0.x` promises no compatibility at all — so
-this project states its own and follows it: **minor** (`0.9.x` → `0.10.0`) when
-a user-visible surface or a config key is added, or when behaviour a user
-relies on changes; **patch** when the release is fixes and documentation only.
-Written down because every release otherwise reopens the argument, and because
-a patch number beside a release that adds a config key reads as a bugfix to
-someone scanning the release list. Two things are deliberately *not* criteria:
-how much work it was, and whether the change is breaking — pre-1.0 a minor bump
-already carries that, and sizing by effort is how a one-line behaviour change
-gets filed as a patch.
+this project states its own, set by the maintainer: **patch** (`0.12.0` →
+`0.12.1`) for minor changes that do not affect what sonata does — fixes,
+refinements, documentation, a screen that presents data sonata already
+reported; **minor** (`0.12.x` → `0.13.0`) for a major change that affects
+sonata's function — how it routes, ranks, prices or dispatches, a new config
+key, or behaviour a user relies on changing. Pre-1.0 the minor digit is the
+"major" one; the leading `0` stays until the 1.0 gate below. When unsure,
+ask rather than pick — v0.12.1 shipped a new usage screen as a patch by the
+maintainer's call, which the older rule here ("minor when a user-visible
+surface is added") would have filed as 0.13.0.
 
 **1.0 is gated on exposure, not on a checklist**, and the gate has already been
 reached on its item list — all fourteen roadmap items shipped by 0.6.0. See
