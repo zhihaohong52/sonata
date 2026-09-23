@@ -8,6 +8,58 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- **One terminal UI, reached from every command that has a screen.** Bare
+  `sonata` opens it; `sonata status`, `sonata agents` and `sonata init` open
+  it on their own screen. Arrow keys move a menu, Enter opens, Esc goes back
+  one level, `q` quits. Each command keeps its plain printed output whenever
+  stdout or stdin is not a terminal, and for the flags a screen cannot honour
+  (`sonata status --session/--all`, `sonata agents --json/--list`, any
+  scripting flag to `sonata init`).
+- **The overview shows only what is wrong.** Passing doctor checks are not
+  listed; `sonata doctor` still prints every check.
+- **Light and dark themes, toggled with `Ctrl-T`.** Each theme paints its own
+  background and names its own text colour, so light mode works on a dark
+  terminal. The palette and the selection highlight — an orange edge over a
+  band — match claude-swap's. `SONATA_THEME=light|dark` sets the starting
+  theme.
+- **`sonata init` runs inside the shell.** Discovery reports each harness as
+  its probe finishes rather than sitting on one line, and a cancelled run
+  says "cancelled — nothing written".
+- **`sonata status` is live, and scoped to this project.** It polls every
+  two seconds and shows each route's local time, model and effort level
+  (`gpt-5.6-terra@max`), and the gateway that served it. By default it shows
+  only the project the command is run in — resolved as the router resolves a
+  tenant, so a worktree sees its checkout's rows — and `--global` (or `g` on
+  the screen) shows every project. `--session` / `--all` still select along
+  the session axis, within the project.
+- **The ranking board labels its columns**, including which metric the bar
+  measures: `intelligence` on `complex` lists, `agentic` on `simple` and
+  `normal`. Rows the catalog shows are beaten on both cost and capability are
+  marked `standby` and struck through; rows you simply left unranked are
+  marked `held`.
+- **Every screen fits any terminal size and redraws on resize.** Lines are
+  cut short with `…` rather than wrapping, lists scroll with `↑`/`↓ N more`,
+  and quitting restores the shell exactly as it was.
+
+### Changed
+
+- **Tiers are derived from the price-performance frontier.** For each tier,
+  on the metric it ranks by, sonata finds the models no other model beats on
+  both cost per task and capability, and the *knee* of that frontier — the
+  point where more capability stops being cheap, found on a log-cost scale
+  and reproducing Artificial Analysis's own chart. `simple` leads with the
+  cheapest (under the existing 12x cost cap), `normal` leads with the knee,
+  and `complex` leads with the strongest. A top rung whose extra capability
+  costs far more than it returns is moved to the end of the list — measured,
+  `gpt-6-astra@max` buys +0.3 index points for 41% more than `@xhigh` — and
+  every model stays in its list as a fallback. This replaces ranking the
+  value tiers purely by capability per dollar, which could never pick the
+  knee: it ranked 12th of 129 by that ratio.
+- **Every action on the Actions screen runs**, including installing LiteLLM
+  and routing the project, with a progress line instead of a refusal.
+
 ### Fixed
 
 - **An account-level refusal cools the whole gateway, not just one candidate.**
@@ -116,22 +168,6 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   deliberately left cost-uncapped, so the cheapest led. On intelligence the
   same three are 41.8 / 47.0 / 52.7. `simple` and `normal` keep the agentic
   index: they are value tiers, and throughput is the right numerator there.
-- **`COMPLEX_COST_BAND` (7) lets `complex` decline the top of an effort
-  ladder.** Rungs within 7 intelligence points of their own model's best
-  count as "as capable as this model gets", so price separates them. Measured
-  on `gpt-6-astra`, whose top rung costs 4x the bottom for 15% more
-  intelligence (low 45.8/$0.82 … max 52.7/$3.26): the tier now leads with
-  `@low`, 2.8x cheaper than the `@xhigh` it chose before, with the dearer
-  rungs kept behind it as fallbacks.
-
-  It is deliberately **not** a wider `AA_CAPABILITY_TIE_MARGIN`. That margin
-  is a claim about *measurement* — a gap that small is benchmark noise;
-  this is a claim about *preference* — a gap this size is real and still
-  worth trading for money. It is also strictly **per-ladder**: it never
-  prefers a cheaper, genuinely weaker model, and it does not reach past the
-  band. Where prices are equal it defers to real capability, since with no
-  money to save there is nothing to trade.
-
 - **The capability tolerance is applied as a class, not pairwise.** "Within
   the margin" cannot be asked pairwise: tolerance is not transitive. With
   scores 52.1, 51.5 and 51.0 the first two tie and so do the last two, but
