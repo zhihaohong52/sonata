@@ -92,3 +92,18 @@ describe('hostKeyAction', () => {
     expect(hostKeyAction('checking', 'q', true)).toBe('none');
   });
 });
+
+describe('the usage screen', () => {
+  it('opens from the overview on u, quits on q and backs out on esc', () => {
+    expect(nextStep('overview', 'u')).toBe('usage');
+    expect(hostKeyAction('usage', 'q', false)).toBe('quit');
+    expect(hostKeyAction('usage', '', true)).toBe('overview');
+    // Its own axis keys are not navigation.
+    for (const key of ['d', 'w', 'g']) expect(nextStep('usage', key)).toBe('usage');
+  });
+
+  it('is a deep link boot lands on once', () => {
+    expect(afterCheck('usage', false)).toBe('usage');
+    expect(afterCheck('usage', true)).toBe('overview');
+  });
+});

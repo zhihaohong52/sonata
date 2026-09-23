@@ -162,3 +162,25 @@ describe('sonata tui without a terminal', () => {
     expect(code).toBe(2);
   });
 });
+
+describe('shouldLaunchTui — sonata usage', () => {
+  it('opens the usage screen in a terminal', () => {
+    expect(shouldLaunchTui('usage', true, true)).toBe(true);
+    expect(shouldLaunchTui('usage', true, true, ['--by', 'tier', '--since', '30d'])).toBe(true);
+    expect(shouldLaunchTui('usage', true, true, ['--project', '.'])).toBe(true);
+    expect(shouldLaunchTui('usage', true, true, ['--project=.'])).toBe(true);
+  });
+
+  it('keeps the printed report for flags the screen cannot honour', () => {
+    expect(shouldLaunchTui('usage', true, true, ['--json'])).toBe(false);
+    expect(shouldLaunchTui('usage', true, true, ['--session', 'abc'])).toBe(false);
+    // Another project: the screen's project axis is only this one or all.
+    expect(shouldLaunchTui('usage', true, true, ['--project', '/elsewhere'])).toBe(false);
+    expect(shouldLaunchTui('usage', true, true, ['--project=/elsewhere'])).toBe(false);
+  });
+
+  it('prints without a terminal', () => {
+    expect(shouldLaunchTui('usage', false, true)).toBe(false);
+    expect(shouldLaunchTui('usage', true, false)).toBe(false);
+  });
+});
