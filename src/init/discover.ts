@@ -32,6 +32,7 @@ import { wellKnownProviders } from '../native/models.js';
 import { byokProviderKey } from '../tui-ink/app-state.js';
 import { oauthProvidersFor, PROVIDER_OAUTH_AUTHS, nativeCandidatesFrom, configNativeCandidates, gatewayNamesOf, avoidedKeysOf, dedupeOauthProviders, type NativeCandidate, configPathFor, defaultDetector, OPENCODE_RANGE } from './helpers.js';
 import type { Detector, ConfigScope, Detection, InitOptions } from './helpers.js';
+import { isBrokenHarness } from '../detect.js';
 
 export interface InitEnvironment {
   cwd: string;
@@ -65,9 +66,12 @@ export async function discover(
 
   out(tmux.installed ? `  ✓ tmux ${tmux.version}` : '  ✗ tmux not found');
   for (const h of harnesses) {
+    // A harness that crashes is not "not installed": that line told the
+    // reader there was nothing to do, directly above the warning saying the
+    // binary needs reinstalling.
     out(h.installed
       ? `  ✓ ${h.name} ${h.version} · ${h.refs.length} models`
-      : `  · ${h.name} not installed`);
+      : isBrokenHarness(h) ? `  ✗ ${h.name} fails to run` : `  · ${h.name} not installed`);
   }
   out('');
 

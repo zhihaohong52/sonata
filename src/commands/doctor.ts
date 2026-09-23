@@ -12,7 +12,7 @@ import {
 } from '../config.js';
 import type { NativeGatewayAuth } from '../config.js';
 import { outdatedAgents, plannedAgents } from './sync.js';
-import { staleAgents, disabledOpencodeAgents, enableOpencodeAgent,
+import { staleAgents, disabledOpencodeAgents, enableOpencodeAgent, firstErrorLine,
 } from '../detect.js';
 import { getAdapter } from '../adapters/index.js';
 import { tmuxVersion } from '../tmux.js';
@@ -1211,8 +1211,19 @@ export async function cmdDoctor(
           });
         }
       }
-    } catch {
-      checks.push({ name, ok: false, detail: 'not found on PATH' });
+    } catch (error) {
+      // Only ENOENT is "not found". A binary that is on PATH and crashes —
+      // codex after an npm upgrade that skipped its platform binary — was
+      // reported as missing, which sends the reader to install something that
+      // is already installed. Its own error line usually names the fix.
+      const e = error as NodeJS.ErrnoException & { stderr?: string };
+      checks.push({
+        name,
+        ok: false,
+        detail: e.code === 'ENOENT'
+          ? 'not found on PATH'
+          : `on PATH but fails to run: ${firstErrorLine(e.stderr) ?? `exited with ${String(e.code)}`}`,
+      });
     }
   }
 
