@@ -35,6 +35,8 @@ export async function apply(
   io: ApplyIo,
 ): Promise<{
   agentsWritten: string[];
+  /** Agent files whose content changed; see `SyncResult.changed`. */
+  agentsChanged: string[];
   pruned: string[];
   hookChanged: boolean;
 }> {
@@ -146,6 +148,9 @@ export async function apply(
   // ---- sync (generates agent files) ----
   const sync = cmdSync({ cwd: plan.syncCwd, home, agentsDir: plan.agentsDir });
   const agentsWritten = sync.written;
+  // `written` without `changed` (a sync predating the field) counts as all
+  // changed: better an unnecessary reload hint than a missing one.
+  const agentsChanged = sync.changed ?? sync.written;
   io.out(`  ✓ generated ${agentsWritten.length} agents in ${plan.agentsDir}`);
 
   if (sync.skipped.length > 0) {
@@ -172,5 +177,5 @@ export async function apply(
     }
   }
 
-  return { agentsWritten, pruned, hookChanged };
+  return { agentsWritten, agentsChanged, pruned, hookChanged };
 }

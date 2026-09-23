@@ -174,7 +174,13 @@ async function runInit(
   });
 
   out('');
-  out('  Done. Run /reload-plugins to pick up the new agents.');
+  // The reload hint only when an agent file actually changed. It used to be
+  // printed after every run, which implied a new RANKING needs a reload — it
+  // never does: agent files name only their routed alias, and the router
+  // reads the ranked list from `sonata.toml` on every request.
+  out(applied.agentsChanged.length > 0 || applied.pruned.length > 0
+    ? '  Done. Run /reload-plugins to pick up the new agents.'
+    : '  Done. Rankings apply from the next dispatch; the agents did not change, so no reload is needed.');
   out('  Native sessions: run `sonata code`, or `sonata route on` to route plain claude sessions.');
   out('');
 

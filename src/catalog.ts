@@ -210,12 +210,17 @@ export function capabilityOf(entry: AaEntry): number {
  * the margin cannot swallow, so the ranking is decided by the measurement
  * rather than by the price.
  *
- * `simple` and `normal` keep `capabilityOf`: they are value tiers, ranked on
- * capability per task-dollar, and throughput is the right numerator there.
- * Coverage is not a constraint — on the rows `init` actually offers (those
- * publishing a per-task cost), intelligence is present on 100% and agentic on
- * 95% — so the fallbacks exist for the odd unscored row, not as a per-role
- * choice.
+ * **Every tier ranks on this now, `simple` and `normal` included.** They used
+ * `capabilityOf` (agentic first), on the reasoning that throughput is the
+ * right numerator for a value tier. The coverage figure that justified it —
+ * "agentic on 95%" — did not hold: AA publishes agentic scores days after
+ * intelligence, so every new model arrives without one. Measured on one real
+ * config: 22 of 36 candidates had an agentic score, all 36 an intelligence
+ * one. `capabilityOf` then fell back per model, putting two scales on one
+ * frontier axis, and the knee it found (`glm-5.3-flash`, agentic 50.9) was
+ * not even on the frontier when measured on one scale — `mimo-v2.6-pro` beats
+ * it on intelligence and on price. A metric only a subset of the candidates
+ * carry cannot rank all of them.
  */
 export function reasoningOf(entry: AaEntry): number {
   return entry.intelligenceIndex ?? entry.agenticIndex ?? entry.codingIndex ?? 0;
@@ -719,7 +724,7 @@ export function candidateLabel(
   const entry = scoreFor(candidate, aa, providers, upstreamFor);
   if (entry === undefined) return head;
   if (entry.costPerTask === undefined) return `${head}  (AA publishes no cost-per-task — add by hand to sonata.toml)`;
-  return `${head.padEnd(32)} ${capabilityOf(entry).toFixed(1).padStart(4)}  $${entry.costPerTask.toFixed(3)}/task`;
+  return `${head.padEnd(32)} ${reasoningOf(entry).toFixed(1).padStart(4)}  $${entry.costPerTask.toFixed(3)}/task`;
 }
 
 /**
@@ -770,8 +775,19 @@ function rank(
  * a tier whose whole purpose is cost). Price is floored before dividing so a
  * free model sorts first rather than dividing by zero.
  */
+/**
+ * Capability per task-dollar.
+ *
+ * No price floor. This divided by `max(price, 0.01)`, a guard from when
+ * prices were per-token rates, and per-task costs now run well under a cent:
+ * `gpt-6-luna@low` costs $0.0045 and `gpt-5.6-luna@low` $0.0098, both floored
+ * to $0.01, so the halved price vanished and a 0.1-point intelligence gap
+ * decided `simple`'s lead the wrong way. A non-positive price is not "very
+ * cheap", it is missing data, and scores zero — the spec's rule that a zero
+ * cost per task is unscored, not free.
+ */
 function valueOf(r: { index: number; price: number }): number {
-  return r.index / Math.max(r.price, 0.01);
+  return r.price > 0 ? r.index / r.price : 0;
 }
 
 /**
@@ -815,7 +831,15 @@ export function proposeTiers(
   // Two rankers, because the tiers measure different things. `simple` and
   // `normal` are value tiers and want throughput per dollar; `complex` is a
   // judgement tier and wants reasoning. See `reasoningOf`.
-  const rankOf = (k: string) => rank(k, aa, providers, upstreamFor);
+  // Intelligence for every tier, not agentic for the value tiers. Agentic
+  // is missing for every model AA has only just scored — measured, 14 of 36
+  // candidates on one real config — and `capabilityOf` then fell back to
+  // intelligence per model, so the value frontier plotted old models by
+  // agentic and new ones by intelligence on one axis. That mixed axis made
+  // `glm-5.3-flash` the knee (agentic 50.9) although `mimo-v2.6-pro` beats
+  // it on intelligence AND price. Intelligence is the one score AA publishes
+  // for every model from day one, and the scale its own frontier chart uses.
+  const rankOf = (k: string) => rank(k, aa, providers, upstreamFor, reasoningOf);
   const rankReasoning = (k: string) => rank(k, aa, providers, upstreamFor, reasoningOf);
   // An avoided model sorts after every non-avoided one, whatever it scores.
   // Demotion, not exclusion: the tier keeps it as a fallback candidate, so
@@ -876,7 +900,7 @@ export function proposeTiers(
     };
   };
 
-  const valueGeometry = geometryFor(capabilityOf);
+  const valueGeometry = geometryFor(reasoningOf);
   const powerGeometry = geometryFor(reasoningOf);
 
   /**

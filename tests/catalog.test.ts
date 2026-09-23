@@ -99,6 +99,50 @@ describe('lookupModel — no published coding index', () => {
   });
 });
 
+describe('proposeTiers — one scale for every tier', () => {
+  // The real case. `glm` has an agentic score; `mimo`, like every model AA
+  // has only just scored, has intelligence alone. Ranking the value tiers on
+  // agentic-with-fallback put glm's 50.9 (agentic) on the same axis as mimo's
+  // 46.3 (intelligence), and glm became the knee — though on intelligence
+  // mimo beats it on capability AND price, so glm is not on the frontier.
+  const aa: AaCatalog = { fetchedAt: 'x', models: {
+    cheap: { intelligenceIndex: 20.9, blendedPriceUsd: 0.1, costPerTask: 0.0045 },
+    mid:   { intelligenceIndex: 33.9, blendedPriceUsd: 0.1, costPerTask: 0.0417 },
+    mimo:  { intelligenceIndex: 46.3, blendedPriceUsd: 0.5, costPerTask: 0.1332 },
+    glm:   { agenticIndex: 50.9, codingIndex: 59.0, intelligenceIndex: 41.8, blendedPriceUsd: 0.5, costPerTask: 0.2533 },
+    top:   { intelligenceIndex: 52.7, blendedPriceUsd: 3, costPerTask: 3.2575 },
+  } };
+
+  it('leads normal with the knee measured on intelligence, not a mixed axis', () => {
+    expect(proposeTiers(['cheap', 'mid', 'mimo', 'glm', 'top'], aa).normal[0]).toBe('mimo');
+  });
+
+  it('never ranks a model above one that beats it on the shared scale', () => {
+    // mimo is smarter and cheaper than glm on intelligence; no tier may put
+    // glm first.
+    const tiers = proposeTiers(['cheap', 'mid', 'mimo', 'glm', 'top'], aa);
+    for (const list of [tiers.simple, tiers.normal, tiers.complex]) {
+      if (list.includes('glm') && list.includes('mimo')) {
+        expect(list.indexOf('mimo')).toBeLessThan(list.indexOf('glm'));
+      }
+    }
+  });
+});
+
+describe('proposeTiers — value below a cent per task', () => {
+  it('ranks by the real price, not a one-cent floor', () => {
+    // The real pair: gpt-6-luna@low 20.9 at $0.0045, gpt-5.6-luna@low 21.0
+    // at $0.0098. Flooring both to $0.01 erased a 2.2x price difference and
+    // let a 0.1-point gap put the dearer model first in `simple`.
+    const aa: AaCatalog = { fetchedAt: 'x', models: {
+      newer: { intelligenceIndex: 20.9, blendedPriceUsd: 0.1, costPerTask: 0.0045 },
+      older: { intelligenceIndex: 21.0, blendedPriceUsd: 0.1, costPerTask: 0.0098 },
+    } };
+    const tiers = proposeTiers(['older', 'newer'], aa);
+    expect(tiers.simple[0]).toBe('newer');
+  });
+});
+
 describe('proposeTiers', () => {
   const threeTierAa: AaCatalog = { fetchedAt: '2026-09-16T00:00:00Z', models: {
     // One family at several efforts: capability nearly flat, cost spread wide.
