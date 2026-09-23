@@ -78,6 +78,10 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   }
 }
 
+/**
+ * The body of `cmdInit`: discover, choose, plan, confirm, then apply. Split
+ * out so `cmdInit` can log any failure in one place.
+ */
 async function runInit(
   opts: InitOptions,
   out: (line: string) => void,

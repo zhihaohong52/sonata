@@ -29,6 +29,11 @@ export interface ApplyIo {
   installLitellm?: (home: string) => Promise<void>;
 }
 
+/**
+ * Perform every write in `plan`: keys, config, hook, skill, guidance,
+ * routing, then agent files and pruning. The result says what changed, so
+ * the caller can tell the user whether a reload or restart is needed.
+ */
 export async function apply(
   plan: InitPlan,
   opts: Pick<InitOptions, 'cwd' | 'home' | 'packageRoot'>,

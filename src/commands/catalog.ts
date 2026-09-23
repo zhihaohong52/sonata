@@ -150,6 +150,11 @@ function nowIso(deps: { now?: () => Date }): string {
   return (deps.now ?? (() => new Date()))().toISOString();
 }
 
+/**
+ * Fetch AA's models with the stored key and cache each one's scores, cost per
+ * task and effort level. Scores AA does not publish are left out, never
+ * substituted.
+ */
 async function updateAaCatalog(
   home: string,
   fetchFn: typeof fetch,

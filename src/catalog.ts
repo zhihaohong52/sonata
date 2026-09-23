@@ -551,6 +551,12 @@ const CURATED: Record<string, { capable: boolean }> = {
   'ox-alpha-free': { capable: false },
 };
 
+/**
+ * Whether a model may be ranked, and which source said so.
+ *
+ * An AA-scored model is always eligible: its position is the ranking's job.
+ * Without a score, the curated table answers, then a default.
+ */
 export function lookupModel(
   name: string,
   aa?: AaCatalog,
@@ -724,6 +730,10 @@ export function candidateFacts(
   return { key, effort, capability: metric(entry), costPerTask: entry.costPerTask };
 }
 
+/**
+ * One ranking row's text: the candidate, its intelligence score and its cost
+ * per task, or a note that AA publishes no per-task cost for it.
+ */
 export function candidateLabel(
   candidate: string,
   aa?: AaCatalog,
@@ -778,16 +788,7 @@ function rank(
 }
 
 /**
- * Capability per dollar — how a simple tier is ordered.
- *
- * A simple tier exists to do grunt work cheaply, so the model that returns the
- * most capability per dollar wins, not the most capable model that happens to
- * clear a price threshold (which is what this used to do, and is backwards for
- * a tier whose whole purpose is cost). Price is floored before dividing so a
- * free model sorts first rather than dividing by zero.
- */
-/**
- * Capability per task-dollar.
+ * Capability per task-dollar — how `simple` and `normal` are ordered.
  *
  * No price floor. This divided by `max(price, 0.01)`, a guard from when
  * prices were per-token rates, and per-task costs now run well under a cent:
