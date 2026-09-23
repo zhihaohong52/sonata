@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-09-23
+
 ### Added
 
 - **`sonata usage` opens in the shell.** In a terminal it now shows a live
