@@ -272,6 +272,83 @@ export function pruneAgents(agentsDir: string, files: string[]): string[] {
   return removed;
 }
 
+/** What running a harness's `--version` actually found. */
+export type VersionProbe =
+  | { state: 'ok'; version: string }
+  | { state: 'missing' }
+  | { state: 'broken'; reason: string };
+
+/**
+ * Run `<cmd> --version` and say which of three things is true.
+ *
+ * `tryRun` answers `null` for every failure, and the detectors read `null` as
+ * "not installed". That merged two different situations: nothing on PATH, and
+ * a harness that IS on PATH but crashes. Reported as "new models not detected
+ * from codex": an npm upgrade of codex had skipped its platform binary
+ * (`Missing optional dependency @openai/codex-darwin-arm64`), every `codex`
+ * call crashed, and sonata quietly showed zero codex models with no warning —
+ * `sonata doctor` did not mention codex at all.
+ *
+ * Only `ENOENT` means missing. A non-zero exit or a timeout means broken, and
+ * the reason is the harness's own error line, since that is usually the fix
+ * (codex's names the reinstall command).
+ */
+export async function probeVersion(
+  cmd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs?: number,
+): Promise<VersionProbe> {
+  try {
+    const { stdout } = await run(cmd, ['--version'], { env, ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}) });
+    return { state: 'ok', version: stdout.trim() };
+  } catch (error) {
+    const e = error as NodeJS.ErrnoException & { stderr?: string; killed?: boolean };
+    if (e.code === 'ENOENT') return { state: 'missing' };
+    if (e.killed) return { state: 'broken', reason: `\`${cmd} --version\` did not answer within ${Math.round((timeoutMs ?? 0) / 1000)}s` };
+    return { state: 'broken', reason: firstErrorLine(e.stderr) ?? `\`${cmd} --version\` exited with ${String(e.code ?? 'an error')}` };
+  }
+}
+
+/**
+ * The line of a crash that says what went wrong: the first `Error:` line if
+ * there is one — a Node stack puts it after the source excerpt — else the
+ * first non-empty line.
+ */
+export function firstErrorLine(stderr: string | undefined): string | undefined {
+  const lines = (stderr ?? '').split('\n').map((l) => l.trim()).filter((l) => l !== '');
+  const error = lines.find((l) => /^\w*Error:/.test(l));
+  return error ?? lines[0];
+}
+
+/**
+ * A harness that is on PATH but cannot run.
+ *
+ * Reported as not installed — it can serve nothing — but with a warning, so
+ * `sonata doctor` and `sonata init` say why its models are missing instead of
+ * leaving the reader to discover that the binary crashes.
+ */
+export const BROKEN_HARNESS_MARKER = 'fails to run';
+
+/** Whether a detected harness is on PATH but cannot run; see `brokenHarness`. */
+export function isBrokenHarness(status: HarnessStatus): boolean {
+  return !status.installed && status.problems.some((p) => p.message.includes(BROKEN_HARNESS_MARKER));
+}
+
+export function brokenHarness(name: HarnessStatus['name'], reason: string): HarnessStatus {
+  return {
+    name,
+    installed: false,
+    supported: false,
+    refs: [],
+    authedProviders: [],
+    problems: [{
+      severity: 'warn',
+      message: `${name} is on PATH but ${BROKEN_HARNESS_MARKER}, so none of its models are offered: ${reason}`,
+      fix: `run \`${name} --version\` to see the full error, and reinstall ${name}`,
+    }],
+  };
+}
+
 async function tryRun(cmd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string | null> {
   try {
     const { stdout } = await run(cmd, args, { env: env ?? process.env });
@@ -333,7 +410,9 @@ export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
   const localBin = join(env.home, '.opencode', 'bin', 'opencode');
 
   const path = `${join(env.home, '.opencode', 'bin')}:${process.env.PATH ?? ''}`;
-  const version = await tryRunLimited('opencode', ['--version'], { ...process.env, PATH: path }, 10_000);
+  const probe = await probeVersion('opencode', { ...process.env, PATH: path }, 10_000);
+  if (probe.state === 'broken') return brokenHarness('opencode', probe.reason);
+  const version = probe.state === 'ok' ? probe.version : null;
 
   if (version === null) {
     return {
@@ -414,7 +493,9 @@ export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
 
 export async function detectPi(env: DetectEnv): Promise<HarnessStatus> {
   const path = `${join(env.home, '.local', 'bin')}:${process.env.PATH ?? ''}`;
-  const version = await tryRun('pi', ['--version'], { ...process.env, PATH: path });
+  const probe = await probeVersion('pi', { ...process.env, PATH: path });
+  if (probe.state === 'broken') return brokenHarness('pi', probe.reason);
+  const version = probe.state === 'ok' ? probe.version : null;
 
   // Absence is not an error. A machine with only opencode is normal.
   if (version === null) {
@@ -452,7 +533,9 @@ export async function detectPi(env: DetectEnv): Promise<HarnessStatus> {
  * only opencode is normal.
  */
 export async function detectCodex(env: DetectEnv): Promise<HarnessStatus> {
-  const version = await tryRun('codex', ['--version'], process.env);
+  const probe = await probeVersion('codex', process.env);
+  if (probe.state === 'broken') return brokenHarness('codex', probe.reason);
+  const version = probe.state === 'ok' ? probe.version : null;
   if (version === null) {
     return { name: 'codex', installed: false, supported: false, refs: [], authedProviders: [], problems: [] };
   }
@@ -491,7 +574,9 @@ export async function detectCodex(env: DetectEnv): Promise<HarnessStatus> {
  * rather than an error: a machine with only opencode is normal.
  */
 export async function detectReasonix(_env: DetectEnv): Promise<HarnessStatus> {
-  const version = await tryRun('reasonix', ['--version'], process.env);
+  const probe = await probeVersion('reasonix', process.env);
+  if (probe.state === 'broken') return brokenHarness('reasonix', probe.reason);
+  const version = probe.state === 'ok' ? probe.version : null;
   if (version === null) {
     return { name: 'reasonix', installed: false, supported: false, refs: [], authedProviders: [], problems: [] };
   }
@@ -552,9 +637,11 @@ export async function detectHarnesses(env: DetectEnv): Promise<HarnessStatus[]> 
   for (const [name] of probes) report(name, 'probing');
   return Promise.all(probes.map(async ([name, probe]) => {
     const status = await probe;
+    // "Fails to run" is not "not installed": the second tells the reader
+    // there is nothing to do, the first that the harness needs fixing.
     report(name, 'done', status.installed
       ? `${status.refs.length} model${status.refs.length === 1 ? '' : 's'}`
-      : 'not installed');
+      : isBrokenHarness(status) ? BROKEN_HARNESS_MARKER : 'not installed');
     return status;
   }));
 }
