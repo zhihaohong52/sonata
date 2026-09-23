@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { aggregate, parseDuration, projectResolver } from '../../src/commands/usage.js';
+import { aggregate, parseDuration, parseUsageFlags, projectResolver } from '../../src/commands/usage.js';
 import type { LedgerRow } from '../../src/ledger.js';
 
 function row(over: Partial<LedgerRow> = {}): LedgerRow {
@@ -293,5 +293,16 @@ describe('aggregate — completed streams that reported no prompt tokens', () =>
     // Nothing was generated, so nothing was under-counted.
     const nothing = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
     expect(aggregate([row({ tokens: nothing })], 'model', {}).noPromptTokens.requests).toBe(0);
+  });
+});
+
+describe('parseUsageFlags', () => {
+  it('defaults to a week by model', () => {
+    expect(parseUsageFlags([])).toMatchObject({ by: 'model', since: '7d', json: false });
+  });
+  it('refuses a bad --by or --since before any screen opens', () => {
+    expect(() => parseUsageFlags(['--by', 'colour'])).toThrow(/--by must be one of/);
+    expect(() => parseUsageFlags(['--since', 'soon'])).toThrow(/duration/);
+    expect(() => parseUsageFlags(['--sincee', '1d'])).toThrow();
   });
 });

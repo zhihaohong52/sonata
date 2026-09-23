@@ -9,6 +9,7 @@
  * presenting a partial figure as complete.
  */
 import { existsSync } from 'node:fs';
+import { parseArgs } from 'node:util';
 import { dirname, join, resolve as resolve0 } from 'node:path';
 
 import { configPath, GLOBAL_CONFIG_RELATIVE } from '../config.js';
@@ -17,6 +18,66 @@ import { readRows, type LedgerRow } from '../ledger.js';
 import { loadSessions, type SessionRecord } from '../sessions.js';
 
 export type UsageDimension = 'model' | 'role' | 'tier' | 'effort' | 'gateway' | 'session' | 'project';
+
+/** Every `--by` value, in the order the usage screen cycles through them. */
+export const USAGE_DIMENSIONS: readonly UsageDimension[] = ['model', 'role', 'tier', 'effort', 'gateway', 'session', 'project'];
+
+/** `sonata usage`'s flags, validated. */
+export interface UsageFlags {
+  by: UsageDimension;
+  since: string;
+  session?: string;
+  project?: string;
+  json: boolean;
+}
+
+/**
+ * Parse and validate `sonata usage`'s arguments.
+ *
+ * One definition for the printed report and the usage screen, so a flag the
+ * CLI refuses is refused before the screen opens rather than being dropped
+ * by it. Strict: an unrecognised flag throws — for a cost report, quietly
+ * falling back to the default window on a misspelled `--since` would be
+ * materially misleading.
+ */
+export function parseUsageFlags(args: readonly string[]): UsageFlags {
+  const { values } = parseArgs({
+    args: [...args],
+    options: {
+      by: { type: 'string' },
+      since: { type: 'string' },
+      session: { type: 'string' },
+      project: { type: 'string' },
+      json: { type: 'boolean', default: false },
+    },
+  });
+  const by = (values.by ?? 'model') as UsageDimension;
+  if (!USAGE_DIMENSIONS.includes(by)) {
+    throw new Error(`sonata usage --by must be one of: ${USAGE_DIMENSIONS.join(' | ')}`);
+  }
+  const since = values.since ?? '7d';
+  // Validated here too, so a bad window fails before a screen is drawn.
+  parseDuration(since);
+  return { by, since, session: values.session, project: values.project, json: values.json ?? false };
+}
+
+/**
+ * A bucket's spend cell.
+ *
+ * `—` rather than `$0.0000` where nothing was billed per token: a bucket that
+ * is all unpriced, or all subscription work, did not cost zero — its cost is
+ * unknown or covered, and a zero would say otherwise.
+ */
+export function spentLabel(bucket: UsageBucket, money: (usd: number) => string): string {
+  if (bucket.costUsd === 0 && bucket.coveredUsd === 0 && bucket.unpricedRequests === bucket.requests) return '—';
+  if (bucket.costUsd === 0 && bucket.coveredRequests > 0) return '—';
+  return money(bucket.costUsd);
+}
+
+/** A bucket's covered cell: `—` when none of its work was subscription-backed. */
+export function coveredLabel(bucket: UsageBucket, money: (usd: number) => string): string {
+  return bucket.coveredUsd === 0 && bucket.coveredRequests === 0 ? '—' : money(bucket.coveredUsd);
+}
 
 export interface UsageBucket {
   label: string;

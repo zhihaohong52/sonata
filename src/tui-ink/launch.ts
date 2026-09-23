@@ -38,6 +38,15 @@ export function shouldLaunchTui(
   // `--json` and `--list` ask for printed output, not an editor; opening Ink
   // for them would swallow the output mode before its flag was parsed.
   if (command === 'agents') return !rest.some((arg) => AGENTS_OUTPUT_FLAGS.has(arg.split('=')[0]!));
+  // The usage screen has a by, a window and a THIS-project/every-project
+  // axis. `--json` asks for printed output, `--session` for an axis the
+  // screen does not have, and `--project <path>` for a project other than
+  // this one — all three keep the printed report that honours them.
+  if (command === 'usage') {
+    if (rest.some((arg) => USAGE_OUTPUT_FLAGS.has(arg.split('=')[0]!))) return false;
+    const project = usageProjectValue(rest);
+    return project === undefined || project === '.';
+  }
   return command === undefined || TUI_COMMANDS.has(command);
 }
 
@@ -52,6 +61,19 @@ export function shouldLaunchTui(
  */
 /** `sonata status` flags the screen cannot honour; see `shouldLaunchTui`. */
 const SESSION_FLAGS: ReadonlySet<string> = new Set(['--session', '--all']);
+
+/** `sonata usage` flags the screen cannot honour; see `shouldLaunchTui`. */
+const USAGE_OUTPUT_FLAGS: ReadonlySet<string> = new Set(['--json', '--session']);
+
+/** The value of `--project`, in either spelling, or undefined when absent. */
+export function usageProjectValue(rest: readonly string[]): string | undefined {
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg === '--project') return rest[i + 1] ?? '';
+    if (arg.startsWith('--project=')) return arg.slice('--project='.length);
+  }
+  return undefined;
+}
 
 /** `sonata agents` flags that select printed output; see `shouldLaunchTui`. */
 const AGENTS_OUTPUT_FLAGS: ReadonlySet<string> = new Set(['--json', '--list']);
@@ -82,4 +104,4 @@ const SCRIPTED_INIT_FLAGS: ReadonlySet<string> = new Set([
  * a non-TTY reader has to be able to follow. The overview screen already
  * renders the same checks for anyone who wants them in the shell.
  */
-export const TUI_COMMANDS: ReadonlySet<string> = new Set(['tui', 'status', 'agents', 'init']);
+export const TUI_COMMANDS: ReadonlySet<string> = new Set(['tui', 'status', 'usage', 'agents', 'init']);

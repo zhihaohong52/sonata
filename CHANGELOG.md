@@ -8,6 +8,17 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- **`sonata usage` opens in the shell.** In a terminal it now shows a live
+  usage screen, also reachable from the menu or with `u`. Keys change the
+  view in place: `d` cycles the breakdown (model, role, tier, effort,
+  gateway, session, project), `w` the window (1h, 24h, 7d, 30d), and `g`
+  switches between every project and this one. Unpriced, covered and
+  no-prompt-count volume stay beside the total, as in the printed report.
+  `--json`, `--session`, `--project <other path>` and any non-terminal
+  caller still get the printed report.
+
 ### Fixed
 
 - **New models were filtered out of `simple` and `normal`.** Artificial
