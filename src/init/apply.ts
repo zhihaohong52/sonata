@@ -37,6 +37,12 @@ export async function apply(
   agentsWritten: string[];
   /** Agent files whose content changed; see `SyncResult.changed`. */
   agentsChanged: string[];
+  /**
+   * Whether this run created the agents directory. Claude Code watches only
+   * the agents directories that existed when a session started, so a new one
+   * needs a restart rather than a reload.
+   */
+  agentsDirCreated: boolean;
   pruned: string[];
   hookChanged: boolean;
 }> {
@@ -146,6 +152,7 @@ export async function apply(
   }
 
   // ---- sync (generates agent files) ----
+  const agentsDirCreated = !existsSync(plan.agentsDir);
   const sync = cmdSync({ cwd: plan.syncCwd, home, agentsDir: plan.agentsDir });
   const agentsWritten = sync.written;
   // `written` without `changed` (a sync predating the field) counts as all
@@ -177,5 +184,5 @@ export async function apply(
     }
   }
 
-  return { agentsWritten, agentsChanged, pruned, hookChanged };
+  return { agentsWritten, agentsChanged, agentsDirCreated, pruned, hookChanged };
 }

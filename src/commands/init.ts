@@ -178,9 +178,15 @@ async function runInit(
   // printed after every run, which implied a new RANKING needs a reload — it
   // never does: agent files name only their routed alias, and the router
   // reads the ranked list from `sonata.toml` on every request.
-  out(applied.agentsChanged.length > 0 || applied.pruned.length > 0
-    ? '  Done. Run /reload-plugins to pick up the new agents.'
-    : '  Done. Rankings apply from the next dispatch; the agents did not change, so no reload is needed.');
+  //
+  // A newly created agents directory is the exception: Claude Code watches
+  // only the directories that existed when a session started, so a running
+  // session never sees the first file in a new one, and only a restart helps.
+  out(applied.agentsDirCreated && applied.agentsWritten.length > 0
+    ? '  Done. Restart Claude Code to pick up the new agents (their directory is new).'
+    : applied.agentsChanged.length > 0 || applied.pruned.length > 0
+      ? '  Done. Run /reload-plugins to pick up the new agents.'
+      : '  Done. Rankings apply from the next dispatch; the agents did not change, so no reload is needed.');
   out('  Native sessions: run `sonata code`, or `sonata route on` to route plain claude sessions.');
   out('');
 

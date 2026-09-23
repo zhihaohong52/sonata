@@ -97,6 +97,23 @@ describe('lookupModel — no published coding index', () => {
     expect(tiers.normal).toContain('weak');
   });
 
+  it('ranks a candidate with no intelligence score below every one that has one', () => {
+    // `reasoningOf` falls back to agentic, so without the scale term `agentic`
+    // (agentic 60, cheap) would sit on the intelligence frontier beside
+    // scores from a different scale and lead both tiers.
+    const aa: AaCatalog = { fetchedAt: 'x', models: {
+      agentic: { agenticIndex: 60, blendedPriceUsd: 0.1, costPerTask: 0.01 },
+      mid:     { intelligenceIndex: 30, blendedPriceUsd: 0.2, costPerTask: 0.05 },
+      strong:  { intelligenceIndex: 48, blendedPriceUsd: 0.5, costPerTask: 0.20 },
+    } };
+    const tiers = proposeTiers(['agentic', 'mid', 'strong'], aa);
+    // Kept as fallback depth, never excluded.
+    expect(tiers.complex.at(-1)).toBe('agentic');
+    expect(tiers.normal.at(-1)).toBe('agentic');
+    expect(tiers.complex).toHaveLength(3);
+    expect(tiers.normal).toHaveLength(3);
+  });
+
   it('keeps a cached row that has only an intelligence score', () => {
     // The loader required a coding index, which would have dropped exactly
     // the rows the stand-in bug was hiding — at load time instead.
@@ -458,6 +475,22 @@ describe('loadAaCatalog', () => {
     expect(loaded).toBeDefined();
     expect(Object.keys(loaded!.models)).toEqual(['good']);
     expect(loaded!.models.good.codingIndex).toBe(60);
+  });
+
+  it('drops a malformed optional score and keeps the row', () => {
+    // One finite score admits a row; a string beside it used to be kept and
+    // reach `toFixed` in a candidate label.
+    const home = mkdtempSync(join(tmpdir(), 'sonata-catalog-'));
+    const path = aaCatalogPath(home);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      fetchedAt: 'x',
+      models: { m: { agenticIndex: 50, intelligenceIndex: 'unknown', codingIndex: null, blendedPriceUsd: 1, costPerTask: 0.1 } },
+    }));
+    const m = loadAaCatalog(home)!.models.m;
+    expect(m.agenticIndex).toBe(50);
+    expect('intelligenceIndex' in m).toBe(false);
+    expect('codingIndex' in m).toBe(false);
   });
 
   it('drops a malformed cost-per-task and keeps the row as uncosted', () => {

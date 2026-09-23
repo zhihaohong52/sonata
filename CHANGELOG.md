@@ -32,7 +32,15 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 - **`sonata init` asks for `/reload-plugins` only when an agent file changed.**
   A new ranking never changes an agent file: each agent names only its routed
   alias, and the router reads the ranked list from `sonata.toml` on every
-  request.
+  request. When `init` creates the agents directory, it asks for a Claude Code
+  restart instead: a running session doesn't watch a directory created after
+  it started.
+- **A model without an intelligence score ranks below every model with one.**
+  Its agentic or coding score used to be plotted on the intelligence axis. It
+  stays in the tier as a fallback.
+- **A malformed score in the cached catalog is dropped, not kept.** A row
+  with one valid score kept its other scores unchecked, and a non-number one
+  could crash a ranking label.
 
 ## [0.12.0] - 2026-09-23
 

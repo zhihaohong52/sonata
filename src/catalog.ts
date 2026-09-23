@@ -869,6 +869,22 @@ export function proposeTiers(
   };
   const byLevel = (a: string, b: string) => levelOf(b) - levelOf(a);
 
+  // A scored candidate with no intelligence index has only an agentic or
+  // coding score, and `reasoningOf` would plot that on the intelligence axis
+  // beside every other model. Such a candidate stays in the tier as fallback
+  // depth — demoted, as avoidance and the gate demote — but never sets the
+  // frontier and never competes with intelligence scores for a position.
+  // Only a MIX is off-scale: when no candidate has an intelligence score (an
+  // old cache, a fixture) they all share the fallback, and demoting every one
+  // of them would just delete the knee. Unscored candidates (no catalog)
+  // share the placeholder, the catalog-less path's own single scale.
+  const lacksIntelligence = (k: string): boolean => {
+    const entry = scoreFor(k, aa, providers, upstreamFor);
+    return entry !== undefined && !Number.isFinite(entry.intelligenceIndex);
+  };
+  const mixed = candidates.some((k) => !lacksIntelligence(k));
+  const offScale = (k: string): boolean => mixed && lacksIntelligence(k);
+  const scaleOrder = (a: string, b: string) => Number(offScale(a)) - Number(offScale(b));
   const capable = (k: string): boolean => lookupModel(k, aa, providers, upstreamFor).capable;
   const perTask = (k: string): number | undefined => scoreFor(k, aa, providers, upstreamFor)?.costPerTask;
 
@@ -889,7 +905,7 @@ export function proposeTiers(
    * computed afterwards would inherit the gate's tuned fraction.
    */
   const geometryFor = (metric: (entry: AaEntry) => number) => {
-    const pool = candidates.filter((k) => capable(k) && (perTask(k) ?? 0) > 0);
+    const pool = candidates.filter((k) => capable(k) && !offScale(k) && (perTask(k) ?? 0) > 0);
     const points: Point[] = pool.map((k) => ({
       capability: rank(k, aa, providers, upstreamFor, metric).index,
       cost: perTask(k) ?? 0,
@@ -938,6 +954,7 @@ export function proposeTiers(
   const byCapability = (a: string, b: string) => {
     const ra = rankReasoning(a); const rb = rankReasoning(b);
     return avoidance(a, b)
+      || scaleOrder(a, b)
       || gateOrder(powerGeometry.wasteful)(a, b)
       // Knee-and-above leads; below-knee follows as fallback depth rather than
       // being excluded. The knee decides the lead, not membership — excluding
@@ -972,6 +989,8 @@ export function proposeTiers(
   // dollar is one comparable unit rather than a mix of work and token prices.
   const byValue = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
+    const scaled = scaleOrder(a, b);
+    if (scaled !== 0) return avoidance(a, b) || scaled;
     const gated = gateOrder(valueGeometry.wasteful)(a, b);
     if (gated !== 0) return avoidance(a, b) || gated;
     if (ra.price === rb.price && capabilityClass(ra.index) === capabilityClass(rb.index)) {
@@ -1085,12 +1104,19 @@ export function loadAaCatalog(home: string): AaCatalog | undefined {
       ) {
         // An unknown level is a hand-edit or a foreign writer; the score is
         // still good, so keep the row and drop only the field.
-        const { effort, costPerTask, ...rest } = entry as AaEntry;
+        const { effort, costPerTask, codingIndex, agenticIndex, intelligenceIndex, ...rest } = entry as AaEntry;
         // Same treatment as `effort`: the row's score is still good, so drop
-        // only the malformed field and let the model read as uncosted.
-        const kept: AaEntry = typeof costPerTask === 'number' && Number.isFinite(costPerTask)
-          ? { ...rest, costPerTask }
-          : rest;
+        // only the malformed field and let the model read as uncosted. Each
+        // optional score likewise: one finite score admits the row, so a
+        // string beside it would otherwise reach `toFixed` in a label.
+        const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+        const kept: AaEntry = {
+          ...rest,
+          ...(finite(codingIndex) ? { codingIndex } : {}),
+          ...(finite(agenticIndex) ? { agenticIndex } : {}),
+          ...(finite(intelligenceIndex) ? { intelligenceIndex } : {}),
+          ...(finite(costPerTask) ? { costPerTask } : {}),
+        };
         models[name] = effort !== undefined && isEffort(effort) ? { ...kept, effort } : kept;
       }
     }
