@@ -30,10 +30,94 @@ describe('shouldLaunchTui', () => {
     expect(shouldLaunchTui('tui', false, true)).toBe(false);
   });
 
-  it('never launches for another command', () => {
-    for (const command of ['doctor', 'init', 'serve', '--help', '-h', '--version']) {
+  it('opens the shell for the commands that are screens in it', () => {
+    // Deep links into one app rather than separate apps: `status` opens it on
+    // the status screen, `agents` on tiers.
+    expect(shouldLaunchTui('status', true, true)).toBe(true);
+    expect(shouldLaunchTui('agents', true, true)).toBe(true);
+  });
+
+  it('keeps agents plain for --json and --list', () => {
+    // Printed output, not an editor. Opening Ink swallowed the output mode
+    // before its flag was ever parsed.
+    expect(shouldLaunchTui('agents', true, true, ['--json'])).toBe(false);
+    expect(shouldLaunchTui('agents', true, true, ['--list'])).toBe(false);
+    expect(shouldLaunchTui('agents', true, true, [])).toBe(true);
+  });
+
+  it('keeps init scripted for --credential-source, in both spellings', () => {
+    expect(shouldLaunchTui('init', true, true, ['--credential-source', 'acme=sonata'])).toBe(false);
+    expect(shouldLaunchTui('init', true, true, ['--credential-source=acme=sonata'])).toBe(false);
+  });
+
+  it('opens status for --global, which the screen honours', () => {
+    expect(shouldLaunchTui('status', true, true, ['--global'])).toBe(true);
+  });
+
+  it('keeps status plain for a session selection the screen cannot honour', () => {
+    // The screen has a project axis and no session axis. Opening it for
+    // `--session <id>` would silently drop the selection and show something
+    // else under the same name.
+    expect(shouldLaunchTui('status', true, true, ['--session', 'abc'])).toBe(false);
+    expect(shouldLaunchTui('status', true, true, ['--all'])).toBe(false);
+    expect(shouldLaunchTui('status', true, true, ['--session=abc'])).toBe(false);
+  });
+
+  it('keeps those same commands printing when either stream is not a TTY', () => {
+    // The contract, not a courtesy: `sonata status` is read by scripts, and
+    // both run inside SessionStart hooks where nothing can answer a screen.
+    for (const command of ['status', 'agents']) {
+      expect(shouldLaunchTui(command, false, true)).toBe(false);
+      expect(shouldLaunchTui(command, true, false)).toBe(false);
+    }
+  });
+
+  it('never launches for another command, doctor included', () => {
+    // `doctor` is deliberately excluded even though the overview renders its
+    // checks: its whole output IS the list, it is what a broken machine runs,
+    // and it is quoted in error messages a non-TTY reader must be able to
+    // follow.
+    for (const command of ['doctor', 'serve', '--help', '-h', '--version']) {
       expect(shouldLaunchTui(command, true, true)).toBe(false);
     }
+  });
+
+  describe('init', () => {
+    // `init` used to be in the list above. It moved deliberately: the wizard
+    // now runs *inside* the shell rather than mounting its own Ink app, so a
+    // bare `sonata init` on a terminal is a deep link like `status` is. What
+    // has not changed is the scripted path, and that is what these tests pin.
+
+    it('opens the shell for a bare interactive init', () => {
+      expect(shouldLaunchTui('init', true, true, [])).toBe(true);
+    });
+
+    it('stays scripted whenever argv tells it what to do', () => {
+      // Not just `--yes`: `--providers` without it is still a caller
+      // supplying the answers, and opening a screen to ask questions that
+      // have already been answered would hang a script on a prompt.
+      for (const flag of [['--yes'], ['-y'], ['--providers', 'codex/openai'], ['--models', 'a'],
+        ['--roles', 'code'], ['--config-scope', 'global'], ['--scope', 'project'],
+        ['--routing', 'skip'], ['--guidance', 'skip'], ['--prune']]) {
+        expect(shouldLaunchTui('init', true, true, flag)).toBe(false);
+      }
+    });
+
+    it('treats --flag=value the same as --flag value', () => {
+      expect(shouldLaunchTui('init', true, true, ['--config-scope=global'])).toBe(false);
+    });
+
+    it('still opens the shell for a flag that needs a wizard to mean anything', () => {
+      // `--repropose-tiers` re-seeds the ranking screens. Matching "any flag"
+      // rather than naming the scripting ones would send it down the scripted
+      // path, where it silently re-ranks with nobody watching.
+      expect(shouldLaunchTui('init', true, true, ['--repropose-tiers'])).toBe(true);
+    });
+
+    it('never opens it without a terminal, flags or not', () => {
+      expect(shouldLaunchTui('init', false, true, [])).toBe(false);
+      expect(shouldLaunchTui('init', true, false, [])).toBe(false);
+    });
   });
 });
 

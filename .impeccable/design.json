@@ -1,0 +1,487 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-22T16:02:01Z",
+  "title": "Design System: sonata",
+  "extensions": {
+    "colorMeta": {
+      "bg-dark": {
+        "role": "neutral",
+        "displayName": "Charcoal Ground",
+        "canonical": "#141414",
+        "tonalRamp": [
+          "#0a0a0a",
+          "#141414",
+          "#1f1f1f",
+          "#2e2e2e",
+          "#3f3f3f",
+          "#6b6b6b",
+          "#8a8a8a",
+          "#e8e4de"
+        ]
+      },
+      "accent-dark": {
+        "role": "primary",
+        "displayName": "Terracotta Accent",
+        "canonical": "#d7875f",
+        "tonalRamp": [
+          "#3a1f12",
+          "#5a3020",
+          "#7a422c",
+          "#95492a",
+          "#b56843",
+          "#d7875f",
+          "#e8a98a",
+          "#f4d6c4"
+        ]
+      },
+      "text-dark": {
+        "role": "neutral",
+        "displayName": "Warm Bone",
+        "canonical": "#e8e4de",
+        "tonalRamp": [
+          "#2b2723",
+          "#453f39",
+          "#635d55",
+          "#8a8a8a",
+          "#b3aca3",
+          "#d2ccc4",
+          "#e8e4de",
+          "#f7f5f2"
+        ]
+      },
+      "muted-dark": {
+        "role": "neutral",
+        "displayName": "Graphite Secondary",
+        "canonical": "#8a8a8a",
+        "tonalRamp": [
+          "#1f1f1f",
+          "#2e2e2e",
+          "#3f3f3f",
+          "#5c5c5c",
+          "#8a8a8a",
+          "#a8a8a8",
+          "#c6c6c6",
+          "#e4e4e4"
+        ]
+      },
+      "rule-dark": {
+        "role": "neutral",
+        "displayName": "Hairline Grey",
+        "canonical": "#3f3f3f",
+        "tonalRamp": [
+          "#141414",
+          "#1f1f1f",
+          "#2e2e2e",
+          "#3f3f3f",
+          "#5c5c5c",
+          "#7a7a7a",
+          "#a0a0a0",
+          "#c9c9c9"
+        ]
+      },
+      "band-dark": {
+        "role": "neutral",
+        "displayName": "Selected Band",
+        "canonical": "#2e2e2e",
+        "tonalRamp": [
+          "#0a0a0a",
+          "#141414",
+          "#1f1f1f",
+          "#2e2e2e",
+          "#3f3f3f",
+          "#5c5c5c",
+          "#8a8a8a",
+          "#c6c6c6"
+        ]
+      },
+      "low-dark": {
+        "role": "tertiary",
+        "displayName": "Sage Low",
+        "canonical": "#87af87",
+        "tonalRamp": [
+          "#14200f",
+          "#1e3318",
+          "#2f6b34",
+          "#4a8a4a",
+          "#6b9d6b",
+          "#87af87",
+          "#aecaae",
+          "#d6e5d6"
+        ]
+      },
+      "mid-dark": {
+        "role": "tertiary",
+        "displayName": "Amber Mid",
+        "canonical": "#d7af5f",
+        "tonalRamp": [
+          "#2a2006",
+          "#44340c",
+          "#5f4a12",
+          "#7a5c14",
+          "#a97f2e",
+          "#d7af5f",
+          "#e6cb96",
+          "#f4e6cb"
+        ]
+      },
+      "high-dark": {
+        "role": "tertiary",
+        "displayName": "Signal Red",
+        "canonical": "#d75f5f",
+        "tonalRamp": [
+          "#2b0f0f",
+          "#471717",
+          "#6b2020",
+          "#9c2f24",
+          "#bd4444",
+          "#d75f5f",
+          "#e79595",
+          "#f4cccc"
+        ]
+      },
+      "bg-light": {
+        "role": "neutral",
+        "displayName": "Warm Paper",
+        "canonical": "#faf7f2",
+        "tonalRamp": [
+          "#2b2723",
+          "#453f39",
+          "#635d55",
+          "#8d8479",
+          "#c9c1b4",
+          "#e6dccc",
+          "#f2ece2",
+          "#faf7f2"
+        ]
+      },
+      "accent-light": {
+        "role": "primary",
+        "displayName": "Deep Terracotta",
+        "canonical": "#95492a",
+        "tonalRamp": [
+          "#2e1309",
+          "#4a2011",
+          "#6b2f18",
+          "#95492a",
+          "#b56843",
+          "#d7875f",
+          "#e8a98a",
+          "#f4d6c4"
+        ]
+      },
+      "text-light": {
+        "role": "neutral",
+        "displayName": "Near-Black Bark",
+        "canonical": "#2b2723",
+        "tonalRamp": [
+          "#161412",
+          "#2b2723",
+          "#453f39",
+          "#635d55",
+          "#8d8479",
+          "#b5ac9f",
+          "#d8d0c3",
+          "#faf7f2"
+        ]
+      },
+      "muted-light": {
+        "role": "neutral",
+        "displayName": "Stone Secondary",
+        "canonical": "#635d55",
+        "tonalRamp": [
+          "#1d1a17",
+          "#332f2a",
+          "#4a453e",
+          "#635d55",
+          "#8d8479",
+          "#b5ac9f",
+          "#d5cdc1",
+          "#f0ebe3"
+        ]
+      },
+      "rule-light": {
+        "role": "neutral",
+        "displayName": "Paper Hairline",
+        "canonical": "#c9c1b4",
+        "tonalRamp": [
+          "#2b2723",
+          "#4a453e",
+          "#6d665c",
+          "#948c7f",
+          "#c9c1b4",
+          "#ded7cb",
+          "#ece7de",
+          "#faf7f2"
+        ]
+      },
+      "band-light": {
+        "role": "neutral",
+        "displayName": "Linen Band",
+        "canonical": "#e6dccc",
+        "tonalRamp": [
+          "#2b2723",
+          "#4a453e",
+          "#6d665c",
+          "#948c7f",
+          "#c9c1b4",
+          "#e6dccc",
+          "#f2ebe0",
+          "#faf7f2"
+        ]
+      },
+      "low-light": {
+        "role": "tertiary",
+        "displayName": "Forest Low",
+        "canonical": "#2f6b34",
+        "tonalRamp": [
+          "#0d1f0f",
+          "#16331a",
+          "#204a24",
+          "#2f6b34",
+          "#4a8a4a",
+          "#6b9d6b",
+          "#a8c7a8",
+          "#dcebdc"
+        ]
+      },
+      "mid-light": {
+        "role": "tertiary",
+        "displayName": "Ochre Mid",
+        "canonical": "#7a5c14",
+        "tonalRamp": [
+          "#221900",
+          "#3a2c06",
+          "#56410d",
+          "#7a5c14",
+          "#a97f2e",
+          "#d7af5f",
+          "#e6cb96",
+          "#f6ecd8"
+        ]
+      },
+      "high-light": {
+        "role": "tertiary",
+        "displayName": "Oxide Red",
+        "canonical": "#9c2f24",
+        "tonalRamp": [
+          "#2b0c08",
+          "#471410",
+          "#6b1f18",
+          "#9c2f24",
+          "#bd4a3c",
+          "#d75f5f",
+          "#e79595",
+          "#f6d5d2"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "masthead": {
+        "displayName": "Masthead",
+        "purpose": "The product's own name, bold, on the overview screen only. Nothing rules under it."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "One Title-case noun at the top-left of a screen. The status screen uses lowercase board heads instead; that split is what the build does."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Row names and the value under edit, in primary text."
+      },
+      "secondary": {
+        "displayName": "Secondary",
+        "purpose": "Head note, cost, status words, provenance, explanatory lines. Always muted."
+      },
+      "keymap": {
+        "displayName": "Keymap",
+        "purpose": "The last line of a screen: key then lowercase verb, three spaces between pairs. Muted throughout on a framed screen; the ranking board alone accents its committing key."
+      }
+    },
+    "shadows": [],
+    "motion": [],
+    "breakpoints": [
+      {
+        "name": "floor",
+        "value": "40ch"
+      },
+      {
+        "name": "min-board",
+        "value": "72ch"
+      },
+      {
+        "name": "status-word",
+        "value": "88ch"
+      },
+      {
+        "name": "max-board",
+        "value": "120ch"
+      }
+    ],
+    "notes": {
+      "shadows": "None. A terminal has no shadows to give. Depth is tonal and one step deep: the painted ground, and a band on exactly one row. On dark the band is lighter than the ground; on light it must be darker.",
+      "motion": "None shipped. The direction contract proposed a single orchestrated line-settle on reorder; the built ranking board and its reducer animate nothing. Recorded as built.",
+      "breakpoints": "Measured in character cells, not pixels. Below 72 the capability bar is dropped; below 88 the status word shortens to its stroke; the board never grows past 120 and sits left. The page itself is always one cell short of the terminal (GROUND_INSET = 1), because ink 7.1.1 emits no background at all at exactly full width.",
+      "columnBudget": "rank 4 + name max(10, budget - bar) + bar min(18, max(8, floor(budget*0.3))) + cost 9 + status (13 with word, 4 without), where budget = width - 4 - 9 - status. At 96 columns: usable 95, status 13, budget 69, bar 18, name 51, total 95."
+    }
+  },
+  "components": [
+    {
+      "name": "State Strokes",
+      "kind": "custom",
+      "refersTo": "board-row-standby",
+      "description": "The six-stroke status vocabulary every screen's right-hand column is drawn from. The mark alone is sufficient; the word repeats it when there is room, colour repeats it again.",
+      "html": "<pre class=\"ds-strokes\">──  ready      reachable, in the chain\n━━  running    what a dispatch gets right now\n─ ─ delayed    a stated condition with a fix or a time\n──○ standby    dominated; never reached first\n─┼─ held       out by hand\n· · unranked   the catalog prices no work for it</pre>",
+      "css": ".ds-strokes { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #141414; color: #8a8a8a; padding: 12px 16px; margin: 0; line-height: 1.5; }"
+    },
+    {
+      "name": "Screen Frame",
+      "kind": "nav",
+      "refersTo": "screen-title",
+      "description": "Title, head note three cells right, hairline, one blank row, body, one blank row, keymap. Worn by default; the overview (masthead) and status (two boards, a rule each) deliberately do not.",
+      "html": "<pre class=\"ds-frame\"><b>Models</b><span class=\"n\">   7 models, all tiered</span>\n<span class=\"r\">───────────────────────────────────────────────</span>\n\n──  flash            gateway acme   code simple, normal\n─┼─ kimi-k3          opencode       <span class=\"n\">no tier names it</span>\n\n<span class=\"n\">esc back</span></pre>",
+      "css": ".ds-frame { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #141414; color: #e8e4de; padding: 12px 16px; margin: 0; line-height: 1.4; } .ds-frame .n { color: #8a8a8a; } .ds-frame .r { color: #3f3f3f; }"
+    },
+    {
+      "name": "Menu Row (selected)",
+      "kind": "nav",
+      "refersTo": "menu-row-selected",
+      "description": "Selection drawn three ways at once — accent edge, band, and full-strength bold text against muted neighbours — because any one alone fails somewhere. A row that opens something further carries an ellipsis; a disabled row keeps its place and says why.",
+      "html": "<pre class=\"ds-menu\"><span class=\"lab\">menu</span>\n\n<span class=\"e\">▌</span><span class=\"sel\"> models…        </span>\n <span class=\"row\">providers…      </span>\n <span class=\"row\">budget…         </span>\n <span class=\"dis\">litellm install </span><span class=\"dis\"> not from here </span></pre>",
+      "css": ".ds-menu { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #141414; color: #8a8a8a; padding: 12px 16px; margin: 0; line-height: 1.5; } .ds-menu .lab { color: #8a8a8a; } .ds-menu .e { color: #d7875f; } .ds-menu .sel { background: #2e2e2e; color: #e8e4de; font-weight: 700; } .ds-menu .row { color: #8a8a8a; } .ds-menu .dis { color: #3f3f3f; }"
+    },
+    {
+      "name": "Ranking Board",
+      "kind": "custom",
+      "refersTo": "board-row-lead",
+      "description": "The signature surface. Rows drawn in rank order so a row's position is its rank; the lead sits above a dotted rule; dominated rows are struck rather than dimmed; bars share one scale across the screen; cost is right- and decimal-aligned; status last.",
+      "html": "<pre class=\"ds-board\"><b>code: simple models — order is the fallback order</b><span class=\"n\">   3 of 19 ranked</span>\n<span class=\"r\">──────────────────────────────────────────────────────────────</span>\n<span class=\"a\">  1 flash @max        </span><span class=\"hi\">━━━━━━━━━━━━╸</span><span class=\"r\">─────</span><span class=\"n\">  $0.0184 ━━ running</span>\n<span class=\"r\">┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄</span>\n<span class=\"n\">  2 </span>kimi-k3 @high     <span class=\"mid\">━━━━━━━━</span><span class=\"r\">──────────</span><span class=\"n\">  $0.0412 ── ready</span>\n<span class=\"n\">  · </span><s class=\"dom\">terra @none</s>       <span class=\"lo\">━━━━</span><span class=\"r\">──────────────</span><span class=\"n\">  $0.2650 ──○ standby</span>\n<span class=\"n\">  · </span><span class=\"dom\">nemotron</span>          <span class=\"r\">──────────────────</span><span class=\"n\">        — · · unranked</span>\n<span class=\"r\">──────────────────────────────────────────────────────────────</span>\n<span class=\"n\">rankings: Artificial Analysis (fetched 2026-09-19) — artificialanalysis.ai</span>\n<span class=\"n\">↑↓ move   space rank   [ ] reorder   </span><span class=\"a\">enter</span><span class=\"n\"> confirm   esc cancel</span></pre>",
+      "css": ".ds-board { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #141414; color: #e8e4de; padding: 12px 16px; margin: 0; line-height: 1.4; } .ds-board .n { color: #8a8a8a; } .ds-board .r { color: #3f3f3f; } .ds-board .a { color: #d7875f; font-weight: 700; } .ds-board .hi { color: #d75f5f; } .ds-board .mid { color: #d7af5f; } .ds-board .lo { color: #87af87; } .ds-board .dom { color: #8a8a8a; text-decoration: line-through; }"
+    },
+    {
+      "name": "Shared-Scale Bar",
+      "kind": "custom",
+      "refersTo": "bar-fill",
+      "description": "A quantity against the screen's own maximum, never the value's ceiling — the reader's question is comparative. The half cell keeps a one-column difference visible at split-pane widths. A row with no measurement gets a full track and an em dash for cost: unknown is never shown as zero.",
+      "html": "<pre class=\"ds-bar\"><span class=\"lo\">━━━━━━╸</span><span class=\"r\">───────────</span>  low\n<span class=\"mid\">━━━━━━━━━━━━╸</span><span class=\"r\">─────</span>  mid (≥0.7)\n<span class=\"hi\">━━━━━━━━━━━━━━━━━━</span>  high (≥0.9)\n<span class=\"r\">──────────────────</span>  <span class=\"n\">unmeasured</span></pre>",
+      "css": ".ds-bar { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #141414; color: #8a8a8a; padding: 12px 16px; margin: 0; line-height: 1.5; } .ds-bar .r { color: #3f3f3f; } .ds-bar .lo { color: #87af87; } .ds-bar .mid { color: #d7af5f; } .ds-bar .hi { color: #d75f5f; } .ds-bar .n { color: #8a8a8a; }"
+    },
+    {
+      "name": "Editable Field",
+      "kind": "input",
+      "refersTo": "field-caret",
+      "description": "Muted label, bold primary value, accent caret. The caret is the whole affordance — an empty field with no caret reads as a value of zero rather than an absent cap. A refusal is answered in place, under the field. A secret renders as bullets, because what is printed stays in scrollback.",
+      "html": "<pre class=\"ds-field\"><span class=\"n\">daily_usd   </span><span class=\"a\">$</span><b>25</b><span class=\"a\">▏</span>\n\n<span class=\"n\">Counts priced volume on the native path only, so it can be exceeded.</span>\n<span class=\"warn\">must be a positive number of US dollars</span>\n\n<span class=\"n\">type a number   </span><span class=\"a\">enter</span><span class=\"n\"> save   esc back</span></pre>",
+      "css": ".ds-field { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #141414; color: #e8e4de; padding: 12px 16px; margin: 0; line-height: 1.5; } .ds-field .n { color: #8a8a8a; } .ds-field .a { color: #d7875f; } .ds-field .warn { color: #d7af5f; }"
+    },
+    {
+      "name": "Keymap",
+      "kind": "custom",
+      "refersTo": "keymap-key-commit",
+      "description": "The last line of every screen: key then lowercase verb, three spaces between pairs. Muted throughout on a framed screen; the ranking board alone draws its committing key in accent. Wraps between pairs, never inside one, and never drops a key to fit — a hidden action is worse than a second line.",
+      "html": "<pre class=\"ds-keys\"><span class=\"n\">↑↓ move   space rank   [ ] reorder   </span><span class=\"a\">enter</span><span class=\"n\"> confirm   A accept all   ← back   esc cancel</span></pre>",
+      "css": ".ds-keys { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #141414; color: #8a8a8a; padding: 12px 16px; margin: 0; line-height: 1.5; } .ds-keys .a { color: #d7875f; }"
+    },
+    {
+      "name": "Empty and Failure State",
+      "kind": "card",
+      "refersTo": "notice",
+      "description": "An empty screen is an invitation, not a void: say what would put something there. A screen that cannot load its config is replaced entirely by a one-line message naming the fault — an error is never drawn over a live surface that still owns the keyboard.",
+      "html": "<pre class=\"ds-empty\"><b>router</b><span class=\"n\">   updated 4s ago</span>\n<span class=\"r\">───────────────────────────────────────────────</span>\n<span class=\"n\">─ ─  not running on port 4100</span>\n<span class=\"warn\">   Start it with `sonata serve --daemon`, or run `sonata doctor` to find out why.</span></pre>",
+      "css": ".ds-empty { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #141414; color: #e8e4de; padding: 12px 16px; margin: 0; line-height: 1.5; } .ds-empty .n { color: #8a8a8a; } .ds-empty .r { color: #3f3f3f; } .ds-empty .warn { color: #d7af5f; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Departure Board",
+    "overview": "A tier is a departure board. One service goes; the rest stand by in declared order, and a delay is a stated condition with a time on it rather than an error. Every screen in src/tui-ink/ is built from that one idea: rows on a shared baseline under a fixed head, each carrying a position, a name, a measured quantity and a status held in its own right-hand column. The screen's job is to show the whole chain — what is running, what follows it, what is delayed and why — not merely where the cursor is.\n\nThe medium is a character grid inside somebody else's terminal, frequently in tmux and often over SSH. The system treats that as a material rather than a limitation. Box-drawing characters are the medium's own marks and are used as such; no emoji ever stands in for an icon. State is carried by the shape of a stroke, so the board survives a 16-colour session and a colour-blind reader, and colour is only ever allowed to agree with the stroke. One warm accent is spent only on what leads, what is selected, and what commits.\n\nThe app paints its own ground. This reverses an earlier rule (still stated in PRODUCT.md and in the surface brief) that the background belongs to the user and nothing may set one. That rule made light mode structurally impossible and shipped a selected row as terminal-grey text on a near-white band; the build that exists now names an explicit background/foreground pair per theme and fills the page before anything draws on it. Where the contract and the build disagree, this document records the build.",
+    "keyCharacteristics": [
+      "Rows on a shared baseline: one service per line, always, at any width.",
+      "State is stroke first; colour repeats it and never replaces it.",
+      "One accent, two or three marks a screen: what leads, what is selected, what commits.",
+      "Quantities are bars on a scale shared across rows, because the question is comparative.",
+      "Hairlines are rare: one under the head, one above provenance, one under the lead.",
+      "Nothing disappears — a cooled gateway and a dominated model stay on the board, struck.",
+      "Ink only. No emoji, no glyph costumes, no colour-only meaning."
+    ],
+    "rules": [
+      {
+        "name": "The Leads-Selects-Commits Rule",
+        "body": "The accent marks exactly three kinds of thing: what leads (the lead service's numeral, a live router's stroke), what is selected or being typed into (the selection edge, the field caret and its $), and — on the ranking board — the key that commits. A fourth use is decoration. Screens wearing the shared frame render their whole keymap muted, commit key included; only the ranking board accents enter.",
+        "section": "colors"
+      },
+      {
+        "name": "The Agreement Rule",
+        "body": "Colour may only agree with something already carried by a stroke, a position or a word. Strip every colour from a screen and it must still read. The quantity bands (≥0.9 High, ≥0.7 Mid, else Low) are behavioural thresholds taken from where sonata itself starts refusing or escalating.",
+        "section": "colors"
+      },
+      {
+        "name": "The Explicit Pair Rule",
+        "body": "A palette that asserts a background owns the foreground that lands on it. Every <Text> names a role; none inherits the terminal's foreground.",
+        "section": "colors"
+      },
+      {
+        "name": "The Band Is The Worst Case Rule",
+        "body": "Contrast is checked against the band as well as the ground, in both themes — tests/tui-ink/menu-theme.test.ts asserts WCAG 4.5:1 for text and 3:1 for secondary text and the accent on both surfaces.",
+        "section": "colors"
+      },
+      {
+        "name": "The Count-Right-Of-Head Rule",
+        "body": "A screen's one live fact goes in the head note, three spaces right of the title, in secondary text. It sits beside the title, not under it, so the hairline stays the first horizontal line on the screen.",
+        "section": "typography"
+      },
+      {
+        "name": "The Key-Then-Verb Rule",
+        "body": "Keymaps read key first, lowercase verb, three spaces between pairs. Wrap between pairs, never inside one, and never drop a key to fit.",
+        "section": "typography"
+      },
+      {
+        "name": "The Truncation Rule",
+        "body": "A field cut to fit ends in an ellipsis. Silently truncating a joined list produces a row that reads as complete and is not, which is the one failure worse than an ugly row.",
+        "section": "typography"
+      },
+      {
+        "name": "The No-Wrap Rule",
+        "body": "A row must never wrap. If it does not fit, drop a column, then shorten the status to its mark, then truncate the name. A wrapped row stops being a row, and one-service-per-line is the whole grammar.",
+        "section": "layout"
+      },
+      {
+        "name": "The Two-Rules Rule",
+        "body": "One hairline under the head, one above provenance. A third horizontal line becomes the loudest thing on a screen whose content is the point.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Nothing-Disappears Rule",
+        "body": "A cooled gateway, a dominated model, an untiered model and a disabled action all stay on screen, marked. Hiding a row loses the reason it was ruled out, which is the thing the reader came for.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Ink-Only Rule",
+        "body": "Box-drawing characters are the medium's own marks. No emoji ever stands in for an icon.",
+        "section": "shapes"
+      }
+    ],
+    "dos": [
+      "Do paint the ground and name every foreground. Each palette is an explicit BG/TEXT pair, and every <Text> names a role from it.",
+      "Do size the page and its rows through usableWidth() and columns() — one definition, one cell short of the terminal.",
+      "Do carry state on a stroke from STATE and let colour agree with it.",
+      "Do put the screen's one live fact in the head note, three spaces right of the title, in secondary text.",
+      "Do drop columns to fit: bar first (below 72), then the status word (below 88), then truncate the name.",
+      "Do draw selection three ways — accent edge, band, full-strength text — in a menu or a list. On the ranking board the cursor is drawn by inversion instead, because the accent there is already spent on the lead.",
+      "Do scale every bar against the screen's shared maximum.",
+      "Do keep dominated, cooled, held and disabled rows on screen and marked.",
+      "Do write keymaps as key verb, lowercase, three spaces between pairs, muted throughout on a framed screen; the ranking board alone accents its committing key.",
+      "Do check a new palette value against the band as well as the ground, and keep tests/tui-ink/menu-theme.test.ts passing."
+    ],
+    "donts": [
+      "Don't let a row wrap. Drop a column instead; a wrapped row stops being a row.",
+      "Don't use colour as the only carrier of anything — rank, state and cost must each read in monochrome.",
+      "Don't spend the accent on a third thing. The lead service and the committing key, and nothing else.",
+      "Don't make the band a screen background, a panel or a group fill; it is one row deep.",
+      "Don't invert the band's direction. Lighter than the ground on dark, darker on light.",
+      "Don't draw a third hairline on a screen, or a lead rule with nothing beneath it.",
+      "Don't substitute an emoji for a stroke, and don't hardcode yellow, cyan or green — a hardcoded hue does not move with the theme toggle.",
+      "Don't show unknown as zero: a missing measurement is an em dash and an unpriced row says so.",
+      "Don't hide a row to make a screen fit, and don't drop a key from a keymap to make a line fit.",
+      "Don't draw an error over a live surface; replace the surface."
+    ]
+  }
+}

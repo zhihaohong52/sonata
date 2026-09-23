@@ -16,3 +16,10 @@ sonata.toml
 
 # Isolated worktrees for subagent-driven plan execution (git-ignored scratch).
 .worktrees/
+
+# Impeccable's session scratch: the decision-page payloads/answers and the
+# detector's cache are per-run, not source. The surface briefs under
+# .impeccable/surfaces/ ARE source — they carry each surface's direction
+# contract, which later sessions reload — so they are force-added below.
+.impeccable/questions/
+.impeccable/hook.cache.json

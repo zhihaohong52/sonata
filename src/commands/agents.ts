@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../extended-context.js';
 import { configPath, loadConfig, parseConfig, TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
-import { assertEffortsPinned, candidateLabel, expandCandidates, hasTaskCost, loadAaCatalog, type AaCatalog } from '../catalog.js';
+import { assertEffortsPinned, candidateFacts, candidateLabel, capabilityOf, expandCandidates, hasTaskCost, loadAaCatalog, reasoningOf, type AaCatalog, type CandidateFacts } from '../catalog.js';
 import { replaceTiersBlock } from '../init/toml.js';
 import { loadModelsDev, type ModelsDevCache } from '../modelsdev.js';
 import { configUpstreamFor } from '../pricing.js';
@@ -276,6 +276,8 @@ export interface AgentsIo {
     config: SonataConfig;
     initialTiers: Record<string, TierLists>;
     items: Array<{ value: string; label: string }>;
+    /** Measurements for the tier being edited; see `itemFacts`. */
+    factsFor?: (candidate: string, tier: keyof TierLists) => CandidateFacts;
   }) => Promise<Record<string, TierLists> | undefined>;
 }
 
@@ -286,6 +288,35 @@ export function itemLabel(config: SonataConfig, candidate: string, aa?: AaCatalo
   return row.route === 'missing'
     ? `${scored}  (names no model)`
     : `${scored.padEnd(50)} ${row.gateway}/${row.id}  ${windowLabel(row.contextWindow)}`;
+}
+
+/**
+ * A candidate's measurements for one tier, as the ranking board draws them.
+ *
+ * Exported and shared rather than inlined at each call site, because the two
+ * editors — `sonata agents` and the TUI's Tiers screen — must offer identical
+ * rows or the same config reads differently depending on how you opened it.
+ * `itemLabel` is shared for that reason and this is its other half.
+ *
+ * The metric follows the tier, exactly as `init`'s tier screens do: `complex`
+ * ranks on reasoning and the value tiers on throughput, so the number on
+ * screen explains the order the row appears in. A single metric for all three
+ * would explain it on two screens out of three.
+ */
+export function itemFacts(
+  config: SonataConfig,
+  candidate: string,
+  tier: keyof TierLists,
+  aa?: AaCatalog,
+  modelsDev?: ModelsDevCache,
+): CandidateFacts {
+  return candidateFacts(
+    candidate,
+    aa,
+    Object.keys(config.native?.gateways ?? {}),
+    upstreamOf(config, modelsDev),
+    tier === 'complex' ? reasoningOf : capabilityOf,
+  );
 }
 
 export async function cmdAgents(
@@ -317,6 +348,11 @@ export async function cmdAgents(
     initialTiers: config.tiers,
     items: editorCandidates(config, catalog, modelsDev)
       .map((candidate) => ({ value: candidate, label: itemLabel(config, candidate, catalog, modelsDev) })),
+    // Without this every row renders through `RankedSelect`'s unscored branch
+    // — dashed track, `—` cost, "unranked" — which is right for a model the
+    // catalog cannot price and was wrong for all of them. This is the surface
+    // that gets opened often, and it was the one drawing a checkbox list.
+    factsFor: (candidate, tier) => itemFacts(config, candidate, tier, catalog, modelsDev),
   });
   if (next === undefined) {
     for (const line of renderAgents(rows)) io.out(line);

@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { homedir } from 'node:os';
-import { Box, Text, render, useApp, useInput } from 'ink';
+import { Box, Text, render, useApp, useInput, useWindowSize } from 'ink';
 import { cmdDoctor, type Check } from '../commands/doctor.js';
-import { nextStep, type Step } from './steps.js';
+import { afterCheck, hostKeyAction, nextStep, SCREENS_OWNING_KEYS, type Step } from './steps.js';
 import { OverviewScreen } from './screens/overview.js';
 import { BudgetScreen } from './screens/budget.js';
 import { ModelsScreen } from './screens/models.js';
@@ -10,6 +10,32 @@ import { ProvidersScreen } from './screens/providers.js';
 import { TiersScreen } from './screens/tiers.js';
 import { KeysScreen } from './screens/keys.js';
 import { ActionsScreen } from './screens/actions.js';
+import { StatusScreen } from './screens/status.js';
+import { InitScreen } from './screens/init.js';
+import { Menu, moveCursor, type MenuItem } from './components/menu.js';
+import { onAltScreen } from './alt-screen.js';
+import { Ground, ThemeProvider, useTheme } from './theme-context.js';
+
+/**
+ * The menu, in the order a reader needs it: what is happening, then what is
+ * configured, then what can be done to it.
+ *
+ * Setup sits last rather than first despite being what a new user needs, for
+ * the reason it is `opens`-marked: it rewrites `sonata.toml` whole, and a
+ * destructive row under the cursor's resting position is one stray enter away
+ * from running. Someone who has never run it reaches it from the overview's
+ * warning, which names it.
+ */
+const MENU: ReadonlyArray<MenuItem<Step>> = [
+  { value: 'status', label: 'Status' },
+  { value: 'models', label: 'Models', opens: true },
+  { value: 'providers', label: 'Providers', opens: true },
+  { value: 'tiers', label: 'Tiers', opens: true },
+  { value: 'keys', label: 'Keys', opens: true },
+  { value: 'budget', label: 'Budget', opens: true },
+  { value: 'actions', label: 'Actions', opens: true },
+  { value: 'init', label: 'Setup', opens: true },
+];
 
 /**
  * The config TUI.
@@ -23,10 +49,24 @@ import { ActionsScreen } from './screens/actions.js';
  * with no error, because there is no error. That is what once made every
  * prompt after the wizard die instantly. Every confirmation is a screen.
  */
-function ConfigTui({ cwd, home }: { cwd: string; home: string }): React.ReactElement {
+function ConfigTui({ cwd, home, start, statusGlobal, reproposeTiers, onKeep }: { cwd: string; home: string; start?: Step; statusGlobal?: boolean; reproposeTiers?: boolean; onKeep?: (lines: string[]) => void }): React.ReactElement {
   const { exit } = useApp();
+  // `checking` always runs first: every screen is read against a machine the
+  // health check has already described, and a deep link that skipped it would
+  // open on stale or absent state. `start` is where boot lands, not a bypass.
   const [step, setStep] = useState<Step>('checking');
   const [checks, setChecks] = useState<Check[]>([]);
+  const [cursor, setCursor] = useState(0);
+  const { toggle, name: themeName, palette } = useTheme();
+  // Subscribed only to be re-rendered by a resize. Every screen sizes itself
+  // from the terminal while rendering, and `Ground` re-rendering is not
+  // enough to reach them — its children element is the same object, so React
+  // stops there. Re-rendering the root hands every screen a fresh render, and
+  // with it the new width and height.
+  useWindowSize();
+  // Whether the health check has already run once. A deep link is a boot
+  // destination, not a standing one — see `afterCheck`.
+  const booted = useRef(false);
 
   useEffect(() => {
     if (step !== 'checking') return;
@@ -35,7 +75,9 @@ function ConfigTui({ cwd, home }: { cwd: string; home: string }): React.ReactEle
       .then((result) => {
         if (cancelled) return;
         setChecks(result.checks);
-        setStep('overview');
+        const next = afterCheck(start, booted.current);
+        booted.current = true;
+        setStep(next);
       })
       .catch(() => {
         // A machine doctor cannot describe is still one the TUI must open on,
@@ -43,37 +85,95 @@ function ConfigTui({ cwd, home }: { cwd: string; home: string }): React.ReactEle
         // rather than leaving a spinner running forever.
         if (cancelled) return;
         setChecks([]);
-        setStep('overview');
+        const next = afterCheck(start, booted.current);
+        booted.current = true;
+        setStep(next);
       });
     return () => { cancelled = true; };
-  }, [step, cwd, home]);
+  }, [step, cwd, home, start]);
 
   useInput((input, key) => {
-    if (step === 'overview' && (input === 'q' || key.escape)) { exit(); return; }
-    setStep((current) => nextStep(current, key.escape ? 'escape' : input));
+    // Setup draws its own screens and owns every key while it runs — including
+    // escape, which the branch below would otherwise read as "go back" and use
+    // to abandon a half-finished init, leaving `cmdInit` suspended on a
+    // promise nothing will ever resolve. `^t` stays live because a theme that
+    // cannot be corrected on the longest screen in the app is the one place
+    // the correction is most needed.
+    // Setup and Tiers own every key while open; see `SCREENS_OWNING_KEYS`.
+    // For Tiers this is what stopped one Esc on the ranking board from jumping
+    // two levels and discarding every unsaved edit.
+    if (SCREENS_OWNING_KEYS.has(step)) {
+      if (key.ctrl && input === 't') toggle();
+      return;
+    }
+    // Ctrl-T anywhere: the detection in `resolveThemeName` is a guess most
+    // terminals give it no evidence for, so the correction has to be one
+    // keystroke away from wherever the reader noticed it was wrong.
+    if (key.ctrl && input === 't') { toggle(); return; }
+    if (step === 'checking') return;
+
+    if (step === 'overview') {
+      if (input === 'q' || key.escape) { exit(); return; }
+      if (key.upArrow) { setCursor((c) => moveCursor(c, MENU.length, 'up')); return; }
+      if (key.downArrow) { setCursor((c) => moveCursor(c, MENU.length, 'down')); return; }
+      if (key.return) { setStep(MENU[cursor]!.value); return; }
+      // The letter keys still work. They were the only way in before this
+      // screen had a cursor, they are in muscle memory and in the docs, and
+      // keeping them costs one line — removing a working shortcut to add a
+      // cursor would be a downgrade for everyone who already learnt it.
+      setStep((current) => nextStep(current, input));
+      return;
+    }
+    const action = hostKeyAction(step, input, key.escape);
+    if (action === 'quit') { exit(); return; }
+    if (action === 'overview') { setStep('overview'); return; }
+    setStep((current) => nextStep(current, input));
   });
 
-  if (step === 'checking') return <Text>checking…</Text>;
+  if (step === 'checking') return <Text color={palette.TEXT}>checking…</Text>;
   if (step === 'budget') return <BudgetScreen cwd={cwd} home={home} />;
   if (step === 'models') return <ModelsScreen cwd={cwd} home={home} />;
   if (step === 'providers') return <ProvidersScreen cwd={cwd} home={home} />;
   if (step === 'tiers') return <TiersScreen cwd={cwd} home={home} onBack={() => setStep('overview')} />;
   if (step === 'keys') return <KeysScreen cwd={cwd} home={home} />;
   if (step === 'actions') return <ActionsScreen cwd={cwd} home={home} />;
+  if (step === 'status') return <StatusScreen cwd={cwd} home={home} global={statusGlobal} />;
+  // Back to `checking`, not `overview`: init changes the machine this whole
+  // app is drawn against, and the tier-routing warning that may have been the
+  // reason for running it is answered by re-running doctor, not by returning
+  // to the stale result that prompted it.
+  if (step === 'init') return <InitScreen cwd={cwd} home={home} reproposeTiers={reproposeTiers} onKeep={onKeep} onDone={() => setStep('checking')} />;
   return (
     <Box flexDirection="column">
-      <OverviewScreen checks={checks} />
+      <OverviewScreen checks={checks} items={MENU} cursor={cursor} />
+      <Box marginTop={1}>
+        <Text color={palette.MUTED}>{`↑↓ move   enter open   ^t ${themeName === 'dark' ? 'light' : 'dark'} theme   q quit`}</Text>
+      </Box>
     </Box>
   );
 }
 
 /** Render the TUI and resolve with the process exit code. */
-export async function runConfigTui(opts: { cwd: string; home?: string }): Promise<number> {
+export async function runConfigTui(opts: { cwd: string; home?: string; start?: Step; statusGlobal?: boolean; reproposeTiers?: boolean }): Promise<number> {
   // Resolved once here so every screen takes a required `home`: `configPath`
   // and `loadConfig` both demand one, and threading an optional down would put
   // the same `?? homedir()` in each screen.
   const home = opts.home ?? homedir();
-  const instance = render(<ConfigTui cwd={opts.cwd} home={home} />);
-  await instance.waitUntilExit();
+  // What the user should still have after the screen is gone. The alternate
+  // buffer is discarded by definition, so anything worth keeping has to be
+  // printed to the real shell once it is restored — `sonata init`'s closing
+  // lines are the case that matters, since they name the next command to run.
+  const keep: string[] = [];
+  await onAltScreen(async () => {
+    const instance = render(
+      <ThemeProvider>
+        <Ground>
+          <ConfigTui cwd={opts.cwd} home={home} start={opts.start} statusGlobal={opts.statusGlobal} reproposeTiers={opts.reproposeTiers} onKeep={(lines) => keep.splice(0, keep.length, ...lines)} />
+        </Ground>
+      </ThemeProvider>,
+    );
+    await instance.waitUntilExit();
+  });
+  for (const line of keep) console.log(line);
   return 0;
 }

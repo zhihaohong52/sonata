@@ -277,3 +277,34 @@ describe('day-file selection', () => {
     }
   });
 });
+
+describe('recentRoutes carries what the status board needs', () => {
+  it('surfaces the gateway, the effort level and the timestamp', () => {
+    // All three were already recorded per request and none reached the view,
+    // so a reader could see WHAT ran but not when, through which provider, or
+    // at which level — the three questions asked of a routing log.
+    const [line] = recentRoutes([row({ effort: 'max', gateway: 'acme' })], 10);
+    expect(line).toMatchObject({
+      gateway: 'acme',
+      effort: 'max',
+      ts: '2026-08-27T04:12:07.881Z',
+    });
+  });
+
+  it('leaves them absent rather than inventing them', () => {
+    // A candidate that pinned no level, and a row from before the ledger
+    // recorded a gateway. Absent must stay absent: `@undefined` beside a
+    // model name is worse than no suffix.
+    const [line] = recentRoutes([row({ effort: undefined, gateway: undefined })], 10);
+    expect(line!.effort).toBeUndefined();
+    expect(line!.gateway).toBeUndefined();
+  });
+
+  it('keeps newest first, so the timestamp column reads downward', () => {
+    const lines = recentRoutes([
+      row({ ts: '2026-08-27T04:00:00.000Z', alias: 'older' }),
+      row({ ts: '2026-08-27T04:12:07.881Z', alias: 'newer' }),
+    ], 10);
+    expect(lines.map((l) => l.alias)).toEqual(['newer', 'older']);
+  });
+});

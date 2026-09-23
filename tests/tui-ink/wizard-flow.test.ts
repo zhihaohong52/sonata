@@ -178,12 +178,19 @@ describe('the wizard, remaining flow', () => {
  * key it expands to, so the set can be compared with `rankableCandidates`.
  */
 function offeredRows(frame: string): string[] {
+  // The board's rank marker is a bare numeral (`1`), not `1.`: the trailing
+  // dot was part of the old flat-list row and reads as punctuation in a
+  // column of numbers.
+  //
+  // `▌` is stripped first: it is the cursor's accent edge, which replaced
+  // Ink's `inverse` so the board highlights the way the menu does, and it
+  // survives `trim()` where a colour change did not.
   return frame
     .split('\n')
-    .map((line) => line.replace(/\u001b\[[0-9;]*m/g, '').trim())
-    .filter((line) => /^(?:\d+\.|·)\s/.test(line))
+    .map((line) => line.replace(/\u001b\[[0-9;]*m/g, '').trim().replace(/^▌\s*/, ''))
+    .filter((line) => /^(?:\d+|·)\s/.test(line))
     .map((line) => line
-      .replace(/^(?:\d+\.|·)\s+/, '')
+      .replace(/^(?:\d+|·)\s+/, '')
       .split(/\s{2,}/)[0]!
       .replace(' @', '@'));
 }

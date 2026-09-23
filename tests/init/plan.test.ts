@@ -345,12 +345,17 @@ describe('plan — effort variants', () => {
       if (candidate.startsWith('acme-fast')) expect(candidate).toMatch(/^acme-fast@(high|max)$/);
     }
     expect(back.tiers!.code.simple[0]).toBe('acme-fast@high');
-    // `complex` leads with @high, not @max: the two are 6 apart (42 vs 36),
-    // inside COMPLEX_COST_BAND (7), so they count as equally capable for this
-    // model and the cheaper rung wins — $0.04 against $0.18. @max is still
-    // ranked, immediately behind it.
-    expect(back.tiers!.code.complex[0]).toBe('acme-fast@high');
-    expect(back.tiers!.code.complex).toContain('acme-fast@max');
+    // `complex` leads with @max now that the cost band is deleted: 42 against
+    // 36 is a six-point edge, well outside `AA_CAPABILITY_TIE_MARGIN`, so it
+    // is a real capability difference rather than benchmark noise and the
+    // strong tier takes it. The band used to credit both rungs with the
+    // family's best and let price decide; that crediting leaked across
+    // families and is what this design replaced.
+    //
+    // The wasteful-tail gate would demote @max if it bought little for the
+    // money. Here it buys six points for 4.5x, which pays.
+    expect(back.tiers!.code.complex[0]).toBe('acme-fast@max');
+    expect(back.tiers!.code.complex).toContain('acme-fast@high');
   });
 
   it('re-proposes a saved bare candidate that now has variants instead of dropping it', () => {

@@ -4,7 +4,7 @@ import { MultiSelect } from './components/multi-select.js';
 import { RankedSelect } from './components/ranked-select.js';
 import { ProvidersStep } from './components/providers-step.js';
 import { ModelsStep } from './components/models-step.js';
-import { candidateLabel, expandCandidates, hasTaskCost, loadAaCatalog, proposeTiers, taskCostedCandidates, unpinnedVariants } from '../catalog.js';
+import { candidateFacts, candidateLabel, capabilityOf, reasoningOf, expandCandidates, hasTaskCost, loadAaCatalog, proposeTiers, taskCostedCandidates, unpinnedVariants } from '../catalog.js';
 import { loadModelsDev, type ModelsDevCache } from '../modelsdev.js';
 import { loginGateway as defaultLoginGateway } from '../native/oauth-login.js';
 import { catalogSpellingsForGateway } from '../pricing.js';
@@ -27,6 +27,7 @@ import { TIER_NAMES, type NativeGatewayAuth } from '../config.js';
 import { byokCandidateKey, fetchModels as defaultFetchModels } from '../native/models.js';
 import { ROLE_BLURB } from '../roles.js';
 import type { InitState, TuiResult } from './types.js';
+import { usePalette } from './theme-context.js';
 
 export interface WizardData {
   home: string;
@@ -111,7 +112,9 @@ interface ChoiceProps<T> {
   onCancel: () => void;
 }
 
+/** A single-choice list screen used by the wizard's fixed questions (config scope, hook scope, routing). */
 function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: ChoiceProps<T>): React.ReactElement {
+  const palette = usePalette();
   const [cursor, setCursor] = useState(() => Math.max(0, choices.findIndex((choice) => choice.value === initial)));
 
   useInput((_, key) => {
@@ -124,18 +127,20 @@ function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: Choi
 
   return (
     <Box flexDirection="column">
-      <Text bold>{title}</Text>
+      <Text bold color={palette.TEXT}>{title}</Text>
       {choices.map((choice, index) => (
         <Text key={String(choice.value)} inverse={index === cursor}>
           {index === cursor ? '›' : ' '} {choice.label}{choice.hint ? `  · ${choice.hint}` : ''}
         </Text>
       ))}
-      <Text dimColor>↑↓ choose · enter confirm{onBack ? ' · ← back' : ''} · esc cancel</Text>
+      <Text color={palette.MUTED}>↑↓ choose   enter confirm{onBack ? '   ← back' : ''}   esc cancel</Text>
     </Box>
   );
 }
 
+/** The wizard's closing summary of what `sonata init` is about to write, shown before the confirm. */
 function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWizardProps['onDone']; onBack: () => void }): React.ReactElement {
+  const palette = usePalette();
   const hasModels = (state.nativeKeys?.length ?? 0) > 0;
   useInput((_, key) => {
     if (key.escape) onDone({ cancelled: true, state });
@@ -145,18 +150,18 @@ function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWiza
 
   return (
     <Box flexDirection="column">
-      <Text bold>Summary</Text>
-      <Text>Config scope: {state.configScope ?? 'none'}</Text>
+      <Text bold color={palette.TEXT}>Summary</Text>
+      <Text color={palette.TEXT}>Config scope: {state.configScope ?? 'none'}</Text>
       {/*
         This lists the harnesses imported *from*, not the ones installed — and
         the detection block directly above shows four of those, so a bare
         "none" read as "nothing was detected" when it meant "native models only".
       */}
-      <Text>Imported from: {state.harnesses?.join(', ') || 'no harness (native models only)'}</Text>
-      <Text>Providers: {state.providerKeys?.join(', ') || 'none'}</Text>
-      <Text>Models: {state.nativeKeys?.join(', ') || 'none'}</Text>
-      {!hasModels && <Text color="red">Select at least one model before continuing.</Text>}
-      <Text>Roles: {state.roles?.join(', ') || 'none'}</Text>
+      <Text color={palette.TEXT}>Imported from: {state.harnesses?.join(', ') || 'no harness (native models only)'}</Text>
+      <Text color={palette.TEXT}>Providers: {state.providerKeys?.join(', ') || 'none'}</Text>
+      <Text color={palette.TEXT}>Models: {state.nativeKeys?.join(', ') || 'none'}</Text>
+      {!hasModels && <Text color={palette.HIGH}>Select at least one model before continuing.</Text>}
+      <Text color={palette.TEXT}>Roles: {state.roles?.join(', ') || 'none'}</Text>
       {(state.roles ?? []).map((role) => {
         const tiers = state.tiers?.[role];
         const line = tiers
@@ -168,7 +173,7 @@ function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWiza
           : 'none';
         return <Text key={role}>  {role}: {line}</Text>;
       })}
-      <Text dimColor>{hasModels ? 'enter confirm' : '← back to select models'} · ← back · esc cancel</Text>
+      <Text color={palette.MUTED}>{hasModels ? 'enter confirm' : '← back to select models'}   ← back   esc cancel</Text>
     </Box>
   );
 }
@@ -440,8 +445,19 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       return <RankedSelect
         key={`${role}-${tier}`}
         title={`${role}: ${tier} models`}
+        metric={tier === 'complex' ? 'intelligence' : 'agentic'}
         items={tierPickerKeys(expand(rankableKeys), initialRanked, expand(nativePickerUniverseKeys))
-          .map((candidate) => ({ value: candidate, label: candidateLabel(candidate, catalog, gateways, upstreamFor) }))}
+          .map((candidate) => ({
+            value: candidate,
+            label: candidateLabel(candidate, catalog, gateways, upstreamFor),
+            // Reported on the metric THIS tier sorts by, so the number on
+            // screen explains the order it appears in. `complex` ranks on
+            // reasoning; the value tiers rank on throughput.
+            facts: candidateFacts(
+              candidate, catalog, gateways, upstreamFor,
+              tier === 'complex' ? reasoningOf : capabilityOf,
+            ),
+          }))}
         initialRanked={initialRanked}
         footer={footer}
         onSubmit={(ranked) => {

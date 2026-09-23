@@ -1,27 +1,50 @@
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Text } from 'ink';
+import { STATE } from '../theme.js';
+import { usePalette } from '../theme-context.js';
+import { Message, Screen, count, fit, ruleWidth } from '../components/screen.js';
 import { loadConfigForScreen } from './screen-config.js';
 import { gatewaysServingNothing, providerRows } from './provider-rows.js';
 
 /** Show configured gateways, their transport, and the models using them. */
 export function ProvidersScreen({ cwd, home }: { cwd: string; home: string }): React.ReactElement {
+  const palette = usePalette();
   const loaded = loadConfigForScreen(cwd, home);
-  if (!loaded.ok) {
-    return <Box flexDirection="column"><Text color="yellow">{loaded.message}</Text><Box marginTop={1}><Text dimColor>esc back</Text></Box></Box>;
-  }
+  if (!loaded.ok) return <Message text={loaded.message} title="Providers" />;
+
   const rows = providerRows(loaded.config);
   const empty = new Set(gatewaysServingNothing(rows));
+  // Capped at 40% of the page. Grown to the longest identifier it let one
+  // long key push every row past the page and wrap, whatever the budget for
+  // the details column said.
+  const width = Math.min(Math.max(...rows.map((row) => row.gateway.length), 7), Math.floor(ruleWidth() * 0.4));
+  // No floor: a floor is how a row outgrows a narrow page.
+  const rest = Math.max(0, ruleWidth() - 4 - width - 2);
+
   return (
-    <Box flexDirection="column">
-      <Text bold>Providers</Text>
-      <Box flexDirection="column" marginTop={1}>
-        {rows.map((row) => (
-          <Text key={row.gateway} color={empty.has(row.gateway) ? 'yellow' : undefined}>
-            {row.gateway}  {row.auth}  {row.transport}  {row.models.length === 0 ? '! no models' : row.models.join(', ')}
+    <Screen
+      title="Providers"
+      note={empty.size === 0 ? count(rows.length, 'gateway') : `${empty.size} of ${rows.length} serve nothing`}
+      footer="esc back   q quit"
+    >
+      {rows.length === 0 && (
+        <Text color={palette.MUTED}>No gateways configured. `sonata init` adds them, by import or by hand.</Text>
+      )}
+      {rows.map((row) => {
+        // A gateway serving no models is `held` rather than broken: it is
+        // reachable and authenticated, nothing routes through it. That costs
+        // nothing until it is the gateway you thought was carrying the work.
+        const idle = empty.has(row.gateway);
+        return (
+          <Text key={row.gateway} wrap="truncate-end">
+            <Text color={idle ? palette.MID : palette.MUTED}>{(idle ? STATE.held.mark : STATE.live.mark).padEnd(4)}</Text>
+            <Text color={idle ? palette.MID : palette.TEXT}>{fit(row.gateway, width).padEnd(width + 2)}</Text>
+            <Text color={palette.MUTED}>
+              {fit(`${row.auth}  ${row.transport}${row.models.length === 0 ? '  no models' : `  ${row.models.join(', ')}`}`, rest)}
+            </Text>
           </Text>
-        ))}
-      </Box>
-      <Box marginTop={1}><Text dimColor>esc back</Text></Box>
-    </Box>
+        );
+      })}
+    </Screen>
   );
 }

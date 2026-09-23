@@ -27,12 +27,14 @@ import { credentialAvailabilityFor, nativeLabel, deriveInitState, configPathFor,
 import { runInitTui } from '../tui-ink/run.js';
 import type { InitState } from '../tui-ink/types.js';
 import type { WizardData } from '../tui-ink/app.js';
+import type { TuiResult } from '../tui-ink/types.js';
 import type { ConfigScope } from '../tui-ink/types.js';
 import type { InitEnvironment } from './discover.js';
 import { validate } from './validate.js';
 import { addByokCandidates, addLiveCandidates, rewriteOauthToApiKey } from './candidates.js';
 import type { InitLog } from '../commands/init-log.js';
 
+/** The wizard front end of `sonata init`: builds `WizardData`, runs the wizard (or the host's), and returns the chosen `InitState`. */
 export async function interactiveState(
   env: InitEnvironment,
   opts: {
@@ -42,6 +44,8 @@ export async function interactiveState(
     scope?: 'project' | 'global' | 'skip';
     routing?: 'project' | 'global' | 'skip';
     guidance?: 'project' | 'global' | 'skip';
+    /** Draws the wizard when something other than a bare terminal does. */
+    host?: { runTui: (data: WizardData, log: (line: string) => void) => Promise<TuiResult> };
     /** Discard saved `[tiers]` rankings and re-rank from the catalog. */
     reproposeTiers?: boolean;
   },
@@ -139,7 +143,10 @@ export async function interactiveState(
     initialStateByScope,
   };
   log.line(`wizard: offering ${data.providers.length} providers, ${data.candidates.length} models`);
-  const result = await runInitTui(data, (line) => log.line(line));
+  // The host's runner when the TUI shell is drawing, `runInitTui` otherwise.
+  // Same component either way — what differs is who owns the Ink instance.
+  const runTui = opts.host?.runTui ?? runInitTui;
+  const result = await runTui(data, (line) => log.line(line));
   // Keys are recorded as the gateways they belong to, never as their value.
   log.line(`wizard returned: cancelled=${result.cancelled} scope=${result.state.configScope} ` +
     `providers=[${result.state.providerKeys ?? []}] models=[${result.state.nativeKeys ?? []}] ` +

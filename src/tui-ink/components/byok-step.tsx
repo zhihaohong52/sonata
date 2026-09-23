@@ -4,6 +4,7 @@ import { MultiSelect } from './multi-select.js';
 import { TextInput } from './text-input.js';
 import { isAnthropicRoutedName } from '../../config.js';
 import { fetchModels as defaultFetchModels, type FetchModelsResult } from '../../native/models.js';
+import { usePalette } from '../theme-context.js';
 
 interface ChoiceProps<T> {
   title: string;
@@ -15,6 +16,7 @@ interface ChoiceProps<T> {
 }
 
 function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: ChoiceProps<T>): React.ReactElement {
+  const palette = usePalette();
   const [cursor, setCursor] = useState(() => Math.max(0, choices.findIndex((choice) => choice.value === initial)));
 
   useInput((_, key) => {
@@ -27,13 +29,13 @@ function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: Choi
 
   return (
     <Box flexDirection="column">
-      <Text bold>{title}</Text>
+      <Text bold color={palette.TEXT}>{title}</Text>
       {choices.map((choice, index) => (
         <Text key={String(choice.value)} inverse={index === cursor}>
           {index === cursor ? '›' : ' '} {choice.label}
         </Text>
       ))}
-      <Text dimColor>↑↓ choose · enter confirm{onBack ? ' · ← back' : ''} · esc cancel</Text>
+      <Text color={palette.MUTED}>↑↓ choose   enter confirm{onBack ? '   ← back' : ''}   esc cancel</Text>
     </Box>
   );
 }
@@ -59,6 +61,7 @@ export interface ByokStepProps {
  * writing into a screen the user has already left.
  */
 export function ByokStep(props: ByokStepProps): React.ReactElement {
+  const palette = usePalette();
   const { provider, apiKey, initialIds, fetchModels, onKey, onSubmit, onBack, onCancel } = props;
   const [result, setResult] = useState<FetchModelsResult | undefined>(undefined);
   const [dropped, setDropped] = useState(0);
@@ -107,8 +110,8 @@ export function ByokStep(props: ByokStepProps): React.ReactElement {
   if (result === undefined) {
     return (
       <Box flexDirection="column">
-        <Text bold>{provider.name}</Text>
-        <Text dimColor>fetching models from {provider.url}…</Text>
+        <Text bold color={palette.TEXT}>{provider.name}</Text>
+        <Text color={palette.MUTED}>fetching models from {provider.url}…</Text>
       </Box>
     );
   }
@@ -148,7 +151,7 @@ export function ByokStep(props: ByokStepProps): React.ReactElement {
   return (
     <Box flexDirection="column">
       {dropped > 0 && (
-        <Text dimColor>
+        <Text color={palette.MUTED}>
           {dropped} claude-* model{dropped === 1 ? '' : 's'} not shown — the router reserves that prefix
         </Text>
       )}

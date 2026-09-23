@@ -47,6 +47,7 @@ export type RsAction =
   | { type: 'moveUp' }
   | { type: 'moveDown' };
 
+/** The board's starting state: cursor on the first row, `ranked` holding the seeded indices in rank order. */
 export function rsInitial(itemCount: number, initialRanked: number[]): RsState {
   return {
     cursor: 0,
@@ -54,6 +55,7 @@ export function rsInitial(itemCount: number, initialRanked: number[]): RsState {
   };
 }
 
+/** The board's state transitions — cursor moves, rank toggles and reorders — as a pure reducer, so every key is testable without a TTY. */
 export function rsReduce(state: RsState, action: RsAction, itemCount: number): RsState {
   const maxCursor = Math.max(0, itemCount - 1);
 
@@ -92,4 +94,104 @@ export function rsReduce(state: RsState, action: RsAction, itemCount: number): R
       return { cursor: state.cursor + 1, ranked };
     }
   }
+}
+
+/** A row's measurements, as far as dominance cares. */
+export interface Measured { capability?: number; costPerTask?: number }
+
+/**
+ * Which rows are genuinely Pareto-dominated: something else is at least as
+ * capable and costs no more.
+ *
+ * Computed rather than assumed. The board used to label **every unranked row**
+ * `dominated`, whose stated meaning in `theme.ts` is "something better and
+ * cheaper exists, so this will never be chosen first" — a claim about the
+ * catalog that the component had never checked. It only knew the row was not
+ * in the user's list. Deselecting a perfectly good model still called it
+ * standby, and on a real screen the label happened to be true, which is worse
+ * than being obviously wrong: it reads as verified.
+ *
+ * Same class as the OAuth gateway reported as needing a credential it cannot
+ * have. A row that says something about the world has to have looked.
+ *
+ * Only rows carrying both measurements take part. An unscored row cannot
+ * dominate (nothing is known about it) and cannot be dominated (there is
+ * nothing to compare), which is why it has a state of its own.
+ */
+export function dominatedRows(rows: ReadonlyArray<Measured | undefined>): Set<number> {
+  const out = new Set<number>();
+  const scored = rows
+    .map((row, index) => ({ index, row }))
+    .filter((entry): entry is { index: number; row: Measured } =>
+      entry.row?.capability !== undefined && entry.row?.costPerTask !== undefined);
+  for (const a of scored) {
+    const beaten = scored.some((b) => b.index !== a.index
+      && b.row.capability! >= a.row.capability!
+      && b.row.costPerTask! <= a.row.costPerTask!
+      && (b.row.capability! > a.row.capability! || b.row.costPerTask! < a.row.costPerTask!));
+    if (beaten) out.add(a.index);
+  }
+  return out;
+}
+
+/**
+ * Which rows of the board to draw, so it never outgrows the terminal.
+ *
+ * The board drew every row however short the window was. A role with a
+ * dozen candidates plus the head, the column header, three rules and a
+ * keymap that wraps on a narrow terminal is taller than a 22-row window, and
+ * what goes is the TOP — the title that says which role and tier is being
+ * ranked. Found while verifying resize: at 40 columns the key hints wrapped
+ * and the title scrolled away.
+ *
+ * The window follows the cursor, centred where it can be, so the row being
+ * moved is always on screen — `[` and `]` carry a row up and down the list,
+ * and a window that did not follow would move it out of sight. `room` is the
+ * number of lines left for rows after the chrome. The result never uses more
+ * lines than that, markers included — on a terminal too short for markers
+ * they are dropped rather than drawn past the bottom.
+ *
+ * The `↑`/`↓` markers are budgeted here rather than drawn on top: they cost a
+ * line each, and forgetting them is how a windowed list overflows by one or
+ * two.
+ */
+export function boardWindow(
+  cursor: number,
+  count: number,
+  room: number,
+): { start: number; end: number; markers: boolean } {
+  const avail = Math.max(1, room);
+  if (count <= avail) return { start: 0, end: count, markers: false };
+  // Markers only when there is room for them AND a row: below three lines
+  // they would crowd out the list they describe, and drawing them anyway is
+  // how a "windowed" list still overflowed a very short terminal — the floor
+  // used to force three rows plus two markers into as little as one line.
+  const markers = avail >= 3;
+  const size = markers ? avail - 2 : avail;
+  const start = Math.max(0, Math.min(cursor - Math.floor(size / 2), count - size));
+  return { start, end: Math.min(count, start + size), markers };
+}
+
+/**
+ * How many lines a row of items takes once it wraps between items.
+ *
+ * The keymap wraps between key/action pairs, never inside one, so its height
+ * is a greedy packing of whole pairs — not total width divided by the page.
+ * The division undercounted badly exactly where it mattered: at 22 columns
+ * almost every pair gets a line of its own, the estimate said four lines
+ * where there were six, and the board spent the difference by pushing its
+ * title off the top.
+ */
+export function packedLines(widths: readonly number[], width: number): number {
+  const page = Math.max(1, width);
+  let lines = widths.length > 0 ? 1 : 0;
+  let used = 0;
+  for (const w of widths) {
+    if (used > 0 && used + w > page) { lines += 1; used = 0; }
+    // An item wider than the page still takes one line of its own; the line
+    // truncates or wraps inside it, which the caller's budget cannot see
+    // anyway, so count it as the one line it occupies at best.
+    used += w;
+  }
+  return lines;
 }
