@@ -1,8 +1,11 @@
 # Model → provider routing: one model, many ways to reach it
 
-**Status:** designed, not implemented
+**Status:** partly shipped. The derived tier ranking (the frontier, its knee
+and the wasteful-tail gate) and `sonata status` project scoping shipped in
+0.12.0. Model → provider routing itself is designed, not implemented.
 **Date:** 2026-09-22
-**Ships in:** 0.12.0
+**Ships in:** 0.13.0 (moved from 0.12.0, which shipped the TUI redesign and
+the ranking half of this document first)
 
 ## The decision
 
