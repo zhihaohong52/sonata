@@ -51,12 +51,16 @@ export interface InitEnvironment {
 }
 
 export async function discover(
-  opts: Pick<InitOptions, 'cwd' | 'home' | 'packageRoot' | 'detect'>,
+  opts: Pick<InitOptions, 'cwd' | 'home' | 'packageRoot' | 'detect' | 'onProbe'>,
   out: (line: string) => void,
 ): Promise<InitEnvironment> {
   // ---- detect -----------------------------------------------------------
   const detect = opts.detect ?? defaultDetector;
-  const { tmux, harnesses } = await detect({ home: opts.home, supportedVersions: OPENCODE_RANGE });
+  const { tmux, harnesses } = await detect({
+    home: opts.home,
+    supportedVersions: OPENCODE_RANGE,
+    onProbe: opts.onProbe,
+  });
   const problems: Problem[] = [...tmux.problems, ...harnesses.flatMap((h) => h.problems)];
 
   out(tmux.installed ? `  ✓ tmux ${tmux.version}` : '  ✗ tmux not found');

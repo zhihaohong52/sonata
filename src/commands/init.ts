@@ -57,6 +57,7 @@ function renderProblem(p: Problem): string {
   return `  ${icon} ${p.message}${fix}`;
 }
 
+/** Run `sonata init`: discover, choose (wizard, host or flags), validate, plan, confirm and apply. Teed to a log, since the wizard owns the screen. */
 export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   const log = opts.log ?? openInitLog(opts.home);
   const print = opts.write ?? ((l: string) => console.log(l));
@@ -64,7 +65,10 @@ export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   // — Ink repaints and the list prompts use the alternate buffer — so what is
   // on the terminal after a failed run is not what the run said.
   const out = (line: string): void => { print(line); log.line(line); };
-  const interactive = !opts.yes && isInteractive();
+  // A host draws its own screens, so it *is* interactive even where
+  // `isInteractive()` cannot tell — it checks this process's stdin, and inside
+  // the shell that has already been claimed by Ink.
+  const interactive = !opts.yes && (opts.host !== undefined || isInteractive());
   log.line(`cwd=${opts.cwd} home=${opts.home} interactive=${interactive} yes=${opts.yes ?? false}`);
   try {
     return await runInit(opts, out, log, interactive);
@@ -81,8 +85,14 @@ async function runInit(
   interactive: boolean,
 ): Promise<InitResult> {
   out('');
-  out(interactive ? banner() : '  sonata init');
-  out('');
+  // The banner is CLI chrome: it exists to name the tool when it takes over a
+  // terminal. A host has already drawn its own title, so printing it there
+  // puts six lines of ASCII art at the top of a screen whose job is to report
+  // what happened — which is what it did.
+  if (opts.host === undefined) {
+    out(interactive ? banner() : '  sonata init');
+    out('');
+  }
 
   // ---- discover ---------------------------------------------------------
   const env: InitEnvironment = await discover({
@@ -90,6 +100,7 @@ async function runInit(
     home: opts.home,
     packageRoot: opts.packageRoot,
     detect: opts.detect,
+    onProbe: opts.onProbe,
   }, out);
 
   if (env.problems.some((p) => p.severity === 'error')) {
@@ -145,7 +156,8 @@ async function runInit(
   // a cleared screen, asking the user to approve a summary they could no longer
   // read. The prompt has to carry its own copy of what it is asking about.
   const writeQuestion = [...initPlan.summary, 'Write these changes?'].join('\n');
-  if (interactive && !(await confirm(writeQuestion, true))) {
+  const ask = opts.host?.confirm ?? confirm;
+  if (interactive && !(await ask(writeQuestion, true))) {
     out('  Nothing written.');
     return cancelledResult(env.problems, chosen.state, opts);
   }
@@ -153,7 +165,7 @@ async function runInit(
   // ---- apply ------------------------------------------------------------
   const applied = await apply(initPlan, opts, {
     out,
-    prune: opts.prune ?? (interactive ? async () => confirm('Delete them?', true) : false),
+    prune: opts.prune ?? (interactive ? async () => ask('Delete them?', true) : false),
     // The one place the real installer is wired in. `init` is the interactive,
     // foregrounded moment where a multi-minute install makes sense; every
     // other caller has to ask for it explicitly.
@@ -182,6 +194,7 @@ function blockedResult(problems: Problem[], opts: InitOptions): InitResult {
   };
 }
 
+/** The `InitResult` for a run the user cancelled: nothing written, `cancelled: true` so a host can say so. */
 function cancelledResult(problems: Problem[], state: InitState, opts: InitOptions): InitResult {
   return {
     problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
@@ -191,6 +204,7 @@ function cancelledResult(problems: Problem[], state: InitState, opts: InitOption
   };
 }
 
+/** Whether an error is the prompt layer's cancellation rather than a failure. */
 export function isCancellation(err: unknown): boolean {
   return err instanceof CancelledError;
 }

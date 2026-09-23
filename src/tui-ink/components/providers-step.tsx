@@ -28,6 +28,7 @@ import type { ModelsDevCache } from '../../modelsdev.js';
 import { loginGateway as defaultLoginGateway, type LoginResult } from '../../native/oauth-login.js';
 import { fetchModels as defaultFetchModels } from '../../native/models.js';
 import type { InitState } from '../types.js';
+import { usePalette } from '../theme-context.js';
 
 interface ChoiceProps<T> {
   title: string;
@@ -44,6 +45,7 @@ interface ChoiceProps<T> {
  * Both are small (under 35 lines) and neither depends on the other's file.
  */
 function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: ChoiceProps<T>): React.ReactElement {
+  const palette = usePalette();
   const [cursor, setCursor] = useState(() => Math.max(0, choices.findIndex((choice) => choice.value === initial)));
 
   useInput((_, key) => {
@@ -56,13 +58,13 @@ function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: Choi
 
   return (
     <Box flexDirection="column">
-      <Text bold>{title}</Text>
+      <Text bold color={palette.TEXT}>{title}</Text>
       {choices.map((choice, index) => (
         <Text key={String(choice.value)} inverse={index === cursor}>
           {index === cursor ? '›' : ' '} {choice.label}
         </Text>
       ))}
-      <Text dimColor>↑↓ choose · enter confirm{onBack ? ' · ← back' : ''} · esc cancel</Text>
+      <Text color={palette.MUTED}>↑↓ choose   enter confirm{onBack ? '   ← back' : ''}   esc cancel</Text>
     </Box>
   );
 }
@@ -167,6 +169,7 @@ export function OAuthModelsStep({ provider, modelIds, onSubmit, onBack, onCancel
  * add providers one at a time — including one sonata has never heard of.
  */
 export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
+  const palette = usePalette();
   const {
     home, harnesses, providers, byokProviders, credentialAvailability, gatewayAuth, storedKeys,
     fetchModels = defaultFetchModels, modelsDevCache, loginGateway, state, onChange, onContinue, onBack, onCancel,
@@ -216,7 +219,7 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
     if (configured.length > 0) choices.push({ value: 'continue', label: 'Continue' });
     return (
       <Box flexDirection="column">
-        {problem !== undefined && <Text color="red">{problem}</Text>}
+        {problem !== undefined && <Text color={palette.HIGH}>{problem}</Text>}
         <Choice
           key="providers-menu"
           title="Set up providers"
@@ -410,7 +413,7 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
     ];
     return (
       <Box flexDirection="column">
-        {problem !== undefined && <Text color="red">{problem}</Text>}
+        {problem !== undefined && <Text color={palette.HIGH}>{problem}</Text>}
         <Choice
           key={`providers-credential-choice-${provider.provider}`}
           title={`Credential for ${provider.provider}`}

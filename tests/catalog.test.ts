@@ -79,21 +79,54 @@ describe('proposeTiers', () => {
     'pro-max':    { codingIndex: 77, blendedPriceUsd: 1, costPerTask: 1.399 },
   } };
 
-  it('ranks normal by value and complex by capability', () => {
+  it('leads normal with the knee, and complex with capability', () => {
+    // `flash-high` is the knee: on (log cost, capability) it sits furthest
+    // above the chord joining `flash-low` to `pro-max`. `normal` leads with
+    // it because the knee is the best balance point and `normal` is the
+    // default tier — leading it with the cheapest model available gave it the
+    // same lead as `simple`, which is the collapse SIMPLE_CAPABILITY_FLOOR
+    // caused and was deleted for.
     const p = proposeTiers(['flash-low', 'flash-high', 'pro-max'], threeTierAa);
-    expect(p.normal).toEqual(['flash-low', 'flash-high', 'pro-max']);
-    expect(p.complex).toEqual(['pro-max', 'flash-high', 'flash-low']);
+    expect(p.normal[0]).toBe('flash-high');
+    // Behind the knee, value order resumes.
+    expect(p.normal.slice(1)).toEqual(['flash-low', 'pro-max']);
+    // `pro-max` buys 14 points for 1.5 cost decades — under a third of the
+    // median slope — so the gate demotes it to last. It is demoted, never
+    // dropped: the tier keeps it as a fallback.
+    expect(p.complex).toEqual(['flash-high', 'flash-low', 'pro-max']);
   });
 
-  it('makes simple a cost-capped subsequence of normal', () => {
-    // 12 x $0.010 = $0.120, so pro-max is out and the order is normal's.
+  it('keeps value order when the frontier is too short to have a knee', () => {
+    // Two frontier points have no interior. `kneeIndex` used to answer the
+    // cheapest point as a stand-in, and `normal` promoted it over its own
+    // value order. Here the cheapest (`weak`, 45 at $0.10) is NOT the best
+    // value (`strong`, 90 at $0.15 = 600/$ against 450/$), so the difference
+    // is visible: with no knee, value order stands. Both clear the capable
+    // threshold, or they would be filtered before any knee was computed and
+    // the test would pass whether or not the fix was there.
+    const aa: AaCatalog = { fetchedAt: 'x', models: {
+      weak:   { codingIndex: 45, blendedPriceUsd: 1, costPerTask: 0.10 },
+      strong: { codingIndex: 90, blendedPriceUsd: 1, costPerTask: 0.15 },
+    } };
+    expect(proposeTiers(['weak', 'strong'], aa).normal[0]).toBe('strong');
+  });
+
+  it('makes simple a cost-capped subsequence of the value order', () => {
+    // 12 x $0.010 = $0.120, so pro-max is out.
     const p = proposeTiers(['flash-low', 'flash-high', 'pro-max'], threeTierAa);
     expect(p.simple).toEqual(['flash-low', 'flash-high']);
-    // A subsequence, not a prefix: value is not monotonic in cost, so the
-    // filter can skip an over-ceiling candidate and keep a cheaper one behind
-    // it. Asserted as order-preserving containment rather than as a prefix,
-    // which held only because this fixture happens to be monotonic.
-    expect(isSubsequence(p.simple, p.normal)).toBe(true);
+    // **`simple` is no longer a subsequence of `normal`, and that is
+    // deliberate.** `normal` promotes the knee to its head, so the two tiers
+    // now disagree about which model comes first — cheap tier leads cheap,
+    // default tier leads balanced. Asserting the old containment would be
+    // asserting the collapse this change exists to undo.
+    //
+    // What still holds, and is what the property was protecting: `simple`
+    // never runs a sort of its own, so it cannot invent an order neither tier
+    // asked for. It is the value order, filtered by cost.
+    expect(isSubsequence(p.simple, ['flash-low', 'flash-high', 'pro-max'])).toBe(true);
+    // And it can only ever contain models `normal` also offers.
+    for (const key of p.simple) expect(p.normal).toContain(key);
   });
 
   it('skips an over-ceiling candidate rather than truncating at it', () => {
@@ -217,8 +250,10 @@ describe('proposeTiers', () => {
       },
     };
     const tiers = proposeTiers(['strong', 'near-strong', 'junk'], aa);
-    expect(tiers.normal[0]).toBe('junk');
+    // `simple` still leads with the cheap weak model; `normal` leads with the
+    // knee, which is the whole difference between the two tiers now.
     expect(tiers.simple).toEqual(['junk']);
+    expect(tiers.normal).toContain('junk');
   });
 
   it('anchors the simple ceiling to the best-value model', () => {
@@ -235,7 +270,10 @@ describe('proposeTiers', () => {
       },
     };
     const tiers = proposeTiers(['strong', 'value', 'lavish', 'junk'], aa);
-    expect(tiers.normal[0]).toBe('junk');
+    // The ceiling is anchored to the best-VALUE model, not to whatever leads
+    // `normal` — `normal` now leads with the knee, which is deliberately not
+    // the cheapest, and anchoring there would raise the cap by the knee's
+    // price and let `simple` reach models it exists to exclude.
     expect(tiers.simple).toEqual(['junk']);
     expect(tiers.complex).toContain('lavish');
   });
@@ -997,7 +1035,7 @@ describe('candidateLabel', () => {
 });
 
 
-describe('proposeTiers — the complex cost band', () => {
+describe('proposeTiers — the wasteful-tail gate', () => {
   // One ladder whose top rungs cost far more than they add, modelled on the
   // real gpt-6-astra numbers that prompted the band.
   const LADDER: AaCatalog = {
@@ -1009,24 +1047,29 @@ describe('proposeTiers — the complex cost band', () => {
     },
   };
 
-  it('leads with the cheapest rung inside the band, keeping the rest as fallbacks', () => {
-    // 52.7 - 45.8 = 6.9, inside COMPLEX_COST_BAND (7): all three count as
-    // "as capable as this model gets", so price decides and @low leads at a
-    // quarter of @xhigh's cost. The dearer rungs stay ranked behind it.
+  it('demotes the rung that buys almost nothing, and keeps it as a fallback', () => {
+    // This is the real astra ladder. `@max` buys +0.3 index points over
+    // `@xhigh` for 41% more money — 2.0 points per cost decade — so the gate
+    // demotes it. `complex` then leads with the strongest rung that actually
+    // pays for itself.
+    //
+    // Demoted, never dropped: the tier keeps it as a last-resort candidate,
+    // exactly as `avoid_gateways` demotes, so declining to pay for it costs
+    // preference rather than fallback depth.
     const tiers = proposeTiers(['astra'], LADDER);
-    expect(tiers.complex[0]).toBe('astra@low');
-    expect(tiers.complex).toEqual(expect.arrayContaining(['astra@max', 'astra@xhigh']));
+    expect(tiers.complex[0]).toBe('astra@xhigh');
+    expect(tiers.complex[tiers.complex.length - 1]).toBe('astra@max');
+    expect(tiers.complex).toEqual(expect.arrayContaining(['astra@max', 'astra@low']));
   });
 
-  it('does not reach past the band to a genuinely weaker rung', () => {
-    // 52.7 - 44.0 = 8.7, outside the band. Cheapness stops buying the lead:
-    // the band declines to pay for the top of a ladder, it does not accept an
-    // arbitrarily worse model for money.
-    const far: AaCatalog = {
+  it('keeps a top rung that earns its price', () => {
+    // The gate is about marginal return, not about being expensive. Give
+    // `@max` a real edge over `@xhigh` for the same money and it leads again.
+    const earns: AaCatalog = {
       fetchedAt: LADDER.fetchedAt,
-      models: { ...LADDER.models, 'astra-low': { ...LADDER.models['astra-low'], intelligenceIndex: 44.0 } },
+      models: { ...LADDER.models, astra: { ...LADDER.models['astra']!, intelligenceIndex: 62.0 } },
     };
-    expect(proposeTiers(['astra'], far).complex[0]).not.toBe('astra@low');
+    expect(proposeTiers(['astra'], earns).complex[0]).toBe('astra@max');
   });
 
   it('never prefers a cheaper, genuinely weaker MODEL', () => {
@@ -1114,29 +1157,34 @@ describe('proposeTiers — the complex cost band', () => {
 describe('proposeTiers — effort variants', () => {
   it('ranks variants as candidates: complex by capability, normal and simple by value', () => {
     const tiers = proposeTiers(['gpt-5.6-luna', 'gpt-5.6-terra', 'deepseek-v4-flash'], FAMILY_AA);
-    // COMPLEX_COST_BAND (7) reshapes this. Each ladder's rungs within 7 of
-    // its own top are credited with that top, so they compete on price:
-    //   luna  best 42.7 -> @max (42.7, $0.178) and @xhigh (39.5, $0.085) in
-    //                      band; @high (35.6, gap 7.1) and @low are not
-    //   terra best 43.7 -> @max ($1.399) and @high (37.6, gap 6.1) in band
-    // Ranking is then by capability CLASS (`capabilityClass`), not by a
-    // pairwise tolerance, so that the comparator cannot cycle. terra's banded
-    // 43.7 and luna's 42.7 land in classes 44 and 43, so terra leads outright
-    // and its cheaper in-band rung (@high, $0.338) comes first. deepseek's
-    // 41.7 is class 42, behind both.
+    // The frontier decides this now, and it is worth following through.
     //
-    // 43.7 vs 42.7 is exactly the margin, so the two were a *tie* under the
-    // old pairwise test and price put luna first. Separating them is the
-    // accepted cost of bucketing, and it is the safe direction: it ranks by
-    // capability where the old code ranked by price, and never makes the
-    // order depend on input.
+    // Frontier by ascending cost: luna@low (17.9, $0.0098), luna@high (35.6,
+    // $0.044), luna@xhigh (39.5, $0.085), luna@max (42.7, $0.178), then
+    // terra@max (43.7, $1.399). `deepseek@none` (41.7, $0.22) and terra@high
+    // (37.6, $0.338) are both dominated by luna@max — more capable, cheaper —
+    // so neither is on it.
     //
-    // The band itself stays a per-ladder claim, never a cross-model one: it
-    // never says "prefer a cheaper, genuinely weaker MODEL".
-    expect(tiers.complex.slice(0, 3)).toEqual(['gpt-5.6-terra@high', 'gpt-5.6-terra@max', 'gpt-5.6-luna@xhigh']);
-    // The floor is retired: normal sorts every capable level by value, and
-    // simple filters that order at 12x the best-value level's cost.
-    expect(tiers.normal[0]).toBe('gpt-5.6-luna@low');
+    // Slopes: 27.1, 13.6, 10.0, then **1.1** for the step to terra@max, which
+    // buys +1.0 agentic for 7.9x the money. Against a median of 13.6 the bar
+    // is 4.5, so terra@max is gated and demoted to the tail.
+    //
+    // `complex` then ranks the rest by capability: luna@max 42.7,
+    // deepseek@none 41.7, luna@xhigh 39.5.
+    expect(tiers.complex.slice(0, 3))
+      .toEqual(['gpt-5.6-luna@max', 'deepseek-v4-flash@none', 'gpt-5.6-luna@xhigh']);
+    // Gated, not dropped: still available once everything better has failed.
+    expect(tiers.complex).toContain('gpt-5.6-terra@max');
+    // `normal` leads with the knee of the AGENTIC frontier — the metric the
+    // value tiers rank by — which is `luna@xhigh`: normalised, it sits 0.402
+    // above the chord, against 0.383 for `@high` and 0.377 for `@max`.
+    //
+    // `simple` still leads with the cheapest, so the two tiers have different
+    // heads. That difference is the point: when both led with the cheapest
+    // model they were the same tier wearing two names.
+    expect(tiers.normal[0]).toBe('gpt-5.6-luna@xhigh');
+    // Behind the promoted knee, value order resumes.
+    expect(tiers.normal[1]).toBe('gpt-5.6-luna@low');
     expect(tiers.simple).toEqual([
       'gpt-5.6-luna@low', 'gpt-5.6-luna@high', 'gpt-5.6-luna@xhigh',
     ]);
@@ -1279,6 +1327,17 @@ describe('proposeTiers — effort breaks a capability-and-price tie', () => {
       },
     };
     expect(proposeTiers(['gemini-3.7-flash'], edged).complex[0]).toBe('gemini-3.7-flash@low');
+    // A 1.0 gap at a fifth of the price now goes to the MORE CAPABLE rung,
+    // where the deleted cost band made it a tie and let price decide.
+    //
+    // This is the band's removal showing its cost honestly. 71 against 72 is
+    // exactly `AA_CAPABILITY_TIE_MARGIN`, so `capabilityClass` separates them
+    // and `complex` — the strong end — takes the edge. The wasteful-tail gate
+    // cannot reach it either: with only two points on the frontier the bar is
+    // a fraction of a median computed from that single slope, so it can never
+    // exceed it, and there is no shape to tell "a bad deal" from "the only
+    // deal available". Gaps genuinely inside the margin are still resolved by
+    // price, which is the case above.
     const cheaper: AaCatalog = {
       fetchedAt: aa.fetchedAt,
       models: {
@@ -1286,7 +1345,16 @@ describe('proposeTiers — effort breaks a capability-and-price tie', () => {
         'gemini-3-7-flash-low': { codingIndex: 71, blendedPriceUsd: 0.5, agenticIndex: 71, costPerTask: 0.1, family: 'gemini-3-7-flash', effort: 'low' },
       },
     };
-    expect(proposeTiers(['gemini-3.7-flash'], cheaper).complex[0]).toBe('gemini-3.7-flash@low');
+    expect(proposeTiers(['gemini-3.7-flash'], cheaper).complex[0]).toBe('gemini-3.7-flash@high');
+    // Inside the margin, price still decides.
+    const noise: AaCatalog = {
+      fetchedAt: aa.fetchedAt,
+      models: {
+        ...aa.models,
+        'gemini-3-7-flash-low': { codingIndex: 71.8, blendedPriceUsd: 0.5, agenticIndex: 71.8, costPerTask: 0.1, family: 'gemini-3-7-flash', effort: 'low' },
+      },
+    };
+    expect(proposeTiers(['gemini-3.7-flash'], noise).complex[0]).toBe('gemini-3.7-flash@low');
   });
 });
 

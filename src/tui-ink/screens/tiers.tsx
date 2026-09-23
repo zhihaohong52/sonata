@@ -1,20 +1,11 @@
 import React, { useState } from 'react';
-import { Box, Text } from 'ink';
+import { useInput } from 'ink';
 import { loadAaCatalog } from '../../catalog.js';
 import { loadModelsDev } from '../../modelsdev.js';
-import { editorCandidates, itemLabel, writeTiers } from '../../commands/agents.js';
+import { editorCandidates, itemFacts, itemLabel, writeTiers } from '../../commands/agents.js';
 import { AgentsApp } from '../agents-app.js';
+import { Message } from '../components/screen.js';
 import { loadConfigForScreen } from './screen-config.js';
-
-/** The error state and the no-config state render the same shape. */
-function Message({ text }: { text: string }): React.ReactElement {
-  return (
-    <Box flexDirection="column">
-      <Text color="yellow">{text}</Text>
-      <Box marginTop={1}><Text dimColor>esc back</Text></Box>
-    </Box>
-  );
-}
 
 /**
  * Re-rank a role's tiers, from inside the TUI.
@@ -40,7 +31,16 @@ export function TiersScreen(
   const loaded = loadConfigForScreen(cwd, home);
   const [error, setError] = useState<string>();
 
-  if (!loaded.ok) return <Message text={loaded.message} />;
+  // Tiers owns every key (`SCREENS_OWNING_KEYS`), so the shell no longer
+  // turns Esc into "go home" here. The editor navigates out through `onDone`;
+  // the two message states have no editor, so they answer Esc themselves —
+  // otherwise a config that will not load would strand the reader on a
+  // screen whose own footer says "esc back" and means nothing.
+  useInput((input, key) => {
+    if (key.escape || input === 'q') onBack();
+  }, { isActive: !loaded.ok || error !== undefined });
+
+  if (!loaded.ok) return <Message text={loaded.message} title="Tiers" />;
   const { config } = loaded;
   const aa = loadAaCatalog(home);
   const modelsDev = loadModelsDev(home);
@@ -49,13 +49,19 @@ export function TiersScreen(
     label: itemLabel(config, candidate, aa, modelsDev),
   }));
 
+  // An error REPLACES the editor rather than sitting above it. As siblings,
+  // a refused write (`assertEffortsPinned` rejects a ranking that pins no
+  // effort level) drew the refusal over a live editor that still owned the
+  // keyboard, and the message's own "esc back" was not what esc did there.
+  if (error !== undefined) return <Message text={error} title="Tiers" />;
+
   return (
     <>
-      {error !== undefined ? <Message text={error} /> : null}
       <AgentsApp
       config={config}
       initialTiers={config.tiers ?? {}}
       items={items}
+      factsFor={(candidate, tier) => itemFacts(config, candidate, tier, aa, modelsDev)}
       onDone={(tiers) => {
         if (tiers === undefined) { onBack(); return; }
         try {

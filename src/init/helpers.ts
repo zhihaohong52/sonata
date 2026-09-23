@@ -24,6 +24,8 @@ import type { InitState } from '../tui-ink/types.js';
 import type { AvailableCredentials } from '../tui-ink/app-state.js';
 import type { HookScope } from '../settings.js';
 import type { InitLog } from '../commands/init-log.js';
+import type { WizardData } from '../tui-ink/app.js';
+import type { TuiResult } from '../tui-ink/types.js';
 
 export const OPENCODE_RANGE = '>=1.18.0 <2.0.0';
 
@@ -184,6 +186,40 @@ export interface InitOptions {
   detect?: Detector;
   /** Injected by tests so a suite never writes into the real log directory. */
   log?: InitLog;
+  /**
+   * Progress for the discovery step, which spawns a subprocess per harness and
+   * can run for many seconds with nothing to show for it. A TUI host draws
+   * this live; the CLI ignores it and keeps its existing summary lines.
+   */
+  onProbe?: (name: string, state: 'probing' | 'done', detail?: string) => void;
+  /**
+   * Who draws the interactive parts, when something other than a bare terminal
+   * is drawing them.
+   *
+   * `sonata init` owns the screen by mounting its own Ink app and then, after
+   * unmounting it, asking two plain questions through `src/tui.ts`. Inside the
+   * unified TUI neither of those is available: a second Ink instance on one
+   * stdout corrupts both silently, and the shell never unmounts — which it
+   * cannot, because Ink *unrefs stdin* on unmount and a prompt waiting on a
+   * keystroke after that is not work node knows about, so the process exits 0
+   * mid-prompt with no error. That is the documented "sonata init never saves
+   * the config" bug, and hosting init without this seam would recreate it.
+   *
+   * So the host supplies both, and everything else — discover, validate, plan,
+   * apply, and the order they run in — is untouched. The alternative was a
+   * second implementation of the init pipeline inside the TUI, which is how
+   * `tiersCollapse` came to be rebuilt at three call sites with one of them
+   * wrong.
+   */
+  host?: InitHost;
+}
+
+/** The interactive surfaces `cmdInit` needs, when the TUI shell is drawing them. */
+export interface InitHost {
+  /** Draw the wizard and resolve with what the user chose. */
+  runTui: (data: WizardData, log: (line: string) => void) => Promise<TuiResult>;
+  /** Ask a yes/no question. Carries its own copy of what it is asking about. */
+  confirm: (question: string, initial: boolean) => Promise<boolean>;
 }
 
 export function parseCredentialSourceFlags(values: string[]): Record<string, CredentialSource> {

@@ -5,6 +5,7 @@ import { mergeLiveCandidates, type CandidateOption } from '../app-state.js';
 import { isAnthropicRoutedName, isOauthGatewayAuth, type NativeGatewayAuth } from '../../config.js';
 import { fetchModels as defaultFetchModels } from '../../native/models.js';
 import { hasTaskCost, type AaCatalog } from '../../catalog.js';
+import { usePalette } from '../theme-context.js';
 
 export interface ModelsStepProps {
   candidates: CandidateOption[];
@@ -81,6 +82,7 @@ export function refreshableGateways(
  * gateway that does not answer simply keeps the list the harness gave.
  */
 export function ModelsStep(props: ModelsStepProps): React.ReactElement {
+  const palette = usePalette();
   const {
     candidates, addedGateways = [], gatewayBaseUrls, gatewayAuth, keys, initialSelected,
     aa, gatewayNames = [], upstreamForCandidate, fetchModels = defaultFetchModels, onSubmit, onBack, onCancel,
@@ -124,8 +126,8 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
   if (live === undefined) {
     return (
       <Box flexDirection="column">
-        <Text bold>Models</Text>
-        <Text dimColor>
+        <Text bold color={palette.TEXT}>Models</Text>
+        <Text color={palette.MUTED}>
           asking {targets.length} provider{targets.length === 1 ? '' : 's'} what {targets.length === 1 ? 'it serves' : 'they serve'}…
         </Text>
       </Box>
@@ -150,17 +152,17 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
   return (
     <Box flexDirection="column">
       {excluded.length > 0 && (
-        <Text dimColor>
+        <Text color={palette.MUTED}>
           excluded {excluded.map((candidate) => candidate.key).join(', ')} — AA publishes no cost-per-task; add by hand to sonata.toml
         </Text>
       )}
       {refreshed > 0 && (
-        <Text dimColor>
+        <Text color={palette.MUTED}>
           refreshed {refreshed} provider{refreshed === 1 ? '' : 's'} from their /models endpoint
         </Text>
       )}
       {failed.length > 0 && (
-        <Text dimColor>{failed.join(', ')} did not answer — showing the harness catalogue</Text>
+        <Text color={palette.MUTED}>{failed.join(', ')} did not answer — showing the harness catalogue</Text>
       )}
       <MultiSelect
         key="models"

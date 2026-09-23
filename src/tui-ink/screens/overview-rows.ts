@@ -4,17 +4,22 @@ import type { Check } from '../../commands/doctor.js';
 export interface OverviewRow { name: string; ok: boolean; detail: string }
 
 /**
- * Doctor's checks in the order the overview shows them: failures first.
+ * Only what is wrong.
  *
- * Stable within each group, so a check a reader has learned the position of
- * does not move when an unrelated one starts failing.
+ * A passing check is not information, it is reassurance — and twenty rows of
+ * reassurance is where the two that matter go to hide. `sonata doctor` still
+ * prints every check, because that is a report someone reads deliberately;
+ * this is a home screen someone glances at, and a glance should land on the
+ * problem or on nothing at all.
+ *
+ * Order is doctor's own, which groups related checks. Failures were once
+ * sorted to the top; with the passes gone there is nothing to sort them above,
+ * and doctor's order carries meaning that a re-sort would discard.
  */
 export function overviewRows(checks: readonly Check[]): OverviewRow[] {
-  const failed = checks.filter((check) => !check.ok);
-  const passed = checks.filter((check) => check.ok);
-  return [...failed, ...passed].map((check) => ({
-    name: check.name, ok: check.ok, detail: check.detail,
-  }));
+  return checks
+    .filter((check) => !check.ok)
+    .map((check) => ({ name: check.name, ok: check.ok, detail: check.detail }));
 }
 
 /**
@@ -27,6 +32,6 @@ export function overviewRows(checks: readonly Check[]): OverviewRow[] {
 export function summarise(checks: readonly Check[]): string {
   if (checks.length === 0) return 'no checks ran';
   const warnings = checks.filter((check) => !check.ok).length;
-  if (warnings === 0) return 'all checks pass';
-  return `${warnings} warning${warnings === 1 ? '' : 's'}`;
+  if (warnings === 0) return `${checks.length} checks pass`;
+  return `${warnings} of ${checks.length} checks need attention`;
 }
