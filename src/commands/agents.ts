@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../extended-context.js';
 import { configPath, loadConfig, parseConfig, TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
-import { assertEffortsPinned, candidateFacts, candidateLabel, capabilityOf, expandCandidates, hasTaskCost, loadAaCatalog, reasoningOf, type AaCatalog, type CandidateFacts } from '../catalog.js';
+import { assertEffortsPinned, candidateFacts, candidateLabel, expandCandidates, hasTaskCost, loadAaCatalog, reasoningOf, type AaCatalog, type CandidateFacts } from '../catalog.js';
 import { replaceTiersBlock } from '../init/toml.js';
 import { loadModelsDev, type ModelsDevCache } from '../modelsdev.js';
 import { configUpstreamFor } from '../pricing.js';
@@ -315,7 +315,7 @@ export function itemFacts(
     aa,
     Object.keys(config.native?.gateways ?? {}),
     upstreamOf(config, modelsDev),
-    tier === 'complex' ? reasoningOf : capabilityOf,
+    reasoningOf,  // every tier ranks on intelligence; see `proposeTiers`
   );
 }
 

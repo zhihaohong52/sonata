@@ -725,3 +725,73 @@ code = ["kimi"]
     expect(outdatedAgents(mkdtempSync(join(tmpdir(), 'sonata-empty-')), plannedAgents(config()))).toEqual([]);
   });
 });
+
+describe('cmdSync — which agent files actually changed', () => {
+  const tiered = (simple: string[]) => `
+[models."a"]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+[models."b"]
+harness = "codex"
+id = "gpt-5.6-luna"
+
+[tiers.code]
+simple = ${JSON.stringify(simple)}
+complex = ["b"]
+`;
+
+  it('reports new files as changed, and an identical rerun as nothing', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sync-changed-'));
+    const agentsDir = join(cwd, '.claude', 'agents');
+    // An empty home, so the real machine's catalog cannot make these ids
+    // require an effort pin — the test is about files, not ranking.
+    const home = mkdtempSync(join(tmpdir(), 'sync-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), tiered(['a', 'b']));
+    const first = cmdSync({ cwd, home, agentsDir });
+    expect(first.changed).toEqual(first.written);
+    expect(first.written.length).toBeGreaterThan(0);
+    expect(cmdSync({ cwd, home, agentsDir }).changed).toEqual([]);
+  });
+
+  it('changes no agent file when only a ranking changes', () => {
+    // Why a re-rank needs no reload: an agent names only its routed alias,
+    // and the router reads the ranked list from `sonata.toml` per request.
+    // init used to say "Run /reload-plugins" after every run regardless.
+    const cwd = mkdtempSync(join(tmpdir(), 'sync-rerank-'));
+    const agentsDir = join(cwd, '.claude', 'agents');
+    const home = mkdtempSync(join(tmpdir(), 'sync-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), tiered(['a', 'b']));
+    cmdSync({ cwd, home, agentsDir });
+    writeFileSync(join(cwd, 'sonata.toml'), tiered(['b', 'a']));
+    expect(cmdSync({ cwd, home, agentsDir }).changed).toEqual([]);
+  });
+});
+
+describe('cmdSync — a re-rank that collapses a role does change the agents', () => {
+  it('reports the file change, which is when a reload IS needed', () => {
+    // When every present tier list becomes element-wise identical the role
+    // collapses to one unsuffixed agent — a different set of files — so the
+    // reload hint must still fire for this kind of re-rank.
+    const cwd = mkdtempSync(join(tmpdir(), 'sync-collapse-'));
+    const home = mkdtempSync(join(tmpdir(), 'sync-home-'));
+    const agentsDir = join(cwd, '.claude', 'agents');
+    const cfg = (simple: string[]) => `
+[models."a"]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+[models."b"]
+harness = "codex"
+id = "gpt-5.6-luna"
+
+[tiers.code]
+simple = ${JSON.stringify(simple)}
+complex = ["b", "a"]
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), cfg(['a', 'b']));
+    cmdSync({ cwd, home, agentsDir });
+    writeFileSync(join(cwd, 'sonata.toml'), cfg(['b', 'a']));
+    expect(cmdSync({ cwd, home, agentsDir }).changed).toEqual([join(agentsDir, 'code.md')]);
+  });
+});

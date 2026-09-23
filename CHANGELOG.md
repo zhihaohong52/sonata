@@ -8,6 +8,40 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- **New models were filtered out of `simple` and `normal`.** Artificial
+  Analysis scores a new model on intelligence before publishing coding and
+  agentic scores. Sonata stored that intelligence score as a coding score and
+  judged it against a coding-scale threshold, so `gpt-6-luna` and `gpt-6-sol`
+  failed and were left unranked. A missing coding score is now treated as
+  unknown instead.
+- **Every tier ranks on intelligence.** The value tiers ranked on agentic
+  scores, which new models don't have yet (14 of 36 candidates on one real
+  config), so old and new models were compared on different scales. That made
+  `glm-5.3-flash` the `normal` knee although `mimo-v2.6-pro` beats it on both
+  intelligence and price. `normal` now leads with `mimo-v2.6-pro`.
+- **Value ranking no longer floors prices at one cent.** Per-task costs below
+  $0.01 were all treated as $0.01, which hid a 2.2x price difference between
+  `gpt-6-luna@low` and `gpt-5.6-luna@low`. The cheaper one now leads `simple`.
+- **The capable threshold is removed.** Models with an Artificial Analysis
+  coding score under 40 were left out of every tier. The threshold checked a
+  score no tier ranks by and couldn't judge new models, which don't have a
+  coding score yet. Weak models now stay in the lists as fallbacks, and the
+  ranking places them below the models that beat them.
+- **`sonata init` asks for `/reload-plugins` only when an agent file changed.**
+  A new ranking never changes an agent file: each agent names only its routed
+  alias, and the router reads the ranked list from `sonata.toml` on every
+  request. When `init` creates the agents directory, it asks for a Claude Code
+  restart instead: a running session doesn't watch a directory created after
+  it started.
+- **A model without an intelligence score ranks below every model with one.**
+  Its agentic or coding score used to be plotted on the intelligence axis. It
+  stays in the tier as a fallback.
+- **A malformed score in the cached catalog is dropped, not kept.** A row
+  with one valid score kept its other scores unchecked, and a non-number one
+  could crash a ranking label.
+
 ## [0.12.0] - 2026-09-23
 
 ### Added

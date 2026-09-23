@@ -17,9 +17,20 @@ import { frontierIndices, keptAfterGate, kneeIndex, type Point } from './frontie
 export const AA_ATTRIBUTION =
   'Model rankings by Artificial Analysis — https://artificialanalysis.ai';
 
-/** Coding Index at or above this ⇒ complex-eligible. Chosen so today's
- * mid-tier coders (deepseek-v4-flash class) sit just above the line. */
-export const AA_CAPABLE_CODING_INDEX = 40;
+/**
+ * The capability an unscored model is ranked as: a mid-table stand-in, so a
+ * model the catalog does not know sorts among known ones rather than first or
+ * last.
+ *
+ * This used to be `AA_CAPABLE_CODING_INDEX`, a threshold that excluded any
+ * catalog-scored model with a coding index below 40 from every tier. It was
+ * removed: it gated on a score no tier ranks by, it excluded rather than
+ * demoted, it could not judge a new model (no coding index yet), and when
+ * every candidate failed it the fallback ranked them all anyway. Measured on
+ * the real catalog, the best of the 27 models it caught had under a third of
+ * the value of the model leading `simple`, so the frontier already sinks them.
+ */
+export const UNSCORED_PLACEHOLDER_INDEX = 40;
 
 /**
  * A model may cost at most this multiple of the cheapest *selected* model's
@@ -133,7 +144,18 @@ export interface AaCatalog {
 }
 
 export interface AaEntry {
-  codingIndex: number;
+  /**
+   * AA's coding index, when AA has published one. Absent for a model AA has
+   * scored on intelligence only — which is every model in its first days.
+   *
+   * It used to be filled with whichever score the row DID have, so a new
+   * model's intelligence score (20.9 for `gpt-6-luna@low`) sat in this field
+   * and was judged against `AA_CAPABLE_CODING_INDEX`, a coding-scale
+   * threshold on which intelligence runs roughly half as high. The model
+   * failed it and was dropped from `simple` and `normal` entirely. Measured:
+   * 26 of 152 costed rows carried a stand-in, the frontier's knee among them.
+   */
+  codingIndex?: number;
   blendedPriceUsd: number;
   /** All absent in a cache written before these were collected. */
   intelligenceIndex?: number;
@@ -199,12 +221,17 @@ export function capabilityOf(entry: AaEntry): number {
  * the margin cannot swallow, so the ranking is decided by the measurement
  * rather than by the price.
  *
- * `simple` and `normal` keep `capabilityOf`: they are value tiers, ranked on
- * capability per task-dollar, and throughput is the right numerator there.
- * Coverage is not a constraint — on the rows `init` actually offers (those
- * publishing a per-task cost), intelligence is present on 100% and agentic on
- * 95% — so the fallbacks exist for the odd unscored row, not as a per-role
- * choice.
+ * **Every tier ranks on this now, `simple` and `normal` included.** They used
+ * `capabilityOf` (agentic first), on the reasoning that throughput is the
+ * right numerator for a value tier. The coverage figure that justified it —
+ * "agentic on 95%" — did not hold: AA publishes agentic scores days after
+ * intelligence, so every new model arrives without one. Measured on one real
+ * config: 22 of 36 candidates had an agentic score, all 36 an intelligence
+ * one. `capabilityOf` then fell back per model, putting two scales on one
+ * frontier axis, and the knee it found (`glm-5.3-flash`, agentic 50.9) was
+ * not even on the frontier when measured on one scale — `mimo-v2.6-pro` beats
+ * it on intelligence and on price. A metric only a subset of the candidates
+ * carry cannot rank all of them.
  */
 export function reasoningOf(entry: AaEntry): number {
   return entry.intelligenceIndex ?? entry.agenticIndex ?? entry.codingIndex ?? 0;
@@ -524,6 +551,12 @@ const CURATED: Record<string, { capable: boolean }> = {
   'ox-alpha-free': { capable: false },
 };
 
+/**
+ * Whether a model may be ranked, and which source said so.
+ *
+ * An AA-scored model is always eligible: its position is the ranking's job.
+ * Without a score, the curated table answers, then a default.
+ */
 export function lookupModel(
   name: string,
   aa?: AaCatalog,
@@ -535,7 +568,11 @@ export function lookupModel(
   const scored = aaEntryFor(normalized, aa, effort);
   if (scored !== undefined) {
     return {
-      capable: scored.codingIndex >= AA_CAPABLE_CODING_INDEX,
+      // Always eligible. A scored model's place is decided by the frontier and
+      // the tier's sort, which demote a weak model to the end of the list
+      // rather than removing it — see `UNSCORED_PLACEHOLDER_INDEX` for the
+      // threshold this replaced and why.
+      capable: true,
       source: 'aa',
     };
   }
@@ -693,6 +730,10 @@ export function candidateFacts(
   return { key, effort, capability: metric(entry), costPerTask: entry.costPerTask };
 }
 
+/**
+ * One ranking row's text: the candidate, its intelligence score and its cost
+ * per task, or a note that AA publishes no per-task cost for it.
+ */
 export function candidateLabel(
   candidate: string,
   aa?: AaCatalog,
@@ -704,7 +745,7 @@ export function candidateLabel(
   const entry = scoreFor(candidate, aa, providers, upstreamFor);
   if (entry === undefined) return head;
   if (entry.costPerTask === undefined) return `${head}  (AA publishes no cost-per-task — add by hand to sonata.toml)`;
-  return `${head.padEnd(32)} ${capabilityOf(entry).toFixed(1).padStart(4)}  $${entry.costPerTask.toFixed(3)}/task`;
+  return `${head.padEnd(32)} ${reasoningOf(entry).toFixed(1).padStart(4)}  $${entry.costPerTask.toFixed(3)}/task`;
 }
 
 /**
@@ -743,20 +784,22 @@ function rank(
   const scored = scoreFor(key, aa, providers, upstreamFor);
   return scored !== undefined
     ? { index: metric(scored), price: scored.costPerTask ?? 0 }
-    : { index: AA_CAPABLE_CODING_INDEX, price: 0 };
+    : { index: UNSCORED_PLACEHOLDER_INDEX, price: 0 };
 }
 
 /**
- * Capability per dollar — how a simple tier is ordered.
+ * Capability per task-dollar — how `simple` and `normal` are ordered.
  *
- * A simple tier exists to do grunt work cheaply, so the model that returns the
- * most capability per dollar wins, not the most capable model that happens to
- * clear a price threshold (which is what this used to do, and is backwards for
- * a tier whose whole purpose is cost). Price is floored before dividing so a
- * free model sorts first rather than dividing by zero.
+ * No price floor. This divided by `max(price, 0.01)`, a guard from when
+ * prices were per-token rates, and per-task costs now run well under a cent:
+ * `gpt-6-luna@low` costs $0.0045 and `gpt-5.6-luna@low` $0.0098, both floored
+ * to $0.01, so the halved price vanished and a 0.1-point intelligence gap
+ * decided `simple`'s lead the wrong way. A non-positive price is not "very
+ * cheap", it is missing data, and scores zero — the spec's rule that a zero
+ * cost per task is unscored, not free.
  */
 function valueOf(r: { index: number; price: number }): number {
-  return r.index / Math.max(r.price, 0.01);
+  return r.price > 0 ? r.index / r.price : 0;
 }
 
 /**
@@ -800,7 +843,15 @@ export function proposeTiers(
   // Two rankers, because the tiers measure different things. `simple` and
   // `normal` are value tiers and want throughput per dollar; `complex` is a
   // judgement tier and wants reasoning. See `reasoningOf`.
-  const rankOf = (k: string) => rank(k, aa, providers, upstreamFor);
+  // Intelligence for every tier, not agentic for the value tiers. Agentic
+  // is missing for every model AA has only just scored — measured, 14 of 36
+  // candidates on one real config — and `capabilityOf` then fell back to
+  // intelligence per model, so the value frontier plotted old models by
+  // agentic and new ones by intelligence on one axis. That mixed axis made
+  // `glm-5.3-flash` the knee (agentic 50.9) although `mimo-v2.6-pro` beats
+  // it on intelligence AND price. Intelligence is the one score AA publishes
+  // for every model from day one, and the scale its own frontier chart uses.
+  const rankOf = (k: string) => rank(k, aa, providers, upstreamFor, reasoningOf);
   const rankReasoning = (k: string) => rank(k, aa, providers, upstreamFor, reasoningOf);
   // An avoided model sorts after every non-avoided one, whatever it scores.
   // Demotion, not exclusion: the tier keeps it as a fallback candidate, so
@@ -819,6 +870,22 @@ export function proposeTiers(
   };
   const byLevel = (a: string, b: string) => levelOf(b) - levelOf(a);
 
+  // A scored candidate with no intelligence index has only an agentic or
+  // coding score, and `reasoningOf` would plot that on the intelligence axis
+  // beside every other model. Such a candidate stays in the tier as fallback
+  // depth — demoted, as avoidance and the gate demote — but never sets the
+  // frontier and never competes with intelligence scores for a position.
+  // Only a MIX is off-scale: when no candidate has an intelligence score (an
+  // old cache, a fixture) they all share the fallback, and demoting every one
+  // of them would just delete the knee. Unscored candidates (no catalog)
+  // share the placeholder, the catalog-less path's own single scale.
+  const lacksIntelligence = (k: string): boolean => {
+    const entry = scoreFor(k, aa, providers, upstreamFor);
+    return entry !== undefined && !Number.isFinite(entry.intelligenceIndex);
+  };
+  const mixed = candidates.some((k) => !lacksIntelligence(k));
+  const offScale = (k: string): boolean => mixed && lacksIntelligence(k);
+  const scaleOrder = (a: string, b: string) => Number(offScale(a)) - Number(offScale(b));
   const capable = (k: string): boolean => lookupModel(k, aa, providers, upstreamFor).capable;
   const perTask = (k: string): number | undefined => scoreFor(k, aa, providers, upstreamFor)?.costPerTask;
 
@@ -839,7 +906,7 @@ export function proposeTiers(
    * computed afterwards would inherit the gate's tuned fraction.
    */
   const geometryFor = (metric: (entry: AaEntry) => number) => {
-    const pool = candidates.filter((k) => capable(k) && (perTask(k) ?? 0) > 0);
+    const pool = candidates.filter((k) => capable(k) && !offScale(k) && (perTask(k) ?? 0) > 0);
     const points: Point[] = pool.map((k) => ({
       capability: rank(k, aa, providers, upstreamFor, metric).index,
       cost: perTask(k) ?? 0,
@@ -861,7 +928,7 @@ export function proposeTiers(
     };
   };
 
-  const valueGeometry = geometryFor(capabilityOf);
+  const valueGeometry = geometryFor(reasoningOf);
   const powerGeometry = geometryFor(reasoningOf);
 
   /**
@@ -888,6 +955,7 @@ export function proposeTiers(
   const byCapability = (a: string, b: string) => {
     const ra = rankReasoning(a); const rb = rankReasoning(b);
     return avoidance(a, b)
+      || scaleOrder(a, b)
       || gateOrder(powerGeometry.wasteful)(a, b)
       // Knee-and-above leads; below-knee follows as fallback depth rather than
       // being excluded. The knee decides the lead, not membership — excluding
@@ -922,6 +990,8 @@ export function proposeTiers(
   // dollar is one comparable unit rather than a mix of work and token prices.
   const byValue = (a: string, b: string) => {
     const ra = rankOf(a); const rb = rankOf(b);
+    const scaled = scaleOrder(a, b);
+    if (scaled !== 0) return avoidance(a, b) || scaled;
     const gated = gateOrder(valueGeometry.wasteful)(a, b);
     if (gated !== 0) return avoidance(a, b) || gated;
     if (ra.price === rb.price && capabilityClass(ra.index) === capabilityClass(rb.index)) {
@@ -1027,17 +1097,27 @@ export function loadAaCatalog(home: string): AaCatalog | undefined {
       if (
         entry !== null &&
         typeof entry === 'object' &&
-        Number.isFinite(entry.codingIndex) &&
+        // At least one real score, not specifically a coding one: a coding
+        // index is optional now, and requiring it here would drop exactly
+        // the rows the stand-in bug was hiding — at load time instead.
+        [entry.codingIndex, entry.agenticIndex, entry.intelligenceIndex].some((v) => Number.isFinite(v)) &&
         Number.isFinite(entry.blendedPriceUsd)
       ) {
         // An unknown level is a hand-edit or a foreign writer; the score is
         // still good, so keep the row and drop only the field.
-        const { effort, costPerTask, ...rest } = entry as AaEntry;
+        const { effort, costPerTask, codingIndex, agenticIndex, intelligenceIndex, ...rest } = entry as AaEntry;
         // Same treatment as `effort`: the row's score is still good, so drop
-        // only the malformed field and let the model read as uncosted.
-        const kept: AaEntry = typeof costPerTask === 'number' && Number.isFinite(costPerTask)
-          ? { ...rest, costPerTask }
-          : rest;
+        // only the malformed field and let the model read as uncosted. Each
+        // optional score likewise: one finite score admits the row, so a
+        // string beside it would otherwise reach `toFixed` in a label.
+        const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+        const kept: AaEntry = {
+          ...rest,
+          ...(finite(codingIndex) ? { codingIndex } : {}),
+          ...(finite(agenticIndex) ? { agenticIndex } : {}),
+          ...(finite(intelligenceIndex) ? { intelligenceIndex } : {}),
+          ...(finite(costPerTask) ? { costPerTask } : {}),
+        };
         models[name] = effort !== undefined && isEffort(effort) ? { ...kept, effort } : kept;
       }
     }

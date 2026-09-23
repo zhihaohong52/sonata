@@ -29,12 +29,25 @@ export interface ApplyIo {
   installLitellm?: (home: string) => Promise<void>;
 }
 
+/**
+ * Perform every write in `plan`: keys, config, hook, skill, guidance,
+ * routing, then agent files and pruning. The result says what changed, so
+ * the caller can tell the user whether a reload or restart is needed.
+ */
 export async function apply(
   plan: InitPlan,
   opts: Pick<InitOptions, 'cwd' | 'home' | 'packageRoot'>,
   io: ApplyIo,
 ): Promise<{
   agentsWritten: string[];
+  /** Agent files whose content changed; see `SyncResult.changed`. */
+  agentsChanged: string[];
+  /**
+   * Whether this run created the agents directory. Claude Code watches only
+   * the agents directories that existed when a session started, so a new one
+   * needs a restart rather than a reload.
+   */
+  agentsDirCreated: boolean;
   pruned: string[];
   hookChanged: boolean;
 }> {
@@ -144,8 +157,12 @@ export async function apply(
   }
 
   // ---- sync (generates agent files) ----
+  const agentsDirCreated = !existsSync(plan.agentsDir);
   const sync = cmdSync({ cwd: plan.syncCwd, home, agentsDir: plan.agentsDir });
   const agentsWritten = sync.written;
+  // `written` without `changed` (a sync predating the field) counts as all
+  // changed: better an unnecessary reload hint than a missing one.
+  const agentsChanged = sync.changed ?? sync.written;
   io.out(`  ✓ generated ${agentsWritten.length} agents in ${plan.agentsDir}`);
 
   if (sync.skipped.length > 0) {
@@ -172,5 +189,5 @@ export async function apply(
     }
   }
 
-  return { agentsWritten, pruned, hookChanged };
+  return { agentsWritten, agentsChanged, agentsDirCreated, pruned, hookChanged };
 }

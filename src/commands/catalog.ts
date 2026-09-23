@@ -150,6 +150,11 @@ function nowIso(deps: { now?: () => Date }): string {
   return (deps.now ?? (() => new Date()))().toISOString();
 }
 
+/**
+ * Fetch AA's models with the stored key and cache each one's scores, cost per
+ * task and effort level. Scores AA does not publish are left out, never
+ * substituted.
+ */
 async function updateAaCatalog(
   home: string,
   fetchFn: typeof fetch,
@@ -229,7 +234,11 @@ async function updateAaCatalog(
     const price = costPerTask ?? blendedPriceUsd;
     if (name === undefined || capability === undefined || price === undefined) continue;
     models[name] = {
-      codingIndex: codingIndex ?? capability,
+      // Only the coding index AA published. `capability` above is still right
+      // for "is this rankable at all" — that question wants any score — but
+      // storing it under this name put an intelligence or agentic score where
+      // a coding-scale threshold reads it. See `AaEntry.codingIndex`.
+      ...(codingIndex === undefined ? {} : { codingIndex }),
       blendedPriceUsd: blendedPriceUsd ?? price,
       ...(intelligenceIndex === undefined ? {} : { intelligenceIndex }),
       ...(agenticIndex === undefined ? {} : { agenticIndex }),
