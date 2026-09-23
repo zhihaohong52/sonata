@@ -11,6 +11,8 @@ import { TiersScreen } from './screens/tiers.js';
 import { KeysScreen } from './screens/keys.js';
 import { ActionsScreen } from './screens/actions.js';
 import { StatusScreen } from './screens/status.js';
+import { UsageScreen } from './screens/usage.js';
+import type { UsageDimension } from '../commands/usage.js';
 import { InitScreen } from './screens/init.js';
 import { Menu, moveCursor, type MenuItem } from './components/menu.js';
 import { onAltScreen } from './alt-screen.js';
@@ -28,6 +30,7 @@ import { Ground, ThemeProvider, useTheme } from './theme-context.js';
  */
 const MENU: ReadonlyArray<MenuItem<Step>> = [
   { value: 'status', label: 'Status' },
+  { value: 'usage', label: 'Usage' },
   { value: 'models', label: 'Models', opens: true },
   { value: 'providers', label: 'Providers', opens: true },
   { value: 'tiers', label: 'Tiers', opens: true },
@@ -49,7 +52,7 @@ const MENU: ReadonlyArray<MenuItem<Step>> = [
  * with no error, because there is no error. That is what once made every
  * prompt after the wizard die instantly. Every confirmation is a screen.
  */
-function ConfigTui({ cwd, home, start, statusGlobal, reproposeTiers, onKeep }: { cwd: string; home: string; start?: Step; statusGlobal?: boolean; reproposeTiers?: boolean; onKeep?: (lines: string[]) => void }): React.ReactElement {
+function ConfigTui({ cwd, home, start, statusGlobal, usage, reproposeTiers, onKeep }: { cwd: string; home: string; start?: Step; statusGlobal?: boolean; usage?: UsageStart; reproposeTiers?: boolean; onKeep?: (lines: string[]) => void }): React.ReactElement {
   const { exit } = useApp();
   // `checking` always runs first: every screen is read against a machine the
   // health check has already described, and a deep link that skipped it would
@@ -138,6 +141,7 @@ function ConfigTui({ cwd, home, start, statusGlobal, reproposeTiers, onKeep }: {
   if (step === 'keys') return <KeysScreen cwd={cwd} home={home} />;
   if (step === 'actions') return <ActionsScreen cwd={cwd} home={home} />;
   if (step === 'status') return <StatusScreen cwd={cwd} home={home} global={statusGlobal} />;
+  if (step === 'usage') return <UsageScreen cwd={cwd} home={home} by={usage?.by} since={usage?.since} project={usage?.project} />;
   // Back to `checking`, not `overview`: init changes the machine this whole
   // app is drawn against, and the tier-routing warning that may have been the
   // reason for running it is answered by re-running doctor, not by returning
@@ -153,8 +157,11 @@ function ConfigTui({ cwd, home, start, statusGlobal, reproposeTiers, onKeep }: {
   );
 }
 
+/** Where `sonata usage`'s flags start the usage screen. */
+export interface UsageStart { by?: UsageDimension; since?: string; project?: boolean }
+
 /** Render the TUI and resolve with the process exit code. */
-export async function runConfigTui(opts: { cwd: string; home?: string; start?: Step; statusGlobal?: boolean; reproposeTiers?: boolean }): Promise<number> {
+export async function runConfigTui(opts: { cwd: string; home?: string; start?: Step; statusGlobal?: boolean; usage?: UsageStart; reproposeTiers?: boolean }): Promise<number> {
   // Resolved once here so every screen takes a required `home`: `configPath`
   // and `loadConfig` both demand one, and threading an optional down would put
   // the same `?? homedir()` in each screen.
@@ -168,7 +175,7 @@ export async function runConfigTui(opts: { cwd: string; home?: string; start?: S
     const instance = render(
       <ThemeProvider>
         <Ground>
-          <ConfigTui cwd={opts.cwd} home={home} start={opts.start} statusGlobal={opts.statusGlobal} reproposeTiers={opts.reproposeTiers} onKeep={(lines) => keep.splice(0, keep.length, ...lines)} />
+          <ConfigTui cwd={opts.cwd} home={home} start={opts.start} statusGlobal={opts.statusGlobal} usage={opts.usage} reproposeTiers={opts.reproposeTiers} onKeep={(lines) => keep.splice(0, keep.length, ...lines)} />
         </Ground>
       </ThemeProvider>,
     );

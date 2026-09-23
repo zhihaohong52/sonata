@@ -34,7 +34,7 @@ import { cmdCatalogUpdate, validateAaKey } from './commands/catalog.js';
 import { cmdLitellm } from './commands/litellm.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
 import { MODELS_DEV_ATTRIBUTION } from './modelsdev.js';
-import { cmdUsage, type UsageDimension } from './commands/usage.js';
+import { cmdUsage, coveredLabel, parseUsageFlags, spentLabel } from './commands/usage.js';
 import { readRows } from './ledger.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
@@ -62,7 +62,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata auth      manage gateway credentials (list/add/remove/login)
   sonata catalog   show or refresh the Artificial Analysis model catalog
   sonata litellm   install or report sonata's own pinned LiteLLM (install|status)
-  sonata usage     report native-path token and cost usage from the ledger
+  sonata usage     native-path token and cost usage from the ledger (live screen in a terminal)
                    [--since 7d] [--by model|role|tier|effort|gateway|session|project]
                    [--project <dir>] [--session <id>] [--json]
   sonata status    router health and this project's last hour of routes (--global: every project)
@@ -151,6 +151,7 @@ export async function main(argv: string[]): Promise<number> {
     // TTY neither reaches here at all, so the plain output every script and
     // SessionStart hook depends on is untouched.
     const start = command === 'status' ? 'status' as const
+      : command === 'usage' ? 'usage' as const
       : command === 'agents' ? 'tiers' as const
       : command === 'init' ? 'init' as const
       : undefined;
@@ -158,6 +159,12 @@ export async function main(argv: string[]): Promise<number> {
       cwd: process.cwd(),
       start,
       statusGlobal: command === 'status' && rest.includes('--global'),
+      // Parsed with the printed report's own validation, so a bad `--by` or
+      // `--since` fails here with its usual message instead of opening a
+      // screen that silently ignores it.
+      usage: command === 'usage'
+        ? (() => { const f = parseUsageFlags(rest); return { by: f.by, since: f.since, project: f.project === '.' }; })()
+        : undefined,
       // `shouldLaunchTui` deliberately sends this flag to the wizard — it
       // re-seeds the ranking screens — so the wizard has to receive it.
       // Dropping it here silently kept the saved rankings.
@@ -562,27 +569,11 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   if (command === 'usage') {
-    // parseArgs is strict by default: an unrecognized flag throws rather than
-    // being silently ignored — for a cost report, quietly falling back to the
-    // default window on a misspelled `--since` would be materially misleading.
-    const { values } = parseArgs({
-      args: rest,
-      options: {
-        by: { type: 'string' },
-        since: { type: 'string' },
-        session: { type: 'string' },
-        project: { type: 'string' },
-        json: { type: 'boolean', default: false },
-      },
-    });
-    const by = (values.by ?? 'model') as UsageDimension;
-    if (!['model', 'role', 'tier', 'effort', 'gateway', 'session', 'project'].includes(by)) {
-      throw new Error('sonata usage --by must be one of: model | role | tier | effort | gateway | session | project');
-    }
+    const values = parseUsageFlags(rest);
     const report = await cmdUsage({
       home: homedir(),
-      since: values.since ?? '7d',
-      by,
+      since: values.since,
+      by: values.by,
       session: values.session,
       // `--project` always takes a value; `parseArgs` rejects a bare flag
       // before this point, so there is no no-value case to handle. Use
@@ -610,12 +601,8 @@ export async function main(argv: string[]): Promise<number> {
       console.log(`${''.padEnd(labelWidth)} ${'requests'.padStart(8)} ${'input'.padStart(12)} ${'output'.padStart(10)}  ${'spent'.padStart(12)}  ${'covered'.padStart(12)}`);
     }
     for (const bucket of report.buckets) {
-      const spent = bucket.costUsd === 0 && bucket.coveredUsd === 0 && bucket.unpricedRequests === bucket.requests
-        ? '—'
-        : bucket.costUsd === 0 && bucket.coveredRequests > 0 ? '—' : money(bucket.costUsd);
-      const covered = anyCovered
-        ? `  ${(bucket.coveredUsd === 0 && bucket.coveredRequests === 0 ? '—' : money(bucket.coveredUsd)).padStart(12)}`
-        : '';
+      const spent = spentLabel(bucket, money);
+      const covered = anyCovered ? `  ${coveredLabel(bucket, money).padStart(12)}` : '';
       console.log(`${bucket.label.padEnd(labelWidth)} ${String(bucket.requests).padStart(8)} ${String(bucket.input).padStart(12)} ${String(bucket.output).padStart(10)}  ${spent.padStart(12)}${covered}`);
     }
     console.log(`\npriced total   $${report.pricedTotalUsd.toFixed(4)}`);
