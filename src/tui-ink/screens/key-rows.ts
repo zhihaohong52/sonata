@@ -34,6 +34,7 @@ export function keyRows(
   });
 }
 
+/** The gateways with no usable credential. An OAuth gateway is never among them — see `keyRows`. */
 export function gatewaysMissingKeys(rows: readonly KeyRow[]): string[] {
   return rows.filter((row) => !row.hasKey).map((row) => row.gateway);
 }

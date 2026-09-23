@@ -14,8 +14,12 @@ export function ProvidersScreen({ cwd, home }: { cwd: string; home: string }): R
 
   const rows = providerRows(loaded.config);
   const empty = new Set(gatewaysServingNothing(rows));
-  const width = Math.max(...rows.map((row) => row.gateway.length), 7);
-  const rest = Math.max(12, ruleWidth() - 4 - width - 2);
+  // Capped at 40% of the page. Grown to the longest identifier it let one
+  // long key push every row past the page and wrap, whatever the budget for
+  // the details column said.
+  const width = Math.min(Math.max(...rows.map((row) => row.gateway.length), 7), Math.floor(ruleWidth() * 0.4));
+  // No floor: a floor is how a row outgrows a narrow page.
+  const rest = Math.max(0, ruleWidth() - 4 - width - 2);
 
   return (
     <Screen
@@ -32,9 +36,9 @@ export function ProvidersScreen({ cwd, home }: { cwd: string; home: string }): R
         // nothing until it is the gateway you thought was carrying the work.
         const idle = empty.has(row.gateway);
         return (
-          <Text key={row.gateway}>
+          <Text key={row.gateway} wrap="truncate-end">
             <Text color={idle ? palette.MID : palette.MUTED}>{(idle ? STATE.held.mark : STATE.live.mark).padEnd(4)}</Text>
-            <Text color={idle ? palette.MID : palette.TEXT}>{row.gateway.padEnd(width + 2)}</Text>
+            <Text color={idle ? palette.MID : palette.TEXT}>{fit(row.gateway, width).padEnd(width + 2)}</Text>
             <Text color={palette.MUTED}>
               {fit(`${row.auth}  ${row.transport}${row.models.length === 0 ? '  no models' : `  ${row.models.join(', ')}`}`, rest)}
             </Text>

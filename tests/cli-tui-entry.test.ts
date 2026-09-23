@@ -37,6 +37,19 @@ describe('shouldLaunchTui', () => {
     expect(shouldLaunchTui('agents', true, true)).toBe(true);
   });
 
+  it('keeps agents plain for --json and --list', () => {
+    // Printed output, not an editor. Opening Ink swallowed the output mode
+    // before its flag was ever parsed.
+    expect(shouldLaunchTui('agents', true, true, ['--json'])).toBe(false);
+    expect(shouldLaunchTui('agents', true, true, ['--list'])).toBe(false);
+    expect(shouldLaunchTui('agents', true, true, [])).toBe(true);
+  });
+
+  it('keeps init scripted for --credential-source, in both spellings', () => {
+    expect(shouldLaunchTui('init', true, true, ['--credential-source', 'acme=sonata'])).toBe(false);
+    expect(shouldLaunchTui('init', true, true, ['--credential-source=acme=sonata'])).toBe(false);
+  });
+
   it('opens status for --global, which the screen honours', () => {
     expect(shouldLaunchTui('status', true, true, ['--global'])).toBe(true);
   });

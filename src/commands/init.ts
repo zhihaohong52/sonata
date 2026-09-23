@@ -57,6 +57,7 @@ function renderProblem(p: Problem): string {
   return `  ${icon} ${p.message}${fix}`;
 }
 
+/** Run `sonata init`: discover, choose (wizard, host or flags), validate, plan, confirm and apply. Teed to a log, since the wizard owns the screen. */
 export async function cmdInit(opts: InitOptions): Promise<InitResult> {
   const log = opts.log ?? openInitLog(opts.home);
   const print = opts.write ?? ((l: string) => console.log(l));
@@ -193,6 +194,7 @@ function blockedResult(problems: Problem[], opts: InitOptions): InitResult {
   };
 }
 
+/** The `InitResult` for a run the user cancelled: nothing written, `cancelled: true` so a host can say so. */
 function cancelledResult(problems: Problem[], state: InitState, opts: InitOptions): InitResult {
   return {
     problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
@@ -202,6 +204,7 @@ function cancelledResult(problems: Problem[], state: InitState, opts: InitOption
   };
 }
 
+/** Whether an error is the prompt layer's cancellation rather than a failure. */
 export function isCancellation(err: unknown): boolean {
   return err instanceof CancelledError;
 }

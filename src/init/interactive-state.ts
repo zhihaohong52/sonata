@@ -34,6 +34,7 @@ import { validate } from './validate.js';
 import { addByokCandidates, addLiveCandidates, rewriteOauthToApiKey } from './candidates.js';
 import type { InitLog } from '../commands/init-log.js';
 
+/** The wizard front end of `sonata init`: builds `WizardData`, runs the wizard (or the host's), and returns the chosen `InitState`. */
 export async function interactiveState(
   env: InitEnvironment,
   opts: {

@@ -88,6 +88,7 @@ export interface RouteLine {
   effort?: string;
 }
 
+/** The newest `limit` ledger rows as route lines — alias, what served it, status, tokens, time, gateway and effort — newest first. */
 export function recentRoutes(rows: LedgerRow[], limit: number): RouteLine[] {
   return [...rows]
     .sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))

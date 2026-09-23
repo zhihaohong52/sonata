@@ -158,6 +158,10 @@ export async function main(argv: string[]): Promise<number> {
       cwd: process.cwd(),
       start,
       statusGlobal: command === 'status' && rest.includes('--global'),
+      // `shouldLaunchTui` deliberately sends this flag to the wizard — it
+      // re-seeds the ranking screens — so the wizard has to receive it.
+      // Dropping it here silently kept the saved rankings.
+      reproposeTiers: command === 'init' && rest.includes('--repropose-tiers'),
     });
   }
 

@@ -35,6 +35,9 @@ export function shouldLaunchTui(
   // drop the selection the caller made and show something else under the
   // same name, so those keep the plain output that honours them.
   if (command === 'status') return !rest.some((arg) => SESSION_FLAGS.has(arg.split('=')[0]!));
+  // `--json` and `--list` ask for printed output, not an editor; opening Ink
+  // for them would swallow the output mode before its flag was parsed.
+  if (command === 'agents') return !rest.some((arg) => AGENTS_OUTPUT_FLAGS.has(arg.split('=')[0]!));
   return command === undefined || TUI_COMMANDS.has(command);
 }
 
@@ -50,9 +53,15 @@ export function shouldLaunchTui(
 /** `sonata status` flags the screen cannot honour; see `shouldLaunchTui`. */
 const SESSION_FLAGS: ReadonlySet<string> = new Set(['--session', '--all']);
 
+/** `sonata agents` flags that select printed output; see `shouldLaunchTui`. */
+const AGENTS_OUTPUT_FLAGS: ReadonlySet<string> = new Set(['--json', '--list']);
+
 const SCRIPTED_INIT_FLAGS: ReadonlySet<string> = new Set([
   '--yes', '-y', '--providers', '--models', '--roles',
   '--config-scope', '--scope', '--routing', '--guidance', '--prune',
+  // A scripted override like the rest — without it here the flag opened the
+  // wizard and the override never reached the CLI parser.
+  '--credential-source',
 ]);
 
 /**

@@ -58,12 +58,18 @@ describe('columns', () => {
     // one cell over wraps, and a wrapped row is not a row. Found by rendering
     // — the status column was measured by eye at 10 and is really 13, so
     // every row wrapped and drew a blank line after itself.
-    for (let w = 40; w <= 220; w++) {
+    //
+    // It used to sweep from 40 against `max(40, w)`, excusing every narrow
+    // terminal — where `columns` really did return a 40-cell row and every
+    // row wrapped. It now sweeps from the narrowest width a rank and a stroke
+    // can occupy, with no excuse.
+    for (let w = 8; w <= 220; w++) {
       const c = columns(w);
-      expect(c.total).toBeLessThanOrEqual(Math.max(40, w));
-      expect(c.name).toBeGreaterThanOrEqual(10);
+      expect(c.total).toBeLessThanOrEqual(w);
       expect(c.bar).toBeGreaterThanOrEqual(0);
     }
+    // Where a usable board is possible, the name keeps a usable width.
+    for (let w = 40; w <= 220; w++) expect(columns(w).name).toBeGreaterThanOrEqual(10);
   });
 
   it('stops growing at the measure limit, and sits left', () => {
@@ -92,5 +98,15 @@ describe('columns', () => {
     // palette rather than a set of inks hoping the terminal agrees with them.
     expect(INK.BG).toMatch(/^#[0-9a-f]{6}$/);
     expect(INK.TEXT).toMatch(/^#[0-9a-f]{6}$/);
+  });
+});
+
+describe('columns — below the old 40-cell floor', () => {
+  it('drops the bar, then the word, then the cost, rather than overflowing', () => {
+    expect(columns(30).showBar).toBe(false);
+    expect(columns(30).showCost).toBe(true);
+    // Too narrow for a price beside a usable name: the price goes.
+    expect(columns(20).showCost).toBe(false);
+    expect(columns(20).total).toBeLessThanOrEqual(20);
   });
 });

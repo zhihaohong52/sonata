@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { fileURLToPath } from 'node:url';
 import { Box, Text, useInput } from 'ink';
 import { cmdInit } from '../../commands/init.js';
 import { InitWizard, type WizardData } from '../app.js';
@@ -74,9 +75,11 @@ export function ConfirmScreen({ question, onAnswer }: { question: string; onAnsw
  * palette and outside the layout. The lines become the done screen, which is
  * where they were always headed.
  */
-export function InitScreen({ cwd, home, onDone, onKeep }: {
+export function InitScreen({ cwd, home, reproposeTiers, onDone, onKeep }: {
   cwd: string;
   home: string;
+  /** `sonata init --repropose-tiers`: re-rank from the catalog instead of the saved order. */
+  reproposeTiers?: boolean;
   onDone: () => void;
   /** Lines to print to the real shell once the alternate buffer is gone. */
   onKeep?: (lines: string[]) => void;
@@ -106,7 +109,11 @@ export function InitScreen({ cwd, home, onDone, onKeep }: {
     void cmdInit({
       cwd,
       home,
-      packageRoot: new URL('../../..', import.meta.url).pathname,
+      // `fileURLToPath`, not `URL.pathname`: the latter keeps percent-encoding
+      // (a space becomes `%20`) and yields `/C:/...` on Windows, neither of
+      // which is a path the filesystem accepts.
+      packageRoot: fileURLToPath(new URL('../../..', import.meta.url)),
+      reproposeTiers,
       write: (line) => { lines.push(line); },
       onProbe: (name, state, detail) => {
         setProbes((current) => {
@@ -144,7 +151,7 @@ export function InitScreen({ cwd, home, onDone, onKeep }: {
         setFinished(true);
       })
       .finally(() => { setPending(undefined); });
-  }, [cwd, home]);
+  }, [cwd, home, reproposeTiers]);
 
   useInput((_input, key) => {
     if (finished && (key.return || key.escape)) onDone();

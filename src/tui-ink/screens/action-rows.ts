@@ -49,6 +49,7 @@ export function actionRows(): ActionRow[] {
   ];
 }
 
+/** One stable line for a `sync` result: how many agents were written, went stale, and were skipped. */
 export function summariseSync(result: { written: string[]; stale: string[]; skipped: string[] }): string {
   return `wrote ${result.written.length} · ${result.stale.length} stale · ${result.skipped.length} skipped`;
 }

@@ -26,8 +26,12 @@ export function KeysScreen({ cwd, home }: { cwd: string; home: string }): React.
     .map(([gateway, gw]) => ({ gateway, auth: gw.auth }));
   const rows = keyRows(entries, keyReport(entries.map((e) => e.gateway), home));
   const missing = new Set(gatewaysMissingKeys(rows));
-  const width = Math.max(...rows.map((row) => row.gateway.length), 7);
-  const rest = Math.max(12, ruleWidth() - 4 - width - 2);
+  // Capped at 40% of the page. Grown to the longest identifier it let one
+  // long key push every row past the page and wrap, whatever the budget for
+  // the details column said.
+  const width = Math.min(Math.max(...rows.map((row) => row.gateway.length), 7), Math.floor(ruleWidth() * 0.4));
+  // No floor: a floor is how a row outgrows a narrow page.
+  const rest = Math.max(0, ruleWidth() - 4 - width - 2);
 
   return (
     <Screen
@@ -43,9 +47,9 @@ export function KeysScreen({ cwd, home }: { cwd: string; home: string }): React.
         // than `held`: held is a choice, this is a fault with a named fix.
         const none = missing.has(row.gateway);
         return (
-          <Text key={row.gateway}>
+          <Text key={row.gateway} wrap="truncate-end">
             <Text color={none ? palette.HIGH : palette.MUTED}>{(none ? STATE.cooled.mark : STATE.live.mark).padEnd(4)}</Text>
-            <Text color={none ? palette.MID : palette.TEXT}>{row.gateway.padEnd(width + 2)}</Text>
+            <Text color={none ? palette.MID : palette.TEXT}>{fit(row.gateway, width).padEnd(width + 2)}</Text>
             <Text color={palette.MUTED}>{fit(row.source, rest)}</Text>
           </Text>
         );

@@ -161,18 +161,22 @@ describe('kneeIndex', () => {
     expect(kneeIndex(gated)).toBe(kneeIndex(AA_FRONTIER));
   });
 
-  it('answers the cheapest point when there is no interior', () => {
-    expect(kneeIndex([p(10, 0.1), p(20, 1)])).toBe(0);
-    expect(kneeIndex([p(10, 0.1)])).toBe(0);
-    expect(kneeIndex([])).toBe(0);
+  // "No knee" is `undefined`, never 0. Answering the cheapest point as a
+  // stand-in let `proposeTiers` treat it as a real knee: `normal` promoted
+  // the cheapest candidate over its own value order, and `complex` gained a
+  // boundary nothing measured.
+  it('reports no knee when there is no interior', () => {
+    expect(kneeIndex([p(10, 0.1), p(20, 1)])).toBeUndefined();
+    expect(kneeIndex([p(10, 0.1)])).toBeUndefined();
+    expect(kneeIndex([])).toBeUndefined();
   });
 
-  it('answers the cheapest point on a flat frontier', () => {
+  it('reports no knee on a flat frontier', () => {
     // No capability gained across the range: there is no tradeoff to find.
-    expect(kneeIndex([p(10, 0.1), p(10, 1), p(10, 10)])).toBe(0);
+    expect(kneeIndex([p(10, 0.1), p(10, 1), p(10, 10)])).toBeUndefined();
   });
 
-  it('answers the cheapest point when every point shares a cost', () => {
-    expect(kneeIndex([p(10, 0.5), p(20, 0.5), p(30, 0.5)])).toBe(0);
+  it('reports no knee when every point shares a cost', () => {
+    expect(kneeIndex([p(10, 0.5), p(20, 0.5), p(30, 0.5)])).toBeUndefined();
   });
 });

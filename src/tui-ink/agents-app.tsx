@@ -92,6 +92,7 @@ export function metricLabel(tier: keyof TierLists): string {
   return tier === 'complex' ? 'intelligence' : 'agentic';
 }
 
+/** The Tiers editor: one row per role × tier, enter opens that list on the ranking board, `w` writes every changed list at once, `q` quits without saving. */
 export function AgentsApp(props: AgentsAppProps): React.ReactElement {
   const { config, items, factsFor, onDone } = props;
   const palette = usePalette();

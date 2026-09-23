@@ -41,6 +41,7 @@ export function useTheme(): ThemeValue {
   return { palette: paletteFor(name), name, toggle: () => {} };
 }
 
+/** The active palette. Shorthand for `useTheme().palette`, so a component that only draws does not see the toggle. */
 export function usePalette(): Palette {
   return useTheme().palette;
 }

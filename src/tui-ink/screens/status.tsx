@@ -37,7 +37,12 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
   const [routes, setRoutes] = useState<RouteLine[] | undefined>(undefined);
   const [at, setAt] = useState<number | undefined>(undefined);
   const [now, setNow] = useState(() => Date.now());
-  const port = routerPorts(home).router;
+  // `routerPorts` throws when the machine config will not parse. The plain
+  // CLI catches that and says so; this render path did not, so a malformed
+  // config crashed the one screen whose job is to report router trouble.
+  const [port] = useState<number | undefined>(() => {
+    try { return routerPorts(home).router; } catch { return undefined; }
+  });
   const palette = usePalette();
 
   useEffect(() => {
@@ -47,10 +52,14 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
       // Bounded: a router that accepts the connection and never answers would
       // otherwise hang this screen, which is the fault it exists to report.
       let alive = false;
-      try {
-        alive = await isSonataRouter(port, ((url: string, init?: RequestInit) =>
-          fetch(url, { ...init, signal: AbortSignal.timeout(2000) })) as typeof fetch);
-      } catch { alive = false; }
+      // No port means the machine config would not parse: there is no router
+      // address to ask, and the routes below still come from the ledger.
+      if (port !== undefined) {
+        try {
+          alive = await isSonataRouter(port, ((url: string, init?: RequestInit) =>
+            fetch(url, { ...init, signal: AbortSignal.timeout(2000) })) as typeof fetch);
+        } catch { alive = false; }
+      }
       if (cancelled) return;
       setUp(alive);
       try {
@@ -133,10 +142,12 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
           {up === undefined ? STATE.unscored.mark : up ? STATE.lead.mark : STATE.cooled.mark}
         </Text>
         <Text color={palette.MUTED}>
-          {up === undefined ? '  checking…' : up ? `  up on port ${port}` : `  not running on port ${port}`}
+          {port === undefined
+            ? '  unavailable — the machine config does not parse; run `sonata doctor`'
+            : up === undefined ? '  checking…' : up ? `  up on port ${port}` : `  not running on port ${port}`}
         </Text>
       </Text>
-      {up === false && (
+      {up === false && port !== undefined && (
         // Two short lines rather than one long one: as a single sentence it
         // wrapped at 80 columns and orphaned the word "why." on a line of its
         // own, directly under a board whose whole grammar is "nothing wraps".

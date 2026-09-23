@@ -21,11 +21,13 @@ export interface MultiSelectProps<T> {
 
 const WINDOW_ROWS = 12;
 
+/** Map preselected values back to item indices, dropping any the list does not offer. */
 function initialIndices<T>(items: Array<MultiSelectItem<T>>, initialSelected?: Set<T>): Set<number> {
   if (!initialSelected) return new Set();
   return new Set(items.flatMap((item, index) => initialSelected.has(item.value) ? [index] : []));
 }
 
+/** A windowed checkbox list with an optional type-to-filter line. Space toggles, enter confirms. */
 export function MultiSelect<T>(props: MultiSelectProps<T>): React.ReactElement {
   const palette = usePalette();
   const { title, items, initialSelected, onSubmit, onBack, onCancel, filterable = true } = props;

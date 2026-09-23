@@ -679,6 +679,7 @@ export interface CandidateFacts {
   costPerTask?: number;
 }
 
+/** A candidate's measurements for the ranking board — capability on the given metric and cost per task — or just its key and effort when the catalog does not score it. */
 export function candidateFacts(
   candidate: string,
   aa?: AaCatalog,
@@ -845,10 +846,19 @@ export function proposeTiers(
     }));
     const order = frontierIndices(points);
     const frontier = order.map((i) => points[i]!);
-    const knee = frontier.length > 0 ? pool[order[kneeIndex(frontier)]!] : undefined;
+    // `undefined` when the frontier has no knee (too few points, or no
+    // tradeoff to find). Then there is nothing to promote in `normal`, and
+    // `complex`'s floor is -Infinity so every candidate counts as at-or-above
+    // it — plain capability order, which is what the spec's degradation says.
+    const at = kneeIndex(frontier);
+    const knee = at === undefined ? undefined : pool[order[at]!];
     const kept = keptAfterGate(frontier);
     const wasteful = new Set(order.slice(kept).map((i) => pool[i]!));
-    return { knee, wasteful, kneeCapability: frontier.length > 0 ? frontier[kneeIndex(frontier)]!.capability : 0 };
+    return {
+      knee,
+      wasteful,
+      kneeCapability: at === undefined ? Number.NEGATIVE_INFINITY : frontier[at]!.capability,
+    };
   };
 
   const valueGeometry = geometryFor(capabilityOf);
@@ -995,10 +1005,12 @@ export function aaCatalogAgeDays(fetchedAt: string, now: Date): number | undefin
   return Math.max(0, Math.floor((now.getTime() - at) / 86_400_000));
 }
 
+/** Where the cached Artificial Analysis catalog lives under a home directory. */
 export function aaCatalogPath(home: string): string {
   return join(home, '.config', 'sonata', 'catalog.json');
 }
 
+/** Read the cached Artificial Analysis catalog, or `undefined` when there is none or it will not parse. */
 export function loadAaCatalog(home: string): AaCatalog | undefined {
   const path = aaCatalogPath(home);
   if (!existsSync(path)) return undefined;

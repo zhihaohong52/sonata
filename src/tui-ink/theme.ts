@@ -157,6 +157,7 @@ export function resolveThemeName(env: NodeJS.ProcessEnv = process.env): ThemeNam
   return 'dark';
 }
 
+/** The palette for a theme name. Dark is the fallback for anything unrecognised. */
 export function paletteFor(name: ThemeName): Palette {
   return name === 'light' ? LIGHT : DARK;
 }
@@ -257,6 +258,8 @@ export interface BoardColumns {
   bar: number;
   showBar: boolean;
   showWord: boolean;
+  /** Whether the cost column fits; dropped last, below the bar and the word. */
+  showCost: boolean;
   /** Total cells a row occupies. Never exceeds the terminal width. */
   total: number;
 }
@@ -275,12 +278,19 @@ export interface BoardColumns {
  */
 export const GROUND_INSET = 1;
 
+/** Columns a row may occupy: the terminal width less `GROUND_INSET`, never below 1. */
 export function usableWidth(termWidth: number = process.stdout.columns ?? 96): number {
   return Math.max(1, termWidth - GROUND_INSET);
 }
 
+/** The ranking board's column widths for a terminal width, dropping the bar, the status word and the cost in that order so `total` never exceeds the width. */
 export function columns(termWidth: number): BoardColumns {
-  const w = Math.min(Math.max(40, termWidth), MAX_BOARD);
+  // No floor. This used to clamp to at least 40 cells, so a narrower terminal
+  // got a 40-cell row on a smaller page and every row wrapped — the same
+  // failure `statusColumns` had, and its test excused the same range. Below
+  // the widths where each column earns its place, columns are dropped instead:
+  // the bar first, then the status word, then the cost.
+  const w = Math.max(1, Math.min(termWidth, MAX_BOARD));
   const showBar = w >= MIN_BOARD;
   const showWord = w >= 88;
   // Measured from STATE rather than guessed: a status column one cell short
@@ -288,9 +298,14 @@ export function columns(termWidth: number): BoardColumns {
   // grammar. Caught by rendering, where rows came back with a blank line
   // between each because the total ran one cell over the terminal.
   const status = showWord ? 1 + MARK_W + 1 + WORD_W : 1 + MARK_W;
-  const budget = w - RANK_W - COST_W - status;
+  // Cost goes last of the optional columns, and only when a usable name still
+  // fits beside it: a board of prices with no model names is worse than one
+  // without prices.
+  const showCost = w - RANK_W - status - COST_W >= 8;
+  const cost = showCost ? COST_W : 0;
+  const budget = Math.max(0, w - RANK_W - cost - status);
   const barWidth = showBar ? Math.min(18, Math.max(8, Math.floor(budget * 0.3))) : 0;
-  const name = Math.max(10, budget - barWidth);
-  return { name, bar: barWidth, showBar, showWord, total: RANK_W + name + barWidth + COST_W + status };
+  const name = Math.max(0, budget - barWidth);
+  return { name, bar: barWidth, showBar, showWord, showCost, total: RANK_W + name + barWidth + cost + status };
 }
 

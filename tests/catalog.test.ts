@@ -96,6 +96,21 @@ describe('proposeTiers', () => {
     expect(p.complex).toEqual(['flash-high', 'flash-low', 'pro-max']);
   });
 
+  it('keeps value order when the frontier is too short to have a knee', () => {
+    // Two frontier points have no interior. `kneeIndex` used to answer the
+    // cheapest point as a stand-in, and `normal` promoted it over its own
+    // value order. Here the cheapest (`weak`, 45 at $0.10) is NOT the best
+    // value (`strong`, 90 at $0.15 = 600/$ against 450/$), so the difference
+    // is visible: with no knee, value order stands. Both clear the capable
+    // threshold, or they would be filtered before any knee was computed and
+    // the test would pass whether or not the fix was there.
+    const aa: AaCatalog = { fetchedAt: 'x', models: {
+      weak:   { codingIndex: 45, blendedPriceUsd: 1, costPerTask: 0.10 },
+      strong: { codingIndex: 90, blendedPriceUsd: 1, costPerTask: 0.15 },
+    } };
+    expect(proposeTiers(['weak', 'strong'], aa).normal[0]).toBe('strong');
+  });
+
   it('makes simple a cost-capped subsequence of the value order', () => {
     // 12 x $0.010 = $0.120, so pro-max is out.
     const p = proposeTiers(['flash-low', 'flash-high', 'pro-max'], threeTierAa);

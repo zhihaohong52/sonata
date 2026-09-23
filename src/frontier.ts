@@ -119,15 +119,19 @@ export function keptAfterGate(frontier: readonly Point[], frac = 1 / 3): number 
  * model that leads the default tier.
  *
  * Fewer than three points has no interior, and a flat or vertical frontier has
- * no chord to measure against; all answer 0, the cheapest point.
+ * no chord to measure against. Those answer `undefined` — **no knee** — never
+ * 0. Returning the cheapest point as a stand-in let the caller treat it as a
+ * real knee: `normal` promoted the cheapest candidate to its head, overriding
+ * the value order it should have kept, and `complex` gained a boundary that
+ * nothing measured.
  */
-export function kneeIndex(frontier: readonly Point[]): number {
-  if (frontier.length < 3) return 0;
+export function kneeIndex(frontier: readonly Point[]): number | undefined {
+  if (frontier.length < 3) return undefined;
   const xs = frontier.map((point) => Math.log10(point.cost));
   const ys = frontier.map((point) => point.capability);
   const dx = xs[xs.length - 1]! - xs[0]!;
   const dy = ys[ys.length - 1]! - ys[0]!;
-  if (dx === 0 || dy === 0) return 0;
+  if (dx === 0 || dy === 0) return undefined;
   let best = Number.NEGATIVE_INFINITY;
   let at = 0;
   frontier.forEach((_, i) => {

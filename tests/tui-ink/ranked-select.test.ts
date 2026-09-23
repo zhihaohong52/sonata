@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import React from 'react';
 import { render } from 'ink-testing-library';
 import { RankedSelect } from '../../src/tui-ink/components/ranked-select.js';
-import { boardWindow, dominatedRows } from '../../src/tui-ink/components/ranked-select-state.js';
+import { boardWindow, dominatedRows, packedLines } from '../../src/tui-ink/components/ranked-select-state.js';
 
 /** Lets Ink flush a render before the next keystroke is read. */
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
@@ -149,17 +149,19 @@ describe('dominatedRows', () => {
 
 describe('boardWindow', () => {
   it('draws everything when it fits', () => {
-    expect(boardWindow(0, 5, 10)).toEqual({ start: 0, end: 5 });
+    expect(boardWindow(0, 5, 10)).toEqual({ start: 0, end: 5, markers: false });
   });
 
   it('never draws more rows than the room, markers included', () => {
     // The overflow this prevents: twelve candidates plus chrome outgrew a
     // 22-row window and the TITLE scrolled off. The two `more` markers cost a
     // line each and are budgeted, since forgetting them overflows by two.
-    for (let cursor = 0; cursor < 30; cursor += 1) {
-      const { start, end } = boardWindow(cursor, 30, 10);
-      const markers = (start > 0 ? 1 : 0) + (end < 30 ? 1 : 0);
-      expect(end - start + markers).toBeLessThanOrEqual(10);
+    for (let room = 1; room <= 12; room += 1) {
+      for (let cursor = 0; cursor < 30; cursor += 1) {
+        const w = boardWindow(cursor, 30, room);
+        const drawn = w.markers ? (w.start > 0 ? 1 : 0) + (w.end < 30 ? 1 : 0) : 0;
+        expect(w.end - w.start + drawn).toBeLessThanOrEqual(room);
+      }
     }
   });
 
@@ -173,8 +175,52 @@ describe('boardWindow', () => {
     }
   });
 
-  it('shows at least three rows on a very short terminal', () => {
-    const { start, end } = boardWindow(5, 30, 1);
-    expect(end - start).toBe(3);
+  it('drops the markers rather than overflow a very short terminal', () => {
+    // The floor used to force three rows plus two markers into as little as
+    // one line, which is the header-scrolling failure this exists to prevent.
+    expect(boardWindow(5, 30, 1)).toEqual({ start: 5, end: 6, markers: false });
+    expect(boardWindow(5, 30, 2).markers).toBe(false);
+    expect(boardWindow(5, 30, 3).markers).toBe(true);
+  });
+});
+
+describe('RankedSelect — a row with a cost but no capability', () => {
+  it('is unscored, not live or held', async () => {
+    // The board cannot score it and draws a dashed bar; labelling it `ready`
+    // or `held` claimed a judgement it could not have made.
+    const app = render(React.createElement(RankedSelect<string>, {
+      title: 'code: simple models',
+      items: [
+        { value: 'priced-only', label: 'priced-only', facts: { key: 'priced-only', costPerTask: 0.1 } },
+        { value: 'scored', label: 'scored', facts: { key: 'scored', capability: 40, costPerTask: 0.2 } },
+      ],
+      initialRanked: ['priced-only'],
+      onSubmit: () => {},
+    }));
+    await tick();
+    // eslint-disable-next-line no-control-regex
+    const row = (app.lastFrame() ?? '').replace(/\u001B\[[0-9;]*m/g, '').split('\n').find((l) => l.includes('priced-only'))!;
+    expect(row).toContain('unranked');
+    expect(row).not.toContain('running');
+  });
+});
+
+describe('packedLines', () => {
+  it('packs whole items, never splitting one', () => {
+    // Six pairs at 10-16 cells each on a 21-cell page: nearly one per line.
+    // Dividing the 75-cell total by 21 said 4; the layout draws 6.
+    expect(packedLines([10, 13, 14, 16, 9, 13], 21)).toBe(6);
+  });
+
+  it('fits everything on one line when there is room', () => {
+    expect(packedLines([10, 13, 14], 80)).toBe(1);
+  });
+
+  it('counts an item wider than the page as its own line', () => {
+    expect(packedLines([30, 5], 20)).toBe(2);
+  });
+
+  it('is zero for nothing', () => {
+    expect(packedLines([], 40)).toBe(0);
   });
 });

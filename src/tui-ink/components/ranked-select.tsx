@@ -1,6 +1,6 @@
 import React, { useReducer } from 'react';
 import { Box, Text, useInput, useWindowSize } from 'ink';
-import { boardWindow, dominatedRows, rsInitial, rsOrder, rsReduce } from './ranked-select-state.js';
+import { boardWindow, dominatedRows, packedLines, rsInitial, rsOrder, rsReduce } from './ranked-select-state.js';
 import { STATE, bar, columns, usableWidth } from '../theme.js';
 import type { CandidateFacts } from '../../catalog.js';
 import { usePalette } from '../theme-context.js';
@@ -44,6 +44,7 @@ export interface RankedSelectProps<T> {
   onCancel?: () => void;
 }
 
+/** Map a seeded ranking of values back to item indices, dropping any value the rows do not offer. */
 function initialIndices<T>(items: Array<RankedSelectItem<T>>, initialRanked: T[] = []): number[] {
   return initialRanked.flatMap((value) => {
     const index = items.findIndex((item) => Object.is(item.value, value));
@@ -51,6 +52,7 @@ function initialIndices<T>(items: Array<RankedSelectItem<T>>, initialRanked: T[]
   });
 }
 
+/** The ranking board: selection order is the fallback order, drawn in rank order with a shared-scale bar, a cost column and a state stroke per row. */
 export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement {
   const palette = usePalette();
   const { title, items, initialRanked, metric = 'capability', footer, onSubmit, onAcceptRest, onBack, onCancel } = props;
@@ -136,14 +138,14 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
     ...(onBack ? [['←', 'back']] : []),
     ...(onCancel ? [['esc', 'cancel']] : []),
   ] as Array<[string, string, boolean?]>);
-  const keymapLines = Math.max(1, Math.ceil(
-    keys.reduce((sum, [key, action]) => sum + key.length + action.length + 4, 0) / Math.max(1, usable),
-  ));
+  // Packed pair by pair, the way the Box wraps them — each pair renders as
+  // `key` + ` action   `. See `packedLines` for why division undercounted.
+  const keymapLines = Math.max(1, packedLines(keys.map(([key, action]) => key.length + action.length + 4), usable));
   // Head, column header, top rule, lead rule, bottom rule, keymap, the footer
   // when present, the empty hint when shown. Ground's height is one short of
   // the terminal's, so that line is spent too.
   const chrome = 5 + keymapLines + (footer !== undefined ? 1 : 0) + (state.ranked.length === 0 ? 1 : 0) + 1;
-  const { start, end } = boardWindow(state.cursor, order.length, (rows ?? 24) - chrome);
+  const { start, end, markers } = boardWindow(state.cursor, order.length, (rows ?? 24) - chrome);
 
   return (
     <Box flexDirection="column">
@@ -162,15 +164,15 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
           different quantity; without this the bar, the number and the dollar
           figure are three unlabelled things in a row. Drawn muted and above
           the rule so it reads as a legend rather than as data. */}
-      <Box>
+      <Text wrap="truncate-end">
         <Text color={palette.MUTED}>{'  # '}</Text>
-        <Text color={palette.MUTED}>{'model'.padEnd(col.name)}</Text>
+        <Text color={palette.MUTED}>{'model'.slice(0, col.name).padEnd(col.name)}</Text>
         {col.showBar && <Text color={palette.MUTED}>{metric.slice(0, col.bar).padEnd(col.bar)}</Text>}
-        <Text color={palette.MUTED}>{'$/task'.padStart(9)}</Text>
+        {col.showCost && <Text color={palette.MUTED}>{'$/task'.padStart(9)}</Text>}
         {col.showWord && <Text color={palette.MUTED}>{'  state'}</Text>}
-      </Box>
+      </Text>
       <Text color={palette.RULE}>{'─'.repeat(ruleCells)}</Text>
-      {start > 0 && <Text wrap="truncate-end" color={palette.MUTED}>{`  ↑ ${start} more`}</Text>}
+      {markers && start > 0 && <Text wrap="truncate-end" color={palette.MUTED}>{`  ↑ ${start} more`}</Text>}
       {order.slice(start, end).map((index, offset) => {
         const position = start + offset;
         const item = items[index];
@@ -184,7 +186,10 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
         // `held` means "kept out by hand", which is exactly what an unranked
         // row is. `dominated` is now reserved for rows the catalog actually
         // says are beaten on both axes.
-        const stateName = facts === undefined || facts.costPerTask === undefined
+        // Both measurements, or unscored. A row can carry a cost with no
+        // capability; it then draws a dashed bar, and calling it `live` or
+        // `held` claimed a judgement the board could not have made.
+        const stateName = facts === undefined || facts.costPerTask === undefined || facts.capability === undefined
           ? 'unscored'
           : isLead ? 'lead'
           : rank >= 0 ? 'live'
@@ -201,7 +206,12 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
 
         return (
           <React.Fragment key={index}>
-          <Box>
+          {/* One truncating line, not a Box of siblings: siblings each shrink
+              and wrap inside their own cell when a row runs long, and a
+              wrapped row is two rows. The width budget decides what is shown;
+              this guarantees a wrong budget costs the end of a line, never
+              the layout. See `StatusScreen`. */}
+          <Text wrap="truncate-end">
             {/* The accent edge, exactly as `menu.tsx` draws it and as
                 claude-swap's `border-left: thick $primary` does. The board
                 used Ink's `inverse` for its cursor — a reversed block that
@@ -229,7 +239,7 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
               strikethrough={stateName === 'dominated'}
               color={rank < 0 && !onCursor ? palette.MUTED : palette.TEXT}
             >
-              {name.length > col.name ? `${name.slice(0, col.name - 1)}…` : name.padEnd(col.name)}
+              {col.name <= 0 ? '' : name.length > col.name ? `${name.slice(0, col.name - 1)}…` : name.padEnd(col.name)}
             </Text>
             {/* The bar carries magnitude by LENGTH, and its colour says only
                 whether this is the lead. It used to be drawn with
@@ -267,15 +277,17 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
                 the tier's business. `band()` belongs to spend against a
                 budget, where "high" means approaching a refusal, and that is
                 the one place it is true. */}
-            <Text backgroundColor={onCursor ? palette.BAND : undefined} color={palette.MUTED}>
-              {facts?.costPerTask === undefined
-                ? '        —'
-                : `$${facts.costPerTask.toFixed(4)}`.padStart(9)}
-            </Text>
+            {col.showCost && (
+              <Text backgroundColor={onCursor ? palette.BAND : undefined} color={palette.MUTED}>
+                {facts?.costPerTask === undefined
+                  ? '        —'
+                  : `$${facts.costPerTask.toFixed(4)}`.padStart(9)}
+              </Text>
+            )}
             <Text backgroundColor={onCursor ? palette.BAND : undefined} color={palette.MUTED}>
               {' '}{mark.mark}{col.showWord ? ` ${mark.word}` : ''}
             </Text>
-          </Box>
+          </Text>
           {/* The lead sits above a rule, apart from the rest. It is the one
               row that answers "what runs if I dispatch right now", and in an
               undifferentiated run of rows that question has to be answered by
@@ -287,7 +299,7 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
           </React.Fragment>
         );
       })}
-      {end < order.length && (
+      {markers && end < order.length && (
         <Text wrap="truncate-end" color={palette.MUTED}>{`  ↓ ${order.length - end} more`}</Text>
       )}
       {state.ranked.length === 0 && (

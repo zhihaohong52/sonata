@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Box, Text, useInput } from 'ink';
 import { cmdSync } from '../../commands/sync.js';
 import { cmdCatalogUpdate } from '../../commands/catalog.js';
@@ -29,7 +30,8 @@ import { usePalette } from '../theme-context.js';
  * state, not a refusal.
  */
 export function ActionsScreen({ cwd, home }: { cwd: string; home: string }): React.ReactElement {
-  const packageRoot = new URL('../../..', import.meta.url).pathname;
+  // `fileURLToPath`, not `URL.pathname`, for the reason `InitScreen` gives.
+  const packageRoot = fileURLToPath(new URL('../../..', import.meta.url));
   const [message, setMessage] = useState<string>();
   const [running, setRunning] = useState<string>();
   const [cursor, setCursor] = useState(0);

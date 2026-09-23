@@ -112,6 +112,7 @@ interface ChoiceProps<T> {
   onCancel: () => void;
 }
 
+/** A single-choice list screen used by the wizard's fixed questions (config scope, hook scope, routing). */
 function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: ChoiceProps<T>): React.ReactElement {
   const palette = usePalette();
   const [cursor, setCursor] = useState(() => Math.max(0, choices.findIndex((choice) => choice.value === initial)));
@@ -137,6 +138,7 @@ function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: Choi
   );
 }
 
+/** The wizard's closing summary of what `sonata init` is about to write, shown before the confirm. */
 function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWizardProps['onDone']; onBack: () => void }): React.ReactElement {
   const palette = usePalette();
   const hasModels = (state.nativeKeys?.length ?? 0) > 0;

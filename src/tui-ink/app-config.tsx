@@ -49,7 +49,7 @@ const MENU: ReadonlyArray<MenuItem<Step>> = [
  * with no error, because there is no error. That is what once made every
  * prompt after the wizard die instantly. Every confirmation is a screen.
  */
-function ConfigTui({ cwd, home, start, statusGlobal, onKeep }: { cwd: string; home: string; start?: Step; statusGlobal?: boolean; onKeep?: (lines: string[]) => void }): React.ReactElement {
+function ConfigTui({ cwd, home, start, statusGlobal, reproposeTiers, onKeep }: { cwd: string; home: string; start?: Step; statusGlobal?: boolean; reproposeTiers?: boolean; onKeep?: (lines: string[]) => void }): React.ReactElement {
   const { exit } = useApp();
   // `checking` always runs first: every screen is read against a machine the
   // health check has already described, and a deep link that skipped it would
@@ -142,7 +142,7 @@ function ConfigTui({ cwd, home, start, statusGlobal, onKeep }: { cwd: string; ho
   // app is drawn against, and the tier-routing warning that may have been the
   // reason for running it is answered by re-running doctor, not by returning
   // to the stale result that prompted it.
-  if (step === 'init') return <InitScreen cwd={cwd} home={home} onKeep={onKeep} onDone={() => setStep('checking')} />;
+  if (step === 'init') return <InitScreen cwd={cwd} home={home} reproposeTiers={reproposeTiers} onKeep={onKeep} onDone={() => setStep('checking')} />;
   return (
     <Box flexDirection="column">
       <OverviewScreen checks={checks} items={MENU} cursor={cursor} />
@@ -154,7 +154,7 @@ function ConfigTui({ cwd, home, start, statusGlobal, onKeep }: { cwd: string; ho
 }
 
 /** Render the TUI and resolve with the process exit code. */
-export async function runConfigTui(opts: { cwd: string; home?: string; start?: Step; statusGlobal?: boolean }): Promise<number> {
+export async function runConfigTui(opts: { cwd: string; home?: string; start?: Step; statusGlobal?: boolean; reproposeTiers?: boolean }): Promise<number> {
   // Resolved once here so every screen takes a required `home`: `configPath`
   // and `loadConfig` both demand one, and threading an optional down would put
   // the same `?? homedir()` in each screen.
@@ -168,7 +168,7 @@ export async function runConfigTui(opts: { cwd: string; home?: string; start?: S
     const instance = render(
       <ThemeProvider>
         <Ground>
-          <ConfigTui cwd={opts.cwd} home={home} start={opts.start} statusGlobal={opts.statusGlobal} onKeep={(lines) => keep.splice(0, keep.length, ...lines)} />
+          <ConfigTui cwd={opts.cwd} home={home} start={opts.start} statusGlobal={opts.statusGlobal} reproposeTiers={opts.reproposeTiers} onKeep={(lines) => keep.splice(0, keep.length, ...lines)} />
         </Ground>
       </ThemeProvider>,
     );
