@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { afterCheck, nextStep } from '../../src/tui-ink/steps.js';
+import { hostKeyAction, afterCheck, nextStep } from '../../src/tui-ink/steps.js';
 
 describe('nextStep', () => {
   it('opens the budget screen from the overview', () => {
@@ -59,5 +59,36 @@ describe('afterCheck', () => {
     // A simpler loop of the same kind: the check completes and routes
     // straight back into itself.
     expect(afterCheck('checking', false)).toBe('overview');
+  });
+});
+
+describe('hostKeyAction', () => {
+  it('leaves Esc to the Tiers editor, so it cannot jump two levels', () => {
+    // One Esc on the ranking board used to be read by BOTH the board ("cancel
+    // this list") and the shell ("go home"), unmounting the editor and
+    // discarding every unsaved edit to every list.
+    expect(hostKeyAction('tiers', '', true)).toBe('none');
+    expect(hostKeyAction('tiers', 'q', false)).toBe('none');
+  });
+
+  it('leaves every key to Setup', () => {
+    expect(hostKeyAction('init', '', true)).toBe('none');
+    expect(hostKeyAction('init', 'q', false)).toBe('none');
+  });
+
+  it('quits on q from a screen that does not own its keys', () => {
+    // `sonata status` could not be closed with q.
+    for (const step of ['status', 'models', 'providers', 'keys', 'budget', 'actions'] as const) {
+      expect(hostKeyAction(step, 'q', false)).toBe('quit');
+    }
+  });
+
+  it('goes back to the overview on Esc from those screens', () => {
+    expect(hostKeyAction('status', '', true)).toBe('overview');
+    expect(hostKeyAction('models', '', true)).toBe('overview');
+  });
+
+  it('ignores keys while the health check runs', () => {
+    expect(hostKeyAction('checking', 'q', true)).toBe('none');
   });
 });

@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { homedir } from 'node:os';
 import { Box, Text, render, useApp, useInput, useWindowSize } from 'ink';
 import { cmdDoctor, type Check } from '../commands/doctor.js';
-import { afterCheck, nextStep, type Step } from './steps.js';
+import { afterCheck, hostKeyAction, nextStep, SCREENS_OWNING_KEYS, type Step } from './steps.js';
 import { OverviewScreen } from './screens/overview.js';
 import { BudgetScreen } from './screens/budget.js';
 import { ModelsScreen } from './screens/models.js';
@@ -99,7 +99,10 @@ function ConfigTui({ cwd, home, start, statusGlobal, onKeep }: { cwd: string; ho
     // promise nothing will ever resolve. `^t` stays live because a theme that
     // cannot be corrected on the longest screen in the app is the one place
     // the correction is most needed.
-    if (step === 'init') {
+    // Setup and Tiers own every key while open; see `SCREENS_OWNING_KEYS`.
+    // For Tiers this is what stopped one Esc on the ranking board from jumping
+    // two levels and discarding every unsaved edit.
+    if (SCREENS_OWNING_KEYS.has(step)) {
       if (key.ctrl && input === 't') toggle();
       return;
     }
@@ -121,7 +124,9 @@ function ConfigTui({ cwd, home, start, statusGlobal, onKeep }: { cwd: string; ho
       setStep((current) => nextStep(current, input));
       return;
     }
-    if (key.escape) { setStep('overview'); return; }
+    const action = hostKeyAction(step, input, key.escape);
+    if (action === 'quit') { exit(); return; }
+    if (action === 'overview') { setStep('overview'); return; }
     setStep((current) => nextStep(current, input));
   });
 

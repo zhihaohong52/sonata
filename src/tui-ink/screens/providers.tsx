@@ -21,7 +21,7 @@ export function ProvidersScreen({ cwd, home }: { cwd: string; home: string }): R
     <Screen
       title="Providers"
       note={empty.size === 0 ? count(rows.length, 'gateway') : `${empty.size} of ${rows.length} serve nothing`}
-      footer="esc back"
+      footer="esc back   q quit"
     >
       {rows.length === 0 && (
         <Text color={palette.MUTED}>No gateways configured. `sonata init` adds them, by import or by hand.</Text>

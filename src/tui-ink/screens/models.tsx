@@ -23,7 +23,7 @@ export function ModelsScreen({ cwd, home }: { cwd: string; home: string }): Reac
     <Screen
       title="Models"
       note={untiered.size === 0 ? `${count(rows.length, 'model')}, all tiered` : `${untiered.size} of ${rows.length} unreachable`}
-      footer="esc back"
+      footer="esc back   q quit"
     >
       {rows.length === 0 && (
         <Text color={palette.MUTED}>No models configured. `sonata init` picks them from what your gateways serve.</Text>

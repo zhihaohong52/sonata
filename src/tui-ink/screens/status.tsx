@@ -224,7 +224,7 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
         <Text wrap="truncate-end" color={palette.MUTED}>{`… ${routes.length - visible.length} more, not shown`}</Text>
       )}
       <Box marginTop={1}>
-        <Text wrap="truncate-end" color={palette.MUTED}>{`g ${global ? 'this project' : 'every project'}   esc back`}</Text>
+        <Text wrap="truncate-end" color={palette.MUTED}>{`g ${global ? 'this project' : 'every project'}   esc back   q quit`}</Text>
       </Box>
     </Box>
   );

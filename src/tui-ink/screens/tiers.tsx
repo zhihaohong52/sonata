@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useInput } from 'ink';
 import { loadAaCatalog } from '../../catalog.js';
 import { loadModelsDev } from '../../modelsdev.js';
 import { editorCandidates, itemFacts, itemLabel, writeTiers } from '../../commands/agents.js';
@@ -29,6 +30,15 @@ export function TiersScreen(
 ): React.ReactElement {
   const loaded = loadConfigForScreen(cwd, home);
   const [error, setError] = useState<string>();
+
+  // Tiers owns every key (`SCREENS_OWNING_KEYS`), so the shell no longer
+  // turns Esc into "go home" here. The editor navigates out through `onDone`;
+  // the two message states have no editor, so they answer Esc themselves —
+  // otherwise a config that will not load would strand the reader on a
+  // screen whose own footer says "esc back" and means nothing.
+  useInput((input, key) => {
+    if (key.escape || input === 'q') onBack();
+  }, { isActive: !loaded.ok || error !== undefined });
 
   if (!loaded.ok) return <Message text={loaded.message} title="Tiers" />;
   const { config } = loaded;

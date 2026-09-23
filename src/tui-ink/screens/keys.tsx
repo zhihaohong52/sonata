@@ -33,7 +33,7 @@ export function KeysScreen({ cwd, home }: { cwd: string; home: string }): React.
     <Screen
       title="Keys"
       note={missing.size === 0 ? `${count(rows.length, 'gateway')}, all credentialed` : `${missing.size} of ${rows.length} need a credential`}
-      footer="esc back   ·   add one with `sonata auth add <gateway>`"
+      footer="esc back   q quit   ·   add one with `sonata auth add <gateway>`"
     >
       {rows.length === 0 && (
         <Text color={palette.MUTED}>No gateways configured, so there is nothing to authenticate.</Text>
