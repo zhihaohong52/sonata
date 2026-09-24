@@ -12,6 +12,9 @@
  *   node scripts/pr-status.mjs 22 23 24        # specific PRs
  *   node scripts/pr-status.mjs --watch         # poll until something changes
  *   node scripts/pr-status.mjs --watch=30      # ... every 30s (default 60)
+ *   node scripts/pr-status.mjs --watch --until-change 65
+ *                                              # exit on the first change, for
+ *                                              # an agent that must be woken
  *
  * Exit code is 0 when every PR examined is mergeable, CI-green, has no
  * unresolved threads and no outstanding findings; 1 otherwise. That makes it
@@ -90,9 +93,11 @@ function prState(number) {
     `query={repository(owner:"zhihaohong52",name:"sonata"){pullRequest(number:${number})` +
     '{reviewThreads(first:100){nodes{isResolved path line}}}}}',
   ])).data.repository.pullRequest.reviewThreads.nodes;
+  // Paginated for the same reason as reviews below: 30 per page, oldest
+  // first, so page one alone goes stale on a busy PR.
   const comments = JSON.parse(gh([
-    'api', `repos/zhihaohong52/sonata/issues/${number}/comments`,
-  ]));
+    'api', '--paginate', '--slurp', `repos/zhihaohong52/sonata/issues/${number}/comments`,
+  ])).flat();
   // Reviews, not just comments: the actionable-comment count lives in a review
   // body, and a PR's verdict cannot be read without it.
   // `--paginate --slurp`: the endpoint returns 30 reviews per page in
@@ -214,6 +219,7 @@ function report(number) {
 function main() {
   const args = process.argv.slice(2);
   const watchArg = args.find((a) => a.startsWith('--watch'));
+  const untilChange = args.includes('--until-change');
   const numbers = args.filter((a) => /^\d+$/.test(a)).map(Number);
   const intervalMs = watchArg
     ? Math.max(15, Number(watchArg.split('=')[1] ?? 60)) * 1000
@@ -238,21 +244,29 @@ function main() {
 
   const state = { previous: null, failures: 0 };
   console.log(`watching every ${intervalMs / 1000}s — Ctrl-C to stop\n`);
+  // Stopped on a change rather than on clean, the exit code carries the
+  // gate's answer for the state it stopped on.
+  const exitCode = () => (state.clean === false ? 1 : 0);
   const first = watchTick({
     poll: run,
     state,
     log: (line) => console.log(line),
     maxFailures: MAX_WATCH_FAILURES,
+    untilChange,
   });
-  if (first === 'stop') return 0;
+  if (first === 'stop') return exitCode();
   const timer = setInterval(() => {
     const outcome = watchTick({
       poll: () => targets.map(report),
       state,
       log: (line) => console.log(line),
       maxFailures: MAX_WATCH_FAILURES,
+      untilChange,
     });
-    if (outcome === 'stop') clearInterval(timer);
+    if (outcome === 'stop') {
+      clearInterval(timer);
+      process.exitCode = exitCode();
+    }
   }, intervalMs);
   return 0;
 }
@@ -281,8 +295,14 @@ export const MAX_WATCH_FAILURES = 5;
  *
  * A failure is therefore announced rather than swallowed, the counter resets
  * on success so blips hours apart never accumulate, and the give-up is stated.
+ *
+ * `untilChange` also stops on the first change after the initial poll, clean
+ * or not. A plain watch ends only when every PR is clean, which suits a person
+ * reading a terminal and fails an agent running it in the background: a review
+ * landing with findings is printed, the process keeps polling, and nothing
+ * wakes the agent — PR #65's findings sat unseen for two hours that way.
  */
-export function watchTick({ poll, state, log, maxFailures }) {
+export function watchTick({ poll, state, log, maxFailures, untilChange = false }) {
   let results;
   try {
     results = poll();
@@ -297,13 +317,19 @@ export function watchTick({ poll, state, log, maxFailures }) {
     return 'continue';
   }
   state.failures = 0;
+  state.clean = results.every((r) => r.clean);
   const now = results.map((r) => r.fingerprint).join('\n');
   if (now === state.previous) return 'continue';
+  const initial = state.previous === null;
   state.previous = now;
   log(`${new Date().toISOString()}  change detected\n`);
   for (const r of results) log(`${r.text}\n`);
-  if (results.every((r) => r.clean)) {
+  if (state.clean) {
     log('all clean');
+    return 'stop';
+  }
+  if (untilChange && !initial) {
+    log('changed — stopping (--until-change)');
     return 'stop';
   }
   return 'continue';

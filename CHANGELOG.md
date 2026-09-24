@@ -29,6 +29,10 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   $0.1332 per task, sat at #13. If the first gateway failed, the router fell
   back to a different model instead of the same model elsewhere. Every
   non-avoided route at the knee's exact point now leads together.
+- **`scripts/pr-status.mjs --until-change`** exits on the first change after
+  the initial poll, with the gate's exit code, so a background watch can wake
+  the agent that started it. Issue comments are now paginated, as reviews
+  already were.
 
 ## [0.12.1] - 2026-09-23
 

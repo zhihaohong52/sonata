@@ -45,6 +45,25 @@ describe('watchTick', () => {
     })).toBe('stop');
   });
 
+  it('with untilChange, keeps watching through the first poll and stops on the next change', () => {
+    // A background watch must end when a review lands with findings, or the
+    // agent that started it is never woken.
+    const state: { previous: string | null; failures: number; clean?: boolean } = { previous: null, failures: 0 };
+    const opts = { state, log: () => {}, maxFailures: 3, untilChange: true };
+    expect(watchTick({ ...opts, poll: () => [{ fingerprint: 'a', text: 'PR #1', clean: false }] })).toBe('continue');
+    expect(watchTick({ ...opts, poll: () => [{ fingerprint: 'a', text: 'PR #1', clean: false }] })).toBe('continue');
+    expect(watchTick({ ...opts, poll: () => [{ fingerprint: 'b', text: 'PR #1', clean: false }] })).toBe('stop');
+    expect(state.clean).toBe(false);
+  });
+
+  it('without untilChange, a dirty change keeps the watch running', () => {
+    const state = { previous: 'a', failures: 0 };
+    expect(watchTick({
+      poll: () => [{ fingerprint: 'b', text: 'PR #1', clean: false }],
+      state, log: () => {}, maxFailures: 3,
+    })).toBe('continue');
+  });
+
   it('gives up after repeated failures rather than spinning forever', () => {
     // A revoked token or a removed repo fails every time. Retrying silently
     // for hours is not better than stopping and saying why.
