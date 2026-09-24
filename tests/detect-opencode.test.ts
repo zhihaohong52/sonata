@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectOpenCode } from '../src/detect.js';
+import { WELL_KNOWN_PROVIDER_URLS, detectOpenCode } from '../src/detect.js';
 
 describe('detectOpenCode', () => {
   afterEach(() => {
@@ -22,5 +22,14 @@ describe('detectOpenCode', () => {
 
     expect(status.installed).toBe(false);
     expect(status.problems).toEqual([]);
+  });
+});
+
+describe('OpenCode gateway URLs', () => {
+  it('points Zen at opencode.ai/zen, beside Go', () => {
+    // api.opencode.ai answers /models with a 200 "Not Found" text body, so a
+    // Zen gateway added by hand fetched no models while Go's listed fine.
+    expect(WELL_KNOWN_PROVIDER_URLS['opencode']).toBe('https://opencode.ai/zen/v1');
+    expect(WELL_KNOWN_PROVIDER_URLS['opencode-go']).toBe('https://opencode.ai/zen/go/v1');
   });
 });

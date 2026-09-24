@@ -8,6 +8,13 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- **An OpenCode Zen gateway now lists its models.** Its base URL was
+  `https://api.opencode.ai/v1`, which answers `/models` with a 200 plain-text
+  "Not Found", so adding Zen fetched nothing while OpenCode Go (on
+  `opencode.ai/zen/go/v1`) listed fine. It is now `https://opencode.ai/zen/v1`.
+
 ## [0.12.1] - 2026-09-23
 
 ### Added
