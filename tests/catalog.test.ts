@@ -196,6 +196,59 @@ describe('proposeTiers', () => {
     expect(p.complex).toEqual(['flash-high', 'flash-low', 'pro-max']);
   });
 
+  it('promotes every route to the knee, not only the one key the frontier kept', () => {
+    // One model on two gateways is one point: same score, same cost per task.
+    // The frontier keeps one of a duplicate pair, so the knee named one key,
+    // and only that key was promoted. Measured: mimo-v2.6-pro led `normal`
+    // on opencode-go and its OpenRouter route sat at #13, so losing the
+    // first gateway fell back to a different model rather than the same one.
+    const aa: AaCatalog = { fetchedAt: 'x', models: {
+      ...threeTierAa.models,
+      'flash-high-twin': { codingIndex: 63, blendedPriceUsd: 1, costPerTask: 0.044 },
+    } };
+    const p = proposeTiers(['flash-low', 'flash-high', 'pro-max', 'flash-high-twin'], aa);
+    expect(p.normal.slice(0, 2)).toEqual(['flash-high', 'flash-high-twin']);
+    expect(p.normal.slice(2)).toEqual(['flash-low', 'pro-max']);
+  });
+
+  it('keeps value order among the knee routes', () => {
+    // Two levels of one model at one point: the frontier keeps the first it
+    // sees (`@low`, expandCandidates is weakest-first) while value order puts
+    // the higher level first at equal price and score. Prepending the knee
+    // reversed that.
+    const aa: AaCatalog = { fetchedAt: 'x', models: {
+      'cheap-low': { intelligenceIndex: 44, blendedPriceUsd: 1, costPerTask: 0.010, family: 'cheap', effort: 'low' },
+      'mid-low': { intelligenceIndex: 63, blendedPriceUsd: 1, costPerTask: 0.044, family: 'mid', effort: 'low' },
+      'mid-high': { intelligenceIndex: 63, blendedPriceUsd: 1, costPerTask: 0.044, family: 'mid', effort: 'high' },
+      'dear-max': { intelligenceIndex: 77, blendedPriceUsd: 1, costPerTask: 1.399, family: 'dear', effort: 'max' },
+    } };
+    const p = proposeTiers(['cheap', 'mid', 'dear'], aa);
+    expect(p.normal.slice(0, 2)).toEqual(['mid@high', 'mid@low']);
+  });
+
+  it('does not promote an off-scale route that ties the knee on its fallback score', () => {
+    // No intelligence index: its coding score stands in, on another scale.
+    const aa: AaCatalog = { fetchedAt: 'x', models: {
+      'cheap': { intelligenceIndex: 44, blendedPriceUsd: 1, costPerTask: 0.010 },
+      'mid': { intelligenceIndex: 63, blendedPriceUsd: 1, costPerTask: 0.044 },
+      'dear': { intelligenceIndex: 77, blendedPriceUsd: 1, costPerTask: 1.399 },
+      'coding-only': { codingIndex: 63, blendedPriceUsd: 1, costPerTask: 0.044 },
+    } };
+    const p = proposeTiers(['cheap', 'mid', 'dear', 'coding-only'], aa);
+    expect(p.normal[0]).toBe('mid');
+    expect(p.normal.at(-1)).toBe('coding-only');
+  });
+
+  it('does not promote an avoided route of the knee', () => {
+    const aa: AaCatalog = { fetchedAt: 'x', models: {
+      ...threeTierAa.models,
+      'flash-high-twin': { codingIndex: 63, blendedPriceUsd: 1, costPerTask: 0.044 },
+    } };
+    const p = proposeTiers(['flash-low', 'flash-high', 'pro-max', 'flash-high-twin'], aa, [], new Set(['flash-high-twin']));
+    expect(p.normal[0]).toBe('flash-high');
+    expect(p.normal.at(-1)).toBe('flash-high-twin');
+  });
+
   it('keeps value order when the frontier is too short to have a knee', () => {
     // Two frontier points have no interior. `kneeIndex` used to answer the
     // cheapest point as a stand-in, and `normal` promoted it over its own
