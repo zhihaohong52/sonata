@@ -81,7 +81,7 @@ export const WELL_KNOWN_PROVIDER_URLS: Record<string, string> = {
   'codex': 'https://api.openai.com/v1',
 
   // OpenCode's own gateways
-  'opencode': 'https://api.opencode.ai/v1',
+  'opencode': 'https://opencode.ai/zen/v1',
   'opencode-go': 'https://opencode.ai/zen/go/v1',
 
   // Major providers
