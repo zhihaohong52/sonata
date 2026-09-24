@@ -196,6 +196,31 @@ describe('proposeTiers', () => {
     expect(p.complex).toEqual(['flash-high', 'flash-low', 'pro-max']);
   });
 
+  it('promotes every route to the knee, not only the one key the frontier kept', () => {
+    // One model on two gateways is one point: same score, same cost per task.
+    // The frontier keeps one of a duplicate pair, so the knee named one key,
+    // and only that key was promoted. Measured: mimo-v2.6-pro led `normal`
+    // on opencode-go and its OpenRouter route sat at #13, so losing the
+    // first gateway fell back to a different model rather than the same one.
+    const aa: AaCatalog = { fetchedAt: 'x', models: {
+      ...threeTierAa.models,
+      'flash-high-twin': { codingIndex: 63, blendedPriceUsd: 1, costPerTask: 0.044 },
+    } };
+    const p = proposeTiers(['flash-low', 'flash-high', 'pro-max', 'flash-high-twin'], aa);
+    expect(p.normal.slice(0, 2)).toEqual(['flash-high', 'flash-high-twin']);
+    expect(p.normal.slice(2)).toEqual(['flash-low', 'pro-max']);
+  });
+
+  it('does not promote an avoided route of the knee', () => {
+    const aa: AaCatalog = { fetchedAt: 'x', models: {
+      ...threeTierAa.models,
+      'flash-high-twin': { codingIndex: 63, blendedPriceUsd: 1, costPerTask: 0.044 },
+    } };
+    const p = proposeTiers(['flash-low', 'flash-high', 'pro-max', 'flash-high-twin'], aa, [], new Set(['flash-high-twin']));
+    expect(p.normal[0]).toBe('flash-high');
+    expect(p.normal.at(-1)).toBe('flash-high-twin');
+  });
+
   it('keeps value order when the frontier is too short to have a knee', () => {
     // Two frontier points have no interior. `kneeIndex` used to answer the
     // cheapest point as a stand-in, and `normal` promoted it over its own
