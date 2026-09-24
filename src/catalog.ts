@@ -1022,8 +1022,25 @@ export function proposeTiers(
     && !avoided.has(bareKey(knee))
     && !valueGeometry.wasteful.has(knee)
     && valueOrdered.includes(knee);
+  // The knee is a point, and the frontier keeps one key per point: one model
+  // on two gateways is a genuine duplicate, so only one of its routes is ever
+  // named. Promoting that key alone left the other route at its value
+  // position — measured, #13 behind a dozen cheaper models — so losing the
+  // first gateway fell back to a different model rather than the same one.
+  // Every route at the knee's exact point leads, in value order, unless the
+  // user avoided it or it is off-scale — a fallback score that happens to
+  // equal the knee's intelligence is a coincidence across two scales, not
+  // the same point. Selected from `valueOrdered` rather than prepending the
+  // knee, since the frontier names the first duplicate it saw while value
+  // order may put another level of the same model first.
+  const kneePoint = (k: string): boolean => kneeLeads
+    && !avoided.has(bareKey(k))
+    && !offScale(k)
+    && perTask(k) === perTask(knee!)
+    && rankOf(k).index === rankOf(knee!).index;
+  const kneeRoutes = kneeLeads ? valueOrdered.filter(kneePoint) : [];
   const normal = kneeLeads
-    ? [knee!, ...valueOrdered.filter((k) => k !== knee)]
+    ? [...kneeRoutes, ...valueOrdered.filter((k) => !kneeRoutes.includes(k))]
     : valueOrdered;
 
   // Anchor the cap to the best-value model that can actually lead. Avoided

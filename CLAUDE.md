@@ -828,7 +828,12 @@ The `claude` harness adapter is the simplest adapter: it runs headless `claude -
   the wording changes. **Keep `--watch=60` running for as long as any PR is
   open** rather than checking back by hand: it prints only when something moves
   and stops itself when every open PR is clean, so a quiet watch costs nothing
-  and a review landing two minutes after you stopped looking is not missed. Opening a PR is
+  and a review landing two minutes after you stopped looking is not missed.
+  **An agent running it in the background adds `--until-change`**: a plain
+  watch ends only when every PR is clean, so a review landing *with* findings
+  is printed and the process keeps polling, and nothing wakes the agent. That
+  is how PR #65's findings sat unseen for two hours. Restart it after acting on
+  each change. Opening a PR is
   not the end of the task — a review lands within a minute, and #48 was
   reported as finished while carrying four unresolved findings and two failed
   pre-merge checks. Its first run

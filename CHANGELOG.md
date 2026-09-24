@@ -14,6 +14,25 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   `https://api.opencode.ai/v1`, which answers `/models` with a 200 plain-text
   "Not Found", so adding Zen fetched nothing while OpenCode Go (on
   `opencode.ai/zen/go/v1`) listed fine. It is now `https://opencode.ai/zen/v1`.
+- **OpenCode Zen and OpenCode Go share one key.** Both endpoints take the same
+  opencode.ai key, but opencode files it under whichever one you logged in to,
+  and sonata looked keys up by gateway name alone. With only an `opencode-go`
+  login, Zen was never offered for import, never asked what it serves, and
+  had no key under `sonata serve`. Either gateway now falls back to the
+  other's key. A key filed under the gateway itself, in any store, still wins,
+  and the shared key is never copied into sonata's store.
+- **Every route to the `normal` knee leads, not just one.** The model sonata
+  picks to lead `normal` is a point on the cost/intelligence frontier, and the
+  frontier keeps one key per point. So when one model was offered on two
+  gateways, only one route was promoted: `opencode-go-mimo-v2.6-pro` led
+  while `openrouter-xiaomi-mimo-v2.6-pro`, with the same score and the same
+  $0.1332 per task, sat at #13. If the first gateway failed, the router fell
+  back to a different model instead of the same model elsewhere. Every
+  non-avoided route at the knee's exact point now leads together.
+- **`scripts/pr-status.mjs --until-change`** exits on the first change after
+  the initial poll, with the gate's exit code, so a background watch can wake
+  the agent that started it. Issue comments are now paginated, as reviews
+  already were.
 
 ## [0.12.1] - 2026-09-23
 
