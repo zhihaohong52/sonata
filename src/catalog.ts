@@ -1028,12 +1028,17 @@ export function proposeTiers(
   // position — measured, #13 behind a dozen cheaper models — so losing the
   // first gateway fell back to a different model rather than the same one.
   // Every route at the knee's exact point leads, in value order, unless the
-  // user avoided it.
+  // user avoided it or it is off-scale — a fallback score that happens to
+  // equal the knee's intelligence is a coincidence across two scales, not
+  // the same point. Selected from `valueOrdered` rather than prepending the
+  // knee, since the frontier names the first duplicate it saw while value
+  // order may put another level of the same model first.
   const kneePoint = (k: string): boolean => kneeLeads
     && !avoided.has(bareKey(k))
+    && !offScale(k)
     && perTask(k) === perTask(knee!)
     && rankOf(k).index === rankOf(knee!).index;
-  const kneeRoutes = kneeLeads ? [knee!, ...valueOrdered.filter((k) => k !== knee && kneePoint(k))] : [];
+  const kneeRoutes = kneeLeads ? valueOrdered.filter(kneePoint) : [];
   const normal = kneeLeads
     ? [...kneeRoutes, ...valueOrdered.filter((k) => !kneeRoutes.includes(k))]
     : valueOrdered;
