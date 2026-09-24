@@ -79,6 +79,11 @@ function keyNamesFor(gateway: string): string[] {
   return [gateway, ...group.filter((name) => name !== gateway)];
 }
 
+/**
+ * The key one named store holds for a gateway: its own entry first, then a
+ * gateway sharing its key. For a gateway pinned to a `credential_source`,
+ * where the other stores must not be consulted.
+ */
 export function resolveKeyFromSource(
   gateway: string,
   home: string,
@@ -91,6 +96,12 @@ export function resolveKeyFromSource(
   return undefined;
 }
 
+/**
+ * The key each gateway authenticates with, and the store it came from.
+ *
+ * Stores are searched in `SOURCES` order. A gateway with no key anywhere is
+ * absent from the result, never present with an empty key.
+ */
 export function resolveKeys(gateways: string[], home: string): KeySource[] {
   const sources = SOURCES.map((source) => ({ name: source.name, keys: source.read(home) }));
   const resolved: KeySource[] = [];

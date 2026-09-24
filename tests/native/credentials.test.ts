@@ -12,6 +12,7 @@ import {
   writeSonataKey,
 } from '../../src/native/credentials.js';
 
+/** A fresh temporary home directory. */
 function tmp(): string {
   return mkdtempSync(join(tmpdir(), 'sonata-credentials-'));
 }
@@ -60,6 +61,7 @@ describe('credential resolution', () => {
 });
 
 describe('gateways that share one key', () => {
+  /** Writes an opencode `auth.json` holding `entries` under `home`. */
   function opencodeAuth(home: string, entries: Record<string, unknown>): void {
     mkdirSync(join(home, '.local/share/opencode'), { recursive: true });
     writeFileSync(join(home, '.local/share/opencode/auth.json'), JSON.stringify(entries));
