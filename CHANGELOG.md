@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-09-24
+
 ### Fixed
 
 - **An OpenCode Zen gateway now lists its models.** Its base URL was
