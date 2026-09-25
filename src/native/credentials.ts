@@ -1,8 +1,11 @@
 import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { readOpencodeCredentials } from './opencode-store.js';
+
 export interface KeySource {
   gateway: string;
+  /** Concrete backing store (`opencode` means auth.json for compatibility). */
   source: string;
   key: string;
 }
@@ -12,10 +15,16 @@ export interface KeyReport {
   source: string | null;
 }
 
+/** One gateway's key inside one store, and the store name to report it under. */
+interface KeyStoreValue {
+  key: string;
+  source: string;
+}
+
 /** A place keys are read from, in precedence order. Not the config's CredentialSource union. */
 interface KeyStoreSource {
   name: string;
-  read(home: string): Record<string, string>;
+  read(home: string): Record<string, KeyStoreValue>;
 }
 
 function readJson(path: string): Record<string, unknown> {
@@ -33,7 +42,12 @@ function usableKey(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value : undefined;
 }
 
-function sonataKeys(home: string): Record<string, string> {
+/**
+ * The sonata store as it is persisted: plain gateway → key strings. Writing
+ * goes through this shape, never the resolved one — serializing `KeyStoreValue`
+ * objects into keys.json silently corrupted the file on the second write.
+ */
+function sonataKeyMap(home: string): Record<string, string> {
   return Object.fromEntries(
     Object.entries(readJson(sonataKeyStorePath(home))).flatMap(([gateway, key]) => {
       const usable = usableKey(key);
@@ -42,13 +56,20 @@ function sonataKeys(home: string): Record<string, string> {
   );
 }
 
-function opencodeKeys(home: string): Record<string, string> {
+function sonataKeys(home: string): Record<string, KeyStoreValue> {
   return Object.fromEntries(
-    Object.entries(readJson(join(home, '.local/share/opencode/auth.json'))).flatMap(([gateway, value]) => {
-      if (value === null || typeof value !== 'object' || Array.isArray(value)) return [];
-      const credential = value as Record<string, unknown>;
-      const key = usableKey(credential.key) ?? usableKey(credential.apiKey);
-      return key === undefined ? [] : [[gateway, key]];
+    Object.entries(sonataKeyMap(home)).map(([gateway, key]) => [gateway, { key, source: 'sonata' }]),
+  );
+}
+
+function opencodeKeys(home: string): Record<string, KeyStoreValue> {
+  return Object.fromEntries(
+    Object.entries(readOpencodeCredentials(home)).flatMap(([gateway, credential]) => {
+      const key = usableKey(credential.key);
+      return key === undefined ? [] : [[gateway, {
+        key,
+        source: credential.origin === 'opencode.db' ? 'opencode.db' : 'opencode',
+      }]];
     }),
   );
 }
@@ -89,9 +110,19 @@ export function resolveKeyFromSource(
   home: string,
   source: 'sonata' | 'opencode',
 ): string | undefined {
+  return resolveKeyDetail(gateway, home, source)?.key;
+}
+
+/** The resolved key plus its concrete store, for diagnostics that name v1/v2. */
+export function resolveKeyDetail(
+  gateway: string,
+  home: string,
+  source: 'sonata' | 'opencode',
+): { key: string; source: string } | undefined {
   const keys = SOURCES.find((candidate) => candidate.name === source)?.read(home) ?? {};
   for (const name of keyNamesFor(gateway)) {
-    if (keys[name] !== undefined) return keys[name];
+    const value = keys[name];
+    if (value !== undefined) return value;
   }
   return undefined;
 }
@@ -111,9 +142,9 @@ export function resolveKeys(gateways: string[], home: string): KeySource[] {
   for (const gateway of new Set(gateways)) {
     search: for (const name of keyNamesFor(gateway)) {
       for (const source of sources) {
-        const key = source.keys[name];
-        if (key !== undefined) {
-          resolved.push({ gateway, source: source.name, key });
+        const value = source.keys[name];
+        if (value !== undefined) {
+          resolved.push({ gateway, source: value.source, key: value.key });
           break search;
         }
       }
@@ -131,13 +162,13 @@ export function keyReport(gateways: string[], home: string): KeyReport[] {
 export function writeSonataKey(home: string, gateway: string, key: string): void {
   const path = sonataKeyStorePath(home);
   mkdirSync(join(home, '.config/sonata'), { recursive: true });
-  writeFileSync(path, `${JSON.stringify({ ...sonataKeys(home), [gateway]: key }, null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(path, `${JSON.stringify({ ...sonataKeyMap(home), [gateway]: key }, null, 2)}\n`, { mode: 0o600 });
   chmodSync(path, 0o600);
 }
 
 export function removeSonataKey(home: string, gateway: string): void {
   const path = sonataKeyStorePath(home);
-  const keys = sonataKeys(home);
+  const keys = sonataKeyMap(home);
   delete keys[gateway];
 
   if (Object.keys(keys).length === 0) {

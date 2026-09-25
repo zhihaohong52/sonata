@@ -37,6 +37,11 @@ export interface InitState {
    * about it.
    */
   reproposeTiers?: boolean;
+  /**
+   * The user's provider ranking; ties between routes to one model go to the
+   * earlier gateway.
+   */
+  gatewayOrder?: string[];
   hookScope?: HookScope;
   /**
    * BYOK provider -> the API key typed in the wizard.

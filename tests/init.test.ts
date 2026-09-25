@@ -32,7 +32,7 @@ vi.mock('../src/native/codex-auth.js', () => ({
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseOpenCodeModels, parseAuthedProviders, staleAgents, isSonataAgent, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
+import { parseOpenCodeModels, staleAgents, isSonataAgent, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
 import { tierAgentMarkdown } from '../src/commands/sync.js';
 import { parsePiRefs } from '../src/adapters/pi.js';
 import {
@@ -83,16 +83,6 @@ describe('parseOpenCodeModels', () => {
   it('returns nothing for malformed or empty config', () => {
     expect(parseOpenCodeModels('not json')).toEqual([]);
     expect(parseOpenCodeModels('{}')).toEqual([]);
-  });
-});
-
-describe('parseAuthedProviders', () => {
-  it('lists provider keys', () => {
-    expect(parseAuthedProviders('{"opencode-go":{"key":"x"}}')).toEqual(['opencode-go']);
-  });
-
-  it('tolerates malformed auth files', () => {
-    expect(parseAuthedProviders('¯\\_(ツ)_/¯')).toEqual([]);
   });
 });
 
@@ -1453,6 +1443,13 @@ describe('deriveInitState', () => {
     ]);
     expect(state.providerKeys).toEqual(['config/shared']);
     expect(state.harnesses).toEqual([]);
+  });
+
+  it('carries the saved gateway_order so Rank providers reopens on it', () => {
+    const parsed = config({ a: { gateway: 'alpha', id: 'a' }, b: { gateway: 'beta', id: 'b' } });
+    const state = deriveInitState({ ...parsed, gatewayOrder: ['beta', 'alpha'] }, 'project', []);
+    expect(state.gatewayOrder).toEqual(['beta', 'alpha']);
+    expect(deriveInitState(parsed, 'project', []).gatewayOrder).toBeUndefined();
   });
 
   it('copies roles and per-role models from generate.native', () => {

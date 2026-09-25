@@ -1,7 +1,7 @@
 import { extendedContextAdvice } from '../extended-context.js';
 import { splitCandidate } from '../effort.js';
 import { execFile } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { promisify } from 'node:util';
 import {
   loadConfig,
@@ -34,7 +34,8 @@ import { loadModelsDev } from '../modelsdev.js';
 import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
-import { keyReport, resolveKeyFromSource } from '../native/credentials.js';
+import { keyReport, resolveKeyDetail } from '../native/credentials.js';
+import { opencodeCredentialOrigin, opencodeDbPath, readOpencodeCredentials } from '../native/opencode-store.js';
 
 /**
  * How long `doctor` waits for LiteLLM's liveliness endpoint before calling it
@@ -61,6 +62,14 @@ async function hasCredentialFrom(source: 'codex' | 'opencode', auth: NativeGatew
     return token !== null && await copilotTokenCanExchange(token);
   }
   return readChatGptOAuth(home, source) !== null;
+}
+
+/**
+ * How doctor names an opencode-sourced credential: `opencode.db` when v2's
+ * `credential` table supplied it, `opencode` when v1's `auth.json` did.
+ */
+function opencodeSourceLabel(home: string, integrationId: string): 'opencode' | 'opencode.db' {
+  return opencodeCredentialOrigin(home, integrationId) === 'opencode.db' ? 'opencode.db' : 'opencode';
 }
 
 function triple(v: string): [number, number, number] {
@@ -483,11 +492,24 @@ export async function cmdDoctor(
       // an error. That is exactly the failure mode the freshness check above
       // exists for, and it is invisible for the same reason.
       {
+        // `avoided` is a set of MODEL KEYS — ranking sorts keys, and
+        // `avoid_gateways` names gateways. Passing the gateway names meant
+        // avoidance never matched anything and the re-proposal ranked an
+        // avoided model as if the user had asked for it. `gateway_order` is
+        // resolved the same way, through the model table.
+        const models = Object.entries(config.unifiedModels ?? {});
+        const avoid = new Set(config.avoidGateways ?? []);
+        const avoided = new Set(models.filter(([, m]) => m.gateway !== undefined && avoid.has(m.gateway)).map(([k]) => k));
+        const order = config.gatewayOrder ?? [];
+        const gatewayRank = new Map(models.flatMap(([k, m]) => {
+          const i = m.gateway === undefined ? -1 : order.indexOf(m.gateway);
+          return i < 0 ? [] : [[k, i] as const];
+        }));
         const stale = Object.entries(config.tiers ?? {})
           .map(([role, lists]) => {
             const proposal = proposeTiers(
               [...new Set(Object.keys(config.unifiedModels ?? {}))],
-              catalog, gateways, new Set(config.avoidGateways ?? []), resolver,
+              catalog, gateways, avoided, resolver, gatewayRank,
             );
             return [role, overCeilingSimple(lists.simple, proposal)] as const;
           })
@@ -973,11 +995,21 @@ export async function cmdDoctor(
         });
         continue;
       }
+      const resolvedKey = source === 'sonata' || source === 'opencode'
+        ? resolveKeyDetail(name, home, source)
+        : undefined;
       const present = gateway.auth === 'api-key'
-        ? (source === 'sonata' || source === 'opencode') && resolveKeyFromSource(name, home, source) !== undefined
+        ? resolvedKey !== undefined
         : source === 'sonata'
           ? existsSync(join(credentialDir(home, name), credentialFileFor(gateway.auth)))
           : await hasCredentialFrom(source, gateway.auth, home);
+      // The store that actually answered, so a credential living in opencode's
+      // v2 table is named `opencode.db` rather than folded into `opencode`.
+      const from = gateway.auth === 'api-key'
+        ? resolvedKey?.source ?? source
+        : source === 'opencode'
+          ? opencodeSourceLabel(home, gateway.auth === 'copilot-oauth' ? 'github-copilot' : 'openai')
+          : source;
       // The fix differs by what the source actually stores: a device-login
       // credential is repaired with `sonata auth login`, but a bearer key is
       // repaired with `sonata auth add` — or, for an opencode-sourced key,
@@ -997,7 +1029,7 @@ export async function cmdDoctor(
         name: `key source: ${name}`,
         ok: present,
         detail: present
-          ? `${name}: credential from ${source}`
+          ? `${name}: credential from ${from}`
           : `${name}: credential from ${source}\n  ! ${name}: no credential from ${source} — ${repairHint}`,
       });
     }
@@ -1018,7 +1050,11 @@ export async function cmdDoctor(
         const token = readCopilotToken(home);
         const usable = token !== null && await copilotTokenCanExchange(token);
         checks.push(usable
-          ? { name: `key source: ${gateway}`, ok: true, detail: 'GitHub Copilot login from opencode' }
+          ? {
+              name: `key source: ${gateway}`,
+              ok: true,
+              detail: `GitHub Copilot login from ${opencodeSourceLabel(home, 'github-copilot')}`,
+            }
           : {
               name: `key source: ${gateway}`,
               ok: false,
@@ -1032,7 +1068,9 @@ export async function cmdDoctor(
         name: `key source: ${gateway}`,
         ok: report.problem === undefined,
         detail: report.problem
-          ?? `ChatGPT subscription from ${report.source ?? 'codex'}` +
+          ?? `ChatGPT subscription from ${
+               report.source === 'opencode' ? opencodeSourceLabel(home, 'openai') : report.source ?? 'codex'
+             }` +
              (report.expired ? ' (expired, refreshes on use)' : ''),
       });
     }
@@ -1047,6 +1085,33 @@ export async function cmdDoctor(
             ok: false,
             detail: `no key — \`sonata auth add ${report.gateway}\``,
           });
+    }
+
+    // opencode v2 keeps its credentials in plaintext inside opencode.db. sonata
+    // only reads that table — but a group/world-readable file exposes every
+    // login in it to anything running on the machine, so the one thing worth
+    // saying is the mode. Advisory, and reporting only: the file is opencode's,
+    // and sonata never chmods what it does not own.
+    const dbPath = opencodeDbPath(home);
+    const tableHoldsCredentials = Object.values(readOpencodeCredentials(home))
+      .some((credential) => credential.origin === 'opencode.db');
+    if (tableHoldsCredentials && existsSync(dbPath)) {
+      try {
+        const mode = statSync(dbPath).mode;
+        if ((mode & 0o044) !== 0) {
+          // Named exactly: a 0640 file is readable by its group, not by
+          // everyone, and the user judges the risk by which it is.
+          const who = (mode & 0o004) !== 0 ? 'world-readable' : 'group-readable';
+          checks.push({
+            name: 'opencode.db',
+            ok: true,
+            detail: `opencode stores credentials in plaintext in a ${who} file — \`chmod 600\` ${dbPath} `
+              + '(sonata only reports this)',
+          });
+        }
+      } catch {
+        // Unreadable at stat time — no mode to compare, so nothing to warn of.
+      }
     }
   }
 

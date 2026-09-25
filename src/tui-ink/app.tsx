@@ -359,6 +359,13 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const avoided = new Set(
         known.filter((c) => avoid.has(c.gateway)).map((c) => c.key),
       );
+      // The user's provider ranking, resolved through the same candidate set:
+      // it only ever breaks a tie between routes to one model.
+      const gatewayOrder = state.gatewayOrder ?? [];
+      const gatewayRank = new Map(known.flatMap((c) => {
+        const at = gatewayOrder.indexOf(c.gateway);
+        return at < 0 ? [] : [[c.key, at] as const];
+      }));
       // A config key as the upstream id a catalog lookup needs. Tier lists
       // hold config keys while the catalog is keyed by upstream id, and a key
       // is only *usually* `<gateway>-<id>` — a hand-named key has no prefix to
@@ -411,7 +418,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         ...(state.nativeKeys ?? []),
         ...Object.keys(harnessOnlyUpstreams),
       ])], catalog, gateways, upstreamFor);
-      const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways, avoided, upstreamFor);
+      const proposal = proposeTiers(state.nativeKeys ?? [], catalog, gateways, avoided, upstreamFor, gatewayRank);
       const expand = (keys: string[]) => expandCandidates(keys, catalog, gateways, upstreamFor);
       // A model native-selected this run that no prior run ever ranked for
       // this role/tier — the baseline is the wizard's own starting state for

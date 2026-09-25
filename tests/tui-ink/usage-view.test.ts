@@ -22,7 +22,7 @@ describe('usage screen axes', () => {
     const seen = ['model'];
     let d = nextDimension('model');
     while (d !== 'model') { seen.push(d); d = nextDimension(d); }
-    expect(seen).toEqual(['model', 'role', 'tier', 'effort', 'gateway', 'session', 'project']);
+    expect(seen).toEqual(['model', 'role', 'tier', 'effort', 'gateway', 'lane', 'session', 'project']);
   });
 
   it('names a window the way a reader says it', () => {
@@ -112,7 +112,7 @@ describe('UsageScreen', () => {
     expect(frame).toContain('$0.5000');
     // Unpriced volume is beside the total, never folded into it.
     expect(frame).toMatch(/unpriced\s+1 requests/);
-    expect(frame).toContain('native path only');
+    expect(frame).toContain('dispatch runs counted when they finish');
 
     app.stdin.write('d');
     await tick(200);

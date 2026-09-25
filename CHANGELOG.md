@@ -8,6 +8,52 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- **`gateway_order` ranks your gateways and breaks ties in tier ranking.** When
+  two routes reach one model — same score, same cost per task, same effort
+  level — the one on the earlier gateway leads. It is only ever a tie-break:
+  a model that wins on a score still outranks a better-gateway route, and
+  `avoid_gateways` still demotes first. `sonata init` asks for it on a new
+  **Rank providers** screen between the providers and the models (skipped when
+  only one gateway is selected, and reopened on the saved order); unattended,
+  the order of `--providers` is the ranking. Preserved across rewrites, and validated like
+  `avoid_gateways` — an unknown or duplicated gateway name is refused rather
+  than silently ignored.
+
+- **`sonata dispatch` runs are measured, and count toward `[budget]`.** A
+  dispatch run never transits the router, so its tokens used to be reported as
+  not observable. Each harness keeps them on disk, and sonata now reads them
+  when a run finishes: codex's rollout file, opencode's database, pi's session
+  file, reasonix's daily stats, and — for a claude run that did not go through
+  the router — its transcript, found by the `--session-id` sonata now passes.
+  Each run becomes one ledger row, so `sonata usage` shows it (`--by lane`
+  splits dispatch from native) and `[budget] daily_usd` counts it;
+  `sonata dispatch` refuses to launch once a cap is reached. A run is never
+  guessed at: parallel dispatches into one directory are told apart by a
+  marker line naming the run that now ends every dispatch prompt, and a run
+  that still matches two sessions is reported unobservable, with the reason
+  shown on the run, and a run with no known price is recorded unpriced,
+  never free. A dispatch run is counted when it finishes, so one run can carry
+  spend past the cap.
+
+### Fixed
+
+- **`sonata doctor`'s tier-freshness re-proposal applies `avoid_gateways`.**
+  It passed the gateway names where model keys were expected, so avoidance
+  never matched and an avoided gateway's model still anchored `simple`'s cost
+  cap — flagging preferred models as over-cap that a correct ranking keeps.
+- **OpenCode v2's credential table is read beside `auth.json`.** v2 stores
+  provider logins in the `credential` table of `opencode.db` and never migrates
+  auth.json — the two coexist — so every caller that read only the file missed
+  a live login: keys never offered for import, ChatGPT and Copilot OAuth
+  invisible to `sonata doctor`, and `credential_source = "opencode"` reporting
+  no credential for one sitting on disk. Both stores are now read through one
+  reader, with the table row winning per provider. `sonata doctor` names the
+  store (`from opencode.db`) and advises `chmod 600` when that file is
+  group/world-readable while holding credentials, since opencode keeps them in
+  plaintext; sonata only reports it and never changes the file.
+
 ## [0.12.2] - 2026-09-24
 
 ### Fixed

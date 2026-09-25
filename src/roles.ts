@@ -38,6 +38,18 @@ export interface ComposeInput {
    * own tools, so the model can start further sonata runs.
    */
   inheritedSonataTools?: boolean;
+  /**
+   * The run's directory, written as the prompt's last line so the harness's
+   * own store — which keeps the prompt — can be matched back to this run
+   * exactly when two dispatches share a directory and a time window. Absent
+   * writes nothing.
+   */
+  runDir?: string;
+}
+
+/** The last line of every run's instructions; see `ComposeInput.runDir`. */
+export function runMarker(runDir: string): string {
+  return `<!-- sonata run: ${runDir} -->`;
 }
 
 export function composeInstructions(input: ComposeInput): string {
@@ -103,6 +115,7 @@ export function composeInstructions(input: ComposeInput): string {
   }
 
   parts.push('## Task reminder', '', 'Complete the task exactly as stated above:', '', input.task.trim(), '');
+  if (input.runDir !== undefined) parts.push(runMarker(input.runDir), '');
 
   return parts.join('\n');
 }

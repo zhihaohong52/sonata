@@ -14,6 +14,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { readOpencodeCredentials } from './opencode-store.js';
+
 /** The flat record LiteLLM's chatgpt Authenticator reads. */
 export interface ChatGptAuthRecord {
   access_token: string;
@@ -117,39 +119,37 @@ function jwtClientId(token: string): string | undefined {
 }
 
 /**
- * The ChatGPT credential opencode stores under `openai`.
+ * The ChatGPT credential opencode stores under `openai`, from either of its
+ * stores (v2's `credential` table wins over v1's `auth.json`).
  *
  * opencode writes `{type: "oauth", access, refresh, expires, accountId}` — the
  * same subscription credential codex holds, under different field names. It is
  * NOT an API key: `opencodeKeys` is right to skip it, because handing it to a
  * gateway as a bearer produces a 429 from the metered API after the token has
  * already authenticated.
+ *
+ * The `client_id` check below applies unchanged to a table row: the claim lives
+ * in the access token's own JWT, which travels with the token in both stores,
+ * so the row needs no `metadata` to be identified — it is accepted under
+ * exactly the same checks as the auth.json entry and refused identically when
+ * the token belongs to another OAuth app.
  */
 export function readOpencodeChatGptOAuth(home: string): ChatGptAuthRecord | null {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(opencodeAuthPath(home), 'utf8'));
-  } catch {
-    return null;
-  }
-  if (raw === null || typeof raw !== 'object') return null;
-  const entry = (raw as Record<string, unknown>).openai;
-  if (entry === null || typeof entry !== 'object') return null;
-  const e = entry as Record<string, unknown>;
-  if (e.type !== 'oauth') return null;
+  const entry = readOpencodeCredentials(home).openai;
+  if (entry === undefined || entry.type !== 'oauth') return null;
 
-  const accessToken = str(e.access);
+  const accessToken = entry.access;
   if (accessToken === undefined) return null;
   if (jwtClientId(accessToken) !== CHATGPT_CLIENT_ID) return null;
 
   // opencode records `expires` in milliseconds; the JWT is authoritative.
-  const expires = typeof e.expires === 'number' ? Math.floor(e.expires / 1000) : undefined;
+  const expires = entry.expires !== undefined ? Math.floor(entry.expires / 1000) : undefined;
 
   return {
     access_token: accessToken,
-    refresh_token: str(e.refresh),
+    refresh_token: entry.refresh,
     expires_at: jwtExpiry(accessToken) ?? expires,
-    account_id: str(e.accountId),
+    account_id: entry.accountId,
   };
 }
 

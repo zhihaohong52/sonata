@@ -11,6 +11,8 @@ import {
   mergeLiveCandidates,
   addProviderCatalog,
   configuredProviderNames,
+  completeGatewayOrder,
+  seedGatewayOrder,
   importableProviders,
   initialRankedFor,
   acceptRemainingTiers,
@@ -262,6 +264,51 @@ describe('configuredProviderNames', () => {
 
   it('drops a key matching neither', () => {
     expect(configuredProviderNames(['config/ghost'], providers)).toEqual([]);
+  });
+});
+
+describe('seedGatewayOrder', () => {
+  it('leads with the saved ranking, in saved order', () => {
+    expect(seedGatewayOrder(['alpha', 'bravo', 'charlie'], ['charlie', 'alpha'])).toEqual([
+      'charlie', 'alpha', 'bravo',
+    ]);
+  });
+
+  it('drops saved names that are no longer selected', () => {
+    expect(seedGatewayOrder(['alpha'], ['ghost', 'alpha'])).toEqual(['alpha']);
+  });
+
+  it('appends names the saved ranking never mentioned, in selection order', () => {
+    expect(seedGatewayOrder(['alpha', 'bravo', 'charlie'], ['bravo'])).toEqual([
+      'bravo', 'alpha', 'charlie',
+    ]);
+  });
+
+  it('falls back to selection order with nothing saved', () => {
+    expect(seedGatewayOrder(['alpha', 'bravo'], undefined)).toEqual(['alpha', 'bravo']);
+  });
+
+  it('seeds every selected gateway exactly once', () => {
+    expect(seedGatewayOrder(['alpha', 'alpha', 'bravo'], ['alpha'])).toEqual(['alpha', 'bravo']);
+  });
+});
+
+describe('completeGatewayOrder', () => {
+  it('keeps the submitted ranking as the order', () => {
+    expect(completeGatewayOrder(['bravo', 'alpha'], ['alpha', 'bravo'])).toEqual(['bravo', 'alpha']);
+  });
+
+  it('appends gateways left unranked, in selection order', () => {
+    // RankedSelect submits only the ranked rows, so a row the user unranked
+    // would vanish from the stored order — and a gateway absent from it is
+    // one the tie-break silently has no preference about.
+    expect(completeGatewayOrder(['charlie'], ['alpha', 'bravo', 'charlie'])).toEqual([
+      'charlie', 'alpha', 'bravo',
+    ]);
+  });
+
+  it('covers every selected gateway even when nothing was ranked', () => {
+    expect(completeGatewayOrder([], ['alpha', 'bravo'])).toEqual(['alpha', 'bravo']);
   });
 });
 

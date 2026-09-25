@@ -59,6 +59,10 @@ export interface RunMeta {
    */
   effort?: Effort;
   effortHonoured?: boolean;
+  /** The model id the harness was given — what its own store records. */
+  harnessModelId?: string;
+  /** The session id sonata passed the harness, when it accepts one. */
+  harnessSessionId?: string;
   session: string;
   cwd: string;
   startedAt: string;

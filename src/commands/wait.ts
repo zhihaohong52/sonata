@@ -24,6 +24,8 @@ export interface WaitOptions {
   now?: () => number;
   /** Seam for tests; production always uses the real cmdTail. */
   tail?: typeof cmdTail;
+  /** Passed through to tail; the user's home by default. */
+  home?: string;
 }
 
 /**
@@ -54,6 +56,7 @@ export async function cmdWait(opts: WaitOptions): Promise<WaitResult> {
       waitSeconds: Math.max(0, Math.ceil((deadline - now()) / 1000)),
       onLines: opts.onLines,
       pollMs,
+      ...(opts.home === undefined ? {} : { home: opts.home }),
     });
     if (result.state !== 'PROGRESS') return { ...result, id: opts.id };
     if (now() >= deadline) return { ...result, state: 'RUNNING', id: opts.id };

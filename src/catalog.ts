@@ -823,6 +823,7 @@ function valueOf(r: { index: number; price: number }): number {
  * collapse into the cost ranking and `normal` becomes a copy of `simple`.
  *
  * Avoided gateways are demoted rather than excluded, and never set either bar.
+ * Gateway order is a last-resort tie-break and never demotes a better candidate.
  */
 export function proposeTiers(
   modelKeys: string[],
@@ -830,6 +831,7 @@ export function proposeTiers(
   providers: readonly string[] = [],
   avoided: ReadonlySet<string> = new Set(),
   upstreamFor: UpstreamFor = identityUpstream,
+  gatewayRank: ReadonlyMap<string, number> = new Map(),
 ): TierProposal {
   // Rank over every scored level of every selected model. A model AA scores
   // at several efforts is several candidates here - luna@high and luna@max
@@ -869,6 +871,16 @@ export function proposeTiers(
     return effort === undefined ? -1 : EFFORT_LEVELS.indexOf(effort);
   };
   const byLevel = (a: string, b: string) => levelOf(b) - levelOf(a);
+  // Gateway order as the LAST tie-break. A key absent from the map sorts
+  // after every present one, so an unrated gateway costs preference rather
+  // than eligibility — and two absent keys compare equal (0), so an empty map
+  // reproduces today's order exactly. Comparing through a branch rather than
+  // subtraction, because Infinity - Infinity is NaN and NaN poisons a sort.
+  const gatewayPos = (k: string): number => gatewayRank.get(bareKey(k)) ?? Number.POSITIVE_INFINITY;
+  const byGateway = (a: string, b: string): number => {
+    const pa = gatewayPos(a); const pb = gatewayPos(b);
+    return pa === pb ? 0 : pa < pb ? -1 : 1;
+  };
 
   // A scored candidate with no intelligence index has only an agentic or
   // coding score, and `reasoningOf` would plot that on the intelligence axis
@@ -979,7 +991,8 @@ export function proposeTiers(
       // its say: where there is no money to save there is nothing to trade,
       // and suppressing the difference would pick the worse rung for nothing.
       || rb.index - ra.index
-      || byLevel(a, b);
+      || byLevel(a, b)
+      || byGateway(a, b);
   };
   // Simple work wants the most capability per dollar, capability breaking
   // ties. At one price, value *is* capability, so a score inside the tie
@@ -995,9 +1008,9 @@ export function proposeTiers(
     const gated = gateOrder(valueGeometry.wasteful)(a, b);
     if (gated !== 0) return avoidance(a, b) || gated;
     if (ra.price === rb.price && capabilityClass(ra.index) === capabilityClass(rb.index)) {
-      return avoidance(a, b) || byLevel(a, b);
+      return avoidance(a, b) || byLevel(a, b) || byGateway(a, b);
     }
-    return avoidance(a, b) || valueOf(rb) - valueOf(ra) || rb.index - ra.index || byLevel(a, b);
+    return avoidance(a, b) || valueOf(rb) - valueOf(ra) || rb.index - ra.index || byLevel(a, b) || byGateway(a, b);
   };
 
   const complex = candidates.filter(capable).sort(byCapability);

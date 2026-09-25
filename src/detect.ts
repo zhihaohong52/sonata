@@ -13,6 +13,7 @@ import { TIER_AGENT_MARKER } from './agent-markers.js';
 import { parsePiRefs } from './adapters/pi.js';
 import { parseCodexModels, codexModelList } from './adapters/codex.js';
 import { parseReasonixRefs, reasonixDoctorJson } from './adapters/reasonix.js';
+import { readOpencodeCredentials } from './native/opencode-store.js';
 import type { ModelRef, ProviderHarness } from './types.js';
 
 const run = promisify(execFile);
@@ -142,14 +143,6 @@ export function parseOpenCodeProviderBaseUrls(text: string): Record<string, stri
     }
   }
   return out;
-}
-
-export function parseAuthedProviders(text: string): string[] {
-  try {
-    return Object.keys(JSON.parse(text) ?? {});
-  } catch {
-    return [];
-  }
 }
 
 /**
@@ -459,10 +452,11 @@ export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
   }
   const providerBaseUrls = parseOpenCodeProviderBaseUrls(configText);
 
-  const authPath = join(env.home, '.local', 'share', 'opencode', 'auth.json');
-  const authedProviders = existsSync(authPath)
-    ? parseAuthedProviders(readFileSync(authPath, 'utf8'))
-    : [];
+  // Authenticated providers come from both of opencode's credential stores —
+  // v2's `credential` table overlaid on v1's `auth.json`. Reading only
+  // auth.json made every v2-only login invisible here, so `init` never offered
+  // to import it.
+  const authedProviders = Object.keys(readOpencodeCredentials(env.home));
 
   if (refs.length === 0) {
     problems.push(listing === null

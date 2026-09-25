@@ -547,6 +547,31 @@ export function configuredProviderNames(providerKeys: readonly string[], provide
 }
 
 /**
+ * The order the Rank providers screen opens on.
+ *
+ * The saved ranking leads, minus any gateway no longer selected, then every
+ * selected gateway it never mentioned, in selection order — so a re-run opens
+ * where the user left it, and a provider added since lands last rather than
+ * silently jumping the queue.
+ */
+export function seedGatewayOrder(selected: readonly string[], saved: readonly string[] | undefined): string[] {
+  const chosen = new Set(selected);
+  return [...new Set([...(saved ?? []).filter((name) => chosen.has(name)), ...selected])];
+}
+
+/**
+ * The order stored when the Rank providers screen is confirmed.
+ *
+ * RankedSelect submits only the rows still ranked, so a row the user unranked
+ * would vanish from the stored order — and a gateway absent from it is one the
+ * tie-break has no preference about. Unranked gateways follow, in selection
+ * order, so the stored order always covers every selected gateway.
+ */
+export function completeGatewayOrder(ranked: readonly string[], selected: readonly string[]): string[] {
+  return [...new Set([...ranked, ...selected])];
+}
+
+/**
  * Which of the "Import from other harnesses" candidates are already stored
  * — by exact key, not by provider name. Two harnesses can list the same
  * provider name (e.g. both opencode and Pi offering "google"); matching by
