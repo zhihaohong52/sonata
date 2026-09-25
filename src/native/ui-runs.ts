@@ -33,6 +33,9 @@ export function runUsageReason(cwd: string, id: string): string {
   if (recorded.kind === 'unobservable') return `not observable: ${recorded.reason}`;
   const t = recorded.tokens;
   const tokens = t.input + t.output + t.cacheRead + t.cacheCreation;
+  // `recordHarnessUsage` writes no row for a run that spent nothing, so this
+  // must not claim one.
+  if (tokens === 0) return 'observed 0 tokens: no ledger row was written';
   const cost = recorded.price.source === 'none' ? 'unpriced' : `$${recorded.price.totalUsd.toFixed(4)}`;
   return `recorded in the ledger: ${tokens} tokens, ${cost}`;
 }

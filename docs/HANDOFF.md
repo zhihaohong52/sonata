@@ -6,6 +6,34 @@ Read this before starting new work. It records what is done, what is
 deliberately *not* done, what to pick up if you want work, and the traps that
 have cost previous sessions real time.
 
+## 0.13.0 work (2026-09-25) — open follow-ups
+
+Four changes on one branch: `gateway_order` + the *Rank providers* init
+screen, opencode v2 credentials (#64), and dispatch-run usage (#47). What is
+known to be unverified or deferred:
+
+- **The router treats a malformed-tool-call 400 as final.** Twice on
+  2026-09-25 a `code-normal` agent died on
+  `tool_calls[1].function.name must be a non-empty string (got empty string)`
+  from OpenRouter (served by `openrouter-xiaomi-mimo-v2.6-pro`, which leads
+  both `code-normal` and `code-complex`). `routeTierRequest` returns the first
+  response < 500, so the next candidate is never tried and the conversation
+  stays pinned to the model that produced the bad call. Check whether the
+  capability-400 fingerprinting in `src/native/router.ts` should cover this
+  shape; filed as its own issue.
+- **#64 is built from opencode's dev-branch source, not a release.** No v2
+  existed to measure. If the released `credential` table differs, the
+  paragraph in CLAUDE.md starting *opencode v2 keeps credentials in
+  `opencode.db`* is the one that is wrong.
+- **Dispatch-usage matching.** The readers were run against 16 real past
+  runs in three repositories: routed claude runs answered `router`, and
+  concurrent opencode runs resolved via the report path already in every
+  write-capable prompt — which is the same needle the new run marker
+  supplies, so narrowing is live-verified on opencode. codex and pi narrowing
+  is verified by fixture only. A process killed between claiming `usage.json`
+  and writing it leaves an empty marker: that run then reads as recorded
+  forever — safe (never double-counted), but it is never recorded either.
+
 ## 0.11.0 (2026-09-19) — read this part first
 
 Published to npm, provenance signed. It is the config TUI plus four user

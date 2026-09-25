@@ -40,6 +40,10 @@ export type RecordedUsage =
   | { kind: 'router'; session?: string }
   | { kind: 'unobservable'; reason: string };
 
+/**
+ * Where a run's recorded usage lives: `usage.json` in its run directory. Its
+ * existence is the claim that makes recording happen once per run.
+ */
 export function usageMarkerPath(cwd: string, id: string): string {
   return join(runDir(cwd, id), 'usage.json');
 }
