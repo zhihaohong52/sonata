@@ -32,7 +32,7 @@ vi.mock('../src/native/codex-auth.js', () => ({
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseOpenCodeModels, parseAuthedProviders, staleAgents, isSonataAgent, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
+import { parseOpenCodeModels, staleAgents, isSonataAgent, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
 import { tierAgentMarkdown } from '../src/commands/sync.js';
 import { parsePiRefs } from '../src/adapters/pi.js';
 import {
@@ -83,16 +83,6 @@ describe('parseOpenCodeModels', () => {
   it('returns nothing for malformed or empty config', () => {
     expect(parseOpenCodeModels('not json')).toEqual([]);
     expect(parseOpenCodeModels('{}')).toEqual([]);
-  });
-});
-
-describe('parseAuthedProviders', () => {
-  it('lists provider keys', () => {
-    expect(parseAuthedProviders('{"opencode-go":{"key":"x"}}')).toEqual(['opencode-go']);
-  });
-
-  it('tolerates malformed auth files', () => {
-    expect(parseAuthedProviders('¯\\_(ツ)_/¯')).toEqual([]);
   });
 });
 

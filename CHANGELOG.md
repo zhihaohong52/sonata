@@ -25,6 +25,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   It passed the gateway names where model keys were expected, so avoidance
   never matched and an avoided gateway's model still anchored `simple`'s cost
   cap — flagging preferred models as over-cap that a correct ranking keeps.
+- **OpenCode v2's credential table is read beside `auth.json`.** v2 stores
+  provider logins in the `credential` table of `opencode.db` and never migrates
+  auth.json — the two coexist — so every caller that read only the file missed
+  a live login: keys never offered for import, ChatGPT and Copilot OAuth
+  invisible to `sonata doctor`, and `credential_source = "opencode"` reporting
+  no credential for one sitting on disk. Both stores are now read through one
+  reader, with the table row winning per provider. `sonata doctor` names the
+  store (`from opencode.db`) and advises `chmod 600` when that file is
+  group/world-readable while holding credentials, since opencode keeps them in
+  plaintext; sonata only reports it and never changes the file.
 
 ## [0.12.2] - 2026-09-24
 

@@ -6,6 +6,8 @@ import { checkVersion, cmdDoctor, staleMcpRegistration, routingFailureDetail } f
 import { planRouteAuto } from '../../src/commands/route.js';
 import type { Settings } from '../../src/settings.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
+import { opencodeDbPath } from '../../src/native/opencode-store.js';
+import { sqliteAvailable, writeOpencodeCredDb } from '../opencode-db-fixture.js';
 import { credentialDir } from '../../src/native/oauth-login.js';
 import { cmdRoute } from '../../src/commands/route.js';
 
@@ -542,6 +544,64 @@ credential_source = "opencode"
     }
   });
 
+  it.skipIf(!sqliteAvailable())('reports an api key supplied by opencode.db', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-db-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-db-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+credential_source = "opencode"
+`);
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'acme',
+        value: JSON.stringify({ type: 'key', key: 'sk-fake' }), timeCreated: 100,
+      },
+    ]);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      expect(checks.find((c) => c.name === 'key source: acme')).toEqual({
+        name: 'key source: acme', ok: true, detail: 'acme: credential from opencode.db',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it.skipIf(!sqliteAvailable())('reports a ChatGPT login supplied by opencode.db', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-db-oauth-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-db-oauth-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.codex]
+auth = "codex-oauth"
+credential_source = "opencode"
+`);
+    // A real ChatGPT access token is a JWT carrying the shared app's client_id
+    // — the same check applies whether the row came from the table or auth.json.
+    const body = Buffer.from(JSON.stringify({
+      exp: 1787806005, client_id: 'app_EMoamEEZ73f0CkXaXp7hrann',
+    })).toString('base64url');
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'openai',
+        value: JSON.stringify({ type: 'oauth', access: `header.${body}.sig`, refresh: 'rt-fake' }),
+        timeCreated: 100,
+      },
+    ]);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      expect(checks.find((c) => c.name === 'key source: codex')).toEqual({
+        name: 'key source: codex', ok: true, detail: 'codex: credential from opencode.db',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('flags an opencode Copilot token that exists but cannot exchange for a Copilot key', async () => {
     // A stored GitHub token is not the same as a usable one: opencode's own
     // login requests only `read:user`, so GitHub refuses the Copilot
@@ -565,6 +625,81 @@ credential_source = "opencode"
       const text = checks.map((check) => check.detail).join('\n');
       expect(text).toContain('github-copilot: credential from opencode');
       expect(text).toMatch(/no credential from opencode.*log into opencode with a GitHub Copilot account/s);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it.skipIf(!sqliteAvailable())('warns when opencode.db holds credentials and is world-readable', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-db-mode-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-db-mode-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+`);
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'acme',
+        value: JSON.stringify({ type: 'key', key: 'sk-fake' }), timeCreated: 100,
+      },
+    ]);
+    chmodSync(opencodeDbPath(home, {}), 0o644);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      // The key itself resolves from the table, named as such...
+      expect(checks.find((c) => c.name === 'key source: acme')?.detail).toBe('from opencode.db');
+      // ...and the file it lives in is called out, without sonata touching it.
+      const advisory = checks.find((c) => c.name === 'opencode.db');
+      expect(advisory?.ok).toBe(true);
+      expect(advisory?.detail).toContain('chmod 600');
+      expect(advisory?.detail).toContain('plaintext');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it.skipIf(!sqliteAvailable())('stays quiet about a 0600 opencode.db', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-db-mode-ok-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-db-mode-ok-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+`);
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'acme',
+        value: JSON.stringify({ type: 'key', key: 'sk-fake' }), timeCreated: 100,
+      },
+    ]);
+    chmodSync(opencodeDbPath(home, {}), 0o600);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      expect(checks.find((c) => c.name === 'opencode.db')).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it.skipIf(!sqliteAvailable())('stays quiet when a world-readable opencode.db holds no credentials', async () => {
+    // The rows are the point: an empty table has nothing to leak, whatever the
+    // mode says.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-db-mode-empty-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-db-mode-empty-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+`);
+    writeOpencodeCredDb(opencodeDbPath(home, {}), []);
+    chmodSync(opencodeDbPath(home, {}), 0o666);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      expect(checks.find((c) => c.name === 'opencode.db')).toBeUndefined();
     } finally {
       globalThis.fetch = originalFetch;
     }

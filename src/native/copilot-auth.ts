@@ -15,9 +15,7 @@
  *
  * Nothing here logs a token.
  */
-import { readFileSync } from 'node:fs';
-
-import { opencodeAuthPath } from './codex-auth.js';
+import { readOpencodeCredentials } from './opencode-store.js';
 
 export interface CopilotAuthReport {
   present: boolean;
@@ -26,22 +24,12 @@ export interface CopilotAuthReport {
   problem?: string;
 }
 
-function str(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
-}
-
-function copilotEntry(home: string): Record<string, unknown> | null {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(opencodeAuthPath(home), 'utf8'));
-  } catch {
-    return null;
-  }
-  if (raw === null || typeof raw !== 'object') return null;
-  const entry = (raw as Record<string, unknown>)['github-copilot'];
-  if (entry === null || typeof entry !== 'object') return null;
-  const e = entry as Record<string, unknown>;
-  return e.type === 'oauth' ? e : null;
+function copilotEntry(home: string): { access: string; expires?: number } | null {
+  // v2's `credential` table wins over v1's `auth.json` — see
+  // `readOpencodeCredentials`. An api-key row is not a login and is skipped.
+  const entry = readOpencodeCredentials(home)['github-copilot'];
+  if (entry === undefined || entry.type !== 'oauth' || entry.access === undefined) return null;
+  return { access: entry.access, expires: entry.expires };
 }
 
 /**
@@ -51,9 +39,7 @@ function copilotEntry(home: string): Record<string, unknown> | null {
  * usable directly against any model endpoint.
  */
 export function readCopilotToken(home: string): string | null {
-  const entry = copilotEntry(home);
-  if (entry === null) return null;
-  return str(entry.access) ?? null;
+  return copilotEntry(home)?.access ?? null;
 }
 
 /** The scope GitHub requires before it will mint a Copilot key. */
@@ -95,7 +81,7 @@ export async function copilotTokenCanExchange(
 /** Health information, carrying no secret material. */
 export function copilotAuthReport(home: string, now: number = Date.now()): CopilotAuthReport {
   const entry = copilotEntry(home);
-  if (entry === null || str(entry.access) === undefined) {
+  if (entry === null) {
     return {
       present: false,
       problem: 'no Copilot login in opencode — run `opencode auth login` and choose github-copilot',
