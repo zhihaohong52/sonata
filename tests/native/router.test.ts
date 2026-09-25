@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, withEffort, STICKY_TTL_MS, createRouterServer, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, repairNamelessToolCalls, withEffort, STICKY_TTL_MS, createRouterServer, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
 
@@ -2116,5 +2116,82 @@ describe('the UI does not disturb the proxy', () => {
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
+  });
+});
+
+describe('repairNamelessToolCalls', () => {
+  // The shape measured on 2026-09-25 (#66): mimo-v2.6-pro split one call's
+  // arguments into a second tool call with no name. Claude Code ran it ("No
+  // such tool available") and replayed it on every later request, which
+  // OpenAI-format validation refuses outright — whichever candidate serves.
+  const broken = () => ({
+    model: 'sonata-code-normal',
+    messages: [
+      { role: 'user', content: 'go' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Redoing it now.' },
+          { type: 'tool_use', id: 'call_ok', name: 'Edit', input: { file_path: '/x' } },
+          { type: 'tool_use', id: 'nameless', name: '', input: { __unparsedToolInput: { raw: " = '", len: 4 } } },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'nameless', is_error: true, content: '<tool_use_error>Error: No such tool available: </tool_use_error>' },
+          { type: 'tool_result', tool_use_id: 'call_ok', content: 'ok' },
+        ],
+      },
+    ],
+  });
+  const repair = (payload: unknown) => JSON.parse(repairNamelessToolCalls(Buffer.from(JSON.stringify(payload))).toString());
+
+  it('turns a nameless tool call and its result into text, keeping every named call', () => {
+    const out = repair(broken());
+    const assistant = out.messages[1].content;
+    expect(assistant.map((b: any) => b.type)).toEqual(['text', 'tool_use', 'text']);
+    expect(assistant[1]).toEqual({ type: 'tool_use', id: 'call_ok', name: 'Edit', input: { file_path: '/x' } });
+    expect(assistant[2].text).toMatch(/tool call with no name/);
+    const user = out.messages[2].content;
+    // A tool_result must lead its message, so the surviving one moves ahead
+    // of the note that replaced the orphaned result.
+    expect(user.map((b: any) => b.type)).toEqual(['tool_result', 'text']);
+    expect(user[0].tool_use_id).toBe('call_ok');
+    expect(user[1].text).toMatch(/No such tool available/);
+    expect(JSON.stringify(out)).not.toContain('"name":""');
+  });
+
+  it('treats a missing name the same as an empty one', () => {
+    const payload = broken();
+    delete (payload.messages[1].content as any[])[2].name;
+    expect(repair(payload).messages[1].content.every((b: any) => b.type !== 'tool_use' || b.name === 'Edit')).toBe(true);
+  });
+
+  it('returns the same buffer when nothing is nameless — a healthy request is byte-identical', () => {
+    const healthy = Buffer.from(JSON.stringify({ messages: [{ role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'Read', input: {} }] }] }));
+    expect(repairNamelessToolCalls(healthy)).toBe(healthy);
+    const garbage = Buffer.from('not json');
+    expect(repairNamelessToolCalls(garbage)).toBe(garbage);
+  });
+
+  it('is applied before a tier request is forwarded', async () => {
+    clearCooldowns();
+    const sent: string[] = [];
+    const res = await routeRequest({
+      method: 'POST', url: '/v1/messages', headers: { 'content-type': 'application/json' },
+      body: Buffer.from(JSON.stringify(broken())),
+    }, {
+      fetch: (async (_url: string, init: RequestInit) => {
+        sent.push(Buffer.from(init.body as Uint8Array).toString());
+        return new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ({ role: 'code', tier: 'normal', routes: [{ key: 'flash', native: { gateway: 'default', id: 'flash-1' } }] }) as any,
+    });
+    expect(res.status).toBe(200);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toContain('"name":""');
+    expect(sent[0]).toContain('"name":"Edit"');
   });
 });

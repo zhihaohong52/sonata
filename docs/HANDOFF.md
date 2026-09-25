@@ -18,9 +18,10 @@ known to be unverified or deferred:
   from OpenRouter (served by `openrouter-xiaomi-mimo-v2.6-pro`, which leads
   both `code-normal` and `code-complex`). `routeTierRequest` returns the first
   response < 500, so the next candidate is never tried and the conversation
-  stays pinned to the model that produced the bad call. Check whether the
-  capability-400 fingerprinting in `src/native/router.ts` should cover this
-  shape; filed as its own issue.
+  stays pinned to the model that produced the bad call. **Fixed for #66**: the
+  cause was the transcript, not the fallback — a nameless `tool_use` the
+  model emitted and Claude Code replayed — so the router now repairs it
+  (`repairNamelessToolCalls`) instead of failing over.
 - **#64 is built from opencode's dev-branch source, not a release.** No v2
   existed to measure. If the released `credential` table differs, the
   paragraph in CLAUDE.md starting *opencode v2 keeps credentials in
