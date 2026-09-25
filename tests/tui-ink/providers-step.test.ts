@@ -106,3 +106,84 @@ describe('OAuth login in ProvidersStep', () => {
     app.unmount();
   });
 });
+
+describe('Rank providers in ProvidersStep', () => {
+  const DOWN = '\u001B[B';
+  const LEFT = '\u001B[D';
+
+  function renderProviders(initial: InitState) {
+    let state: InitState = initial;
+    let continued = 0;
+    const app = render(React.createElement(ProvidersStep, {
+      home: '/tmp/sonata-rank-test',
+      harnesses: [],
+      providers: [],
+      byokProviders: [],
+      credentialAvailability: {},
+      gatewayAuth: {},
+      storedKeys: {},
+      state,
+      onChange: (updater: (current: InitState) => InitState) => { state = updater(state); },
+      onContinue: () => { continued += 1; },
+      onBack: () => {},
+      onCancel: () => {},
+    }));
+    return {
+      app,
+      press: async (...keys: string[]) => {
+        for (const key of keys) { app.stdin.write(key); await tick(); }
+      },
+      state: () => state,
+      continued: () => continued,
+    };
+  }
+
+  const two: InitState = {
+    providerKeys: ['byok/alpha', 'byok/beta'],
+    customProviders: [
+      { name: 'alpha', url: 'https://alpha.example/v1' },
+      { name: 'beta', url: 'https://beta.example/v1' },
+    ],
+  };
+
+  it('opens on Continue with two gateways and records the submitted order', async () => {
+    const w = renderProviders(two);
+    // Nothing importable, so the menu is Add provider / Continue.
+    await w.press(DOWN, ENTER);
+    expect(w.app.lastFrame()).toContain('Rank providers');
+    expect(w.continued()).toBe(0);
+    await w.press(ENTER);
+    expect(w.state().gatewayOrder).toEqual(['alpha', 'beta']);
+    expect(w.continued()).toBe(1);
+    w.app.unmount();
+  });
+
+  it('opens on the saved ranking, dropping names no longer selected', async () => {
+    const w = renderProviders({ ...two, gatewayOrder: ['ghost', 'beta'] });
+    await w.press(DOWN, ENTER, ENTER);
+    expect(w.state().gatewayOrder).toEqual(['beta', 'alpha']);
+    w.app.unmount();
+  });
+
+  it('skips the screen with a single gateway and records it', async () => {
+    const w = renderProviders({
+      providerKeys: ['byok/alpha'],
+      customProviders: [{ name: 'alpha', url: 'https://alpha.example/v1' }],
+    });
+    await w.press(DOWN, ENTER);
+    expect(w.app.lastFrame()).not.toContain('Rank providers');
+    expect(w.continued()).toBe(1);
+    expect(w.state().gatewayOrder).toEqual(['alpha']);
+    w.app.unmount();
+  });
+
+  it('returns to the providers menu on back', async () => {
+    const w = renderProviders(two);
+    await w.press(DOWN, ENTER);
+    expect(w.app.lastFrame()).toContain('Rank providers');
+    await w.press(LEFT);
+    expect(w.app.lastFrame()).toContain('Set up providers');
+    expect(w.continued()).toBe(0);
+    w.app.unmount();
+  });
+});

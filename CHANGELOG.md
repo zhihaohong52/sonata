@@ -14,8 +14,10 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   two routes reach one model — same score, same cost per task, same effort
   level — the one on the earlier gateway leads. It is only ever a tie-break:
   a model that wins on a score still outranks a better-gateway route, and
-  `avoid_gateways` still demotes first. Written by `sonata init` (the order of
-  `--providers` is the ranking), preserved across rewrites, and validated like
+  `avoid_gateways` still demotes first. `sonata init` asks for it on a new
+  **Rank providers** screen between the providers and the models (skipped when
+  only one gateway is selected, and reopened on the saved order); unattended,
+  the order of `--providers` is the ranking. Preserved across rewrites, and validated like
   `avoid_gateways` — an unknown or duplicated gateway name is refused rather
   than silently ignored.
 

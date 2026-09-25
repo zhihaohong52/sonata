@@ -1445,6 +1445,13 @@ describe('deriveInitState', () => {
     expect(state.harnesses).toEqual([]);
   });
 
+  it('carries the saved gateway_order so Rank providers reopens on it', () => {
+    const parsed = config({ a: { gateway: 'alpha', id: 'a' }, b: { gateway: 'beta', id: 'b' } });
+    const state = deriveInitState({ ...parsed, gatewayOrder: ['beta', 'alpha'] }, 'project', []);
+    expect(state.gatewayOrder).toEqual(['beta', 'alpha']);
+    expect(deriveInitState(parsed, 'project', []).gatewayOrder).toBeUndefined();
+  });
+
   it('copies roles and per-role models from generate.native', () => {
     const state = deriveInitState(config({ m: { gateway: 'g', id: 'm' } }, { review: ['m'] }), 'global', []);
     expect(state.roles).toEqual(['review']);

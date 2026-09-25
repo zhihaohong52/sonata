@@ -548,6 +548,9 @@ export function deriveInitState(
     configScope,
     harnesses,
     providerKeys,
+    // The saved provider ranking, so a re-run's Rank providers screen opens
+    // where the user left it rather than in detection order.
+    ...(config.gatewayOrder === undefined ? {} : { gatewayOrder: [...config.gatewayOrder] }),
     nativeKeys: modelKeys,
     // `undefined`, not `[]`, when the config carries no role configuration at
     // all (a valid native-only unified config with no [tiers] and no legacy
