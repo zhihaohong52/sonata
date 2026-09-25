@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-25
+
 ### Added
 
 - **`gateway_order` ranks your gateways and breaks ties in tier ranking.** When
