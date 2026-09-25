@@ -483,11 +483,24 @@ export async function cmdDoctor(
       // an error. That is exactly the failure mode the freshness check above
       // exists for, and it is invisible for the same reason.
       {
+        // `avoided` is a set of MODEL KEYS — ranking sorts keys, and
+        // `avoid_gateways` names gateways. Passing the gateway names meant
+        // avoidance never matched anything and the re-proposal ranked an
+        // avoided model as if the user had asked for it. `gateway_order` is
+        // resolved the same way, through the model table.
+        const models = Object.entries(config.unifiedModels ?? {});
+        const avoid = new Set(config.avoidGateways ?? []);
+        const avoided = new Set(models.filter(([, m]) => m.gateway !== undefined && avoid.has(m.gateway)).map(([k]) => k));
+        const order = config.gatewayOrder ?? [];
+        const gatewayRank = new Map(models.flatMap(([k, m]) => {
+          const i = m.gateway === undefined ? -1 : order.indexOf(m.gateway);
+          return i < 0 ? [] : [[k, i] as const];
+        }));
         const stale = Object.entries(config.tiers ?? {})
           .map(([role, lists]) => {
             const proposal = proposeTiers(
               [...new Set(Object.keys(config.unifiedModels ?? {}))],
-              catalog, gateways, new Set(config.avoidGateways ?? []), resolver,
+              catalog, gateways, avoided, resolver, gatewayRank,
             );
             return [role, overCeilingSimple(lists.simple, proposal)] as const;
           })

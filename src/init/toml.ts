@@ -5,7 +5,7 @@ import type { SonataConfig, PriceConfig, Rates, TierLists } from '../config.js';
 import { isOauthGatewayAuth, oauthGatewayBaseUrl } from '../config.js';
 import { proposeTiers } from '../catalog.js';
 import { proposePricingProvider } from '../pricing.js';
-import { gatewayNamesOf, avoidedKeysOf, duplicateKeys } from './helpers.js';
+import { gatewayNamesOf, avoidedKeysOf, duplicateKeys, gatewayRankOf } from './helpers.js';
 import { CURRENT_SCHEMA_VERSION, SCHEMA_VERSION_KEY } from '../migrations.js';
 
 const TOML_ESCAPES: Record<string, string> = {
@@ -104,6 +104,12 @@ export function nativeTomlFor(
    * until the spend arrives.
    */
   existingBudget?: SonataConfig['budget'],
+  /**
+   * The user's gateway ranking, first = preferred, carried forward by the same
+   * rule as every trailing parameter: init is the sole writer of the file, so
+   * a key it does not emit is deleted.
+   */
+  gatewayOrder: readonly string[] = [],
 ): string {
   const allModels = new Map<string, NativeCandidate>();
   for (const cands of Object.values(roleModels)) {
@@ -117,6 +123,8 @@ export function nativeTomlFor(
         undefined,
         gatewayNamesOf(allModels),
         avoidedKeysOf(allModels, avoidGateways),
+        undefined,
+        gatewayRankOf(allModels, gatewayOrder),
       );
       return [role, proposal];
     }),
@@ -147,6 +155,14 @@ export function nativeTomlFor(
   // would re-propose the ordering the user avoided.
   if (avoidGateways.length > 0) {
     lines.push(`avoid_gateways = [${avoidGateways.map(tomlKey).join(', ')}]`, '');
+  }
+  // The user's gateway ranking, same top-level rule as `avoid_gateways` above.
+  // Filtered to gateways actually being written: a name absent from the file
+  // would fail the unknown-gateway check at parse time and refuse the config
+  // rather than merely drop a preference.
+  const writtenOrder = gatewayOrder.filter((g) => gateways.has(g));
+  if (writtenOrder.length > 0) {
+    lines.push(`gateway_order = [${writtenOrder.map(tomlKey).join(', ')}]`, '');
   }
 
   // Its own table, emitted before every other header for the same reason

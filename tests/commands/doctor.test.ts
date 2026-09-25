@@ -1342,6 +1342,73 @@ id = "gpt-5.6-sol"
   });
 });
 
+describe('cmdDoctor — tier freshness honours avoid_gateways', () => {
+  // The re-proposal compared against the saved `simple` used to be handed the
+  // gateway names as `avoided`, and `avoided` is a set of MODEL KEYS — so
+  // avoidance never applied and the advisory's demotion was invisible. The
+  // observable consequence: a model on the avoided gateway leads the fresh
+  // proposal's `simple`, and the preferred model reads as over-ceiling.
+  // (Ordering inside the proposal is not directly visible through a check, so
+  // this asserts the shape avoidance produces — the avoided model demoted off
+  // the lead — through the advisory that reads the proposal.)
+  const setup = (extra: string) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-fresh-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-fresh-home-'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    // `bad-m` is dirt cheap and would anchor `simple`'s cost cap at 12x its
+    // price; `good-m` is 20x dearer per task. Saved `simple` holds `good-m`.
+    writeFileSync(join(home, '.config', 'sonata', 'catalog.json'), JSON.stringify({
+      fetchedAt: '2026-09-25T00:00:00Z',
+      models: {
+        'bad-model': { intelligenceIndex: 30, blendedPriceUsd: 1, costPerTask: 0.01 },
+        'good-model': { intelligenceIndex: 80, blendedPriceUsd: 1, costPerTask: 0.2 },
+      },
+    }));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+${extra}
+[models."bad-m"]
+gateway = "bad-gw"
+id = "bad-model"
+context_window = 128000
+
+[models."good-m"]
+gateway = "good-gw"
+id = "good-model"
+context_window = 128000
+
+[native.gateways."bad-gw"]
+base_url = "https://bad.example/v1"
+
+[native.gateways."good-gw"]
+base_url = "https://good.example/v1"
+
+[tiers.code]
+simple = ["good-m"]
+normal = ["good-m", "bad-m"]
+complex = ["good-m"]
+`);
+    return { cwd, home };
+  };
+
+  it('reports a preferred model as over-cap while the avoided gateway sets the anchor', async () => {
+    // Control case: with nothing avoided, `bad-m` leads and anchors the cap,
+    // so `good-m` is flagged. This is what the bug produced even WITH
+    // avoid_gateways — the case below shows the fix.
+    const { cwd, home } = setup('');
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const fresh = checks.find((c) => c.name === 'tier freshness');
+    expect(fresh?.detail).toContain('good-m');
+  });
+
+  it('demotes an avoided gateway\'s model so the preferred one anchors the cap', async () => {
+    const { cwd, home } = setup('avoid_gateways = ["bad-gw"]');
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    // The avoided model is demoted, `good-m` anchors at its own price, and
+    // nothing the cap would exclude is left to report.
+    expect(checks.find((c) => c.name === 'tier freshness')).toBeUndefined();
+  });
+});
+
 describe('doctor survives an unreadable agent file', () => {
   // `outdatedAgents` deliberately propagates anything that is not ENOENT or
   // ENOTDIR, so an unreadable file is not silently treated as "not ours".

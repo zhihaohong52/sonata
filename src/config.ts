@@ -218,6 +218,14 @@ export interface SonataConfig {
    */
   avoidGateways?: string[];
   /**
+   * The user's gateway ranking, first = preferred.
+   *
+   * A tie-break for tier ranking, never a demotion: when two routes reach the
+   * same model at the same score and cost, the earlier gateway leads. Every
+   * existing comparator term outranks it.
+   */
+  gatewayOrder?: string[];
+  /**
    * A ceiling on what the router forwards in a UTC day, in US dollars.
    *
    * Absent means no cap, which is every existing config. Enforcement, and the
@@ -447,28 +455,56 @@ export function parseConfig(text: string): SonataConfig {
     }
   }
 
+  // A name that matches no gateway would silently do nothing, and the whole
+  // point of these settings is that their absence is invisible — a typo would
+  // read as "the gateway is not being avoided" (or "not ranked") with no way
+  // to tell. Shared by `avoid_gateways` and `gateway_order`, which fail the
+  // same way.
+  const knownGateways = new Set([
+    ...Object.keys((raw.native as { gateways?: Record<string, unknown> } | undefined)?.gateways ?? {}),
+    ...Object.values(unifiedModels).map((model) => model.gateway).filter((g): g is string => g !== undefined),
+  ]);
+  const knownList = () => [...knownGateways].sort().join(', ') || '(none)';
+
   let avoidGateways: string[] | undefined;
   if (raw.avoid_gateways !== undefined) {
     const listed = raw.avoid_gateways;
     if (!Array.isArray(listed) || !listed.every((name) => typeof name === 'string')) {
       throw new Error('sonata.toml: avoid_gateways must be a list of gateway names');
     }
-    // A name that matches no gateway would silently do nothing, and the whole
-    // point of the setting is that its absence is invisible — a typo would
-    // read as "the gateway is not being avoided" with no way to tell.
-    const known = new Set([
-      ...Object.keys((raw.native as { gateways?: Record<string, unknown> } | undefined)?.gateways ?? {}),
-      ...Object.values(unifiedModels).map((model) => model.gateway).filter((g): g is string => g !== undefined),
-    ]);
     for (const name of listed as string[]) {
-      if (!known.has(name)) {
+      if (!knownGateways.has(name)) {
         throw new Error(
           `sonata.toml: avoid_gateways names unknown gateway "${name}". ` +
-          `Known gateways: ${[...known].sort().join(', ') || '(none)'}`,
+          `Known gateways: ${knownList()}`,
         );
       }
     }
     avoidGateways = listed as string[];
+  }
+
+  let gatewayOrder: string[] | undefined;
+  if (raw.gateway_order !== undefined) {
+    const listed = raw.gateway_order;
+    if (!Array.isArray(listed) || !listed.every((name) => typeof name === 'string')) {
+      throw new Error('sonata.toml: gateway_order must be a list of gateway names');
+    }
+    const seen = new Set<string>();
+    for (const name of listed as string[]) {
+      if (!knownGateways.has(name)) {
+        throw new Error(
+          `sonata.toml: gateway_order names unknown gateway "${name}". ` +
+          `Known gateways: ${knownList()}`,
+        );
+      }
+      // A duplicate would leave the ranking ambiguous — two positions for one
+      // gateway — and silently do half of what was asked.
+      if (seen.has(name)) {
+        throw new Error(`sonata.toml: gateway_order lists gateway "${name}" twice`);
+      }
+      seen.add(name);
+    }
+    gatewayOrder = listed as string[];
   }
 
   let budget: { dailyUsd: number } | undefined;
@@ -769,6 +805,7 @@ export function parseConfig(text: string): SonataConfig {
     unifiedModels,
     tiers,
     avoidGateways,
+    gatewayOrder,
     budget,
     generate: { roles },
     native,

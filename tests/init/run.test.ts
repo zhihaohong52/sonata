@@ -82,6 +82,10 @@ describe('front-end parity', () => {
       tiers: { code: { simple: ['acme-fast'], complex: ['acme-fast'] } },
       perRoleModels: { code: ['acme-fast'] },
       credentialSources: {},
+      // The wizard records the provider ranking in selection order — the same
+      // choice `--providers` makes, since both front ends answer "which
+      // providers, in what order".
+      gatewayOrder: ['acme'],
       hookScope: 'skip' as const,
       routing: 'skip' as const,
     };

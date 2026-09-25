@@ -278,6 +278,55 @@ describe('nativeTomlFor — avoid_gateways', () => {
     expect(parseConfig(toml).avoidGateways).toBeUndefined();
   });
 });
+
+describe('nativeTomlFor — gateway_order', () => {
+  const candidate = (gateway: string) => ({
+    key: `${gateway}-m`, gateway, id: 'm', contextWindow: 128000,
+    baseUrl: `https://${gateway}.example/v1`, auth: 'api-key' as const,
+  });
+
+  it('round-trips through parseConfig', () => {
+    // Same trap as avoid_gateways: a bare key emitted after a [table] header
+    // binds to that table and is silently lost on read.
+    const acme = candidate('acme');
+    const beta = candidate('beta');
+    const toml = nativeTomlFor(
+      { code: [acme, beta] }, {}, undefined, {}, [acme, beta], undefined, [], undefined, undefined,
+      ['beta', 'acme'],
+    );
+    expect(parseConfig(toml).gatewayOrder).toEqual(['beta', 'acme']);
+  });
+
+  it('emits the key before any table header', () => {
+    const acme = candidate('acme');
+    const toml = nativeTomlFor(
+      { code: [acme] }, {}, undefined, {}, [acme], undefined, [], undefined, undefined, ['acme'],
+    );
+    const keyAt = toml.indexOf('gateway_order');
+    const firstTableAt = toml.indexOf('[');
+    expect(keyAt).toBeGreaterThanOrEqual(0);
+    expect(keyAt).toBeLessThan(firstTableAt);
+  });
+
+  it('drops a gateway the file does not write rather than emitting an unparseable name', () => {
+    // parseConfig refuses an unknown gateway name, so a ranking entry for a
+    // gateway no longer present would make the whole config fail to load.
+    const acme = candidate('acme');
+    const toml = nativeTomlFor(
+      { code: [acme] }, {}, undefined, {}, [acme], undefined, [], undefined, undefined,
+      ['gone', 'acme'],
+    );
+    expect(toml).not.toContain('gone');
+    expect(parseConfig(toml).gatewayOrder).toEqual(['acme']);
+  });
+
+  it('omits the key entirely when no ordering is given', () => {
+    const acme = candidate('acme');
+    const toml = nativeTomlFor({ code: [acme] }, {}, undefined, {}, [acme]);
+    expect(toml).not.toContain('gateway_order');
+    expect(parseConfig(toml).gatewayOrder).toBeUndefined();
+  });
+});
 // Issue #31: a config written by init had no `pricing_provider` on any
 // gateway, so `resolvePrice` returned `source: 'none'` at its
 // `provider === undefined` guard before models.dev was consulted at all —

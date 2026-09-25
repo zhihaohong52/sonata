@@ -1157,6 +1157,59 @@ complex = ["m"]
   });
 });
 
+describe('gateway_order', () => {
+  const base = `
+gateway_order = ["acme", "beta"]
+
+[models."m"]
+gateway = "acme"
+id = "m"
+context_window = 128000
+
+[models."n"]
+gateway = "beta"
+id = "n"
+context_window = 128000
+
+[native.gateways."acme"]
+base_url = "https://acme.example/v1"
+
+[native.gateways."beta"]
+base_url = "https://beta.example/v1"
+
+[tiers.code]
+simple = ["m", "n"]
+complex = ["m", "n"]
+`;
+
+  it('parses a list of gateway names, in order', () => {
+    // Order is the whole content: it is a ranking, not a set.
+    expect(parseConfig(base).gatewayOrder).toEqual(['acme', 'beta']);
+  });
+
+  it('is absent when unset, so existing configs are unaffected', () => {
+    expect(parseConfig(base.replace('gateway_order = ["acme", "beta"]\n', '')).gatewayOrder).toBeUndefined();
+  });
+
+  it('refuses a gateway that does not exist', () => {
+    // Same invisible-absence failure as avoid_gateways: a typo would read as
+    // "that gateway is simply not ranked".
+    expect(() => parseConfig(base.replace('"acme", "beta"', '"acme", "betaa"')))
+      .toThrow(/unknown gateway "betaa"/);
+  });
+
+  it('refuses a duplicate name', () => {
+    // Two positions for one gateway make the ranking uninterpretable.
+    expect(() => parseConfig(base.replace('"acme", "beta"', '"acme", "beta", "acme"')))
+      .toThrow(/lists gateway "acme" twice/);
+  });
+
+  it('refuses a non-list value', () => {
+    expect(() => parseConfig(base.replace('gateway_order = ["acme", "beta"]', 'gateway_order = "acme"')))
+      .toThrow(/must be a list/);
+  });
+});
+
 describe('native gateway provider', () => {
   const gw = (extra: string) => `
 [models."m"]

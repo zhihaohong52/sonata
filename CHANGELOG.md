@@ -8,6 +8,24 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- **`gateway_order` ranks your gateways and breaks ties in tier ranking.** When
+  two routes reach one model — same score, same cost per task, same effort
+  level — the one on the earlier gateway leads. It is only ever a tie-break:
+  a model that wins on a score still outranks a better-gateway route, and
+  `avoid_gateways` still demotes first. Written by `sonata init` (the order of
+  `--providers` is the ranking), preserved across rewrites, and validated like
+  `avoid_gateways` — an unknown or duplicated gateway name is refused rather
+  than silently ignored.
+
+### Fixed
+
+- **`sonata doctor`'s tier-freshness re-proposal applies `avoid_gateways`.**
+  It passed the gateway names where model keys were expected, so avoidance
+  never matched and an avoided gateway's model still anchored `simple`'s cost
+  cap — flagging preferred models as over-cap that a correct ranking keeps.
+
 ## [0.12.2] - 2026-09-24
 
 ### Fixed

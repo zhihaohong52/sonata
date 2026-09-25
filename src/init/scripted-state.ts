@@ -108,6 +108,14 @@ export function scriptedState(
 
   const roles = opts.roles ?? d.roles ?? [...KNOWN_ROLES];
 
+  // The order of `--providers` is the ranking: a scripted install states its
+  // preferences by listing them, so the flag order is the gateway order.
+  // Absent, there is no ordering to record — plan then falls back to the one
+  // saved in the config rather than inventing one from detection order.
+  const gatewayOrder = opts.providers === undefined
+    ? undefined
+    : [...new Set(providerKeys.map((k) => k.split('/')[1] ?? k))];
+
   // Build state for validation
   const state: InitState = {
     configScope,
@@ -149,6 +157,7 @@ export function scriptedState(
       nativeKeys,
       roles,
       credentialSources,
+      gatewayOrder,
       reproposeTiers: opts.reproposeTiers === true,
       routing: opts.routing ?? 'project',
     guidance: opts.guidance ?? 'project',
