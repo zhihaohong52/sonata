@@ -20,6 +20,15 @@ describe('composeInstructions', () => {
     reportPath: '/tmp/run/report.md',
   });
 
+  it('ends with the run marker, even for a run that cannot write a report', () => {
+    const readOnly = composeInstructions({
+      role: 'review', roleText: 'R', repoContext: 'C', task: 'T', reportPath: '/tmp/run/report.md',
+      canWriteReport: false, runDir: '/repo/.sonata/runs/abc123',
+    });
+    expect(readOnly.trimEnd().endsWith('<!-- sonata run: /repo/.sonata/runs/abc123 -->')).toBe(true);
+    expect(out).not.toContain('sonata run:');
+  });
+
   it('puts the task before repository context and restates it at the end', () => {
     expect(out.indexOf('ROLE_BODY')).toBeLessThan(out.indexOf('REPO_CONTEXT'));
     expect(out.indexOf('TASK_TEXT')).toBeLessThan(out.indexOf('REPO_CONTEXT'));

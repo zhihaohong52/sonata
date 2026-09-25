@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { loadConfig, harnessModelFor, isReadOnlyRole } from '../config.js';
 import type { Effort } from '../effort.js';
@@ -171,7 +172,11 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
   // all, and the instructions must not ask for one that cannot be written.
   // `adapter.plan` only takes the instructions path, never its contents, so
   // nothing here depends on the file existing yet.
+  // Chosen here rather than by the harness, so the run's usage can later be
+  // found by id — see `UsageQuery.sessionId`.
+  const harnessSessionId = randomUUID();
   const plan = adapter.plan({
+    sessionId: harnessSessionId,
     modelId: modelCfg.id,
     role: opts.role,
     mode,
@@ -189,6 +194,7 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     reportPath: reportPathFor(dir),
     canWriteReport: plan.canWriteReport ?? true,
     inheritedSonataTools: exposesSonataTools(opts.cwd),
+    runDir: dir,
   }));
 
   const harnessPath = join(dir, 'harness.sh');
@@ -215,6 +221,8 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     // control is unremarkable until a level was actually asked for.
     ...(opts.effort === undefined ? {} : { effort: opts.effort }),
     effortHonoured: plan.effortHonoured,
+    harnessModelId: modelCfg.id,
+    harnessSessionId,
     // Sampled here, not before `createRun`, so that sonata's own scaffolding —
     // the run directory and the three files just written into it — is already
     // on disk in this sample as it will be in the one tail takes at exit. A

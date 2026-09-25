@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput } from './types.js';
+import { join } from 'node:path';
+import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput, UsageQuery, UsageRecord, UsageResult } from './types.js';
+import { ambiguous, asRecord, canonicalPath, count, epochMs, fileContains, filesIn, inWindow, money, mtimeMs, narrowByMarker, readJsonl, WINDOW_SLACK_MS } from './usage-files.js';
 import type { ModelRef } from '../types.js';
 import { isReadOnlyRole } from '../config.js';
 import { wireEffort, type Effort } from '../effort.js';
@@ -166,6 +168,59 @@ async function piHealth(_env: { home: string; cwd: string }): Promise<HarnessPro
   }
 }
 
+/**
+ * A finished run's usage, from pi's session file.
+ *
+ * pi writes one JSON-lines file per session under a directory named for the
+ * flattened cwd; the header line carries the real `cwd` and start time, so
+ * the directory name is never decoded. Every assistant message carries its
+ * own `usage` (per request, not cumulative) and pi's own `cost.total`, which
+ * is trusted only when positive — pi prices an unknown model at 0.
+ */
+export function piUsage(query: UsageQuery): UsageResult {
+  const root = join(query.home, '.pi', 'agent', 'sessions');
+  const found: string[] = [];
+  for (const dir of filesIn(root, () => true)) {
+    // A stat is far cheaper than a parse, and a session last written before
+    // the run began cannot be this run's.
+    for (const path of filesIn(dir, (name) => name.endsWith('.jsonl'))) {
+      const touched = mtimeMs(path);
+      if (touched === undefined || touched < query.startMs - WINDOW_SLACK_MS) continue;
+      const header = asRecord(readJsonl(path)[0]);
+      if (header?.type !== 'session' || typeof header.cwd !== 'string') continue;
+      if (canonicalPath(header.cwd) !== query.cwd) continue;
+      if (!inWindow(epochMs(header.timestamp), query.startMs, query.endMs)) continue;
+      found.push(path);
+    }
+  }
+  const matches = narrowByMarker(found, (path) => fileContains(path, query.runDir));
+  if (matches.length === 0) return { kind: 'unobservable', reason: 'no pi session was recorded for this run' };
+  if (matches.length > 1) return { kind: 'unobservable', reason: ambiguous('pi', matches.length) };
+
+  const lines = readJsonl(matches[0]!);
+  const header = asRecord(lines[0]);
+  const records: UsageRecord[] = [];
+  for (const line of lines.slice(1)) {
+    const entry = asRecord(line);
+    const message = asRecord(entry?.message);
+    const usage = asRecord(message?.usage);
+    if (entry?.type !== 'message' || message?.role !== 'assistant' || usage === undefined) continue;
+    const cost = money(asRecord(usage.cost)?.total);
+    records.push({
+      ts: new Date(epochMs(entry.timestamp) ?? query.endMs).toISOString(),
+      model: typeof message.model === 'string' ? message.model : undefined,
+      tokens: {
+        input: count(usage.input),
+        output: count(usage.output),
+        cacheRead: count(usage.cacheRead),
+        cacheCreation: count(usage.cacheWrite),
+      },
+      ...(cost !== undefined && cost > 0 ? { costUsd: cost } : {}),
+    });
+  }
+  return { kind: 'observed', session: typeof header?.id === 'string' ? header.id : undefined, records };
+}
+
 export const piAdapter: HarnessAdapter = {
   name: 'pi',
   versionCommand: ['pi', '--version'],
@@ -180,4 +235,5 @@ export const piAdapter: HarnessAdapter = {
   /** Nothing to send: pi never waits for an answer. */
   approveKeys: { yes: [], no: [] },
   health: piHealth,
+  usage: piUsage,
 };

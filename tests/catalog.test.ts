@@ -696,6 +696,51 @@ describe('proposeTiers — avoided gateways', () => {
   });
 });
 
+describe('proposeTiers — gateway order', () => {
+  // One model reached through two gateways is one point: the same AA row, so
+  // every comparator term ties and only the tie-break can order the routes.
+  const aa: AaCatalog = {
+    fetchedAt: '2026-09-20T00:00:00Z',
+    models: {
+      'mimo': { intelligenceIndex: 46.3, blendedPriceUsd: 0.5, costPerTask: 0.1332 },
+      'star': { intelligenceIndex: 60, blendedPriceUsd: 0.5, costPerTask: 0.05 },
+    },
+  };
+
+  it('leads every tier with the route on the higher-ranked gateway', () => {
+    // `{ b-mimo: 0, a-mimo: 1 }` — gateway `b` is preferred, so its route
+    // leads simple, normal and complex. Reverse the map and `a` leads.
+    const keys = ['a-mimo', 'b-mimo'];
+    for (const tier of Object.values(proposeTiers(keys, aa, ['a', 'b'], new Set(), undefined, new Map([['b-mimo', 0], ['a-mimo', 1]])))) {
+      expect(tier[0]).toBe('b-mimo');
+    }
+    for (const tier of Object.values(proposeTiers(keys, aa, ['a', 'b'], new Set(), undefined, new Map([['a-mimo', 0], ['b-mimo', 1]])))) {
+      expect(tier[0]).toBe('a-mimo');
+    }
+  });
+
+  it('never moves a route past a different model that wins on a score', () => {
+    // `star` beats `mimo` on capability AND value, but sits on the
+    // lower-ranked gateway. Gateway order is a tie-break, not a demotion:
+    // `star` still leads every tier.
+    const t = proposeTiers(
+      ['a-mimo', 'b-star'], aa, ['a', 'b'], new Set(), undefined,
+      new Map([['a-mimo', 0], ['b-star', 1]]),
+    );
+    expect(t.simple[0]).toBe('b-star');
+    expect(t.normal[0]).toBe('b-star');
+    expect(t.complex[0]).toBe('b-star');
+  });
+
+  it('is inert when the map is absent or empty', () => {
+    // Two routes that tie everywhere must keep today's order with no ranking
+    // supplied — a missing map is "no preference", not "reverse the sort".
+    const keys = ['a-mimo', 'b-mimo', 'a-star'];
+    const without = proposeTiers(keys, aa, ['a', 'b']);
+    expect(proposeTiers(keys, aa, ['a', 'b'], new Set(), undefined, new Map())).toEqual(without);
+  });
+});
+
 describe('proposeTiers — the simple tier admits on cost per task', () => {
   // The bug this replaces: admission tested `blendedPriceUsd` (dollars per 1M
   // tokens) while ranking *inside* the tier used `costPerTask` (dollars per

@@ -631,7 +631,7 @@ export async function main(argv: string[]): Promise<number> {
         .join(', ');
       console.log(`fell past      ${worst}`);
     }
-    console.log('native path only — `sonata dispatch` runs bypass the router and cannot be measured');
+    console.log('dispatch runs are counted when they finish, from each harness\'s own store — `--by lane` splits them out');
     if (report.priceCacheAgeMs !== undefined) {
       console.log(`prices: models.dev cache ${Math.floor(report.priceCacheAgeMs / 86_400_000)}d old`);
     }

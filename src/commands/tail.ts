@@ -1,5 +1,7 @@
 import { statSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { recordHarnessUsage } from '../harness-usage.js';
 import { loadConfig } from '../config.js';
 import { getAdapter } from '../adapters/index.js';
 import { tryCapturePane } from '../tmux.js';
@@ -214,6 +216,8 @@ export interface TailOptions {
   /** Grace period after the exit sentinel for the pane to flush. */
   settleMs?: number;
   now?: () => number;
+  /** Where the ledger and the harnesses' stores live; the user's home by default. */
+  home?: string;
 }
 
 function lastChangeMs(cwd: string, id: string, now: () => number): number {
@@ -244,7 +248,8 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
   const now = opts.now ?? (() => Date.now());
   const pollMs = opts.pollMs ?? 500;
   const settleMs = opts.settleMs ?? 500;
-  const config = loadConfig(opts.cwd);
+  const home = opts.home ?? homedir();
+  const config = loadConfig(opts.cwd, home);
   const meta = readMeta(opts.cwd, opts.id);
   const adapter = getAdapter(meta.harness);
 
@@ -362,12 +367,17 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
     });
 
     if (result.state === 'DONE') {
-      writeMeta(opts.cwd, {
+      const finished = {
         ...meta,
         endedAt: new Date().toISOString(),
         exitCode: result.exitCode,
         degraded: result.degraded,
-      });
+      };
+      writeMeta(opts.cwd, finished);
+      // What the run spent, from the harness's own store, into the ledger —
+      // once, however many times a finished run is tailed. A degraded run
+      // still spent its tokens, so it is recorded too.
+      recordHarnessUsage({ cwd: opts.cwd, home, meta: finished, config, adapter });
       // Every finished report carries its own provenance, so verification is
       // not a step someone has to remember. A wrapper that answers from its
       // own head instead of dispatching cannot produce this line: it is built

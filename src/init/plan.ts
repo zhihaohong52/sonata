@@ -12,7 +12,7 @@ import { tierAgentNames, parseConfig } from '../config.js';
 import { litellmRequired } from '../native/providers.js';
 import { expandCandidates, loadAaCatalog, proposeTiers, unpinnedVariants } from '../catalog.js';
 import { nativeTomlFor } from './toml.js';
-import { reconcilePerRoleModels, reconcileTierList, gatewayNamesOf, avoidedKeysOf } from './helpers.js';
+import { reconcilePerRoleModels, reconcileTierList, gatewayNamesOf, avoidedKeysOf, gatewayRankOf } from './helpers.js';
 import { configPathFor, agentsDirFor } from './helpers.js';
 import { resolveKeyFromSource, keyReport } from '../native/credentials.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
@@ -99,6 +99,11 @@ export function plan(
   // Get the config for this scope to read existing avoidGateways and run settings
   const configForScope = env.configsByScope[configScope];
   const avoidGateways = configForScope?.avoidGateways ?? [];
+  // The user's provider ranking. The front end records one when it asked
+  // (`--providers` order, or the wizard's ranking screen); otherwise the saved
+  // config's order stands, and an absent one means "no preference" rather
+  // than an order invented from detection.
+  const gatewayOrder = state.gatewayOrder ?? configForScope?.gatewayOrder ?? [];
 
   // ---- migratedModels ----
   // parseConfig always builds unifiedModels from the raw [models] table
@@ -197,9 +202,10 @@ export function plan(
     }),
   ]);
   const addedKeys = expand(nativeKeys.filter((key) => !savedNativeKeys.includes(key)));
+  const gatewayRank = gatewayRankOf(nativeByKey, gatewayOrder);
   const tiers = Object.fromEntries(roles.map((role) => {
     const proposal = proposeTiers(
-      nativeKeys, catalog, gatewayNames, avoidedKeysOf(nativeByKey, avoidGateways), upstreamFor);
+      nativeKeys, catalog, gatewayNames, avoidedKeysOf(nativeByKey, avoidGateways), upstreamFor, gatewayRank);
     const saved = state.tiers?.[role] ?? configForScope?.tiers?.[role];
     // `--repropose-tiers` is expressed by forgetting the saved lists entirely,
     // rather than by a second ranking path: every downstream step then takes
@@ -242,7 +248,7 @@ export function plan(
   // writer would otherwise delete — `pricing_provider` and every `[price]`
   // block. Both were read on load and written back by nobody, so each
   // `sonata init` silently un-priced the gateway.
-  const configToml = nativeTomlFor(nativeRoleModels, state.credentialSources ?? {}, tiers, migratedModels, chosenNative, configForScope?.run, avoidGateways, configForScope, configForScope?.budget);
+  const configToml = nativeTomlFor(nativeRoleModels, state.credentialSources ?? {}, tiers, migratedModels, chosenNative, configForScope?.run, avoidGateways, configForScope, configForScope?.budget, gatewayOrder);
 
   // ---- notices (key check) ----
   const notices: string[] = [];

@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { codexAuthPath, codexAuthReport, jwtExpiry, readCodexOAuth, readOpencodeChatGptOAuth, readChatGptOAuth } from '../../src/native/codex-auth.js';
+import { opencodeDbPath } from '../../src/native/opencode-store.js';
+import { sqliteAvailable, writeOpencodeCredDb } from '../opencode-db-fixture.js';
 
 let home: string;
 
@@ -206,5 +208,73 @@ describe('codexAuthReport — source', () => {
 
   it('mentions both harnesses when neither has a login', () => {
     expect(codexAuthReport(home, NOW).problem).toMatch(/codex or opencode/);
+  });
+});
+
+describe('readOpencodeChatGptOAuth — the v2 credential table', () => {
+  const skip = !sqliteAvailable();
+  const exp = 1787806005;
+
+  it.skipIf(skip)('flattens a table oauth row into the LiteLLM record', () => {
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'openai',
+        value: JSON.stringify({
+          type: 'oauth', methodID: 'chatgpt-browser',
+          refresh: 'rt-oc', access: chatgptJwt(exp), expires: (exp + 60) * 1000,
+        }),
+        timeCreated: 100,
+      },
+    ]);
+
+    expect(readOpencodeChatGptOAuth(home)).toEqual({
+      access_token: chatgptJwt(exp),
+      refresh_token: 'rt-oc',
+      expires_at: exp,
+      account_id: undefined,
+    });
+  });
+
+  it.skipIf(skip)('lets the table row win over auth.json', () => {
+    writeOpencodeAuth(home, { openai: { type: 'oauth', access: chatgptJwt(exp), refresh: 'rt-json' } });
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'openai',
+        value: JSON.stringify({
+          type: 'oauth', access: chatgptJwt(exp), refresh: 'rt-db', expires: exp * 1000,
+        }),
+        timeCreated: 100,
+      },
+    ]);
+
+    expect(readOpencodeChatGptOAuth(home)?.refresh_token).toBe('rt-db');
+  });
+
+  it.skipIf(skip)('refuses a table token from a different OAuth app', () => {
+    // The client_id check is on the token's own claims, so it transfers to the
+    // table unchanged — a non-ChatGPT grant would fail confusingly in LiteLLM.
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'openai',
+        value: JSON.stringify({
+          type: 'oauth', access: chatgptJwt(exp, 'app_somethingelse'), refresh: 'rt',
+        }),
+        timeCreated: 100,
+      },
+    ]);
+
+    expect(readOpencodeChatGptOAuth(home)).toBeNull();
+  });
+
+  it.skipIf(skip)('falls back to the table when codex has no login', () => {
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'openai',
+        value: JSON.stringify({ type: 'oauth', access: chatgptJwt(exp), refresh: 'rt-oc' }),
+        timeCreated: 100,
+      },
+    ]);
+
+    expect(readChatGptOAuth(home)?.refresh_token).toBe('rt-oc');
   });
 });

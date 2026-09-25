@@ -384,6 +384,28 @@ export function gatewayNamesOf(models: ReadonlyMap<string, NativeCandidate>): st
   return [...new Set([...models.values()].map((candidate) => candidate.gateway))];
 }
 
+/**
+ * Each model key as the position of its gateway in the user's ranking.
+ *
+ * `gateway_order` names gateways, but ranking sorts model keys, exactly as
+ * `avoid_gateways` does — so the two resolve through the candidate map the
+ * same way. Keys whose gateway is not listed are omitted rather than given a
+ * tail position: the ranking treats an absent key as "no preference" (two
+ * absent keys compare equal), and inventing a number here would demote an
+ * unranked gateway the user simply did not mention.
+ */
+export function gatewayRankOf(
+  models: ReadonlyMap<string, NativeCandidate>,
+  gatewayOrder: readonly string[],
+): Map<string, number> {
+  const rank = new Map<string, number>();
+  for (const [key, candidate] of models) {
+    const position = gatewayOrder.indexOf(candidate.gateway);
+    if (position >= 0) rank.set(key, position);
+  }
+  return rank;
+}
+
 export function nativeLabel(c: NativeCandidate): string {
   return `${c.gateway}/${c.id}`;
 }
@@ -526,6 +548,9 @@ export function deriveInitState(
     configScope,
     harnesses,
     providerKeys,
+    // The saved provider ranking, so a re-run's Rank providers screen opens
+    // where the user left it rather than in detection order.
+    ...(config.gatewayOrder === undefined ? {} : { gatewayOrder: [...config.gatewayOrder] }),
     nativeKeys: modelKeys,
     // `undefined`, not `[]`, when the config carries no role configuration at
     // all (a valid native-only unified config with no [tiers] and no legacy

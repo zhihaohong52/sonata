@@ -5,6 +5,7 @@ import { TextInput } from './text-input.js';
 import { SearchSelect } from './search-select.js';
 import { LoginScreen } from './login-screen.js';
 import { ByokStep } from './byok-step.js';
+import { RankedSelect } from './ranked-select.js';
 import { WELL_KNOWN_PROVIDER_URLS } from '../../detect.js';
 import {
   addProviderCatalog,
@@ -13,10 +14,12 @@ import {
   byokProviderKey,
   byokProviderName,
   byokProviderRoute,
+  completeGatewayOrder,
   configuredProviderNames,
   importableProviders,
   importHint,
   providersForHarnesses,
+  seedGatewayOrder,
   validateCustomProviderName,
   validateProviderUrl,
   type AvailableCredentials,
@@ -89,6 +92,7 @@ export interface ProvidersStepProps {
 
 type Screen =
   | { kind: 'menu' }
+  | { kind: 'rank' }
   | { kind: 'import-harnesses' }
   | { kind: 'import' }
   | { kind: 'pick' }
@@ -186,6 +190,9 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
   // Only a name that collides with a custom provider already added this run has
   // no such redirect, so that's the only case left for validation to reject.
   const existingNames = (state.customProviders ?? []).map((p) => p.name);
+  // The gateways the Rank providers screen orders: every provider selected
+  // this run, a custom one included, each once.
+  const selectedGateways = [...new Set([...configured, ...existingNames])];
 
   const routeToProvider = (provider: ProviderOption) => {
     if (provider.harness === 'byok') {
@@ -211,6 +218,24 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
     }
   };
 
+  if (screen.kind === 'rank') {
+    return (
+      <RankedSelect<string>
+        key="rank-providers"
+        title="Rank providers"
+        items={selectedGateways.map((name) => ({ value: name, label: name }))}
+        initialRanked={seedGatewayOrder(selectedGateways, state.gatewayOrder)}
+        footer="first = preferred when two providers serve the same model"
+        onSubmit={(ranked) => {
+          onChange((current) => ({ ...current, gatewayOrder: completeGatewayOrder(ranked, selectedGateways) }));
+          onContinue();
+        }}
+        onBack={() => setScreen({ kind: 'menu' })}
+        onCancel={onCancel}
+      />
+    );
+  }
+
   if (screen.kind === 'menu') {
     const importable = importableProviders(providers, credentialAvailability);
     const choices: Array<{ value: 'import' | 'add' | 'continue'; label: string }> = [];
@@ -229,7 +254,11 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
             setProblem(undefined);
             if (choice === 'import') setScreen({ kind: 'import-harnesses' });
             else if (choice === 'add') setScreen({ kind: 'pick' });
-            else onContinue();
+            else if (selectedGateways.length < 2) {
+              // Nothing to order: one gateway is trivially first.
+              onChange((current) => ({ ...current, gatewayOrder: [...selectedGateways] }));
+              onContinue();
+            } else setScreen({ kind: 'rank' });
           }}
           onBack={onBack}
           onCancel={onCancel}

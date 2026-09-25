@@ -25,7 +25,14 @@ export type LedgerPrice =
    * would drop that spend from `sonata usage` *and* from `spentTodayUsd`,
    * silently lowering a budget cap's view of a day it should still count.
    */
-  | { source: 'model' | 'gateway' | 'models-dev' | 'covered' | 'ai-pricing'; totalUsd: number; observedAt?: string };
+  | { source: 'model' | 'gateway' | 'models-dev' | 'covered' | 'ai-pricing'; totalUsd: number; observedAt?: string }
+  /**
+   * The cost the harness computed itself (opencode's `cost`, pi's
+   * `cost.total`, reasonix's `cost_*`) for a `sonata dispatch` run. Used only
+   * when sonata has no rate of its own for the model; it is the harness's
+   * number, so it can disagree with what sonata would have charged.
+   */
+  | { source: 'harness'; totalUsd: number };
 
 export interface LedgerRow {
   ts: string;
@@ -57,7 +64,16 @@ export interface LedgerRow {
    */
   effort?: Effort;
   gateway?: string;
-  upstream: 'litellm' | 'anthropic' | 'direct';
+  /**
+   * Where the request went. `harness` is a `sonata dispatch` run, read from
+   * the harness's own store after it finished rather than observed in
+   * flight — one row per run and model, not per request.
+   */
+  upstream: 'litellm' | 'anthropic' | 'direct' | 'harness';
+  /** The harness a `harness` row ran in (opencode, codex, pi, reasonix, claude). */
+  harness?: string;
+  /** The `sonata dispatch` run id a `harness` row belongs to. */
+  run?: string;
   litellmModel?: string;
   callId?: string;
   status: number;
@@ -195,6 +211,7 @@ function priceIsValid(price: LedgerRow['price']): boolean {
   if (
     price.source === 'model' || price.source === 'gateway' || price.source === 'models-dev'
     || price.source === 'covered'
+    || price.source === 'harness'
     // Legacy, still readable — see LedgerPrice.
     || price.source === 'ai-pricing'
   ) {

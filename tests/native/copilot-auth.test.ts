@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { copilotAuthReport, readCopilotToken, copilotTokenCanExchange } from '../../src/native/copilot-auth.js';
+import { opencodeDbPath } from '../../src/native/opencode-store.js';
+import { sqliteAvailable, writeOpencodeCredDb } from '../opencode-db-fixture.js';
 
 let home: string;
 
@@ -116,5 +118,50 @@ describe('copilotTokenCanExchange', () => {
   it('does not mistake a scope that merely contains the word', async () => {
     const fake = async () => new Response('{}', { status: 200, headers: headers('copilot-editor') });
     expect(await copilotTokenCanExchange('gho_x', { fetch: fake })).toBe(false);
+  });
+});
+
+describe('copilot login — the v2 credential table', () => {
+  const skip = !sqliteAvailable();
+  const NOW = 1_700_000_000_000;
+
+  it.skipIf(skip)('reads the GitHub token from the table', () => {
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'github-copilot',
+        value: JSON.stringify({ type: 'oauth', refresh: 'r', access: 'gho_db', expires: 0 }),
+        timeCreated: 100,
+      },
+    ]);
+
+    expect(readCopilotToken(home)).toBe('gho_db');
+    const report = copilotAuthReport(home, NOW);
+    expect(report.present).toBe(true);
+    expect(JSON.stringify(report)).not.toContain('gho_db');
+  });
+
+  it.skipIf(skip)('lets the table row win over auth.json', () => {
+    writeOpencodeAuth({ 'github-copilot': { type: 'oauth', access: 'gho_json', refresh: 'r' } });
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'github-copilot',
+        value: JSON.stringify({ type: 'oauth', access: 'gho_db', refresh: 'r' }),
+        timeCreated: 100,
+      },
+    ]);
+
+    expect(readCopilotToken(home)).toBe('gho_db');
+  });
+
+  it.skipIf(skip)('ignores a table row that is an api key, not a login', () => {
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'github-copilot',
+        value: JSON.stringify({ type: 'key', key: 'sk-fake' }),
+        timeCreated: 100,
+      },
+    ]);
+
+    expect(readCopilotToken(home)).toBeNull();
   });
 });

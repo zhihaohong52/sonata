@@ -393,7 +393,7 @@ killed and the run is reported `DONE`, `degraded`, with a report beginning
 | `sonata code` | Launch a Claude Code session routed through the local proxy (passes `claude` args through) |
 | `sonata route on\|off\|status [--global]` | Route every plain `claude` session in the project (or, with `--global`, every project) through the proxy via settings.local.json/settings.json |
 | `sonata route auto\|manual [--global]` | Route each session for its lifetime via SessionStart/SessionEnd hooks, keeping Remote Control |
-| `sonata usage [--since 7d] [--by model\|role\|tier\|gateway\|session\|project] [--session <id>] [--json]` | Tokens and cost from the router's ledger (**native path only** — `sonata dispatch` runs never transit the router and are unobservable); unpriced volume is reported separately, never folded into the total |
+| `sonata usage [--since 7d] [--by model\|role\|tier\|effort\|gateway\|lane\|session\|project] [--session <id>] [--json]` | Tokens and cost from the ledger: native requests as the router saw them, and `sonata dispatch` runs read from each harness's own store once they finish (`--by lane` splits the two); unpriced volume is reported separately, never folded into the total |
 | `sonata status [--session <id>\|--all]` | Whether the router is up and on which port, then the recent alias → candidate served → tokens → failed attempts decisions from the ledger; reachability and routing state live in `sonata route status` |
 | `sonata runs [--json]` | List this project's dispatch runs |
 | `sonata gc` | Kill finished tmux sessions |

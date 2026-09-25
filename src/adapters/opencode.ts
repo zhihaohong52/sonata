@@ -1,4 +1,7 @@
-import type { HarnessAdapter, LaunchPlan, PlanInput } from './types.js';
+import type { HarnessAdapter, LaunchPlan, PlanInput, UsageQuery, UsageRecord, UsageResult } from './types.js';
+import { opencodeDbPath } from '../native/opencode-store.js';
+import { openReadOnlySync } from '../sqlite.js';
+import { ambiguous, asRecord, canonicalPath, count, epochMs, inWindow, money, narrowByMarker, WINDOW_SLACK_MS } from './usage-files.js';
 import { isReadOnlyRole } from '../config.js';
 import { wireEffort } from '../effort.js';
 
@@ -116,6 +119,79 @@ function buildScript(input: PlanInput): LaunchPlan {
   return { script, interactive: false, canWriteReport: agent !== 'plan', effortHonoured: true };
 }
 
+/**
+ * A finished run's usage, from opencode's database.
+ *
+ * `opencode run` makes one root session in the launch directory, plus a child
+ * session per subagent it spawns (`parent_id`); both are the run's spend.
+ * Usage is read per assistant message, and only from messages that finished
+ * (`time.completed`), since an unfinished one carries partial counts.
+ * opencode reports reasoning apart from output, so the two are added — the
+ * ledger's output is everything billed as output.
+ *
+ * opencode's own `cost` is trusted only when positive: it writes 0 for a model
+ * it has no price for, which is indistinguishable from a free one, and a
+ * guessed zero is exactly what the ledger refuses to record.
+ */
+export function openCodeUsage(query: UsageQuery): UsageResult {
+  const db = openReadOnlySync(opencodeDbPath(query.home));
+  if (db === undefined) return { kind: 'unobservable', reason: 'opencode\'s database could not be opened read-only' };
+  try {
+    const sessions = db.all(
+      'SELECT id, parent_id, directory, time_created FROM session WHERE time_created >= ? AND time_created <= ?',
+      query.startMs - WINDOW_SLACK_MS, query.endMs + WINDOW_SLACK_MS,
+    );
+    const found = sessions.filter((row) => row.parent_id === null
+      && typeof row.directory === 'string' && canonicalPath(row.directory) === query.cwd
+      && inWindow(epochMs(row.time_created), query.startMs, query.endMs));
+    // Concurrent dispatches in one directory are told apart by the prompt,
+    // which opencode keeps in `part` and whose last line names this run's
+    // directory. `instr`, not LIKE: a path's `_` is a LIKE wildcard.
+    const roots = narrowByMarker(found, (row) => db.all(
+      'SELECT 1 FROM part WHERE session_id = ? AND instr(data, ?) > 0 LIMIT 1', String(row.id), query.runDir,
+    ).length > 0);
+    if (roots.length === 0) return { kind: 'unobservable', reason: 'no opencode session was recorded for this run' };
+    if (roots.length > 1) return { kind: 'unobservable', reason: ambiguous('opencode', roots.length) };
+    const root = String(roots[0]!.id);
+    const ids = [root, ...sessions.filter((row) => row.parent_id === root).map((row) => String(row.id))];
+
+    const records: UsageRecord[] = [];
+    for (const id of ids) {
+      for (const row of db.all('SELECT data FROM message WHERE session_id = ?', id)) {
+        let data: Record<string, unknown> | undefined;
+        try {
+          data = asRecord(JSON.parse(String(row.data)));
+        } catch {
+          continue;
+        }
+        if (data?.role !== 'assistant') continue;
+        const time = asRecord(data.time);
+        if (epochMs(time?.completed) === undefined) continue;
+        const tokens = asRecord(data.tokens);
+        if (tokens === undefined) continue;
+        const cache = asRecord(tokens.cache);
+        const cost = money(data.cost);
+        records.push({
+          ts: new Date(epochMs(time?.created) ?? query.endMs).toISOString(),
+          model: typeof data.modelID === 'string' ? data.modelID : undefined,
+          tokens: {
+            input: count(tokens.input),
+            output: count(tokens.output) + count(tokens.reasoning),
+            cacheRead: count(cache?.read),
+            cacheCreation: count(cache?.write),
+          },
+          ...(cost !== undefined && cost > 0 ? { costUsd: cost } : {}),
+        });
+      }
+    }
+    return { kind: 'observed', session: root, records };
+  } catch {
+    return { kind: 'unobservable', reason: 'opencode\'s database did not have the expected shape' };
+  } finally {
+    db.close();
+  }
+}
+
 export const openCodeAdapter: HarnessAdapter = {
   name: 'opencode',
   versionCommand: ['opencode', '--version'],
@@ -129,4 +205,5 @@ export const openCodeAdapter: HarnessAdapter = {
   },
   /** Nothing to send: `opencode run` never waits for an answer. */
   approveKeys: { yes: [], no: [] },
+  usage: openCodeUsage,
 };

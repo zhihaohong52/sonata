@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { connect } from 'node:net';
 import { reportPathFor } from '../report-contract.js';
 import { spawn } from 'node:child_process';
-import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput } from './types.js';
+import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput, UsageQuery, UsageResult } from './types.js';
+import { ambiguous, asRecord, canonicalPath, count, epochMs, fileContains, filesIn, inWindow, narrowByMarker, readJsonl } from './usage-files.js';
 import type { ModelRef } from '../types.js';
 import { isReadOnlyRole } from '../config.js';
 import { wireEffort } from '../effort.js';
@@ -365,6 +366,80 @@ async function codexHealth(env: { home: string; cwd: string }): Promise<HarnessP
   return problems;
 }
 
+/**
+ * The day directories a run's rollout can sit in. Codex names them by LOCAL
+ * date, so a UTC day either side is scanned too — a run near midnight must
+ * not be missed because the two calendars disagree about which day it was.
+ */
+function rolloutDays(root: string, startMs: number, endMs: number): string[] {
+  const days = new Set<string>();
+  for (let t = startMs - 86_400_000; t <= endMs + 86_400_000; t += 86_400_000) {
+    const d = new Date(t);
+    days.add(join(root, String(d.getUTCFullYear()), String(d.getUTCMonth() + 1).padStart(2, '0'), String(d.getUTCDate()).padStart(2, '0')));
+  }
+  return [...days];
+}
+
+/**
+ * A finished run's usage, from codex's rollout file.
+ *
+ * Sonata owns the whole codex session — one launch, one rollout — so the
+ * LAST `token_count` event's `total_token_usage` is the run's total and no
+ * diffing is needed. Codex counts cached input INSIDE `input_tokens`
+ * (OpenAI's convention) while the ledger keeps cache reads apart, so they are
+ * subtracted out; `reasoning_output_tokens` is already inside `output_tokens`
+ * and is not added again. Codex reports no cost of its own.
+ */
+export function codexUsage(query: UsageQuery): UsageResult {
+  const root = join(query.home, '.codex', 'sessions');
+  const found: Array<{ path: string; id?: string }> = [];
+  for (const day of rolloutDays(root, query.startMs, query.endMs)) {
+    for (const path of filesIn(day, (name) => name.startsWith('rollout-') && name.endsWith('.jsonl'))) {
+      const first = asRecord(readJsonl(path)[0]);
+      const meta = first?.type === 'session_meta' ? asRecord(first.payload) : undefined;
+      if (meta === undefined || typeof meta.cwd !== 'string') continue;
+      if (canonicalPath(meta.cwd) !== query.cwd) continue;
+      if (!inWindow(epochMs(meta.timestamp), query.startMs, query.endMs)) continue;
+      found.push({ path, id: typeof meta.id === 'string' ? meta.id : undefined });
+    }
+  }
+  // Two dispatches in one directory overlap in time; the rollout keeps the
+  // prompt, whose last line names this run's directory.
+  const matches = narrowByMarker(found, (match) => fileContains(match.path, query.runDir));
+  if (matches.length === 0) return { kind: 'unobservable', reason: 'no codex session was recorded for this run' };
+  if (matches.length > 1) return { kind: 'unobservable', reason: ambiguous('codex', matches.length) };
+
+  let total: Record<string, unknown> | undefined;
+  let at: string | undefined;
+  let model: string | undefined;
+  for (const line of readJsonl(matches[0]!.path)) {
+    const event = asRecord(line);
+    const payload = asRecord(event?.payload);
+    if (event?.type === 'turn_context' && typeof payload?.model === 'string') model = payload.model;
+    if (event?.type !== 'event_msg' || payload?.type !== 'token_count') continue;
+    const usage = asRecord(asRecord(payload.info)?.total_token_usage);
+    if (usage === undefined) continue;
+    total = usage;
+    at = typeof event.timestamp === 'string' ? event.timestamp : at;
+  }
+  if (total === undefined) return { kind: 'unobservable', reason: 'the codex session recorded no token counts' };
+  const cached = count(total.cached_input_tokens ?? total.cache_read_input_tokens);
+  return {
+    kind: 'observed',
+    session: matches[0]!.id,
+    records: [{
+      ts: at ?? new Date(query.endMs).toISOString(),
+      model: model ?? query.modelId,
+      tokens: {
+        input: Math.max(0, count(total.input_tokens) - cached),
+        output: count(total.output_tokens),
+        cacheRead: cached,
+        cacheCreation: count(total.cache_write_input_tokens),
+      },
+    }],
+  };
+}
+
 export const codexAdapter: HarnessAdapter = {
   name: 'codex',
   versionCommand: ['codex', '--version'],
@@ -410,4 +485,5 @@ export const codexAdapter: HarnessAdapter = {
    */
   fallbackReportFile: 'last-message.txt',
   health: codexHealth,
+  usage: codexUsage,
 };

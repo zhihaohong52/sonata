@@ -61,8 +61,8 @@ export function BudgetScreen({ cwd, home }: { cwd: string; home: string }): Reac
         <Text color={palette.ACCENT}>▏</Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
-        <Text color={palette.MUTED}>Counts priced volume on the native path only, so it can be exceeded:</Text>
-        <Text color={palette.MUTED}>unpriced models are not bounded, and `sonata dispatch` never transits the router.</Text>
+        <Text color={palette.MUTED}>Counts priced volume from both lanes, so it can be exceeded:</Text>
+        <Text color={palette.MUTED}>unpriced models are not bounded, and a dispatch run is counted when it finishes.</Text>
       </Box>
       {!loaded.ok && <Box marginTop={1}><Text color={palette.MID}>{loaded.message}</Text></Box>}
       {note !== '' && loaded.ok && (

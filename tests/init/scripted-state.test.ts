@@ -44,4 +44,37 @@ describe('scriptedState', () => {
       opts({ providers: ['byok/made-up'], models: ['made-up-x'] }),
     )).toThrow(/made-up/);
   });
+
+  it('takes the --providers order as the gateway ranking', () => {
+    // The flag's order is the only ranking a scripted install ever states, so
+    // it is the ranking — not detection order, which would silently reorder
+    // the user's list.
+    const candidates = [
+      { key: 'b-m', gateway: 'b', id: 'm', contextWindow: 128000, baseUrl: 'https://b.example/v1', auth: 'api-key' as const },
+      { key: 'a-m', gateway: 'a', id: 'm', contextWindow: 128000, baseUrl: 'https://a.example/v1', auth: 'api-key' as const },
+    ];
+    const richEnv = env({
+      offered: [
+        { harness: 'opencode', provider: 'a', key: 'opencode/a', count: 1 },
+        { harness: 'opencode', provider: 'b', key: 'opencode/b', count: 1 },
+      ],
+      allNativeCandidates: candidates,
+    });
+    const { state } = scriptedState(richEnv, opts({ providers: ['opencode/b', 'opencode/a'], models: ['b-m', 'a-m'] }));
+    expect(state.gatewayOrder).toEqual(['b', 'a']);
+  });
+
+  it('leaves gatewayOrder undefined when --providers is absent', () => {
+    // Absent means "no opinion" — plan then falls back to the ranking saved
+    // in the config. Inventing one from detection order would overwrite it.
+    const candidates = [
+      { key: 'a-m', gateway: 'a', id: 'm', contextWindow: 128000, baseUrl: 'https://a.example/v1', auth: 'api-key' as const },
+    ];
+    const richEnv = env({
+      offered: [{ harness: 'opencode', provider: 'a', key: 'opencode/a', count: 1 }],
+      allNativeCandidates: candidates,
+    });
+    const { state } = scriptedState(richEnv, opts({ models: ['a-m'] }));
+    expect(state.gatewayOrder).toBeUndefined();
+  });
 });

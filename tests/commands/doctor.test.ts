@@ -6,6 +6,8 @@ import { checkVersion, cmdDoctor, staleMcpRegistration, routingFailureDetail } f
 import { planRouteAuto } from '../../src/commands/route.js';
 import type { Settings } from '../../src/settings.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
+import { opencodeDbPath } from '../../src/native/opencode-store.js';
+import { sqliteAvailable, writeOpencodeCredDb } from '../opencode-db-fixture.js';
 import { credentialDir } from '../../src/native/oauth-login.js';
 import { cmdRoute } from '../../src/commands/route.js';
 
@@ -542,6 +544,64 @@ credential_source = "opencode"
     }
   });
 
+  it.skipIf(!sqliteAvailable())('reports an api key supplied by opencode.db', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-db-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-db-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+credential_source = "opencode"
+`);
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'acme',
+        value: JSON.stringify({ type: 'key', key: 'sk-fake' }), timeCreated: 100,
+      },
+    ]);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      expect(checks.find((c) => c.name === 'key source: acme')).toEqual({
+        name: 'key source: acme', ok: true, detail: 'acme: credential from opencode.db',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it.skipIf(!sqliteAvailable())('reports a ChatGPT login supplied by opencode.db', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-db-oauth-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-db-oauth-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.codex]
+auth = "codex-oauth"
+credential_source = "opencode"
+`);
+    // A real ChatGPT access token is a JWT carrying the shared app's client_id
+    // — the same check applies whether the row came from the table or auth.json.
+    const body = Buffer.from(JSON.stringify({
+      exp: 1787806005, client_id: 'app_EMoamEEZ73f0CkXaXp7hrann',
+    })).toString('base64url');
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'openai',
+        value: JSON.stringify({ type: 'oauth', access: `header.${body}.sig`, refresh: 'rt-fake' }),
+        timeCreated: 100,
+      },
+    ]);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      expect(checks.find((c) => c.name === 'key source: codex')).toEqual({
+        name: 'key source: codex', ok: true, detail: 'codex: credential from opencode.db',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('flags an opencode Copilot token that exists but cannot exchange for a Copilot key', async () => {
     // A stored GitHub token is not the same as a usable one: opencode's own
     // login requests only `read:user`, so GitHub refuses the Copilot
@@ -565,6 +625,87 @@ credential_source = "opencode"
       const text = checks.map((check) => check.detail).join('\n');
       expect(text).toContain('github-copilot: credential from opencode');
       expect(text).toMatch(/no credential from opencode.*log into opencode with a GitHub Copilot account/s);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it.skipIf(!sqliteAvailable())('warns when opencode.db holds credentials and is world-readable', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-db-mode-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-db-mode-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+`);
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'acme',
+        value: JSON.stringify({ type: 'key', key: 'sk-fake' }), timeCreated: 100,
+      },
+    ]);
+    chmodSync(opencodeDbPath(home, {}), 0o644);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      // The key itself resolves from the table, named as such...
+      expect(checks.find((c) => c.name === 'key source: acme')?.detail).toBe('from opencode.db');
+      // ...and the file it lives in is called out, without sonata touching it.
+      const advisory = checks.find((c) => c.name === 'opencode.db');
+      expect(advisory?.ok).toBe(true);
+      expect(advisory?.detail).toContain('chmod 600');
+      expect(advisory?.detail).toContain('plaintext');
+      expect(advisory?.detail).toContain('world-readable');
+      // A file only its group can read is named as such, not as everyone's.
+      chmodSync(opencodeDbPath(home, {}), 0o640);
+      const group = (await cmdDoctor({ ...NO_CLIENT, cwd, home })).checks.find((c) => c.name === 'opencode.db');
+      expect(group?.detail).toContain('group-readable');
+      expect(group?.detail).not.toContain('world-readable');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it.skipIf(!sqliteAvailable())('stays quiet about a 0600 opencode.db', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-db-mode-ok-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-db-mode-ok-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+`);
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'acme',
+        value: JSON.stringify({ type: 'key', key: 'sk-fake' }), timeCreated: 100,
+      },
+    ]);
+    chmodSync(opencodeDbPath(home, {}), 0o600);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      expect(checks.find((c) => c.name === 'opencode.db')).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it.skipIf(!sqliteAvailable())('stays quiet when a world-readable opencode.db holds no credentials', async () => {
+    // The rows are the point: an empty table has nothing to leak, whatever the
+    // mode says.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-db-mode-empty-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-db-mode-empty-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+`);
+    writeOpencodeCredDb(opencodeDbPath(home, {}), []);
+    chmodSync(opencodeDbPath(home, {}), 0o666);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      expect(checks.find((c) => c.name === 'opencode.db')).toBeUndefined();
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -1339,6 +1480,73 @@ harness = "codex"
 id = "gpt-5.6-sol"
 `;
     expect(await pricingCheck(toml)).toBeUndefined();
+  });
+});
+
+describe('cmdDoctor — tier freshness honours avoid_gateways', () => {
+  // The re-proposal compared against the saved `simple` used to be handed the
+  // gateway names as `avoided`, and `avoided` is a set of MODEL KEYS — so
+  // avoidance never applied and the advisory's demotion was invisible. The
+  // observable consequence: a model on the avoided gateway leads the fresh
+  // proposal's `simple`, and the preferred model reads as over-ceiling.
+  // (Ordering inside the proposal is not directly visible through a check, so
+  // this asserts the shape avoidance produces — the avoided model demoted off
+  // the lead — through the advisory that reads the proposal.)
+  const setup = (extra: string) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-fresh-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-fresh-home-'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    // `bad-m` is dirt cheap and would anchor `simple`'s cost cap at 12x its
+    // price; `good-m` is 20x dearer per task. Saved `simple` holds `good-m`.
+    writeFileSync(join(home, '.config', 'sonata', 'catalog.json'), JSON.stringify({
+      fetchedAt: '2026-09-25T00:00:00Z',
+      models: {
+        'bad-model': { intelligenceIndex: 30, blendedPriceUsd: 1, costPerTask: 0.01 },
+        'good-model': { intelligenceIndex: 80, blendedPriceUsd: 1, costPerTask: 0.2 },
+      },
+    }));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+${extra}
+[models."bad-m"]
+gateway = "bad-gw"
+id = "bad-model"
+context_window = 128000
+
+[models."good-m"]
+gateway = "good-gw"
+id = "good-model"
+context_window = 128000
+
+[native.gateways."bad-gw"]
+base_url = "https://bad.example/v1"
+
+[native.gateways."good-gw"]
+base_url = "https://good.example/v1"
+
+[tiers.code]
+simple = ["good-m"]
+normal = ["good-m", "bad-m"]
+complex = ["good-m"]
+`);
+    return { cwd, home };
+  };
+
+  it('reports a preferred model as over-cap while the avoided gateway sets the anchor', async () => {
+    // Control case: with nothing avoided, `bad-m` leads and anchors the cap,
+    // so `good-m` is flagged. This is what the bug produced even WITH
+    // avoid_gateways — the case below shows the fix.
+    const { cwd, home } = setup('');
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const fresh = checks.find((c) => c.name === 'tier freshness');
+    expect(fresh?.detail).toContain('good-m');
+  });
+
+  it('demotes an avoided gateway\'s model so the preferred one anchors the cap', async () => {
+    const { cwd, home } = setup('avoid_gateways = ["bad-gw"]');
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    // The avoided model is demoted, `good-m` anchors at its own price, and
+    // nothing the cap would exclude is left to report.
+    expect(checks.find((c) => c.name === 'tier freshness')).toBeUndefined();
   });
 });
 

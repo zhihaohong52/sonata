@@ -2,7 +2,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput } from './types.js';
+import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput, UsageQuery, UsageRecord, UsageResult } from './types.js';
+import { ambiguous, asRecord, count, epochMs, filesIn, inWindow, mtimeMs, readJsonl, WINDOW_SLACK_MS } from './usage-files.js';
 import { reportPathFor } from '../report-contract.js';
 import type { ModelRef } from '../types.js';
 import { isReadOnlyRole } from '../config.js';
@@ -342,6 +343,80 @@ async function reasonixHealth(env: { home: string; cwd: string }): Promise<Harne
   return problems;
 }
 
+/** A session file's start, from its name (`20260817-084458.423240000-<model>.jsonl`, local time). */
+function reasonixSessionStart(name: string): number | undefined {
+  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/.exec(name);
+  if (m === null) return undefined;
+  const at = new Date(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!, +m[6]!).getTime();
+  return Number.isFinite(at) ? at : undefined;
+}
+
+/**
+ * A finished run's usage, from reasonix's daily stats files.
+ *
+ * reasonix keeps usage per turn in `~/.reasonix/stats/<date>.jsonl`, stamped
+ * with a time and a model but with NO session or directory — so a row can
+ * only be attributed when this run was the one reasonix session running
+ * anywhere on the machine. Sessions are listed per project
+ * (`projects/<flattened cwd>/sessions/<start>-<model>.jsonl`); exactly one
+ * active in the window, in this run's directory, or the answer is
+ * unobservable rather than a guess.
+ *
+ * `prompt` is `cache_hit + cache_miss`; the ledger keeps cache reads apart,
+ * so input is the miss and cacheRead the hit. reasonix's own cost fields are
+ * not used: their names were not observed on a row with a complete cost.
+ */
+export function reasonixUsage(query: UsageQuery): UsageResult {
+  const root = join(query.home, '.reasonix');
+  const active: Array<{ project: string }> = [];
+  for (const project of filesIn(join(root, 'projects'), () => true)) {
+    for (const path of filesIn(join(project, 'sessions'), (name) => /^\d{8}-\d{6}.*\.jsonl$/.test(name) && !name.endsWith('.events.jsonl'))) {
+      const start = reasonixSessionStart(path.slice(path.lastIndexOf('/') + 1));
+      const touched = mtimeMs(path);
+      if (start === undefined || touched === undefined) continue;
+      if (start > query.endMs + WINDOW_SLACK_MS || touched < query.startMs - WINDOW_SLACK_MS) continue;
+      active.push({ project: project.slice(project.lastIndexOf('/') + 1) });
+    }
+  }
+  const flat = query.cwd.replace(/[/.]/g, '-');
+  const here = active.filter((session) => session.project === flat || session.project === query.cwd.replace(/\//g, '-'));
+  if (here.length === 0) return { kind: 'unobservable', reason: 'no reasonix session was recorded for this run' };
+  if (here.length > 1) return { kind: 'unobservable', reason: ambiguous('reasonix', here.length) };
+  if (active.length > 1) {
+    return {
+      kind: 'unobservable',
+      reason: `${active.length} reasonix sessions ran on this machine during the run, and reasonix's stats name no session to tell them apart`,
+    };
+  }
+
+  const records: UsageRecord[] = [];
+  const statsDir = join(root, 'stats');
+  const days = new Set<string>();
+  for (let t = query.startMs - 86_400_000; t <= query.endMs + 86_400_000; t += 86_400_000) {
+    days.add(`${new Date(t).toISOString().slice(0, 10)}.jsonl`);
+  }
+  for (const day of days) {
+    for (const line of readJsonl(join(statsDir, day))) {
+      const row = asRecord(line);
+      if (row === undefined || typeof row.prompt !== 'number') continue;
+      const at = epochMs(row.ts);
+      if (!inWindow(at, query.startMs, query.endMs)) continue;
+      const hit = count(row.cache_hit);
+      records.push({
+        ts: new Date(at!).toISOString(),
+        model: typeof row.model === 'string' ? row.model : undefined,
+        tokens: {
+          input: typeof row.cache_miss === 'number' ? count(row.cache_miss) : Math.max(0, count(row.prompt) - hit),
+          output: count(row.completion),
+          cacheRead: hit,
+          cacheCreation: 0,
+        },
+      });
+    }
+  }
+  return { kind: 'observed', records };
+}
+
 export const reasonixAdapter: HarnessAdapter = {
   name: 'reasonix',
   versionCommand: ['reasonix', '--version'],
@@ -385,4 +460,5 @@ export const reasonixAdapter: HarnessAdapter = {
    */
   approveKeys: { yes: ['1'], no: ['Escape'] },
   health: reasonixHealth,
+  usage: reasonixUsage,
 };

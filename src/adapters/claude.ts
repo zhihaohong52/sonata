@@ -1,4 +1,6 @@
-import type { HarnessAdapter, LaunchPlan, PlanInput } from './types.js';
+import { join } from 'node:path';
+import type { HarnessAdapter, LaunchPlan, PlanInput, UsageQuery, UsageRecord, UsageResult } from './types.js';
+import { asRecord, count, epochMs, filesIn, readJsonl } from './usage-files.js';
 import { isAnthropicRoutedName, isReadOnlyRole, loadConfig } from '../config.js';
 import { joinCandidate } from '../effort.js';
 import { homedir } from 'node:os';
@@ -42,6 +44,9 @@ function buildScript(input: PlanInput): LaunchPlan {
   // "allowedTools" rules, and `-p` then had no prompt argument left at all.
   // The `=` form binds exactly one value and does not swallow what follows.
   if (readOnly) flags.push('--allowedTools=Read,Grep,Glob,Bash');
+  // The session id sonata chose, so the run's transcript — and the router's
+  // ledger rows, which record Claude Code's session id — name this run.
+  if (input.sessionId !== undefined) flags.push(`--session-id ${shellQuote(input.sessionId)}`);
 
   // Resolve the actual router URL from config rather than inheriting from
   // the parent env — the parent is typically an unproxied session where
@@ -91,6 +96,53 @@ function buildScript(input: PlanInput): LaunchPlan {
   return { script, interactive: false, canWriteReport: !readOnly, silentUntilExit: true, effortHonoured };
 }
 
+/**
+ * A finished run's usage.
+ *
+ * When the config has a native section, `plan` pointed the run at sonata's
+ * router, which already wrote a ledger row for every request — reading the
+ * transcript as well would count each token twice, so the answer is `router`
+ * and the rows are found by session id. Otherwise the run spoke to Anthropic
+ * directly and the transcript is the only record: every assistant line
+ * carries its request's `message.usage`, and a streamed message can be
+ * written more than once under one `message.id`, so the last copy wins.
+ */
+export function claudeUsage(query: UsageQuery): UsageResult {
+  let routed = false;
+  try {
+    routed = loadConfig(query.cwd, query.home).native !== undefined;
+  } catch {
+    // No loadable config: the plan could not have routed it either.
+  }
+  if (routed) return { kind: 'router', session: query.sessionId };
+  if (query.sessionId === undefined) {
+    return { kind: 'unobservable', reason: 'the run was launched before sonata named its claude session' };
+  }
+  const name = `${query.sessionId}.jsonl`;
+  const [path] = filesIn(join(query.home, '.claude', 'projects'), () => true)
+    .flatMap((dir) => filesIn(dir, (file) => file === name));
+  if (path === undefined) return { kind: 'unobservable', reason: 'no claude transcript was written for this run' };
+  const byMessage = new Map<string, UsageRecord>();
+  for (const line of readJsonl(path)) {
+    const entry = asRecord(line);
+    const message = asRecord(entry?.message);
+    const usage = asRecord(message?.usage);
+    if (entry?.type !== 'assistant' || usage === undefined) continue;
+    const id = typeof message?.id === 'string' ? message.id : `${byMessage.size}`;
+    byMessage.set(id, {
+      ts: new Date(epochMs(entry.timestamp) ?? query.endMs).toISOString(),
+      model: typeof message?.model === 'string' ? message.model : undefined,
+      tokens: {
+        input: count(usage.input_tokens),
+        output: count(usage.output_tokens),
+        cacheRead: count(usage.cache_read_input_tokens),
+        cacheCreation: count(usage.cache_creation_input_tokens),
+      },
+    });
+  }
+  return { kind: 'observed', session: query.sessionId, records: [...byMessage.values()] };
+}
+
 export const claudeAdapter: HarnessAdapter = {
   name: 'claude',
   versionCommand: ['claude', '--version'],
@@ -104,4 +156,5 @@ export const claudeAdapter: HarnessAdapter = {
   },
   approveKeys: { yes: [], no: [] },
   fallbackReportFile: 'last-message.txt',
+  usage: claudeUsage,
 };

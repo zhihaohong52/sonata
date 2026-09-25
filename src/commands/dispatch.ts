@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { loadConfig, harnessModelFor, resolveTierAlias } from '../config.js';
 import { joinCandidate, splitCandidate, type Effort } from '../effort.js';
+import { budgetRefusal, dispatchBudgetStatuses } from '../budget.js';
 import { cmdRun } from './run.js';
 import type { RunOptions } from './run.js';
 import { cmdWait } from './wait.js';
@@ -25,6 +26,14 @@ export function truncateReport(report: string, id: string, max = MAX_REPORT_CHAR
   const provenance = markerIndex !== -1 ? report.slice(markerIndex) : '';
   const bodyMax = Math.max(0, max - provenance.length);
   return `${report.slice(0, bodyMax)}\n\n[truncated: full transcript at \`sonata log ${id}\`]${provenance}`;
+}
+
+/** A dispatch refused before launch because a `[budget] daily_usd` cap is reached. */
+export class BudgetRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BudgetRefusedError';
+  }
 }
 
 export interface DispatchOptions {
@@ -121,6 +130,13 @@ export async function cmdDispatch(
     candidates.push({ key, effort });
   }
 
+  // Before anything launches: a run cannot be stopped midway once its cap is
+  // reached, so the one place to honour the cap is here. Checked once, not per
+  // candidate — a fallback candidate is the same dispatch, not new spend
+  // sonata could have refused.
+  const refusal = budgetRefusal(dispatchBudgetStatuses(opts.cwd, opts.home));
+  if (refusal !== undefined) throw new BudgetRefusedError(refusal);
+
   const run = deps.run ?? cmdRun;
   const wait = deps.wait ?? cmdWait;
   const attempts: DispatchAttempt[] = [];
@@ -157,7 +173,7 @@ export async function cmdDispatch(
 
     let result: WaitResult;
     try {
-      result = await wait({ cwd: opts.cwd, id: launched.id });
+      result = await wait({ cwd: opts.cwd, id: launched.id, home: opts.home });
     } catch (err) {
       // The launch succeeded — the harness may still be running. Trying the
       // next candidate here would race it on the same working tree, so this

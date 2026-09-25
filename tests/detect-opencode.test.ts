@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WELL_KNOWN_PROVIDER_URLS, detectOpenCode } from '../src/detect.js';
+import { opencodeDbPath } from '../src/native/opencode-store.js';
+import { sqliteAvailable, writeOpencodeCredDb } from './opencode-db-fixture.js';
 
 describe('detectOpenCode', () => {
   afterEach(() => {
@@ -22,6 +24,40 @@ describe('detectOpenCode', () => {
 
     expect(status.installed).toBe(false);
     expect(status.problems).toEqual([]);
+  });
+
+  it.skipIf(!sqliteAvailable())('lists providers authenticated in either store, table included', async () => {
+    // v2 keeps logins in the `credential` table of opencode.db; auth.json is
+    // the v1 store and the fallback. A provider holding a live login only in
+    // the table was invisible here, so init never offered importing it.
+    const home = mkdtempSync(join(tmpdir(), 'sonata-detect-'));
+    const bin = mkdtempSync(join(tmpdir(), 'sonata-detect-bin-'));
+    writeFileSync(join(bin, 'opencode'), [
+      '#!/bin/sh',
+      'case "$1" in',
+      '--version) echo 1.18.16 ;;',
+      'models) echo openrouter/fake-model ;;',
+      'esac',
+    ].join('\n'));
+    chmodSync(join(bin, 'opencode'), 0o755);
+    vi.stubEnv('PATH', bin);
+
+    mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+    writeFileSync(
+      join(home, '.local', 'share', 'opencode', 'auth.json'),
+      JSON.stringify({ acme: { type: 'api', key: 'sk-fake' } }),
+    );
+    writeOpencodeCredDb(opencodeDbPath(home, {}), [
+      {
+        id: 'r1', integration: 'openrouter',
+        value: JSON.stringify({ type: 'key', key: 'sk-fake' }), timeCreated: 100,
+      },
+    ]);
+
+    const status = await detectOpenCode({ home, supportedVersions: '>=1.0.0 <2.0.0' });
+
+    expect(status.installed).toBe(true);
+    expect(status.authedProviders.sort()).toEqual(['acme', 'openrouter']);
   });
 });
 
