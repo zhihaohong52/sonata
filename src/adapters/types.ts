@@ -1,5 +1,6 @@
 import type { PermissionMode } from '../types.js';
 import type { Effort } from '../effort.js';
+import type { UsageTokens } from '../native/usage.js';
 
 export interface PlanInput {
   modelId: string;
@@ -14,6 +15,12 @@ export interface PlanInput {
    * harness runs at its own default — exactly today's request.
    */
   effort?: Effort;
+  /**
+   * A session id sonata chose for this run. A harness that accepts one
+   * (claude's `--session-id`) passes it on, so the run's usage can be found
+   * by id rather than guessed from a directory and a time window.
+   */
+  sessionId?: string;
 }
 
 export interface LaunchPlan {
@@ -56,6 +63,53 @@ export interface LaunchPlan {
   effortHonoured: boolean;
 }
 
+/**
+ * What a finished run's usage reader is given: where and when the harness ran.
+ *
+ * `startMs`/`endMs` bound the run — launch, and the exit sentinel's mtime,
+ * never the moment tail happened to notice the exit. `cwd` is the directory
+ * the harness was launched in, already canonicalised by the caller.
+ */
+export interface UsageQuery {
+  home: string;
+  cwd: string;
+  runDir: string;
+  startMs: number;
+  endMs: number;
+  /** The harness's own model id, as the adapter's `plan` received it. */
+  modelId: string;
+  /** Set when sonata told the harness which session id to use (claude). */
+  sessionId?: string;
+}
+
+/** One request's (or one cumulative session's) usage, as the harness recorded it. */
+export interface UsageRecord {
+  ts: string;
+  /** The model the harness says served it, when it says. */
+  model?: string;
+  tokens: UsageTokens;
+  /**
+   * The cost the harness itself computed, in USD, when it reports one and
+   * reports it completely. Absent is unknown, never zero.
+   */
+  costUsd?: number;
+}
+
+/**
+ * The answer every adapter must give about a finished run's tokens.
+ *
+ * - `observed`: the harness's own store held this run's usage.
+ * - `router`: the run's requests went through sonata's router, whose ledger
+ *   already recorded them — reading the harness's files too would count
+ *   every token twice.
+ * - `unobservable`: sonata could not attribute usage to this run, and says
+ *   why. Never folded in as zero: an unknown is not a free run.
+ */
+export type UsageResult =
+  | { kind: 'observed'; records: UsageRecord[]; session?: string }
+  | { kind: 'router'; session?: string }
+  | { kind: 'unobservable'; reason: string };
+
 export interface HarnessAdapter {
   name: string;
   versionCommand: string[];
@@ -91,6 +145,16 @@ export interface HarnessAdapter {
    * `sonata doctor`.
    */
   health?(env: { home: string; cwd: string }): Promise<HarnessProblem[]>;
+  /**
+   * The tokens a finished run spent, read from the harness's own store.
+   *
+   * Required, like `effortHonoured`: a new adapter must answer rather than
+   * inherit a silent "nothing". Harness knowledge — file layout, field names,
+   * cumulative vs per-request counters — lives here and nowhere else.
+   * Synchronous and never throwing: a store sonata cannot read is
+   * `unobservable`, not a failed run.
+   */
+  usage(query: UsageQuery): UsageResult;
 }
 
 export interface HarnessProblem {

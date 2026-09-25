@@ -1,12 +1,14 @@
 /**
- * `sonata usage` — what the native path actually consumed.
+ * `sonata usage` — what sonata's two lanes actually consumed.
  *
  * Two honesty constraints shape this file. Unpriced volume is reported beside
  * the total and never folded into it: a total that treats "unknown" as zero is
- * worse than no total. And this measures the *native* path only — a `sonata
- * dispatch` run executes in the foreign CLI's own process and never transits
- * the router, so its tokens are unobservable and the output says so rather than
- * presenting a partial figure as complete.
+ * worse than no total. And the two lanes are measured differently: a native
+ * request is observed in flight by the router, while a `sonata dispatch` run
+ * is read from the harness's own store once it finishes
+ * (`src/harness-usage.ts`) — one row per run, and none at all for a run whose
+ * usage could not be attributed, which `sonata runs` shows rather than this
+ * report guessing at.
  */
 import { existsSync } from 'node:fs';
 import { parseArgs } from 'node:util';
@@ -17,10 +19,10 @@ import { loadModelsDev } from '../modelsdev.js';
 import { readRows, type LedgerRow } from '../ledger.js';
 import { loadSessions, type SessionRecord } from '../sessions.js';
 
-export type UsageDimension = 'model' | 'role' | 'tier' | 'effort' | 'gateway' | 'session' | 'project';
+export type UsageDimension = 'model' | 'role' | 'tier' | 'effort' | 'gateway' | 'lane' | 'session' | 'project';
 
 /** Every `--by` value, in the order the usage screen cycles through them. */
-export const USAGE_DIMENSIONS: readonly UsageDimension[] = ['model', 'role', 'tier', 'effort', 'gateway', 'session', 'project'];
+export const USAGE_DIMENSIONS: readonly UsageDimension[] = ['model', 'role', 'tier', 'effort', 'gateway', 'lane', 'session', 'project'];
 
 /** `sonata usage`'s flags, validated. */
 export interface UsageFlags {
@@ -221,7 +223,11 @@ export function labelOf(
     // cost-per-task moving against the no-level rows is the only evidence
     // available that a level did anything at all.
     case 'effort': return row.effort ?? 'none sent';
-    case 'gateway': return row.gateway ?? row.upstream;
+    // A dispatch run has no gateway sonata chose; the harness it ran in is
+    // the closest honest answer, and naming the lane keeps it from reading as
+    // a gateway called "codex".
+    case 'gateway': return row.upstream === 'harness' ? `${row.harness ?? 'harness'} (dispatch)` : row.gateway ?? row.upstream;
+    case 'lane': return row.upstream === 'harness' ? 'dispatch' : 'native';
     case 'session': return row.session ?? 'unknown';
     case 'project': {
       const cwd = row.project ?? (row.session === undefined ? undefined : sessions[row.session]?.cwd);

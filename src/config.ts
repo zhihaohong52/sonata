@@ -229,8 +229,8 @@ export interface SonataConfig {
    * A ceiling on what the router forwards in a UTC day, in US dollars.
    *
    * Absent means no cap, which is every existing config. Enforcement, and the
-   * two limits it inherits — priced volume only, native path only — live in
-   * `src/budget.ts`.
+   * two limits it inherits — priced volume only, and a dispatch run counted
+   * only once it finishes — live in `src/budget.ts`.
    */
   budget?: { dailyUsd: number };
   generate: { roles: Record<string, string[]> };

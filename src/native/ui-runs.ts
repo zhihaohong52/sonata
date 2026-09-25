@@ -2,10 +2,11 @@
  * The `kind: 'run'` half of the merged list: `sonata dispatch` runs.
  *
  * A run executes in the foreign CLI's own process against that CLI's own
- * credentials and never transits the router, so there is no ledger row for it
- * and its usage is `null` with a reason -- never `0`. Reading those numbers
- * out of each harness's own session store is feasible and deferred; see the
- * spec's "Deliberately not done".
+ * credentials and never transits the router. Its usage is read from the
+ * harness's own store once it finishes (`src/harness-usage.ts`) and written to
+ * the ledger, where the usage views already count it; this row therefore
+ * carries `usage: null` and says in `usageReason` what was recorded — never a
+ * `0` standing in for "not read".
  */
 import { existsSync, realpathSync } from 'node:fs';
 import * as fsp from 'node:fs/promises';
@@ -14,13 +15,27 @@ import { dirname, join } from 'node:path';
 import type { RunSummary } from '../commands/runs.js';
 import { sonataDir, runDir } from '../store.js';
 import { reportPathFor } from '../report-contract.js';
+import { readRecordedUsage } from '../harness-usage.js';
 import { loadSessions } from '../sessions.js';
 import { projectResolver } from '../commands/usage.js';
 import type { UiFilters } from './ui-usage.js';
 import type { UiDeps } from './ui.js';
 
+/** A run whose usage has not been read yet: it has not been tailed to completion. */
 export const RUN_USAGE_REASON =
-  'not observable: this run executed in the harness\'s own process and never transited the router';
+  'not read yet: a dispatch run\'s usage is recorded when it is tailed to completion';
+
+/** What a run's `usage.json` says, in words for the run row. */
+export function runUsageReason(cwd: string, id: string): string {
+  const recorded = readRecordedUsage(cwd, id);
+  if (recorded === undefined) return RUN_USAGE_REASON;
+  if (recorded.kind === 'router') return 'counted by the router: this run\'s requests are in the ledger under its session';
+  if (recorded.kind === 'unobservable') return `not observable: ${recorded.reason}`;
+  const t = recorded.tokens;
+  const tokens = t.input + t.output + t.cacheRead + t.cacheCreation;
+  const cost = recorded.price.source === 'none' ? 'unpriced' : `$${recorded.price.totalUsd.toFixed(4)}`;
+  return `recorded in the ledger: ${tokens} tokens, ${cost}`;
+}
 
 /** A bound on how many directories one page load may stat. */
 export const MAX_PROJECT_DIRS = 200;
@@ -259,7 +274,7 @@ async function allRunRows(deps: UiDeps): Promise<RunRow[]> {
         kind: 'run', id: run.id, project, cwd,
         role: run.role, model: run.model, state: run.state,
         degraded: run.degraded, started: run.started, report: run.report,
-        usage: null, usageReason: RUN_USAGE_REASON,
+        usage: null, usageReason: runUsageReason(cwd, run.id),
       });
     }
     // Newest first within the project, then capped. `MAX_RUN_ROWS` is a

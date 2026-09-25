@@ -21,6 +21,22 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   `avoid_gateways` — an unknown or duplicated gateway name is refused rather
   than silently ignored.
 
+- **`sonata dispatch` runs are measured, and count toward `[budget]`.** A
+  dispatch run never transits the router, so its tokens used to be reported as
+  not observable. Each harness keeps them on disk, and sonata now reads them
+  when a run finishes: codex's rollout file, opencode's database, pi's session
+  file, reasonix's daily stats, and — for a claude run that did not go through
+  the router — its transcript, found by the `--session-id` sonata now passes.
+  Each run becomes one ledger row, so `sonata usage` shows it (`--by lane`
+  splits dispatch from native) and `[budget] daily_usd` counts it;
+  `sonata dispatch` refuses to launch once a cap is reached. A run is never
+  guessed at: parallel dispatches into one directory are told apart by a
+  marker line naming the run that now ends every dispatch prompt, and a run
+  that still matches two sessions is reported unobservable, with the reason
+  shown on the run, and a run with no known price is recorded unpriced,
+  never free. A dispatch run is counted when it finishes, so one run can carry
+  spend past the cap.
+
 ### Fixed
 
 - **`sonata doctor`'s tier-freshness re-proposal applies `avoid_gateways`.**
