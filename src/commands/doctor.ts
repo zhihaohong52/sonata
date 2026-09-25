@@ -1097,11 +1097,15 @@ export async function cmdDoctor(
       .some((credential) => credential.origin === 'opencode.db');
     if (tableHoldsCredentials && existsSync(dbPath)) {
       try {
-        if ((statSync(dbPath).mode & 0o044) !== 0) {
+        const mode = statSync(dbPath).mode;
+        if ((mode & 0o044) !== 0) {
+          // Named exactly: a 0640 file is readable by its group, not by
+          // everyone, and the user judges the risk by which it is.
+          const who = (mode & 0o004) !== 0 ? 'world-readable' : 'group-readable';
           checks.push({
             name: 'opencode.db',
             ok: true,
-            detail: `opencode stores credentials in plaintext in a world-readable file — \`chmod 600\` ${dbPath} `
+            detail: `opencode stores credentials in plaintext in a ${who} file — \`chmod 600\` ${dbPath} `
               + '(sonata only reports this)',
           });
         }

@@ -655,6 +655,12 @@ base_url = "https://gateway.example/v1"
       expect(advisory?.ok).toBe(true);
       expect(advisory?.detail).toContain('chmod 600');
       expect(advisory?.detail).toContain('plaintext');
+      expect(advisory?.detail).toContain('world-readable');
+      // A file only its group can read is named as such, not as everyone's.
+      chmodSync(opencodeDbPath(home, {}), 0o640);
+      const group = (await cmdDoctor({ ...NO_CLIENT, cwd, home })).checks.find((c) => c.name === 'opencode.db');
+      expect(group?.detail).toContain('group-readable');
+      expect(group?.detail).not.toContain('world-readable');
     } finally {
       globalThis.fetch = originalFetch;
     }

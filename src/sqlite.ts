@@ -37,10 +37,21 @@ let cached: SqliteModule | null | undefined;
 
 function sqliteModule(): SqliteModule | null {
   if (cached !== undefined) return cached;
+  // Node 22 prints "SQLite is an experimental feature" to stderr the first
+  // time the module loads — into `sonata init`'s Ink screen and every hook's
+  // output. Only that one warning is dropped, and only for this load.
+  const emit = process.emitWarning;
+  process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
+    const message = typeof warning === 'string' ? warning : warning.message;
+    if (message.includes('SQLite is an experimental feature')) return;
+    (emit as (...args: unknown[]) => void).call(process, warning, ...rest);
+  }) as typeof process.emitWarning;
   try {
     cached = createRequire(import.meta.url)('node:sqlite') as SqliteModule;
   } catch {
     cached = null;
+  } finally {
+    process.emitWarning = emit;
   }
   return cached;
 }
@@ -50,8 +61,11 @@ function sqliteModule(): SqliteModule | null {
  * opened — never throws.
  */
 export function openReadOnlySync(path: string): ReadOnlyDb | undefined {
+  // Existence first: most machines have no opencode.db, and those must not
+  // load `node:sqlite` at all.
+  if (!existsSync(path)) return undefined;
   const sqlite = sqliteModule();
-  if (sqlite === null || !existsSync(path)) return undefined;
+  if (sqlite === null) return undefined;
   let opened: InstanceType<SqliteModule['DatabaseSync']> | undefined;
   try {
     opened = new sqlite.DatabaseSync(path, { readOnly: true });

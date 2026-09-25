@@ -159,7 +159,7 @@ export function UsageScreen({ cwd, home, by: initialBy = 'model', since: initial
       {notes.map((note) => (
         <Text key={note.text} wrap="truncate-end" color={palette[note.tone]}>{note.text}</Text>
       ))}
-      <Text wrap="truncate-end" color={palette.MUTED}>dispatch runs counted when they finish — `d` to lane splits them out</Text>
+      <Text wrap="truncate-end" color={palette.MUTED}>dispatch runs counted when they finish — press d until "by lane" to split them out</Text>
       <Box marginTop={1}>
         <Text wrap="truncate-end" color={palette.MUTED}>
           {`d by ${nextDimension(by)}   w ${windowLabel(nextWindow(since)).replace('last ', '')}   g ${project ? 'every project' : 'this project'}   esc back   q quit`}
