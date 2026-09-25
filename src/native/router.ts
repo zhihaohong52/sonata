@@ -719,6 +719,92 @@ export function stripForeignThinking(body: Buffer): Buffer {
   return Buffer.from(JSON.stringify({ ...payload, messages: out }));
 }
 
+function hasToolName(block: Record<string, unknown>): boolean {
+  return typeof block.name === 'string' && block.name.length > 0;
+}
+
+function resultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => (typeof part === 'object' && part !== null && typeof (part as { text?: unknown }).text === 'string'
+        ? (part as { text: string }).text : ''))
+      .join('');
+  }
+  return '';
+}
+
+/**
+ * Turn a tool call with no name — and the result answering it — into text.
+ *
+ * A model can emit one: measured on 2026-09-25 (#66), mimo-v2.6-pro through
+ * OpenRouter split one call's arguments into a second call whose name was
+ * empty. Claude Code runs it, answers "No such tool available", and then
+ * replays it on every later request of the conversation. OpenAI-format
+ * validation refuses a nameless tool call outright, so every upstream behind
+ * LiteLLM answers 400 — a 400 the fallback loop rightly treats as final, since
+ * the next candidate is sent the same transcript. The agent died on its very
+ * next turn, twice.
+ *
+ * Text, not deletion: the turn stays the same length and in the same order,
+ * a paired result can never be orphaned, and the model still reads that it
+ * made a call that went nowhere. Surviving tool_results are kept ahead of the
+ * note that replaces an orphaned one, because Anthropic requires a user turn's
+ * tool_result blocks to lead it.
+ *
+ * Applied on every path, direct included: a nameless call is invalid for any
+ * upstream. A body with nothing to repair is returned as the same buffer, so
+ * the byte-identical contract holds for every healthy request.
+ */
+export function repairNamelessToolCalls(body: Buffer): Buffer {
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(body.toString()) as Record<string, unknown>;
+  } catch {
+    return body;
+  }
+  const messages = payload.messages;
+  if (!Array.isArray(messages)) return body;
+
+  const removed = new Set<string>();
+  const assistantsRepaired = messages.map((message) => {
+    const record = typeof message === 'object' && message !== null ? message as Record<string, unknown> : undefined;
+    if (record?.role !== 'assistant' || !Array.isArray(record.content)) return message;
+    let touched = false;
+    const content = record.content.map((block) => {
+      const b = typeof block === 'object' && block !== null ? block as Record<string, unknown> : undefined;
+      if (b?.type !== 'tool_use' || hasToolName(b)) return block;
+      touched = true;
+      if (typeof b.id === 'string') removed.add(b.id);
+      return { type: 'text', text: '[sonata: removed a tool call with no name — it could not have run]' };
+    });
+    return touched ? { ...record, content } : message;
+  });
+  if (removed.size === 0) return body;
+
+  const repaired = assistantsRepaired.map((message) => {
+    const record = typeof message === 'object' && message !== null ? message as Record<string, unknown> : undefined;
+    if (record?.role !== 'user' || !Array.isArray(record.content)) return message;
+    const results: unknown[] = [];
+    const notes: unknown[] = [];
+    const rest: unknown[] = [];
+    let touched = false;
+    for (const block of record.content) {
+      const b = typeof block === 'object' && block !== null ? block as Record<string, unknown> : undefined;
+      if (b?.type === 'tool_result' && typeof b.tool_use_id === 'string' && removed.has(b.tool_use_id)) {
+        touched = true;
+        notes.push({ type: 'text', text: `[sonata: the removed call's result was: ${resultText(b.content)}]` });
+      } else if (b?.type === 'tool_result') {
+        results.push(block);
+      } else {
+        rest.push(block);
+      }
+    }
+    return touched ? { ...record, content: [...results, ...notes, ...rest] } : message;
+  });
+  return Buffer.from(JSON.stringify({ ...payload, messages: repaired }));
+}
+
 /**
  * Test seam: every scrap of per-candidate and per-conversation memory the
  * router accumulates. Sticky pins are cleared alongside the cooldowns because
@@ -1437,6 +1523,14 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       headers: { 'content-type': 'application/json' },
       body: anthropicErrorBody('rate_limit_error', refusal),
     };
+  }
+
+  // Once, ahead of every branch, so the tier loop, the bare-key path and the
+  // direct transport all see the same repaired transcript. See #66.
+  const repairedBody = repairNamelessToolCalls(req.body);
+  if (repairedBody !== req.body) {
+    deps.log?.(`router: model=${alias ?? '?'} — replaced a tool call with no name in the transcript`);
+    req = { ...req, body: repairedBody };
   }
 
   let startedAt = 0;

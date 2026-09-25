@@ -8,6 +8,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- **A model's malformed tool call no longer kills the agent on its next turn.**
+  A model can emit a tool call with an empty name (mimo-v2.6-pro did, through
+  OpenRouter). Claude Code keeps it in the conversation and sends it back on
+  every later request, which every OpenAI-format upstream refuses with a 400,
+  so the agent died immediately and no fallback could help. The router now
+  replaces that call, and its "No such tool available" result, with a short
+  note before forwarding. Requests without one are passed through unchanged.
+
 ## [0.13.0] - 2026-09-25
 
 ### Added
