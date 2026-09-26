@@ -6,7 +6,7 @@ import type { SonataConfig } from '../config.js';
 import type { LedgerRow } from '../ledger.js';
 import { SONATA_PROJECT_HEADER, TenantError } from './tenants.js';
 import { SONATA_TOKEN_HEADER, projectHintAuthorised } from './router-token.js';
-import type { Transport } from './providers.js';
+import { OPENCODE_SESSION_HEADER, type Transport } from './providers.js';
 import { joinCandidate, splitCandidate, wireEffort, type Effort } from '../effort.js';
 import { createUsageCollector, type UsageTokens, usageFromJsonBody } from './usage.js';
 import { handleUiRequest, type UiDeps } from './ui.js';
@@ -490,6 +490,25 @@ const CAPABILITY_400_SIGNATURES = [
   'No tool output found for function call',
   'Reasoning is mandatory',
 ] as const;
+
+/**
+ * 400 bodies that mean "this gateway cannot serve ANY request as sonata sends
+ * it" — a refusal about how the request was addressed, not its shape.
+ *
+ * Unlike `CAPABILITY_400_SIGNATURES` these need no run of three: every request
+ * to the gateway fails identically, so the first is proof, and waiting for a
+ * third means two agents die to learn what the first already said. They fall
+ * through at once and cool the whole gateway, since its sibling models are
+ * refused for the same reason.
+ *
+ * `MissingSessionID` is opencode.ai refusing a request without
+ * `x-opencode-session` (measured 2026-09-26). The router now sends one, so
+ * this is the backstop for when it cannot — a request with no messages and no
+ * Claude Code session, or a LiteLLM that stops forwarding the header — where a
+ * 400 would otherwise be terminal and kill every agent on a tier that ranks an
+ * opencode.ai model first.
+ */
+const UNSERVABLE_400_SIGNATURES = ['MissingSessionID'] as const;
 
 /** Module-level so a cooling-down key stays cool across requests. Test seam: `clearCooldowns()`. */
 const cooldowns = new Map<string, number>();
@@ -1005,6 +1024,25 @@ function litellmHeaders(headers: Record<string, string>, litellmKey: string): Re
 }
 
 /**
+ * Names the conversation to an upstream that routes by one.
+ *
+ * Set on every request to LiteLLM, which forwards it only to the model groups
+ * `litellmConfig` lists — opencode.ai's, which refuse a request without it.
+ * The value is the conversation key where there is one, because that is
+ * stable across a transcript's turns (what the upstream's prompt cache needs)
+ * and distinct between two subagents of one Claude session, which Claude
+ * Code's own session id is not. Failing that, the session id; failing both,
+ * nothing, and the upstream's refusal reaches the fallback below.
+ */
+function withSessionHeader(
+  headers: Record<string, string>,
+  conversation: string | undefined,
+): Record<string, string> {
+  const session = conversation ?? headers['x-claude-code-session-id'];
+  return session === undefined ? headers : { ...headers, [OPENCODE_SESSION_HEADER]: session };
+}
+
+/**
  * Forwards straight to an Anthropic-native gateway, no LiteLLM in the path.
  *
  * The body is passed through UNMODIFIED — no `flattenSystemBlocks`. An
@@ -1092,7 +1130,6 @@ async function routeTierRequest(
   }
 
   const now = deps.now ?? Date.now;
-  const headers = litellmHeaders(requestHeaders(req.headers), deps.litellmKey);
   const flattened = litellmBody(req.body);
   const ranked = resolved.routes.filter((route) => route.native !== undefined);
   const attempts: { key: string; status: number }[] = [];
@@ -1107,6 +1144,7 @@ async function routeTierRequest(
   // keeps a multi-turn agent on one model, which is what stops its transcript
   // growing extended-thinking blocks the next candidate would reject.
   const conversation = conversationKey(req.body, tenant.id, alias);
+  const headers = withSessionHeader(litellmHeaders(requestHeaders(req.headers), deps.litellmKey), conversation);
   const pinned = conversation === undefined ? undefined : stickyGet(conversation, now());
   // Two different questions, deliberately read from two fields. `lastServed`
   // is whose extended-thinking blocks the transcript carries, and stays true
@@ -1254,6 +1292,22 @@ async function routeTierRequest(
       // one-shot iterable — handing the caller the drained original would give
       // them an empty error. This mirrors the 500 path in `forwardToLitellm`.
       const bodyBuf = await bufferBody(response.body);
+      const unservable = response.status === 400
+        ? UNSERVABLE_400_SIGNATURES.find((signature) => bodyBuf.toString().includes(signature))
+        : undefined;
+      if (unservable !== undefined) {
+        attempts.push({ key: route.key, status: response.status });
+        cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+        const refusingGateway = gatewayOf(route);
+        if (refusingGateway !== undefined) {
+          providerCooldowns.set(providerCooldownKey(tenant, refusingGateway), now() + TIER_COOLDOWN_MS);
+        }
+        deps.log?.(
+          `router: ${route.key} refused (400 "${unservable}"), ` +
+          `cooling gateway ${refusingGateway ?? '?'} and trying next`,
+        );
+        continue;
+      }
       const fingerprint = response.status === 400
         ? capability400Fingerprint(bodyBuf.toString())
         : undefined;
@@ -1472,7 +1526,15 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     // request's config-change check can fire.
     deps.checkModelChange?.();
     return withUsageRecording(
-      await forwardToLitellm(body, litellmHeaders(headers, deps.litellmKey), req, deps),
+      await forwardToLitellm(
+        body,
+        withSessionHeader(
+          litellmHeaders(headers, deps.litellmKey),
+          alias === undefined ? undefined : conversationKey(req.body, tenant.id, alias),
+        ),
+        req,
+        deps,
+      ),
       {
         startedAt,
         session,

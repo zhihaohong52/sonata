@@ -8,6 +8,22 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- **OpenCode Zen and Go models work on the native path.** opencode.ai refuses
+  a request that names no conversation with 400 `MissingSessionID`, and
+  LiteLLM drops every client header it is not told to forward — so every
+  native request to an opencode.ai gateway failed, and none had ever
+  succeeded. The generated LiteLLM config now forwards client headers for
+  opencode.ai models only, and the router sends `x-opencode-session` set to
+  the conversation key (Claude Code's session id when there is none).
+  Verified live through LiteLLM 1.98.0: 400 without the header, 200 with it.
+- **A tier no longer dies on a gateway that refuses every request.** A 400 is
+  normally returned to the caller, so a tier ranking an opencode.ai model
+  first killed every agent that reached it — including agents already running
+  when the model above it hit a 5xx. `MissingSessionID` now falls through to
+  the next candidate on the first occurrence and cools the whole gateway.
+
 ## [0.13.0] - 2026-09-25
 
 ### Added

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 
-import { providerForBaseUrl } from './providers.js';
+import { providerForBaseUrl, requiresSessionHeader } from './providers.js';
 import type { NativeConfig, UnifiedModelConfig, SonataConfig } from '../config.js';
 
 export interface LiteLLMModelConfig {
@@ -20,7 +20,17 @@ export interface LiteLLMModelConfig {
 
 export interface LiteLLMConfig {
   model_list: LiteLLMModelConfig[];
-  litellm_settings: { drop_params: true; use_chat_completions_url_for_anthropic_messages: true };
+  litellm_settings: {
+    drop_params: true;
+    use_chat_completions_url_for_anthropic_messages: true;
+    /**
+     * The model groups LiteLLM forwards the client's `x-*` headers to. Absent
+     * when none need it: forwarding hands the upstream every `x-*` header
+     * Claude Code sent, so it is scoped to the endpoints that refuse a
+     * request without a session header rather than switched on globally.
+     */
+    model_group_settings?: { forward_client_headers_to_llm_api: string[] };
+  };
   general_settings: { master_key: string };
 }
 
@@ -103,8 +113,8 @@ function litellmModelEntry(
  * (see the comment on it below), and a third hand-inlined copy is a third place
  * it can silently stop matching.
  */
-function sharedSettings(masterKey: string): Pick<LiteLLMConfig, 'litellm_settings' | 'general_settings'> {
-  return {
+function sharedSettings(masterKey: string, forwardHeaders: string[] = []): Pick<LiteLLMConfig, 'litellm_settings' | 'general_settings'> {
+  const settings = {
     // LiteLLM 1.82+ silently routes any `openai/<id>` model hit through its
     // Anthropic /v1/messages passthrough to the OpenAI Responses API rather
     // than chat/completions (see _should_route_to_responses_api in
@@ -116,7 +126,11 @@ function sharedSettings(masterKey: string): Pick<LiteLLMConfig, 'litellm_setting
     // This flag is LiteLLM's own documented opt-out.
     litellm_settings: { drop_params: true, use_chat_completions_url_for_anthropic_messages: true },
     general_settings: { master_key: masterKey },
-  };
+  } as Pick<LiteLLMConfig, 'litellm_settings' | 'general_settings'>;
+  if (forwardHeaders.length > 0) {
+    settings.litellm_settings.model_group_settings = { forward_client_headers_to_llm_api: forwardHeaders };
+  }
+  return settings;
 }
 
 export function litellmConfig(
@@ -127,6 +141,9 @@ export function litellmConfig(
   const modelList = Object.entries(native.models).map(
     ([modelName, model]) => litellmModelEntry(modelName, model.gateway, model.id, native.gateways),
   );
+  const forwardHeaders = Object.entries(native.models)
+    .filter(([, model]) => requiresSessionHeader(native.gateways[model.gateway]?.baseUrl))
+    .map(([modelName]) => modelName);
 
   // Legacy native.models entries stay authoritative during migration: a
   // unified [models] entry sharing a key with one is skipped rather than
@@ -135,9 +152,10 @@ export function litellmConfig(
     if (modelName in native.models) continue;
     if (model.gateway === undefined || model.id === undefined) continue;
     modelList.push(litellmModelEntry(modelName, model.gateway, model.id, native.gateways));
+    if (requiresSessionHeader(native.gateways[model.gateway]?.baseUrl)) forwardHeaders.push(modelName);
   }
 
-  return { model_list: modelList, ...sharedSettings(masterKey) };
+  return { model_list: modelList, ...sharedSettings(masterKey, forwardHeaders) };
 }
 
 /**
@@ -153,6 +171,7 @@ export function litellmConfigForTenants(
   masterKey: string,
 ): LiteLLMConfig {
   const modelList: LiteLLMModelConfig[] = [];
+  const forwardHeaders: string[] = [];
   for (const { id, config } of tenants) {
     const native = config.native;
     if (native === undefined) continue;
@@ -160,8 +179,11 @@ export function litellmConfigForTenants(
     for (const entry of single.model_list) {
       modelList.push({ ...entry, model_name: `${id}/${entry.model_name}` });
     }
+    for (const name of single.litellm_settings.model_group_settings?.forward_client_headers_to_llm_api ?? []) {
+      forwardHeaders.push(`${id}/${name}`);
+    }
   }
-  return { model_list: modelList, ...sharedSettings(masterKey) };
+  return { model_list: modelList, ...sharedSettings(masterKey, forwardHeaders) };
 }
 
 export function litellmConfigYamlForTenants(

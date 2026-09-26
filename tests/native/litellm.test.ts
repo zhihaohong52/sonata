@@ -285,3 +285,50 @@ base_url = "https://b.example/v1"
     expect(litellmConfigForTenants([{ id: 'x', config: none }], 'sk').model_list).toEqual([]);
   });
 });
+
+describe('LiteLLM config — OpenCode session forwarding', () => {
+  // LiteLLM forwards a client's `x-*` headers upstream only for model groups
+  // listed here. opencode.ai refuses any request without `x-opencode-session`,
+  // so its models must be listed — and nothing else, since forwarding hands
+  // the upstream every `x-*` header Claude Code sent.
+  const cfg = () => litellmConfig({
+    models: {
+      mimo: { gateway: 'opencode-go', id: 'mimo-v2.6-pro', contextWindow: 1048576 },
+      glm: { gateway: 'zen', id: 'glm-5.3-flash', contextWindow: 1000000 },
+      flash: { gateway: 'acme', id: 'deepseek-v4-flash', contextWindow: 128000 },
+    },
+    gateways: {
+      'opencode-go': { baseUrl: 'https://opencode.ai/zen/go/v1', auth: 'api-key' },
+      zen: { baseUrl: 'https://opencode.ai/zen/v1', auth: 'api-key' },
+      acme: { baseUrl: 'https://gateway.acme.example/v1', auth: 'api-key' },
+    },
+    ports: { router: 4100, litellm: 4000 },
+    generate: {},
+  }, 'sk');
+
+  it('forwards client headers for every opencode.ai model, whatever the gateway is called', () => {
+    expect(cfg().litellm_settings.model_group_settings?.forward_client_headers_to_llm_api).toEqual(['mimo', 'glm']);
+  });
+
+  it('forwards nothing when no gateway is on opencode.ai', () => {
+    const none = litellmConfig({
+      models: { flash: { gateway: 'acme', id: 'x', contextWindow: 1 } },
+      gateways: { acme: { baseUrl: 'https://gateway.acme.example/v1', auth: 'api-key' } },
+      ports: { router: 4100, litellm: 4000 },
+      generate: {},
+    }, 'sk');
+    expect(none.litellm_settings.model_group_settings).toBeUndefined();
+  });
+
+  it('lists the namespaced names in a multi-tenant config', () => {
+    const t = parseConfig(`
+[models."mimo"]
+gateway = "opencode-go"
+id = "mimo-v2.6-pro"
+[native.gateways."opencode-go"]
+base_url = "https://opencode.ai/zen/go/v1"
+`);
+    const multi = litellmConfigForTenants([{ id: 'aaaaaaaaaaaa', config: t }], 'sk');
+    expect(multi.litellm_settings.model_group_settings?.forward_client_headers_to_llm_api).toEqual(['aaaaaaaaaaaa/mimo']);
+  });
+});

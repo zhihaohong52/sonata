@@ -47,6 +47,33 @@ export function providerForBaseUrl(gateway: string): LitellmProvider {
   return PROVIDER_FOR_GATEWAY[gateway] ?? 'openai';
 }
 
+/**
+ * The header opencode.ai routes a conversation by.
+ *
+ * OpenCode Go answers a request without one with 400 `MissingSessionID`
+ * ("Request is missing x-opencode-session and cannot be routed efficiently").
+ * Measured 2026-09-26 against `opencode.ai/zen/go/v1`: the identical body
+ * answered 200 once the header was set. Claude Code's own session header is
+ * accepted in its place, but LiteLLM drops every client header it is not told
+ * to forward, so on the native path the upstream saw neither.
+ */
+export const OPENCODE_SESSION_HEADER = 'x-opencode-session';
+
+/**
+ * Whether a gateway's upstream needs `OPENCODE_SESSION_HEADER` forwarded.
+ *
+ * Keyed by host, not by gateway name: a user may call an opencode.ai gateway
+ * anything, and the requirement belongs to the endpoint.
+ */
+export function requiresSessionHeader(baseUrl: string | undefined): boolean {
+  if (baseUrl === undefined) return false;
+  try {
+    return new URL(baseUrl).hostname === 'opencode.ai';
+  } catch {
+    return false;
+  }
+}
+
 
 /**
  * How sonata reaches a gateway.
