@@ -1024,22 +1024,34 @@ function litellmHeaders(headers: Record<string, string>, litellmKey: string): Re
 }
 
 /**
- * Names the conversation to an upstream that routes by one.
+ * Names the conversation to an upstream that routes by one, and sends LiteLLM
+ * no other client `x-*` header.
  *
- * Set on every request to LiteLLM, which forwards it only to the model groups
- * `litellmConfig` lists — opencode.ai's, which refuse a request without it.
- * The value is the conversation key where there is one, because that is
- * stable across a transcript's turns (what the upstream's prompt cache needs)
- * and distinct between two subagents of one Claude session, which Claude
- * Code's own session id is not. Failing that, the session id; failing both,
- * nothing, and the upstream's refusal reaches the fallback below.
+ * The session is set on every request to LiteLLM, which forwards it only to
+ * the model groups `litellmConfig` lists — opencode.ai's, which refuse a
+ * request without it. The value is the conversation key where there is one,
+ * because that is stable across a transcript's turns (what the upstream's
+ * prompt cache needs) and distinct between two subagents of one Claude
+ * session, which Claude Code's own session id is not. Failing that, the
+ * session id; failing both, nothing, and the upstream's refusal reaches the
+ * fallback below.
+ *
+ * Every other `x-*` header is dropped, AFTER the session is read from them:
+ * for those model groups LiteLLM forwards every client `x-*` header upstream,
+ * and Claude Code's session id and metadata are not a third party's business.
+ * Nothing on the LiteLLM path reads them — the router takes its own session
+ * from the incoming request, not from this copy.
  */
 function withSessionHeader(
   headers: Record<string, string>,
   conversation: string | undefined,
 ): Record<string, string> {
   const session = conversation ?? headers['x-claude-code-session-id'];
-  return session === undefined ? headers : { ...headers, [OPENCODE_SESSION_HEADER]: session };
+  const out = Object.fromEntries(
+    Object.entries(headers).filter(([name]) => !name.toLowerCase().startsWith('x-')),
+  );
+  if (session !== undefined) out[OPENCODE_SESSION_HEADER] = session;
+  return out;
 }
 
 /**
