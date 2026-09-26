@@ -23,6 +23,12 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   first killed every agent that reached it — including agents already running
   when the model above it hit a 5xx. `MissingSessionID` now falls through to
   the next candidate on the first occurrence and cools the whole gateway.
+- **A dispatch no longer fails to launch because another run just ended.** A
+  tmux server exits when its last session closes, and a `new-session` that
+  connects while it is exiting fails with "server exited unexpectedly" —
+  sonata's parallel dispatches share the user's server, so one run finishing
+  as another starts was enough. That failure is now retried, and only that
+  one. Reproduced 3 in 300 under session churn; 0 in 300 with the retry.
 
 ## [0.13.0] - 2026-09-25
 
