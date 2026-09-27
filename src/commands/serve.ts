@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 
 import { loadModelsDev } from '../modelsdev.js';
 import { spentTodayUsd, unreadableMachineBudget, type BudgetStatus } from '../budget.js';
-import { GLOBAL_CONFIG_RELATIVE, loadConfig, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
+import { GLOBAL_CONFIG_RELATIVE, loadConfig, nativeRouteFor, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
 import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
@@ -1188,6 +1188,7 @@ export async function cmdServe(
       projectHintToken: ensureRouterToken(opts.home),
       resolveTier: (alias, tenant) => tenant.config === undefined ? undefined : resolveTierAlias(tenant.config, alias),
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
+      resolveNative: (key, tenant) => tenant.config === undefined ? undefined : nativeRouteFor(tenant.config, key),
       budget: (tenant) => {
         const statuses = budgetStatusesFor({
           tenant,

@@ -70,6 +70,13 @@ export interface RouterDeps {
    */
   resolveGateway?: (key: string, tenant: RouterTenant) => string | undefined;
   /**
+   * Resolves a bare `--model <key>` request's key to its native route, so a
+   * key on a `direct` gateway is forwarded straight to that gateway — the same
+   * path a tier candidate takes — rather than to a LiteLLM that, on a
+   * direct-only config, is not running at all.
+   */
+  resolveNative?: (key: string, tenant: RouterTenant) => TierRoute['native'];
+  /**
    * Fire-and-forget: checks whether sonata.toml's model registry has changed
    * since litellm was last (re)started, restarting it if so. Called once per
    * litellm-bound router request — both a tier request and a direct
@@ -1526,6 +1533,37 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     : alias === undefined
       ? litellmBody(req.body)
       : withEffort(withModel(litellmBody(req.body), litellmModelName(tenant, alias)), bareEffort);
+
+  // A bare key on a direct gateway goes where a tier candidate on that
+  // gateway would: straight to it, with its own key and its own upstream id.
+  // Sending it to LiteLLM instead reaches nothing on a direct-only config
+  // (no child is started) and loses the direct path's pass-through contract
+  // on a mixed one.
+  const native = !anthropic && alias !== undefined ? deps.resolveNative?.(alias, tenant) : undefined;
+  if (native?.transport === 'direct' && alias !== undefined) {
+    deps.log?.(`${req.method} ${req.url} model=${requested ?? '?'} -> direct`);
+    return withUsageRecording(
+      await forwardDirect(
+        withEffort(withModel(req.body, native.id), bareEffort),
+        { baseUrl: native.baseUrl ?? '', key: deps.gatewayKeys?.(tenant)[native.gateway] ?? '' },
+        req,
+        deps,
+      ),
+      {
+        startedAt,
+        session,
+        project: tenant.project,
+        tenant: tenant.id,
+        alias,
+        key: alias,
+        gateway: native.gateway,
+        effort: bareEffort,
+        upstream: 'direct',
+        attempts: [],
+      },
+      deps,
+    );
+  }
 
   deps.log?.(`${req.method} ${req.url} model=${requested ?? '?'} -> ${upstream}`);
 
