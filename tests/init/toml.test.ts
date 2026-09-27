@@ -496,6 +496,37 @@ describe('nativeTomlFor — settings init must not silently drop', () => {
     expect(parseConfig(toml).native!.gateways.acme.provider).toBe('gemini');
   });
 
+  const gwCand = (gw: string, id: string): NativeCandidate => ({
+    key: `${gw}-${id}`, gateway: gw, id, contextWindow: 128000, baseUrl: `https://${gw}.example/v1`,
+    auth: 'api-key',
+  });
+
+  it("keeps an existing gateway's base_url over a candidate's", () => {
+    // A saved model's candidate carries the config's URL while a model a
+    // harness discovered carries the harness's, and the gateway map was filled
+    // per candidate — so whichever came last won, and a hand-edited base_url
+    // was silently replaced on re-init.
+    const existing = parseConfig([
+      'schema_version = 1',
+      '[native.gateways."acme"]',
+      'base_url = "https://edited.example/v1"',
+      '[models."acme-m"]',
+      'gateway = "acme"',
+      'id = "m"',
+      'context_window = 128000',
+    ].join('\n'));
+    const saved: NativeCandidate = { ...gwCand('acme', 'm'), baseUrl: 'https://edited.example/v1' };
+    const detected: NativeCandidate = { ...gwCand('acme', 'n'), baseUrl: 'https://harness.example/v1' };
+    const toml = nativeTomlFor({ code: [saved, detected] }, {}, undefined, {}, [], undefined, [], existing);
+    expect(parseConfig(toml).native!.gateways.acme.baseUrl).toBe('https://edited.example/v1');
+    expect(toml).not.toContain('harness.example');
+  });
+
+  it("takes a new gateway's base_url from its candidates", () => {
+    const toml = nativeTomlFor({ code: [gwCand('fresh', 'm')] }, {}, undefined, {}, [], undefined, [], parseConfig('schema_version = 1'));
+    expect(parseConfig(toml).native!.gateways.fresh.baseUrl).toBe('https://fresh.example/v1');
+  });
+
   it('keeps a provider written by a first run through a second', () => {
     // Run one writes `provider = "anthropic"` from a candidate's wireFormat.
     // The config it writes carries no `wire_format`, and the candidates init
