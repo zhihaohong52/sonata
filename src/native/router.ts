@@ -130,7 +130,21 @@ export interface RouterDeps {
    * unaffected by this feature existing.
    */
   ui?: UiDeps;
+  /**
+   * How much of an error body the router reads, and for how long, before it
+   * abandons the rest. Test seam; defaults to `ERROR_BODY_LIMITS`.
+   */
+  errorBodyLimits?: { maxBytes: number; timeoutMs: number };
 }
+
+/**
+ * An error body is read only to decide what to do next (a fingerprint, a
+ * rewrite) or to hand the caller the upstream's own message. Neither needs
+ * more than a megabyte, and neither is worth waiting on: an upstream that
+ * sends its error status and then stalls would otherwise hold the whole
+ * ranked fallback on one candidate, forever.
+ */
+export const ERROR_BODY_LIMITS = { maxBytes: 1024 * 1024, timeoutMs: 10_000 };
 
 export interface RouterRequest {
   method: string;
@@ -168,24 +182,72 @@ function responseHeaders(headers: Headers): Record<string, string> {
   );
 }
 
-async function* responseBody(body: ReadableStream<Uint8Array>): AsyncIterable<Uint8Array> {
+/**
+ * An upstream body as an async iterable that can also be cancelled.
+ *
+ * `cancel` exists because a generator suspended on a read cannot be stopped
+ * by `return()` — that waits for the pending read to settle, which for a
+ * stalled upstream is never. Cancelling the reader settles it at once.
+ */
+function responseBody(body: ReadableStream<Uint8Array>): AsyncIterable<Uint8Array> & { cancel(): void } {
   const reader = body.getReader();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      yield value;
+  async function* chunks(): AsyncIterable<Uint8Array> {
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        yield value;
+      }
+    } finally {
+      try { reader.releaseLock(); } catch { /* already released by a cancel */ }
     }
+  }
+  return Object.assign(chunks(), {
+    cancel: () => { reader.cancel().catch(() => { /* nothing left to tell */ }); },
+  });
+}
+
+/**
+ * Reads at most `maxBytes` of a body within `timeoutMs`, then abandons the
+ * rest — cancelling the upstream so its connection is released rather than
+ * left half-read. What was read is returned; `abandoned` says the body was
+ * cut short. A failing body ends the read with what arrived before it.
+ */
+async function readBounded(
+  body: AsyncIterable<Uint8Array> | Buffer,
+  limits: { maxBytes: number; timeoutMs: number },
+  keep: boolean,
+): Promise<{ buf: Buffer; abandoned: boolean }> {
+  if (Buffer.isBuffer(body)) return { buf: body.subarray(0, limits.maxBytes), abandoned: body.length > limits.maxBytes };
+  const iterator = body[Symbol.asyncIterator]();
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<'expired'>((resolve) => { timer = setTimeout(() => resolve('expired'), limits.timeoutMs); });
+  const abandon = (): void => {
+    (body as { cancel?: () => void }).cancel?.();
+    void Promise.resolve(iterator.return?.()).catch(() => { /* already failing */ });
+  };
+  try {
+    for (;;) {
+      const next = await Promise.race([iterator.next(), expired]);
+      if (next === 'expired') { abandon(); return { buf: Buffer.concat(chunks), abandoned: true }; }
+      if (next.done === true) return { buf: Buffer.concat(chunks), abandoned: false };
+      const chunk = Buffer.from(next.value);
+      const room = limits.maxBytes - bytes;
+      if (keep) chunks.push(chunk.subarray(0, Math.max(0, room)));
+      bytes += chunk.length;
+      if (bytes > limits.maxBytes) { abandon(); return { buf: Buffer.concat(chunks), abandoned: true }; }
+    }
+  } catch {
+    return { buf: Buffer.concat(chunks), abandoned: true };
   } finally {
-    reader.releaseLock();
+    clearTimeout(timer);
   }
 }
 
-async function drainBody(body: AsyncIterable<Uint8Array> | Buffer): Promise<void> {
-  if (Buffer.isBuffer(body)) return;
-  try {
-    for await (const _chunk of body) { /* discard */ }
-  } catch { /* the body failing to drain is not itself an error */ }
+async function drainBody(body: AsyncIterable<Uint8Array> | Buffer, deps: RouterDeps): Promise<void> {
+  await readBounded(body, deps.errorBodyLimits ?? ERROR_BODY_LIMITS, false);
 }
 
 /**
@@ -833,12 +895,9 @@ function capability400Fingerprint(body: string): string | undefined {
   return CAPABILITY_400_SIGNATURES.find((signature) => body.includes(signature));
 }
 
-/** Reads a response body into a Buffer, leaving it readable by the caller. */
-async function bufferBody(body: AsyncIterable<Uint8Array> | Buffer): Promise<Buffer> {
-  if (Buffer.isBuffer(body)) return body;
-  const chunks: Buffer[] = [];
-  for await (const chunk of body) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks);
+/** Reads a response body into a Buffer, bounded by `ERROR_BODY_LIMITS`. */
+async function bufferBody(body: AsyncIterable<Uint8Array> | Buffer, deps: RouterDeps): Promise<Buffer> {
+  return (await readBounded(body, deps.errorBodyLimits ?? ERROR_BODY_LIMITS, true)).buf;
 }
 
 /**
@@ -1059,7 +1118,7 @@ async function forwardToLitellm(
     if (response.status === 500) {
       const responseBodyBuf = response.body === null
         ? Buffer.alloc(0)
-        : Buffer.concat(await async function() { const chunks: Buffer[] = []; for await (const c of responseBody(response.body!)) chunks.push(Buffer.from(c)); return chunks; }());
+        : await bufferBody(responseBody(response.body), deps);
       const text = responseBodyBuf.toString();
       if (text.includes('Unknown items in responses API response')) {
         const msg = 'upstream returned empty completion (overloaded) — retry';
@@ -1346,7 +1405,7 @@ async function routeTierRequest(
     // Only >= 400 is considered: a 3xx never arrives (fetch follows
     // redirects) and a 2xx that is not 200 — 204, say — is a success.
     if (response.status >= 400 && !TERMINAL_STATUSES.has(response.status)) {
-      await drainBody(response.body);
+      await drainBody(response.body, deps);
       attempts.push({ key: route.key, status: response.status });
       cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
       // An account-level refusal is about the gateway, not this model, so it
@@ -1385,7 +1444,7 @@ async function routeTierRequest(
       // Buffered because deciding requires reading the body, and the body is a
       // one-shot iterable — handing the caller the drained original would give
       // them an empty error. This mirrors the 500 path in `forwardToLitellm`.
-      const bodyBuf = await bufferBody(response.body);
+      const bodyBuf = await bufferBody(response.body, deps);
       const unservable = response.status === 400
         ? UNSERVABLE_400_SIGNATURES.find((signature) => bodyBuf.toString().includes(signature))
         : undefined;
