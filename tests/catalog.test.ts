@@ -17,6 +17,21 @@ import { splitCandidate } from '../src/effort.js';
 import type { InitEnvironment } from '../src/init/discover.js';
 
 describe('normalizeModelName', () => {
+  it('lets a configured gateway beat a shorter harness prefix it begins with', () => {
+    // The harness pass ran first and at most once, so `opencode-go-…` lost
+    // `opencode-` as a harness and kept `go-` — a name AA files nothing under.
+    const gateways = ['opencode', 'opencode-go'];
+    expect(normalizeModelName('opencode-go-kimi-k3', gateways)).toBe('kimi-k3');
+    expect(normalizeModelName('opencode-go-kimi-k3-free', gateways)).toBe('kimi-k3-free');
+    // The shorter one still strips where it is the whole prefix.
+    expect(normalizeModelName('opencode-kimi-k3', gateways)).toBe('kimi-k3');
+    // A key is `<gateway>-<id>`, so a gateway match ends stripping: an id that
+    // begins with the gateway's own name keeps it.
+    expect(normalizeModelName('deepseek-deepseek-v4-pro', ['deepseek'])).toBe('deepseek-v4-pro');
+    // A harness match still goes on to strip the provider after it.
+    expect(normalizeModelName('opencode-acme-kimi-k3', ['acme'])).toBe('kimi-k3');
+  });
+
   it('strips harness/provider prefixes and date suffixes', () => {
     expect(normalizeModelName('acme-deepseek-v4-flash-0731', ['acme'])).toBe('deepseek-v4-flash');
     expect(normalizeModelName('opencode-acme-deepseek-v4-pro-0813', ['acme'])).toBe('deepseek-v4-pro');
