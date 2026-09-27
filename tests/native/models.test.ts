@@ -100,10 +100,12 @@ describe('fetchModels', () => {
       .toEqual({ outcome: 'unreachable' });
   });
 
-  it('reports a 200 whose body is not JSON as unreachable', async () => {
+  it('reports a 200 whose body is not JSON as unreadable, not unreachable', async () => {
+    // The endpoint answered, so "unreachable" misdescribes it: the body would
+    // not parse, which is exactly what `unreadable` means.
     const notJson = (async () => new Response('<html>hi</html>', { status: 200 })) as unknown as typeof fetch;
     expect(await fetchModels('https://api.example.com/v1', 'sk-test', { fetch: notJson }))
-      .toEqual({ outcome: 'unreachable' });
+      .toEqual({ outcome: 'unreadable' });
   });
 
   it('reports a payload with no data array as unreadable', async () => {
