@@ -104,7 +104,7 @@ export interface RouterDeps {
    * Receives one row per request. Each invocation is isolated from routing so
    * accounting trouble can only lose its own row, never a client response.
    */
-  recordUsage?: (row: LedgerRow) => void;
+  recordUsage?: (row: LedgerRow, config?: SonataConfig) => void;
   /**
    * The daily cap and the spend against it, or `undefined` when no cap is
    * configured. Called once per request rather than read at startup, so a cap
@@ -334,6 +334,12 @@ interface RecordContext {
   session?: string;
   project?: string;
   tenant?: string;
+  /**
+   * The tenant's config as it was when the request was routed — handed to
+   * the recorder so the row is priced under the rules the request ran under,
+   * not whatever the file says when the stream ends.
+   */
+  tenantConfig?: SonataConfig;
 }
 
 function headerNumber(headers: Record<string, string>, name: string): number | undefined {
@@ -384,7 +390,7 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
           litellm: fallbacks === undefined && retries === undefined
             ? undefined
             : { fallbacks: fallbacks ?? 0, retries: retries ?? 0 },
-        });
+        }, ctx.tenantConfig);
       } catch { /* Accounting is strictly best-effort. */ }
     };
 
@@ -1502,6 +1508,7 @@ async function routeTierRequest(
         session,
         project: tenant.project,
       tenant: tenant.id,
+      tenantConfig: tenant.config,
         alias,
         role: resolved.role,
         tier: resolved.tier,
@@ -1534,6 +1541,7 @@ async function routeTierRequest(
       session,
       project: tenant.project,
       tenant: tenant.id,
+      tenantConfig: tenant.config,
       alias,
       role: resolved.role,
       tier: resolved.tier,
@@ -1577,6 +1585,7 @@ async function routeTierRequest(
     session,
     project: tenant.project,
     tenant: tenant.id,
+      tenantConfig: tenant.config,
     alias,
     role: resolved.role,
     tier: resolved.tier,
@@ -1706,6 +1715,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
         session,
         project: tenant.project,
         tenant: tenant.id,
+      tenantConfig: tenant.config,
         alias,
         key: alias,
         gateway: native.gateway,
@@ -1742,6 +1752,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
         session,
         project: tenant.project,
       tenant: tenant.id,
+      tenantConfig: tenant.config,
         alias: alias ?? '',
         // For a direct `--model <key>` request, `alias` IS the config key.
         // Recording it (and its gateway) is what lets `resolvePrice` price this
@@ -1768,14 +1779,16 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       status: response.status,
       headers: responseHeaders(response.headers),
       body: response.body === null ? Buffer.alloc(0) : responseBody(response.body),
-    }, { startedAt, session, project: tenant.project, tenant: tenant.id, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
+    }, { startedAt, session, project: tenant.project, tenant: tenant.id,
+      tenantConfig: tenant.config, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return withUsageRecording({
       status: 502,
       headers: { 'content-type': 'application/json' },
       body: anthropicErrorBody('router_error', message),
-    }, { startedAt, session, project: tenant.project, tenant: tenant.id, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
+    }, { startedAt, session, project: tenant.project, tenant: tenant.id,
+      tenantConfig: tenant.config, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   }
 }
 
