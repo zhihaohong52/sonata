@@ -63,6 +63,33 @@ on one branch; the rest are recorded here as the backlog.
 
 ## Backlog
 
+> **Resolved 2026-09-28 (branch `fix/audit-backlog`).** Every entry below was
+> re-verified by Claude Opus agents against `main` at 7642c83 — the audit was
+> a foreign-model pass, so the verification used the other family — with a
+> verdict per entry and repros where cheap. None was refuted; two were already
+> fixed by PR #70 (`[native.ports]`, the watchdog kill order); several were
+> re-rated, mostly downward (e.g. both Money P1s → P2). The Opus agents then
+> fixed every confirmed or partial entry test-first, one commit each, on
+> `audit/{routing,router,dispatch,config,money}`, merged into
+> `fix/audit-backlog`. Notable corrections to the entries as written:
+> - *Router, first entry:* the codex 429 cooling the whole gateway was
+>   correct — it was an account usage cap with ~3 h left. The defect was the
+>   terminal message-less 400. ~30 probes (up to ~318k tokens, metadata,
+>   Claude Code's schema shapes, 129 tools) all returned 200, so the trigger
+>   is still unidentified; the router now falls through a message-less 400
+>   on first sight, logs every terminal 400, and can capture the outbound
+>   body (`SONATA_CAPTURE_400_DIR`) to identify it.
+> - *Dispatch, claude read-only Bash:* `--allowedTools` only pre-approves, so
+>   the fix restricts the tool set with `--tools=Read,Grep,Glob`; not yet
+>   verified by a live run.
+> - *Router, conversation collisions:* once a conversation has been served by
+>   more than one candidate, thinking blocks are stripped on every later
+>   turn, including the current candidate's own — the accepted cost of never
+>   sending foreign blocks.
+>
+> The entries are kept below as the record of what was found.
+
+
 ### Routing and serve
 - **P1** Router cannot start on a project-only machine: `~/.config/sonata` is
   created before `existsSync` picks the daemon cwd (`serve.ts:1313-1327`).
