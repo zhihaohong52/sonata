@@ -9,7 +9,9 @@ import { createRun, runDir, writeMeta } from '../store.js';
 import { loadRole, composeInstructions } from '../roles.js';
 import { reportPathFor } from '../report-contract.js';
 import { readPermissionMode } from '../mode.js';
-import { newSession, runScript } from '../tmux.js';
+import { newSession, runScript, tryCapturePane } from '../tmux.js';
+import { cleanPane } from '../normalize.js';
+import type { RunMeta } from '../types.js';
 import { wrapWithTimeout } from '../watchdog.js';
 import { isSonataRouter, preMultiTenantMessage, sonataRouterMultiTenant, startServeDaemon } from './serve.js';
 import { homedir } from 'node:os';
@@ -87,6 +89,25 @@ export function exposesSonataTools(cwd: string): boolean {
     // An unreadable .mcp.json is not sonata's to repair, and guessing that it
     // exposes nothing would be the unsafe direction.
     return true;
+  }
+}
+
+/**
+ * The pane once the shell has drawn its prompt: non-empty and unchanged across
+ * two captures. A fresh session's shell is still loading its rc files when
+ * `new-session` returns, so one immediate capture is usually blank. Bounded,
+ * and an empty answer only means tail keeps its older filters.
+ */
+export async function settledPane(session: string, timeoutMs = 3_000, pollMs = 50): Promise<string[]> {
+  const deadline = Date.now() + timeoutMs;
+  let last: string[] | null = null;
+  for (;;) {
+    const raw = await tryCapturePane(session);
+    const lines = raw === null ? [] : cleanPane(raw);
+    if (lines.length > 0 && last !== null && lines.join('\n') === last.join('\n')) return lines;
+    last = lines;
+    if (Date.now() >= deadline) return lines;
+    await new Promise((r) => setTimeout(r, pollMs));
   }
 }
 
@@ -212,7 +233,7 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     worktreeCwd: isReadOnlyRole(opts.role) ? undefined : opts.cwd,
   }), { mode: 0o755 });
 
-  writeMeta(opts.cwd, {
+  const launched: RunMeta = {
     ...meta,
     interactive: plan.interactive,
     canWriteReport: plan.canWriteReport ?? true,
@@ -231,9 +252,14 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     // appearing between the two samples and every run would look changed,
     // which fails in the useless direction: never flagging anything.
     worktreeAtLaunch: isReadOnlyRole(opts.role) ? undefined : worktreeFingerprint(opts.cwd),
-  });
+  };
+  writeMeta(opts.cwd, launched);
 
   await newSession({ session: meta.session, cwd: opts.cwd });
+  // Before anything is typed: the shell's prompt, which it prints again when
+  // the wrapper exits, so tail can tell it from harness output.
+  const preLaunchPane = await settledPane(meta.session);
+  if (preLaunchPane.length > 0) writeMeta(opts.cwd, { ...launched, preLaunchPane });
   await runScript(meta.session, scriptPath);
 
   return { id: meta.id, session: meta.session, interactive: plan.interactive };

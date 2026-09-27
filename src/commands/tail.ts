@@ -63,6 +63,8 @@ export interface DecideInput {
    * started it — an exact string sonata wrote, not a guessed prompt pattern.
    */
   launchMarker?: string;
+  /** `RunMeta.preLaunchPane`: lines the shell showed before sonata typed anything. */
+  preLaunchPane?: string[];
   /**
    * True when the working tree is exactly where it was at launch, false when it
    * moved, `undefined` when the comparison could not be made (not a git
@@ -87,10 +89,21 @@ export interface DecideInput {
  * there. tmux echoes the launch command, and the shell prints a prompt around
  * it, so a pane that "has content" is not evidence a model ever spoke.
  */
-export function harnessOutput(paneTail: string[], launchMarker?: string): string[] {
+export function harnessOutput(
+  paneTail: string[],
+  launchMarker?: string,
+  preLaunchPane?: string[],
+): string[] {
+  // The pane is a live shell, so when the wrapper exits the shell prints its
+  // prompt again. That line is not the harness: counted as output, it made a
+  // read-only harness that exited 0 having said nothing read as a run that
+  // answered, with its prompt for a report. Any line the pane already showed
+  // before launch is the shell's, whether the prompt spans one line or three.
+  const shell = new Set((preLaunchPane ?? []).map((l) => l.trim()).filter((l) => l.length > 0));
   return paneTail.filter((line) => {
     const t = line.trim();
     if (t.length === 0) return false;
+    if (shell.has(t)) return false;
     if (launchMarker !== undefined && t.includes(launchMarker)) return false;
     // The watchdog foregrounds the harness job with `fg`, which echoes the
     // job's command line — `bash '<runDir>/harness.sh'`. That is sonata's own
@@ -135,7 +148,7 @@ export function decide(input: DecideInput): TailResult {
     // echo standing in for a report. That is the silent success this whole
     // design exists to prevent: nothing else downstream can tell the
     // difference between "answered" and "never ran".
-    const spoke = harnessOutput(input.paneTail, input.launchMarker).length > 0;
+    const spoke = harnessOutput(input.paneTail, input.launchMarker, input.preLaunchPane).length > 0;
     const reportImpossible = input.canWriteReport === false
       && input.report === null
       && input.exitCode === 0
@@ -214,7 +227,7 @@ export function decide(input: DecideInput): TailResult {
     // Only the two trusted branches can be empty: every degraded branch
     // already carries a verdict, and `dispatch` retries those anyway.
     const reportEmpty = !degraded && (reportImpossible
-      ? harnessOutput(input.paneTail, input.launchMarker).length === 0
+      ? harnessOutput(input.paneTail, input.launchMarker, input.preLaunchPane).length === 0
       : (input.report ?? '').trim().length === 0);
     return {
       state: 'DONE',
@@ -347,7 +360,7 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       exitCode = readExit(opts.cwd, opts.id);
     }
 
-    const output = harnessOutput(fresh, scriptPath);
+    const output = harnessOutput(fresh, scriptPath, meta.preLaunchPane);
     if (output.length > 0) {
       try {
         opts.onLines?.(output);
@@ -401,6 +414,7 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       canWriteReport: meta.canWriteReport,
       silentUntilExit: meta.silentUntilExit,
       launchMarker: scriptPath,
+      preLaunchPane: meta.preLaunchPane,
       worktreeUnchanged,
       effort: meta.effort,
       effortHonoured: meta.effortHonoured,
