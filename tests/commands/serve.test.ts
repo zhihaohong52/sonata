@@ -657,7 +657,7 @@ describe('defaultWaitForLitellm', () => {
  * count *stays* put keep their fixed sleep, since a poll would return
  * immediately and prove nothing.
  */
-async function waitFor(cond: () => boolean, what: string, timeoutMs = 2000): Promise<void> {
+async function waitFor(cond: () => boolean, what: string, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!cond()) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
@@ -893,7 +893,7 @@ litellm = ${litellmPort}
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     expect(changed.status).toBe(529);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(() => spawnCount === 2, 'the restarted litellm child');
     expect(spawnCount).toBe(2);
     expect(configs[1]).toContain('second-upstream');
 
@@ -956,7 +956,7 @@ litellm = ${litellmPort}
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     expect(response.status).toBe(529);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(() => spawnCount === 2, 'the restarted litellm child');
     expect(spawnCount).toBe(2);
   });
 
@@ -2774,7 +2774,7 @@ litellm = ${port}
     // spellings of one project cannot become two tenants.
     const projectId = tenantId(realpathSync(join(project, 'sonata.toml')));
     expect(forwarded).toEqual([`${projectId}/flash`]);
-    await new Promise((r) => setTimeout(r, 0));
+    await waitFor(() => configs.at(-1)?.includes(`${projectId}/flash`) === true, "the project's litellm config");
     expect(configs.at(-1)).toContain(`${projectId}/flash`);
     expect(configs.at(-1)).toContain('a-model');
   });
@@ -2812,7 +2812,7 @@ litellm = ${litellmPort}
       headers: { 'content-type': 'application/json', ...projectHeaders(project) },
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
-    await new Promise((r) => setTimeout(r, 0));
+    await waitFor(() => spawns === 1, 'the lazy litellm child');
     expect(spawns).toBe(1);
     const state = JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8'));
     expect(state.routerPid).toBe(process.pid);
@@ -2891,7 +2891,7 @@ litellm = ${litellmPort}
     // The live child now crashes on its own. The marker must not have leaked,
     // so this is seen as a crash and respawned.
     for (const cb of exitCbs.slice()) cb(1, null);
-    await new Promise((r) => setTimeout(r, 20));
+    await waitFor(() => spawns === 2, 'the respawned litellm child');
     expect(spawns).toBe(2);
   });
 
@@ -3048,7 +3048,7 @@ litellm = ${litellmPort}
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     await request();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(() => spawns === 1, 'the first lazy spawn');
     expect(spawns).toBe(1);
     const served = await request();
     expect(served.status).toBe(200);
