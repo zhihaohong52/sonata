@@ -571,6 +571,26 @@ describe('loadAaCatalog', () => {
     expect(hasTaskCost('costed', aa)).toBe(true);
   });
 
+  it('treats a zero or negative cost-per-task as uncosted, never as free', () => {
+    // A literal 0 used to be admitted, then ranked last in the value tiers
+    // (valueOf scores it 0, "unscored") and FIRST in complex (the cheapest
+    // price breaks a capability tie) — two opposite readings of one number.
+    const entry = (cost: number) => ({
+      intelligenceIndex: 50, codingIndex: 50, agenticIndex: 50, blendedPriceUsd: 1, costPerTask: cost,
+    });
+    const aa = { fetchedAt: new Date().toISOString(), models: {
+      'alpha-1': entry(0.5), 'beta-1': entry(0), 'gamma-1': entry(-1),
+    } } as unknown as AaCatalog;
+    expect(hasTaskCost('beta-1', aa)).toBe(false);
+    expect(hasTaskCost('gamma-1', aa)).toBe(false);
+    expect(hasTaskCost('alpha-1', aa)).toBe(true);
+    const tiers = proposeTiers(['alpha-1', 'beta-1', 'gamma-1'], aa);
+    for (const tier of [tiers.simple, tiers.normal, tiers.complex]) {
+      expect(tier.map((c) => c.split('@')[0])).toEqual(['alpha-1']);
+    }
+    expect(candidateLabel('beta-1', aa)).toContain('AA publishes no cost-per-task');
+  });
+
   it('keeps family and effort, and drops an effort that is not a known level', () => {
     const home = mkdtempSync(join(tmpdir(), 'sonata-aa-'));
     const path = aaCatalogPath(home);

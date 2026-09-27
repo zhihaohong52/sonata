@@ -607,8 +607,18 @@ export function hasTaskCost(
   // Finite, not merely present: a hand-edited or foreign-written cache can
   // carry `null`, a string or a NaN, and `.toFixed(3)` on the ranking label
   // throws on the first two while the third ranks on a meaningless number.
-  const cost = scoreFor(candidate, aa, providers, upstreamFor)?.costPerTask;
-  return typeof cost === 'number' && Number.isFinite(cost);
+  //
+  // And positive: a zero cost per task is missing data, not a free model —
+  // `valueOf` already reads it that way. Admitted, a literal 0 was ranked last
+  // in the value tiers (value 0, "unscored") and first in `complex`, where the
+  // cheapest price breaks a capability tie: two opposite readings of one
+  // number. Treating it as uncosted keeps it out of offering and ranking alike.
+  return isTaskCost(scoreFor(candidate, aa, providers, upstreamFor)?.costPerTask);
+}
+
+/** A usable AA cost per task: finite and positive. */
+function isTaskCost(cost: unknown): cost is number {
+  return typeof cost === 'number' && Number.isFinite(cost) && cost > 0;
 }
 
 /** Keep only candidates AA can compare on its dollars-per-task scale. */
@@ -744,7 +754,7 @@ export function candidateLabel(
   const head = effort === undefined ? key : `${key} @${effort}`;
   const entry = scoreFor(candidate, aa, providers, upstreamFor);
   if (entry === undefined) return head;
-  if (entry.costPerTask === undefined) return `${head}  (AA publishes no cost-per-task — add by hand to sonata.toml)`;
+  if (!isTaskCost(entry.costPerTask)) return `${head}  (AA publishes no cost-per-task — add by hand to sonata.toml)`;
   return `${head.padEnd(32)} ${reasoningOf(entry).toFixed(1).padStart(4)}  $${entry.costPerTask.toFixed(3)}/task`;
 }
 
