@@ -1117,6 +1117,25 @@ from = "16:30"
 base_url = "https://example.invalid/v1"
 `)).toThrow(/from.*to/i);
   });
+
+  // `inWindow` reads from == to as the empty interval, so such a window never
+  // applies and the flat rate is charged instead — silently, since nothing
+  // else says the window was ignored.
+  it('refuses a window whose from equals its to', () => {
+    expect(() => parseConfig(`
+[models."flash"]
+gateway = "acme"
+id = "x"
+
+[[models."flash".price.windows]]
+from = "09:00"
+to = "09:00"
+input = 1
+
+[native.gateways."acme"]
+base_url = "https://example.invalid/v1"
+`)).toThrow(/^sonata\.toml: .*empty window.*omit the window/);
+  });
 });
 
 describe('avoid_gateways', () => {

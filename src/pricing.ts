@@ -21,8 +21,9 @@ function hasRates(rates: Rates): boolean {
 }
 
 /**
- * UTC only. A window ending at or before its start wraps over midnight, so its
- * two matching ranges must be joined rather than treated as an empty interval.
+ * UTC only. A window ending before its start wraps over midnight, so its two
+ * matching ranges must be joined rather than treated as an empty interval. A
+ * window ending exactly at its start is empty; `parseConfig` refuses one.
  */
 export function inWindow(window: PriceWindow, at: Date): boolean {
   const time = at.getUTCHours() * 60 + at.getUTCMinutes();
