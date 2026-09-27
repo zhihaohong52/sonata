@@ -31,7 +31,13 @@ describe('cmdApprove', () => {
     await newSession({ session: SESSION, cwd });
     await sendKeys(SESSION, "printf 'Would you like to run the following command?\\n$ ls\\nPress Enter to confirm\\n'");
     await sendKeys(SESSION, 'Enter');
-    await new Promise((r) => setTimeout(r, 100));
+    // Wait for the prompt to be printed rather than for 100ms: the typed
+    // command line carries the same text, so the printed copy is the second.
+    const deadline = Date.now() + 10_000;
+    while (((await capturePane(SESSION)).match(/Press Enter to confirm/g) ?? []).length < 2) {
+      if (Date.now() > deadline) throw new Error('timed out waiting for the prompt to be printed');
+      await new Promise((r) => setTimeout(r, 25));
+    }
     await cmdApprove({ cwd, id: 'abc123', yes: true });
     await new Promise((r) => setTimeout(r, 500));
     expect(await capturePane(SESSION)).toContain('y');
