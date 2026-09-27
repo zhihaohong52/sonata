@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { UsageResult } from '../src/adapters/types.js';
 import { dispatchBudgetStatuses, spentTodayUsd } from '../src/budget.js';
@@ -160,11 +160,20 @@ describe('dispatch budget', () => {
   it('refuses before launching anything once a cap is reached', async () => {
     writeFileSync(join(cwd, 'sonata.toml'), `${CONFIG}\n[budget]\ndaily_usd = 1\n`);
     record(observed(0.75));
-    let launched = false;
-    await expect(cmdDispatch(
-      { cwd, home, model: 'kimi', task: 't', rolesDir: '/roles' },
-      { run: async () => { launched = true; throw new Error('unreachable'); } },
-    )).rejects.toBeInstanceOf(BudgetRefusedError);
-    expect(launched).toBe(false);
+    // `cmdDispatch` asks the real clock for "today", and the spend above is
+    // dated END — so without pinning the clock this test passed only on the
+    // UTC day it was written.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(END + 1000);
+    try {
+      let launched = false;
+      await expect(cmdDispatch(
+        { cwd, home, model: 'kimi', task: 't', rolesDir: '/roles' },
+        { run: async () => { launched = true; throw new Error('unreachable'); } },
+      )).rejects.toBeInstanceOf(BudgetRefusedError);
+      expect(launched).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
