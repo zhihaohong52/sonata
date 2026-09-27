@@ -10,6 +10,7 @@ const cmdServe: typeof realCmdServe = (opts) => realCmdServe({ refreshPrices: as
 import { managedLitellmPath, venvDir, LITELLM_VERSION } from '../../src/native/litellm-venv.js';
 import { parseConfig } from '../../src/config.js';
 import type { LedgerRow } from '../../src/ledger.js';
+import { freePort } from '../free-port.js';
 
 let home: string;
 const machineConfigPath = () => join(home, '.config', 'sonata', 'sonata.toml');
@@ -121,7 +122,7 @@ describe('cmdServe — ledger wiring', () => {
     return handle;
   }
 
-  const writeConfig = (litellmPort = 43123) => writeMachineConfig( `
+  const writeConfig = async (litellmPort?: number) => writeMachineConfig( `
 [models."flash"]
 gateway = "acme"
 id = "deepseek-v4-flash"
@@ -135,11 +136,11 @@ base_url = "https://gateway.example/v1"
 
 [native.ports]
 router = 0
-litellm = ${litellmPort}
+litellm = ${litellmPort ?? await freePort()}
 `);
 
   it('the router calls the injected recordUsage seam, with an unpriced row', async () => {
-    writeConfig();
+    await writeConfig();
     const rows: LedgerRow[] = [];
     const handle = await start((rec) => rows.push(rec));
 
@@ -163,7 +164,7 @@ litellm = ${litellmPort}
   });
 
   it('prunes old ledger day-files on startup', async () => {
-    writeConfig();
+    await writeConfig();
     const usageDir = join(home, '.config', 'sonata', 'usage');
     mkdirSync(usageDir, { recursive: true });
     const oldFile = join(usageDir, '2020-01-01.jsonl');
@@ -174,7 +175,7 @@ litellm = ${litellmPort}
   });
 
   it('prunes old session records on startup alongside the ledger', async () => {
-    writeConfig();
+    await writeConfig();
     const sessionsFile = join(home, '.config', 'sonata', 'sessions.json');
     mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
     writeFileSync(sessionsFile, JSON.stringify({
@@ -191,7 +192,7 @@ litellm = ${litellmPort}
   it('keeps pruning on a daily timer, not only at startup', async () => {
     // A daemon runs for weeks; pruning only as it started let day-files and
     // session records outlive the retention window for as long as it stayed up.
-    writeConfig();
+    await writeConfig();
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline'); }));
     try {
@@ -211,7 +212,7 @@ litellm = ${litellmPort}
   });
 
   it('serves even when pruning throws', async () => {
-    writeConfig();
+    await writeConfig();
     // A regular file where the day-file directory belongs makes pruneLedger's
     // readdirSync throw (ENOTDIR). Startup must still succeed and answer.
     mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
