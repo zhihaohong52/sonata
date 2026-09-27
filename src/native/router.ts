@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import { budgetRefusal, type BudgetStatus } from '../budget.js';
@@ -135,6 +137,12 @@ export interface RouterDeps {
    * abandons the rest. Test seam; defaults to `ERROR_BODY_LIMITS`.
    */
   errorBodyLimits?: { maxBytes: number; timeoutMs: number };
+  /**
+   * Where to write the outbound body of every 400 a tier candidate answers,
+   * one 0600 file per refusal. Unset (the default) writes nothing: bodies
+   * hold conversation content. `serve` sets it from `SONATA_CAPTURE_400_DIR`.
+   */
+  capture400Dir?: string;
 }
 
 /**
@@ -610,6 +618,71 @@ const CAPABILITY_400_SIGNATURES = [
   'No tool output found for function call',
   'Reasoning is mandatory',
 ] as const;
+
+/**
+ * Whether an upstream 400 names nothing at all about what was wrong: an empty
+ * body, or a JSON object with no `error`, `message` or `detail` in it — seen
+ * raw, or as the upstream detail LiteLLM's proxy embeds in its own envelope
+ * (`… Error code: 400 - <detail>. Received Model Group=…`, the detail absent
+ * when the upstream body was empty).
+ *
+ * The one definition; the tier loop's message-less fall-through keys on it.
+ */
+export function isMessagelessError(body: string): boolean {
+  const namesNothing = (detail: string): boolean => {
+    const text = detail.trim();
+    if (text === '') return true;
+    // Upstream detail is JSON raw, and a Python dict repr inside LiteLLM's
+    // message; both quote their keys, so one pattern reads both.
+    if (!text.startsWith('{')) return false;
+    return !/['"](error|message|detail)['"]\s*:/.test(text);
+  };
+  let doc: unknown;
+  try {
+    doc = JSON.parse(body);
+  } catch {
+    return namesNothing(body);
+  }
+  const message = (doc as { error?: { message?: unknown } } | null)?.error?.message;
+  if (typeof message === 'string') {
+    const wrapped = /Error code: 400(?: - ([\s\S]*?))?\. Received Model Group=/.exec(message);
+    return wrapped !== null && namesNothing(wrapped[1] ?? '');
+  }
+  return namesNothing(body);
+}
+
+/** The counter fingerprint a message-less 400 accumulates under. */
+const MESSAGELESS_400_FINGERPRINT = 'message-less 400';
+
+/**
+ * Writes one refused request to `dir` for later diagnosis: the outbound body
+ * exactly as the candidate received it, and the start of what it answered.
+ * Opt-in, owner-only, and never fatal — a capture that cannot be written is
+ * logged and the request carries on.
+ */
+function capture400(
+  deps: RouterDeps,
+  entry: { alias: string; candidate: string; status: number; outbound: Buffer; response: Buffer },
+): void {
+  const dir = deps.capture400Dir;
+  if (dir === undefined || dir === '') return;
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const name = `${stamp}-${entry.candidate.replace(/[^A-Za-z0-9@._-]/g, '_')}.json`;
+    let request: unknown;
+    try { request = JSON.parse(entry.outbound.toString()); } catch { request = entry.outbound.toString(); }
+    writeFileSync(join(dir, name), `${JSON.stringify({
+      alias: entry.alias,
+      candidate: entry.candidate,
+      status: entry.status,
+      response: entry.response.subarray(0, 4096).toString(),
+      request,
+    }, null, 2)}\n`, { mode: 0o600 });
+  } catch (error) {
+    deps.log?.(`router: could not capture a ${entry.status} to ${dir}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 /**
  * 400 bodies that mean "this gateway cannot serve ANY request as sonata sends
@@ -1293,6 +1366,11 @@ async function routeTierRequest(
   // against them reads as a tier that has no candidates rather than one whose
   // candidates are waiting out an account problem.
   const skippedCoolingProviders = new Set<string>();
+  // The most recent message-less 400, and how many attempts had been made
+  // when it arrived. If it is the LAST thing the loop saw, it is returned
+  // rather than a 529: a request every candidate refuses may really be
+  // malformed, and the caller should see the refusal itself.
+  let lastMessageless: { at: number; headers: Record<string, string>; body: Buffer; route: TierRoute } | undefined;
 
   // Which candidate already served this conversation, if any. Preferring it
   // keeps a multi-turn agent on one model, which is what stops its transcript
@@ -1451,6 +1529,9 @@ async function routeTierRequest(
       // one-shot iterable — handing the caller the drained original would give
       // them an empty error. This mirrors the 500 path in `forwardToLitellm`.
       const bodyBuf = await bufferBody(response.body, deps);
+      if (response.status === 400) {
+        capture400(deps, { alias, candidate: variant, status: response.status, outbound: body, response: bodyBuf });
+      }
       const unservable = response.status === 400
         ? UNSERVABLE_400_SIGNATURES.find((signature) => bodyBuf.toString().includes(signature))
         : undefined;
@@ -1467,9 +1548,19 @@ async function routeTierRequest(
         );
         continue;
       }
-      const fingerprint = response.status === 400
+      const capability = response.status === 400
         ? capability400Fingerprint(bodyBuf.toString())
         : undefined;
+      // A deliberate, shape-based exception to "signatures on evidence only":
+      // a 400 whose body names nothing says nothing about the request, so
+      // reading it as the request's fault is the less likely reading. It falls
+      // through on the FIRST occurrence — the agent survives — and cools the
+      // candidate only after the usual run of identical ones. Litellm path
+      // only, where it was measured: 10 of 10 real subagent requests to one
+      // candidate, while hand-built requests to it all succeeded.
+      const messageless = capability === undefined && !direct && response.status === 400
+        && isMessagelessError(bodyBuf.toString());
+      const fingerprint = messageless ? MESSAGELESS_400_FINGERPRINT : capability;
       const counterKey = fingerprint === undefined ? undefined : `${cool} ${fingerprint}`;
 
       if (counterKey !== undefined) {
@@ -1483,6 +1574,17 @@ async function routeTierRequest(
             `router: ${route.key} cannot serve this request shape ` +
             `(${seen}× 400 "${fingerprint}"), cooling down and trying next`,
           );
+          if (messageless) lastMessageless = { at: attempts.length, headers: response.headers, body: bodyBuf, route };
+          continue;
+        }
+        if (messageless) {
+          attempts.push({ key: route.key, status: response.status });
+          if (conversation !== undefined) stickyDemote(conversation, route.key);
+          deps.log?.(
+            `router: ${alias} ${variant} answered a message-less 400 (${seen}×): ` +
+            `${JSON.stringify(bodyBuf.subarray(0, 200).toString())} — trying next`,
+          );
+          lastMessageless = { at: attempts.length, headers: response.headers, body: bodyBuf, route };
           continue;
         }
       } else {
@@ -1499,6 +1601,10 @@ async function routeTierRequest(
       // lapses; the record of whose thinking blocks are in the transcript does
       // not, so the next candidate still gets them stripped.
       if (conversation !== undefined) stickyDemote(conversation, route.key);
+      deps.log?.(
+        `router: ${alias} ${variant} answered ${response.status} (terminal): ` +
+        JSON.stringify(bodyBuf.subarray(0, 200).toString()),
+      );
       return withUsageRecording({
         status: response.status,
         headers: response.headers,
@@ -1565,6 +1671,25 @@ async function routeTierRequest(
       headers: { 'content-type': 'application/json' },
       body: anthropicErrorBody('router_error', unavailable!),
     };
+  }
+  if (lastMessageless !== undefined && lastMessageless.at === attempts.length) {
+    const last = lastMessageless;
+    deps.log?.(`router: every native route for ${label} refused; returning the last 400`);
+    return withUsageRecording({ status: 400, headers: last.headers, body: last.body }, {
+      startedAt,
+      session,
+      project: tenant.project,
+      tenant: tenant.id,
+      tenantConfig: tenant.config,
+      alias,
+      role: resolved.role,
+      tier: resolved.tier,
+      key: last.route.key,
+      effort: last.route.effort,
+      gateway: last.route.native!.gateway,
+      upstream: last.route.native?.transport === 'direct' ? 'direct' : 'litellm',
+      attempts,
+    }, deps);
   }
   deps.log?.(`router: all native routes for ${label} failed`);
   const cooling = skippedCoolingProviders.size > 0
