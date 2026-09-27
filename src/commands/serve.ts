@@ -1,6 +1,6 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -642,6 +642,46 @@ function buildChildEnv(native: NativeConfig, home: string, tempDir: string): Nod
 /** Default bound on how long a model-registry restart waits for the old litellm child to exit (see `litellmExitTimeoutMs`). */
 const LITELLM_EXIT_TIMEOUT_MS = 5000;
 
+/** How often a running daemon re-applies ledger and session retention. */
+const RETENTION_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Prunes ledger day-files and session records past the retention window.
+ * Housekeeping: every failure is swallowed, since it must never block serving.
+ * The session prune is awaited so it does not race its own lock against a
+ * concurrent hook.
+ */
+async function pruneRetention(home: string): Promise<void> {
+  try {
+    const removed = pruneLedger(home, LEDGER_RETENTION_DAYS);
+    if (removed > 0) console.log(`ledger: pruned ${removed} day file(s) older than ${LEDGER_RETENTION_DAYS}d`);
+  } catch { /* housekeeping */ }
+  try {
+    const removedSessions = await pruneSessions(home, LEDGER_RETENTION_DAYS);
+    if (removedSessions > 0) console.log(`sessions: pruned ${removedSessions} record(s) older than ${LEDGER_RETENTION_DAYS}d`);
+  } catch { /* housekeeping */ }
+}
+
+/**
+ * SIGTERM, a bounded wait for the exit, then SIGKILL (once). Shared by the
+ * startup-failure path and `stop()`, so the two cannot drift apart again.
+ */
+async function terminateLitellm(
+  dying: SpawnedLitellm,
+  timeoutMs: number,
+  sleepFn: (ms: number) => Promise<void>,
+): Promise<void> {
+  const exited = new Promise<void>((resolve) => {
+    if (dying.onExit) dying.onExit(() => resolve());
+    else resolve();
+  });
+  dying.kill();
+  if (await raceTimeout(exited, timeoutMs, sleepFn)) {
+    console.error('sonata serve: litellm did not exit after SIGTERM — sending SIGKILL');
+    (dying.forceKill ?? dying.kill).call(dying);
+  }
+}
+
 /** Resolves `true` if `promise` had not settled after `timeoutMs`, `false` if it settled first. Never rejects. */
 async function raceTimeout(promise: Promise<void>, timeoutMs: number, sleepFn: (ms: number) => Promise<void>): Promise<boolean> {
   let timedOut = false;
@@ -1089,8 +1129,8 @@ export async function cmdServe(
         await litellmReady;
         return;
       }
-      // Only committed once the replacement config and credentials are
-      // successfully prepared below — not up front. A gateway added without
+      // Only committed once the replacement is ready (inside `litellmReady`
+      // below) — not up front, and not merely once its config is prepared. A gateway added without
       // its credential yet available makes `buildChildEnv` throw; if this
       // were set before that point, a later request (after the credential is
       // fixed) would see `freshModelsJson === activeModelsJson` and never
@@ -1104,7 +1144,6 @@ export async function cmdServe(
         // its direct ones keep serving from `gatewayKeys` — which is read off
         // `childEnv` and would otherwise still hold the pre-change credential.
         refreshGatewayKeys(mergedNative());
-        activeModelsJson = freshModelsJson;
         console.error('sonata serve: model registry changed — restarting litellm to pick it up...');
         const oldChild = child;
         expectedRestartChild = oldChild;
@@ -1147,6 +1186,11 @@ export async function cmdServe(
           if (stopping) return;
           child = spawnLitellmChild();
           await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
+          // Committed only once the replacement answers. Committed earlier, a
+          // replacement that never came up was never tried again: the next
+          // request saw no change and served a dead upstream until a manual
+          // `sonata restart`. Left uncommitted, the next check retries.
+          activeModelsJson = freshModelsJson;
         })().catch((error) => {
           console.error(`sonata serve: restarted litellm never came up: ${String(error)}`);
         });
@@ -1180,22 +1224,13 @@ export async function cmdServe(
       return inFlight;
     };
 
-    // Retention is enforced where the writer starts, so a long-lived daemon
-    // cannot accumulate day-files indefinitely the way opencode's event table
-    // did (6.5 GB, and not something sonata gets to repeat in its own store).
-    try {
-      const removed = pruneLedger(opts.home, LEDGER_RETENTION_DAYS);
-      if (removed > 0) console.log(`ledger: pruned ${removed} day file(s) older than ${LEDGER_RETENTION_DAYS}d`);
-    } catch { /* pruning is housekeeping; it never blocks serving */ }
-
-    // Same retention window, same defensive posture: a long-lived daemon must
-    // also expire the session->project map, not just the ledger it relies on.
-    // Awaited so `serve` does not race its own lock against a concurrent hook;
-    // its own failure is swallowed identically to the ledger prune above.
-    try {
-      const removedSessions = await pruneSessions(opts.home, LEDGER_RETENTION_DAYS);
-      if (removedSessions > 0) console.log(`sessions: pruned ${removedSessions} record(s) older than ${LEDGER_RETENTION_DAYS}d`);
-    } catch { /* pruning is housekeeping; it never blocks serving */ }
+    // Retention is enforced by the writer — at startup and then daily (the
+    // timer is started beside the price refresh below) — so a daemon that
+    // stays up for weeks cannot accumulate day-files the way opencode's event
+    // table did (6.5 GB, and not something sonata gets to repeat in its own
+    // store). Pruning only at startup let everything outlive the window for
+    // as long as the daemon lived.
+    await pruneRetention(opts.home);
 
     let litellmReadyResolved = !needsLitellmAtStart;
 
@@ -1326,18 +1361,7 @@ export async function cmdServe(
     //
     // Killing is unconditional and needs no grace period: this child never
     // became ready, so it is serving nothing and has nothing to flush.
-    const dying = child;
-    if (dying !== undefined) {
-      const exited = new Promise<void>((resolve) => {
-        if (dying.onExit) dying.onExit(() => resolve());
-        else resolve();
-      });
-      dying.kill();
-      if (await raceTimeout(exited, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep)) {
-        console.error('sonata serve: litellm did not exit after SIGTERM — sending SIGKILL');
-        (dying.forceKill ?? dying.kill).call(dying);
-      }
-    }
+    if (child !== undefined) await terminateLitellm(child, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep);
     // Clear the record while this process still owns the bound port. A
     // replacement cannot have written a new record until after close begins.
     if (router?.listening === true) clearFailedRouterRecord(opts.home, ports.router);
@@ -1364,6 +1388,10 @@ export async function cmdServe(
     update: opts.refreshPrices ?? (async (home) => updateModelsDev(home, fetch, {})),
     log: (line) => console.log(line),
   });
+  // Same posture as the price refresh: never delays a request, never holds the
+  // process open.
+  const retentionTimer = setInterval(() => { void pruneRetention(opts.home); }, RETENTION_INTERVAL_MS);
+  retentionTimer.unref?.();
 
   let stopped = false;
 
@@ -1376,8 +1404,14 @@ export async function cmdServe(
       // Before anything else: an interval firing during teardown would fetch
       // against a daemon that is going away.
       stopPriceRefresh();
+      clearInterval(retentionTimer);
       stopping = true;
-      child?.kill();
+      // SIGTERM, bounded wait, then SIGKILL — the startup-failure path's
+      // sequence, and BEFORE the state file naming its pid and the temp dir
+      // holding its config are removed. A bare SIGTERM left a SIGTERM-deaf
+      // child (one blocked on a device-code login) running as an orphan that
+      // nothing recorded any more.
+      if (child !== undefined) await terminateLitellm(child, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep);
       try { unlinkSync(serveStatePath(opts.home, ports.router)); } catch { /* already gone */ }
       try {
         await close(startedRouter);
@@ -1429,6 +1463,15 @@ export async function startServeDaemon(
 
   const port = routerPorts(home).router;
 
+  // A machine-wide daemon must start where its machine config is visible;
+  // otherwise a project-local sonata.toml can still win config resolution.
+  // Decided from the config FILE, and before the log mkdir below: that mkdir
+  // creates ~/.config/sonata, so asking about the directory afterwards always
+  // answered yes and a project-only machine started its router in a directory
+  // with no config at all — which `serve` refuses.
+  const machineConfigFile = join(home, GLOBAL_CONFIG_RELATIVE);
+  const daemonCwd = existsSync(machineConfigFile) ? dirname(machineConfigFile) : cwd;
+
   const logPath = timestampedLogPath(home, 'serve');
   mkdirSync(dirname(logPath), { recursive: true });
   const log = openSync(logPath, 'a');
@@ -1440,16 +1483,21 @@ export async function startServeDaemon(
   // against a leftover daemon (see the design doc for the reproduction).
   const instanceId = randomUUID();
 
-  // A machine-wide daemon must start where its machine config is visible;
-  // otherwise a project-local sonata.toml can still win config resolution.
-  const machineConfigDir = dirname(join(home, GLOBAL_CONFIG_RELATIVE));
-  const daemonCwd = existsSync(machineConfigDir) ? machineConfigDir : cwd;
-  const child = spawnFn(argv[0], argv.slice(1), {
-    detached: true,
-    stdio: ['ignore', log, log],
-    cwd: daemonCwd,
-    env: { ...process.env, SONATA_SERVE_INSTANCE_ID: instanceId },
-  });
+  // The child holds its own duplicate of the log fd once spawned, so the
+  // parent's copy is closed straight away — on every path, including a spawn
+  // that throws. Left open, a long-lived caller (`sonata code`, a route hook's
+  // CLI) leaked one fd per daemon start.
+  let child: ReturnType<typeof spawnFn>;
+  try {
+    child = spawnFn(argv[0], argv.slice(1), {
+      detached: true,
+      stdio: ['ignore', log, log],
+      cwd: daemonCwd,
+      env: { ...process.env, SONATA_SERVE_INSTANCE_ID: instanceId },
+    });
+  } finally {
+    closeSync(log);
+  }
   child.unref();
 
   const deadline = now() + timeoutMs;

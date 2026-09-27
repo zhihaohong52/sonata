@@ -38,12 +38,25 @@ async function readSessionId() {
  * exits 0 for the one expected failure (no config in this directory), so a
  * global hook stays silent where it has nothing to do.
  */
-function surface(code, stderr) {
-  const text = stderr.trim();
-  if (code === 0 || text === '') return;
+function surface(detail) {
   process.stdout.write(JSON.stringify({
-    systemMessage: `sonata route session-${phase} failed, so foreign-model tier agents will not route in this session:\n${text.slice(0, 2000)}`,
+    systemMessage: `sonata route session-${phase} failed, so foreign-model tier agents will not route in this session:\n${detail.slice(0, 2000)}`,
   }) + '\n');
+}
+
+/**
+ * Every non-zero ending is shown, not only one that explained itself: a CLI
+ * that died without a word (an uncaught crash with its output lost, a kill by
+ * signal) left routing just as broken, and the exit code or signal is then the
+ * only evidence there is.
+ */
+function surfaceExit(code, signal, stderr) {
+  if (code === 0) return;
+  const text = stderr.trim();
+  if (text !== '') return surface(text);
+  surface(signal !== null && signal !== undefined
+    ? `the CLI was killed by ${signal}, with no output`
+    : `the CLI ended with exit code ${code}, with no output`);
 }
 
 const sessionId = await readSessionId();
@@ -59,8 +72,10 @@ await new Promise((resolve) => {
     const child = spawn(process.execPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     const stderr = [];
     child.stderr.on('data', (chunk) => stderr.push(chunk));
-    child.on('exit', (code) => { surface(code, Buffer.concat(stderr).toString('utf8')); resolve(); });
-    child.on('error', resolve);
+    child.on('exit', (code, signal) => { surfaceExit(code, signal, Buffer.concat(stderr).toString('utf8')); resolve(); });
+    // A CLI that cannot be started at all (EAGAIN, EMFILE) is as unrouted as
+    // one that refused, and used to end here with nothing said.
+    child.on('error', (error) => { surface(`the CLI could not be started: ${error.message}`); resolve(); });
   } catch {
     resolve();
   }

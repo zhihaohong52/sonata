@@ -30,7 +30,8 @@ import {
 } from '../../src/commands/route.js';
 import { ensureRouterToken } from '../../src/native/router-token.js';
 import type { Settings, HookEntry } from '../../src/settings.js';
-import { readSettings } from '../../src/settings.js';
+import { readSettings, writeSettings as writeSettingsFile } from '../../src/settings.js';
+import { withSessionLock } from '../../src/filelock.js';
 import { loadConfig } from '../../src/config.js';
 
 /**
@@ -646,6 +647,23 @@ describe('cmdRouteSession', () => {
     expect((await cmdRoute('status', o))?.on).toBe(true);
   });
 
+  // A session that fires SessionStart again under its own id (resume,
+  // compaction) writes the env again. Kept at its old position it is not the
+  // newest registration, so its own settle returned early and the env stayed
+  // until every session ended — every later launch losing Remote Control.
+  it('moves a re-entering session to newest, so its own settle clears', async () => {
+    const o = opts();
+    await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
+    await cmdRouteSession('start', 's2', o, { ...deps, settle: () => {} });
+    await cmdRouteSettle('s2', o, { delay: async () => {} });
+
+    await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
+    expect(readSessions(routeSessionsFile(cwd, 'project', home))).toEqual(['s2', 's1']);
+
+    await cmdRouteSettle('s1', o, { delay: async () => {} });
+    expect((await cmdRoute('status', o))?.on).toBe(false);
+  });
+
   it('waits before settling, so the session has read the file first', async () => {
     const o = opts();
     await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
@@ -954,6 +972,38 @@ describe('cmdRouteSubagent', () => {
     // A finishing subagent must not erase session liveness, or the next
     // SessionEnd believes it was the last one.
     expect(readSessions(routeSessionsFile(cwd, 'global', home))).toEqual(['s1']);
+  });
+
+  // Registration and the routing write are one step: an id left registered
+  // after the write threw is a reference nothing will release until its stop
+  // hook — which may never fire — and it holds routing on for a subagent that
+  // was never routed.
+  it('unregisters a subagent whose routing write threw', async () => {
+    const o = opts();
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'settings.json'), '{ not json');
+    await expect(cmdRouteSubagent('start', 'a1', o, OFFLINE)).rejects.toThrow();
+    expect(readSessions(routeSubagentsFile(cwd, 'global', home))).toEqual([]);
+  });
+
+  it('unregisters a session whose routing write threw', async () => {
+    const o = { ...opts(), serveArgv: ['node', 'cli.js', 'serve'] };
+    await cmdRouteSession('start', 's0', o, { ...deps, settle: () => {} });
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'settings.json'), '{ not json');
+    await expect(cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} })).rejects.toThrow();
+    expect(readSessions(routeSessionsFile(cwd, 'global', home))).toEqual(['s0']);
+  });
+
+  it('keeps an already-registered session registered when its re-entry write throws', async () => {
+    const o = { ...opts(), serveArgv: ['node', 'cli.js', 'serve'] };
+    await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
+    await cmdRouteSession('start', 's2', o, { ...deps, settle: () => {} });
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'settings.json'), '{ not json');
+    await expect(cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} })).rejects.toThrow();
+    // Still live, so its SessionEnd must still find it; the order is restored.
+    expect(readSessions(routeSessionsFile(cwd, 'global', home))).toEqual(['s1', 's2']);
   });
 
   it('clears leaked subagent references when the last session ends', async () => {
@@ -1282,5 +1332,55 @@ describe('route on — the project hint travels with its authorisation', () => {
     writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
     const on = planRouteOn(settings(), loadConfig(cwd, home), PACKAGE_ROOT, 'global', { routerPort: 4100 });
     expect(envOf(on.settings).ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+  });
+});
+
+describe('settings writes are serialised across writers', () => {
+  // The session lock guards session-start and settle; the subagent lock guards
+  // subagent start/stop. Both read-modify-write the same settings file, so
+  // neither excluded the other: a last-subagent stop could write "off" over a
+  // session start's "on" and leave a new session unrouted. Every route write
+  // now also takes the settings file's own lock, innermost.
+  it('a subagent stop waits for the settings lock and re-reads under it', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT };
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
+    const file = routeSettingsFile(cwd, 'project', home);
+    expect(routeEnv(readSettings(file)).ANTHROPIC_BASE_URL).toBeDefined();
+
+    let stop!: Promise<unknown>;
+    await withSessionLock(file, async () => {
+      stop = cmdRouteSubagent('stop', 'a1', o, OFFLINE);
+      await new Promise((r) => setTimeout(r, 150));
+      // Still ours: the stop has not written around the lock.
+      expect(routeEnv(readSettings(file)).ANTHROPIC_BASE_URL).toBeDefined();
+      // Another writer's change, made while holding the lock.
+      writeSettingsFile(file, { ...readSettings(file), marker: 1 });
+    });
+    await stop;
+
+    const after = readSettings(file);
+    expect(routeEnv(after).ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(after.marker).toBe(1);
+  });
+
+  // `route auto` keeps the routing env when auto sessions are live, and strips
+  // it when none are. It read the registry without the session lock, so a
+  // session registering between that read and the write had its env stripped.
+  it('route auto decides "are sessions live?" under the session lock', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT };
+    await cmdRoute('on', o);
+    const registry = routeSessionsFile(cwd, 'project', home);
+
+    let auto!: Promise<unknown>;
+    await withSessionLock(registry, async () => {
+      auto = cmdRoute('auto', o);
+      await new Promise((r) => setTimeout(r, 150));
+      writeSessions(registry, ['s1']); // a session starting meanwhile
+    });
+    await auto;
+
+    expect(routeEnv(readSettings(routeSettingsFile(cwd, 'project', home))).ANTHROPIC_BASE_URL).toBeDefined();
   });
 });

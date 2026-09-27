@@ -23,6 +23,7 @@ const fs = require('node:fs');
 fs.writeFileSync(process.env.FAKE_ARGV_FILE, JSON.stringify(process.argv.slice(2)));
 if (process.env.FAKE_STDERR) process.stderr.write(process.env.FAKE_STDERR);
 if (process.env.FAKE_STDOUT) process.stdout.write(process.env.FAKE_STDOUT);
+if (process.env.FAKE_SIGNAL) process.kill(process.pid, process.env.FAKE_SIGNAL);
 process.exit(Number(process.env.FAKE_EXIT ?? 0));
 `;
 
@@ -44,9 +45,14 @@ async function invoke(
   hook: string,
   args: string[],
   payload: string,
-  fake: { exit?: number; stderr?: string; stdout?: string } = {},
+  fake: { exit?: number; stderr?: string; stdout?: string; signal?: string; noFork?: boolean } = {},
 ): Promise<{ code: number | null; stdout: string }> {
-  const child = spawn('node', [join(dir, 'hooks', hook), ...args], {
+  const script = [join(dir, 'hooks', hook), ...args];
+  // `ulimit -u 1` makes the hook's own spawn fail (EAGAIN) — the one way to
+  // exercise its spawn 'error' path, since the binary it spawns is node itself.
+  const child = spawn(fake.noFork ? 'sh' : 'node', fake.noFork
+    ? ['-c', 'ulimit -u 1; exec "$0" "$@"', process.execPath, ...script]
+    : script, {
     cwd: dir,
     stdio: ['pipe', 'pipe', 'ignore'],
     env: {
@@ -55,6 +61,7 @@ async function invoke(
       FAKE_EXIT: String(fake.exit ?? 0),
       FAKE_STDERR: fake.stderr ?? '',
       FAKE_STDOUT: fake.stdout ?? '',
+      FAKE_SIGNAL: fake.signal ?? '',
     },
   });
   const out: Buffer[] = [];
@@ -93,12 +100,28 @@ describe('route-session hook — surfacing the CLI', () => {
     expect(doc.systemMessage).toContain('predates multi-tenant routing');
   });
 
-  it('stays silent on a failure that says nothing', async () => {
-    // Nothing to show is nothing to show: an empty stderr must not produce an
-    // empty warning box.
-    const { code, stdout } = await invoke('route-session.mjs', ['start'], JSON.stringify({ session_id: 's1' }), { exit: 1 });
+  it('surfaces a failure that says nothing, naming its exit code', async () => {
+    // Silence here is how the old refusal went unseen: a CLI that died without
+    // a word still left the session unrouted. The code is the only evidence.
+    const { code, stdout } = await invoke('route-session.mjs', ['start'], JSON.stringify({ session_id: 's1' }), { exit: 3 });
     expect(code).toBe(0);
-    expect(stdout.trim()).toBe('');
+    const doc = JSON.parse(stdout) as { systemMessage: string };
+    expect(doc.systemMessage).toContain('sonata route session-start failed');
+    expect(doc.systemMessage).toContain('exit code 3');
+  });
+
+  it('surfaces a CLI killed by a signal, naming the signal', async () => {
+    const { code, stdout } = await invoke('route-session.mjs', ['start'], JSON.stringify({ session_id: 's1' }), { signal: 'SIGTERM' });
+    expect(code).toBe(0);
+    expect((JSON.parse(stdout) as { systemMessage: string }).systemMessage).toContain('SIGTERM');
+  });
+
+  it('surfaces a CLI that could not be spawned at all', async () => {
+    const { code, stdout } = await invoke('route-session.mjs', ['start'], JSON.stringify({ session_id: 's1' }), { noFork: true });
+    expect(code).toBe(0);
+    const doc = JSON.parse(stdout) as { systemMessage: string };
+    expect(doc.systemMessage).toContain('sonata route session-start failed');
+    expect(doc.systemMessage).toContain('could not be started');
   });
 
   it('exits 0 without invoking the CLI when stdin carries no session id', async () => {
@@ -123,5 +146,13 @@ describe('route-subagent hook — surfacing the CLI', () => {
     const doc = JSON.parse(stdout) as { systemMessage: string };
     expect(doc.systemMessage).toContain('sonata route subagent-stop failed');
     expect(doc.systemMessage).toContain('sonata: boom');
+  });
+
+  it('surfaces a silent failure and a spawn failure too', async () => {
+    const silent = await invoke('route-subagent.mjs', ['start'], JSON.stringify({ agent_id: 'a1' }), { exit: 2 });
+    expect((JSON.parse(silent.stdout) as { systemMessage: string }).systemMessage).toContain('exit code 2');
+    const unspawned = await invoke('route-subagent.mjs', ['start'], JSON.stringify({ agent_id: 'a1' }), { noFork: true });
+    expect(unspawned.code).toBe(0);
+    expect((JSON.parse(unspawned.stdout) as { systemMessage: string }).systemMessage).toContain('could not be started');
   });
 });
