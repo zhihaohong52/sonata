@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, withEffort, STICKY_TTL_MS, createRouterServer, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, withEffort, STICKY_TTL_MS, createRouterServer, respond, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
 
@@ -2456,5 +2456,66 @@ describe('error bodies are read within bounds', () => {
     );
     expect(res.status).toBe(500);
     expect(cancelled).toBe(true);
+  });
+});
+
+describe('createRouterServer — a stream that fails after its headers', () => {
+  it('destroys the response instead of appending a JSON error to the event stream', async () => {
+    const server = createRouterServer({
+      fetch: (async () => new Response(new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('event: message_start\ndata: {"type":"message_start"}\n\n'));
+          setTimeout(() => c.error(new Error('upstream reset')), 20);
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const { request } = await import('node:http');
+      const outcome = await new Promise<{ data: string; aborted: boolean }>((resolve) => {
+        const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/v1/messages', headers: { 'content-type': 'application/json' } }, (res) => {
+          let data = '';
+          let aborted = false;
+          res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+          res.on('aborted', () => { aborted = true; });
+          res.on('error', () => { aborted = true; });
+          res.on('close', () => resolve({ data, aborted }));
+        });
+        req.on('error', () => resolve({ data: '', aborted: true }));
+        req.end('{"model":"flash"}');
+      });
+      expect(outcome.data).toContain('message_start');
+      expect(outcome.data).not.toContain('router_error');
+      expect(outcome.aborted).toBe(true);
+    } finally {
+      server.close();
+    }
+  });
+});
+
+describe('respond — backpressure', () => {
+  it('waits for drain before pulling the next chunk when write returns false', async () => {
+    const { EventEmitter } = await import('node:events');
+    const events: string[] = [];
+    const res = Object.assign(new EventEmitter(), {
+      writeHead: () => undefined,
+      write: (chunk: Uint8Array) => { events.push(`write ${Buffer.from(chunk).toString()}`); return false; },
+      end: () => { events.push('end'); },
+    });
+    async function* body(): AsyncIterable<Uint8Array> {
+      events.push('pull a'); yield Buffer.from('a');
+      events.push('pull b'); yield Buffer.from('b');
+    }
+    const done = respond(res as never, { status: 200, headers: {}, body: body() });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(events).toEqual(['pull a', 'write a']);
+    res.emit('drain');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(events).toEqual(['pull a', 'write a', 'pull b', 'write b']);
+    res.emit('drain');
+    await done;
+    expect(events.at(-1)).toBe('end');
   });
 });

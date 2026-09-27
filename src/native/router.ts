@@ -1783,13 +1783,27 @@ async function readBody(req: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-async function respond(res: ServerResponse, routed: RouterResponse): Promise<void> {
+/**
+ * Writes a routed response, pulling the next upstream chunk only once the
+ * client has taken the last one. Ignoring `write`'s false would let a slow
+ * client make the router buffer an entire upstream stream in memory.
+ */
+export async function respond(res: ServerResponse, routed: RouterResponse): Promise<void> {
   res.writeHead(routed.status, routed.headers);
   if (Buffer.isBuffer(routed.body)) {
     res.end(routed.body);
     return;
   }
-  for await (const chunk of routed.body) res.write(chunk);
+  for await (const chunk of routed.body) {
+    if (!res.write(chunk)) {
+      // 'close' as well as 'drain': a client that disconnects never drains.
+      await new Promise<void>((resolve) => {
+        const done = (): void => { res.off('drain', done); res.off('close', done); resolve(); };
+        res.once('drain', done);
+        res.once('close', done);
+      });
+    }
+  }
   res.end();
 }
 
@@ -1828,8 +1842,16 @@ export function createRouterServer(deps: RouterDeps): Server {
         headers: incomingHeaders(req),
         body: await readBody(req),
       }, deps));
-    } catch {
-      if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' });
+    } catch (error) {
+      // Once the headers are out, the response is an event stream the client
+      // is parsing frame by frame: a JSON body appended to it is garbage
+      // mid-stream, not an error. Tearing the connection down is the signal
+      // every HTTP client understands as "this response failed".
+      if (res.headersSent) {
+        res.destroy(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      res.writeHead(500, { 'content-type': 'application/json' });
       res.end(anthropicErrorBody('router_error', 'failed to route request'));
     }
   });
