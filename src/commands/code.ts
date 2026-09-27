@@ -85,7 +85,8 @@ export async function defaultEnsureServe(cwd: string, home: string): Promise<num
     if (await sonataRouterMultiTenant(port) !== true) throw new Error(preMultiTenantMessage(port));
     return port;
   }
-  await startServeDaemon(home, ['sonata', 'serve', '--daemon'], {}, cwd);
+  // foreground: startServeDaemon detaches it; `--daemon` would re-daemonise under a new instance id and the readiness probe would never match
+  await startServeDaemon(home, ['sonata', 'serve'], {}, cwd);
   if (await sonataRouterMultiTenant(port) !== true) throw new Error(preMultiTenantMessage(port));
   return port;
 }
