@@ -780,6 +780,27 @@ export function mergeTenantGateways(
       );
     }
   }
+  // Two DIFFERENT names can still share one key variable across projects:
+  // parseConfig refuses `foo-bar` beside `foo_bar` inside one file, but the
+  // child env is keyed by envVarForGateway over the merged set, so one
+  // project's `foo-bar` and another's `foo_bar` would write the same
+  // SONATA_KEY_FOO_BAR. Serve neither, as above.
+  const byKeyVar = new Map<string, string>();
+  for (const name of Object.keys(merged)) {
+    const keyVar = envVarForGateway(name);
+    const other = byKeyVar.get(keyVar);
+    if (other === undefined) {
+      byKeyVar.set(keyVar, name);
+      continue;
+    }
+    delete merged[name];
+    delete merged[other];
+    log(
+      `gateways "${other}" (${owner[other]}) and "${name}" (${owner[name]}) would share the key ` +
+      `variable ${keyVar} — serving neither, since one project's credential must not reach the ` +
+      'other\'s endpoint; rename one of them',
+    );
+  }
   return merged;
 }
 

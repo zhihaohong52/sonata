@@ -3145,6 +3145,22 @@ describe('mergeTenantGateways', () => {
     expect(lines).toEqual([]);
   });
 
+  it('drops two differently named gateways from two projects that share one key variable', () => {
+    // parseConfig refuses the pair inside one file, but the router merges
+    // every project's gateways into ONE child env keyed by envVarForGateway,
+    // so `foo-bar` in one project and `foo_bar` in another would still write
+    // the same SONATA_KEY_FOO_BAR and one would send the other's key.
+    const lines: string[] = [];
+    const merged = mergeTenantGateways([
+      { id: 'a', gateways: { 'foo-bar': gw({}), keep: gw({}) } },
+      { id: 'b', gateways: { foo_bar: gw({}) } },
+    ], (l) => lines.push(l));
+    expect(merged['foo-bar']).toBeUndefined();
+    expect(merged.foo_bar).toBeUndefined();
+    expect(Object.keys(merged)).toEqual(['keep']);
+    expect(lines.join('\n')).toContain('SONATA_KEY_FOO_BAR');
+  });
+
   it('drops a gateway whose tenants disagree about how it authenticates', () => {
     // `buildChildEnv` resolves one credential per gateway NAME, so a name two
     // projects define with different credential sources would send one
