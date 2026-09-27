@@ -8,6 +8,37 @@ async function tmux(args: string[]): Promise<string> {
   return stdout;
 }
 
+/**
+ * Runs `fn` again when tmux reports the server exited under it.
+ *
+ * A tmux server exits when its last session closes, and a client that
+ * connects while it is exiting fails with "server exited unexpectedly" having
+ * created nothing — so trying again is safe, and starts a fresh server.
+ * Sonata's parallel dispatches share the user's server, so one run ending
+ * while another launches is enough to lose the race (reproduced 3 in 300 by
+ * churning sessions beside a creator; seen in CI as a failed e2e launch).
+ * Only that message is retried: any other failure, a duplicate session name
+ * included, is the caller's to see.
+ */
+export async function retryWhenServerExits<T>(
+  fn: () => Promise<T>,
+  opts: { attempts?: number; delayMs?: number } = {},
+): Promise<T> {
+  const attempts = opts.attempts ?? 3;
+  const delayMs = opts.delayMs ?? 100;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      const stderr = String((error as { stderr?: unknown }).stderr ?? '');
+      const message = error instanceof Error ? error.message : '';
+      const raced = `${stderr}\n${message}`.includes('server exited unexpectedly');
+      if (!raced || attempt >= attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 export async function tmuxVersion(): Promise<string> {
   const out = await tmux(['-V']);
   return out.trim().replace(/^tmux\s+/, '');
@@ -19,12 +50,12 @@ export async function tmuxVersion(): Promise<string> {
  * the pane-tail fallback is unavailable exactly when a harness crashes.
  */
 export async function newSession(opts: { session: string; cwd: string }): Promise<void> {
-  await tmux([
+  await retryWhenServerExits(() => tmux([
     'new-session', '-d',
     '-s', opts.session,
     '-c', opts.cwd,
     '-x', '200', '-y', '50',
-  ]);
+  ]));
   await tmux(['set-option', '-t', opts.session, 'remain-on-exit', 'on']);
   await tmux(['set-option', '-t', opts.session, 'history-limit', '10000']);
 }
