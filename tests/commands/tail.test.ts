@@ -483,10 +483,10 @@ describe('cmdTail composes the effort annotation from the run`s own meta', () =>
 });
 
 describe('tail decide — a fallback report from a failed harness', () => {
-  // The fallback file (codex/claude `last-message.txt`) captures the HARNESS's
-  // own output — error text included. So its presence proves nothing when the
-  // harness failed: a crash wrote that file just as readily as a final message,
-  // and treating it as a trusted report is how a 404 became a clean DONE.
+  // The fallback file (codex/claude `last-message.txt`) is the harness's
+  // account, not the model's report: claude writes its own error output into
+  // it, so a crash fills it as readily as a final message does. Treating it as
+  // trusted after a failed exit is how a 404 became a clean DONE.
   it('degrades a fallback report when the harness exited non-zero', () => {
     const r = decide({
       ...base,

@@ -132,6 +132,13 @@ on one branch; the rest are recorded here as the backlog.
 - **P2** `createRun` precedes steps that throw; a refused plan leaves a
   permanent RUNNING record (`run.ts:159`).
 - **P2** A timed-out run discards the report body (`tail.ts:175`).
+  The same branch drops a fallback report's text too, which for claude (all
+  stdout in `last-message.txt`, empty pane) leaves only the bracket line.
+- **P3** `src/commands/runs.ts:36` still defines degraded as
+  `exit !== 0 || report === null` over report.md alone, so `sonata runs`
+  badges runs `decide()` trusts (a fallback report from a clean exit, or the
+  model's own report.md with a non-zero exit) — top-nine fix 1 aligned
+  `decide()` only.
 - **P2** Run ids are unsanitised path segments (`store.ts:14`).
 - **P2** Read-only roles on the claude harness can write via allow-listed
   `Bash` (`claude.ts:46`).

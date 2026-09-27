@@ -139,10 +139,12 @@ export function decide(input: DecideInput): TailResult {
     // work was cut short, so the report cannot be trusted as complete.
     //
     // Nor can a report that is only the harness's fallback file when the
-    // harness failed: that file captures the harness's own error output, so
-    // its presence proves nothing — a crash wrote it just as readily as a
-    // final message. A model that wrote report.md itself is still trusted on a
-    // non-zero exit; so is a fallback report from a clean one.
+    // harness failed. What that file holds depends on the adapter — claude
+    // redirects stdout AND stderr into it, so a crash writes its own error
+    // there; codex's `-o` holds only a final message, which a later failure
+    // does not retract — so a failed exit leaves it unable to vouch for the
+    // work either way. A model that wrote report.md itself is still trusted on
+    // a non-zero exit; so is a fallback report from a clean one.
     const degraded = input.timedOut
       || (input.report === null && !reportImpossible)
       || (input.reportFromFallback === true && input.exitCode !== null && input.exitCode !== 0);
@@ -196,7 +198,7 @@ export function decide(input: DecideInput): TailResult {
         // exactly the evidence the reader needs, so it is kept rather than
         // replaced by pane text. The note says why it cannot be trusted.
         : degraded && input.reportFromFallback === true && input.exitCode !== 0
-          ? `[degraded: harness exited ${input.exitCode}, and the report is only the fallback file, which captures the harness's own error output — its presence proves nothing when the harness failed]\n\n${input.report!}`
+          ? `[degraded: harness exited ${input.exitCode}; the only report is its fallback file, which a failed run cannot vouch for — it may hold the harness's own error output]\n\n${input.report!}`
           : degraded && !spoke
           ? `[degraded: the harness exited ${input.exitCode} without producing any output — nothing ran]\n\n${input.paneTail.join('\n')}`
           : degraded
