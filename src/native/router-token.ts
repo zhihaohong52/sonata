@@ -20,8 +20,8 @@
  * Persisted rather than generated per run, because a settings file written once
  * has to keep working across restarts.
  */
-import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /** Where the token travels. Stripped before forwarding, like the project header. */
@@ -49,7 +49,13 @@ export function readRouterToken(home: string): string | undefined {
  */
 export function ensureRouterToken(home: string): string {
   const existing = readRouterToken(home);
-  if (existing !== undefined) return existing;
+  if (existing !== undefined) {
+    // `mode` applies only when a file is created, so a token file that
+    // arrived some other way (a copy, a restore, an older writer) keeps
+    // whatever mode it had. Owner-only is the whole defence.
+    try { chmodSync(routerTokenPath(home), 0o600); } catch { /* unreadable dirs fail later, loudly */ }
+    return existing;
+  }
   const token = randomBytes(32).toString('hex');
   const path = routerTokenPath(home);
   mkdirSync(dirname(path), { recursive: true });
@@ -57,10 +63,13 @@ export function ensureRouterToken(home: string): string {
   return token;
 }
 
-/** Whether a request may choose its own project. Constant-shape compare; both sides are hex. */
+/** Whether a request may choose its own project. A constant-time compare, length-checked first. */
 export function projectHintAuthorised(presented: string | undefined, expected: string | undefined): boolean {
-  if (expected === undefined || expected === '') return false;
-  return presented === expected;
+  if (expected === undefined || expected === '' || presented === undefined) return false;
+  const a = Buffer.from(presented, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
 /** Kept so a caller need not reimplement the existsSync check. */

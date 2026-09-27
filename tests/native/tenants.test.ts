@@ -237,4 +237,22 @@ describe('TenantRegistry — the noted set is fed by a request header', () => {
     expect(reg.resolve({ project: made[made.length - 1] }).config?.unifiedModels.flash.id)
       .toBe(`m-${MAX_NOTED_PROJECTS + 4}`);
   });
+  it('keeps a project that is still in use: re-noting makes it the most recent', () => {
+    const reg = new TenantRegistry(home);
+    const dirs: string[] = [];
+    for (let i = 0; i < MAX_NOTED_PROJECTS + 1; i += 1) {
+      const dir = mkdtempSync(join(tmpdir(), `tenants-lru-${i}-`));
+      writeFileSync(join(dir, 'sonata.toml'), NATIVE(`m-${i}`));
+      dirs.push(dir);
+    }
+    const [active, ...others] = dirs;
+    reg.noteProject(active);
+    for (const dir of others.slice(0, MAX_NOTED_PROJECTS - 1)) reg.noteProject(dir);
+    // The set is full. The active project is used again, then one more arrives.
+    reg.noteProject(active);
+    reg.noteProject(others[MAX_NOTED_PROJECTS - 1]);
+    const known = reg.known().map((t) => t.configPath);
+    expect(known).toContain(canonicalConfigPath(join(active, 'sonata.toml')));
+    expect(known).not.toContain(canonicalConfigPath(join(others[0], 'sonata.toml')));
+  });
 });

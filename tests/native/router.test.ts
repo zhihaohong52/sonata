@@ -412,6 +412,30 @@ describe('tier alias routing', () => {
     expect(rec[0].url).toBe('http://litellm/v1/messages');
   });
 
+  it('answers a generated-shape alias the config does not know with the typed 400 naming sonata sync', async () => {
+    const rec: FetchCall[] = [];
+    const res = await routeRequest(req('sonata-code-normal'), {
+      fetch: fakeFetch(rec),
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => undefined,
+    });
+    expect(res.status).toBe(400);
+    expect(rec).toHaveLength(0);
+    expect(JSON.parse((res.body as Buffer).toString()).error.message).toContain('sonata sync');
+  });
+
+  it('still forwards a generated-shape name that is a native model key', async () => {
+    const rec: FetchCall[] = [];
+    const res = await routeRequest(req('sonata-code'), {
+      fetch: fakeFetch(rec),
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => undefined,
+      resolveNative: () => ({ gateway: 'g', id: 'x', transport: 'litellm' as const }),
+    });
+    expect(res.status).toBe(200);
+    expect(rec[0].url).toBe('http://litellm/v1/messages');
+  });
+
   it('4xx from upstream is returned, not retried — our bug, not their outage', async () => {
     const seen: string[] = [];
     const res = await routeRequest(req('sonata-code-simple'), {
