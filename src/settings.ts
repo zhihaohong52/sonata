@@ -8,6 +8,7 @@
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { withSessionLock } from './filelock.js';
 
 export type HookScope = 'project' | 'global';
 
@@ -90,6 +91,30 @@ export function writeSettings(path: string, settings: Settings): void {
   mkdirSync(dirname(path), { recursive: true });
   if (existsSync(path)) copyFileSync(path, `${path}.bak`);
   writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`);
+}
+
+/**
+ * One read-modify-write of a settings file, under that file's own lock
+ * (`<path>.lock`).
+ *
+ * Several sonata writers touch one settings file from separate processes —
+ * session start and settle under the session registry's lock, subagent
+ * start/stop under the subagent registry's — so neither registry lock excludes
+ * the other, and a plan computed from a stale read could undo a concurrent
+ * writer's change (a last-subagent stop writing "off" over a session start's
+ * "on"). This lock is always the INNERMOST: it is taken inside any registry
+ * lock and nothing is acquired while it is held, so it cannot deadlock with
+ * them. The file is read inside it, never passed in.
+ */
+export async function updateSettings(
+  path: string,
+  plan: (current: Settings) => { settings: Settings; changed: boolean },
+): Promise<Settings> {
+  return await withSessionLock(path, () => {
+    const next = plan(readSettings(path));
+    if (next.changed) writeSettings(path, next.settings);
+    return next.settings;
+  });
 }
 
 /**

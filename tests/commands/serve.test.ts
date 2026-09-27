@@ -661,18 +661,32 @@ async function waitFor(cond: () => boolean, what: string, timeoutMs = 2000): Pro
   }
 }
 
+/**
+ * A fake child's `onExit` that keeps only the FIRST listener — the crash
+ * watcher `cmdServe` registers at spawn. `stop()` registers a second one to
+ * wait for the exit; a fake that let it overwrite the watcher would make a
+ * later simulated crash call the wrong listener.
+ */
+function firstExitOnly(
+  register: (cb: (code: number | null, signal: NodeJS.Signals | null) => void) => void,
+): (cb: (code: number | null, signal: NodeJS.Signals | null) => void) => void {
+  let registered = false;
+  return (cb) => { if (!registered) { registered = true; register(cb); } };
+}
+
 describe('cmdServe — litellm respawn', () => {
   it('respawns litellm when it exits on its own, and updates the recorded pid', async () => {
     let spawnCount = 0;
     let exitCb: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20, // its fake children never exit on SIGTERM; stop() would wait out the default
       waitForLitellm: async () => {},
       respawnDelayMs: 0,
       spawnLitellm: () => {
         spawnCount += 1;
         const pid = spawnCount;
-        return { pid, kill() {}, onExit: (cb) => { exitCb = cb; } };
+        return { pid, kill() {}, onExit: firstExitOnly((cb) => { exitCb = cb; }) };
       },
     });
     handles.push(handle);
@@ -692,12 +706,13 @@ describe('cmdServe — litellm respawn', () => {
     let exitCb: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20, // its fake children never exit on SIGTERM; stop() would wait out the default
       waitForLitellm: async () => {},
       respawnDelayMs: 0,
       maxRespawns: 2,
       spawnLitellm: () => {
         spawnCount += 1;
-        return { pid: spawnCount, kill() {}, onExit: (cb) => { exitCb = cb; } };
+        return { pid: spawnCount, kill() {}, onExit: firstExitOnly((cb) => { exitCb = cb; }) };
       },
     });
     handles.push(handle);
@@ -720,11 +735,12 @@ describe('cmdServe — litellm respawn', () => {
     let exitCb: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20, // its fake children never exit on SIGTERM; stop() would wait out the default
       waitForLitellm: async () => {},
       respawnDelayMs: 0,
       spawnLitellm: () => {
         spawnCount += 1;
-        return { pid: spawnCount, kill() {}, onExit: (cb) => { exitCb = cb; } };
+        return { pid: spawnCount, kill() {}, onExit: firstExitOnly((cb) => { exitCb = cb; }) };
       },
     });
     await handle.stop();
@@ -788,13 +804,14 @@ litellm = 39217
 
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20, // its fake children never exit on SIGTERM; stop() would wait out the default
       respawnDelayMs: 0,
       waitForLitellm: async () => {
         waitCalls += 1;
         if (waitCalls === 1) return;
         await new Promise<void>((resolve) => { releaseRespawnWait = resolve; });
       },
-      spawnLitellm: () => ({ pid: 1, kill() {}, onExit: (cb) => { exitCb = cb; } }),
+      spawnLitellm: () => ({ pid: 1, kill() {}, onExit: firstExitOnly((cb) => { exitCb = cb; }) }),
     });
     handles.push(handle);
     expect(waitCalls).toBe(1);
@@ -1088,6 +1105,7 @@ litellm = 43121
     const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20, // its fake children never exit on SIGTERM; stop() would wait out the default
       waitForLitellm: async () => {},
       spawnLitellm: () => {
         spawnCount += 1;
@@ -1272,6 +1290,104 @@ litellm = 43117
     expect(response.status).toBe(529);
     expect(forceKillCalls).toBe(1);
     expect(spawnCount).toBe(2);
+  });
+
+  it('stop() escalates to forceKill for a litellm child that ignores SIGTERM, before removing its temp dir', async () => {
+    // stop() sent SIGTERM once and then deleted the child's config directory
+    // and the state file naming its pid: a SIGTERM-deaf child (one blocked on a
+    // device-code login) survived as an orphan nothing could find again.
+    writeMachineConfig(`
+[models."m"]
+gateway = "acme"
+id = "m-upstream"
+context_window = 128000
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43119
+`);
+    const exits: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
+    const events: string[] = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      litellmExitTimeoutMs: 20,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      spawnLitellm: () => ({
+        pid: 1,
+        kill: () => { events.push('term'); },
+        onExit: (cb) => { exits.push(cb); },
+        forceKill: () => {
+          events.push(`kill:tempDir=${existsSync(tempDirFor())}`);
+          for (const cb of exits) cb(null, 'SIGKILL');
+        },
+      }),
+    });
+    await handle.stop();
+    expect(events).toEqual(['term', 'kill:tempDir=true']);
+    expect(existsSync(tempDirFor())).toBe(false);
+  });
+
+  it('retries a model-change restart whose replacement never became ready', async () => {
+    // The new registry was committed before the replacement child answered
+    // its readiness probe, so a replacement that never came up was never
+    // tried again: the next request saw "no change" and used a dead upstream.
+    const config = (model: string) => `
+[models."${model}"]
+gateway = "acme"
+id = "${model}-upstream"
+context_window = 128000
+
+[tiers.code]
+simple = ["${model}"]
+complex = ["${model}"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43118
+`;
+    writeSonataKey(home, 'acme', 'acme-key');
+    writeMachineConfig(config('first'));
+    let spawnCount = 0;
+    let waits = 0;
+    const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20,
+      // Startup's child is ready; the first replacement never is.
+      waitForLitellm: async () => { waits += 1; if (waits === 2) throw new Error('never came up'); },
+      spawnLitellm: () => {
+        spawnCount += 1;
+        const index = spawnCount - 1;
+        return {
+          pid: spawnCount,
+          kill: () => exits[index]?.forEach((cb) => cb(null, 'SIGTERM')),
+          onExit: (cb) => { (exits[index] ??= []).push(cb); },
+        };
+      },
+    });
+    handles.push(handle);
+    const send = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+
+    writeMachineConfig(config('second'));
+    await send();
+    expect(spawnCount).toBe(2);
+
+    // No further edit: the change is still unapplied, so it is tried again.
+    await send();
+    const deadline = Date.now() + 2000;
+    while (spawnCount < 3 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+    expect(spawnCount).toBe(3);
   });
 
   it('retries the restart on the next request after a failed one, instead of marking the change handled', async () => {
@@ -1678,6 +1794,35 @@ context_window = 128000
     }, '/some/other/cwd');
 
     expect(opts[0]).toMatchObject({ cwd: join(home, '.config', 'sonata') });
+  });
+
+  it('spawns from the caller\'s cwd when there is no machine config file', async () => {
+    // Only the machine config FILE may move the daemon. The log directory is
+    // created inside ~/.config/sonata before the check used to run, so the
+    // directory always existed and a project-only machine started its router
+    // in a directory with no config — which `serve` refuses outright.
+    rmSync(join(home, '.config'), { force: true, recursive: true });
+    const opts: Parameters<typeof spawnType>[2][] = [];
+    const spy = ((_cmd: string, _args: string[], o: never) => {
+      opts.push(o);
+      return { pid: 4242, unref: () => {} };
+    }) as unknown as typeof spawnType;
+
+    await startServeDaemon(home, ['node', 'cli.js', 'serve'], { spawn: spy, probe: async () => true }, '/some/project');
+
+    expect(opts[0]).toMatchObject({ cwd: '/some/project' });
+  });
+
+  it('closes its own copy of the log fd, on success and on timeout', async () => {
+    const fdDir = existsSync('/proc/self/fd') ? '/proc/self/fd' : '/dev/fd';
+    const before = readdirSync(fdDir).length;
+    await startServeDaemon(home, ['node', 'cli.js', 'serve'], { spawn: fakeSpawn(), probe: async () => true }, home);
+    let clock = 0;
+    await expect(startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: fakeSpawn(), probe: async () => false,
+      sleep: async () => { clock += 500; }, now: () => clock, timeoutMs: 1000,
+    }, home)).rejects.toThrow(/did not answer/);
+    expect(readdirSync(fdDir).length).toBe(before);
   });
 
   it('detaches and returns once the router answers', async () => {
@@ -2701,6 +2846,7 @@ litellm = 4000
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20, // its fake children never exit on SIGTERM; stop() would wait out the default
       respawnDelayMs: 0,
       waitForLitellm: async () => { waits += 1; if (waits === 1) await firstReady; },
       spawnLitellm: () => {
@@ -2872,6 +3018,7 @@ litellm = 4000
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20, // its fake children never exit on SIGTERM; stop() would wait out the default
       spawnLitellm: () => {
         spawns += 1;
         return {

@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { withSessionLock } from '../filelock.js';
 import { join } from 'node:path';
 
 /**
@@ -166,17 +167,32 @@ export async function installLitellm(home: string, deps: InstallerDeps): Promise
   const final = venvDir(home);
   const previous = previousDir(home);
   mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
-  rmSync(previous, { recursive: true, force: true });
-  const hadPrevious = existsSync(final);
-  if (hadPrevious) renameSync(final, previous);
-  try {
-    await installer.create(final, run);
-    await installer.install(final, `litellm[proxy]==${LITELLM_VERSION}`, run);
-    writeFileSync(join(final, '.sonata-pin'), LITELLM_VERSION);
+  // One installer at a time, for the whole move-aside/build/restore sequence.
+  // Unlocked, a second installer deleted `.previous` — the working venv the
+  // first had just moved aside — and moved the first's half-built venv there,
+  // so a failure could restore a broken venv or none. The lock is renewed for
+  // as long as the install runs, and a waiter gives it the length of one.
+  await withSessionLock(`${final}.install`, async ({ waited }) => {
+    // Waited on another install and the venv is now healthy: that result is
+    // what was asked for, so a second build would only repeat it. An install
+    // that did not wait is a deliberate (re)install and always runs.
+    if (waited && litellmStatus(home, true).state === 'ok') return;
     rmSync(previous, { recursive: true, force: true });
-  } catch (error) {
-    rmSync(final, { recursive: true, force: true });
-    if (hadPrevious) renameSync(previous, final);
-    throw error;
-  }
+    const hadPrevious = existsSync(final);
+    if (hadPrevious) renameSync(final, previous);
+    try {
+      await installer.create(final, run);
+      await installer.install(final, `litellm[proxy]==${LITELLM_VERSION}`, run);
+      writeFileSync(join(final, '.sonata-pin'), LITELLM_VERSION);
+      rmSync(previous, { recursive: true, force: true });
+    } catch (error) {
+      rmSync(final, { recursive: true, force: true });
+      if (hadPrevious) renameSync(previous, final);
+      throw error;
+    }
+  }, { timeoutMs: INSTALL_WAIT_MS });
 }
+
+/** How long a second installer waits for the first; a cold LiteLLM install takes minutes. */
+const INSTALL_WAIT_MS = 30 * 60_000;
+
