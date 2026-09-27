@@ -303,18 +303,26 @@ export type VersionProbe =
  * the reason is the harness's own error line, since that is usually the fix
  * (codex's names the reinstall command).
  */
+/**
+ * How long any `--version` probe may take. Only opencode's was bounded, so a
+ * pi, codex, reasonix or tmux binary that hung on `--version` hung `sonata
+ * init` and `sonata doctor` outright. The default for every probe, so a new
+ * caller cannot forget it.
+ */
+export const VERSION_PROBE_TIMEOUT_MS = 10_000;
+
 export async function probeVersion(
   cmd: string,
   env: NodeJS.ProcessEnv,
-  timeoutMs?: number,
+  timeoutMs: number = VERSION_PROBE_TIMEOUT_MS,
 ): Promise<VersionProbe> {
   try {
-    const { stdout } = await run(cmd, ['--version'], { env, ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}) });
+    const { stdout } = await run(cmd, ['--version'], { env, timeout: timeoutMs });
     return { state: 'ok', version: stdout.trim() };
   } catch (error) {
     const e = error as NodeJS.ErrnoException & { stderr?: string; killed?: boolean };
     if (e.code === 'ENOENT') return { state: 'missing' };
-    if (e.killed) return { state: 'broken', reason: `\`${cmd} --version\` did not answer within ${Math.round((timeoutMs ?? 0) / 1000)}s` };
+    if (e.killed) return { state: 'broken', reason: `\`${cmd} --version\` did not answer within ${Math.round(timeoutMs / 1000)}s` };
     return { state: 'broken', reason: firstErrorLine(e.stderr) ?? `\`${cmd} --version\` exited with ${String(e.code ?? 'an error')}` };
   }
 }
@@ -384,7 +392,7 @@ async function tryRunLimited(
 }
 
 export async function detectTmux(): Promise<{ installed: boolean; version?: string; problems: Problem[] }> {
-  const out = await tryRun('tmux', ['-V']);
+  const out = await tryRunLimited('tmux', ['-V'], process.env, VERSION_PROBE_TIMEOUT_MS);
   if (out === null) {
     return {
       installed: false,
@@ -420,7 +428,7 @@ export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
   const localBin = join(env.home, '.opencode', 'bin', 'opencode');
 
   const path = `${join(env.home, '.opencode', 'bin')}:${process.env.PATH ?? ''}`;
-  const probe = await probeVersion('opencode', { ...process.env, PATH: path }, 10_000);
+  const probe = await probeVersion('opencode', { ...process.env, PATH: path });
   if (probe.state === 'broken') return brokenHarness('opencode', probe.reason);
   const version = probe.state === 'ok' ? probe.version : null;
 
