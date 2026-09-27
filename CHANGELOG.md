@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-09-27
+
 ### Fixed
 
 - **OpenCode Zen and Go models work on the native path.** opencode.ai refuses
