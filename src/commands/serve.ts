@@ -87,6 +87,12 @@ export interface ServeDeps {
    */
   recordUsage?: (row: LedgerRow) => void;
   /**
+   * Fetches models.dev and writes the price cache, when the cache is stale.
+   * Production default is the real fetch; tests inject a no-op so no
+   * `cmdServe` reaches the network.
+   */
+  refreshPrices?: (home: string) => Promise<void>;
+  /**
    * Test seam for the id `cmdServe` reports on `/__sonata_health`. Production
    * default reads `SONATA_SERVE_INSTANCE_ID` (set by `startServeDaemon` on the
    * child it spawns) and falls back to a freshly generated id when neither is
@@ -1324,7 +1330,7 @@ export async function cmdServe(
   // can neither delay a request nor hold the process open, and a failed fetch
   // leaves the previous cache in place rather than emptying it.
   const stopPriceRefresh = startPriceRefresh(opts.home, {
-    update: async (home) => updateModelsDev(home, fetch, {}),
+    update: opts.refreshPrices ?? (async (home) => updateModelsDev(home, fetch, {})),
     log: (line) => console.log(line),
   });
 

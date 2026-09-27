@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
-  cmdServe, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
+  cmdServe as realCmdServe, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
   serveStatePath, stopServe, cmdRestart, defaultWaitForLitellm, sonataRouterMultiTenant, processCommand,
   budgetStatusesFor,
 } from '../../src/commands/serve.js';
@@ -17,6 +17,12 @@ import { clearCooldowns } from '../../src/native/router.js';
 import { ensureRouterToken } from '../../src/native/router-token.js';
 import { tenantId } from '../../src/native/tenants.js';
 import { appendRow } from '../../src/ledger.js';
+
+// Every cmdServe starts the models.dev price refresh, and a fresh test home has
+// no cache, so each one fetched models.dev over the real network — unawaited
+// and uncancellable, landing in whichever test was running when it resolved.
+// The file's calls go through this, which swaps in a no-op.
+const cmdServe: typeof realCmdServe = (opts) => realCmdServe({ refreshPrices: async () => {}, ...opts });
 
 let cwd: string;
 let home: string;
@@ -3194,5 +3200,18 @@ describe('mergeTenantGateways', () => {
     mergeTenantGateways(tenants, log);
     mergeTenantGateways(tenants, log);
     expect(lines).toHaveLength(2);
+  });
+});
+
+describe('cmdServe — the models.dev price refresh', () => {
+  it('runs the injected refresh against its own home instead of fetching', async () => {
+    const calls: string[] = [];
+    const handle = await realCmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+      refreshPrices: async (at) => { calls.push(at); },
+    });
+    handles.push(handle);
+    expect(calls).toEqual([home]);
   });
 });
