@@ -1256,11 +1256,14 @@ export async function cmdServe(
         });
       },
       litellmReady: () => litellmReady,
-      recordUsage: opts.recordUsage ?? ((row) => {
+      recordUsage: opts.recordUsage ?? ((row, config) => {
         setImmediate(() => {
           let priced = row;
           try {
-            priced = priceRow(registry.resolve({ project: row.project }).config!, opts.home, row);
+            // The config the request was routed under, snapshotted at its
+            // start; re-resolving here would price it under whatever the file
+            // says when the stream ends, and re-parse it once per row.
+            priced = priceRow(config ?? registry.resolve({ project: row.project }).config!, opts.home, row);
           } catch {
             // A config that will not load is still no reason to drop the row.
           }
