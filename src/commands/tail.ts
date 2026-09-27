@@ -32,6 +32,13 @@ export interface DecideInput {
   newLines: string[];
   exitCode: number | null;
   report: string | null;
+  /**
+   * True when `report` came from the adapter's fallback file (codex/claude
+   * `last-message.txt`) rather than the model's own `report.md`. That file is
+   * the harness's account — error text included — so alongside a failed exit
+   * it proves nothing about the work being done.
+   */
+  reportFromFallback?: boolean;
   promptText: string | null;
   msSinceLastChange: number;
   stallTimeoutMs: number;
@@ -130,7 +137,15 @@ export function decide(input: DecideInput): TailResult {
 
     // A timed-out run is degraded even if a report file happens to exist: the
     // work was cut short, so the report cannot be trusted as complete.
-    const degraded = input.timedOut || (input.report === null && !reportImpossible);
+    //
+    // Nor can a report that is only the harness's fallback file when the
+    // harness failed: that file captures the harness's own error output, so
+    // its presence proves nothing — a crash wrote it just as readily as a
+    // final message. A model that wrote report.md itself is still trusted on a
+    // non-zero exit; so is a fallback report from a clean one.
+    const degraded = input.timedOut
+      || (input.report === null && !reportImpossible)
+      || (input.reportFromFallback === true && input.exitCode !== null && input.exitCode !== 0);
 
     // An annotation, deliberately NOT a degraded verdict. `degraded` means
     // sonata cannot mechanically trust the result, and a run that correctly
@@ -176,7 +191,13 @@ export function decide(input: DecideInput): TailResult {
       ? `[timed out: sonata killed the run after the configured run_timeout_seconds]\n\n${input.paneTail.join('\n')}`
       : reportImpossible
         ? `${effortNote}[read-only run: the harness cannot write a report file, so this is its terminal output]\n\n${input.paneTail.join('\n')}`
-        : degraded && !spoke
+        // Before the generic degraded branches: this one has a report-shaped
+        // file to speak of, and its text (the harness's own last message) is
+        // exactly the evidence the reader needs, so it is kept rather than
+        // replaced by pane text. The note says why it cannot be trusted.
+        : degraded && input.reportFromFallback === true && input.exitCode !== 0
+          ? `[degraded: harness exited ${input.exitCode}, and the report is only the fallback file, which captures the harness's own error output — its presence proves nothing when the harness failed]\n\n${input.report!}`
+          : degraded && !spoke
           ? `[degraded: the harness exited ${input.exitCode} without producing any output — nothing ran]\n\n${input.paneTail.join('\n')}`
           : degraded
             ? `[degraded: harness exited ${input.exitCode} without writing a report]\n\n${input.paneTail.join('\n')}`
@@ -328,6 +349,10 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
     const fallback = fallbackPath && existsSync(fallbackPath)
       ? readFileSync(fallbackPath, 'utf8').trim() || null
       : null;
+    const ownReport = readReport(opts.cwd, opts.id);
+    // The fallback file is the harness's own output, not the model's report —
+    // so decide() must know which one it is getting before it can weigh it.
+    const reportFromFallback = ownReport === null && fallback !== null;
 
     const detectedPrompt = meta.interactive ? adapter.describePrompt(pane) : null;
     const answeredPrompt = readAnsweredPrompt(opts.cwd, opts.id);
@@ -351,7 +376,8 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
     const result = decide({
       newLines: fresh,
       exitCode,
-      report: readReport(opts.cwd, opts.id) ?? fallback,
+      report: ownReport ?? fallback,
+      reportFromFallback,
       promptText: detectedPrompt === answeredPrompt ? null : detectedPrompt,
       msSinceLastChange: now() - lastChange,
       stallTimeoutMs: config.run.stallTimeoutSeconds * 1000,

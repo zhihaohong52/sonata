@@ -481,3 +481,102 @@ describe('cmdTail composes the effort annotation from the run`s own meta', () =>
     expect(r.report).toContain('I fixed the bug.');
   });
 });
+
+describe('tail decide — a fallback report from a failed harness', () => {
+  // The fallback file (codex/claude `last-message.txt`) captures the HARNESS's
+  // own output — error text included. So its presence proves nothing when the
+  // harness failed: a crash wrote that file just as readily as a final message,
+  // and treating it as a trusted report is how a 404 became a clean DONE.
+  it('degrades a fallback report when the harness exited non-zero', () => {
+    const r = decide({
+      ...base,
+      exitCode: 1,
+      report: 'API Error: 404 model not found',
+      reportFromFallback: true,
+    });
+    expect(r.state).toBe('DONE');
+    expect(r.degraded).toBe(true);
+  });
+
+  it('says why a fallback report cannot be trusted and keeps its text', () => {
+    const r = decide({
+      ...base,
+      exitCode: 1,
+      report: 'API Error: 404 model not found',
+      reportFromFallback: true,
+    });
+    expect(r.report).toMatch(/^\[degraded:/);
+    expect(r.report).toContain('fallback');
+    expect(r.report).toContain('API Error: 404 model not found');
+  });
+
+  it('still trusts a fallback report from a clean exit', () => {
+    const r = decide({
+      ...base,
+      exitCode: 0,
+      report: 'I fixed the bug.',
+      reportFromFallback: true,
+    });
+    expect(r.state).toBe('DONE');
+    expect(r.degraded).toBe(false);
+    expect(r.report).toBe('I fixed the bug.');
+  });
+
+  it("still trusts the model's own report.md even when the exit is non-zero", () => {
+    // The model wrote report.md itself; a non-zero exit alone must not
+    // demote a report the model produced.
+    const r = decide({ ...base, exitCode: 1, report: 'I fixed the bug.' });
+    expect(r.state).toBe('DONE');
+    expect(r.degraded).toBe(false);
+    expect(r.report).toBe('I fixed the bug.');
+  });
+
+  it('leaves a run with no report at all to the existing verdict', () => {
+    const r = decide({ ...base, exitCode: 1, report: null });
+    expect(r.degraded).toBe(true);
+    expect(r.report).toContain('without writing a report');
+  });
+});
+
+describe('cmdTail degrades a fallback report from a failed run', () => {
+  // The `decide` tests above cover the predicate; this covers the WIRING —
+  // that cmdTail threads reportFromFallback from the adapter's fallback file
+  // when report.md is absent. Without it the threading could be deleted with
+  // the suite green.
+  let cwd: string;
+  const session = 'sonata-test-tail-fallback';
+  const id = 'fb123';
+
+  beforeEach(async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-fallback-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '[run]\nstall_timeout_seconds = 120\n');
+    mkdirSync(runDir(cwd, id), { recursive: true });
+    writeFileSync(join(runDir(cwd, id), 'meta.json'), JSON.stringify({
+      id, role: 'code', model: 'gpt-5.6-luna', harness: 'codex', mode: 'acceptEdits',
+      interactive: false, session, cwd, startedAt: '2026-09-27T00:00:00.000Z',
+    }));
+    writeFileSync(join(runDir(cwd, id), 'last-message.txt'), 'API Error: 404 model not found');
+    writeFileSync(join(runDir(cwd, id), 'exit'), '1\n');
+    await newSession({ session, cwd });
+  });
+
+  afterEach(async () => { await killSession(session); });
+
+  it('threads reportFromFallback through to the degraded verdict', async () => {
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+
+    expect(r.state).toBe('DONE');
+    expect(r.degraded).toBe(true);
+    expect(r.report).toMatch(/^\[degraded:/);
+    expect(r.report).toContain('API Error: 404 model not found');
+  });
+
+  it('does not flag a run whose model wrote report.md itself', async () => {
+    writeFileSync(join(runDir(cwd, id), 'report.md'), 'I fixed the bug.');
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+
+    expect(r.state).toBe('DONE');
+    expect(r.degraded).toBe(false);
+    expect(r.report).toContain('I fixed the bug.');
+  });
+});
