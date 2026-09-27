@@ -201,6 +201,25 @@ describe('unreadableMachineBudget', () => {
     expect(unreadableMachineBudget(home)).toBeUndefined();
   });
 
+  it.each([
+    ['a trailing comment', '[budget] # daily cap\ndaily_usd = 5\n'],
+    ['spaces inside the brackets', '[ budget ]\ndaily_usd = 5\n'],
+    ['a quoted table name', '["budget"]\ndaily_usd = 5\n'],
+    ['a dotted top-level key', 'budget.daily_usd = 5\n'],
+    ['an inline table', 'budget = { daily_usd = 5 }\n'],
+  ])('recognises a [budget] cap written with %s', (_label, cap) => {
+    // Every legal TOML spelling of the cap must count: a broken file that
+    // wrote it differently would otherwise lose it silently — the failure
+    // this exists to prevent.
+    writeMachineAt(home, `${cap}[native.gateways\n`);
+    expect(unreadableMachineBudget(home)?.unreadable).toBeDefined();
+  });
+
+  it('does not mistake a [budget.x] subtable header or a key merely named like it for a cap', () => {
+    writeMachineAt(home, 'budgeted = 1\n[native.gateways\n');
+    expect(unreadableMachineBudget(home)).toBeUndefined();
+  });
+
   it('leaves a loadable machine config to the ordinary cap path', () => {
     writeMachineAt(home, '[budget]\ndaily_usd = 5\n');
     expect(unreadableMachineBudget(home)).toBeUndefined();

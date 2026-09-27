@@ -110,6 +110,18 @@ export function budgetRefusal(statuses: BudgetStatus[] | undefined): string | un
 }
 
 /**
+ * A line that sets `[budget]` in any legal TOML spelling: a table header
+ * (spaces inside the brackets, a quoted name and a trailing comment all
+ * allowed) or a top-level `budget.` / `budget =` key. Matching only the bare
+ * `[budget]` line let a broken file that wrote its cap another way lose it
+ * silently. A `[budget.x]` subtable header and a key like `budgeted` do not
+ * count; a commented-out line never starts with the name, so it does not
+ * either. Erring wide is safe here: this is consulted only for a file that
+ * already fails to load.
+ */
+const SETS_BUDGET = /^[ \t]*(?:\[[ \t]*(?:budget|"budget"|'budget')[ \t]*\]|(?:budget|"budget"|'budget')[ \t]*[.=])/m;
+
+/**
  * The refusing status for a machine config that sets `[budget]` but will not
  * load — recovered from the raw file, since `loadConfig` can only say "this
  * does not parse". A cap's only visible effect is a refusal that has not
@@ -137,7 +149,7 @@ export function unreadableMachineBudget(home: string): BudgetStatus | undefined 
     loadConfig(dirname(raw), home);
     return undefined; // loads — a missing cap here is a real absence
   } catch (err) {
-    if (!/^\s*\[budget\]\s*$/m.test(text)) return undefined;
+    if (!SETS_BUDGET.test(text)) return undefined;
     return {
       dailyUsd: 0,
       spentUsd: 0,
