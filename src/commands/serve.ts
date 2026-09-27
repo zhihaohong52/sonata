@@ -1078,8 +1078,8 @@ export async function cmdServe(
         await litellmReady;
         return;
       }
-      // Only committed once the replacement config and credentials are
-      // successfully prepared below — not up front. A gateway added without
+      // Only committed once the replacement is ready (inside `litellmReady`
+      // below) — not up front, and not merely once its config is prepared. A gateway added without
       // its credential yet available makes `buildChildEnv` throw; if this
       // were set before that point, a later request (after the credential is
       // fixed) would see `freshModelsJson === activeModelsJson` and never
@@ -1093,7 +1093,6 @@ export async function cmdServe(
         // its direct ones keep serving from `gatewayKeys` — which is read off
         // `childEnv` and would otherwise still hold the pre-change credential.
         refreshGatewayKeys(mergedNative());
-        activeModelsJson = freshModelsJson;
         console.error('sonata serve: model registry changed — restarting litellm to pick it up...');
         const oldChild = child;
         expectedRestartChild = oldChild;
@@ -1136,6 +1135,11 @@ export async function cmdServe(
           if (stopping) return;
           child = spawnLitellmChild();
           await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
+          // Committed only once the replacement answers. Committed earlier, a
+          // replacement that never came up was never tried again: the next
+          // request saw no change and served a dead upstream until a manual
+          // `sonata restart`. Left uncommitted, the next check retries.
+          activeModelsJson = freshModelsJson;
         })().catch((error) => {
           console.error(`sonata serve: restarted litellm never came up: ${String(error)}`);
         });

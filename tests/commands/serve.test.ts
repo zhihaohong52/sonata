@@ -1325,6 +1325,65 @@ litellm = 43119
     expect(existsSync(tempDirFor())).toBe(false);
   });
 
+  it('retries a model-change restart whose replacement never became ready', async () => {
+    // The new registry was committed before the replacement child answered
+    // its readiness probe, so a replacement that never came up was never
+    // tried again: the next request saw "no change" and used a dead upstream.
+    const config = (model: string) => `
+[models."${model}"]
+gateway = "acme"
+id = "${model}-upstream"
+context_window = 128000
+
+[tiers.code]
+simple = ["${model}"]
+complex = ["${model}"]
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43118
+`;
+    writeSonataKey(home, 'acme', 'acme-key');
+    writeMachineConfig(config('first'));
+    let spawnCount = 0;
+    let waits = 0;
+    const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20,
+      // Startup's child is ready; the first replacement never is.
+      waitForLitellm: async () => { waits += 1; if (waits === 2) throw new Error('never came up'); },
+      spawnLitellm: () => {
+        spawnCount += 1;
+        const index = spawnCount - 1;
+        return {
+          pid: spawnCount,
+          kill: () => exits[index]?.forEach((cb) => cb(null, 'SIGTERM')),
+          onExit: (cb) => { (exits[index] ??= []).push(cb); },
+        };
+      },
+    });
+    handles.push(handle);
+    const send = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+
+    writeMachineConfig(config('second'));
+    await send();
+    expect(spawnCount).toBe(2);
+
+    // No further edit: the change is still unapplied, so it is tried again.
+    await send();
+    const deadline = Date.now() + 2000;
+    while (spawnCount < 3 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+    expect(spawnCount).toBe(3);
+  });
+
   it('retries the restart on the next request after a failed one, instead of marking the change handled', async () => {
     // A gateway added with `credential_source = "sonata"` but no key stored
     // yet makes buildChildEnv throw. If the model snapshot were committed
