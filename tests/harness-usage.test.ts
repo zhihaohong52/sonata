@@ -127,6 +127,13 @@ describe('recordHarnessUsage', () => {
     expect(spentTodayUsd(home, END + 1000)).toBe(0);
   });
 
+  it('hands the adapter the routing the run recorded at launch', () => {
+    const seen: (boolean | undefined)[] = [];
+    const adapter = { usage: (q: { routed?: boolean }) => { seen.push(q.routed); return observed(0.75); } };
+    recordHarnessUsage({ cwd, home, meta: { ...finishedRun(), routed: true }, config: loadConfig(cwd, home), adapter, modelsDev: undefined });
+    expect(seen).toEqual([true]);
+  });
+
   it('survives a reader that throws', () => {
     const meta = finishedRun();
     const out = recordHarnessUsage({
