@@ -632,6 +632,26 @@ function buildChildEnv(native: NativeConfig, home: string, tempDir: string): Nod
 /** Default bound on how long a model-registry restart waits for the old litellm child to exit (see `litellmExitTimeoutMs`). */
 const LITELLM_EXIT_TIMEOUT_MS = 5000;
 
+/** How often a running daemon re-applies ledger and session retention. */
+const RETENTION_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Prunes ledger day-files and session records past the retention window.
+ * Housekeeping: every failure is swallowed, since it must never block serving.
+ * The session prune is awaited so it does not race its own lock against a
+ * concurrent hook.
+ */
+async function pruneRetention(home: string): Promise<void> {
+  try {
+    const removed = pruneLedger(home, LEDGER_RETENTION_DAYS);
+    if (removed > 0) console.log(`ledger: pruned ${removed} day file(s) older than ${LEDGER_RETENTION_DAYS}d`);
+  } catch { /* housekeeping */ }
+  try {
+    const removedSessions = await pruneSessions(home, LEDGER_RETENTION_DAYS);
+    if (removedSessions > 0) console.log(`sessions: pruned ${removedSessions} record(s) older than ${LEDGER_RETENTION_DAYS}d`);
+  } catch { /* housekeeping */ }
+}
+
 /**
  * SIGTERM, a bounded wait for the exit, then SIGKILL (once). Shared by the
  * startup-failure path and `stop()`, so the two cannot drift apart again.
@@ -1173,22 +1193,13 @@ export async function cmdServe(
       return inFlight;
     };
 
-    // Retention is enforced where the writer starts, so a long-lived daemon
-    // cannot accumulate day-files indefinitely the way opencode's event table
-    // did (6.5 GB, and not something sonata gets to repeat in its own store).
-    try {
-      const removed = pruneLedger(opts.home, LEDGER_RETENTION_DAYS);
-      if (removed > 0) console.log(`ledger: pruned ${removed} day file(s) older than ${LEDGER_RETENTION_DAYS}d`);
-    } catch { /* pruning is housekeeping; it never blocks serving */ }
-
-    // Same retention window, same defensive posture: a long-lived daemon must
-    // also expire the session->project map, not just the ledger it relies on.
-    // Awaited so `serve` does not race its own lock against a concurrent hook;
-    // its own failure is swallowed identically to the ledger prune above.
-    try {
-      const removedSessions = await pruneSessions(opts.home, LEDGER_RETENTION_DAYS);
-      if (removedSessions > 0) console.log(`sessions: pruned ${removedSessions} record(s) older than ${LEDGER_RETENTION_DAYS}d`);
-    } catch { /* pruning is housekeeping; it never blocks serving */ }
+    // Retention is enforced by the writer — at startup and then daily (the
+    // timer is started beside the price refresh below) — so a daemon that
+    // stays up for weeks cannot accumulate day-files the way opencode's event
+    // table did (6.5 GB, and not something sonata gets to repeat in its own
+    // store). Pruning only at startup let everything outlive the window for
+    // as long as the daemon lived.
+    await pruneRetention(opts.home);
 
     let litellmReadyResolved = !needsLitellmAtStart;
 
@@ -1340,6 +1351,10 @@ export async function cmdServe(
     update: async (home) => updateModelsDev(home, fetch, {}),
     log: (line) => console.log(line),
   });
+  // Same posture as the price refresh: never delays a request, never holds the
+  // process open.
+  const retentionTimer = setInterval(() => { void pruneRetention(opts.home); }, RETENTION_INTERVAL_MS);
+  retentionTimer.unref?.();
 
   let stopped = false;
 
@@ -1352,6 +1367,7 @@ export async function cmdServe(
       // Before anything else: an interval firing during teardown would fetch
       // against a daemon that is going away.
       stopPriceRefresh();
+      clearInterval(retentionTimer);
       stopping = true;
       // SIGTERM, bounded wait, then SIGKILL — the startup-failure path's
       // sequence, and BEFORE the state file naming its pid and the temp dir
