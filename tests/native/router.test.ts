@@ -29,6 +29,23 @@ function fakeFetch(record: FetchCall[]): typeof fetch {
   };
 }
 
+/** A JSON body carrying final usage — what a completed non-streaming answer looks like. */
+const COMPLETE_BODY = JSON.stringify({ usage: { input_tokens: 1, output_tokens: 1 } });
+
+/**
+ * Routes and then reads the whole body, as a real client does. Stickiness is
+ * decided when the response completes, not when its status arrives.
+ */
+async function serveFully(...args: Parameters<typeof routeRequest>): ReturnType<typeof routeRequest> {
+  const res = await routeRequest(...args);
+  if (!Buffer.isBuffer(res.body)) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of res.body) chunks.push(Buffer.from(chunk));
+    return { ...res, body: Buffer.concat(chunks) };
+  }
+  return res;
+}
+
 const base = { litellmBase: 'http://lite', litellmKey: 'sk-local', anthropicBase: 'https://api.anthropic.com' };
 
 describe('routeRequest', () => {
@@ -1706,7 +1723,7 @@ describe('conversation stickiness', () => {
         const payload = JSON.parse(init.body as string) as { model: string };
         seen.push(payload.model);
         bodies.push(payload);
-        return new Response('{}', { status: payload.model === 'default/flash' && state.flashFails ? 503 : 200 });
+        return new Response(COMPLETE_BODY, { status: payload.model === 'default/flash' && state.flashFails ? 503 : 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
       resolveTier: () => ROUTES,
@@ -1719,7 +1736,7 @@ describe('conversation stickiness', () => {
     const { seen, state, deps } = harness();
 
     // Turn 1: the leader fails, so luna serves — and is remembered.
-    await routeRequest(turn(1), deps);
+    await serveFully(turn(1), deps);
     expect(seen).toEqual(['default/flash', 'default/luna']);
 
     // flash recovers and its cooldown lapses, so rank order would pick it again.
@@ -1727,11 +1744,11 @@ describe('conversation stickiness', () => {
     state.clock += TIER_COOLDOWN_MS + 1;
 
     // Turn 2 of the SAME conversation still goes to luna.
-    await routeRequest(turn(2), deps);
+    await serveFully(turn(2), deps);
     expect(seen.slice(2)).toEqual(['default/luna']);
 
     // A different conversation is unaffected and gets the ranked leader.
-    await routeRequest(turn(1, 'write the docs'), deps);
+    await serveFully(turn(1, 'write the docs'), deps);
     expect(seen.slice(3)).toEqual(['default/flash']);
   });
 
@@ -1739,13 +1756,13 @@ describe('conversation stickiness', () => {
     const { seen, state, deps } = harness();
     state.flashFails = false;
 
-    await routeRequest(turn(1), deps);
+    await serveFully(turn(1), deps);
     expect(seen).toEqual(['default/flash']);
 
     // The pinned candidate now fails; the tier must still fall through to luna
     // rather than dying on the model the conversation happens to prefer.
     state.flashFails = true;
-    await routeRequest(turn(2), deps);
+    await serveFully(turn(2), deps);
     expect(seen.slice(1)).toEqual(['default/flash', 'default/luna']);
   });
 
@@ -1753,10 +1770,10 @@ describe('conversation stickiness', () => {
     const { seen, bodies, state, deps } = harness();
     state.flashFails = false;
 
-    await routeRequest(turn(1), deps);
+    await serveFully(turn(1), deps);
     // Turn 2 carries flash's thinking blocks; flash then fails, so luna takes over.
     state.flashFails = true;
-    await routeRequest(turn(3), deps);
+    await serveFully(turn(3), deps);
 
     expect(seen).toEqual(['default/flash', 'default/flash', 'default/luna']);
     const served = bodies.at(-1)!;
@@ -1772,8 +1789,8 @@ describe('conversation stickiness', () => {
     const { bodies, state, deps } = harness();
     state.flashFails = false;
 
-    await routeRequest(turn(1), deps);
-    await routeRequest(turn(3), deps);
+    await serveFully(turn(1), deps);
+    await serveFully(turn(3), deps);
 
     const types = bodies.at(-1)!.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content.map((b: any) => b.type) : []);
     expect(types).toContain('thinking');
@@ -1791,26 +1808,26 @@ describe('conversation stickiness', () => {
         seen.push(model);
         return model === 'default/flash' && state.flash400
           ? new Response(JSON.stringify({ error: { message: 'some client error' } }), { status: 400 })
-          : new Response('{}', { status: 200 });
+          : new Response(COMPLETE_BODY, { status: 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
       resolveTier: () => ROUTES,
     };
 
     // flash serves and is pinned.
-    await routeRequest(turn(1), deps);
+    await serveFully(turn(1), deps);
     expect(seen).toEqual(['default/flash']);
 
     // It now 400s. The 400 is returned to the caller (not a recognised
     // capability failure), so nothing cools it down.
     state.flash400 = true;
-    expect((await routeRequest(turn(2), deps)).status).toBe(400);
+    expect((await serveFully(turn(2), deps)).status).toBe(400);
     expect(seen.slice(1)).toEqual(['default/flash']);
 
     // The retry must NOT prefer it again. Rank order puts flash first anyway,
     // so it is tried, 400s, and the tier falls through — the point is that the
     // pin is no longer forcing it ahead of a healthy candidate.
-    await routeRequest(turn(2), deps);
+    await serveFully(turn(2), deps);
     expect(seen.slice(2)).toEqual(['default/flash']);
   });
 
@@ -1830,23 +1847,23 @@ describe('conversation stickiness', () => {
         seen.push(payload.model);
         bodies.push(payload);
         const flash = payload.model === 'default/flash';
-        if (state.phase === 1) return new Response('{}', { status: flash ? 503 : 200 });
+        if (state.phase === 1) return new Response(COMPLETE_BODY, { status: flash ? 503 : 200 });
         if (state.phase === 2 && !flash) {
           return new Response(JSON.stringify({ error: { message: 'client error' } }), { status: 400 });
         }
-        return new Response('{}', { status: 200 });
+        return new Response(COMPLETE_BODY, { status: 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
       resolveTier: () => ROUTES,
       now: () => state.clock,
     };
 
-    await routeRequest(turn(1), deps);
+    await serveFully(turn(1), deps);
     expect(seen).toEqual(['default/flash', 'default/luna']);
 
     // Luna is now preferred over the ranked leader, and 400s.
     state.phase = 2;
-    expect((await routeRequest(turn(3), deps)).status).toBe(400);
+    expect((await serveFully(turn(3), deps)).status).toBe(400);
     expect(seen.slice(2)).toEqual(['default/luna']);
 
     // Retried: the preference is gone, so flash leads on rank again — and it
@@ -1855,7 +1872,7 @@ describe('conversation stickiness', () => {
     // the memory of luna having served.
     state.phase = 3;
     state.clock += TIER_COOLDOWN_MS + 1;
-    await routeRequest(turn(3), deps);
+    await serveFully(turn(3), deps);
     const served = bodies.at(-1)!;
     expect(served.model).toBe('default/flash');
     const types = served.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content.map((b: any) => b.type) : []);
@@ -1866,14 +1883,14 @@ describe('conversation stickiness', () => {
   it('forgets a conversation that has been idle past the TTL', async () => {
     const { seen, state, deps } = harness();
 
-    await routeRequest(turn(1), deps);
+    await serveFully(turn(1), deps);
     expect(seen).toEqual(['default/flash', 'default/luna']);
 
     state.flashFails = false;
     state.clock += STICKY_TTL_MS + 1;
 
     // The pin has aged out, so rank order applies again.
-    await routeRequest(turn(2), deps);
+    await serveFully(turn(2), deps);
     expect(seen.slice(2)).toEqual(['default/flash']);
   });
 });
@@ -2292,20 +2309,20 @@ describe('conversation key collisions', () => {
       fetch: (async (_url: string, init: RequestInit) => {
         const payload = JSON.parse(init.body as string) as { model: string; messages: unknown[] };
         bodies.push(payload);
-        return new Response('{}', { status: payload.model === 'default/flash' && state.flashFails ? 503 : 200 });
+        return new Response(COMPLETE_BODY, { status: payload.model === 'default/flash' && state.flashFails ? 503 : 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
       resolveTier: () => ROUTES,
     };
     const opener = { role: 'user', content: 'same task text' };
     // Conversation A is served by flash.
-    await routeRequest(request([opener]), deps);
+    await serveFully(request([opener]), deps);
     // Conversation B opens identically; flash fails, so luna serves it.
     state.flashFails = true;
-    await routeRequest(request([opener]), deps);
+    await serveFully(request([opener]), deps);
     // A's second turn carries flash's thinking. flash is cooling, luna serves:
     // the blocks are foreign to luna and must not reach it.
-    await routeRequest(request([
+    await serveFully(request([
       opener,
       { role: 'assistant', content: [THINKING, { type: 'text', text: 'ok' }] },
       { role: 'user', content: 'continue' },
@@ -2313,5 +2330,63 @@ describe('conversation key collisions', () => {
     const last = bodies.at(-1)!;
     expect(last.model).toBe('default/luna');
     expect(JSON.stringify(last.messages)).not.toContain('sig-flash');
+  });
+});
+
+describe('stickiness waits for the response to complete', () => {
+  const ROUTES = {
+    role: 'code', tier: 'simple',
+    routes: [
+      { key: 'flash', native: { gateway: 'gf', id: 'flash-1' } },
+      { key: 'luna', native: { gateway: 'gl', id: 'luna-1' } },
+    ],
+  };
+  const request = () => ({
+    method: 'POST', url: '/v1/messages', headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: 'task' }] })),
+  });
+  const sse = (frames: string[], breakAfter: boolean) => new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const frame of frames) controller.enqueue(new TextEncoder().encode(frame));
+      if (breakAfter) controller.error(new Error('upstream reset'));
+      else controller.close();
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const START = 'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":0}}}\n\n';
+  const DELTA = 'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":5}}\n\n';
+
+  beforeEach(() => clearCooldowns());
+
+  const run = async (breakLuna: boolean) => {
+    const seen: string[] = [];
+    const state = { flashFails: true, clock: 1_000 };
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        if (model === 'default/flash') return state.flashFails ? new Response('{}', { status: 503 }) : sse([START, DELTA], false);
+        return breakLuna ? sse([START], true) : sse([START, DELTA], false);
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+      now: () => state.clock,
+    };
+    const first = await routeRequest(request(), deps);
+    try { for await (const _ of first.body as AsyncIterable<Uint8Array>) { /* read */ } } catch { /* broken stream */ }
+    // flash recovers after its cooldown; which candidate is tried first now?
+    state.flashFails = false;
+    state.clock += TIER_COOLDOWN_MS + 1;
+    seen.length = 0;
+    const second = await routeRequest(request(), deps);
+    for await (const _ of second.body as AsyncIterable<Uint8Array>) { /* read */ }
+    return seen[0];
+  };
+
+  it('prefers the candidate whose stream completed', async () => {
+    expect(await run(false)).toBe('default/luna');
+  });
+
+  it('does not prefer a candidate whose stream broke partway', async () => {
+    expect(await run(true)).toBe('default/flash');
   });
 });
