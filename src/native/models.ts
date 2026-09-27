@@ -134,6 +134,8 @@ export async function fetchModels(
   try {
     const response = await doFetch(modelsUrl(baseUrl), {
       headers: google ? { 'x-goog-api-key': apiKey } : { Authorization: `Bearer ${apiKey}` },
+      // Never follow a redirect: fetch would carry the key to another origin.
+      redirect: 'error',
       signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
     });
     if (response.status === 401 || response.status === 403) {
