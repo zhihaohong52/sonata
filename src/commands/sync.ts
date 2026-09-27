@@ -82,6 +82,23 @@ ${bullets}
 ${pick}`;
 }
 
+/**
+ * The paragraph telling a caller how the model is chosen.
+ *
+ * A collapsed role has no tiers to choose between, and interpolating the
+ * empty list rendered "pick , and let the frontmatter select the model" — so
+ * that case says what is actually true instead, with no tier list at all.
+ */
+function modelChoice(available: readonly Tier[]): string {
+  if (available.length === 0) {
+    return '\nThis role\'s tiers are identical, so there is no tier to choose: the frontmatter selects the model.';
+  }
+  return `${tierChoice(available)}
+
+The tier is the model choice: pick ${available.map((t) => `-${t}`).join(' or ')}, and let
+the frontmatter select the model.`;
+}
+
 const DELEGATING = `## Delegating
 
 You may spawn subagents. Delegate only to read-only agent types — \`review-*\`,
@@ -502,10 +519,7 @@ ${tools}---
 This agent only works in a routed session (sonata code, or sonata route on/auto).
 
 ${NO_MODEL_ARG}
-${tierChoice(available)}
-
-The tier is the model choice: pick ${available.map((t) => `-${t}`).join(' or ')}, and let
-the frontmatter select the model.
+${modelChoice(available)}
 
 ${TIER_AGENT_MARKER} — edits here are overwritten on the next sync.
 
