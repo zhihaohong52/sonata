@@ -8,7 +8,7 @@ import { splitCandidate, type Effort } from './effort.js';
 import { assertEffortsPinned, loadAaCatalog } from './catalog.js';
 import { loadModelsDev } from './modelsdev.js';
 import { configUpstreamFor } from './pricing.js';
-import { envVarForGateway } from './native/litellm.js';
+import { envVarForGateway } from './native/gateway-env.js';
 
 export const KNOWN_HARNESSES = ['opencode', 'codex', 'pi', 'reasonix', 'claude'] as const;
 export const KNOWN_ROLES = ['review', 'code', 'explore', 'plan'] as const;
