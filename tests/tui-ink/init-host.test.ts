@@ -2,10 +2,10 @@ import React from 'react';
 import { render } from 'ink-testing-library';
 import { describe, expect, it } from 'vitest';
 import { ConfirmScreen } from '../../src/tui-ink/screens/init.js';
+import { tick } from './ink-wait.js';
 
 const ENTER = '\r';
 const LEFT = '\u001B[D';
-const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
 
 const QUESTION = ['  config: ./sonata.toml', '  agents: 12', 'Write these changes?'].join('\n');
 
