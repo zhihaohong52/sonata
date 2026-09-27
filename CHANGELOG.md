@@ -8,6 +8,38 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+From the full audit of 0.13.1 (`docs/reviews/2026-09-27-full-audit.md`):
+
+- **A crashed dispatch run is no longer reported as a clean success.** A
+  harness that failed still leaves its fallback report file (claude writes
+  its own error output there), so a run exiting 1 with "API Error: 404" was
+  DONE and trusted, and `sonata dispatch` never tried the next ranked model.
+- **Launch scripts shell-quote every path.** A project path containing `'`
+  broke every launch in it; one containing `$(…)` ran it.
+- **Two gateways that would share one key variable are refused.**
+  `acme-prod` and `acme_prod` (or `Foo` and `foo`) mapped to one
+  `SONATA_KEY_*`, so one gateway's key was sent to the other's endpoint.
+- **API keys are never sent across a redirect.** `sonata catalog update`
+  and the BYOK model listing followed redirects carrying the key; the
+  catalog fetch also had no timeout.
+- **`sonata restart` no longer signals a pid the OS has reused.** The
+  recorded LiteLLM pid is checked against its command line first.
+- **`sonata code` / `sonata run` no longer time out starting the router.**
+  They launched `serve --daemon`, which re-daemonised under a new instance
+  id, so the readiness check never matched.
+- **Re-running `sonata init` keeps a gateway's `provider`, a hand-ranked
+  `normal` tier, and a non-default `[native.ports]`.** All three were
+  silently deleted.
+- **Dispatch-run spend no longer vanishes from the budget.** A metered
+  harness run of a model with an OAuth native route was counted as covered;
+  a session with unreadable token counts was recorded as zero; a failed
+  ledger write was never retried.
+- **A machine `sonata.toml` that will not load no longer switches its cap
+  off.** When it has a `[budget]` table, the router and `sonata dispatch`
+  refuse, naming the file and the error.
+
 ## [0.13.1] - 2026-09-27
 
 ### Fixed
