@@ -28,7 +28,7 @@ describe('agentMarkdown', () => {
   const md = agentMarkdown({ role: 'code', model: 'deepseek-v4-flash', harness: 'opencode' });
 
   it('declares a cheap tool-only wrapper', () => {
-    expect(md).toContain('name: code-deepseek-v4-flash');
+    expect(md).toContain('name: "code-deepseek-v4-flash"');
     expect(md).toContain('model: haiku');
     expect(md).toContain('tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
   });
@@ -64,6 +64,30 @@ describe('agentMarkdown', () => {
   it('documents the PAUSED and STALLED handling', () => {
     expect(md).toContain('PAUSED');
     expect(md).toContain('STALLED');
+  });
+});
+
+describe('legacy agents — model keys in YAML frontmatter', () => {
+  // A config key is any quoted TOML string, and interpolating one into a plain
+  // YAML scalar broke the frontmatter: `: ` reads as a mapping and ` #` as a
+  // comment. JSON's double-quoted string is valid YAML, so each is emitted as
+  // one and must parse back to exactly the text intended.
+  const value = (md: string, field: string): string => {
+    const line = md.split('\n').find((l) => l.startsWith(`${field}: `))!;
+    return JSON.parse(line.slice(field.length + 2)) as string;
+  };
+  const key = 'opencode-a: b #c';
+
+  it('quotes name and description in the harness wrapper', () => {
+    const md = agentMarkdown({ role: 'code', model: key, harness: 'opencode' });
+    expect(value(md, 'name')).toBe(`code-${key}`);
+    expect(value(md, 'description')).toContain(`to ${key} running under opencode`);
+  });
+
+  it('quotes name and description in the native agent', () => {
+    const md = nativeAgentMarkdown({ role: 'code', model: key });
+    expect(value(md, 'name')).toBe(`native-code-${key}`);
+    expect(value(md, 'description')).toContain(`natively on ${key} inside`);
   });
 });
 
@@ -110,7 +134,7 @@ describe('agentMarkdown — one-call dispatch', () => {
 describe('nativeAgentMarkdown', () => {
   it('generates a native agent with the model id in frontmatter and no dispatch tools', () => {
     const md = nativeAgentMarkdown({ role: 'code', model: 'deepseek-v4-flash' });
-    expect(md).toMatch(/^name: native-code-deepseek-v4-flash$/m);
+    expect(md).toMatch(/^name: "native-code-deepseek-v4-flash"$/m);
     expect(md).toMatch(/^model: deepseek-v4-flash$/m);
     expect(md).not.toMatch(/mcp__legacy__/);
     expect(md).not.toMatch(/forwarding wrapper/);
