@@ -9,13 +9,12 @@ import { aaCatalogPath, loadAaCatalog } from '../../src/catalog.js';
 import { parseConfig } from '../../src/config.js';
 import { rankableCandidates } from '../../src/commands/agents.js';
 import type { TuiResult } from '../../src/tui-ink/types.js';
+import { tick } from './ink-wait.js';
 
 const ENTER = '\r';
 const DOWN = '\x1B[B';
 const SPACE = ' ';
 
-/** Lets Ink flush a render before the next keystroke is read. */
-const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
 
 function renderWizard(data: WizardData) {
   let result: TuiResult | undefined;

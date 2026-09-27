@@ -5,10 +5,10 @@ import { OAuthModelsStep, ProvidersStep, oauthModelIds, parseOAuthModelIds } fro
 import type { ModelsDevCache } from '../../src/modelsdev.js';
 import type { LoginResult } from '../../src/native/oauth-login.js';
 import type { InitState } from '../../src/tui-ink/types.js';
+import { settle, tick, until } from './ink-wait.js';
 
 const ENTER = '\r';
 const SPACE = ' ';
-const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
 
 const cache: ModelsDevCache = {
   fetchedAt: '2026-09-21T00:00:00Z',
@@ -88,17 +88,19 @@ describe('OAuth login in ProvidersStep', () => {
       onCancel: () => {},
     }));
 
+    const frame = () => app.lastFrame() ?? '';
+    await settle();
     app.stdin.write(ENTER); // menu -> add provider
-    await tick();
+    await until(() => frame().includes('Add a custom provider'), 'the provider picker');
     app.stdin.write('openai');
     app.stdin.write(ENTER); // provider picker -> login
-    await tick();
-    await tick(); // let LoginScreen's effect complete
-    expect(app.lastFrame()).toContain('Models for openai');
+    // The models screen mounts from LoginScreen's effect once the login
+    // resolves, so it is waited for rather than assumed after a fixed sleep.
+    await until(() => frame().includes('Models for openai') && frame().includes('gpt-5.6-luna'), 'the models screen');
     app.stdin.write(SPACE); // select the first catalog row
-    await tick();
+    await until(() => frame().includes('1 selected'), 'the row to be selected');
     app.stdin.write(ENTER);
-    await tick();
+    await until(() => state.byokModels !== undefined, 'the selection to be recorded');
 
     expect(state.providerKeys).toEqual(['byok/openai']);
     expect(state.credentialSources).toEqual({ openai: 'sonata' });
