@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
-  cmdServe as realCmdServe, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
+  cmdServe as realCmdServe, listenOn, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
   serveStatePath, stopServe, cmdRestart, defaultWaitForLitellm, sonataRouterMultiTenant, processCommand,
   budgetStatusesFor,
 } from '../../src/commands/serve.js';
@@ -334,12 +334,7 @@ litellm = ${litellmPort}
 
   it('closes the router when eager LiteLLM startup fails after binding', async () => {
     const net = await import('node:net');
-    const probe = net.createServer();
-    await new Promise<void>((resolve) => probe.listen(0, 'localhost', () => resolve()));
-    const address = probe.address();
-    if (address === null || typeof address === 'string') throw new Error('probe did not bind');
-    const routerPort = address.port;
-    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+    const routerPort = await freePort();
 
     await expect(cmdServe({
       cwd, home, tempDir: tempDirFor(), ports: { router: routerPort, litellm: litellmPort },
@@ -348,22 +343,19 @@ litellm = ${litellmPort}
     })).rejects.toThrow('LiteLLM never came up');
 
     expect(existsSync(serveStatePath(home, routerPort))).toBe(false);
-    const rebound = net.createServer();
-    await new Promise<void>((resolve, reject) => {
-      rebound.once('error', reject);
-      rebound.listen(routerPort, 'localhost', () => resolve());
-    });
-    await new Promise<void>((resolve, reject) => rebound.close((error) => error ? reject(error) : resolve()));
+    // Released on both families, not just the one `localhost` names.
+    for (const host of ['127.0.0.1', '::1']) {
+      const rebound = net.createServer();
+      await new Promise<void>((resolve, reject) => {
+        rebound.once('error', reject);
+        rebound.listen(routerPort, host, () => resolve());
+      });
+      await new Promise<void>((resolve, reject) => rebound.close((error) => error ? reject(error) : resolve()));
+    }
   });
 
   it('preserves a replacement router record when eager startup later fails', async () => {
-    const net = await import('node:net');
-    const probe = net.createServer();
-    await new Promise<void>((resolve) => probe.listen(0, 'localhost', () => resolve()));
-    const address = probe.address();
-    if (address === null || typeof address === 'string') throw new Error('probe did not bind');
-    const routerPort = address.port;
-    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+    const routerPort = await freePort();
 
     await expect(cmdServe({
       cwd, home, tempDir: tempDirFor(), ports: { router: routerPort, litellm: litellmPort },
@@ -407,13 +399,7 @@ litellm = ${litellmPort}
   });
 
   it('does not touch the winner state when a second serve loses the router port race', async () => {
-    const net = await import('node:net');
-    const probe = net.createServer();
-    await new Promise<void>((resolve) => probe.listen(0, 'localhost', () => resolve()));
-    const address = probe.address();
-    if (address === null || typeof address === 'string') throw new Error('probe did not bind');
-    const routerPort = address.port;
-    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+    const routerPort = await freePort();
 
     const winner = await cmdServe({
       cwd, home, tempDir: join(cwd, 'winner'), ports: { router: routerPort, litellm: litellmPort },
@@ -3414,4 +3400,136 @@ describe('defaultWaitForLitellm — a listener that never answers', () => {
     expect(signals.length).toBeGreaterThan(0);
     expect(signals.every((signal) => signal !== undefined)).toBe(true);
   }, 15_000);
+});
+
+describe('cmdServe — the router listens on both loopback families', () => {
+  // `localhost` resolves to ::1 and 127.0.0.1 here, in that order. The router
+  // bound `localhost` — ::1 only — while every client (Claude Code's
+  // ANTHROPIC_BASE_URL, the hooks, doctor) connects to `localhost` with
+  // Node's happy-eyeballs: when the ::1 attempt has not been *seen* to
+  // complete within 250ms, it is abandoned for 127.0.0.1, where nothing
+  // listened, and the request fails `fetch failed` / ETIMEDOUT.
+  const health = (url: string) => fetch(url, { headers: { connection: 'close' } }).then((res) => res.status);
+
+  it('accepts a client that stalls while connecting over localhost', async () => {
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+    const net = await import('node:net');
+    // The same connect undici makes for `fetch('http://localhost:…')`:
+    // happy-eyeballs across both families, 250ms per attempt. Blocking the
+    // thread for 300ms as the first attempt starts — a loaded worker, or a busy
+    // client — lets that timer expire before the completed connect is seen,
+    // so the attempt is abandoned for the next family.
+    const outcome = await new Promise<string>((resolve) => {
+      const stall = new Int32Array(new SharedArrayBuffer(4));
+      const socket = net.connect({ host: 'localhost', port: handle.routerPort, autoSelectFamily: true });
+      // Blocking from a setImmediate puts the stall in the loop's check phase,
+      // so the next turn runs its timers — the expired attempt timer — before
+      // it polls for the connect that has meanwhile completed.
+      socket.once('connectionAttempt', () => { setImmediate(() => { Atomics.wait(stall, 0, 0, 300); }); });
+      socket.once('connect', () => { socket.destroy(); resolve('connected'); });
+      socket.once('error', (error: NodeJS.ErrnoException) => resolve(`${error.code ?? error.message}`));
+    });
+    expect(outcome).toBe('connected');
+  });
+
+  it('answers on both http://127.0.0.1 and http://[::1]', async () => {
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+    expect(await health(`http://127.0.0.1:${handle.routerPort}/__sonata_health`)).toBe(200);
+    expect(await health(`http://[::1]:${handle.routerPort}/__sonata_health`)).toBe(200);
+  });
+
+  it('releases both families on stop', async () => {
+    const port = await freePort();
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(), ports: { router: port, litellm: litellmPort },
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    await handle.stop();
+    const net = await import('node:net');
+    for (const host of ['127.0.0.1', '::1']) {
+      const again = net.createServer();
+      await new Promise<void>((resolve, reject) => { again.once('error', reject); again.listen(port, host, () => resolve()); });
+      await new Promise<void>((resolve) => again.close(() => resolve()));
+    }
+  });
+
+  for (const missing of ['::1', '127.0.0.1'] as const) {
+    for (const code of ['EADDRNOTAVAIL', 'EAFNOSUPPORT']) {
+      it(`serves on the other family when ${missing} cannot be bound (${code})`, async () => {
+        const handle = await cmdServe({
+          cwd, home, tempDir: tempDirFor(),
+          waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+          listenOn: (server, port, host) => host === missing
+            ? Promise.reject(Object.assign(new Error(`listen ${code} ${host}`), { code }))
+            : listenOn(server, port, host),
+        });
+        handles.push(handle);
+        const present = missing === '::1' ? `127.0.0.1` : `[::1]`;
+        expect(await health(`http://${present}:${handle.routerPort}/__sonata_health`)).toBe(200);
+      });
+    }
+  }
+
+  it('fails when neither family can be bound', async () => {
+    await expect(cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+      listenOn: (_server, _port, host) => Promise.reject(Object.assign(new Error(`listen EADDRNOTAVAIL ${host}`), { code: 'EADDRNOTAVAIL' })),
+    })).rejects.toThrow(/EADDRNOTAVAIL/);
+  });
+
+  it('still refuses, naming the holder, when either family of a fixed port is taken', async () => {
+    // A router predating this binds ::1 alone; its successor must not come up
+    // beside it on 127.0.0.1 and split `localhost` between two daemons.
+    const net = await import('node:net');
+    for (const held of ['::1', '127.0.0.1']) {
+      const port = await freePort();
+      const holder = net.createServer();
+      await new Promise<void>((resolve) => holder.listen(port, held, () => resolve()));
+      try {
+        await expect(cmdServe({
+          cwd, home, tempDir: tempDirFor(), ports: { router: port, litellm: litellmPort },
+          waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+          probeHealth: (async () => { throw new Error('not a router'); }) as unknown as typeof fetch,
+        })).rejects.toThrow(/non-sonata/);
+        // Nothing half-bound is left behind on the other family.
+        const other = held === '::1' ? '127.0.0.1' : '::1';
+        const again = net.createServer();
+        await new Promise<void>((resolve, reject) => { again.once('error', reject); again.listen(port, other, () => resolve()); });
+        await new Promise<void>((resolve) => again.close(() => resolve()));
+      } finally {
+        await new Promise<void>((resolve) => holder.close(() => resolve()));
+      }
+    }
+  });
+
+  it('retries an ephemeral port whose other family is already taken', async () => {
+    // Port 0 lets the kernel pick for the first family only; the same number
+    // can be held on the second. That is a collision to route around, not a
+    // configured port to refuse.
+    let collisions = 1;
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+      listenOn: (server, port, host) => {
+        if (host === '::1' && collisions > 0) {
+          collisions -= 1;
+          return Promise.reject(Object.assign(new Error(`listen EADDRINUSE ${host}:${port}`), { code: 'EADDRINUSE' }));
+        }
+        return listenOn(server, port, host);
+      },
+    });
+    handles.push(handle);
+    expect(collisions).toBe(0);
+    expect(await health(`http://127.0.0.1:${handle.routerPort}/__sonata_health`)).toBe(200);
+    expect(await health(`http://[::1]:${handle.routerPort}/__sonata_health`)).toBe(200);
+  });
 });

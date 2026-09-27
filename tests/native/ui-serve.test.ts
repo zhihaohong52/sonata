@@ -19,7 +19,7 @@ describe('serve mounts the UI', () => {
     const src = readFileSync(new URL('../../src/commands/serve.ts', import.meta.url), 'utf8');
     // A configured port of 0 binds an ephemeral one; a UiDeps still carrying 0
     // fails every Host check and the startup line reads `localhost:0`.
-    expect(src).toMatch(/uiDeps\.port = typeof bound === 'object'/);
+    expect(src).toMatch(/uiDeps\.port = boundPort;/);
     expect(src).toMatch(/sonata UI: http:\/\/localhost:\$\{uiDeps\.port\}\//);
   });
 });
