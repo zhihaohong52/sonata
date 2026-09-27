@@ -40,26 +40,51 @@ if (Number.isInteger(port) && port > 0) {
     process.exit(0);
   }
 
+  // Shown to the user by Claude Code; plain stdout on SessionStart would
+  // become context for Claude instead. The hook still exits 0 — it must never
+  // break the session it observes — but a router that never came up used to
+  // end here with nothing said, leaving only connection errors later.
+  const surface = (text) => {
+    process.stdout.write(JSON.stringify({ systemMessage: text }) + '\n');
+  };
+  const logDir = join(homedir(), '.config', 'sonata', 'logs');
+
   try {
     // The machine config FILE decides, not its directory: sonata creates
     // ~/.config/sonata for logs and the router token on machines whose only
     // config is a project's, and a daemon started there has no config.
     const machineConfigDir = join(homedir(), '.config', 'sonata');
+    let spawnError = null;
     const daemon = spawn('sonata', ['serve', '--daemon'], {
       detached: true,
       stdio: 'ignore',
       ...(existsSync(join(machineConfigDir, 'sonata.toml')) ? { cwd: machineConfigDir } : {}),
     });
+    // Unhandled, a spawn failure (no `sonata` on PATH) is an 'error' event
+    // that crashes the hook with a stack trace instead of a reason.
+    daemon.on('error', (error) => { spawnError = error; });
     daemon.unref();
 
     const deadline = Date.now() + 10_000;
     let started = null;
-    while (Date.now() < deadline) {
+    while (Date.now() < deadline && spawnError === null) {
       started = await probeHealth(1000);
       if (started) break;
       await new Promise((r) => setTimeout(r, 500));
     }
     if (started && started.multiTenant !== true) rejectPreMultiTenant();
+    if (spawnError !== null) {
+      surface(
+        `sonata: could not start \`sonata serve --daemon\` (${spawnError.message}), so this session's ` +
+        `requests to port ${port} have no router. Is sonata on PATH?`,
+      );
+    } else if (!started) {
+      surface(
+        `sonata: the router did not come up on port ${port} within 10s. It may still be starting; if ` +
+        `this session's requests fail, see the newest serve-*.log in ${logDir}, or run ` +
+        `\`sonata serve --daemon\` to see why.`,
+      );
+    }
   } catch {
     // A hook must never break the session it observes.
   }
