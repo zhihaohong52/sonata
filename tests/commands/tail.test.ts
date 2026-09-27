@@ -459,6 +459,30 @@ describe('cmdTail answered prompts', () => {
  * exited 0 — which read as a read-only run that had answered, with the prompt
  * as its report.
  */
+describe('tail decide — a read-only run whose terminal output is the report', () => {
+  const long = Array.from({ length: 60 }, (_, i) => `finding ${i + 1}`);
+  const readOnly = {
+    ...base, exitCode: 0, canWriteReport: false, paneTail: long.slice(-20),
+  };
+
+  it('uses the whole harness log rather than the last 20 pane lines', () => {
+    const r = decide({ ...readOnly, terminalLog: long.join('\n') });
+    expect(r.degraded).toBe(false);
+    expect(r.report).toContain('finding 1\n');
+    expect(r.report).toContain('finding 60');
+  });
+
+  it('keeps the log`s paragraph breaks and drops its escapes', () => {
+    const r = decide({ ...readOnly, terminalLog: '\u001b[1mSummary\u001b[0m\n\nAll clear.\n' });
+    expect(r.report).toContain('Summary\n\nAll clear.');
+  });
+
+  it('falls back to the pane when the log is empty or absent', () => {
+    expect(decide({ ...readOnly, terminalLog: ' \n' }).report).not.toContain('finding 40\n');
+    expect(decide(readOnly).report).toContain('finding 60');
+  });
+});
+
 describe('harnessOutput — the shell prompt around the run', () => {
   const marker = '/r/.sonata/runs/abc123/cmd.sh';
   const prompt = 'james@Zhis-MacBook-Air r1 %';
@@ -603,6 +627,40 @@ describe('tail decide — a fallback report from a failed harness', () => {
     const r = decide({ ...base, exitCode: 1, report: null });
     expect(r.degraded).toBe(true);
     expect(r.report).toContain('without writing a report');
+  });
+});
+
+describe('cmdTail reads a read-only run`s report from its harness log', () => {
+  // The wiring: the decide test above covers the choice, this covers that
+  // cmdTail actually reads harness.log into it.
+  let cwd: string;
+  const session = 'sonata-test-tail-readonly';
+  const id = 'aaa111';
+
+  beforeEach(async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-ro-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '[run]\nstall_timeout_seconds = 120\n');
+    mkdirSync(runDir(cwd, id), { recursive: true });
+    writeFileSync(join(runDir(cwd, id), 'meta.json'), JSON.stringify({
+      id, role: 'review', model: 'm', harness: 'pi', mode: 'plan',
+      interactive: false, session, cwd, startedAt: '2026-09-27T00:00:00.000Z',
+      canWriteReport: false,
+    }));
+    const log = Array.from({ length: 60 }, (_, i) => `finding ${i + 1}`).join('\n');
+    writeFileSync(join(runDir(cwd, id), 'harness.log'), `${log}\n`);
+    writeFileSync(join(runDir(cwd, id), 'exit'), '0\n');
+    await newSession({ session, cwd });
+    await sendKeys(session, "printf 'finding 60\\n'");
+    await sendKeys(session, 'Enter');
+  });
+
+  afterEach(async () => { await killSession(session); });
+
+  it('returns every line the harness printed', async () => {
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 200 });
+    expect(r.state).toBe('DONE');
+    expect(r.report).toContain('finding 1\n');
+    expect(r.report).toContain('finding 59');
   });
 });
 
