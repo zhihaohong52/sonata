@@ -26,6 +26,25 @@ async function invoke(
   }
 }
 
+/**
+ * What the stub daemon wrote to its sentinel, once it has written it.
+ *
+ * Polling for the file's existence was not enough: `writeFileSync` creates
+ * the file before it writes, and a read in between returned `''` — which
+ * `realpathSync` resolves to the *test's* cwd, so the assertion reported the
+ * daemon as spawned from the wrong directory. The stub is a fresh `node`
+ * process, whose start alone can take seconds on a loaded machine.
+ */
+async function sentinelWritten(sentinel: string, timeoutMs = 20_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const text = existsSync(sentinel) ? readFileSync(sentinel, 'utf8') : '';
+    if (text !== '') return text;
+    if (Date.now() > deadline) throw new Error(`the stub daemon never wrote ${sentinel}`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
 describe('ensure-serve SessionStart hook', () => {
   it('exits 0 when the router reports multi-tenant support', async () => {
     const server = createServer((_req, res) => {
@@ -175,12 +194,7 @@ require('node:fs').writeFileSync(${JSON.stringify(sentinel)}, 'yes');
       expect(code).toBe(0);
       expect(signal).toBe(null);
       // The daemon is detached and unref'd, so its write races the hook's exit.
-      // Poll briefly rather than asserting immediately.
-      const deadline = Date.now() + 3000;
-      while (!existsSync(sentinel) && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 25));
-      }
-      expect(realpathSync(readFileSync(sentinel, 'utf8'))).toBe(realpathSync(cfgDir));
+      expect(realpathSync(await sentinelWritten(sentinel))).toBe(realpathSync(cfgDir));
     } finally {
       server.close();
     }
@@ -213,9 +227,7 @@ require('node:fs').writeFileSync(${JSON.stringify(sentinel)}, 'yes');
         ...process.env, HOME: home, SONATA_CWD_SENTINEL: sentinel, PATH: `${binDir}${delimiter}${process.env.PATH}`,
       });
       expect(code).toBe(0);
-      const deadline = Date.now() + 3000;
-      while (!existsSync(sentinel) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
-      expect(realpathSync(readFileSync(sentinel, 'utf8'))).toBe(realpathSync(project));
+      expect(realpathSync(await sentinelWritten(sentinel))).toBe(realpathSync(project));
     } finally {
       server.close();
     }
