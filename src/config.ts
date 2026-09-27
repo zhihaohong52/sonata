@@ -839,6 +839,19 @@ export function parseConfig(text: string): SonataConfig {
 }
 
 /**
+ * Whether a model name has the shape of an alias `sonata sync` generates —
+ * `sonata-<role>` or `sonata-<role>-<tier>` for a known role and tier.
+ *
+ * A name of this shape that `resolveTierAlias` cannot resolve is a stale
+ * agent or a config missing that tier, and deserves an answer naming
+ * `sonata sync`; any other `sonata-` name may be a model key that merely
+ * begins that way.
+ */
+export function isTierAliasShape(name: string): boolean {
+  return new RegExp(`^sonata-(${KNOWN_ROLES.join('|')})(-(${TIER_NAMES.join('|')}))?$`).test(name);
+}
+
+/**
  * Resolves a `sonata-<role>[-<tier>]` model alias to its ranked routes.
  * The collapsed form (`sonata-explore`) exists for roles whose two tier lists
  * are identical — sync generates a single agent for those, and its alias

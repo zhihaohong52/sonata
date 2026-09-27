@@ -99,11 +99,15 @@ export class TenantRegistry {
    * by the caller on every request — and `known()` does filesystem work per
    * noted path *on the request path*. Unbounded, a long-lived machine daemon
    * would grow memory and per-request I/O with the number of distinct header
-   * values it had ever seen. Insertion order is Set iteration order, so the
-   * oldest goes first; a project still in use is re-noted by its next request.
+   * values it had ever seen. Insertion order is Set iteration order, and a
+   * project is re-inserted each time it is noted, so the victim is the one
+   * least recently used — a project still in use is never the one evicted.
    */
   noteProject(cwd: string): void {
-    if (this.noted.has(cwd)) return;
+    if (this.noted.delete(cwd)) {
+      this.noted.add(cwd);
+      return;
+    }
     if (this.noted.size >= MAX_NOTED_PROJECTS) {
       const oldest = this.noted.values().next();
       if (!oldest.done) this.noted.delete(oldest.value);

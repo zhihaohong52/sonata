@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import { budgetRefusal, type BudgetStatus } from '../budget.js';
-import type { SonataConfig } from '../config.js';
+import { isTierAliasShape, type SonataConfig } from '../config.js';
 import type { LedgerRow } from '../ledger.js';
 import { SONATA_PROJECT_HEADER, TenantError } from './tenants.js';
 import { SONATA_TOKEN_HEADER, projectHintAuthorised } from './router-token.js';
@@ -1661,6 +1661,16 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     } catch { /* A broken accounting clock must not stop routing. */ }
   }
   if (alias !== undefined && alias.startsWith('sonata-') && deps.resolveTier?.(alias, tenant) !== undefined) {
+    return routeTierRequest(req, deps, alias, startedAt, session, tenant, unavailable);
+  }
+  // A name shaped exactly like a generated alias that the config does not
+  // resolve is a stale agent file or a missing tier, not a model key.
+  // Forwarding it would surface as LiteLLM's "invalid model name", which
+  // names neither cause; `routeTierRequest` answers with the typed 400 that
+  // points at `sonata sync`. A config that really has a model key of that
+  // shape still reaches it.
+  if (alias !== undefined && bareEffort === undefined && isTierAliasShape(alias)
+    && deps.resolveNative?.(alias, tenant) === undefined) {
     return routeTierRequest(req, deps, alias, startedAt, session, tenant, unavailable);
   }
 
