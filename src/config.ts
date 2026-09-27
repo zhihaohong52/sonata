@@ -749,6 +749,25 @@ export function parseConfig(text: string): SonataConfig {
       keyVarOwners.set(keyVar, name);
     }
 
+    // LiteLLM reads a ChatGPT credential from one directory
+    // (CHATGPT_TOKEN_DIR) and a Copilot one from another
+    // (GITHUB_COPILOT_TOKEN_DIR), process-wide — so a second gateway of the
+    // same OAuth kind cannot have an account of its own. Serve would quietly
+    // give it the first one's.
+    const oauthOwners = new Map<string, string>();
+    for (const [name, gateway] of Object.entries(gateways)) {
+      if (gateway.auth !== 'codex-oauth' && gateway.auth !== 'copilot-oauth') continue;
+      const owner = oauthOwners.get(gateway.auth);
+      if (owner !== undefined) {
+        throw new Error(
+          `sonata.toml: gateways "${owner}" and "${name}" both use auth = "${gateway.auth}", ` +
+          'but LiteLLM holds one credential of that kind per process, so both would be served ' +
+          `"${owner}"'s account — keep one of them`,
+        );
+      }
+      oauthOwners.set(gateway.auth, name);
+    }
+
     const nativeModels: Record<string, NativeModelConfig> = {};
     for (const [name, def] of Object.entries((rawNative.models ?? {}) as Record<string, unknown>)) {
       const d = def as Record<string, unknown>;
@@ -867,6 +886,19 @@ export function parseConfig(text: string): SonataConfig {
 }
 
 /**
+ * Whether a model name has the shape of an alias `sonata sync` generates —
+ * `sonata-<role>` or `sonata-<role>-<tier>` for a known role and tier.
+ *
+ * A name of this shape that `resolveTierAlias` cannot resolve is a stale
+ * agent or a config missing that tier, and deserves an answer naming
+ * `sonata sync`; any other `sonata-` name may be a model key that merely
+ * begins that way.
+ */
+export function isTierAliasShape(name: string): boolean {
+  return new RegExp(`^sonata-(${KNOWN_ROLES.join('|')})(-(${TIER_NAMES.join('|')}))?$`).test(name);
+}
+
+/**
  * Resolves a `sonata-<role>[-<tier>]` model alias to its ranked routes.
  * The collapsed form (`sonata-explore`) exists for roles whose two tier lists
  * are identical — sync generates a single agent for those, and its alias
@@ -900,24 +932,36 @@ export function resolveTierAlias(
   const routes = keys.map((candidate): TierRoute => {
     const { key, effort } = splitCandidate(candidate);
     const model = config.unifiedModels[key];
-    const gw = model?.gateway !== undefined ? config.native?.gateways?.[model.gateway] : undefined;
     return {
       key,
       ...(effort === undefined ? {} : { effort }),
-      native: model?.gateway !== undefined && model.id !== undefined
-        ? {
-          gateway: model.gateway,
-          id: model.id,
-          transport: gw !== undefined ? transportFor(gw, model.gateway) : undefined,
-          baseUrl: gw?.baseUrl,
-        }
-        : undefined,
+      native: nativeRouteFor(config, key),
       harness: model?.harness !== undefined && model.harnessId !== undefined
         ? { harness: model.harness, id: model.harnessId }
         : undefined,
     };
   });
   return { role, tier, routes };
+}
+
+/**
+ * The native route for one model key: its gateway, upstream id, transport and
+ * base URL, or undefined when the key has no native half.
+ *
+ * The one definition both a tier candidate and a bare `--model <key>` request
+ * use, so the two cannot disagree about whether a key is reached directly or
+ * through LiteLLM.
+ */
+export function nativeRouteFor(config: SonataConfig, key: string): TierRoute['native'] {
+  const model = config.unifiedModels[key];
+  if (model?.gateway === undefined || model.id === undefined) return undefined;
+  const gw = config.native?.gateways?.[model.gateway];
+  return {
+    gateway: model.gateway,
+    id: model.id,
+    transport: gw !== undefined ? transportFor(gw, model.gateway) : undefined,
+    baseUrl: gw?.baseUrl,
+  };
 }
 
 /** The harness route for one model key, for the dispatch CLI. */

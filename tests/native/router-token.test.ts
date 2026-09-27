@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  SONATA_TOKEN_HEADER, routerTokenPath, ensureRouterToken, readRouterToken,
+  SONATA_TOKEN_HEADER, routerTokenPath, ensureRouterToken, readRouterToken, projectHintAuthorised,
 } from '../../src/native/router-token.js';
 
 let home: string;
@@ -37,5 +37,23 @@ describe('router token', () => {
     mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
     writeFileSync(routerTokenPath(home), '   \n');
     expect(ensureRouterToken(home)).toMatch(/^[0-9a-f]{64}$/);
+  });
+  it('repairs an existing token file that is readable by others', () => {
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(routerTokenPath(home), `${'a'.repeat(64)}\n`);
+    chmodSync(routerTokenPath(home), 0o644);
+    expect(ensureRouterToken(home)).toBe('a'.repeat(64));
+    expect(statSync(routerTokenPath(home)).mode & 0o777).toBe(0o600);
+  });
+
+  it('authorises only the exact token, whatever the lengths', () => {
+    const token = 'b'.repeat(64);
+    expect(projectHintAuthorised(token, token)).toBe(true);
+    expect(projectHintAuthorised(`${token}x`, token)).toBe(false);
+    expect(projectHintAuthorised(token.slice(1), token)).toBe(false);
+    expect(projectHintAuthorised('c'.repeat(64), token)).toBe(false);
+    expect(projectHintAuthorised(undefined, token)).toBe(false);
+    expect(projectHintAuthorised('', '')).toBe(false);
+    expect(projectHintAuthorised('é', 'e')).toBe(false);
   });
 });

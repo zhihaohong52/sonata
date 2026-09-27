@@ -187,3 +187,23 @@ describe('router usage recording', () => {
     expect(rows[0].attempts).toEqual([{ key: 'only', status: 500 }]);
   });
 });
+
+describe('the usage recorder gets the config the request was routed under', () => {
+  it('hands recordUsage the tenant config resolved at request start, not one read at stream end', async () => {
+    const { parseConfig } = await import('../../src/config.js');
+    const atStart = parseConfig('');
+    const later = parseConfig('');
+    let current = atStart;
+    const seen: unknown[] = [];
+    const res = await routeRequest(req('sonata-code-simple'), {
+      ...deps([], () => sse(DELTA)),
+      resolveTenant: () => ({ id: 't', configPath: '/p/sonata.toml', config: current }),
+      recordUsage: (_row, config) => seen.push(config),
+    });
+    // The config on disk changes while the response is still streaming.
+    current = later;
+    await drain(res.body);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBe(atStart);
+  });
+});
