@@ -213,6 +213,51 @@ async function* observe(
   }
 }
 
+/** Most bytes of a non-SSE body kept to judge whether it completed. */
+const COMPLETION_JSON_CAP_BYTES = 1024 * 1024;
+
+/**
+ * Calls `onEnd(true)` once the response has demonstrably completed — the
+ * body was read to its end AND carried final usage (the usage recorder's own
+ * "complete" signal: a `message_delta` with usage for a stream, a top-level
+ * `usage` for a JSON body) — and `onEnd(false)` for anything less: a stream
+ * that broke, a disconnect, or an SSE `error` event that ended it early.
+ *
+ * Independent of `recordUsage`, which may be absent: stickiness must not
+ * depend on whether accounting is switched on.
+ */
+function withCompletion(response: RouterResponse, onEnd: (complete: boolean) => void): RouterResponse {
+  const safe = (complete: boolean): void => {
+    try { onEnd(complete); } catch { /* a bookkeeping failure never reaches the client */ }
+  };
+  if (Buffer.isBuffer(response.body)) {
+    safe(usageFromJsonBody(response.body).complete);
+    return response;
+  }
+  const sse = (response.headers['content-type'] ?? '').includes('text/event-stream');
+  const collector = createUsageCollector();
+  const json: Buffer[] = [];
+  let jsonBytes = 0;
+  return {
+    ...response,
+    body: observe(
+      response.body,
+      (chunk) => {
+        collector.push(chunk);
+        if (!sse && jsonBytes + chunk.byteLength <= COMPLETION_JSON_CAP_BYTES) {
+          json.push(Buffer.from(chunk));
+          jsonBytes += chunk.byteLength;
+        }
+      },
+      (streamComplete) => {
+        const usageComplete = collector.finish().complete
+          || (!sse && usageFromJsonBody(Buffer.concat(json)).complete);
+        safe(streamComplete && usageComplete);
+      },
+    ),
+  };
+}
+
 interface RecordContext {
   startedAt: number;
   alias: string;
@@ -665,6 +710,21 @@ function stickyDemote(conversation: string, key: string): void {
   const hit = stickyCandidates.get(conversation);
   if (hit === undefined || hit.key !== key) return;
   hit.prefer = false;
+}
+
+/**
+ * A candidate answered but its response did not complete: it may still have
+ * put blocks in front of the client, so it joins `served`, but it is not
+ * preferred — a stream that broke is no reason to try that candidate first.
+ */
+function stickyIncomplete(conversation: string, key: string, at: number): void {
+  const hit = stickyCandidates.get(conversation);
+  if (hit === undefined) {
+    stickyCandidates.set(conversation, { key, at, prefer: false, served: new Set([key]) });
+    return;
+  }
+  hit.served.add(key);
+  stickyDemote(conversation, key);
 }
 
 /**
@@ -1397,12 +1457,20 @@ async function routeTierRequest(
     for (const key of capability400Counts.keys()) {
       if (key.startsWith(`${cool} `)) capability400Counts.delete(key);
     }
-    // Pin only on a response the client actually receives. A 400 handed back
-    // above is a request this candidate could not serve, and pinning to it
-    // would make the next turn prefer the model that just refused.
-    if (conversation !== undefined) stickySet(conversation, route.key, now());
+    // Pin only on a response the client actually receives IN FULL. A 400
+    // handed back above is a request this candidate could not serve, and a
+    // stream that breaks partway is one it did not finish serving: pinning to
+    // either would make the next turn prefer the model that just failed. The
+    // status alone arrives before a single byte of the body, so the decision
+    // waits for the body's end.
+    const completed = conversation === undefined
+      ? response
+      : withCompletion(response, (complete) => {
+        if (complete) stickySet(conversation, route.key, now());
+        else stickyIncomplete(conversation, route.key, now());
+      });
     deps.log?.(`${req.method} ${req.url} model=${alias} -> ${variant} -> ${direct ? 'direct' : 'litellm'}`);
-    return withUsageRecording(response, {
+    return withUsageRecording(completed, {
       startedAt,
       session,
       project: tenant.project,
