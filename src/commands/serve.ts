@@ -356,11 +356,15 @@ export async function defaultWaitForLitellm(
   let foreign = false;
   for (;;) {
     try {
-      const res = await doFetch(`http://localhost:${port}/health/liveliness`);
+      // Each probe is bounded: a listener that accepts and never answers
+      // would otherwise hold this loop past its deadline, and every
+      // LiteLLM-bound request awaits it. 2 s, as `isSonataRouter` uses.
+      const res = await doFetch(`http://localhost:${port}/health/liveliness`, { signal: AbortSignal.timeout(2000) });
       if (res.ok) {
         if (masterKey === undefined) return;
         const mine = await doFetch(`http://localhost:${port}/v1/models`, {
           headers: { authorization: `Bearer ${masterKey}` },
+          signal: AbortSignal.timeout(2000),
         });
         if (mine.ok) return;
         // Something is alive here and it is not ours. Keep polling anyway: our
