@@ -2390,3 +2390,71 @@ describe('stickiness waits for the response to complete', () => {
     expect(await run(true)).toBe('default/flash');
   });
 });
+
+describe('error bodies are read within bounds', () => {
+  const ROUTES = {
+    role: 'code', tier: 'simple',
+    routes: [
+      { key: 'slow', native: { gateway: 'gs', id: 'slow-1' } },
+      { key: 'good', native: { gateway: 'gg', id: 'good-1' } },
+    ],
+  };
+  const request = () => ({
+    method: 'POST', url: '/v1/messages', headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: 'x' }] })),
+  });
+  beforeEach(() => clearCooldowns());
+
+  it('abandons a stalled error body and moves on to the next candidate', async () => {
+    let cancelled = false;
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        if (model === 'default/slow') {
+          return new Response(new ReadableStream<Uint8Array>({
+            start(c) { c.enqueue(new TextEncoder().encode('{"error":')); /* never closes */ },
+            cancel() { cancelled = true; },
+          }), { status: 503 });
+        }
+        return new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+      errorBodyLimits: { maxBytes: 1024, timeoutMs: 50 },
+    };
+    const started = Date.now();
+    const res = await routeRequest(request(), deps);
+    expect(res.status).toBe(200);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(cancelled).toBe(true);
+  });
+
+  it('keeps at most maxBytes of a terminal 400 body and still returns the 400', async () => {
+    const deps = {
+      fetch: (async () => new Response('x'.repeat(10_000), { status: 400 })) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ({ role: 'code', tier: 'simple', routes: [ROUTES.routes[1]] }),
+      errorBodyLimits: { maxBytes: 1024, timeoutMs: 1_000 },
+    };
+    const res = await routeRequest(request(), deps);
+    expect(res.status).toBe(400);
+    expect((res.body as Buffer).length).toBeLessThanOrEqual(1024);
+  });
+
+  it('bounds the 500 read on the plain litellm path too', async () => {
+    let cancelled = false;
+    const res = await routeRequest(
+      { method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from('{"model":"flash"}') },
+      {
+        fetch: (async () => new Response(new ReadableStream<Uint8Array>({
+          start(c) { c.enqueue(new TextEncoder().encode('partial')); },
+          cancel() { cancelled = true; },
+        }), { status: 500 })) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        errorBodyLimits: { maxBytes: 1024, timeoutMs: 50 },
+      },
+    );
+    expect(res.status).toBe(500);
+    expect(cancelled).toBe(true);
+  });
+});
