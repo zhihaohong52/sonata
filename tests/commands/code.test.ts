@@ -8,6 +8,7 @@ import type { spawn as spawnType } from 'node:child_process';
 
 import { execClaude, planCode, defaultEnsureServe, nativeSessionEnv } from '../../src/commands/code.js';
 import { startServeDaemon } from '../../src/commands/serve.js';
+import { ensureRouterToken } from '../../src/native/router-token.js';
 
 // `startServeDaemon` is stubbed — a real detached process would race the live
 // :4100 router. `isSonataRouter` and `sonataRouterMultiTenant` are left real
@@ -73,6 +74,16 @@ base_url = "http://gateway.example/v1"
 `);
 
     expect(planCode({ cwd, home, passthrough: [] }).env.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBeUndefined();
+  });
+
+  it('authorises its project hint with the router token, so the router honours it', () => {
+    // The router drops `x-sonata-project` from any caller without the 0600
+    // token. `sonata code` sent the hint alone, so every request it routed
+    // fell through to the machine config — the wrong gateways and cap, or a
+    // 400 on a machine with none.
+    writeFileSync(join(cwd, 'sonata.toml'), '[native]\n');
+    const headers = planCode({ cwd, home, passthrough: [] }).env.ANTHROPIC_CUSTOM_HEADERS;
+    expect(headers).toBe(`x-sonata-project: ${cwd}\nx-sonata-token: ${ensureRouterToken(home)}`);
   });
 
   it('includes passthrough args and explains the Remote Control limitation', () => {
