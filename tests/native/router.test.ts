@@ -2218,3 +2218,54 @@ describe('OpenCode session header', () => {
     expect(seen).toEqual(['default/mimo', 'default/luna', 'default/luna']);
   });
 });
+
+describe('routeRequest — a bare model key on a direct gateway', () => {
+  beforeEach(() => clearCooldowns());
+
+  it('goes to the gateway through forwardDirect, not to LiteLLM', async () => {
+    const seen: { url: string; model: string; auth?: string; effort?: unknown }[] = [];
+    const rows: { upstream?: string; gateway?: string; key?: string }[] = [];
+    const res = await routeRequest(
+      {
+        method: 'POST', url: '/v1/messages',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer CALLER' },
+        body: Buffer.from(JSON.stringify({ model: 'flash@low', messages: [{ role: 'user', content: 'hi' }] })),
+      },
+      {
+        fetch: (async (url: string, init: RequestInit) => {
+          const body = JSON.parse(Buffer.from(init.body as Uint8Array).toString()) as { model: string; reasoning_effort?: unknown };
+          seen.push({ url, model: body.model, auth: (init.headers as Record<string, string>).authorization, effort: body.reasoning_effort });
+          return new Response('{}', { status: 200 });
+        }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveNative: (key: string) => key === 'flash'
+          ? { gateway: 'g', id: 'upstream-flash', transport: 'direct' as const, baseUrl: 'https://gw.example/v1' }
+          : undefined,
+        gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
+        // A direct-only config needs no LiteLLM; this must not be consulted.
+        litellmUnavailable: () => 'LiteLLM is not needed and not running',
+        recordUsage: (row) => rows.push(row),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].url).toBe('https://gw.example/v1/messages');
+    expect(seen[0].model).toBe('upstream-flash');
+    expect(seen[0].auth).toBe('Bearer GATEWAY-KEY');
+    expect(seen[0].effort).toBe('low');
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it('still sends a litellm-transport bare key to LiteLLM', async () => {
+    let url = '';
+    await routeRequest(
+      { method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from(JSON.stringify({ model: 'flash', messages: [] })) },
+      {
+        fetch: (async (u: string) => { url = u; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveNative: () => ({ gateway: 'g', id: 'x', transport: 'litellm' as const }),
+      },
+    );
+    expect(url).toBe('http://litellm/v1/messages');
+  });
+});

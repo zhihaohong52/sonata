@@ -872,24 +872,36 @@ export function resolveTierAlias(
   const routes = keys.map((candidate): TierRoute => {
     const { key, effort } = splitCandidate(candidate);
     const model = config.unifiedModels[key];
-    const gw = model?.gateway !== undefined ? config.native?.gateways?.[model.gateway] : undefined;
     return {
       key,
       ...(effort === undefined ? {} : { effort }),
-      native: model?.gateway !== undefined && model.id !== undefined
-        ? {
-          gateway: model.gateway,
-          id: model.id,
-          transport: gw !== undefined ? transportFor(gw, model.gateway) : undefined,
-          baseUrl: gw?.baseUrl,
-        }
-        : undefined,
+      native: nativeRouteFor(config, key),
       harness: model?.harness !== undefined && model.harnessId !== undefined
         ? { harness: model.harness, id: model.harnessId }
         : undefined,
     };
   });
   return { role, tier, routes };
+}
+
+/**
+ * The native route for one model key: its gateway, upstream id, transport and
+ * base URL, or undefined when the key has no native half.
+ *
+ * The one definition both a tier candidate and a bare `--model <key>` request
+ * use, so the two cannot disagree about whether a key is reached directly or
+ * through LiteLLM.
+ */
+export function nativeRouteFor(config: SonataConfig, key: string): TierRoute['native'] {
+  const model = config.unifiedModels[key];
+  if (model?.gateway === undefined || model.id === undefined) return undefined;
+  const gw = config.native?.gateways?.[model.gateway];
+  return {
+    gateway: model.gateway,
+    id: model.id,
+    transport: gw !== undefined ? transportFor(gw, model.gateway) : undefined,
+    baseUrl: gw?.baseUrl,
+  };
 }
 
 /** The harness route for one model key, for the dispatch CLI. */
