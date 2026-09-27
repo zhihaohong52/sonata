@@ -20,7 +20,7 @@ import { homedir } from 'node:os';
 
 import { spawn } from 'node:child_process';
 
-import { readSettings, writeSettings, installHook, uninstallHook, hookInstalled } from '../settings.js';
+import { readSettings, updateSettings, installHook, uninstallHook, hookInstalled } from '../settings.js';
 import type { Settings } from '../settings.js';
 import { loadConfig, GLOBAL_CONFIG_RELATIVE, NoConfigError, parseConfig, type SonataConfig } from '../config.js';
 import { assertEffortsPinned, loadAaCatalog } from '../catalog.js';
@@ -684,15 +684,17 @@ export async function cmdRoute(
   );
 
   if (action === 'on') {
-    const plan = planRouteOn(settings, activeConfig, opts.packageRoot, scope, {
+    const routing = {
       routerPort: routerPorts(opts.home).router,
       projectCwd: scope === 'project' ? opts.cwd : undefined,
       // Created here as well as by `serve`, so `route on` before a first
       // `serve` still writes settings the router will later honour.
       projectHintToken: scope === 'project' ? ensureRouterToken(opts.home) : undefined,
-    });
-    if (plan.changed) writeSettings(file, plan.settings);
-    return status(plan.settings);
+    };
+    // Planned from a read taken under the settings lock, not from `settings`
+    // above, which another writer may have changed since.
+    const after = await updateSettings(file, (current) => planRouteOn(current, activeConfig, opts.packageRoot, scope, routing));
+    return status(after);
   }
 
   if (action === 'off') {
@@ -707,11 +709,10 @@ export async function cmdRoute(
   if (action === 'auto' || action === 'manual') {
     const hasLiveSessions = action === 'auto'
       && readSessions(routeSessionsFile(opts.cwd, scope, opts.home)).length > 0;
-    const plan = action === 'auto'
-      ? planRouteAuto(settings, opts.packageRoot, scope, hasLiveSessions)
-      : planRouteManual(settings, opts.packageRoot, scope);
-    if (plan.changed) writeSettings(file, plan.settings);
-    return status(plan.settings);
+    const after = await updateSettings(file, (current) => action === 'auto'
+      ? planRouteAuto(current, opts.packageRoot, scope, hasLiveSessions)
+      : planRouteManual(current, opts.packageRoot, scope));
+    return status(after);
   }
 
   return status(settings);
@@ -800,14 +801,14 @@ export async function cmdRouteSettle(
   await wait(ROUTE_SETTLE_MS);
 
   const registry = routeSessionsFile(opts.cwd, scope, opts.home);
-  await withSessionLock(registry, () => {
+  await withSessionLock(registry, async () => {
     const registered = readSessions(registry);
     // The newest registration, not merely membership. Registration order is
     // the file's order — `cmdRouteSession('start')` appends — so the last
     // entry is the most recent session to have written the env, and only its
     // own settle may take that env away again.
     if (registered[registered.length - 1] !== sessionId) return;
-    routeOffKeepingRegistries(opts, scope);
+    await routeOffKeepingRegistries(opts, scope);
   });
 }
 
@@ -1013,7 +1014,10 @@ function spawnSettle(
  * registry with it. The subagent path needs only the settings half.
  */
 /**
- * **LOCK ORDER: session registry, then subagent registry. Never the reverse.**
+ * **LOCK ORDER: session registry, then subagent registry, then the settings
+ * file's own lock (`updateSettings`). Never the reverse.** The settings lock
+ * is innermost everywhere: it is taken for one read-modify-write and nothing
+ * is acquired while it is held.
  *
  * They are different files, so nesting is mechanically fine; the *order* is
  * what makes it deadlock-free, and `withSessionLock` (`src/filelock.ts`) is a
@@ -1063,24 +1067,22 @@ async function routeOffUnlocked(
   // why `route off` did not recover a pinned project: the ids survived their
   // own documented fix, and the next SubagentStart took the count 6 -> 7.
   const subagents = routeSubagentsFile(opts.cwd, scope, opts.home);
-  return await withSessionLock(subagents, () => {
-    const plan = planRouteOff(readSettings(settingsFile), opts.packageRoot);
-    if (plan.changed) writeSettings(settingsFile, plan.settings);
+  return await withSessionLock(subagents, async () => {
+    const after = await updateSettings(settingsFile, (current) => planRouteOff(current, opts.packageRoot));
     writeSessions(subagents, []);
-    return plan.settings;
+    return after;
   });
 }
 
-function routeOffKeepingRegistries(
+async function routeOffKeepingRegistries(
   opts: { cwd: string; home: string; packageRoot: string },
   // Required, never defaulted: a helper that resolves scope itself is exactly
   // how the writer and the cleaner of `route-subagents.json` came to disagree.
   // Callers pass the scope their entry point already resolved.
   scope: 'project' | 'global',
-): void {
+): Promise<void> {
   const file = routeSettingsFile(opts.cwd, scope, opts.home);
-  const plan = planRouteOff(readSettings(file), opts.packageRoot);
-  if (plan.changed) writeSettings(file, plan.settings);
+  await updateSettings(file, (current) => planRouteOff(current, opts.packageRoot));
 }
 
 export interface SubagentPhaseResult {
@@ -1152,7 +1154,7 @@ export async function cmdRouteSubagent(
       // Not `cmdRoute('off')`: that also clears the *session* registry, which
       // is a different lifetime entirely. A finishing subagent erasing session
       // liveness would make the next SessionEnd believe it was the last one.
-      routeOffKeepingRegistries(opts, scope);
+      await routeOffKeepingRegistries(opts, scope);
       return { subagents: 0, routing: 'off' };
     }
     const next = current.includes(agentId) ? current : [...current, agentId];
