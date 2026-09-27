@@ -932,13 +932,15 @@ export function proposeTiers(
   /**
    * The frontier geometry for one metric.
    *
-   * Computed per tier rather than once, because the tiers measure different
-   * things — `capabilityOf` is throughput and `reasoningOf` is judgement, a
-   * split `catalog.ts` already makes for measured reasons — and bounding a
-   * value tier with a knee derived from a metric it does not rank on is the
-   * same unit-mixing error as comparing a per-task cost with a per-token one.
-   * They genuinely differ: on one real config the agentic knee is
-   * `glm-5.3-flash` and the intelligence knee is `mimo-v2.6-pro`.
+   * Parameterised by metric because a knee must come from the metric its tier
+   * ranks on — bounding a tier with a knee from another metric is the same
+   * unit-mixing error as comparing a per-task cost with a per-token one. Both
+   * geometries below now use `reasoningOf`: the value tiers moved off
+   * `capabilityOf` (agentic), which is missing for newly scored models and
+   * fell back per model, putting two scales on one axis — on one real config
+   * that made `glm-5.3-flash` the agentic knee where `mimo-v2.6-pro` is the
+   * intelligence one. So the two are computed identically today; they are
+   * kept separate so a tier can change metric without touching the other.
    *
    * The knee is taken from the FULL frontier and the gate applied after, never
    * the reverse. `kneeIndex` records why: Kneedle measures against a chord
