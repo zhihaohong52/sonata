@@ -1941,7 +1941,11 @@ context_window = 128000
     expect(tuiMocks.data!.gatewayBaseUrls?.['removed-gw']).toBe('https://gateway.example/v1');
   });
 
-  it('prefers a harness-live base URL over a config-persisted one for the same gateway', async () => {
+  it('prefers the config-persisted base URL over a harness-live one for the same gateway', async () => {
+    // The config is what `nativeTomlFor` writes back for a gateway it already
+    // holds, so the wizard must query and mint candidates from the same URL.
+    // A harness URL winning here made the written base_url depend on which
+    // candidate came last, silently replacing a hand-edited one on re-init.
     const cwd = mkdtempSync(join(tmpdir(), 'init-gateway-base-url-live-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'init-gateway-base-url-live-home-'));
     writeFileSync(join(cwd, 'sonata.toml'), `
@@ -1970,7 +1974,7 @@ context_window = 128000
     await cmdInit({
       installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', detect, write: () => {} });
 
-    expect(tuiMocks.data!.gatewayBaseUrls?.acme).toBe('https://live.example/v1');
+    expect(tuiMocks.data!.gatewayBaseUrls?.acme).toBe('https://stale.example/v1');
   });
 
   it('keys the declared gateway names by scope, so each scope reads its own config', async () => {
