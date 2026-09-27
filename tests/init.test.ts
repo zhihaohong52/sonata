@@ -280,7 +280,14 @@ describe('cmdInit (non-interactive)', () => {
       roles: ['code'], scope: 'skip', routing: 'skip', write,
     });
 
-    const check = (await cmdDoctor({ cwd, home, packageRoot: process.cwd() })).checks
+    // Nothing here is about the client, the harness binaries or a live
+    // router: unseamed, doctor spawned `claude`/`opencode` and probed the
+    // machine ports 4100/4000, which on a maintainer's machine answer.
+    vi.stubGlobal('fetch', async () => { throw new Error('no network in this test'); });
+    const check = (await cmdDoctor({
+      cwd, home, packageRoot: process.cwd(),
+      claudeVersion: async () => undefined, harnessVersion: async () => '0.0.0', harnessHealth: async () => [],
+    }).finally(() => vi.unstubAllGlobals())).checks
       .find((candidate) => candidate.name === 'tier routing');
     expect(check?.ok).toBe(false);
     expect(check?.detail).toBe('tier agents need a routed session — run `sonata route auto`');
