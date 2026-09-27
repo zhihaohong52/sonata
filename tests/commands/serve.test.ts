@@ -586,8 +586,8 @@ describe('defaultWaitForLitellm', () => {
     await defaultWaitForLitellm(4010, 'sk-sonata-ours', { doFetch, sleep: async () => {} });
 
     expect(seen).toEqual([
-      'http://localhost:4010/health/liveliness',
-      'http://localhost:4010/v1/models',
+      'http://127.0.0.1:4010/health/liveliness',
+      'http://127.0.0.1:4010/v1/models',
     ]);
   });
 
@@ -3531,5 +3531,41 @@ describe('cmdServe — the router listens on both loopback families', () => {
     expect(collisions).toBe(0);
     expect(await health(`http://127.0.0.1:${handle.routerPort}/__sonata_health`)).toBe(200);
     expect(await health(`http://[::1]:${handle.routerPort}/__sonata_health`)).toBe(200);
+  });
+});
+
+describe('cmdServe — the managed LiteLLM is bound and reached on one family', () => {
+  // LiteLLM's own default host is 0.0.0.0 — every IPv4 interface, and
+  // overridable by a stray HOST in the environment — while the router reached
+  // it as `localhost`, which tries ::1 first. The router must reach exactly
+  // the address the child binds, or a foreign ::1 listener on that port
+  // answers in its place.
+  it('starts the child on 127.0.0.1 alone', async () => {
+    const argsFile = join(cwd, 'litellm-args');
+    writeFileSync(managedLitellmPath(home), `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\n`, { mode: 0o755 });
+    const handle = await cmdServe({ cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {} });
+    handles.push(handle);
+    await waitFor(() => existsSync(argsFile) && readFileSync(argsFile, 'utf8').includes('--port'), 'the child to record its arguments');
+    const args = readFileSync(argsFile, 'utf8').trim().split('\n');
+    expect(args[args.indexOf('--host') + 1]).toBe('127.0.0.1');
+    expect(args[args.indexOf('--port') + 1]).toBe(String(litellmPort));
+  });
+
+  it('forwards to the child at 127.0.0.1', async () => {
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', async (url: string) => { seen.push(String(url)); return new Response('{}', { status: 200 }); });
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+    await realFetch(`http://127.0.0.1:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [] }),
+    });
+    expect(seen.some((url) => url.startsWith(`http://127.0.0.1:${litellmPort}/`))).toBe(true);
+    expect(seen.some((url) => url.includes('localhost'))).toBe(false);
   });
 });

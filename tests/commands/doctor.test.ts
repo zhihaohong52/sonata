@@ -348,6 +348,18 @@ code = ["deepseek-v4-flash"]
     } finally { globalThis.fetch = originalFetch; }
   });
 
+  it('probes the managed LiteLLM at 127.0.0.1, the one address it binds', async () => {
+    const { cwd, home } = setup();
+    const seen: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({ status: 'ok', sonata: true, multiTenant: true, tenants: [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.find((c) => c.name === 'litellm health')?.ok).toBe(true);
+    expect(seen).toContain('http://127.0.0.1:4000/health/liveliness');
+  });
+
   it('warns on whitespace around a project ports table header', async () => {
     const { cwd, home } = setup();
     writeFileSync(join(cwd, 'sonata.toml'), `${NATIVE}\n  [ native.ports ]\nrouter = 4101\n`);

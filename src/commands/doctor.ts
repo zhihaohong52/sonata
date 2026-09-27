@@ -48,7 +48,7 @@ const LITELLM_HEALTH_TIMEOUT_MS = 3000;
 import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
-import { serveHealthUrl, healthReportsUi } from './serve.js';
+import { LITELLM_HOST, serveHealthUrl, healthReportsUi } from './serve.js';
 import { routerPorts } from './ports.js';
 import { nativeSessionEnv } from './code.js';
 import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile, diagnoseRouteAuto, isLocalhostUrl } from './route.js';
@@ -925,7 +925,7 @@ export async function cmdDoctor(
               // the one failure mode it must not have, so a non-answer inside
               // the window is reported as down, which for every caller's
               // purposes it is.
-              alive = (await fetch(`http://localhost:${litellmPort}/health/liveliness`, {
+              alive = (await fetch(`http://${LITELLM_HOST}:${litellmPort}/health/liveliness`, {
                 signal: AbortSignal.timeout(LITELLM_HEALTH_TIMEOUT_MS),
               })).ok;
             } catch { alive = false; }
