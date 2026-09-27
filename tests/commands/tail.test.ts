@@ -328,12 +328,24 @@ describe('tail decide', () => {
     expect(r.report).toMatch(/^\[timed out: sonata killed the run after the configured run_timeout_seconds\]\n\n/);
   });
 
-  it('still degrades a timed-out run that has a report file', () => {
-    const r = decide({ ...base, exitCode: 0, report: 'a complete report', timedOut: true });
+  it('still degrades a timed-out run that has a report file, and keeps its text', () => {
+    // The report is what the run got as far as — degraded, since the work was
+    // cut short, but it is the evidence the reader needs, not the pane tail.
+    const r = decide({ ...base, exitCode: 0, report: 'a partial report', timedOut: true });
     expect(r.state).toBe('DONE');
     expect(r.degraded).toBe(true);
-    expect(r.report).toMatch(/^\[timed out: sonata killed the run after the configured run_timeout_seconds\]/);
-    expect(r.report).toContain('last');
+    expect(r.report).toBe('[timed out: sonata killed the run after the configured run_timeout_seconds]\n\na partial report');
+  });
+
+  it('keeps a fallback report`s text when the run timed out', () => {
+    // claude sends all of its stdout to last-message.txt and leaves the pane
+    // empty, so without this nothing but the bracket line survived.
+    const r = decide({
+      ...base, exitCode: 143, report: 'claude got this far', reportFromFallback: true, timedOut: true,
+    });
+    expect(r.degraded).toBe(true);
+    expect(r.report).toMatch(/^\[timed out:/);
+    expect(r.report).toContain('claude got this far');
   });
 });
 

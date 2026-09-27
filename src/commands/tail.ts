@@ -230,8 +230,12 @@ export function decide(input: DecideInput): TailResult {
       ? `[effort ${input.effort} not honoured: sonata has no effort control for ${input.harness ?? 'this harness'}]\n\n`
       : '';
 
+    // A timed-out run keeps whatever report it got as far as — the model's own
+    // or the harness's fallback file. It is still degraded; the text is the
+    // evidence of how far it got, and for claude (all stdout in the fallback
+    // file, an empty pane) the pane tail is nothing at all.
     const report = input.timedOut
-      ? `[timed out: sonata killed the run after the configured run_timeout_seconds]\n\n${input.paneTail.join('\n')}`
+      ? `[timed out: sonata killed the run after the configured run_timeout_seconds]\n\n${input.report ?? input.paneTail.join('\n')}`
       : reportImpossible
         ? `${effortNote}[read-only run: the harness cannot write a report file, so this is its terminal output]\n\n${terminalOutput(input)}`
         // Before the generic degraded branches: this one has a report-shaped
