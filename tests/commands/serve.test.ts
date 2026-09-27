@@ -2988,6 +2988,67 @@ litellm = 4000
   });
 });
 
+describe('cmdServe — a machine config that will not load', () => {
+  // The machine cap bounds everything the router forwards, so a machine
+  // config that fails to load must not silently remove it: `machineConfig()`
+  // swallows the load error, `machineDailyUsd` is undefined, and the
+  // machine-wide [budget] vanishes while every request keeps spending. A
+  // broken file that never had a [budget] table had no cap to lose and must
+  // not start refusing everything.
+  const PROJECT = `
+[models."flash"]
+gateway = "acme"
+id = "a-model"
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+[native.ports]
+router = 0
+litellm = 4000
+`;
+
+  async function serveWithBrokenMachine(withBudget: boolean) {
+    writeMachineConfig(withBudget ? '[budget]\ndaily_usd = 5\n[native.gateways\n' : '[native.gateways\n');
+    const project = mkdtempSync(join(tmpdir(), 'serve-broken-machine-'));
+    writeFileSync(join(project, 'sonata.toml'), PROJECT);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    const handle = await cmdServe({
+      cwd: project, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+      // `routerPorts` reads the machine config, which is deliberately broken
+      // here, so the port comes from the seam rather than 4100.
+      ports: { router: 0, litellm: 4000 },
+      spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+    });
+    handles.push(handle);
+    vi.unstubAllGlobals();
+    return { project, handle };
+  }
+
+  const request = (project: string, handle: ServeHandle) =>
+    fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...projectHeaders(project) },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+
+  it('refuses a project request when the broken machine config had a [budget] table', async () => {
+    const { project, handle } = await serveWithBrokenMachine(true);
+    const res = await request(project, handle);
+    expect(res.status).toBe(429);
+    const body = await res.text();
+    expect(body).toContain('sets [budget] but will not load');
+    expect(body).toContain(machineConfigPath());
+  });
+
+  it('refuses nothing extra when the broken machine config had no [budget] table', async () => {
+    const { project, handle } = await serveWithBrokenMachine(false);
+    const res = await request(project, handle);
+    expect(res.status).toBe(200);
+  });
+});
+
 describe('cmdServe — the machine config is the machine, canonically', () => {
   it('names the canonical machine config in a budget refusal', async () => {
     // `TenantRegistry` realpaths every config path; `join(home, ...)` did not,

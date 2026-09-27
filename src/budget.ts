@@ -26,8 +26,8 @@
  * is reached — but it cannot stop a run midway the way the router refuses a
  * request, so a single run can carry spend past the cap.
  */
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { GLOBAL_CONFIG_RELATIVE, configPath, loadConfig } from './config.js';
 import { readRows } from './ledger.js';
@@ -74,6 +74,12 @@ export interface BudgetStatus {
   spentUsd: number;
   /** The sonata.toml that set this cap — named in the refusal, since a project and the machine can each set one. */
   configPath: string;
+  /**
+   * The load error for a config that sets a cap but will not load. A cap that
+   * cannot be read is not the same as no cap: reading it as absent lets spend
+   * proceed exactly where the user asked to bound it.
+   */
+  unreadable?: string;
 }
 
 /**
@@ -83,6 +89,14 @@ export interface BudgetStatus {
  */
 export function budgetRefusal(statuses: BudgetStatus[] | undefined): string | undefined {
   for (const status of statuses ?? []) {
+    // Before the spend comparison: an unreadable cap is checked first, or a
+    // broken file whose (lost) cap had room would read as room that exists.
+    if (status.unreadable !== undefined) {
+      return (
+        `sonata budget cannot be checked: ${status.configPath} sets [budget] but will not load ` +
+        `(${status.unreadable}). Fix the file to continue — sonata refuses rather than spend without the cap.`
+      );
+    }
     if (status.spentUsd < status.dailyUsd) continue;
     return (
       `sonata daily budget reached: $${status.spentUsd.toFixed(4)} of ` +
@@ -93,6 +107,44 @@ export function budgetRefusal(statuses: BudgetStatus[] | undefined): string | un
     );
   }
   return undefined;
+}
+
+/**
+ * The refusing status for a machine config that sets `[budget]` but will not
+ * load — recovered from the raw file, since `loadConfig` can only say "this
+ * does not parse". A cap's only visible effect is a refusal that has not
+ * happened yet, so a machine cap lost to a load error reads exactly like one
+ * that is working, right up until the bill.
+ *
+ * A broken machine config with no `[budget]` table had no cap to lose and
+ * must not start refusing everything, so the table header has to be visible
+ * in the raw text (`[budget]` alone on its line — a commented-out mention is
+ * not a table). The status carries the raw path and zero spend because the
+ * real numbers are unknowable for a file that will not load; `budgetRefusal`
+ * refuses on `unreadable` before ever looking at them.
+ */
+export function unreadableMachineBudget(home: string): BudgetStatus | undefined {
+  const raw = join(home, GLOBAL_CONFIG_RELATIVE);
+  if (!existsSync(raw)) return undefined;
+  let text: string;
+  try {
+    text = readFileSync(raw, 'utf8');
+  } catch {
+    // Unreadable as bytes too, so there is no way to know it had a cap.
+    return undefined;
+  }
+  try {
+    loadConfig(dirname(raw), home);
+    return undefined; // loads — a missing cap here is a real absence
+  } catch (err) {
+    if (!/^\s*\[budget\]\s*$/m.test(text)) return undefined;
+    return {
+      dailyUsd: 0,
+      spentUsd: 0,
+      configPath: raw,
+      unreadable: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 /**
@@ -119,7 +171,12 @@ export function dispatchBudgetStatuses(cwd: string, home: string, now: number = 
     try {
       cap = loadConfig(join(home, '.config', 'sonata'), home).budget?.dailyUsd;
     } catch {
-      // A machine config that will not load sets no cap here; `sonata doctor` names it.
+      // A machine config that will not load sets no readable cap here. When
+      // it had a [budget] table to lose, that is a refusal rather than a
+      // silence; `unreadableMachineBudget` decides which, so a broken file
+      // with no cap does not refuse everything.
+      const unreadable = unreadableMachineBudget(home);
+      if (unreadable !== undefined) out.push(unreadable);
     }
     if (cap !== undefined) out.push({ dailyUsd: cap, spentUsd: spentTodayUsd(home, now), configPath: machineRaw });
   }

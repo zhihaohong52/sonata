@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { loadModelsDev } from '../modelsdev.js';
-import { spentTodayUsd, type BudgetStatus } from '../budget.js';
+import { spentTodayUsd, unreadableMachineBudget, type BudgetStatus } from '../budget.js';
 import { GLOBAL_CONFIG_RELATIVE, loadConfig, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
@@ -1167,13 +1167,23 @@ export async function cmdServe(
       projectHintToken: ensureRouterToken(opts.home),
       resolveTier: (alias, tenant) => tenant.config === undefined ? undefined : resolveTierAlias(tenant.config, alias),
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
-      budget: (tenant) => budgetStatusesFor({
-        tenant,
-        machineConfigPath,
-        machineDailyUsd: machineConfig()?.budget?.dailyUsd,
-        projectSpend: () => spentTodayUsd(opts.home, Date.now(), { tenant: tenant.id }),
-        machineSpend: () => spentTodayUsd(opts.home),
-      }),
+      budget: (tenant) => {
+        const statuses = budgetStatusesFor({
+          tenant,
+          machineConfigPath,
+          machineDailyUsd: machineConfig()?.budget?.dailyUsd,
+          projectSpend: () => spentTodayUsd(opts.home, Date.now(), { tenant: tenant.id }),
+          machineSpend: () => spentTodayUsd(opts.home),
+        });
+        // `machineConfig()` swallows a load failure and answers undefined, so
+        // a machine config that sets [budget] but will not parse would lose
+        // its machine-wide cap and read exactly like one that never set one.
+        // `unreadableMachineBudget` recovers the refusal; a broken file with
+        // no [budget] table had no cap to lose and is left alone. Other
+        // callers of `machineConfig()` keep their present behaviour.
+        const unreadable = unreadableMachineBudget(opts.home);
+        return unreadable === undefined ? statuses : [...(statuses ?? []), unreadable];
+      },
       gatewayKeys: (tenant) => {
         const out: Record<string, string> = {};
         for (const [name, gateway] of Object.entries(tenant.config?.native?.gateways ?? {})) {

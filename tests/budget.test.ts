@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { budgetRefusal, spentTodayUsd, startOfUtcDay } from '../src/budget.js';
+import { budgetRefusal, dispatchBudgetStatuses, spentTodayUsd, startOfUtcDay, unreadableMachineBudget, type BudgetStatus } from '../src/budget.js';
 import { appendRow, type LedgerPrice, type LedgerRow } from '../src/ledger.js';
-import { parseConfig } from '../src/config.js';
+import { GLOBAL_CONFIG_RELATIVE, parseConfig } from '../src/config.js';
 import { routeRequest, type RouterDeps } from '../src/native/router.js';
 
 function row(ts: string, price: LedgerPrice, over: Partial<LedgerRow> = {}): LedgerRow {
@@ -142,6 +142,112 @@ describe('budgetRefusal', () => {
     expect(message).toContain('priced');
     expect(message).toContain('dispatch');
   });
+
+  it('refuses an unreadable cap by name, before any spend comparison', () => {
+    // A cap that cannot be read must not read as "no cap". `spentUsd <
+    // dailyUsd` here on purpose — the unreadable check has to fire first, or
+    // a broken file whose (lost) cap had room would read as room that exists.
+    const status: BudgetStatus = {
+      dailyUsd: 5, spentUsd: 0, configPath: '/m/sonata.toml', unreadable: 'Unexpected token',
+    };
+    expect(budgetRefusal([status])).toBe(
+      'sonata budget cannot be checked: /m/sonata.toml sets [budget] but will not load ' +
+      '(Unexpected token). Fix the file to continue — sonata refuses rather than spend without the cap.',
+    );
+  });
+});
+
+/** Broken TOML (an unterminated table header) that still carries a real `[budget]` line. */
+const BROKEN_WITH_BUDGET = '[budget]\ndaily_usd = 5\n[native.gateways\n';
+const BROKEN_WITHOUT_BUDGET = '[native.gateways\n';
+
+function writeMachineAt(home: string, toml: string): void {
+  mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+  writeFileSync(join(home, GLOBAL_CONFIG_RELATIVE), toml);
+}
+
+describe('unreadableMachineBudget', () => {
+  let home: string;
+  const machinePath = () => join(home, GLOBAL_CONFIG_RELATIVE);
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'sonata-budget-home-'));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('returns a refusing status for a machine config that will not load and had a [budget] table', () => {
+    writeMachineAt(home, BROKEN_WITH_BUDGET);
+    const status = unreadableMachineBudget(home);
+    expect(status).toMatchObject({ dailyUsd: 0, spentUsd: 0, configPath: machinePath() });
+    expect(status?.unreadable).toBeTruthy();
+    expect(budgetRefusal([status!])).toContain(machinePath());
+    expect(budgetRefusal([status!])).toContain('sets [budget] but will not load');
+    expect(budgetRefusal([status!])).toContain(status!.unreadable!);
+  });
+
+  it('leaves a broken machine config with no [budget] table alone — it had no cap to lose', () => {
+    // A file that never set a cap must not start refusing everything just
+    // because it is broken: that trades one silent failure for an outage
+    // nobody asked for.
+    writeMachineAt(home, BROKEN_WITHOUT_BUDGET);
+    expect(unreadableMachineBudget(home)).toBeUndefined();
+  });
+
+  it('counts [budget] only as a table header on its own line', () => {
+    writeMachineAt(home, '# [budget]\n[native.gateways\n');
+    expect(unreadableMachineBudget(home)).toBeUndefined();
+  });
+
+  it('leaves a loadable machine config to the ordinary cap path', () => {
+    writeMachineAt(home, '[budget]\ndaily_usd = 5\n');
+    expect(unreadableMachineBudget(home)).toBeUndefined();
+  });
+
+  it('says nothing when there is no machine config at all', () => {
+    expect(unreadableMachineBudget(home)).toBeUndefined();
+  });
+});
+
+describe('dispatchBudgetStatuses', () => {
+  let home: string;
+  let cwd: string;
+  const machinePath = () => join(home, GLOBAL_CONFIG_RELATIVE);
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'sonata-budget-home-'));
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-budget-cwd-'));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it('includes the unreadable machine status when the machine config had a cap to lose', () => {
+    writeMachineAt(home, BROKEN_WITH_BUDGET);
+    const statuses = dispatchBudgetStatuses(cwd, home);
+    expect(statuses).toHaveLength(1);
+    expect(statuses?.[0]).toMatchObject({ dailyUsd: 0, spentUsd: 0, configPath: machinePath() });
+    expect(statuses?.[0].unreadable).toBeTruthy();
+    expect(budgetRefusal(statuses)).toContain('sets [budget] but will not load');
+    expect(budgetRefusal(statuses)).toContain(machinePath());
+  });
+
+  it('keeps a project cap alongside the unreadable machine status', () => {
+    writeFileSync(join(cwd, 'sonata.toml'), '[budget]\ndaily_usd = 2\n');
+    writeMachineAt(home, BROKEN_WITH_BUDGET);
+    const statuses = dispatchBudgetStatuses(cwd, home);
+    expect(statuses?.map((s) => s.dailyUsd)).toEqual([2, 0]);
+    expect(statuses?.[1].unreadable).toBeTruthy();
+  });
+
+  it('says nothing extra when the machine config is broken but had no cap to lose', () => {
+    writeMachineAt(home, BROKEN_WITHOUT_BUDGET);
+    expect(dispatchBudgetStatuses(cwd, home)).toBeUndefined();
+  });
 });
 
 describe('[budget] parsing', () => {
@@ -202,6 +308,18 @@ describe('router budget enforcement', () => {
     expect(parsed.type).toBe('error');
     expect(parsed.error.type).toBe('rate_limit_error');
     expect(parsed.error.message).toContain('daily budget reached');
+  });
+
+  it('refuses with 429 when the cap is unreadable, naming the file and the load error', async () => {
+    const res = await routeRequest(req, deps({
+      budget: () => [{ dailyUsd: 0, spentUsd: 0, configPath: '/m/sonata.toml', unreadable: 'Unexpected token' }],
+    }));
+    expect(res.status).toBe(429);
+    const parsed = JSON.parse(res.body.toString());
+    expect(parsed.error.type).toBe('rate_limit_error');
+    expect(parsed.error.message).toContain('sets [budget] but will not load');
+    expect(parsed.error.message).toContain('/m/sonata.toml');
+    expect(parsed.error.message).toContain('Unexpected token');
   });
 
   it('never reaches the upstream when refusing', async () => {
