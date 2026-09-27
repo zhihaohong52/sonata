@@ -67,6 +67,17 @@ describe('claudeAdapter.plan', () => {
     expect(plan.script).toContain("CLAUDE_CODE_MAX_CONTEXT_TOKENS='128000'");
   });
 
+  // Recorded on the run at launch, so the usage reader at finish answers from
+  // what the run actually did rather than from the config as it is by then.
+  it('says whether it routed the run', () => {
+    expect(claudeAdapter.plan({ ...base, mode: 'acceptEdits' }).routed).toBe(true);
+    const cwd = mkdtempSync(join(tmpdir(), 'sonata-claude-adapter-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '[models."k"]\nharness = "claude"\nid = "k"\n');
+    const plan = claudeAdapter.plan({ ...base, cwd, mode: 'acceptEdits' });
+    expect(plan.script).not.toContain('ANTHROPIC_BASE_URL');
+    expect(plan.routed).toBe(false);
+  });
+
   it('a read-only role restricts tools and cannot write a report', () => {
     const plan = claudeAdapter.plan({ ...base, role: 'explore', mode: 'acceptEdits' });
 

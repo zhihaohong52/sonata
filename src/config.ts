@@ -295,6 +295,15 @@ function parsePrice(raw: unknown, where: string): PriceConfig | undefined {
       for (const [name, value] of [['from', from], ['to', to]] as const) {
         if (!HHMM.test(value)) throw new Error(`${where}: price.windows[${i}].${name} must be UTC HH:MM`);
       }
+      // `inWindow` reads an equal pair as the empty interval, so the window
+      // would never apply and the flat rate would be charged without a word.
+      if (from === to) {
+        throw new Error(
+          `sonata.toml: ${where}: price.windows[${i}] has from = to = "${from}", which is an empty window. ` +
+          'A window must end at a different time than it starts; for a rate that applies all day, omit the window ' +
+          'and set the rate on the price table itself.',
+        );
+      }
       return { from, to, ...parseRates(w, `${where}: price.windows[${i}]`) };
     });
   }

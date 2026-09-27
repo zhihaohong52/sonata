@@ -63,6 +63,8 @@ export interface RunMeta {
   harnessModelId?: string;
   /** The session id sonata passed the harness, when it accepts one. */
   harnessSessionId?: string;
+  /** Whether the plan routed the run through sonata's router (`LaunchPlan.routed`). */
+  routed?: boolean;
   session: string;
   cwd: string;
   startedAt: string;
