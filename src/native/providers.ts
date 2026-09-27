@@ -1,4 +1,4 @@
-import type { NativeGatewayConfig, SonataConfig } from '../config.js';
+import type { NativeGatewayAuth, NativeGatewayConfig, SonataConfig } from '../config.js';
 
 /**
  * Which LiteLLM provider a gateway speaks, and what that implies about how
@@ -131,4 +131,58 @@ export function litellmRequired(config: SonataConfig): boolean {
     if (gw !== undefined && transportFor(gw, name) === 'litellm') return true;
   }
   return false;
+}
+
+
+/** Gateways sharing one endpoint, and the endpoint they share. */
+export interface SharedBaseUrl { url: string; gateways: string[] }
+
+/** A base URL compared as an endpoint: trailing slashes, scheme and host case ignored. */
+function endpointOf(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/, '');
+  try {
+    const url = new URL(trimmed);
+    return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}${url.search}`;
+  } catch {
+    return trimmed;
+  }
+}
+
+/**
+ * Key-authenticated gateways that share one endpoint.
+ *
+ * Two names on one endpoint are almost always one account imported twice, and
+ * nothing said so. Measured on a real machine: opencode.json defined a
+ * provider NAMED `opencode` on the Go URL, detection mapped it onto the
+ * `opencode` gateway, and `opencode` and `opencode-go` then served the same
+ * models under two names — duplicate candidates in every tier, duplicate
+ * agents, split cooldowns. OAuth gateways are skipped: their URL is implied by
+ * their auth, and one credential offered twice is already deduplicated.
+ *
+ * Advisory only — two gateways on one endpoint with different keys is a
+ * legitimate setup, so this is reported, never refused.
+ */
+export function sharedBaseUrls(
+  gateways: Iterable<readonly [string, { baseUrl?: string; auth?: NativeGatewayAuth }]>,
+): SharedBaseUrl[] {
+  const byEndpoint = new Map<string, string[]>();
+  for (const [name, gateway] of gateways) {
+    if (gateway.baseUrl === undefined || gateway.baseUrl.trim() === '') continue;
+    // Anything but a key is OAuth. Not `isOauthGatewayAuth`: config.ts imports
+    // this module's values, so a value import back would be a cycle.
+    if (gateway.auth !== undefined && gateway.auth !== 'api-key') continue;
+    const endpoint = endpointOf(gateway.baseUrl);
+    const names = byEndpoint.get(endpoint) ?? [];
+    if (!names.includes(name)) names.push(name);
+    byEndpoint.set(endpoint, names);
+  }
+  return [...byEndpoint]
+    .filter(([, names]) => names.length > 1)
+    .map(([url, names]) => ({ url, gateways: [...names].sort() }));
+}
+
+/** One sentence naming the gateways, the endpoint, and the likely cause. */
+export function sharedBaseUrlWarning(group: SharedBaseUrl): string {
+  return `gateways ${group.gateways.join(', ')} share base_url ${group.url} — probably one account under two names, `
+    + 'so every model on it is a duplicate candidate and agent; remove one, or point each at its own endpoint';
 }

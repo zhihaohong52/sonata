@@ -983,6 +983,43 @@ pricing_provider = ["deepseek", "tencent", "nope"]
     expect(ok).toBe(clean.ok);
   });
 
+  it('warns when two gateways share a base_url, and only then', async () => {
+    // Measured on a real machine: a provider NAMED `opencode` on the Go URL
+    // put `opencode` and `opencode-go` on one endpoint, duplicating every
+    // model and agent under two names with nothing saying so.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-shared-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-shared-home-'));
+    const toml = (second: string) => `
+[models."a"]
+gateway = "opencode"
+id = "kimi-k3"
+
+[models."b"]
+gateway = "opencode-go"
+id = "kimi-k3"
+
+[native.gateways."opencode"]
+base_url = "https://opencode.ai/zen/go/v1"
+
+[native.gateways."opencode-go"]
+base_url = "${second}"
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), toml('https://opencode.ai/zen/go/v1/'));
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    const at = new Date('2026-09-14T00:00:00.000Z');
+    const { ok, checks } = await doctorResult(cwd, home, at);
+    const c = checks.find((check) => check.name === 'shared base_url');
+    expect(c?.ok).toBe(true);
+    expect(c?.detail).toContain('opencode, opencode-go');
+    expect(c?.detail).toMatch(/one account under two names/);
+
+    writeFileSync(join(cwd, 'sonata.toml'), toml('https://opencode.ai/zen/v1'));
+    const clean = await doctorResult(cwd, home, at);
+    expect(clean.checks.some((check) => check.name === 'shared base_url')).toBe(false);
+    // Advisory: the verdict is whatever it is without the warning.
+    expect(ok).toBe(clean.ok);
+  });
+
   it('says nothing about pricing providers that all match, or with no cache', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-pp2-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-pp2-home-'));
