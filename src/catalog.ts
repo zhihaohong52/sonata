@@ -829,18 +829,22 @@ function valueOf(r: { index: number; price: number }): number {
 /**
  * Rank a role's selected models into the three tiers.
  *
- * Each tier is one sort key over the two quantities AA publishes — a coding
- * index and a cost per task. `complex` takes capability, cost breaking a
- * near-tie; `normal` takes capability per task-dollar; `simple` is `normal`
- * filtered to a cost cap, so it never sorts independently and cannot disagree
- * with `normal` about order.
+ * Each tier is built from two quantities AA publishes — an intelligence index
+ * (`reasoningOf`) and a cost per task. `complex` takes capability, cost
+ * breaking a near-tie; `simple` and `normal` both start from capability per
+ * task-dollar (the value order). `normal` leads with the frontier's knee — the
+ * best capability-for-cost balance point, unless avoided or gated — then the
+ * rest of the value order. `simple` is the value order filtered to a cost cap;
+ * it never sorts independently, but it follows the value order rather than
+ * `normal`, so where the knee falls under the cap the two disagree about the
+ * head: `simple` leads with the best-value model, `normal` with the knee.
  *
  * Only candidates AA prices per task are considered (`taskCostedCandidates`),
  * because capability-per-token and capability-per-task are different units and
  * ranking across them is an arithmetic error, not a judgement.
  *
  * Three properties are deliberate and easy to undo by accident:
- * `simple` is a *subsequence* of `normal`, not a prefix — value is not
+ * `simple` is a *subsequence* of the value order, not a prefix — value is not
  * monotonic in cost; the cap is anchored to the best-value model, which
  * therefore always clears it, so `simple` is never empty on any config; and
  * there is no capability floor, because a floor makes the value ranking
