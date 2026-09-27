@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 
 import {
   cmdServe, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
-  serveStatePath, stopServe, cmdRestart, defaultWaitForLitellm, sonataRouterMultiTenant,
+  serveStatePath, stopServe, cmdRestart, defaultWaitForLitellm, sonataRouterMultiTenant, processCommand,
   budgetStatusesFor,
 } from '../../src/commands/serve.js';
 import type { RouterTenant } from '../../src/native/router.js';
@@ -445,6 +445,87 @@ litellm = 4000
 
     expect(existsSync(legacy)).toBe(true);
     expect(JSON.parse(readFileSync(legacy, 'utf8')).litellmPid).toBe(2147483647);
+  });
+
+  it('does not kill a recorded litellm pid whose process is no longer LiteLLM', async () => {
+    // `killRecordedOrphan` runs on the startup path against whatever the
+    // previous daemon recorded — and that record outlives its child, so the
+    // number can belong to an unrelated process the OS has since assigned it
+    // to. Same "refuse only on POSITIVE evidence" rule as the routerPid check
+    // in `stopServe`: a command line naming no litellm is that evidence, and
+    // signalling the stranger is what this refuses.
+    mkdirSync(dirname(serveStatePath(home, 0)), { recursive: true });
+    writeFileSync(serveStatePath(home, 0), JSON.stringify({ litellmPid: 222 }));
+
+    const signalled: number[] = [];
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(
+      ((pid: number) => { signalled.push(pid); return true; }) as unknown as typeof process.kill,
+    );
+    const notes: string[] = [];
+    const errorSpy = vi.spyOn(console, 'error')
+      .mockImplementation((...args: unknown[]) => { notes.push(args.map(String).join(' ')); });
+    try {
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(),
+        waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 4242, kill() {} }),
+        processCommand: () => '/usr/bin/vim notes.txt',
+      });
+      handles.push(handle);
+    } finally {
+      killSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+
+    expect(signalled).not.toContain(222);
+    expect(notes.join('\n')).toMatch(/222/);
+    expect(notes.join('\n')).toMatch(/no longer LiteLLM/i);
+  });
+
+  it('kills the recorded litellm pid when it is still LiteLLM', async () => {
+    mkdirSync(dirname(serveStatePath(home, 0)), { recursive: true });
+    writeFileSync(serveStatePath(home, 0), JSON.stringify({ litellmPid: 222 }));
+
+    const signalled: number[] = [];
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(
+      ((pid: number) => { signalled.push(pid); return true; }) as unknown as typeof process.kill,
+    );
+    try {
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(),
+        waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 4242, kill() {} }),
+        processCommand: () => '/usr/bin/python /opt/venv/bin/litellm --config x',
+      });
+      handles.push(handle);
+    } finally {
+      killSpy.mockRestore();
+    }
+
+    expect(signalled).toContain(222);
+  });
+
+  it('kills the recorded litellm pid when its command cannot be determined', async () => {
+    // Unknown (ps failed) is not evidence of a mismatch — refusing on it would
+    // strand a real orphan litellm holding the port on any machine where ps is
+    // unavailable. "Cannot tell" proceeds as today.
+    mkdirSync(dirname(serveStatePath(home, 0)), { recursive: true });
+    writeFileSync(serveStatePath(home, 0), JSON.stringify({ litellmPid: 222 }));
+
+    const signalled: number[] = [];
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(
+      ((pid: number) => { signalled.push(pid); return true; }) as unknown as typeof process.kill,
+    );
+    try {
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(),
+        waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 4242, kill() {} }),
+        processCommand: () => undefined,
+      });
+      handles.push(handle);
+    } finally {
+      killSpy.mockRestore();
+    }
+
+    expect(signalled).toContain(222);
   });
 
   it('starts even when a state file parses to something that is not a record', async () => {
@@ -1740,6 +1821,19 @@ context_window = 128000
 
 const notSonataFetch: typeof fetch = (async () => new Response('', { status: 500 })) as unknown as typeof fetch;
 
+describe('processCommand', () => {
+  it('reports a live pid\'s command line and nothing for one that cannot exist', () => {
+    // The real `ps` invocation is half the fix; the seams below only prove
+    // what callers do with its answer. This pins the answer shape: trimmed
+    // text for a pid the OS knows, `undefined` when ps fails or says nothing
+    // — 2147483647 is past pid_max on macOS and Linux alike, so ps errors out.
+    const command = processCommand(process.pid);
+    expect(typeof command).toBe('string');
+    expect((command as string).length).toBeGreaterThan(0);
+    expect(processCommand(2147483647)).toBeUndefined();
+  });
+});
+
 describe('stopServe', () => {
   let cwd: string;
   let home: string;
@@ -1786,6 +1880,9 @@ litellm = 4000
       // machine answers about a real router and the guard refuses.
       findPortPid: () => '111', kill: (pid) => killed.push(pid), sleep: async () => {},
       isAlive: () => false,
+      // The recorded litellm pid is the genuine child here, so the command
+      // line check lets it be signalled.
+      processCommand: () => '/usr/bin/python /opt/venv/bin/LiteLLM --config x.yaml',
     });
 
     expect(result.killed).toBe(true);
@@ -1866,6 +1963,7 @@ litellm = 4000
       // machine answers about a real router and the guard refuses.
       findPortPid: () => '111', kill: () => {}, sleep: async () => {},
       isAlive: () => false,
+      processCommand: () => '/usr/bin/python /opt/venv/bin/litellm',
     });
 
     expect(result.killed).toBe(true);
@@ -1909,6 +2007,7 @@ litellm = 4000
       cwd, home, probeHealth: sonataHealth, sleep: async () => {},
       kill: (pid) => killed.push(pid), isAlive: () => false,
       findPortPid: () => undefined,
+      processCommand: () => '/usr/bin/python /opt/venv/bin/litellm',
     });
 
     expect(killed).toEqual([111, 222]);
@@ -1956,6 +2055,7 @@ litellm = 4000
       forceKill: (pid) => { killed.push(pid); dead.add(pid); },
       isAlive: (pid) => !dead.has(pid),
       timeoutMs: 0,
+      processCommand: () => '/usr/bin/python /opt/venv/bin/litellm',
     });
 
     expect(termed).toEqual([111, 222]);
@@ -2020,6 +2120,7 @@ litellm = 4000
       // left to the real `lsof`, which answered with whatever unrelated
       // process happened to hold 4100 on the developer's machine.
       findPortPid: () => '111',
+      processCommand: () => '/usr/bin/python /opt/venv/bin/litellm',
     });
 
     expect(result.killed).toBe(true);
@@ -2066,6 +2167,96 @@ litellm = 4000
 
     expect((result as Error).message).toMatch(/no recorded pid/);
     expect(killed).toEqual([]);
+  });
+
+  it('does not signal a recorded litellm pid whose process is no longer LiteLLM', async () => {
+    // A serve-state file outlives its LiteLLM child, and the OS reuses pids:
+    // the recorded number can belong to an unrelated process that has nothing
+    // to do with sonata. Signalling it is what this refuses — while the router
+    // pid, already proven against the port holder above, is still stopped.
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
+
+    const killed: number[] = [];
+    const notes: string[] = [];
+    const errorSpy = vi.spyOn(console, 'error')
+      .mockImplementation((...args: unknown[]) => { notes.push(args.map(String).join(' ')); });
+    try {
+      const result = await stopServe({
+        cwd, home, probeHealth: sonataHealth, sleep: async () => {},
+        findPortPid: () => '111', kill: (pid) => killed.push(pid), isAlive: () => false,
+        processCommand: () => '/usr/bin/vim notes.txt',
+      });
+      expect(result.killed).toBe(true);
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(killed).toEqual([111]);
+    // The note names the pid and says why it was left alone.
+    expect(notes.join('\n')).toMatch(/222/);
+    expect(notes.join('\n')).toMatch(/no longer LiteLLM/i);
+  });
+
+  it('signals a recorded litellm pid whose command line still runs litellm', async () => {
+    // Case-insensitive: sonata's own managed venv spells it `LiteLLM`.
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
+
+    const killed: number[] = [];
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, sleep: async () => {},
+      findPortPid: () => '111', kill: (pid) => killed.push(pid), isAlive: () => false,
+      processCommand: () => '/usr/bin/python /opt/venv/bin/LiteLLM --config x.yaml',
+    });
+
+    expect(result.killed).toBe(true);
+    expect(killed.sort()).toEqual([111, 222]);
+  });
+
+  it('signals the recorded litellm pid when its command cannot be read', async () => {
+    // `processCommand` answers undefined for any failure — no ps, no
+    // permission, pid already gone. Treating "cannot tell" as "reused" would
+    // strand a real orphan litellm on every machine where ps is unavailable:
+    // the same "refuse only on POSITIVE evidence" rule as `findPortPid`
+    // above. Unknown proceeds exactly as before.
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
+
+    const killed: number[] = [];
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, sleep: async () => {},
+      findPortPid: () => '111', kill: (pid) => killed.push(pid), isAlive: () => false,
+      processCommand: () => undefined,
+    });
+
+    expect(result.killed).toBe(true);
+    expect(killed.sort()).toEqual([111, 222]);
+  });
+
+  it('does not escalate to SIGKILL against a reused litellm pid', async () => {
+    // The wait/escalate loop below kills whatever is still on its pid list.
+    // A reused pid that is simply alive (it is someone else's long-running
+    // process) must be off that list entirely — otherwise the timeout makes
+    // this send SIGKILL at a stranger and then report failure for it.
+    mkdirSync(dirname(serveStatePath(home, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(home, 4100), JSON.stringify({ routerPid: 111, litellmPid: 222 }));
+
+    const killed: number[] = [];
+    const forced: number[] = [];
+    const result = await stopServe({
+      cwd, home, probeHealth: sonataHealth, sleep: async () => {},
+      findPortPid: () => '111', kill: (pid) => killed.push(pid),
+      forceKill: (pid) => forced.push(pid),
+      // The stranger is alive the whole time; the router exits at once.
+      isAlive: (pid) => pid === 222,
+      timeoutMs: 0,
+      processCommand: () => '/usr/bin/vim notes.txt',
+    });
+
+    expect(result.killed).toBe(true);
+    expect(killed).toEqual([111]);
+    expect(forced).toEqual([]);
   });
 });
 
@@ -2797,6 +2988,67 @@ litellm = 4000
   });
 });
 
+describe('cmdServe — a machine config that will not load', () => {
+  // The machine cap bounds everything the router forwards, so a machine
+  // config that fails to load must not silently remove it: `machineConfig()`
+  // swallows the load error, `machineDailyUsd` is undefined, and the
+  // machine-wide [budget] vanishes while every request keeps spending. A
+  // broken file that never had a [budget] table had no cap to lose and must
+  // not start refusing everything.
+  const PROJECT = `
+[models."flash"]
+gateway = "acme"
+id = "a-model"
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+[native.ports]
+router = 0
+litellm = 4000
+`;
+
+  async function serveWithBrokenMachine(withBudget: boolean) {
+    writeMachineConfig(withBudget ? '[budget]\ndaily_usd = 5\n[native.gateways\n' : '[native.gateways\n');
+    const project = mkdtempSync(join(tmpdir(), 'serve-broken-machine-'));
+    writeFileSync(join(project, 'sonata.toml'), PROJECT);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    const handle = await cmdServe({
+      cwd: project, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+      // `routerPorts` reads the machine config, which is deliberately broken
+      // here, so the port comes from the seam rather than 4100.
+      ports: { router: 0, litellm: 4000 },
+      spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+    });
+    handles.push(handle);
+    vi.unstubAllGlobals();
+    return { project, handle };
+  }
+
+  const request = (project: string, handle: ServeHandle) =>
+    fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...projectHeaders(project) },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+
+  it('refuses a project request when the broken machine config had a [budget] table', async () => {
+    const { project, handle } = await serveWithBrokenMachine(true);
+    const res = await request(project, handle);
+    expect(res.status).toBe(429);
+    const body = await res.text();
+    expect(body).toContain('sets [budget] but will not load');
+    expect(body).toContain(machineConfigPath());
+  });
+
+  it('refuses nothing extra when the broken machine config had no [budget] table', async () => {
+    const { project, handle } = await serveWithBrokenMachine(false);
+    const res = await request(project, handle);
+    expect(res.status).toBe(200);
+  });
+});
+
 describe('cmdServe — the machine config is the machine, canonically', () => {
   it('names the canonical machine config in a budget refusal', async () => {
     // `TenantRegistry` realpaths every config path; `join(home, ...)` did not,
@@ -2891,6 +3143,22 @@ describe('mergeTenantGateways', () => {
     ], (l) => lines.push(l));
     expect(Object.keys(merged)).toEqual(['acme']);
     expect(lines).toEqual([]);
+  });
+
+  it('drops two differently named gateways from two projects that share one key variable', () => {
+    // parseConfig refuses the pair inside one file, but the router merges
+    // every project's gateways into ONE child env keyed by envVarForGateway,
+    // so `foo-bar` in one project and `foo_bar` in another would still write
+    // the same SONATA_KEY_FOO_BAR and one would send the other's key.
+    const lines: string[] = [];
+    const merged = mergeTenantGateways([
+      { id: 'a', gateways: { 'foo-bar': gw({}), keep: gw({}) } },
+      { id: 'b', gateways: { foo_bar: gw({}) } },
+    ], (l) => lines.push(l));
+    expect(merged['foo-bar']).toBeUndefined();
+    expect(merged.foo_bar).toBeUndefined();
+    expect(Object.keys(merged)).toEqual(['keep']);
+    expect(lines.join('\n')).toContain('SONATA_KEY_FOO_BAR');
   });
 
   it('drops a gateway whose tenants disagree about how it authenticates', () => {

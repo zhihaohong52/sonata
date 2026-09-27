@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 
+import { envVarForGateway } from './gateway-env.js';
 import { providerForBaseUrl, requiresSessionHeader } from './providers.js';
 import type { NativeConfig, UnifiedModelConfig, SonataConfig } from '../config.js';
 
@@ -34,9 +35,7 @@ export interface LiteLLMConfig {
   general_settings: { master_key: string };
 }
 
-export function envVarForGateway(gateway: string): string {
-  return `SONATA_KEY_${gateway.toUpperCase().replace(/-/g, '_')}`;
-}
+export { envVarForGateway } from './gateway-env.js';
 
 function litellmModelEntry(
   modelName: string,

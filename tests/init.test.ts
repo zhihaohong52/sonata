@@ -1477,6 +1477,70 @@ complex = ["big@max"]
     expect(state.perRoleModels?.code).toEqual(['big']);
   });
 
+  it('keeps a hand-ranked normal tier', () => {
+    // deriveInitState seeds the wizard's tier state, and plan prefers
+    // `state.tiers` over the existing config — so a `normal` dropped here is
+    // replaced by a fresh catalog proposal on every re-init, discarding the
+    // user's ranking for the one tier nothing else re-seeds.
+    const tiered = parseConfig(`
+[native.gateways."g"]
+base_url = "https://g.example/v1"
+
+[models."big"]
+gateway = "g"
+id = "big"
+context_window = 128000
+
+[models."small"]
+gateway = "g"
+id = "small"
+context_window = 128000
+
+[tiers.code]
+simple = ["small"]
+normal = ["big", "small"]
+complex = ["big"]
+`);
+    const state = deriveInitState(tiered, 'project', []);
+    expect(state.tiers?.code.simple).toEqual(['small']);
+    expect(state.tiers?.code.normal).toEqual(['big', 'small']);
+    expect(state.tiers?.code.complex).toEqual(['big']);
+  });
+
+  it('folds a normal-only model into perRoleModels without re-ordering the rest', () => {
+    // A key only a hand-ranked `normal` names is still a model the role needs
+    // selected: dropping it here let a rewrite lose the `[models]` entry the
+    // tier still names. `normal` contributes only keys neither other list
+    // names, between the simple and complex contributions — the de-duplicated
+    // simple-then-complex order stays exactly as it was.
+    const tiered = parseConfig(`
+[native.gateways."g"]
+base_url = "https://g.example/v1"
+
+[models."a"]
+gateway = "g"
+id = "a"
+context_window = 128000
+
+[models."b"]
+gateway = "g"
+id = "b"
+context_window = 128000
+
+[models."c"]
+gateway = "g"
+id = "c"
+context_window = 128000
+
+[tiers.code]
+simple = ["a"]
+normal = ["b", "a"]
+complex = ["a", "c"]
+`);
+    const state = deriveInitState(tiered, 'project', []);
+    expect(state.perRoleModels?.code).toEqual(['a', 'b', 'c']);
+  });
+
   it('keeps an untiered unified native-only model selected', () => {
     const config = parseConfig(`
 [native.gateways."solo-gateway"]

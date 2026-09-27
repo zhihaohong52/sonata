@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 
+import { shellQuote } from './shell.js';
 import { WORKTREE_CAPTURE_FILE, WORKTREE_CAPTURE_SH } from './worktree.js';
 
 export interface WatchdogInput {
@@ -41,20 +42,23 @@ export function wrapWithTimeout(input: WatchdogInput): string {
     '# a Node CLI that spawns further children; killing only direct children',
     '# leaves those grandchildren running.',
     'set -m',
-    `bash '${input.harnessScriptPath}' &`,
+    `bash ${shellQuote(input.harnessScriptPath)} &`,
     'HARNESS_PID=$!',
     '',
     '(',
     `  sleep ${input.timeoutSeconds}`,
     '  if kill -0 $HARNESS_PID 2>/dev/null; then',
-    `    echo 'sonata: run timeout after ${input.timeoutSeconds}s' >> '${harnessLog}'`,
-    `    echo timeout > '${timeoutMark}'`,
+    `    echo 'sonata: run timeout after ${input.timeoutSeconds}s' >> ${shellQuote(harnessLog)}`,
+    `    echo timeout > ${shellQuote(timeoutMark)}`,
     '    pkill -P $HARNESS_PID 2>/dev/null',
     '    kill -TERM -$HARNESS_PID 2>/dev/null || kill -TERM $HARNESS_PID 2>/dev/null',
     '    sleep 5',
     '    kill -KILL -$HARNESS_PID 2>/dev/null || kill -KILL $HARNESS_PID 2>/dev/null',
     '  fi',
-    ') &',
+    // Its own messages go to the harness log explicitly; stderr would only
+    // carry the shell's "Terminated … sleep" report when the wrapper kills
+    // the sleep on a normal finish, which would land in the pane.
+    ') 2>/dev/null &',
     'WATCHDOG_PID=$!',
     '# Job control reports a killed background job to the terminal. On a normal',
     '# run the watchdog is always killed, so without this every completed run',
@@ -97,8 +101,11 @@ export function wrapWithTimeout(input: WatchdogInput): string {
         'STATUS=$?',
       ]),
     '',
-    'kill $WATCHDOG_PID 2>/dev/null',
+    // Children first: once the watchdog subshell is gone its `sleep` is
+    // reparented, `pkill -P` matches nothing, and the orphan holds the run's
+    // stdout open for the rest of run_timeout_seconds.
     'pkill -P $WATCHDOG_PID 2>/dev/null',
+    'kill $WATCHDOG_PID 2>/dev/null',
     'wait $WATCHDOG_PID 2>/dev/null',
     '',
     // Fingerprint the tree BEFORE the exit sentinel, because the sentinel is
@@ -114,21 +121,21 @@ export function wrapWithTimeout(input: WatchdogInput): string {
     ...(input.worktreeCwd === undefined
       ? []
       : [
-        `if ( cd '${input.worktreeCwd}' && {`,
+        `if ( cd ${shellQuote(input.worktreeCwd)} && {`,
         WORKTREE_CAPTURE_SH.split('\n').map((l) => `  ${l}`).join('\n'),
-        `} ) > '${capturePath}' 2>/dev/null; then`,
+        `} ) > ${shellQuote(capturePath)} 2>/dev/null; then`,
         '  :',
         'else',
         '  # Not a usable repository. Remove the file rather than leaving the',
         '  # empty one the redirection just created: an empty capture hashes to',
         '  # a perfectly stable value, and "unknown" must never be reported as',
         '  # "unchanged".',
-        `  rm -f '${capturePath}'`,
+        `  rm -f ${shellQuote(capturePath)}`,
         'fi',
         '',
       ]),
-    `if [ ! -f '${exitPath}' ]; then`,
-    `  echo $STATUS > '${exitPath}'`,
+    `if [ ! -f ${shellQuote(exitPath)} ]; then`,
+    `  echo $STATUS > ${shellQuote(exitPath)}`,
     'fi',
     '',
     'exit $STATUS',

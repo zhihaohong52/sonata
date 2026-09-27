@@ -235,6 +235,22 @@ base_url = "http://gateway.example/v1"
     expect(vi.mocked(startServeDaemon)).toHaveBeenCalledTimes(1);
   });
 
+  it('starts serve in the foreground so the readiness probe can match its instance id', async () => {
+    writeNativeConfig(cwd);
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('ECONNREFUSED');
+      return sonataHealthPayload();
+    }) as unknown as typeof fetch);
+
+    await ensureNativeServe(cwd);
+    expect(vi.mocked(startServeDaemon)).toHaveBeenCalledTimes(1);
+    const argv = vi.mocked(startServeDaemon).mock.calls[0][1];
+    expect(argv).toContain('serve');
+    expect(argv).not.toContain('--daemon');
+  });
+
   it('accepts a running multi-tenant router without starting a daemon', async () => {
     writeNativeConfig(cwd);
     vi.stubGlobal('fetch', vi.fn(async () => sonataHealthPayload()) as unknown as typeof fetch);

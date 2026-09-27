@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { parseConfig, tierAgentNames, type SonataConfig } from '../../src/config.js';
 import { plan, type CredentialProbe } from '../../src/init/plan.js';
+import { deriveInitState } from '../../src/init/helpers.js';
 import { litellmRequired } from '../../src/native/providers.js';
 import { aaCatalogPath } from '../../src/catalog.js';
 import type { InitEnvironment } from '../../src/init/discover.js';
@@ -142,6 +143,88 @@ describe('plan — the config it emits', () => {
     const p = plan(env(), state, noCredentials, opts);
     const keys = [...p.configToml.matchAll(/^\[models\."([^"]+)"\]$/gm)].map((m) => m[1]);
     expect(keys).toEqual([...new Set(keys)]);
+  });
+
+  it('carries a hand-ranked normal tier from deriveInitState through plan', () => {
+    // The sibling failure a deriveInitState test alone cannot catch: plan
+    // prefers `state.tiers` over the existing config (`saved = state.tiers?.[role]
+    // ?? configForScope?.tiers?.[role]`), so a `normal` dropped while seeding
+    // the wizard state leaves `savedLists.normal` undefined and the whole tier
+    // falls back to a fresh proposal before anything is written.
+    const derived = deriveInitState(parseConfig([
+      '[native.gateways."acme"]',
+      'base_url = "https://acme.example/v1"',
+      '',
+      '[native.gateways."flaky-gw"]',
+      'base_url = "https://flaky.example/v1"',
+      '',
+      '[models."acme-fast"]',
+      'gateway = "acme"',
+      'id = "fast"',
+      'context_window = 128000',
+      '',
+      '[models."flaky-slow"]',
+      'gateway = "flaky-gw"',
+      'id = "slow"',
+      'context_window = 128000',
+      '',
+      '[tiers.code]',
+      'simple = ["acme-fast"]',
+      'normal = ["flaky-slow", "acme-fast"]',
+      'complex = ["flaky-slow"]',
+    ].join('\n')), 'project', []);
+    const p = plan(
+      env({ configsByScope: { project: existing } }),
+      { ...state, tiers: derived.tiers }, noCredentials, opts);
+    expect(parseConfig(p.configToml).tiers!.code.normal).toEqual(['flaky-slow', 'acme-fast']);
+  });
+
+  it('keeps a normal-only model through deriveInitState → plan, with its [models] entry and position', () => {
+    // A model present only in a hand-ranked `normal` list must survive a
+    // rewrite: its `[models]` entry (or the tier names a key nothing defines)
+    // and its exact place in the ranking. Everything rides deriveInitState —
+    // the seeded selection and the seeded tiers — so the chain is exercised
+    // end to end rather than each half against its own fixture.
+    const parsed = parseConfig(`
+[native.gateways."g"]
+base_url = "https://g.example/v1"
+
+[models."g-a"]
+gateway = "g"
+id = "a"
+context_window = 128000
+
+[models."g-b"]
+gateway = "g"
+id = "b"
+context_window = 128000
+
+[tiers.code]
+simple = ["g-a"]
+normal = ["g-b", "g-a"]
+complex = ["g-a"]
+`);
+    const d = deriveInitState(parsed, 'project', []);
+    // 'g-b' exists only in `normal` and must be selected for the role all the
+    // same — this is where a rewrite used to lose it.
+    expect(d.perRoleModels?.code).toEqual(['g-a', 'g-b']);
+    const p = plan(
+      env({
+        configsByScope: { project: parsed },
+        allNativeCandidates: [candidate('g-a', 'g', 'a'), candidate('g-b', 'g', 'b')],
+      }),
+      {
+        ...state,
+        nativeKeys: d.nativeKeys ?? [],
+        roles: d.roles ?? ['code'],
+        perRoleModels: d.perRoleModels,
+        tiers: d.tiers,
+      },
+      noCredentials, opts);
+    const back = parseConfig(p.configToml);
+    expect(back.unifiedModels['g-a']).toBeDefined();
+    expect(back.unifiedModels['g-b']).toMatchObject({ gateway: 'g', id: 'b' });
+    expect(back.tiers!.code.normal).toEqual(['g-b', 'g-a']);
   });
 });
 
