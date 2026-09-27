@@ -938,7 +938,16 @@ export async function cmdRouteSession(
     // stayed for as long as any session lived.
     const current = readSessions(registry);
     writeSessions(registry, [...current.filter((id) => id !== sessionId), sessionId]);
-    await cmdRoute('on', opts);
+    try {
+      await cmdRoute('on', opts);
+    } catch (error) {
+      // Registration and the routing write are one step. Restoring the list
+      // as it was read — under the same lock — un-registers a new id and keeps
+      // a re-entering one live in its old place, since its SessionEnd must
+      // still find it.
+      writeSessions(registry, current);
+      throw error;
+    }
   });
 
   // Records which project this session belongs to, so `sonata usage --by
@@ -1148,7 +1157,15 @@ export async function cmdRouteSubagent(
     }
     const next = current.includes(agentId) ? current : [...current, agentId];
     writeSessions(registry, next);
-    await cmdRoute('on', opts);
+    try {
+      await cmdRoute('on', opts);
+    } catch (error) {
+      // An id left registered after the write threw would hold routing on for
+      // a subagent that was never routed, until a stop hook that may never
+      // fire. Restore the list as read, under the same lock.
+      writeSessions(registry, current);
+      throw error;
+    }
     return { subagents: next.length, routing: 'on' };
   });
 }
