@@ -10,6 +10,7 @@ import { opencodeDbPath } from '../../src/native/opencode-store.js';
 import { sqliteAvailable, writeOpencodeCredDb } from '../opencode-db-fixture.js';
 import { credentialDir } from '../../src/native/oauth-login.js';
 import { cmdRoute } from '../../src/commands/route.js';
+import { nativeAgentMarkdown } from '../../src/commands/sync.js';
 
 vi.mock('../../src/native/litellm.js', () => ({
   findLitellm: () => '/usr/local/bin/litellm',
@@ -356,7 +357,8 @@ code = ["deepseek-v4-flash"]
 
   it('checks LiteLLM, a down serve, missing key sources, and native stale agents', async () => {
     const { cwd, home } = setup();
-    writeFileSync(join(cwd, '.claude', 'agents', 'native-code-old.md'), '---\nname: native-code-old\n---\nold');
+    // A real legacy native agent: the name alone no longer claims a file.
+    writeFileSync(join(cwd, '.claude', 'agents', 'native-code-old.md'), nativeAgentMarkdown({ role: 'code', model: 'old' }));
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {

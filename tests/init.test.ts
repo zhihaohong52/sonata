@@ -32,8 +32,8 @@ vi.mock('../src/native/codex-auth.js', () => ({
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseOpenCodeModels, staleAgents, isSonataAgent, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
-import { tierAgentMarkdown } from '../src/commands/sync.js';
+import { parseOpenCodeModels, staleAgents, isSonataAgent, isSonataAgentText, parseOpenCodeRefs, offerableProviders } from '../src/detect.js';
+import { tierAgentMarkdown, nativeAgentMarkdown } from '../src/commands/sync.js';
 import { parsePiRefs } from '../src/adapters/pi.js';
 import {
   cmdInit, credentialAvailabilityFor, duplicateKeys, parseCredentialSourceFlags, previousAskedStep, nativeCandidatesFrom,
@@ -109,6 +109,33 @@ describe('staleAgents', () => {
     writeFileSync(path, tierAgentMarkdown({ role: 'code', tier: 'simple' }));
     expect(isSonataAgent(path)).toBe(true);
     expect(staleAgents(dir, [])).toContain('code-simple.md');
+  });
+
+  it('does not claim a hand-written agent merely for being named native-*', () => {
+    // The name alone was the ownership test, so a user's `native-deploy`
+    // agent was listed stale and deleted by `sonata agents`' write, which
+    // prunes without asking.
+    const path = join(dir, 'native-deploy.md');
+    writeFileSync(path, '---\nname: native-deploy\ndescription: Deploys the app.\n---\n\nRun the deploy script.\n');
+    expect(isSonataAgent(path)).toBe(false);
+    expect(staleAgents(dir, [])).not.toContain('native-deploy.md');
+  });
+
+  it('still claims every legacy native agent sonata has generated', () => {
+    // The current generator, plus the two older bodies it replaced: a legacy
+    // file on disk may predate either change and must still be prunable.
+    expect(isSonataAgentText(nativeAgentMarkdown({ role: 'code', model: 'acme-m' }))).toBe(true);
+    expect(isSonataAgentText([
+      '---', 'name: native-code-acme-m',
+      "description: Runs implementation natively on acme-m inside Claude Code's own loop. Requires a sonata code session.",
+      'model: acme-m', '---', '', 'This agent only works in a sonata code session.', '', 'Focus on implementation.', '',
+    ].join('\n'))).toBe(true);
+    expect(isSonataAgentText([
+      '---', 'name: native-review-acme-m',
+      "description: Runs review natively on acme-m inside Claude Code's own loop. Requires a routed session (sonata code, or sonata route on).",
+      'model: acme-m', 'tools: Read, Grep, Glob', '---', '',
+      'This agent only works in a routed session (sonata code, or sonata route on).', '', 'Focus on review.', '',
+    ].join('\n'))).toBe(true);
   });
 
   it('handles a missing directory', () => {

@@ -234,7 +234,24 @@ export function staleAgents(agentsDir: string, expected: string[]): string[] {
 export function isSonataAgentText(text: string): boolean {
   return text.includes('forwarding wrapper around the sonata runtime')
     || text.includes(TIER_AGENT_MARKER)
-    || /^name:\s+native-[^\s]+/m.test(text);
+    || isLegacyNativeAgentText(text);
+}
+
+/**
+ * Whether this is a legacy per-model *native* agent, which carries no marker.
+ *
+ * The name alone is not evidence — a user's own `native-deploy` agent was
+ * claimed by it, listed stale, and deleted by `sonata agents`' write, which
+ * prunes without asking. So the name must come with the two lines every
+ * version of `nativeAgentMarkdown` has written: the description's "natively
+ * on <model> inside Claude Code's own loop." and the body's opening "This
+ * agent only works in a sonata code session" / "…a routed session". The
+ * optional quotes admit the double-quoted scalars the writer now emits.
+ */
+function isLegacyNativeAgentText(text: string): boolean {
+  return /^name:\s+"?native-[^\s"]+/m.test(text)
+    && /^description:\s+"?Runs .+ natively on .+ inside Claude Code's own loop\./m.test(text)
+    && /^This agent only works in a (sonata code|routed) session/m.test(text);
 }
 
 export function isSonataAgent(path: string): boolean {
