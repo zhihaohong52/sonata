@@ -185,6 +185,28 @@ litellm = ${litellmPort}
     expect(remaining).toHaveProperty('fresh');
   });
 
+  it('keeps pruning on a daily timer, not only at startup', async () => {
+    // A daemon runs for weeks; pruning only as it started let day-files and
+    // session records outlive the retention window for as long as it stayed up.
+    writeConfig();
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline'); }));
+    try {
+      await start();
+      const usageDir = join(home, '.config', 'sonata', 'usage');
+      mkdirSync(usageDir, { recursive: true });
+      const oldFile = join(usageDir, '2020-01-01.jsonl');
+      writeFileSync(oldFile, `${JSON.stringify(row())}\n`);
+
+      vi.advanceTimersByTime(24 * 60 * 60 * 1000);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(existsSync(oldFile)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('serves even when pruning throws', async () => {
     writeConfig();
     // A regular file where the day-file directory belongs makes pruneLedger's
