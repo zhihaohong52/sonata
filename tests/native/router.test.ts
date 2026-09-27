@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, withEffort, STICKY_TTL_MS, createRouterServer, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, withEffort, STICKY_TTL_MS, createRouterServer, respond, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
 
@@ -27,6 +27,23 @@ function fakeFetch(record: FetchCall[]): typeof fetch {
     record.push({ url: String(input), headers: Object.fromEntries(new Headers(init?.headers)) });
     return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
   };
+}
+
+/** A JSON body carrying final usage — what a completed non-streaming answer looks like. */
+const COMPLETE_BODY = JSON.stringify({ usage: { input_tokens: 1, output_tokens: 1 } });
+
+/**
+ * Routes and then reads the whole body, as a real client does. Stickiness is
+ * decided when the response completes, not when its status arrives.
+ */
+async function serveFully(...args: Parameters<typeof routeRequest>): ReturnType<typeof routeRequest> {
+  const res = await routeRequest(...args);
+  if (!Buffer.isBuffer(res.body)) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of res.body) chunks.push(Buffer.from(chunk));
+    return { ...res, body: Buffer.concat(chunks) };
+  }
+  return res;
 }
 
 const base = { litellmBase: 'http://lite', litellmKey: 'sk-local', anthropicBase: 'https://api.anthropic.com' };
@@ -390,6 +407,30 @@ describe('tier alias routing', () => {
       fetch: fakeFetch(rec),
       litellmBase: 'http://litellm', litellmKey: 'k',
       resolveTier: () => undefined,
+    });
+    expect(res.status).toBe(200);
+    expect(rec[0].url).toBe('http://litellm/v1/messages');
+  });
+
+  it('answers a generated-shape alias the config does not know with the typed 400 naming sonata sync', async () => {
+    const rec: FetchCall[] = [];
+    const res = await routeRequest(req('sonata-code-normal'), {
+      fetch: fakeFetch(rec),
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => undefined,
+    });
+    expect(res.status).toBe(400);
+    expect(rec).toHaveLength(0);
+    expect(JSON.parse((res.body as Buffer).toString()).error.message).toContain('sonata sync');
+  });
+
+  it('still forwards a generated-shape name that is a native model key', async () => {
+    const rec: FetchCall[] = [];
+    const res = await routeRequest(req('sonata-code'), {
+      fetch: fakeFetch(rec),
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => undefined,
+      resolveNative: () => ({ gateway: 'g', id: 'x', transport: 'litellm' as const }),
     });
     expect(res.status).toBe(200);
     expect(rec[0].url).toBe('http://litellm/v1/messages');
@@ -1706,7 +1747,7 @@ describe('conversation stickiness', () => {
         const payload = JSON.parse(init.body as string) as { model: string };
         seen.push(payload.model);
         bodies.push(payload);
-        return new Response('{}', { status: payload.model === 'default/flash' && state.flashFails ? 503 : 200 });
+        return new Response(COMPLETE_BODY, { status: payload.model === 'default/flash' && state.flashFails ? 503 : 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
       resolveTier: () => ROUTES,
@@ -1719,7 +1760,7 @@ describe('conversation stickiness', () => {
     const { seen, state, deps } = harness();
 
     // Turn 1: the leader fails, so luna serves — and is remembered.
-    await routeRequest(turn(1), deps);
+    await serveFully(turn(1), deps);
     expect(seen).toEqual(['default/flash', 'default/luna']);
 
     // flash recovers and its cooldown lapses, so rank order would pick it again.
@@ -1727,11 +1768,11 @@ describe('conversation stickiness', () => {
     state.clock += TIER_COOLDOWN_MS + 1;
 
     // Turn 2 of the SAME conversation still goes to luna.
-    await routeRequest(turn(2), deps);
+    await serveFully(turn(2), deps);
     expect(seen.slice(2)).toEqual(['default/luna']);
 
     // A different conversation is unaffected and gets the ranked leader.
-    await routeRequest(turn(1, 'write the docs'), deps);
+    await serveFully(turn(1, 'write the docs'), deps);
     expect(seen.slice(3)).toEqual(['default/flash']);
   });
 
@@ -1739,13 +1780,13 @@ describe('conversation stickiness', () => {
     const { seen, state, deps } = harness();
     state.flashFails = false;
 
-    await routeRequest(turn(1), deps);
+    await serveFully(turn(1), deps);
     expect(seen).toEqual(['default/flash']);
 
     // The pinned candidate now fails; the tier must still fall through to luna
     // rather than dying on the model the conversation happens to prefer.
     state.flashFails = true;
-    await routeRequest(turn(2), deps);
+    await serveFully(turn(2), deps);
     expect(seen.slice(1)).toEqual(['default/flash', 'default/luna']);
   });
 
@@ -1753,10 +1794,10 @@ describe('conversation stickiness', () => {
     const { seen, bodies, state, deps } = harness();
     state.flashFails = false;
 
-    await routeRequest(turn(1), deps);
+    await serveFully(turn(1), deps);
     // Turn 2 carries flash's thinking blocks; flash then fails, so luna takes over.
     state.flashFails = true;
-    await routeRequest(turn(3), deps);
+    await serveFully(turn(3), deps);
 
     expect(seen).toEqual(['default/flash', 'default/flash', 'default/luna']);
     const served = bodies.at(-1)!;
@@ -1772,8 +1813,8 @@ describe('conversation stickiness', () => {
     const { bodies, state, deps } = harness();
     state.flashFails = false;
 
-    await routeRequest(turn(1), deps);
-    await routeRequest(turn(3), deps);
+    await serveFully(turn(1), deps);
+    await serveFully(turn(3), deps);
 
     const types = bodies.at(-1)!.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content.map((b: any) => b.type) : []);
     expect(types).toContain('thinking');
@@ -1791,26 +1832,26 @@ describe('conversation stickiness', () => {
         seen.push(model);
         return model === 'default/flash' && state.flash400
           ? new Response(JSON.stringify({ error: { message: 'some client error' } }), { status: 400 })
-          : new Response('{}', { status: 200 });
+          : new Response(COMPLETE_BODY, { status: 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
       resolveTier: () => ROUTES,
     };
 
     // flash serves and is pinned.
-    await routeRequest(turn(1), deps);
+    await serveFully(turn(1), deps);
     expect(seen).toEqual(['default/flash']);
 
     // It now 400s. The 400 is returned to the caller (not a recognised
     // capability failure), so nothing cools it down.
     state.flash400 = true;
-    expect((await routeRequest(turn(2), deps)).status).toBe(400);
+    expect((await serveFully(turn(2), deps)).status).toBe(400);
     expect(seen.slice(1)).toEqual(['default/flash']);
 
     // The retry must NOT prefer it again. Rank order puts flash first anyway,
     // so it is tried, 400s, and the tier falls through — the point is that the
     // pin is no longer forcing it ahead of a healthy candidate.
-    await routeRequest(turn(2), deps);
+    await serveFully(turn(2), deps);
     expect(seen.slice(2)).toEqual(['default/flash']);
   });
 
@@ -1830,23 +1871,23 @@ describe('conversation stickiness', () => {
         seen.push(payload.model);
         bodies.push(payload);
         const flash = payload.model === 'default/flash';
-        if (state.phase === 1) return new Response('{}', { status: flash ? 503 : 200 });
+        if (state.phase === 1) return new Response(COMPLETE_BODY, { status: flash ? 503 : 200 });
         if (state.phase === 2 && !flash) {
           return new Response(JSON.stringify({ error: { message: 'client error' } }), { status: 400 });
         }
-        return new Response('{}', { status: 200 });
+        return new Response(COMPLETE_BODY, { status: 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
       resolveTier: () => ROUTES,
       now: () => state.clock,
     };
 
-    await routeRequest(turn(1), deps);
+    await serveFully(turn(1), deps);
     expect(seen).toEqual(['default/flash', 'default/luna']);
 
     // Luna is now preferred over the ranked leader, and 400s.
     state.phase = 2;
-    expect((await routeRequest(turn(3), deps)).status).toBe(400);
+    expect((await serveFully(turn(3), deps)).status).toBe(400);
     expect(seen.slice(2)).toEqual(['default/luna']);
 
     // Retried: the preference is gone, so flash leads on rank again — and it
@@ -1855,7 +1896,7 @@ describe('conversation stickiness', () => {
     // the memory of luna having served.
     state.phase = 3;
     state.clock += TIER_COOLDOWN_MS + 1;
-    await routeRequest(turn(3), deps);
+    await serveFully(turn(3), deps);
     const served = bodies.at(-1)!;
     expect(served.model).toBe('default/flash');
     const types = served.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content.map((b: any) => b.type) : []);
@@ -1866,14 +1907,14 @@ describe('conversation stickiness', () => {
   it('forgets a conversation that has been idle past the TTL', async () => {
     const { seen, state, deps } = harness();
 
-    await routeRequest(turn(1), deps);
+    await serveFully(turn(1), deps);
     expect(seen).toEqual(['default/flash', 'default/luna']);
 
     state.flashFails = false;
     state.clock += STICKY_TTL_MS + 1;
 
     // The pin has aged out, so rank order applies again.
-    await routeRequest(turn(2), deps);
+    await serveFully(turn(2), deps);
     expect(seen.slice(2)).toEqual(['default/flash']);
   });
 });
@@ -2216,5 +2257,427 @@ describe('OpenCode session header', () => {
     expect(seen).toEqual(['default/mimo', 'default/luna']);
     await routeRequest(turn([{ role: 'user', content: 'another agent' }]), deps);
     expect(seen).toEqual(['default/mimo', 'default/luna', 'default/luna']);
+  });
+});
+
+describe('routeRequest — a bare model key on a direct gateway', () => {
+  beforeEach(() => clearCooldowns());
+
+  it('goes to the gateway through forwardDirect, not to LiteLLM', async () => {
+    const seen: { url: string; model: string; auth?: string; effort?: unknown }[] = [];
+    const rows: { upstream?: string; gateway?: string; key?: string }[] = [];
+    const res = await routeRequest(
+      {
+        method: 'POST', url: '/v1/messages',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer CALLER' },
+        body: Buffer.from(JSON.stringify({ model: 'flash@low', messages: [{ role: 'user', content: 'hi' }] })),
+      },
+      {
+        fetch: (async (url: string, init: RequestInit) => {
+          const body = JSON.parse(Buffer.from(init.body as Uint8Array).toString()) as { model: string; reasoning_effort?: unknown };
+          seen.push({ url, model: body.model, auth: (init.headers as Record<string, string>).authorization, effort: body.reasoning_effort });
+          return new Response('{}', { status: 200 });
+        }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveNative: (key: string) => key === 'flash'
+          ? { gateway: 'g', id: 'upstream-flash', transport: 'direct' as const, baseUrl: 'https://gw.example/v1' }
+          : undefined,
+        gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
+        // A direct-only config needs no LiteLLM; this must not be consulted.
+        litellmUnavailable: () => 'LiteLLM is not needed and not running',
+        recordUsage: (row) => rows.push(row),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].url).toBe('https://gw.example/v1/messages');
+    expect(seen[0].model).toBe('upstream-flash');
+    expect(seen[0].auth).toBe('Bearer GATEWAY-KEY');
+    expect(seen[0].effort).toBe('low');
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it('still sends a litellm-transport bare key to LiteLLM', async () => {
+    let url = '';
+    await routeRequest(
+      { method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from(JSON.stringify({ model: 'flash', messages: [] })) },
+      {
+        fetch: (async (u: string) => { url = u; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveNative: () => ({ gateway: 'g', id: 'x', transport: 'litellm' as const }),
+      },
+    );
+    expect(url).toBe('http://litellm/v1/messages');
+  });
+});
+
+describe('conversation key collisions', () => {
+  const ROUTES = {
+    role: 'code', tier: 'simple',
+    routes: [
+      { key: 'flash', native: { gateway: 'gf', id: 'flash-1' } },
+      { key: 'luna', native: { gateway: 'gl', id: 'luna-1' } },
+    ],
+  };
+  const THINKING = { type: 'thinking', thinking: 'flash reasoning', signature: 'sig-flash' };
+  const request = (messages: unknown[]) => ({
+    method: 'POST', url: '/v1/messages', headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages })),
+  });
+  beforeEach(() => clearCooldowns());
+
+  it('strips thinking when another conversation sharing the key was served by a different candidate', async () => {
+    const bodies: { model: string; messages: unknown[] }[] = [];
+    const state = { flashFails: false };
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const payload = JSON.parse(init.body as string) as { model: string; messages: unknown[] };
+        bodies.push(payload);
+        return new Response(COMPLETE_BODY, { status: payload.model === 'default/flash' && state.flashFails ? 503 : 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    };
+    const opener = { role: 'user', content: 'same task text' };
+    // Conversation A is served by flash.
+    await serveFully(request([opener]), deps);
+    // Conversation B opens identically; flash fails, so luna serves it.
+    state.flashFails = true;
+    await serveFully(request([opener]), deps);
+    // A's second turn carries flash's thinking. flash is cooling, luna serves:
+    // the blocks are foreign to luna and must not reach it.
+    await serveFully(request([
+      opener,
+      { role: 'assistant', content: [THINKING, { type: 'text', text: 'ok' }] },
+      { role: 'user', content: 'continue' },
+    ]), deps);
+    const last = bodies.at(-1)!;
+    expect(last.model).toBe('default/luna');
+    expect(JSON.stringify(last.messages)).not.toContain('sig-flash');
+  });
+});
+
+describe('stickiness waits for the response to complete', () => {
+  const ROUTES = {
+    role: 'code', tier: 'simple',
+    routes: [
+      { key: 'flash', native: { gateway: 'gf', id: 'flash-1' } },
+      { key: 'luna', native: { gateway: 'gl', id: 'luna-1' } },
+    ],
+  };
+  const request = () => ({
+    method: 'POST', url: '/v1/messages', headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: 'task' }] })),
+  });
+  const sse = (frames: string[], breakAfter: boolean) => new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const frame of frames) controller.enqueue(new TextEncoder().encode(frame));
+      if (breakAfter) controller.error(new Error('upstream reset'));
+      else controller.close();
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const START = 'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":0}}}\n\n';
+  const DELTA = 'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":5}}\n\n';
+
+  beforeEach(() => clearCooldowns());
+
+  const run = async (breakLuna: boolean) => {
+    const seen: string[] = [];
+    const state = { flashFails: true, clock: 1_000 };
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        if (model === 'default/flash') return state.flashFails ? new Response('{}', { status: 503 }) : sse([START, DELTA], false);
+        return breakLuna ? sse([START], true) : sse([START, DELTA], false);
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+      now: () => state.clock,
+    };
+    const first = await routeRequest(request(), deps);
+    try { for await (const _ of first.body as AsyncIterable<Uint8Array>) { /* read */ } } catch { /* broken stream */ }
+    // flash recovers after its cooldown; which candidate is tried first now?
+    state.flashFails = false;
+    state.clock += TIER_COOLDOWN_MS + 1;
+    seen.length = 0;
+    const second = await routeRequest(request(), deps);
+    for await (const _ of second.body as AsyncIterable<Uint8Array>) { /* read */ }
+    return seen[0];
+  };
+
+  it('prefers the candidate whose stream completed', async () => {
+    expect(await run(false)).toBe('default/luna');
+  });
+
+  it('does not prefer a candidate whose stream broke partway', async () => {
+    expect(await run(true)).toBe('default/flash');
+  });
+});
+
+describe('error bodies are read within bounds', () => {
+  const ROUTES = {
+    role: 'code', tier: 'simple',
+    routes: [
+      { key: 'slow', native: { gateway: 'gs', id: 'slow-1' } },
+      { key: 'good', native: { gateway: 'gg', id: 'good-1' } },
+    ],
+  };
+  const request = () => ({
+    method: 'POST', url: '/v1/messages', headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: 'x' }] })),
+  });
+  beforeEach(() => clearCooldowns());
+
+  it('abandons a stalled error body and moves on to the next candidate', async () => {
+    let cancelled = false;
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        if (model === 'default/slow') {
+          return new Response(new ReadableStream<Uint8Array>({
+            start(c) { c.enqueue(new TextEncoder().encode('{"error":')); /* never closes */ },
+            cancel() { cancelled = true; },
+          }), { status: 503 });
+        }
+        return new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+      errorBodyLimits: { maxBytes: 1024, timeoutMs: 50 },
+    };
+    const started = Date.now();
+    const res = await routeRequest(request(), deps);
+    expect(res.status).toBe(200);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(cancelled).toBe(true);
+  });
+
+  it('keeps at most maxBytes of a terminal 400 body and still returns the 400', async () => {
+    const deps = {
+      fetch: (async () => new Response('x'.repeat(10_000), { status: 400 })) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ({ role: 'code', tier: 'simple', routes: [ROUTES.routes[1]] }),
+      errorBodyLimits: { maxBytes: 1024, timeoutMs: 1_000 },
+    };
+    const res = await routeRequest(request(), deps);
+    expect(res.status).toBe(400);
+    expect((res.body as Buffer).length).toBeLessThanOrEqual(1024);
+  });
+
+  it('bounds the 500 read on the plain litellm path too', async () => {
+    let cancelled = false;
+    const res = await routeRequest(
+      { method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from('{"model":"flash"}') },
+      {
+        fetch: (async () => new Response(new ReadableStream<Uint8Array>({
+          start(c) { c.enqueue(new TextEncoder().encode('partial')); },
+          cancel() { cancelled = true; },
+        }), { status: 500 })) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        errorBodyLimits: { maxBytes: 1024, timeoutMs: 50 },
+      },
+    );
+    expect(res.status).toBe(500);
+    expect(cancelled).toBe(true);
+  });
+});
+
+describe('createRouterServer — a stream that fails after its headers', () => {
+  it('destroys the response instead of appending a JSON error to the event stream', async () => {
+    const server = createRouterServer({
+      fetch: (async () => new Response(new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('event: message_start\ndata: {"type":"message_start"}\n\n'));
+          setTimeout(() => c.error(new Error('upstream reset')), 20);
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const { request } = await import('node:http');
+      const outcome = await new Promise<{ data: string; aborted: boolean }>((resolve) => {
+        const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/v1/messages', headers: { 'content-type': 'application/json' } }, (res) => {
+          let data = '';
+          let aborted = false;
+          res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+          res.on('aborted', () => { aborted = true; });
+          res.on('error', () => { aborted = true; });
+          res.on('close', () => resolve({ data, aborted }));
+        });
+        req.on('error', () => resolve({ data: '', aborted: true }));
+        req.end('{"model":"flash"}');
+      });
+      expect(outcome.data).toContain('message_start');
+      expect(outcome.data).not.toContain('router_error');
+      expect(outcome.aborted).toBe(true);
+    } finally {
+      server.close();
+    }
+  });
+});
+
+describe('respond — backpressure', () => {
+  it('waits for drain before pulling the next chunk when write returns false', async () => {
+    const { EventEmitter } = await import('node:events');
+    const events: string[] = [];
+    const res = Object.assign(new EventEmitter(), {
+      writeHead: () => undefined,
+      write: (chunk: Uint8Array) => { events.push(`write ${Buffer.from(chunk).toString()}`); return false; },
+      end: () => { events.push('end'); },
+    });
+    async function* body(): AsyncIterable<Uint8Array> {
+      events.push('pull a'); yield Buffer.from('a');
+      events.push('pull b'); yield Buffer.from('b');
+    }
+    const done = respond(res as never, { status: 200, headers: {}, body: body() });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(events).toEqual(['pull a', 'write a']);
+    res.emit('drain');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(events).toEqual(['pull a', 'write a', 'pull b', 'write b']);
+    res.emit('drain');
+    await done;
+    expect(events.at(-1)).toBe('end');
+  });
+});
+
+describe('message-less 400s', () => {
+  // The two bodies seen live (2026-09-27), exactly as LiteLLM's proxy wraps
+  // an upstream 400: opencode.ai answered once with an empty body and then
+  // with `{"model":"deepseek-v4.1-flash"}` — naming nothing about the request.
+  const ENVELOPE_EMPTY = JSON.stringify({ error: {
+    message: 'litellm.BadRequestError: OpenAIException - Error code: 400. Received Model Group=8f3f1636d2c8/opencode-deepseek-v4.1-flash\nAvailable Model Group Fallbacks=None',
+    type: null, param: null, code: '400',
+  } });
+  const ENVELOPE_MODEL_ONLY = JSON.stringify({ error: {
+    message: "litellm.BadRequestError: OpenAIException - Error code: 400 - {'model': 'deepseek-v4.1-flash'}. Received Model Group=8f3f1636d2c8/opencode-deepseek-v4.1-flash\nAvailable Model Group Fallbacks=None",
+    type: null, param: null, code: '400',
+  } });
+  const ENVELOPE_WITH_MESSAGE = JSON.stringify({ error: {
+    message: "litellm.BadRequestError: OpenAIException - Error code: 400 - {'error': {'message': 'max_tokens is too large'}}. Received Model Group=t/x",
+    type: null, param: null, code: '400',
+  } });
+
+  describe('isMessagelessError', () => {
+    it('recognises the two real bodies, raw and as LiteLLM wraps them', () => {
+      expect(isMessagelessError('')).toBe(true);
+      expect(isMessagelessError('{"model":"deepseek-v4.1-flash"}')).toBe(true);
+      expect(isMessagelessError(ENVELOPE_EMPTY)).toBe(true);
+      expect(isMessagelessError(ENVELOPE_MODEL_ONLY)).toBe(true);
+    });
+    it('does not match a body that says what is wrong', () => {
+      expect(isMessagelessError(ENVELOPE_WITH_MESSAGE)).toBe(false);
+      expect(isMessagelessError('{"error":{"message":"bad field"}}')).toBe(false);
+      expect(isMessagelessError('{"type":"error","error":{"type":"invalid_request_error","message":"x"}}')).toBe(false);
+      expect(isMessagelessError('bad request')).toBe(false);
+      expect(isMessagelessError(JSON.stringify({ error: { message: 'litellm.BadRequestError: Invalid model name passed in model=x' } }))).toBe(false);
+    });
+  });
+
+  const ROUTES = {
+    role: 'code', tier: 'simple',
+    routes: [
+      { key: 'ds', effort: 'none' as const, native: { gateway: 'opencode', id: 'deepseek-v4.1-flash' } },
+      { key: 'mimo', native: { gateway: 'opencode', id: 'mimo' } },
+    ],
+  };
+  const request = (text = 'task') => ({
+    method: 'POST', url: '/v1/messages', headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: text }] })),
+  });
+  beforeEach(() => clearCooldowns());
+
+  const harness = (answer: (model: string) => Response) => {
+    const seen: string[] = [];
+    const lines: string[] = [];
+    const rows: { status: number; key?: string; attempts: { key: string; status: number }[] }[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return answer(model);
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+      log: (line: string) => lines.push(line),
+      recordUsage: (row: { status: number; key?: string; attempts: { key: string; status: number }[] }) => rows.push(row),
+    };
+    return { seen, lines, rows, deps };
+  };
+
+  for (const [name, body] of [['empty', ENVELOPE_EMPTY], ['model-only', ENVELOPE_MODEL_ONLY]] as const) {
+    it(`falls through on the first ${name} 400 and the next candidate serves`, async () => {
+      const { seen, rows, deps } = harness((model) => model === 'default/ds'
+        ? new Response(body, { status: 400 })
+        : new Response('{}', { status: 200 }));
+      const res = await routeRequest(request(), deps);
+      expect(res.status).toBe(200);
+      expect(seen).toEqual(['default/ds', 'default/mimo']);
+      for await (const _ of res.body as AsyncIterable<Uint8Array>) { /* the ledger row lands at the end of the body */ }
+      expect(rows.at(-1)?.attempts).toEqual([{ key: 'ds', status: 400 }]);
+    });
+  }
+
+  it('keeps a 400 that carries a real error message terminal', async () => {
+    const { seen, lines, deps } = harness(() => new Response(ENVELOPE_WITH_MESSAGE, { status: 400 }));
+    const res = await routeRequest(request(), deps);
+    expect(res.status).toBe(400);
+    expect(seen).toEqual(['default/ds']);
+    // Every terminal 400 is logged: alias, candidate, status, the start of the body.
+    const line = lines.find((l) => l.includes('terminal'));
+    expect(line).toContain('sonata-code-simple');
+    expect(line).toContain('ds@none');
+    expect(line).toContain('400');
+    expect(line).toContain('max_tokens is too large');
+  });
+
+  it('cools the candidate after three consecutive message-less 400s', async () => {
+    const { seen, deps } = harness((model) => model === 'default/ds'
+      ? new Response(ENVELOPE_MODEL_ONLY, { status: 400 })
+      : new Response('{}', { status: 200 }));
+    for (let i = 0; i < TIER_CAPABILITY_400_THRESHOLD; i += 1) await routeRequest(request(`t${i}`), deps);
+    seen.length = 0;
+    await routeRequest(request('after'), deps);
+    expect(seen).toEqual(['default/mimo']);
+  });
+
+  it('returns the last response when every candidate answers message-less', async () => {
+    const { seen, deps } = harness((model) => new Response(
+      model === 'default/mimo' ? ENVELOPE_EMPTY : ENVELOPE_MODEL_ONLY, { status: 400 },
+    ));
+    const res = await routeRequest(request(), deps);
+    expect(seen).toEqual(['default/ds', 'default/mimo']);
+    expect(res.status).toBe(400);
+    expect((res.body as Buffer).toString()).toBe(ENVELOPE_EMPTY);
+  });
+
+  it('captures the outbound body of a 400 to SONATA_CAPTURE_400_DIR, owner-only', async () => {
+    const { mkdtempSync, readdirSync, readFileSync, statSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = join(mkdtempSync(join(tmpdir(), 'sonata-capture-')), 'captures');
+    const { deps } = harness((model) => model === 'default/ds'
+      ? new Response(ENVELOPE_MODEL_ONLY, { status: 400 })
+      : new Response(ENVELOPE_WITH_MESSAGE, { status: 400 }));
+    await routeRequest(request('capture me'), { ...deps, capture400Dir: dir });
+    const files = readdirSync(dir).sort();
+    expect(files).toHaveLength(2);
+    expect(files.some((f) => f.endsWith('-ds@none.json'))).toBe(true);
+    for (const file of files) {
+      expect(statSync(join(dir, file)).mode & 0o777).toBe(0o600);
+      const doc = JSON.parse(readFileSync(join(dir, file), 'utf8')) as { alias: string; request: { messages: unknown[] }; status: number };
+      expect(doc.alias).toBe('sonata-code-simple');
+      expect(doc.status).toBe(400);
+      expect(JSON.stringify(doc.request)).toContain('capture me');
+    }
+  });
+
+  it('writes nothing when no capture directory is configured', async () => {
+    const { deps } = harness(() => new Response(ENVELOPE_WITH_MESSAGE, { status: 400 }));
+    const res = await routeRequest(request(), { ...deps, capture400Dir: undefined });
+    expect(res.status).toBe(400);
   });
 });

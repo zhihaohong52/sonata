@@ -3167,6 +3167,31 @@ describe('mergeTenantGateways', () => {
     expect(lines.join('\n')).toContain('SONATA_KEY_FOO_BAR');
   });
 
+  it('drops two differently named gateways of one OAuth kind from two projects', () => {
+    // One LiteLLM child holds ONE ChatGPT credential (CHATGPT_TOKEN_DIR), so
+    // two projects' codex-oauth gateways would both be served whichever
+    // account buildChildEnv found first.
+    const lines: string[] = [];
+    const merged = mergeTenantGateways([
+      { id: 'a', gateways: { codex: gw({ auth: 'codex-oauth', baseUrl: undefined }), keep: gw({}) } },
+      { id: 'b', gateways: { 'codex-work': gw({ auth: 'codex-oauth', baseUrl: undefined, credentialSource: 'sonata' }) } },
+    ], (l) => lines.push(l));
+    expect(merged.codex).toBeUndefined();
+    expect(merged['codex-work']).toBeUndefined();
+    expect(Object.keys(merged)).toEqual(['keep']);
+    expect(lines.join('\n')).toMatch(/"codex" \(a\) and "codex-work" \(b\) both use auth = "codex-oauth"/);
+  });
+
+  it('keeps one OAuth gateway that two projects name identically', () => {
+    const lines: string[] = [];
+    const merged = mergeTenantGateways([
+      { id: 'a', gateways: { codex: gw({ auth: 'codex-oauth', baseUrl: undefined }) } },
+      { id: 'b', gateways: { codex: gw({ auth: 'codex-oauth', baseUrl: undefined }) } },
+    ], (l) => lines.push(l));
+    expect(Object.keys(merged)).toEqual(['codex']);
+    expect(lines).toEqual([]);
+  });
+
   it('drops a gateway whose tenants disagree about how it authenticates', () => {
     // `buildChildEnv` resolves one credential per gateway NAME, so a name two
     // projects define with different credential sources would send one
@@ -3214,4 +3239,27 @@ describe('cmdServe — the models.dev price refresh', () => {
     handles.push(handle);
     expect(calls).toEqual([home]);
   });
+});
+
+describe('defaultWaitForLitellm — a listener that never answers', () => {
+  it('bounds each probe with an abort signal, so the deadline is reached', async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    // Accepts the connection and never answers — unless the signal aborts it.
+    const doFetch = ((_url: string, init?: RequestInit) => {
+      signals.push(init?.signal ?? undefined);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    }) as unknown as typeof fetch;
+    let clock = 0;
+    const waited = defaultWaitForLitellm(4010, 'sk', {
+      doFetch,
+      now: () => clock,
+      sleep: async () => { clock += 1_000; },
+      timeoutMs: 1_500,
+    });
+    await expect(waited).rejects.toThrow(/did not come up/);
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.every((signal) => signal !== undefined)).toBe(true);
+  }, 15_000);
 });

@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import { budgetRefusal, type BudgetStatus } from '../budget.js';
-import type { SonataConfig } from '../config.js';
+import { isTierAliasShape, type SonataConfig } from '../config.js';
 import type { LedgerRow } from '../ledger.js';
 import { SONATA_PROJECT_HEADER, TenantError } from './tenants.js';
 import { SONATA_TOKEN_HEADER, projectHintAuthorised } from './router-token.js';
@@ -70,6 +72,13 @@ export interface RouterDeps {
    */
   resolveGateway?: (key: string, tenant: RouterTenant) => string | undefined;
   /**
+   * Resolves a bare `--model <key>` request's key to its native route, so a
+   * key on a `direct` gateway is forwarded straight to that gateway — the same
+   * path a tier candidate takes — rather than to a LiteLLM that, on a
+   * direct-only config, is not running at all.
+   */
+  resolveNative?: (key: string, tenant: RouterTenant) => TierRoute['native'];
+  /**
    * Fire-and-forget: checks whether sonata.toml's model registry has changed
    * since litellm was last (re)started, restarting it if so. Called once per
    * litellm-bound router request — both a tier request and a direct
@@ -97,7 +106,7 @@ export interface RouterDeps {
    * Receives one row per request. Each invocation is isolated from routing so
    * accounting trouble can only lose its own row, never a client response.
    */
-  recordUsage?: (row: LedgerRow) => void;
+  recordUsage?: (row: LedgerRow, config?: SonataConfig) => void;
   /**
    * The daily cap and the spend against it, or `undefined` when no cap is
    * configured. Called once per request rather than read at startup, so a cap
@@ -123,7 +132,27 @@ export interface RouterDeps {
    * unaffected by this feature existing.
    */
   ui?: UiDeps;
+  /**
+   * How much of an error body the router reads, and for how long, before it
+   * abandons the rest. Test seam; defaults to `ERROR_BODY_LIMITS`.
+   */
+  errorBodyLimits?: { maxBytes: number; timeoutMs: number };
+  /**
+   * Where to write the outbound body of every 400 a tier candidate answers,
+   * one 0600 file per refusal. Unset (the default) writes nothing: bodies
+   * hold conversation content. `serve` sets it from `SONATA_CAPTURE_400_DIR`.
+   */
+  capture400Dir?: string;
 }
+
+/**
+ * An error body is read only to decide what to do next (a fingerprint, a
+ * rewrite) or to hand the caller the upstream's own message. Neither needs
+ * more than a megabyte, and neither is worth waiting on: an upstream that
+ * sends its error status and then stalls would otherwise hold the whole
+ * ranked fallback on one candidate, forever.
+ */
+export const ERROR_BODY_LIMITS = { maxBytes: 1024 * 1024, timeoutMs: 10_000 };
 
 export interface RouterRequest {
   method: string;
@@ -161,24 +190,72 @@ function responseHeaders(headers: Headers): Record<string, string> {
   );
 }
 
-async function* responseBody(body: ReadableStream<Uint8Array>): AsyncIterable<Uint8Array> {
+/**
+ * An upstream body as an async iterable that can also be cancelled.
+ *
+ * `cancel` exists because a generator suspended on a read cannot be stopped
+ * by `return()` — that waits for the pending read to settle, which for a
+ * stalled upstream is never. Cancelling the reader settles it at once.
+ */
+function responseBody(body: ReadableStream<Uint8Array>): AsyncIterable<Uint8Array> & { cancel(): void } {
   const reader = body.getReader();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      yield value;
+  async function* chunks(): AsyncIterable<Uint8Array> {
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        yield value;
+      }
+    } finally {
+      try { reader.releaseLock(); } catch { /* already released by a cancel */ }
     }
+  }
+  return Object.assign(chunks(), {
+    cancel: () => { reader.cancel().catch(() => { /* nothing left to tell */ }); },
+  });
+}
+
+/**
+ * Reads at most `maxBytes` of a body within `timeoutMs`, then abandons the
+ * rest — cancelling the upstream so its connection is released rather than
+ * left half-read. What was read is returned; `abandoned` says the body was
+ * cut short. A failing body ends the read with what arrived before it.
+ */
+async function readBounded(
+  body: AsyncIterable<Uint8Array> | Buffer,
+  limits: { maxBytes: number; timeoutMs: number },
+  keep: boolean,
+): Promise<{ buf: Buffer; abandoned: boolean }> {
+  if (Buffer.isBuffer(body)) return { buf: body.subarray(0, limits.maxBytes), abandoned: body.length > limits.maxBytes };
+  const iterator = body[Symbol.asyncIterator]();
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<'expired'>((resolve) => { timer = setTimeout(() => resolve('expired'), limits.timeoutMs); });
+  const abandon = (): void => {
+    (body as { cancel?: () => void }).cancel?.();
+    void Promise.resolve(iterator.return?.()).catch(() => { /* already failing */ });
+  };
+  try {
+    for (;;) {
+      const next = await Promise.race([iterator.next(), expired]);
+      if (next === 'expired') { abandon(); return { buf: Buffer.concat(chunks), abandoned: true }; }
+      if (next.done === true) return { buf: Buffer.concat(chunks), abandoned: false };
+      const chunk = Buffer.from(next.value);
+      const room = limits.maxBytes - bytes;
+      if (keep) chunks.push(chunk.subarray(0, Math.max(0, room)));
+      bytes += chunk.length;
+      if (bytes > limits.maxBytes) { abandon(); return { buf: Buffer.concat(chunks), abandoned: true }; }
+    }
+  } catch {
+    return { buf: Buffer.concat(chunks), abandoned: true };
   } finally {
-    reader.releaseLock();
+    clearTimeout(timer);
   }
 }
 
-async function drainBody(body: AsyncIterable<Uint8Array> | Buffer): Promise<void> {
-  if (Buffer.isBuffer(body)) return;
-  try {
-    for await (const _chunk of body) { /* discard */ }
-  } catch { /* the body failing to drain is not itself an error */ }
+async function drainBody(body: AsyncIterable<Uint8Array> | Buffer, deps: RouterDeps): Promise<void> {
+  await readBounded(body, deps.errorBodyLimits ?? ERROR_BODY_LIMITS, false);
 }
 
 /**
@@ -206,6 +283,51 @@ async function* observe(
   }
 }
 
+/** Most bytes of a non-SSE body kept to judge whether it completed. */
+const COMPLETION_JSON_CAP_BYTES = 1024 * 1024;
+
+/**
+ * Calls `onEnd(true)` once the response has demonstrably completed — the
+ * body was read to its end AND carried final usage (the usage recorder's own
+ * "complete" signal: a `message_delta` with usage for a stream, a top-level
+ * `usage` for a JSON body) — and `onEnd(false)` for anything less: a stream
+ * that broke, a disconnect, or an SSE `error` event that ended it early.
+ *
+ * Independent of `recordUsage`, which may be absent: stickiness must not
+ * depend on whether accounting is switched on.
+ */
+function withCompletion(response: RouterResponse, onEnd: (complete: boolean) => void): RouterResponse {
+  const safe = (complete: boolean): void => {
+    try { onEnd(complete); } catch { /* a bookkeeping failure never reaches the client */ }
+  };
+  if (Buffer.isBuffer(response.body)) {
+    safe(usageFromJsonBody(response.body).complete);
+    return response;
+  }
+  const sse = (response.headers['content-type'] ?? '').includes('text/event-stream');
+  const collector = createUsageCollector();
+  const json: Buffer[] = [];
+  let jsonBytes = 0;
+  return {
+    ...response,
+    body: observe(
+      response.body,
+      (chunk) => {
+        collector.push(chunk);
+        if (!sse && jsonBytes + chunk.byteLength <= COMPLETION_JSON_CAP_BYTES) {
+          json.push(Buffer.from(chunk));
+          jsonBytes += chunk.byteLength;
+        }
+      },
+      (streamComplete) => {
+        const usageComplete = collector.finish().complete
+          || (!sse && usageFromJsonBody(Buffer.concat(json)).complete);
+        safe(streamComplete && usageComplete);
+      },
+    ),
+  };
+}
+
 interface RecordContext {
   startedAt: number;
   alias: string;
@@ -220,6 +342,12 @@ interface RecordContext {
   session?: string;
   project?: string;
   tenant?: string;
+  /**
+   * The tenant's config as it was when the request was routed — handed to
+   * the recorder so the row is priced under the rules the request ran under,
+   * not whatever the file says when the stream ends.
+   */
+  tenantConfig?: SonataConfig;
 }
 
 function headerNumber(headers: Record<string, string>, name: string): number | undefined {
@@ -270,7 +398,7 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
           litellm: fallbacks === undefined && retries === undefined
             ? undefined
             : { fallbacks: fallbacks ?? 0, retries: retries ?? 0 },
-        });
+        }, ctx.tenantConfig);
       } catch { /* Accounting is strictly best-effort. */ }
     };
 
@@ -492,6 +620,71 @@ const CAPABILITY_400_SIGNATURES = [
 ] as const;
 
 /**
+ * Whether an upstream 400 names nothing at all about what was wrong: an empty
+ * body, or a JSON object with no `error`, `message` or `detail` in it — seen
+ * raw, or as the upstream detail LiteLLM's proxy embeds in its own envelope
+ * (`… Error code: 400 - <detail>. Received Model Group=…`, the detail absent
+ * when the upstream body was empty).
+ *
+ * The one definition; the tier loop's message-less fall-through keys on it.
+ */
+export function isMessagelessError(body: string): boolean {
+  const namesNothing = (detail: string): boolean => {
+    const text = detail.trim();
+    if (text === '') return true;
+    // Upstream detail is JSON raw, and a Python dict repr inside LiteLLM's
+    // message; both quote their keys, so one pattern reads both.
+    if (!text.startsWith('{')) return false;
+    return !/['"](error|message|detail)['"]\s*:/.test(text);
+  };
+  let doc: unknown;
+  try {
+    doc = JSON.parse(body);
+  } catch {
+    return namesNothing(body);
+  }
+  const message = (doc as { error?: { message?: unknown } } | null)?.error?.message;
+  if (typeof message === 'string') {
+    const wrapped = /Error code: 400(?: - ([\s\S]*?))?\. Received Model Group=/.exec(message);
+    return wrapped !== null && namesNothing(wrapped[1] ?? '');
+  }
+  return namesNothing(body);
+}
+
+/** The counter fingerprint a message-less 400 accumulates under. */
+const MESSAGELESS_400_FINGERPRINT = 'message-less 400';
+
+/**
+ * Writes one refused request to `dir` for later diagnosis: the outbound body
+ * exactly as the candidate received it, and the start of what it answered.
+ * Opt-in, owner-only, and never fatal — a capture that cannot be written is
+ * logged and the request carries on.
+ */
+function capture400(
+  deps: RouterDeps,
+  entry: { alias: string; candidate: string; status: number; outbound: Buffer; response: Buffer },
+): void {
+  const dir = deps.capture400Dir;
+  if (dir === undefined || dir === '') return;
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const name = `${stamp}-${entry.candidate.replace(/[^A-Za-z0-9@._-]/g, '_')}.json`;
+    let request: unknown;
+    try { request = JSON.parse(entry.outbound.toString()); } catch { request = entry.outbound.toString(); }
+    writeFileSync(join(dir, name), `${JSON.stringify({
+      alias: entry.alias,
+      candidate: entry.candidate,
+      status: entry.status,
+      response: entry.response.subarray(0, 4096).toString(),
+      request,
+    }, null, 2)}\n`, { mode: 0o600 });
+  } catch (error) {
+    deps.log?.(`router: could not capture a ${entry.status} to ${dir}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
  * 400 bodies that mean "this gateway cannot serve ANY request as sonata sends
  * it" — a refusal about how the request was addressed, not its shape.
  *
@@ -613,9 +806,9 @@ export const STICKY_MAX_CONVERSATIONS = 1000;
  * its own work. Remembering who served a conversation lets the router prefer
  * that candidate, and lets it know when it is about to switch.
  */
-const stickyCandidates = new Map<string, { key: string; at: number; prefer: boolean }>();
+const stickyCandidates = new Map<string, { key: string; at: number; prefer: boolean; served: Set<string> }>();
 
-function stickyGet(conversation: string, at: number): { key: string; prefer: boolean } | undefined {
+function stickyGet(conversation: string, at: number): { key: string; prefer: boolean; served: Set<string> } | undefined {
   const hit = stickyCandidates.get(conversation);
   if (hit === undefined) return undefined;
   if (at - hit.at > STICKY_TTL_MS) {
@@ -627,9 +820,13 @@ function stickyGet(conversation: string, at: number): { key: string; prefer: boo
 
 function stickySet(conversation: string, key: string, at: number): void {
   // Delete-then-set moves the entry to the end of the insertion order, so a
-  // conversation still in use is never the eviction victim.
+  // conversation still in use is never the eviction victim. `served` only
+  // grows: it is every candidate whose thinking blocks may be in a transcript
+  // carrying this key.
+  const served = stickyCandidates.get(conversation)?.served ?? new Set<string>();
+  served.add(key);
   stickyCandidates.delete(conversation);
-  stickyCandidates.set(conversation, { key, at, prefer: true });
+  stickyCandidates.set(conversation, { key, at, prefer: true, served });
   if (stickyCandidates.size > STICKY_MAX_CONVERSATIONS) {
     const oldest = stickyCandidates.keys().next();
     if (!oldest.done) stickyCandidates.delete(oldest.value);
@@ -657,6 +854,21 @@ function stickyDemote(conversation: string, key: string): void {
 }
 
 /**
+ * A candidate answered but its response did not complete: it may still have
+ * put blocks in front of the client, so it joins `served`, but it is not
+ * preferred — a stream that broke is no reason to try that candidate first.
+ */
+function stickyIncomplete(conversation: string, key: string, at: number): void {
+  const hit = stickyCandidates.get(conversation);
+  if (hit === undefined) {
+    stickyCandidates.set(conversation, { key, at, prefer: false, served: new Set([key]) });
+    return;
+  }
+  hit.served.add(key);
+  stickyDemote(conversation, key);
+}
+
+/**
  * A stable identity for the conversation this request belongs to.
  *
  * The first message is the one part of a transcript that does not change as
@@ -665,10 +877,16 @@ function stickyDemote(conversation: string, key: string): void {
  * even when their opening message is identical, and two projects are never the
  * same conversation.
  *
- * A collision — two agents genuinely opened with the same text — costs nothing
- * beyond a shared preference, since this only reorders candidates that were
- * all eligible anyway. `undefined` (an unparseable or empty body) simply means
- * no stickiness, which is the behaviour that shipped before this existed.
+ * A collision — two agents genuinely opened with the same text — is NOT free.
+ * The two conversations share one record of who served them, so a candidate
+ * that served only the other one would otherwise look like the owner of this
+ * transcript's thinking blocks, and receive another model's blocks unstripped
+ * (the issue #30 failure). The record therefore keeps every candidate that has
+ * served the key, and a candidate is foreign whenever any *other* has: a
+ * collision strips thinking rather than keeping foreign blocks. Stripping costs
+ * reasoning continuity; keeping them kills the agent. `undefined` (an
+ * unparseable or empty body) simply means no stickiness, which is the
+ * behaviour that shipped before this existed.
  */
 export function conversationKey(body: Buffer, tenant: string, alias: string): string | undefined {
   try {
@@ -756,12 +974,9 @@ function capability400Fingerprint(body: string): string | undefined {
   return CAPABILITY_400_SIGNATURES.find((signature) => body.includes(signature));
 }
 
-/** Reads a response body into a Buffer, leaving it readable by the caller. */
-async function bufferBody(body: AsyncIterable<Uint8Array> | Buffer): Promise<Buffer> {
-  if (Buffer.isBuffer(body)) return body;
-  const chunks: Buffer[] = [];
-  for await (const chunk of body) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks);
+/** Reads a response body into a Buffer, bounded by `ERROR_BODY_LIMITS`. */
+async function bufferBody(body: AsyncIterable<Uint8Array> | Buffer, deps: RouterDeps): Promise<Buffer> {
+  return (await readBounded(body, deps.errorBodyLimits ?? ERROR_BODY_LIMITS, true)).buf;
 }
 
 /**
@@ -982,7 +1197,7 @@ async function forwardToLitellm(
     if (response.status === 500) {
       const responseBodyBuf = response.body === null
         ? Buffer.alloc(0)
-        : Buffer.concat(await async function() { const chunks: Buffer[] = []; for await (const c of responseBody(response.body!)) chunks.push(Buffer.from(c)); return chunks; }());
+        : await bufferBody(responseBody(response.body), deps);
       const text = responseBodyBuf.toString();
       if (text.includes('Unknown items in responses API response')) {
         const msg = 'upstream returned empty completion (overloaded) — retry';
@@ -1151,6 +1366,11 @@ async function routeTierRequest(
   // against them reads as a tier that has no candidates rather than one whose
   // candidates are waiting out an account problem.
   const skippedCoolingProviders = new Set<string>();
+  // The most recent message-less 400, and how many attempts had been made
+  // when it arrived. If it is the LAST thing the loop saw, it is returned
+  // rather than a 529: a request every candidate refuses may really be
+  // malformed, and the caller should see the refusal itself.
+  let lastMessageless: { at: number; headers: Record<string, string>; body: Buffer; route: TierRoute } | undefined;
 
   // Which candidate already served this conversation, if any. Preferring it
   // keeps a multi-turn agent on one model, which is what stops its transcript
@@ -1158,11 +1378,12 @@ async function routeTierRequest(
   const conversation = conversationKey(req.body, tenant.id, alias);
   const headers = withSessionHeader(litellmHeaders(requestHeaders(req.headers), deps.litellmKey), conversation);
   const pinned = conversation === undefined ? undefined : stickyGet(conversation, now());
-  // Two different questions, deliberately read from two fields. `lastServed`
-  // is whose extended-thinking blocks the transcript carries, and stays true
-  // until another candidate actually serves. `sticky` is who to TRY first, and
-  // lapses the moment that candidate hands back a 400.
+  // Two different questions, deliberately read from two fields. `served` is
+  // every candidate whose extended-thinking blocks the transcript may carry,
+  // and only grows. `sticky` is who to TRY first, and lapses the moment that
+  // candidate hands back a 400.
   const lastServed = pinned?.key;
+  const served = pinned?.served;
   const sticky = pinned?.prefer === true ? pinned.key : undefined;
   // Preference, not a pin: the sticky candidate moves to the front and every
   // other keeps its rank behind it. Its cooldown still applies, so a candidate
@@ -1204,11 +1425,15 @@ async function routeTierRequest(
     // the candidate that is no longer serving, and the direct path's usual
     // byte-identical contract exists to echo vendor state back to the vendor
     // that issued it — which is exactly what has stopped being true here.
-    const foreign = lastServed !== undefined && lastServed !== route.key;
+    // Foreign when any OTHER candidate has served this key — not merely the
+    // last one. A switch leaves the earlier model's blocks in the client's
+    // transcript for every later turn, and a colliding conversation's
+    // candidate is indistinguishable from this one's (see `conversationKey`).
+    const foreign = served !== undefined && [...served].some((key) => key !== route.key);
     if (foreign) {
       deps.log?.(
-        `router: ${alias} conversation moving ${lastServed} -> ${route.key}, ` +
-        "dropping the previous model's thinking blocks",
+        `router: ${alias} conversation served by ${[...served!].join(', ')} now on ${route.key}` +
+        `${lastServed === route.key ? '' : ` (was ${lastServed})`}, dropping other models' thinking blocks`,
       );
     }
     const outbound = direct ? req.body : flattened;
@@ -1264,7 +1489,7 @@ async function routeTierRequest(
     // Only >= 400 is considered: a 3xx never arrives (fetch follows
     // redirects) and a 2xx that is not 200 — 204, say — is a success.
     if (response.status >= 400 && !TERMINAL_STATUSES.has(response.status)) {
-      await drainBody(response.body);
+      await drainBody(response.body, deps);
       attempts.push({ key: route.key, status: response.status });
       cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
       // An account-level refusal is about the gateway, not this model, so it
@@ -1303,7 +1528,10 @@ async function routeTierRequest(
       // Buffered because deciding requires reading the body, and the body is a
       // one-shot iterable — handing the caller the drained original would give
       // them an empty error. This mirrors the 500 path in `forwardToLitellm`.
-      const bodyBuf = await bufferBody(response.body);
+      const bodyBuf = await bufferBody(response.body, deps);
+      if (response.status === 400) {
+        capture400(deps, { alias, candidate: variant, status: response.status, outbound: body, response: bodyBuf });
+      }
       const unservable = response.status === 400
         ? UNSERVABLE_400_SIGNATURES.find((signature) => bodyBuf.toString().includes(signature))
         : undefined;
@@ -1320,9 +1548,19 @@ async function routeTierRequest(
         );
         continue;
       }
-      const fingerprint = response.status === 400
+      const capability = response.status === 400
         ? capability400Fingerprint(bodyBuf.toString())
         : undefined;
+      // A deliberate, shape-based exception to "signatures on evidence only":
+      // a 400 whose body names nothing says nothing about the request, so
+      // reading it as the request's fault is the less likely reading. It falls
+      // through on the FIRST occurrence — the agent survives — and cools the
+      // candidate only after the usual run of identical ones. Litellm path
+      // only, where it was measured: 10 of 10 real subagent requests to one
+      // candidate, while hand-built requests to it all succeeded.
+      const messageless = capability === undefined && !direct && response.status === 400
+        && isMessagelessError(bodyBuf.toString());
+      const fingerprint = messageless ? MESSAGELESS_400_FINGERPRINT : capability;
       const counterKey = fingerprint === undefined ? undefined : `${cool} ${fingerprint}`;
 
       if (counterKey !== undefined) {
@@ -1336,6 +1574,17 @@ async function routeTierRequest(
             `router: ${route.key} cannot serve this request shape ` +
             `(${seen}× 400 "${fingerprint}"), cooling down and trying next`,
           );
+          if (messageless) lastMessageless = { at: attempts.length, headers: response.headers, body: bodyBuf, route };
+          continue;
+        }
+        if (messageless) {
+          attempts.push({ key: route.key, status: response.status });
+          if (conversation !== undefined) stickyDemote(conversation, route.key);
+          deps.log?.(
+            `router: ${alias} ${variant} answered a message-less 400 (${seen}×): ` +
+            `${JSON.stringify(bodyBuf.subarray(0, 200).toString())} — trying next`,
+          );
+          lastMessageless = { at: attempts.length, headers: response.headers, body: bodyBuf, route };
           continue;
         }
       } else {
@@ -1352,6 +1601,10 @@ async function routeTierRequest(
       // lapses; the record of whose thinking blocks are in the transcript does
       // not, so the next candidate still gets them stripped.
       if (conversation !== undefined) stickyDemote(conversation, route.key);
+      deps.log?.(
+        `router: ${alias} ${variant} answered ${response.status} (terminal): ` +
+        JSON.stringify(bodyBuf.subarray(0, 200).toString()),
+      );
       return withUsageRecording({
         status: response.status,
         headers: response.headers,
@@ -1361,6 +1614,7 @@ async function routeTierRequest(
         session,
         project: tenant.project,
       tenant: tenant.id,
+      tenantConfig: tenant.config,
         alias,
         role: resolved.role,
         tier: resolved.tier,
@@ -1375,16 +1629,25 @@ async function routeTierRequest(
     for (const key of capability400Counts.keys()) {
       if (key.startsWith(`${cool} `)) capability400Counts.delete(key);
     }
-    // Pin only on a response the client actually receives. A 400 handed back
-    // above is a request this candidate could not serve, and pinning to it
-    // would make the next turn prefer the model that just refused.
-    if (conversation !== undefined) stickySet(conversation, route.key, now());
+    // Pin only on a response the client actually receives IN FULL. A 400
+    // handed back above is a request this candidate could not serve, and a
+    // stream that breaks partway is one it did not finish serving: pinning to
+    // either would make the next turn prefer the model that just failed. The
+    // status alone arrives before a single byte of the body, so the decision
+    // waits for the body's end.
+    const completed = conversation === undefined
+      ? response
+      : withCompletion(response, (complete) => {
+        if (complete) stickySet(conversation, route.key, now());
+        else stickyIncomplete(conversation, route.key, now());
+      });
     deps.log?.(`${req.method} ${req.url} model=${alias} -> ${variant} -> ${direct ? 'direct' : 'litellm'}`);
-    return withUsageRecording(response, {
+    return withUsageRecording(completed, {
       startedAt,
       session,
       project: tenant.project,
       tenant: tenant.id,
+      tenantConfig: tenant.config,
       alias,
       role: resolved.role,
       tier: resolved.tier,
@@ -1409,6 +1672,25 @@ async function routeTierRequest(
       body: anthropicErrorBody('router_error', unavailable!),
     };
   }
+  if (lastMessageless !== undefined && lastMessageless.at === attempts.length) {
+    const last = lastMessageless;
+    deps.log?.(`router: every native route for ${label} refused; returning the last 400`);
+    return withUsageRecording({ status: 400, headers: last.headers, body: last.body }, {
+      startedAt,
+      session,
+      project: tenant.project,
+      tenant: tenant.id,
+      tenantConfig: tenant.config,
+      alias,
+      role: resolved.role,
+      tier: resolved.tier,
+      key: last.route.key,
+      effort: last.route.effort,
+      gateway: last.route.native!.gateway,
+      upstream: last.route.native?.transport === 'direct' ? 'direct' : 'litellm',
+      attempts,
+    }, deps);
+  }
   deps.log?.(`router: all native routes for ${label} failed`);
   const cooling = skippedCoolingProviders.size > 0
     ? ` (skipped ${[...skippedCoolingProviders].sort().join(', ')}: cooling down after an ` +
@@ -1428,6 +1710,7 @@ async function routeTierRequest(
     session,
     project: tenant.project,
     tenant: tenant.id,
+      tenantConfig: tenant.config,
     alias,
     role: resolved.role,
     tier: resolved.tier,
@@ -1514,6 +1797,16 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   if (alias !== undefined && alias.startsWith('sonata-') && deps.resolveTier?.(alias, tenant) !== undefined) {
     return routeTierRequest(req, deps, alias, startedAt, session, tenant, unavailable);
   }
+  // A name shaped exactly like a generated alias that the config does not
+  // resolve is a stale agent file or a missing tier, not a model key.
+  // Forwarding it would surface as LiteLLM's "invalid model name", which
+  // names neither cause; `routeTierRequest` answers with the typed 400 that
+  // points at `sonata sync`. A config that really has a model key of that
+  // shape still reaches it.
+  if (alias !== undefined && bareEffort === undefined && isTierAliasShape(alias)
+    && deps.resolveNative?.(alias, tenant) === undefined) {
+    return routeTierRequest(req, deps, alias, startedAt, session, tenant, unavailable);
+  }
 
   const anthropic = isClaudeRequest(req.body);
   const headers = requestHeaders(req.headers);
@@ -1526,6 +1819,38 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     : alias === undefined
       ? litellmBody(req.body)
       : withEffort(withModel(litellmBody(req.body), litellmModelName(tenant, alias)), bareEffort);
+
+  // A bare key on a direct gateway goes where a tier candidate on that
+  // gateway would: straight to it, with its own key and its own upstream id.
+  // Sending it to LiteLLM instead reaches nothing on a direct-only config
+  // (no child is started) and loses the direct path's pass-through contract
+  // on a mixed one.
+  const native = !anthropic && alias !== undefined ? deps.resolveNative?.(alias, tenant) : undefined;
+  if (native?.transport === 'direct' && alias !== undefined) {
+    deps.log?.(`${req.method} ${req.url} model=${requested ?? '?'} -> direct`);
+    return withUsageRecording(
+      await forwardDirect(
+        withEffort(withModel(req.body, native.id), bareEffort),
+        { baseUrl: native.baseUrl ?? '', key: deps.gatewayKeys?.(tenant)[native.gateway] ?? '' },
+        req,
+        deps,
+      ),
+      {
+        startedAt,
+        session,
+        project: tenant.project,
+        tenant: tenant.id,
+      tenantConfig: tenant.config,
+        alias,
+        key: alias,
+        gateway: native.gateway,
+        effort: bareEffort,
+        upstream: 'direct',
+        attempts: [],
+      },
+      deps,
+    );
+  }
 
   deps.log?.(`${req.method} ${req.url} model=${requested ?? '?'} -> ${upstream}`);
 
@@ -1552,6 +1877,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
         session,
         project: tenant.project,
       tenant: tenant.id,
+      tenantConfig: tenant.config,
         alias: alias ?? '',
         // For a direct `--model <key>` request, `alias` IS the config key.
         // Recording it (and its gateway) is what lets `resolvePrice` price this
@@ -1578,14 +1904,16 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       status: response.status,
       headers: responseHeaders(response.headers),
       body: response.body === null ? Buffer.alloc(0) : responseBody(response.body),
-    }, { startedAt, session, project: tenant.project, tenant: tenant.id, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
+    }, { startedAt, session, project: tenant.project, tenant: tenant.id,
+      tenantConfig: tenant.config, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return withUsageRecording({
       status: 502,
       headers: { 'content-type': 'application/json' },
       body: anthropicErrorBody('router_error', message),
-    }, { startedAt, session, project: tenant.project, tenant: tenant.id, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
+    }, { startedAt, session, project: tenant.project, tenant: tenant.id,
+      tenantConfig: tenant.config, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   }
 }
 
@@ -1603,13 +1931,27 @@ async function readBody(req: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-async function respond(res: ServerResponse, routed: RouterResponse): Promise<void> {
+/**
+ * Writes a routed response, pulling the next upstream chunk only once the
+ * client has taken the last one. Ignoring `write`'s false would let a slow
+ * client make the router buffer an entire upstream stream in memory.
+ */
+export async function respond(res: ServerResponse, routed: RouterResponse): Promise<void> {
   res.writeHead(routed.status, routed.headers);
   if (Buffer.isBuffer(routed.body)) {
     res.end(routed.body);
     return;
   }
-  for await (const chunk of routed.body) res.write(chunk);
+  for await (const chunk of routed.body) {
+    if (!res.write(chunk)) {
+      // 'close' as well as 'drain': a client that disconnects never drains.
+      await new Promise<void>((resolve) => {
+        const done = (): void => { res.off('drain', done); res.off('close', done); resolve(); };
+        res.once('drain', done);
+        res.once('close', done);
+      });
+    }
+  }
   res.end();
 }
 
@@ -1648,8 +1990,16 @@ export function createRouterServer(deps: RouterDeps): Server {
         headers: incomingHeaders(req),
         body: await readBody(req),
       }, deps));
-    } catch {
-      if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' });
+    } catch (error) {
+      // Once the headers are out, the response is an event stream the client
+      // is parsing frame by frame: a JSON body appended to it is garbage
+      // mid-stream, not an error. Tearing the connection down is the signal
+      // every HTTP client understands as "this response failed".
+      if (res.headersSent) {
+        res.destroy(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      res.writeHead(500, { 'content-type': 'application/json' });
       res.end(anthropicErrorBody('router_error', 'failed to route request'));
     }
   });

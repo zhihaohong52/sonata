@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 
 import { loadModelsDev } from '../modelsdev.js';
 import { spentTodayUsd, unreadableMachineBudget, type BudgetStatus } from '../budget.js';
-import { GLOBAL_CONFIG_RELATIVE, loadConfig, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
+import { GLOBAL_CONFIG_RELATIVE, loadConfig, nativeRouteFor, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
 import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
@@ -362,11 +362,15 @@ export async function defaultWaitForLitellm(
   let foreign = false;
   for (;;) {
     try {
-      const res = await doFetch(`http://localhost:${port}/health/liveliness`);
+      // Each probe is bounded: a listener that accepts and never answers
+      // would otherwise hold this loop past its deadline, and every
+      // LiteLLM-bound request awaits it. 2 s, as `isSonataRouter` uses.
+      const res = await doFetch(`http://localhost:${port}/health/liveliness`, { signal: AbortSignal.timeout(2000) });
       if (res.ok) {
         if (masterKey === undefined) return;
         const mine = await doFetch(`http://localhost:${port}/v1/models`, {
           headers: { authorization: `Bearer ${masterKey}` },
+          signal: AbortSignal.timeout(2000),
         });
         if (mine.ok) return;
         // Something is alive here and it is not ours. Keep polling anyway: our
@@ -807,6 +811,27 @@ export function mergeTenantGateways(
       'other\'s endpoint; rename one of them',
     );
   }
+  // Likewise one OAuth credential of each kind per LiteLLM child
+  // (CHATGPT_TOKEN_DIR / GITHUB_COPILOT_TOKEN_DIR): two differently named
+  // gateways of one kind would both be served whichever account
+  // buildChildEnv found first. parseConfig refuses the pair inside one file.
+  const byOauth = new Map<string, string>();
+  for (const name of Object.keys(merged)) {
+    const auth = merged[name]?.auth;
+    if (auth !== 'codex-oauth' && auth !== 'copilot-oauth') continue;
+    const other = byOauth.get(auth);
+    if (other === undefined) {
+      byOauth.set(auth, name);
+      continue;
+    }
+    delete merged[name];
+    delete merged[other];
+    log(
+      `gateways "${other}" (${owner[other]}) and "${name}" (${owner[name]}) both use auth = "${auth}" — ` +
+      'serving neither, since LiteLLM holds one credential of that kind and one project would be ' +
+      'served the other\'s account; keep one of them',
+    );
+  }
   return merged;
 }
 
@@ -1194,6 +1219,9 @@ export async function cmdServe(
       projectHintToken: ensureRouterToken(opts.home),
       resolveTier: (alias, tenant) => tenant.config === undefined ? undefined : resolveTierAlias(tenant.config, alias),
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
+      resolveNative: (key, tenant) => tenant.config === undefined ? undefined : nativeRouteFor(tenant.config, key),
+      // Opt-in only: a captured request is a whole conversation.
+      capture400Dir: process.env.SONATA_CAPTURE_400_DIR,
       budget: (tenant) => {
         const statuses = budgetStatusesFor({
           tenant,
@@ -1236,11 +1264,14 @@ export async function cmdServe(
         });
       },
       litellmReady: () => litellmReady,
-      recordUsage: opts.recordUsage ?? ((row) => {
+      recordUsage: opts.recordUsage ?? ((row, config) => {
         setImmediate(() => {
           let priced = row;
           try {
-            priced = priceRow(registry.resolve({ project: row.project }).config!, opts.home, row);
+            // The config the request was routed under, snapshotted at its
+            // start; re-resolving here would price it under whatever the file
+            // says when the stream ends, and re-parse it once per row.
+            priced = priceRow(config ?? registry.resolve({ project: row.project }).config!, opts.home, row);
           } catch {
             // A config that will not load is still no reason to drop the row.
           }
