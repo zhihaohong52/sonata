@@ -8,6 +8,7 @@ import { splitCandidate, type Effort } from './effort.js';
 import { assertEffortsPinned, loadAaCatalog } from './catalog.js';
 import { loadModelsDev } from './modelsdev.js';
 import { configUpstreamFor } from './pricing.js';
+import { envVarForGateway } from './native/litellm.js';
 
 export const KNOWN_HARNESSES = ['opencode', 'codex', 'pi', 'reasonix', 'claude'] as const;
 export const KNOWN_ROLES = ['review', 'code', 'explore', 'plan'] as const;
@@ -699,6 +700,25 @@ export function parseConfig(text: string): SonataConfig {
         throw new Error(`sonata.toml: native gateway "${name}" needs string "base_url"`);
       }
       gateways[name] = { baseUrl: d.base_url, auth, credentialSource, provider, wireFormat, price, pricingProvider };
+    }
+
+    // Two distinct gateway names can collapse onto one LiteLLM key variable
+    // (envVarForGateway uppercases and folds hyphens into underscores), and
+    // serve builds the child env from those names — so the later gateway's key
+    // overwrites the earlier one's and one gateway's key is sent to the other's
+    // endpoint. A refusal, not a rename: silently renaming would change which
+    // key a gateway reads.
+    const keyVarOwners = new Map<string, string>();
+    for (const name of Object.keys(gateways)) {
+      const keyVar = envVarForGateway(name);
+      const owner = keyVarOwners.get(keyVar);
+      if (owner !== undefined) {
+        throw new Error(
+          `sonata.toml: gateways "${owner}" and "${name}" would share the key variable ${keyVar}, ` +
+          "so one's key would be sent to the other — rename one of them",
+        );
+      }
+      keyVarOwners.set(keyVar, name);
     }
 
     const nativeModels: Record<string, NativeModelConfig> = {};
