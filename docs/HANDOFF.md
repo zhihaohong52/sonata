@@ -1,10 +1,49 @@
-# Handoff — sonata after 0.11.0
+# Handoff — sonata after 0.13.1
 
 Originally written 2026-09-04 at the end of the 0.6.0 session; rewritten
 2026-09-12 after 0.8.3, and the top section again 2026-09-19 after 0.11.0.
 Read this before starting new work. It records what is done, what is
 deliberately *not* done, what to pick up if you want work, and the traps that
 have cost previous sessions real time.
+
+## 0.13.1 (2026-09-27) — open follow-ups
+
+A patch release of three fixes (PR #69), all found because a "full audit"
+of six native `review-*` agents died before any of them read a file:
+
+- **OpenCode Zen/Go never worked on the native path.** They need an
+  `x-opencode-session` header; LiteLLM dropped it. Fixed by forwarding it to
+  opencode.ai models only and sending no other client `x-*` header — see the
+  CLAUDE.md paragraph starting *opencode.ai routes by a session header*.
+- **A 400 that refuses every request killed the whole tier.** `MissingSessionID`
+  now falls through at once and cools the gateway (`UNSERVABLE_400_SIGNATURES`).
+- **tmux cold-start race** (`retryWhenServerExits`) — failed CI and can fail a
+  parallel dispatch on a user's machine.
+- A test that only passed on the day it was written (the dispatch-budget one)
+  now pins the clock.
+
+What is still open:
+
+- **The audit itself has not run.** It is six read-only reviews (native
+  router; pricing/ledger/budget; config and init; dispatch lane and adapters;
+  routing hooks and serve lifecycle; credentials and catalog). Re-run it once
+  a `review-normal` dispatch is confirmed working on 0.13.1.
+- **Only the first PR #69 commit was reviewed by CodeRabbit.** The header
+  stripping, the test fix and the tmux retry passed CI unreviewed.
+- **The maintainer's machine config points both `opencode` and `opencode-go`
+  at the Go URL**, so each Go model is listed twice and the `opencode` one is
+  priced from the Zen table. How the Go URL got onto `opencode` is not
+  established — sonata's table never held it. Whether Zen serves the models
+  listed under that gateway is also unchecked.
+- **`gpt-6-luna` answers a 400 on roughly every other request** on
+  `code-simple`/`review-simple` in other sessions (each followed by a 200).
+  Seen in the 2026-09-26 ledger, not investigated.
+- **`tests/commands/serve.test.ts` fails under full-suite load** (different
+  tests on different runs; 111/111 in isolation, with or without the PR #69
+  changes). Load-dependent timing, not yet diagnosed.
+- **A LiteLLM or router restart is needed for any router fix to apply** — the
+  running daemon keeps the code it started with. A user who upgrades and does
+  not `sonata restart` still has the bug.
 
 ## 0.13.0 work (2026-09-25) — open follow-ups
 
