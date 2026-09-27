@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import { shellQuote } from './shell.js';
+
 const run = promisify(execFile);
 
 async function tmux(args: string[]): Promise<string> {
@@ -69,8 +71,17 @@ export async function hasSession(session: string): Promise<boolean> {
   }
 }
 
+/**
+ * Sends the command to run a script to the pane's interactive shell.
+ *
+ * The path is single-quote wrapped (`shellQuote`), not JSON-quoted: these are
+ * keystrokes typed into a live shell, so `$()`, backticks and history `!` are
+ * all live there — `JSON.stringify` leaves every one of them unescaped, and a
+ * script path carrying them broke the launch or ran commands. Single quotes
+ * suppress all three in bash and zsh.
+ */
 export async function runScript(session: string, scriptPath: string): Promise<void> {
-  await tmux(['send-keys', '-t', session, `bash ${JSON.stringify(scriptPath)}`, 'Enter']);
+  await tmux(['send-keys', '-t', session, `bash ${shellQuote(scriptPath)}`, 'Enter']);
 }
 
 export async function sendKeys(session: string, keys: string): Promise<void> {

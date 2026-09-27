@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { shellQuote } from '../src/shell.js';
 import { wrapWithTimeout } from '../src/watchdog.js';
+import { WORKTREE_CAPTURE_FILE } from '../src/worktree.js';
 
 const script = wrapWithTimeout({
   harnessScriptPath: '/tmp/sonata/harness.sh',
@@ -105,5 +111,73 @@ describe('wrapWithTimeout', () => {
   it('guards the exit write with an existence check', () => {
     expect(script).toContain("if [ ! -f '/tmp/sonata/exit' ]; then");
     expect(script).toContain("echo $STATUS > '/tmp/sonata/exit'");
+  });
+});
+
+/**
+ * Paths reach this script as raw string interpolation. A run directory whose
+ * name carries a single quote, a command substitution or a history bang — all
+ * of them legal on disk — must not break the launch or execute anything. The
+ * quoting is single-quote wrapping via `shellQuote`, the same form the
+ * adapters already use.
+ */
+describe('wrapWithTimeout quotes hostile paths', () => {
+  const nasty = "/tmp/it's $(echo pwned) !x";
+
+  const script = wrapWithTimeout({
+    harnessScriptPath: `${nasty}/harness.sh`,
+    runDir: nasty,
+    timeoutSeconds: 30,
+    worktreeCwd: nasty,
+  });
+
+  it('generates a script bash accepts', () => {
+    // Parse-only: if the quoting left a dangling quote or an unescaped bang,
+    // this is where it shows up before anything runs.
+    expect(() => execFileSync('bash', ['-n'], { input: script, stdio: ['pipe', 'pipe', 'pipe'] }))
+      .not.toThrow();
+  });
+
+  it('quotes every interpolated path with shellQuote', () => {
+    expect(script).toContain(`bash ${shellQuote(`${nasty}/harness.sh`)} &`);
+    expect(script).toContain(`>> ${shellQuote(`${nasty}/harness.log`)}`);
+    expect(script).toContain(`> ${shellQuote(`${nasty}/timeout`)}`);
+    expect(script).toContain(`cd ${shellQuote(nasty)} && {`);
+    expect(script).toContain(`} ) > ${shellQuote(`${nasty}/${WORKTREE_CAPTURE_FILE}`)}`);
+    expect(script).toContain(`rm -f ${shellQuote(`${nasty}/${WORKTREE_CAPTURE_FILE}`)}`);
+    expect(script).toContain(`if [ ! -f ${shellQuote(`${nasty}/exit`)} ]; then`);
+    expect(script).toContain(`echo $STATUS > ${shellQuote(`${nasty}/exit`)}`);
+  });
+
+  it('leaves nothing of the old raw single-quote wrapping', () => {
+    // Raw `'${path}'` quoting would close on the apostrophe in "it's" and let
+    // `$(echo pwned)` run as a command substitution.
+    expect(script).not.toContain(`bash '${nasty}/harness.sh'`);
+    expect(script).not.toContain(`>> '${nasty}/harness.log'`);
+    expect(script).not.toContain(`echo $STATUS > '${nasty}/exit'`);
+  });
+
+  it('runs end-to-end against a real directory of that name', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sonata-shell-'));
+    const runDir = join(dir, "it's $(echo pwned) !x");
+    mkdirSync(runDir);
+    const harness = join(runDir, 'harness.sh');
+    writeFileSync(harness, '#!/bin/bash\necho SENTINEL_LINE\n');
+    const wrapPath = join(runDir, 'wrap.sh');
+    writeFileSync(wrapPath, wrapWithTimeout({
+      harnessScriptPath: harness,
+      runDir,
+      timeoutSeconds: 60,
+      interactive: false,
+      worktreeCwd: runDir,
+    }));
+
+    const out = execFileSync('bash', [wrapPath], { encoding: 'utf8' });
+
+    // The harness ran, its output came through, and the command substitution
+    // never fired (a fired one would have printed `pwned` on its own).
+    expect(out).toContain('SENTINEL_LINE');
+    expect(out).not.toMatch(/(^|\n)pwned(\n|$)/);
+    expect(readFileSync(join(runDir, 'exit'), 'utf8').trim()).toBe('0');
   });
 });

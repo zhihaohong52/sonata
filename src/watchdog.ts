@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 
+import { shellQuote } from './shell.js';
 import { WORKTREE_CAPTURE_FILE, WORKTREE_CAPTURE_SH } from './worktree.js';
 
 export interface WatchdogInput {
@@ -41,14 +42,14 @@ export function wrapWithTimeout(input: WatchdogInput): string {
     '# a Node CLI that spawns further children; killing only direct children',
     '# leaves those grandchildren running.',
     'set -m',
-    `bash '${input.harnessScriptPath}' &`,
+    `bash ${shellQuote(input.harnessScriptPath)} &`,
     'HARNESS_PID=$!',
     '',
     '(',
     `  sleep ${input.timeoutSeconds}`,
     '  if kill -0 $HARNESS_PID 2>/dev/null; then',
-    `    echo 'sonata: run timeout after ${input.timeoutSeconds}s' >> '${harnessLog}'`,
-    `    echo timeout > '${timeoutMark}'`,
+    `    echo 'sonata: run timeout after ${input.timeoutSeconds}s' >> ${shellQuote(harnessLog)}`,
+    `    echo timeout > ${shellQuote(timeoutMark)}`,
     '    pkill -P $HARNESS_PID 2>/dev/null',
     '    kill -TERM -$HARNESS_PID 2>/dev/null || kill -TERM $HARNESS_PID 2>/dev/null',
     '    sleep 5',
@@ -114,21 +115,21 @@ export function wrapWithTimeout(input: WatchdogInput): string {
     ...(input.worktreeCwd === undefined
       ? []
       : [
-        `if ( cd '${input.worktreeCwd}' && {`,
+        `if ( cd ${shellQuote(input.worktreeCwd)} && {`,
         WORKTREE_CAPTURE_SH.split('\n').map((l) => `  ${l}`).join('\n'),
-        `} ) > '${capturePath}' 2>/dev/null; then`,
+        `} ) > ${shellQuote(capturePath)} 2>/dev/null; then`,
         '  :',
         'else',
         '  # Not a usable repository. Remove the file rather than leaving the',
         '  # empty one the redirection just created: an empty capture hashes to',
         '  # a perfectly stable value, and "unknown" must never be reported as',
         '  # "unchanged".',
-        `  rm -f '${capturePath}'`,
+        `  rm -f ${shellQuote(capturePath)}`,
         'fi',
         '',
       ]),
-    `if [ ! -f '${exitPath}' ]; then`,
-    `  echo $STATUS > '${exitPath}'`,
+    `if [ ! -f ${shellQuote(exitPath)} ]; then`,
+    `  echo $STATUS > ${shellQuote(exitPath)}`,
     'fi',
     '',
     'exit $STATUS',

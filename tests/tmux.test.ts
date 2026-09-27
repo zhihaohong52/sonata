@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -43,6 +43,36 @@ describe('tmux wrapper', () => {
 
     expect(pane).toContain('SENTINEL_LINE');
     // The critical property: session survives its command finishing.
+    expect(await hasSession(SESSION)).toBe(true);
+  });
+
+  /**
+   * runScript sends `bash <path>` as keystrokes to the pane's INTERACTIVE
+   * shell. JSON quoting left `$()`, backticks and history `!` live there, so a
+   * script path containing them broke the launch or ran commands. Single-quote
+   * wrapping is the only form that suppresses all three in bash and zsh.
+   */
+  it('runs a script whose path carries quotes, substitutions and a bang', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sonata-'));
+    const nasty = join(dir, "it's $(echo pwned) !x");
+    mkdirSync(nasty);
+    const script = join(nasty, 'cmd.sh');
+    writeFileSync(script, '#!/bin/bash\necho SENTINEL_LINE\n');
+
+    await newSession({ session: SESSION, cwd: nasty });
+    await runScript(SESSION, script);
+
+    let pane = '';
+    for (let i = 0; i < 40; i++) {
+      pane = await capturePane(SESSION);
+      if (pane.includes('SENTINEL_LINE')) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+
+    expect(pane).toContain('SENTINEL_LINE');
+    // If the quoting broke, the pane would have shown `pwned` from the
+    // substitution, or a syntax/history error, instead of the sentinel.
+    expect(pane).not.toMatch(/(^|\n)pwned(\n|$)/);
     expect(await hasSession(SESSION)).toBe(true);
   });
 });
