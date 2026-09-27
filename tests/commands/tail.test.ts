@@ -222,6 +222,29 @@ describe('tail decide — runs that cannot write a report', () => {
   });
 });
 
+describe('tail decide — an empty report', () => {
+  // `sonata dispatch` retries the next candidate on an empty report, but it can
+  // only see the decorated text, which always carries the provenance line — so
+  // the verdict has to come from here, before anything is appended.
+  it('flags a trusted report with no content as empty', () => {
+    const r = decide({ ...base, exitCode: 0, report: '  \n' });
+    expect(r.reportEmpty).toBe(true);
+  });
+
+  it('does not flag a report with content', () => {
+    const r = decide({ ...base, exitCode: 0, report: 'I fixed the bug.', worktreeUnchanged: true });
+    expect(r.reportEmpty).toBe(false);
+  });
+
+  it('does not count an annotation as content', () => {
+    const r = decide({
+      ...base, exitCode: 0, report: '', worktreeUnchanged: true,
+      effort: 'high', effortHonoured: false, harness: 'reasonix',
+    });
+    expect(r.reportEmpty).toBe(true);
+  });
+});
+
 describe('harnessOutput', () => {
   const LAUNCH = '/repo/.sonata/runs/abc123/cmd.sh';
 
@@ -568,6 +591,16 @@ describe('cmdTail degrades a fallback report from a failed run', () => {
     expect(r.state).toBe('DONE');
     expect(r.degraded).toBe(true);
     expect(r.report).toMatch(/^\[degraded:/);
+    expect(r.report).toContain('API Error: 404 model not found');
+  });
+
+  it('reads the fallback file when report.md exists but is empty', async () => {
+    // An empty report.md used to shadow last-message.txt and be trusted as a
+    // finished, un-degraded report of nothing.
+    writeFileSync(join(runDir(cwd, id), 'report.md'), '');
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+
+    expect(r.degraded).toBe(true);
     expect(r.report).toContain('API Error: 404 model not found');
   });
 

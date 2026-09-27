@@ -54,6 +54,21 @@ describe('run store', () => {
     expect(readEvents(cwd, meta.id)).toEqual(['a', 'b']);
   });
 
+  it('reads an empty or whitespace-only report.md as no report at all', () => {
+    // A zero-length report.md is what a model leaves when it creates the file
+    // and never fills it — and the codex/reasonix quit watchers fire on the
+    // file merely existing. Read as "", it was trusted as a finished report and
+    // hid the harness's own fallback file behind it.
+    const meta = createRun(cwd, {
+      role: 'code', model: 'm', harness: 'codex',
+      mode: 'acceptEdits', interactive: false, startedAt: '2026-08-10T00:00:00.000Z',
+    });
+    writeFileSync(join(runDir(cwd, meta.id), 'report.md'), '');
+    expect(readReport(cwd, meta.id)).toBeNull();
+    writeFileSync(join(runDir(cwd, meta.id), 'report.md'), '  \n\t\n');
+    expect(readReport(cwd, meta.id)).toBeNull();
+  });
+
   it('persists meta updates', () => {
     const meta = createRun(cwd, {
       role: 'code', model: 'm', harness: 'opencode',
