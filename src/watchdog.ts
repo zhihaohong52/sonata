@@ -55,7 +55,10 @@ export function wrapWithTimeout(input: WatchdogInput): string {
     '    sleep 5',
     '    kill -KILL -$HARNESS_PID 2>/dev/null || kill -KILL $HARNESS_PID 2>/dev/null',
     '  fi',
-    ') &',
+    // Its own messages go to the harness log explicitly; stderr would only
+    // carry the shell's "Terminated … sleep" report when the wrapper kills
+    // the sleep on a normal finish, which would land in the pane.
+    ') 2>/dev/null &',
     'WATCHDOG_PID=$!',
     '# Job control reports a killed background job to the terminal. On a normal',
     '# run the watchdog is always killed, so without this every completed run',
@@ -98,8 +101,11 @@ export function wrapWithTimeout(input: WatchdogInput): string {
         'STATUS=$?',
       ]),
     '',
-    'kill $WATCHDOG_PID 2>/dev/null',
+    // Children first: once the watchdog subshell is gone its `sleep` is
+    // reparented, `pkill -P` matches nothing, and the orphan holds the run's
+    // stdout open for the rest of run_timeout_seconds.
     'pkill -P $WATCHDOG_PID 2>/dev/null',
+    'kill $WATCHDOG_PID 2>/dev/null',
     'wait $WATCHDOG_PID 2>/dev/null',
     '',
     // Fingerprint the tree BEFORE the exit sentinel, because the sentinel is

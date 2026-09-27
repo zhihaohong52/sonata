@@ -157,6 +157,24 @@ describe('wrapWithTimeout quotes hostile paths', () => {
     expect(script).not.toContain(`echo $STATUS > '${nasty}/exit'`);
   });
 
+  it('closes its output as soon as the harness finishes, not at the timeout', () => {
+    // The wrapper killed the watchdog subshell before its children, so its
+    // `sleep` was reparented, `pkill -P` missed it, and the orphan held the
+    // wrapper's stdout open for the whole run_timeout_seconds (seen as a 60s
+    // CI timeout; measured 20s against a 20s cap).
+    const dir = mkdtempSync(join(tmpdir(), 'sonata-wd-'));
+    const harness = join(dir, 'harness.sh');
+    writeFileSync(harness, '#!/bin/bash\necho done\n');
+    const wrapPath = join(dir, 'wrap.sh');
+    writeFileSync(wrapPath, wrapWithTimeout({
+      harnessScriptPath: harness, runDir: dir, timeoutSeconds: 20, interactive: false, worktreeCwd: dir,
+    }));
+    const started = Date.now();
+    const out = execFileSync('bash', [wrapPath], { encoding: 'utf8' });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(out).not.toContain('Terminated');
+  });
+
   it('runs end-to-end against a real directory of that name', () => {
     const dir = mkdtempSync(join(tmpdir(), 'sonata-shell-'));
     const runDir = join(dir, "it's $(echo pwned) !x");
