@@ -632,6 +632,26 @@ function buildChildEnv(native: NativeConfig, home: string, tempDir: string): Nod
 /** Default bound on how long a model-registry restart waits for the old litellm child to exit (see `litellmExitTimeoutMs`). */
 const LITELLM_EXIT_TIMEOUT_MS = 5000;
 
+/**
+ * SIGTERM, a bounded wait for the exit, then SIGKILL (once). Shared by the
+ * startup-failure path and `stop()`, so the two cannot drift apart again.
+ */
+async function terminateLitellm(
+  dying: SpawnedLitellm,
+  timeoutMs: number,
+  sleepFn: (ms: number) => Promise<void>,
+): Promise<void> {
+  const exited = new Promise<void>((resolve) => {
+    if (dying.onExit) dying.onExit(() => resolve());
+    else resolve();
+  });
+  dying.kill();
+  if (await raceTimeout(exited, timeoutMs, sleepFn)) {
+    console.error('sonata serve: litellm did not exit after SIGTERM — sending SIGKILL');
+    (dying.forceKill ?? dying.kill).call(dying);
+  }
+}
+
 /** Resolves `true` if `promise` had not settled after `timeoutMs`, `false` if it settled first. Never rejects. */
 async function raceTimeout(promise: Promise<void>, timeoutMs: number, sleepFn: (ms: number) => Promise<void>): Promise<boolean> {
   let timedOut = false;
@@ -1289,18 +1309,7 @@ export async function cmdServe(
     //
     // Killing is unconditional and needs no grace period: this child never
     // became ready, so it is serving nothing and has nothing to flush.
-    const dying = child;
-    if (dying !== undefined) {
-      const exited = new Promise<void>((resolve) => {
-        if (dying.onExit) dying.onExit(() => resolve());
-        else resolve();
-      });
-      dying.kill();
-      if (await raceTimeout(exited, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep)) {
-        console.error('sonata serve: litellm did not exit after SIGTERM — sending SIGKILL');
-        (dying.forceKill ?? dying.kill).call(dying);
-      }
-    }
+    if (child !== undefined) await terminateLitellm(child, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep);
     // Clear the record while this process still owns the bound port. A
     // replacement cannot have written a new record until after close begins.
     if (router?.listening === true) clearFailedRouterRecord(opts.home, ports.router);
@@ -1340,7 +1349,12 @@ export async function cmdServe(
       // against a daemon that is going away.
       stopPriceRefresh();
       stopping = true;
-      child?.kill();
+      // SIGTERM, bounded wait, then SIGKILL — the startup-failure path's
+      // sequence, and BEFORE the state file naming its pid and the temp dir
+      // holding its config are removed. A bare SIGTERM left a SIGTERM-deaf
+      // child (one blocked on a device-code login) running as an orphan that
+      // nothing recorded any more.
+      if (child !== undefined) await terminateLitellm(child, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep);
       try { unlinkSync(serveStatePath(opts.home, ports.router)); } catch { /* already gone */ }
       try {
         await close(startedRouter);
