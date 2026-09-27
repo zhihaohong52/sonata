@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, withEffort, STICKY_TTL_MS, createRouterServer, respond, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, withEffort, STICKY_TTL_MS, createRouterServer, respond, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
 
@@ -2541,5 +2541,143 @@ describe('respond — backpressure', () => {
     res.emit('drain');
     await done;
     expect(events.at(-1)).toBe('end');
+  });
+});
+
+describe('message-less 400s', () => {
+  // The two bodies seen live (2026-09-27), exactly as LiteLLM's proxy wraps
+  // an upstream 400: opencode.ai answered once with an empty body and then
+  // with `{"model":"deepseek-v4.1-flash"}` — naming nothing about the request.
+  const ENVELOPE_EMPTY = JSON.stringify({ error: {
+    message: 'litellm.BadRequestError: OpenAIException - Error code: 400. Received Model Group=8f3f1636d2c8/opencode-deepseek-v4.1-flash\nAvailable Model Group Fallbacks=None',
+    type: null, param: null, code: '400',
+  } });
+  const ENVELOPE_MODEL_ONLY = JSON.stringify({ error: {
+    message: "litellm.BadRequestError: OpenAIException - Error code: 400 - {'model': 'deepseek-v4.1-flash'}. Received Model Group=8f3f1636d2c8/opencode-deepseek-v4.1-flash\nAvailable Model Group Fallbacks=None",
+    type: null, param: null, code: '400',
+  } });
+  const ENVELOPE_WITH_MESSAGE = JSON.stringify({ error: {
+    message: "litellm.BadRequestError: OpenAIException - Error code: 400 - {'error': {'message': 'max_tokens is too large'}}. Received Model Group=t/x",
+    type: null, param: null, code: '400',
+  } });
+
+  describe('isMessagelessError', () => {
+    it('recognises the two real bodies, raw and as LiteLLM wraps them', () => {
+      expect(isMessagelessError('')).toBe(true);
+      expect(isMessagelessError('{"model":"deepseek-v4.1-flash"}')).toBe(true);
+      expect(isMessagelessError(ENVELOPE_EMPTY)).toBe(true);
+      expect(isMessagelessError(ENVELOPE_MODEL_ONLY)).toBe(true);
+    });
+    it('does not match a body that says what is wrong', () => {
+      expect(isMessagelessError(ENVELOPE_WITH_MESSAGE)).toBe(false);
+      expect(isMessagelessError('{"error":{"message":"bad field"}}')).toBe(false);
+      expect(isMessagelessError('{"type":"error","error":{"type":"invalid_request_error","message":"x"}}')).toBe(false);
+      expect(isMessagelessError('bad request')).toBe(false);
+      expect(isMessagelessError(JSON.stringify({ error: { message: 'litellm.BadRequestError: Invalid model name passed in model=x' } }))).toBe(false);
+    });
+  });
+
+  const ROUTES = {
+    role: 'code', tier: 'simple',
+    routes: [
+      { key: 'ds', effort: 'none' as const, native: { gateway: 'opencode', id: 'deepseek-v4.1-flash' } },
+      { key: 'mimo', native: { gateway: 'opencode', id: 'mimo' } },
+    ],
+  };
+  const request = (text = 'task') => ({
+    method: 'POST', url: '/v1/messages', headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: text }] })),
+  });
+  beforeEach(() => clearCooldowns());
+
+  const harness = (answer: (model: string) => Response) => {
+    const seen: string[] = [];
+    const lines: string[] = [];
+    const rows: { status: number; key?: string; attempts: { key: string; status: number }[] }[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return answer(model);
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+      log: (line: string) => lines.push(line),
+      recordUsage: (row: { status: number; key?: string; attempts: { key: string; status: number }[] }) => rows.push(row),
+    };
+    return { seen, lines, rows, deps };
+  };
+
+  for (const [name, body] of [['empty', ENVELOPE_EMPTY], ['model-only', ENVELOPE_MODEL_ONLY]] as const) {
+    it(`falls through on the first ${name} 400 and the next candidate serves`, async () => {
+      const { seen, rows, deps } = harness((model) => model === 'default/ds'
+        ? new Response(body, { status: 400 })
+        : new Response('{}', { status: 200 }));
+      const res = await routeRequest(request(), deps);
+      expect(res.status).toBe(200);
+      expect(seen).toEqual(['default/ds', 'default/mimo']);
+      for await (const _ of res.body as AsyncIterable<Uint8Array>) { /* the ledger row lands at the end of the body */ }
+      expect(rows.at(-1)?.attempts).toEqual([{ key: 'ds', status: 400 }]);
+    });
+  }
+
+  it('keeps a 400 that carries a real error message terminal', async () => {
+    const { seen, lines, deps } = harness(() => new Response(ENVELOPE_WITH_MESSAGE, { status: 400 }));
+    const res = await routeRequest(request(), deps);
+    expect(res.status).toBe(400);
+    expect(seen).toEqual(['default/ds']);
+    // Every terminal 400 is logged: alias, candidate, status, the start of the body.
+    const line = lines.find((l) => l.includes('terminal'));
+    expect(line).toContain('sonata-code-simple');
+    expect(line).toContain('ds@none');
+    expect(line).toContain('400');
+    expect(line).toContain('max_tokens is too large');
+  });
+
+  it('cools the candidate after three consecutive message-less 400s', async () => {
+    const { seen, deps } = harness((model) => model === 'default/ds'
+      ? new Response(ENVELOPE_MODEL_ONLY, { status: 400 })
+      : new Response('{}', { status: 200 }));
+    for (let i = 0; i < TIER_CAPABILITY_400_THRESHOLD; i += 1) await routeRequest(request(`t${i}`), deps);
+    seen.length = 0;
+    await routeRequest(request('after'), deps);
+    expect(seen).toEqual(['default/mimo']);
+  });
+
+  it('returns the last response when every candidate answers message-less', async () => {
+    const { seen, deps } = harness((model) => new Response(
+      model === 'default/mimo' ? ENVELOPE_EMPTY : ENVELOPE_MODEL_ONLY, { status: 400 },
+    ));
+    const res = await routeRequest(request(), deps);
+    expect(seen).toEqual(['default/ds', 'default/mimo']);
+    expect(res.status).toBe(400);
+    expect((res.body as Buffer).toString()).toBe(ENVELOPE_EMPTY);
+  });
+
+  it('captures the outbound body of a 400 to SONATA_CAPTURE_400_DIR, owner-only', async () => {
+    const { mkdtempSync, readdirSync, readFileSync, statSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = join(mkdtempSync(join(tmpdir(), 'sonata-capture-')), 'captures');
+    const { deps } = harness((model) => model === 'default/ds'
+      ? new Response(ENVELOPE_MODEL_ONLY, { status: 400 })
+      : new Response(ENVELOPE_WITH_MESSAGE, { status: 400 }));
+    await routeRequest(request('capture me'), { ...deps, capture400Dir: dir });
+    const files = readdirSync(dir).sort();
+    expect(files).toHaveLength(2);
+    expect(files.some((f) => f.endsWith('-ds@none.json'))).toBe(true);
+    for (const file of files) {
+      expect(statSync(join(dir, file)).mode & 0o777).toBe(0o600);
+      const doc = JSON.parse(readFileSync(join(dir, file), 'utf8')) as { alias: string; request: { messages: unknown[] }; status: number };
+      expect(doc.alias).toBe('sonata-code-simple');
+      expect(doc.status).toBe(400);
+      expect(JSON.stringify(doc.request)).toContain('capture me');
+    }
+  });
+
+  it('writes nothing when no capture directory is configured', async () => {
+    const { deps } = harness(() => new Response(ENVELOPE_WITH_MESSAGE, { status: 400 }));
+    const res = await routeRequest(request(), { ...deps, capture400Dir: undefined });
+    expect(res.status).toBe(400);
   });
 });

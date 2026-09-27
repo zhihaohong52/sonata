@@ -1214,6 +1214,8 @@ export async function cmdServe(
       resolveTier: (alias, tenant) => tenant.config === undefined ? undefined : resolveTierAlias(tenant.config, alias),
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
       resolveNative: (key, tenant) => tenant.config === undefined ? undefined : nativeRouteFor(tenant.config, key),
+      // Opt-in only: a captured request is a whole conversation.
+      capture400Dir: process.env.SONATA_CAPTURE_400_DIR,
       budget: (tenant) => {
         const statuses = budgetStatusesFor({
           tenant,
