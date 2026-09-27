@@ -1674,6 +1674,23 @@ context_window = 128000
     expect(opts[0]).toMatchObject({ cwd: join(home, '.config', 'sonata') });
   });
 
+  it('spawns from the caller\'s cwd when there is no machine config file', async () => {
+    // Only the machine config FILE may move the daemon. The log directory is
+    // created inside ~/.config/sonata before the check used to run, so the
+    // directory always existed and a project-only machine started its router
+    // in a directory with no config — which `serve` refuses outright.
+    rmSync(join(home, '.config'), { force: true, recursive: true });
+    const opts: Parameters<typeof spawnType>[2][] = [];
+    const spy = ((_cmd: string, _args: string[], o: never) => {
+      opts.push(o);
+      return { pid: 4242, unref: () => {} };
+    }) as unknown as typeof spawnType;
+
+    await startServeDaemon(home, ['node', 'cli.js', 'serve'], { spawn: spy, probe: async () => true }, '/some/project');
+
+    expect(opts[0]).toMatchObject({ cwd: '/some/project' });
+  });
+
   it('detaches and returns once the router answers', async () => {
     // The flag used to be parsed, handed to cmdServe and ignored, so
     // `sonata serve --daemon` blocked exactly like the foreground command.

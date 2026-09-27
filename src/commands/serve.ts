@@ -1392,6 +1392,15 @@ export async function startServeDaemon(
 
   const port = routerPorts(home).router;
 
+  // A machine-wide daemon must start where its machine config is visible;
+  // otherwise a project-local sonata.toml can still win config resolution.
+  // Decided from the config FILE, and before the log mkdir below: that mkdir
+  // creates ~/.config/sonata, so asking about the directory afterwards always
+  // answered yes and a project-only machine started its router in a directory
+  // with no config at all — which `serve` refuses.
+  const machineConfigFile = join(home, GLOBAL_CONFIG_RELATIVE);
+  const daemonCwd = existsSync(machineConfigFile) ? dirname(machineConfigFile) : cwd;
+
   const logPath = timestampedLogPath(home, 'serve');
   mkdirSync(dirname(logPath), { recursive: true });
   const log = openSync(logPath, 'a');
@@ -1403,10 +1412,6 @@ export async function startServeDaemon(
   // against a leftover daemon (see the design doc for the reproduction).
   const instanceId = randomUUID();
 
-  // A machine-wide daemon must start where its machine config is visible;
-  // otherwise a project-local sonata.toml can still win config resolution.
-  const machineConfigDir = dirname(join(home, GLOBAL_CONFIG_RELATIVE));
-  const daemonCwd = existsSync(machineConfigDir) ? machineConfigDir : cwd;
   const child = spawnFn(argv[0], argv.slice(1), {
     detached: true,
     stdio: ['ignore', log, log],

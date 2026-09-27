@@ -41,11 +41,14 @@ if (Number.isInteger(port) && port > 0) {
   }
 
   try {
+    // The machine config FILE decides, not its directory: sonata creates
+    // ~/.config/sonata for logs and the router token on machines whose only
+    // config is a project's, and a daemon started there has no config.
     const machineConfigDir = join(homedir(), '.config', 'sonata');
     const daemon = spawn('sonata', ['serve', '--daemon'], {
       detached: true,
       stdio: 'ignore',
-      ...(existsSync(machineConfigDir) ? { cwd: machineConfigDir } : {}),
+      ...(existsSync(join(machineConfigDir, 'sonata.toml')) ? { cwd: machineConfigDir } : {}),
     });
     daemon.unref();
 
