@@ -57,7 +57,15 @@ function modelsUrl(baseUrl: string): string {
 /** Google's Generative Language API needs `x-goog-api-key` and a different list shape — see the module docstring. */
 function isGoogleGenerativeLanguage(baseUrl: string): boolean {
   try {
-    return new URL(baseUrl).hostname === 'generativelanguage.googleapis.com';
+    const url = new URL(baseUrl);
+    // The host alone is not enough. Google's OpenAI-compatibility shim
+    // (`…/v1beta/openai`) lives on the same host and speaks the OpenAI shape
+    // — matched by hostname, it got the Google header and its `{ data }` list
+    // was parsed as `{ models }`, so listing failed. And a key is never sent
+    // in `x-goog-api-key` over plain http.
+    return url.protocol === 'https:'
+      && url.hostname === 'generativelanguage.googleapis.com'
+      && !url.pathname.split('/').includes('openai');
   } catch {
     return false;
   }
