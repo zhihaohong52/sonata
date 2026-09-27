@@ -30,7 +30,8 @@ import {
 } from '../../src/commands/route.js';
 import { ensureRouterToken } from '../../src/native/router-token.js';
 import type { Settings, HookEntry } from '../../src/settings.js';
-import { readSettings } from '../../src/settings.js';
+import { readSettings, writeSettings as writeSettingsFile } from '../../src/settings.js';
+import { withSessionLock } from '../../src/filelock.js';
 import { loadConfig } from '../../src/config.js';
 
 /**
@@ -1331,5 +1332,35 @@ describe('route on — the project hint travels with its authorisation', () => {
     writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
     const on = planRouteOn(settings(), loadConfig(cwd, home), PACKAGE_ROOT, 'global', { routerPort: 4100 });
     expect(envOf(on.settings).ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+  });
+});
+
+describe('settings writes are serialised across writers', () => {
+  // The session lock guards session-start and settle; the subagent lock guards
+  // subagent start/stop. Both read-modify-write the same settings file, so
+  // neither excluded the other: a last-subagent stop could write "off" over a
+  // session start's "on" and leave a new session unrouted. Every route write
+  // now also takes the settings file's own lock, innermost.
+  it('a subagent stop waits for the settings lock and re-reads under it', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT };
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
+    const file = routeSettingsFile(cwd, 'project', home);
+    expect(routeEnv(readSettings(file)).ANTHROPIC_BASE_URL).toBeDefined();
+
+    let stop!: Promise<unknown>;
+    await withSessionLock(file, async () => {
+      stop = cmdRouteSubagent('stop', 'a1', o, OFFLINE);
+      await new Promise((r) => setTimeout(r, 150));
+      // Still ours: the stop has not written around the lock.
+      expect(routeEnv(readSettings(file)).ANTHROPIC_BASE_URL).toBeDefined();
+      // Another writer's change, made while holding the lock.
+      writeSettingsFile(file, { ...readSettings(file), marker: 1 });
+    });
+    await stop;
+
+    const after = readSettings(file);
+    expect(routeEnv(after).ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(after.marker).toBe(1);
   });
 });
