@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdTail, decide, harnessOutput } from '../../src/commands/tail.js';
 import { tailWaitSeconds } from '../../src/cli.js';
-import { capturePane, killSession, newSession, sendKeys } from '../../src/tmux.js';
+import { capturePane, killSession, newSession, sendKeys, tryCapturePaneHistory } from '../../src/tmux.js';
 import { readAnsweredPrompt, readCursor, readEvents, runDir, writeAnsweredPrompt } from '../../src/store.js';
 import { cleanPane } from '../../src/normalize.js';
 import { codexAdapter } from '../../src/adapters/codex.js';
@@ -371,8 +371,13 @@ describe('cmdTail answered prompts', () => {
   afterEach(async () => { await killSession(session); });
 
   async function snapshotPrompt(): Promise<string> {
+    // Stands in for an earlier poll, which leaves both captures behind: the
+    // visible one prompts are read from, and the scrollback one new output is
+    // diffed from.
     const pane = cleanPane(await capturePane(session));
     writeFileSync(join(runDir(cwd, id), 'pane.snapshot'), pane.join('\n'));
+    const history = cleanPane((await tryCapturePaneHistory(session)) ?? '');
+    writeFileSync(join(runDir(cwd, id), 'pane-history.snapshot'), history.join('\n'));
     return codexAdapter.describePrompt(pane)!;
   }
 
@@ -716,6 +721,55 @@ describe('cmdTail waits for the worktree capture the exit sentinel outruns', () 
     utimesSync(join(runDir(cwd, id), 'exit'), old, old);
     const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
     expect(r.state).toBe('DONE');
+  });
+});
+
+describe('cmdTail records output that scrolled past the visible pane', () => {
+  // `sonata log` prints events.jsonl, which was diffed from a visible-only
+  // capture: anything more than one screen (50 rows) between polls was never
+  // recorded, and a run nobody tailed kept only its last screen.
+  let cwd: string;
+  const session = 'sonata-test-tail-scroll';
+  const id = 'ddd111';
+
+  beforeEach(async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-scroll-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '[run]\nstall_timeout_seconds = 120\n');
+    mkdirSync(runDir(cwd, id), { recursive: true });
+    writeFileSync(join(runDir(cwd, id), 'meta.json'), JSON.stringify({
+      id, role: 'code', model: 'm', harness: 'opencode', mode: 'acceptEdits',
+      interactive: false, session, cwd, startedAt: '2026-09-27T00:00:00.000Z',
+    }));
+    await newSession({ session, cwd });
+    await sendKeys(session, "seq -f 'row-%g' 1 150");
+    await sendKeys(session, 'Enter');
+    const deadline = Date.now() + 5_000;
+    while (!(await capturePane(session)).includes('row-150') && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  });
+
+  afterEach(async () => { await killSession(session); });
+
+  it('keeps every line in the event log, not just the last screen', async () => {
+    await cmdTail({ cwd, id, waitSeconds: 0 });
+    const events = readEvents(cwd, id);
+    expect(events).toContain('row-1');
+    expect(events).toContain('row-150');
+  });
+
+  it('does not record a line twice across polls', async () => {
+    await cmdTail({ cwd, id, waitSeconds: 0 });
+    await sendKeys(session, "echo 'after'");
+    await sendKeys(session, 'Enter');
+    const deadline = Date.now() + 5_000;
+    while (!(await capturePane(session)).split('\n').some((l) => l.trim() === 'after') && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    await cmdTail({ cwd, id, waitSeconds: 0 });
+    const events = readEvents(cwd, id);
+    expect(events.filter((l) => l === 'row-1')).toHaveLength(1);
+    expect(events.filter((l) => l === 'after')).toHaveLength(1);
   });
 });
 

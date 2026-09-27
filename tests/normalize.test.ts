@@ -40,6 +40,19 @@ describe('newLines', () => {
   it('returns everything when there is no overlap at all', () => {
     expect(newLines(['a'], ['x', 'y'])).toEqual(['x', 'y']);
   });
+
+  it('treats a last line rewritten in place as new, not the whole pane', () => {
+    // A shell prompt that has since been typed after, or a progress line the
+    // harness redraws: the last line of one capture is rarely final. Requiring
+    // it to match re-emitted the whole capture — from a scrollback capture,
+    // thousands of lines recorded twice.
+    expect(newLines(['a', 'b', '%'], ['a', 'b', '% echo hi', 'hi', '%']))
+      .toEqual(['% echo hi', 'hi', '%']);
+  });
+
+  it('handles a rewritten last line after scrolling too', () => {
+    expect(newLines(['a', 'b', 'c', '%'], ['b', 'c', '% ls', 'x', '%'])).toEqual(['% ls', 'x', '%']);
+  });
 });
 
 import { parseConfig } from '../src/config.js';
