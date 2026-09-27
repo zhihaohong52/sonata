@@ -12,6 +12,24 @@ import { readRows } from '../src/ledger.js';
 import { canonicalConfigPath, tenantId } from '../src/native/tenants.js';
 import type { RunMeta } from '../src/types.js';
 
+// A ledger write that fails on demand. Forced by a mock rather than by
+// making the usage directory unwritable: chmod does not stop root, so a
+// suite run as root would write the row and assert nothing about the claim.
+const ledgerFault = vi.hoisted(() => ({ failNext: false }));
+vi.mock('../src/ledger.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../src/ledger.js')>();
+  return {
+    ...real,
+    appendRow: (...args: Parameters<typeof real.appendRow>) => {
+      if (ledgerFault.failNext) {
+        ledgerFault.failNext = false;
+        throw new Error('ENOSPC: no space left on device');
+      }
+      return real.appendRow(...args);
+    },
+  };
+});
+
 let home: string;
 let cwd: string;
 const START = '2026-09-25T04:00:00.000Z';
@@ -118,6 +136,55 @@ describe('recordHarnessUsage', () => {
     expect(out.kind).toBe('unobservable');
     expect(existsSync(join(cwd, '.sonata', 'runs', 'r1', 'usage.json'))).toBe(true);
   });
+
+  // Unknown is never zero. A session the adapter found but could not count
+  // must not finalise as `observed` with zero tokens — that marker is the
+  // claim that stops the run ever being looked at again, so an observed-zero
+  // is a permanent, silent $0.
+  it('records a tokenless observed session as unobservable, never as zero', () => {
+    record({ kind: 'observed', session: 'ses_1', records: [] });
+    expect(readRows(home, 0, END + 1000)).toHaveLength(0);
+    expect(readRecordedUsage(cwd, 'r1')).toEqual({
+      kind: 'unobservable',
+      reason: 'the harness session was found but carried no token counts sonata could read',
+    });
+  });
+
+  it('records an observed session whose every field parsed as zero the same way', () => {
+    record({
+      kind: 'observed',
+      session: 'ses_1',
+      records: [{ ts: START, tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 } }],
+    });
+    expect(readRows(home, 0, END + 1000)).toHaveLength(0);
+    expect(readRecordedUsage(cwd, 'r1')).toEqual({
+      kind: 'unobservable',
+      reason: 'the harness session was found but carried no token counts sonata could read',
+    });
+  });
+
+  // The claim exists to prevent double-writes, and must not turn a failed
+  // write into a permanent zero: a marker left behind after appendRow threw
+  // says the run was recorded when its row never landed, and the run is never
+  // looked at again. The claim is released instead, so a later tail retries.
+  it('releases the claim when the ledger cannot be written, so a later call retries the row', () => {
+    const meta = finishedRun();
+    ledgerFault.failNext = true;
+    const out = recordHarnessUsage({
+      cwd, home, meta, config: loadConfig(cwd, home), modelsDev: undefined,
+      adapter: { usage: () => observed(0.75) },
+    });
+    expect(ledgerFault.failNext).toBe(false); // the fault was actually reached
+    expect(out).toMatchObject({ kind: 'observed' });
+    expect(readRows(home, 0, END + 1000)).toHaveLength(0);
+    expect(existsSync(join(cwd, '.sonata', 'runs', 'r1', 'usage.json'))).toBe(false);
+    const again = recordHarnessUsage({
+      cwd, home, meta, config: loadConfig(cwd, home), modelsDev: undefined,
+      adapter: { usage: () => observed(0.75) },
+    });
+    expect(again).toMatchObject({ kind: 'observed' });
+    expect(readRows(home, 0, END + 1000)).toHaveLength(1);
+  });
 });
 
 describe('priceHarnessRun', () => {
@@ -144,6 +211,33 @@ describe('priceHarnessRun', () => {
       tokens, [{ ts: START, tokens }], new Date(END), modelsDev,
     );
     expect(price).toMatchObject({ source: 'models-dev', totalUsd: 1.5 });
+  });
+
+  // Covered is a property of the native lane's auth. The harness lane
+  // authenticates on its own — a metered dispatch through a model that also
+  // has an OAuth native route still costs money — so relabelling it covered
+  // excluded real spend from `[budget] daily_usd`. Counting it errs toward the
+  // cap refusing, never toward it silently not counting.
+  it('does not relabel a metered harness run as covered by the native lane\'s OAuth gateway', () => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."dual"]
+gateway = "oauthgw"
+harness = "codex"
+id = "gpt-5.6-terra"
+
+[models."dual".price]
+input = 1.0
+output = 2.0
+
+[native.gateways."oauthgw"]
+auth = "codex-oauth"
+`);
+    const tokens2 = { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheCreation: 0 };
+    const price = priceHarnessRun(
+      loadConfig(cwd, home), { model: 'dual', harness: 'codex', harnessModelId: 'gpt-5.6-terra' },
+      tokens2, [{ ts: START, tokens: tokens2 }], new Date(END), undefined,
+    );
+    expect(price).toEqual({ source: 'model', totalUsd: 3 });
   });
 });
 

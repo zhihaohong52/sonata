@@ -20,7 +20,7 @@
  *   would have given a request from this directory, so a project's own
  *   `daily_usd` counts it, not only the machine's.
  */
-import { closeSync, existsSync, openSync, readFileSync, statSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { HarnessAdapter, UsageRecord, UsageResult } from './adapters/types.js';
@@ -89,7 +89,11 @@ export function priceHarnessRun(
   at: Date,
   modelsDev: ModelsDevCache | undefined,
 ): LedgerPrice {
-  const own = resolvePrice(config, meta.model, tokens, at, modelsDev);
+  // Covered is a property of the native lane's auth; the harness lane
+  // authenticates on its own, so a metered run of a model that also has an
+  // OAuth native route must count as spend. Counting it errs toward the cap
+  // refusing, never toward it silently not counting.
+  const own = resolvePrice(config, meta.model, tokens, at, modelsDev, { relabelCovered: false });
   if (own.source !== 'none') return own;
 
   if (records.length > 0 && records.every((record) => record.costUsd !== undefined)) {
@@ -110,7 +114,7 @@ export function priceHarnessRun(
       gateways: { [key]: { baseUrl: '', auth: 'api-key', pricingProvider: [target.provider] } satisfies NativeGatewayConfig },
     },
   };
-  return resolvePrice(synthetic, key, tokens, at, modelsDev);
+  return resolvePrice(synthetic, key, tokens, at, modelsDev, { relabelCovered: false });
 }
 
 /** Exclusive create: true when this caller now owns recording the run. */
@@ -197,37 +201,59 @@ export function recordHarnessUsage(opts: RecordHarnessUsageOptions): RecordedUsa
   }
 
   const tokens = sumTokens(result.records.map((record) => record.tokens));
+  const spent = tokens.input + tokens.output + tokens.cacheRead + tokens.cacheCreation;
+  // Unknown is never zero. A session the adapter found but could not count —
+  // no records, or every field unparsed (`count()` coerces missing fields to
+  // 0) — must not finalise as `observed` with zero tokens: this marker is the
+  // claim that stops the run ever being looked at again, so an observed-zero
+  // is a permanent, silent $0.
+  if (spent === 0) {
+    const unobservable: RecordedUsage = {
+      kind: 'unobservable',
+      reason: 'the harness session was found but carried no token counts sonata could read',
+    };
+    writeMarker(marker, unobservable);
+    return unobservable;
+  }
+
   const at = new Date(endMs);
   const price = priceHarnessRun(opts.config, meta, tokens, result.records, at, opts.modelsDev ?? loadModelsDev(home));
   const recorded: RecordedUsage = { kind: 'observed', session: result.session, tokens, price };
-  const spent = tokens.input + tokens.output + tokens.cacheRead + tokens.cacheCreation;
-  if (spent > 0) {
-    const path = configPath(cwd, home);
-    const row: LedgerRow = {
-      ts: at.toISOString(),
-      ms: Math.max(0, endMs - startMs),
-      ...(result.session === undefined ? {} : { session: result.session }),
-      project: cwd,
-      ...(path === null ? {} : { tenant: tenantId(canonicalConfigPath(path)) }),
-      alias: meta.model,
-      role: meta.role,
-      key: meta.model,
-      ...(meta.effort === undefined ? {} : { effort: meta.effort }),
-      upstream: 'harness',
-      harness: meta.harness,
-      run: meta.id,
-      status: 200,
-      complete: true,
-      tokens,
-      price,
-      attempts: [],
-    };
+  const path = configPath(cwd, home);
+  const row: LedgerRow = {
+    ts: at.toISOString(),
+    ms: Math.max(0, endMs - startMs),
+    ...(result.session === undefined ? {} : { session: result.session }),
+    project: cwd,
+    ...(path === null ? {} : { tenant: tenantId(canonicalConfigPath(path)) }),
+    alias: meta.model,
+    role: meta.role,
+    key: meta.model,
+    ...(meta.effort === undefined ? {} : { effort: meta.effort }),
+    upstream: 'harness',
+    harness: meta.harness,
+    run: meta.id,
+    status: 200,
+    complete: true,
+    tokens,
+    price,
+    attempts: [],
+  };
+  try {
+    appendRow(home, row);
+  } catch {
+    // The claim exists to prevent double-writes, and must not turn a failed
+    // write into a permanent zero: a marker left behind would say the run was
+    // recorded when its row never landed, and the run would never be looked
+    // at again. Release the claim so a later tail retries the row — and keep
+    // this function non-throwing, a ledger sonata cannot write must not turn
+    // a finished run into a failed one.
     try {
-      appendRow(home, row);
+      unlinkSync(marker);
     } catch {
-      // The marker still says what was observed; a ledger sonata cannot write
-      // must not turn a finished run into a failed one.
+      // Already gone — nothing left to release.
     }
+    return recorded;
   }
   writeMarker(marker, recorded);
   return recorded;

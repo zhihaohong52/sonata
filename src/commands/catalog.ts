@@ -59,6 +59,9 @@ export interface AaKeyValidation {
 /** Bounds how long a bad or unreachable AA endpoint can hold up `auth add`'s reported result. */
 const AA_VALIDATE_TIMEOUT_MS = 10_000;
 
+/** Per-page bound on the catalog fetch — same reasoning as validateAaKey's timeout. */
+const AA_PAGE_TIMEOUT_MS = 30_000;
+
 /**
  * A single, uncached request against page 1 — enough to tell a rejected key
  * from a working one without writing (or overwriting) the catalog file.
@@ -171,7 +174,12 @@ async function updateAaCatalog(
   const entries: unknown[] = [];
   let indexVersion: string | undefined;
   for (let page = 1; page <= AA_MAX_PAGES; page += 1) {
-    const response = await fetchFn(`${AA_MODELS_URL}?page=${page}`, { headers: { 'x-api-key': key } });
+    // `redirect: 'error'` and the timeout: see validateAaKey.
+    const response = await fetchFn(`${AA_MODELS_URL}?page=${page}`, {
+      headers: { 'x-api-key': key },
+      redirect: 'error',
+      signal: AbortSignal.timeout(AA_PAGE_TIMEOUT_MS),
+    });
     if (!response.ok) {
       const reason = response.status === 401 || response.status === 403 ? 'key rejected' : 'request failed';
       throw new Error(`sonata catalog update: ${reason} (HTTP ${response.status})`);

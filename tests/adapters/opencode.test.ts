@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openCodeAdapter } from '../../src/adapters/opencode.js';
 import { getAdapter } from '../../src/adapters/index.js';
+import { shellQuote } from '../../src/shell.js';
 
 const base = {
   modelId: 'openrouter/deepseek-v4-flash',
@@ -20,7 +22,7 @@ describe('openCodeAdapter.plan', () => {
     expect(p.script).toContain('opencode run');
     expect(p.script).toContain('--auto');
     expect(p.script).toContain('--agent build');
-    expect(p.script).toContain('-m openrouter/deepseek-v4-flash');
+    expect(p.script).toContain(`-m ${shellQuote('openrouter/deepseek-v4-flash')}`);
   });
 
   it('never passes --format json, which is broken upstream', () => {
@@ -149,15 +151,15 @@ describe('openCodeAdapter.plan — provider routing', () => {
     // tier regardless of the provider the user chose — and that tier serves
     // none of these models, so the run died before the model saw the task.
     const p = openCodeAdapter.plan({ ...base, mode: 'acceptEdits' });
-    expect(p.script).toContain('-m openrouter/deepseek-v4-flash');
-    expect(p.script).not.toContain('-m opencode/openrouter/deepseek-v4-flash');
+    expect(p.script).toContain(`-m ${shellQuote('openrouter/deepseek-v4-flash')}`);
+    expect(p.script).not.toContain(`-m ${shellQuote('opencode/openrouter/deepseek-v4-flash')}`);
   });
 
   it('routes a nested openrouter ref unchanged', () => {
     const p = openCodeAdapter.plan({
       ...base, modelId: 'openrouter/deepseek/deepseek-v4-flash', mode: 'acceptEdits',
     });
-    expect(p.script).toContain('-m openrouter/deepseek/deepseek-v4-flash');
+    expect(p.script).toContain(`-m ${shellQuote('openrouter/deepseek/deepseek-v4-flash')}`);
   });
 });
 
@@ -247,5 +249,48 @@ describe('openCodeAdapter.plan — `none` needs no mapping', () => {
   it('sends none as none', () => {
     const p = openCodeAdapter.plan({ ...base, mode: 'acceptEdits', effort: 'none' });
     expect(p.script).toContain('--variant none');
+  });
+});
+
+/**
+ * Paths and the model ref reach the plan script as raw string interpolation.
+ * A project whose path (or run directory) carries a single quote, a command
+ * substitution or a history bang — all legal on disk — must not break the
+ * launch or execute anything. Quoting is single-quote wrapping via
+ * `shellQuote`, matching the other adapters.
+ */
+describe('openCodeAdapter.plan — quotes hostile paths', () => {
+  const nasty = "/tmp/it's $(echo pwned) !x";
+  const hostile = {
+    ...base,
+    cwd: nasty,
+    runDir: `${nasty}/run`,
+    instructionsPath: `${nasty}/run/instructions.md`,
+    modelId: "prov/it's $(echo pwned) !m",
+    mode: 'acceptEdits' as const,
+  };
+
+  it('generates a script bash accepts', () => {
+    const { script } = openCodeAdapter.plan(hostile);
+    expect(() => execFileSync('bash', ['-n'], { input: script, stdio: ['pipe', 'pipe', 'pipe'] }))
+      .not.toThrow();
+  });
+
+  it('quotes cwd, the model ref, the instructions path and the run dir', () => {
+    const { script } = openCodeAdapter.plan(hostile);
+    expect(script).toContain(`cd ${shellQuote(nasty)} || exit 97`);
+    expect(script).toContain(`-m ${shellQuote(hostile.modelId)}`);
+    expect(script).toContain(`-f ${shellQuote(hostile.instructionsPath)}`);
+    expect(script).toContain(`tee -a ${shellQuote(`${hostile.runDir}/harness.log`)}`);
+    expect(script).toContain(`echo $? > ${shellQuote(`${hostile.runDir}/exit`)}`);
+  });
+
+  it('leaves nothing of the old raw single-quote wrapping or bare model ref', () => {
+    const { script } = openCodeAdapter.plan(hostile);
+    expect(script).not.toContain(`cd '${nasty}'`);
+    expect(script).not.toContain(`-f '${hostile.instructionsPath}'`);
+    expect(script).not.toContain(`tee -a '${hostile.runDir}/harness.log'`);
+    expect(script).not.toContain(`echo $? > '${hostile.runDir}/exit'`);
+    expect(script).not.toContain(`-m ${hostile.modelId}`);
   });
 });

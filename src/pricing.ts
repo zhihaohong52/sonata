@@ -277,31 +277,46 @@ export function configUpstreamFor(
   };
 }
 
+export interface ResolvePriceOptions {
+  /**
+   * Whether an OAuth gateway's auth may relabel the result `covered`
+   * (default true — the native lane's rule).
+   *
+   * The harness lane passes false: a `sonata dispatch` run authenticates on
+   * its own, so the native gateway's OAuth subscription says nothing about
+   * whether that run was billed per token.
+   */
+  relabelCovered?: boolean;
+}
+
 export function resolvePrice(
   config: SonataConfig,
   key: string | undefined,
   tokens: UsageTokens,
   at: Date,
   modelsDev?: ModelsDevCache,
+  options?: ResolvePriceOptions,
 ): LedgerPrice {
   if (key === undefined) return { source: 'none' };
   const model = config.unifiedModels[key];
   if (model === undefined) return { source: 'none' };
 
   const gateway = model.gateway === undefined ? undefined : config.native?.gateways[model.gateway];
+  const covered = (price: LedgerPrice): LedgerPrice =>
+    (options?.relabelCovered === false ? price : relabelCovered(gateway?.auth, price));
 
   const modelRates = ratesFor(model.price, at);
   if (modelRates !== undefined) {
     const totalUsd = costOf(tokens, modelRates);
     if (!Number.isFinite(totalUsd)) return { source: 'none' };
-    return relabelCovered(gateway?.auth, { source: 'model', totalUsd });
+    return covered({ source: 'model', totalUsd });
   }
 
   const gatewayRates = ratesFor(gateway?.price, at);
   if (gatewayRates !== undefined) {
     const totalUsd = costOf(tokens, gatewayRates);
     if (!Number.isFinite(totalUsd)) return { source: 'none' };
-    return relabelCovered(gateway?.auth, { source: 'gateway', totalUsd });
+    return covered({ source: 'gateway', totalUsd });
   }
 
   const provider = gateway?.pricingProvider;
@@ -346,7 +361,7 @@ export function resolvePrice(
 
   const totalUsd = costOf(tokens, scraped);
   if (!Number.isFinite(totalUsd)) return { source: 'none' };
-  return relabelCovered(gateway?.auth, {
+  return covered({
     source: 'models-dev',
     totalUsd,
     observedAt: modelsDev.fetchedAt,
