@@ -34,6 +34,13 @@ export function wrapWithTimeout(input: WatchdogInput): string {
   const timeoutMark = join(input.runDir, 'timeout');
   const exitPath = join(input.runDir, 'exit');
   const capturePath = join(input.runDir, WORKTREE_CAPTURE_FILE);
+  // Written here and renamed into place: every adapter's harness.sh writes the
+  // exit sentinel itself, before this capture runs, so tail can be reading the
+  // run as finished while the capture is still being produced. A redirect
+  // straight into the final name exposed it empty and then growing, and a
+  // fragment hashes as "changed" — dropping the note on exactly the run that
+  // changed nothing. A rename is atomic: the file is absent or whole.
+  const partialPath = `${capturePath}.partial`;
 
   return [
     '#!/bin/bash',
@@ -123,14 +130,14 @@ export function wrapWithTimeout(input: WatchdogInput): string {
       : [
         `if ( cd ${shellQuote(input.worktreeCwd)} && {`,
         WORKTREE_CAPTURE_SH.split('\n').map((l) => `  ${l}`).join('\n'),
-        `} ) > ${shellQuote(capturePath)} 2>/dev/null; then`,
-        '  :',
+        `} ) > ${shellQuote(partialPath)} 2>/dev/null; then`,
+        `  mv -f ${shellQuote(partialPath)} ${shellQuote(capturePath)}`,
         'else',
         '  # Not a usable repository. Remove the file rather than leaving the',
         '  # empty one the redirection just created: an empty capture hashes to',
         '  # a perfectly stable value, and "unknown" must never be reported as',
         '  # "unchanged".',
-        `  rm -f ${shellQuote(capturePath)}`,
+        `  rm -f ${shellQuote(partialPath)}`,
         'fi',
         '',
       ]),

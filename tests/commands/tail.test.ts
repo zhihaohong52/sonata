@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdTail, decide, harnessOutput } from '../../src/commands/tail.js';
@@ -661,6 +661,49 @@ describe('cmdTail reads a read-only run`s report from its harness log', () => {
     expect(r.state).toBe('DONE');
     expect(r.report).toContain('finding 1\n');
     expect(r.report).toContain('finding 59');
+  });
+});
+
+describe('cmdTail waits for the worktree capture the exit sentinel outruns', () => {
+  // harness.sh writes the exit sentinel before the wrapper's capture runs, so
+  // a finished run can be seen before its closing sample exists. Deciding then
+  // compared against a live sample of a tree that may already have moved.
+  let cwd: string;
+  const session = 'sonata-test-tail-capture';
+  const id = 'ccc111';
+
+  beforeEach(async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-capture-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '[run]\nstall_timeout_seconds = 120\n');
+    mkdirSync(runDir(cwd, id), { recursive: true });
+    writeFileSync(join(runDir(cwd, id), 'meta.json'), JSON.stringify({
+      id, role: 'code', model: 'm', harness: 'opencode', mode: 'acceptEdits',
+      interactive: false, session, cwd, startedAt: '2026-09-27T00:00:00.000Z',
+      worktreeAtLaunch: 'launch-fingerprint',
+    }));
+    writeFileSync(join(runDir(cwd, id), 'report.md'), 'I fixed the bug.');
+    writeFileSync(join(runDir(cwd, id), 'exit'), '0\n');
+    await newSession({ session, cwd });
+  });
+
+  afterEach(async () => { await killSession(session); });
+
+  it('keeps reporting PROGRESS while the capture has not landed', async () => {
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+    expect(r.state).toBe('PROGRESS');
+  });
+
+  it('finishes once the capture appears', async () => {
+    writeFileSync(join(runDir(cwd, id), 'worktree-capture'), 'x');
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+    expect(r.state).toBe('DONE');
+  });
+
+  it('gives up waiting ten seconds after the exit sentinel', async () => {
+    const old = new Date(Date.now() - 11_000);
+    utimesSync(join(runDir(cwd, id), 'exit'), old, old);
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+    expect(r.state).toBe('DONE');
   });
 });
 

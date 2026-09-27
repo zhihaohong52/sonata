@@ -11,7 +11,7 @@ import {
   appendEvents, readEvents, writeMeta, runDir, readAnsweredPrompt, clearAnsweredPrompt,
 } from '../store.js';
 import { cmdVerify } from './verify.js';
-import { worktreeUnchangedSince } from '../worktree.js';
+import { WORKTREE_CAPTURE_FILE, worktreeUnchangedSince } from '../worktree.js';
 import type { TailState } from '../types.js';
 import type { Effort } from '../effort.js';
 
@@ -299,6 +299,22 @@ function lastChangeMs(cwd: string, id: string, now: () => number): number {
   }
 }
 
+/** How long after the exit sentinel tail waits for the wrapper's capture. */
+export const CAPTURE_GRACE_MS = 10_000;
+
+function awaitingCapture(
+  cwd: string, id: string, launchFingerprint: string | undefined, now: () => number,
+): boolean {
+  if (launchFingerprint === undefined) return false;
+  const dir = runDir(cwd, id);
+  if (existsSync(join(dir, WORKTREE_CAPTURE_FILE))) return false;
+  try {
+    return now() - statSync(join(dir, 'exit')).mtimeMs < CAPTURE_GRACE_MS;
+  } catch {
+    return false;
+  }
+}
+
 function paneSnapshotPath(cwd: string, id: string): string {
   return join(runDir(cwd, id), 'pane.snapshot');
 }
@@ -381,6 +397,18 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       exitCode = readExit(opts.cwd, opts.id);
     }
 
+    // The exit sentinel outruns the wrapper's worktree capture: every adapter's
+    // harness.sh writes it before the wrapper samples the tree. Until the
+    // capture lands the run is not finished as far as tail is concerned —
+    // deciding now would compare against a live tree that may already have
+    // moved. Bounded, so a capture that never comes (the repository became
+    // unusable) falls back to the live sample rather than hanging the run.
+    // Reported as PROGRESS outright rather than by hiding the exit code from
+    // decide(), which would let a quiet pane read as STALLED.
+    const captureWait = exitCode !== null
+      && awaitingCapture(opts.cwd, opts.id, meta.worktreeAtLaunch, now);
+    if (captureWait) exitCode = null;
+
     const output = harnessOutput(fresh, scriptPath, meta.preLaunchPane);
     if (output.length > 0) {
       try {
@@ -427,7 +455,7 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
     const logPath = join(runDir(opts.cwd, opts.id), 'harness.log');
     const terminalLog = exitCode !== null && existsSync(logPath) ? readFileSync(logPath, 'utf8') : undefined;
 
-    const result = decide({
+    const result: TailResult = captureWait ? { state: 'PROGRESS', lines: fresh } : decide({
       newLines: fresh,
       exitCode,
       report: ownReport ?? fallback,
