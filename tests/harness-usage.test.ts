@@ -239,6 +239,58 @@ auth = "codex-oauth"
     );
     expect(price).toEqual({ source: 'model', totalUsd: 3 });
   });
+
+  // A run crossing a price window used to be priced whole at the rate in force
+  // when it exited. Each record carries its own time, as a native request
+  // does, so each is priced at it.
+  describe('a run crossing a price window', () => {
+    const WINDOWED = `
+[models."windowed"]
+harness = "opencode"
+id = "openrouter/windowed"
+
+[models."windowed".price]
+input = 1.0
+output = 2.0
+
+[[models."windowed".price.windows]]
+from = "04:05"
+to = "05:00"
+input = 10.0
+output = 20.0
+
+[models."peakonly"]
+harness = "opencode"
+id = "openrouter/peakonly"
+
+[[models."peakonly".price.windows]]
+from = "04:05"
+to = "05:00"
+input = 10.0
+output = 20.0
+`;
+    const before = { ts: START, tokens: { input: 1_000_000, output: 0, cacheRead: 0, cacheCreation: 0 } };
+    const inside = { ts: '2026-09-25T04:06:00.000Z', tokens: { input: 0, output: 1_000_000, cacheRead: 0, cacheCreation: 0 } };
+    const both = { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheCreation: 0 };
+
+    it('prices each record at its own time and sums them', () => {
+      writeFileSync(join(cwd, 'sonata.toml'), WINDOWED);
+      const price = priceHarnessRun(
+        loadConfig(cwd, home), { model: 'windowed', harness: 'opencode' }, both, [before, inside], new Date(END), undefined,
+      );
+      // $1 for the input before the window opened, $20 for the output inside it
+      // — not $30, which is every token at the exit-time window rate.
+      expect(price).toEqual({ source: 'model', totalUsd: 21 });
+    });
+
+    it('leaves the whole run unpriced when any record has no rate, never pricing the rest as the total', () => {
+      writeFileSync(join(cwd, 'sonata.toml'), WINDOWED);
+      const price = priceHarnessRun(
+        loadConfig(cwd, home), { model: 'peakonly', harness: 'opencode' }, both, [before, inside], new Date(END), undefined,
+      );
+      expect(price).toEqual({ source: 'none' });
+    });
+  });
 });
 
 describe('dispatch budget', () => {

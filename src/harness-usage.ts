@@ -80,6 +80,10 @@ function harnessProviderModel(harness: string, id: string): { provider: string; 
  * 3. models.dev under the provider the harness id names, through the same
  *    `resolvePrice` rules (OpenRouter as last resort, coverage check) — by
  *    describing the harness model as a one-model gateway to it.
+ *
+ * Steps 1 and 3 price each record at its own `ts`, as the router prices each
+ * native request at its own time — a run crossing a `[price].windows` edge
+ * would otherwise be charged whole at the rate in force when it exited.
  */
 export function priceHarnessRun(
   config: SonataConfig,
@@ -93,7 +97,8 @@ export function priceHarnessRun(
   // authenticates on its own, so a metered run of a model that also has an
   // OAuth native route must count as spend. Counting it errs toward the cap
   // refusing, never toward it silently not counting.
-  const own = resolvePrice(config, meta.model, tokens, at, modelsDev, { relabelCovered: false });
+  const own = pricePerRecord(tokens, records, at, (t, when) =>
+    resolvePrice(config, meta.model, t, when, modelsDev, { relabelCovered: false }));
   if (own.source !== 'none') return own;
 
   if (records.length > 0 && records.every((record) => record.costUsd !== undefined)) {
@@ -114,7 +119,33 @@ export function priceHarnessRun(
       gateways: { [key]: { baseUrl: '', auth: 'api-key', pricingProvider: [target.provider] } satisfies NativeGatewayConfig },
     },
   };
-  return resolvePrice(synthetic, key, tokens, at, modelsDev, { relabelCovered: false });
+  return pricePerRecord(tokens, records, at, (t, when) =>
+    resolvePrice(synthetic, key, t, when, modelsDev, { relabelCovered: false }));
+}
+
+/**
+ * Prices each record at its own time and sums them. If any record has no
+ * price the whole run is unpriced: pricing the rest and calling that the total
+ * would under-report, and unknown is never zero. With no records, the run's
+ * total is priced at `at`, as before.
+ */
+function pricePerRecord(
+  tokens: UsageTokens,
+  records: readonly UsageRecord[],
+  at: Date,
+  price: (tokens: UsageTokens, at: Date) => LedgerPrice,
+): LedgerPrice {
+  if (records.length === 0) return price(tokens, at);
+  let first: Exclude<LedgerPrice, { source: 'none' }> | undefined;
+  let totalUsd = 0;
+  for (const record of records) {
+    const ts = Date.parse(record.ts);
+    const each = price(record.tokens, Number.isFinite(ts) ? new Date(ts) : at);
+    if (each.source === 'none') return { source: 'none' };
+    first ??= each;
+    totalUsd += each.totalUsd;
+  }
+  return { ...first!, totalUsd };
 }
 
 /** Exclusive create: true when this caller now owns recording the run. */
