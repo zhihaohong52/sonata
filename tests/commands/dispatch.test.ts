@@ -46,6 +46,20 @@ describe('cmdDispatch', () => {
     expect(outcome.attempts).toHaveLength(1);
   });
 
+  it('falls through on an empty report even though provenance was appended', async () => {
+    // cmdTail appends the provenance line to every finished report, so the
+    // decorated text is never empty; the retry must key off the verdict.
+    const ran: string[] = [];
+    const outcome = await cmdDispatch(opts(), {
+      run: async (o) => { ran.push(o.model); return { id: `r${ran.length}`, session: 's', interactive: false }; },
+      wait: async (o) => (o.id === 'r1'
+        ? { id: 'r1', state: 'DONE', report: '\n\n— sonata verified run r1', reportEmpty: true, degraded: false, lines: [] }
+        : { id: 'r2', state: 'DONE', report: 'terra did it', degraded: false, lines: [] }) as never,
+    });
+    expect(ran).toEqual(['flash', 'terra']);
+    expect(outcome.modelKey).toBe('terra');
+  });
+
   it('falls through to the next candidate on a degraded finish', async () => {
     const ran: string[] = [];
     const outcome = await cmdDispatch(opts(), {
@@ -201,7 +215,18 @@ describe('truncateReport', () => {
   it('falls back to plain truncation when there is no provenance line', () => {
     const report = 'x'.repeat(200);
     const truncated = truncateReport(report, 'r1', 100);
-    expect(truncated).toBe(`${'x'.repeat(100)}\n\n[truncated: full transcript at \`sonata log r1\`]`);
+    const marker = '\n\n[truncated: full transcript at `sonata log r1`]';
+    expect(truncated).toBe(`${'x'.repeat(100 - marker.length)}${marker}`);
+  });
+
+  it('never returns more than max, marker and provenance included', () => {
+    // The marker used to be added on top of a body already sized to max, so
+    // every truncated report overshot by the marker's length.
+    const provenance = '\n\n— sonata verified: opencode, deepseek-v4-flash, DONE';
+    for (const report of ['x'.repeat(50_000), 'x'.repeat(50_000) + provenance]) {
+      expect(truncateReport(report, 'aaaaaa111111', 40_000).length).toBeLessThanOrEqual(40_000);
+      expect(truncateReport(report, 'aaaaaa111111', 40_000).length).toBe(40_000);
+    }
   });
 });
 

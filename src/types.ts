@@ -65,6 +65,13 @@ export interface RunMeta {
   harnessSessionId?: string;
   /** Whether the plan routed the run through sonata's router (`LaunchPlan.routed`). */
   routed?: boolean;
+  /**
+   * The pane's lines just before the launch line was typed — the shell's own
+   * prompt, however many lines it spans. The shell prints it again when the
+   * wrapper exits, and tail must not mistake that for the harness speaking.
+   * Absent on a run launched before this existed.
+   */
+  preLaunchPane?: string[];
   session: string;
   cwd: string;
   startedAt: string;

@@ -143,8 +143,9 @@ describe('wrapWithTimeout quotes hostile paths', () => {
     expect(script).toContain(`>> ${shellQuote(`${nasty}/harness.log`)}`);
     expect(script).toContain(`> ${shellQuote(`${nasty}/timeout`)}`);
     expect(script).toContain(`cd ${shellQuote(nasty)} && {`);
-    expect(script).toContain(`} ) > ${shellQuote(`${nasty}/${WORKTREE_CAPTURE_FILE}`)}`);
-    expect(script).toContain(`rm -f ${shellQuote(`${nasty}/${WORKTREE_CAPTURE_FILE}`)}`);
+    expect(script).toContain(`} ) > ${shellQuote(`${nasty}/${WORKTREE_CAPTURE_FILE}.partial`)}`);
+    expect(script).toContain(`mv -f ${shellQuote(`${nasty}/${WORKTREE_CAPTURE_FILE}.partial`)} ${shellQuote(`${nasty}/${WORKTREE_CAPTURE_FILE}`)}`);
+    expect(script).toContain(`rm -f ${shellQuote(`${nasty}/${WORKTREE_CAPTURE_FILE}.partial`)}`);
     expect(script).toContain(`if [ ! -f ${shellQuote(`${nasty}/exit`)} ]; then`);
     expect(script).toContain(`echo $STATUS > ${shellQuote(`${nasty}/exit`)}`);
   });

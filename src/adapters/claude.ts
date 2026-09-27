@@ -43,7 +43,15 @@ function buildScript(input: PlanInput): LaunchPlan {
   // prompt text ended up split on commas/whitespace into garbage
   // "allowedTools" rules, and `-p` then had no prompt argument left at all.
   // The `=` form binds exactly one value and does not swallow what follows.
-  if (readOnly) flags.push('--allowedTools=Read,Grep,Glob,Bash');
+  //
+  // Bash is deliberately absent, and `--tools` is what makes that hold.
+  // `--allowedTools` only pre-approves: an unlisted tool still exists, and in
+  // plan mode a shell command outside the built-in read-only set goes to the
+  // auto-mode classifier rather than being refused — so an unscoped `Bash`
+  // allow was no read-only guarantee, and neither is leaving Bash unlisted.
+  // `--tools` restricts which tools exist at all, matching pi's allowlist.
+  // Not yet verified by a live run.
+  if (readOnly) flags.push('--tools=Read,Grep,Glob', '--allowedTools=Read,Grep,Glob');
   // The session id sonata chose, so the run's transcript — and the router's
   // ledger rows, which record Claude Code's session id — name this run.
   if (input.sessionId !== undefined) flags.push(`--session-id ${shellQuote(input.sessionId)}`);

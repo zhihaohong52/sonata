@@ -84,8 +84,26 @@ describe('claudeAdapter.plan', () => {
     expect(plan.script).toContain('--permission-mode plan');
     // The = form is load-bearing: the space form is variadic in claude's CLI
     // parser and swallows the prompt argument that follows.
-    expect(plan.script).toContain('--allowedTools=Read,Grep,Glob,Bash');
+    expect(plan.script).toContain('--allowedTools=Read,Grep,Glob');
+    // --allowedTools only pre-approves; --tools is what removes the rest.
+    expect(plan.script).toContain('--tools=Read,Grep,Glob');
     expect(plan.canWriteReport).toBe(false);
+  });
+
+  it('gives a read-only role no Bash at all', () => {
+    // An unscoped Bash allow let a review or explore run write anything a
+    // shell can; plan mode routes shell commands to the classifier rather
+    // than refusing them, so it is no read-only guarantee.
+    const plan = claudeAdapter.plan({ ...base, role: 'review', mode: 'acceptEdits' });
+    const flags = plan.script.split('\n').find((l) => l.startsWith('claude '))!.split(' "$(cat')[0];
+    expect(flags).not.toContain('Bash');
+  });
+
+  it('leaves a write role`s flags unchanged', () => {
+    const plan = claudeAdapter.plan({ ...base, mode: 'acceptEdits' });
+    expect(plan.script).not.toContain('--tools=');
+    expect(plan.script).not.toContain('--allowedTools');
+    expect(plan.script).toContain('--permission-mode acceptEdits');
   });
 
   it('can write a report for a write-capable role', () => {
