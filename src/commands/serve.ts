@@ -1,6 +1,6 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -1412,12 +1412,21 @@ export async function startServeDaemon(
   // against a leftover daemon (see the design doc for the reproduction).
   const instanceId = randomUUID();
 
-  const child = spawnFn(argv[0], argv.slice(1), {
-    detached: true,
-    stdio: ['ignore', log, log],
-    cwd: daemonCwd,
-    env: { ...process.env, SONATA_SERVE_INSTANCE_ID: instanceId },
-  });
+  // The child holds its own duplicate of the log fd once spawned, so the
+  // parent's copy is closed straight away — on every path, including a spawn
+  // that throws. Left open, a long-lived caller (`sonata code`, a route hook's
+  // CLI) leaked one fd per daemon start.
+  let child: ReturnType<typeof spawnFn>;
+  try {
+    child = spawnFn(argv[0], argv.slice(1), {
+      detached: true,
+      stdio: ['ignore', log, log],
+      cwd: daemonCwd,
+      env: { ...process.env, SONATA_SERVE_INSTANCE_ID: instanceId },
+    });
+  } finally {
+    closeSync(log);
+  }
   child.unref();
 
   const deadline = now() + timeoutMs;
