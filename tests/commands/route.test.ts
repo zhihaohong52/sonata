@@ -646,6 +646,23 @@ describe('cmdRouteSession', () => {
     expect((await cmdRoute('status', o))?.on).toBe(true);
   });
 
+  // A session that fires SessionStart again under its own id (resume,
+  // compaction) writes the env again. Kept at its old position it is not the
+  // newest registration, so its own settle returned early and the env stayed
+  // until every session ended — every later launch losing Remote Control.
+  it('moves a re-entering session to newest, so its own settle clears', async () => {
+    const o = opts();
+    await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
+    await cmdRouteSession('start', 's2', o, { ...deps, settle: () => {} });
+    await cmdRouteSettle('s2', o, { delay: async () => {} });
+
+    await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
+    expect(readSessions(routeSessionsFile(cwd, 'project', home))).toEqual(['s2', 's1']);
+
+    await cmdRouteSettle('s1', o, { delay: async () => {} });
+    expect((await cmdRoute('status', o))?.on).toBe(false);
+  });
+
   it('waits before settling, so the session has read the file first', async () => {
     const o = opts();
     await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
