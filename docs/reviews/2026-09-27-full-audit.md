@@ -91,6 +91,14 @@ on one branch; the rest are recorded here as the backlog.
   `--global`.
 
 ### Router
+- **P1** A 429 on one codex candidate cools the whole codex gateway (429 is
+  provider-scoped), skipping nine ranked candidates at once; the tier then
+  reached `opencode-deepseek-v4.1-flash@none`, which answered a real Claude
+  Code request with a bare 400 (`{'model': 'deepseek-v4.1-flash'}`) — terminal,
+  so two `code-simple` agents died (2026-09-27 11:47Z). The same model, key and
+  effort answer 200 to hand-built requests with tools, tool history, thinking
+  blocks, streaming and `max_tokens` up to 128k, so the offending shape is not
+  yet identified; the router logs no request bodies to find it with.
 - **P1** A bare model key on a `direct` gateway always goes to LiteLLM
   (`router.ts:1518`); on a direct-only config nothing listens → 502.
 - **P1** Only the first `codex-oauth`/`copilot-oauth` gateway's credential is
