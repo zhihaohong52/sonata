@@ -234,3 +234,65 @@ describe('litellmStatus — a venv that was moved', () => {
     expect(litellmStatus(h, true).state).toBe('ok');
   });
 });
+
+describe('installLitellm — two installers at once', () => {
+  const which = (b: string) => (b === 'uv' ? '/bin/uv' : undefined);
+
+  // Unlocked, the second installer deleted `.previous` — the working venv the
+  // first had just moved aside — and moved the first's half-built venv there in
+  // its place, so a failure restored a broken venv or none.
+  it('makes the second wait for the first, which then fails, before building', async () => {
+    const h = home('race');
+    // Stale, so the waiter still has work to do once the first gives up.
+    installedVenv(h, '0.0.0');
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const first = installLitellm(h, {
+      which, pythonVersion: () => '3.12.0',
+      run: async () => { await gate; throw new Error('network down'); },
+    });
+    const secondCalls: string[] = [];
+    const second = installLitellm(h, {
+      which, pythonVersion: () => '3.12.0',
+      run: async (cmd, args) => {
+        secondCalls.push([cmd, ...args].join(' '));
+        fakeVenv(venvDir(h));
+        writeFileSync(managedLitellmPath(h), '#!/bin/sh\n', { mode: 0o755 });
+      },
+    });
+    await new Promise((r) => setTimeout(r, 150));
+    expect(secondCalls).toEqual([]);
+
+    release();
+    await expect(first).rejects.toThrow(/network down/);
+    await second;
+    expect(secondCalls.length).toBeGreaterThan(0);
+    expect(litellmStatus(h, true).state).toBe('ok');
+    expect(existsSync(`${venvDir(h)}.previous`)).toBe(false);
+  });
+
+  it('a waiter does nothing when the install it waited on succeeded', async () => {
+    const h = home('race-ok');
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const first = installLitellm(h, {
+      which, pythonVersion: () => '3.12.0',
+      run: async () => {
+        await gate;
+        fakeVenv(venvDir(h));
+        writeFileSync(managedLitellmPath(h), '#!/bin/sh\n', { mode: 0o755 });
+      },
+    });
+    const secondCalls: string[] = [];
+    const second = installLitellm(h, {
+      which, pythonVersion: () => '3.12.0',
+      run: async (cmd) => { secondCalls.push(cmd); fakeVenv(venvDir(h)); },
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    release();
+    await first;
+    await second;
+    expect(secondCalls).toEqual([]);
+  });
+});
+

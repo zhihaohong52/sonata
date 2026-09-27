@@ -84,18 +84,26 @@ export function reclaimStaleLock(lock: string, seen: LockObservation): boolean {
   return false;
 }
 
-export async function withSessionLock<T>(file: string, fn: () => T | Promise<T>): Promise<T> {
+export async function withSessionLock<T>(
+  file: string,
+  /** `waited` is true when another holder had the lock as this call arrived. */
+  fn: (info: { waited: boolean }) => T | Promise<T>,
+  /** How long to wait for the lock; 2s suits the short registry updates, and a caller holding it for minutes passes more. */
+  opts: { timeoutMs?: number } = {},
+): Promise<T> {
   const lock = `${file}.lock`;
   const ownerPath = join(lock, 'owner');
   mkdirSync(dirname(file), { recursive: true });
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + (opts.timeoutMs ?? 2000);
   const token = randomUUID();
+  let waited = false;
   for (;;) {
     let acquired = false;
     try {
       mkdirSync(lock);
       acquired = true;
     } catch {
+      waited = true;
       const seen = observeLock(lock);
       if (seen !== undefined && Date.now() - seen.mtimeMs > STALE_MS) reclaimStaleLock(lock, seen);
     }
@@ -128,7 +136,7 @@ export async function withSessionLock<T>(file: string, fn: () => T | Promise<T>)
   timer = setInterval(renew, RENEW_INTERVAL_MS);
 
   try {
-    return await fn();
+    return await fn({ waited });
   } finally {
     clearInterval(timer);
     try {
