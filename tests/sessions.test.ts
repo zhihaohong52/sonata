@@ -123,3 +123,30 @@ describe('sessions map', () => {
     }
   });
 });
+describe('sessions.json is never read torn', () => {
+  it('replaces the file by rename, so a reader sees the old or the new file, never half of one', async () => {
+    const { statSync, readdirSync } = await import('node:fs');
+    await recordSession(home, { session: 's1', cwd: '/repo/a', started: '2026-08-27T10:00:00.000Z' });
+    const before = statSync(sessionsPath(home)).ino;
+    await recordSession(home, { session: 's2', cwd: '/repo/b', started: '2026-08-27T10:00:00.000Z' });
+    // An in-place write keeps the inode; a rename installs a new one.
+    expect(statSync(sessionsPath(home)).ino).not.toBe(before);
+    expect(readdirSync(dirname(sessionsPath(home))).filter((name) => name.includes('.tmp'))).toEqual([]);
+    expect(Object.keys(loadSessions(home)).sort()).toEqual(['s1', 's2']);
+  });
+
+  it('retries once when the first read does not parse', () => {
+    mkdirSync(dirname(sessionsPath(home)), { recursive: true });
+    writeFileSync(sessionsPath(home), '{}');
+    const reads = ['{"s1": {"sess', JSON.stringify({ s1: { session: 's1', cwd: '/repo/a', started: 'x' } })];
+    const read = vi.fn(() => reads.shift()!);
+    expect(loadSessions(home, read).s1.cwd).toBe('/repo/a');
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up with an empty map after the retry also fails', () => {
+    mkdirSync(dirname(sessionsPath(home)), { recursive: true });
+    writeFileSync(sessionsPath(home), '{}');
+    expect(loadSessions(home, () => '{"torn')).toEqual({});
+  });
+});
