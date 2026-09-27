@@ -299,6 +299,15 @@ function delegatingForRole(role: string, planTiers: readonly Tier[], ownTier: Ti
 }
 
 /**
+ * A YAML double-quoted scalar. JSON's string syntax is a subset of YAML's, so
+ * this escapes everything a model key can carry — a plain scalar breaks on
+ * `: ` (a mapping) and ` #` (a comment), and a config key is any TOML string.
+ */
+function yamlString(text: string): string {
+  return JSON.stringify(text);
+}
+
+/**
  * The agent file for one legacy per-model harness route.
  *
  * Generated only for a config with no `[tiers]`: a tiered config skips this
@@ -315,8 +324,8 @@ export function agentMarkdown(spec: AgentSpec): string {
   const blurb = ROLE_BLURB[spec.role] ?? spec.role;
 
   return `---
-name: ${name}
-description: Delegates ${blurb} to ${spec.model} running under ${spec.harness}. Use when this work should run on ${spec.model} rather than Claude — typically to save cost on bulk work, or to get a different model's judgement.
+name: ${yamlString(name)}
+description: ${yamlString(`Delegates ${blurb} to ${spec.model} running under ${spec.harness}. Use when this work should run on ${spec.model} rather than Claude — typically to save cost on bulk work, or to get a different model's judgement.`)}
 model: haiku
 tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)
 ---
@@ -454,8 +463,8 @@ export function nativeAgentMarkdown(spec: { role: string; model: string }): stri
   const delegating = delegatingForRole(spec.role, TIER_NAMES, undefined, TIER_NAMES);
 
   return `---
-name: native-${spec.role}-${spec.model}
-description: Runs ${blurb} natively on ${spec.model} inside Claude Code's own loop. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on).
+name: ${yamlString(`native-${spec.role}-${spec.model}`)}
+description: ${yamlString(`Runs ${blurb} natively on ${spec.model} inside Claude Code's own loop. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on).`)}
 model: ${spec.model}
 ${tools}---
 
