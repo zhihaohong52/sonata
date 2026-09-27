@@ -15,9 +15,10 @@ async function invoke(
   args: string[],
   cwd = process.cwd(),
   env: NodeJS.ProcessEnv = process.env,
+  timeout = 15000,
 ): Promise<{ code: number | null; signal: string | null; stderr: string; stdout: string }> {
   try {
-    const { stdout } = await run('node', [SCRIPT, ...args], { cwd, timeout: 15000, env });
+    const { stdout } = await run('node', [SCRIPT, ...args], { cwd, timeout, env });
     return { code: 0, signal: null, stderr: '', stdout };
   } catch (err) {
     const e = err as { code: number | null; signal: string | null; stdout: string; stderr: string };
@@ -233,7 +234,7 @@ require('node:fs').writeFileSync(${JSON.stringify(sentinel)}, 'yes');
     try {
       const { code, stdout } = await invoke([String(port)], process.cwd(), {
         ...process.env, HOME: home, PATH: `${binDir}${delimiter}${process.env.PATH}`,
-      });
+      }, 40000); // the hook's own wait is 10s of polling; leave room for a loaded runner
       expect(code).toBe(0);
       const message = JSON.parse(stdout.trim()).systemMessage as string;
       expect(message).toContain(`did not come up on port ${port}`);
@@ -242,7 +243,7 @@ require('node:fs').writeFileSync(${JSON.stringify(sentinel)}, 'yes');
     } finally {
       server.close();
     }
-  }, 20000);
+  }, 45000);
 
   it('reports a sonata binary that cannot be spawned instead of crashing', async () => {
     const server = createServer((_req, res) => { res.writeHead(200); res.end('{}'); });
