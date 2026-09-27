@@ -1691,6 +1691,18 @@ context_window = 128000
     expect(opts[0]).toMatchObject({ cwd: '/some/project' });
   });
 
+  it('closes its own copy of the log fd, on success and on timeout', async () => {
+    const fdDir = existsSync('/proc/self/fd') ? '/proc/self/fd' : '/dev/fd';
+    const before = readdirSync(fdDir).length;
+    await startServeDaemon(home, ['node', 'cli.js', 'serve'], { spawn: fakeSpawn(), probe: async () => true }, home);
+    let clock = 0;
+    await expect(startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: fakeSpawn(), probe: async () => false,
+      sleep: async () => { clock += 500; }, now: () => clock, timeoutMs: 1000,
+    }, home)).rejects.toThrow(/did not answer/);
+    expect(readdirSync(fdDir).length).toBe(before);
+  });
+
   it('detaches and returns once the router answers', async () => {
     // The flag used to be parsed, handed to cmdServe and ignored, so
     // `sonata serve --daemon` blocked exactly like the foreground command.
