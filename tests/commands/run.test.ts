@@ -108,6 +108,24 @@ describe('cmdRun', () => {
     expect(await hasSession(res.session)).toBe(true);
   });
 
+  it('records what the pane showed before launch, so tail can tell the shell from the harness', async () => {
+    const taskFile = join(cwd, 'task.txt');
+    writeFileSync(taskFile, 'Refactor the parser.');
+
+    const res = await cmdRun({
+      cwd, role: 'code', model: 'fake', taskFile,
+      rolesDir: join(cwd, 'roles'), sessionId: sessionInMode('acceptEdits'),
+    });
+    created.push(res.session);
+
+    const meta = readMeta(cwd, res.id);
+    // The shell's prompt, taken before the launch line was typed — so it
+    // carries no trace of cmd.sh.
+    expect(Array.isArray(meta.preLaunchPane)).toBe(true);
+    expect(meta.preLaunchPane!.length).toBeGreaterThan(0);
+    expect(meta.preLaunchPane!.some((l) => l.includes('cmd.sh'))).toBe(false);
+  });
+
   it('sends a pinned effort level to the harness and records it on the run', async () => {
     const taskFile = join(cwd, 'task.txt');
     writeFileSync(taskFile, 'Refactor the parser.');

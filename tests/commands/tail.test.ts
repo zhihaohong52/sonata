@@ -452,6 +452,51 @@ describe('cmdTail answered prompts', () => {
  * to the user as harness output — and counted as evidence the harness had
  * spoken, which is what the degraded check depends on.
  */
+/**
+ * The pane is a live shell: once the wrapper exits, the shell prints its
+ * prompt again, and that prompt is not the harness speaking. The shape below
+ * is a real capture (zsh, 2026-09-27) of a harness that printed nothing and
+ * exited 0 — which read as a read-only run that had answered, with the prompt
+ * as its report.
+ */
+describe('harnessOutput — the shell prompt around the run', () => {
+  const marker = '/r/.sonata/runs/abc123/cmd.sh';
+  const prompt = 'james@Zhis-MacBook-Air r1 %';
+  const pane = [`${prompt} bash '${marker}'`, prompt];
+
+  it('drops a line the pane already showed before launch', () => {
+    expect(harnessOutput(pane, marker, [prompt])).toEqual([]);
+  });
+
+  it('drops every line of a multi-line prompt', () => {
+    const two = ['╭─ ~/proj  main', '╰─ ❯'];
+    expect(harnessOutput([...two, `╰─ ❯ bash '${marker}'`, 'answer', ...two], marker, two))
+      .toEqual(['answer']);
+  });
+
+  it('does not degrade a run without the snapshot differently than before', () => {
+    expect(harnessOutput(pane, marker)).toEqual([prompt]);
+  });
+
+  it('flags a silent read-only run that exited 0 as having said nothing', () => {
+    const r = decide({
+      ...base, exitCode: 0, canWriteReport: false, paneTail: pane,
+      launchMarker: marker, preLaunchPane: [prompt],
+    });
+    expect(r.degraded).toBe(true);
+    expect(r.report).toMatch(/nothing ran/);
+  });
+
+  it('still accepts a read-only run that spoke between the prompts', () => {
+    const r = decide({
+      ...base, exitCode: 0, canWriteReport: false,
+      paneTail: [pane[0], 'No defects found.', prompt],
+      launchMarker: marker, preLaunchPane: [prompt],
+    });
+    expect(r.degraded).toBe(false);
+  });
+});
+
 describe('harnessOutput — the watchdog fg echo', () => {
   it('drops the job line fg prints', () => {
     expect(harnessOutput([
