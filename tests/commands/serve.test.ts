@@ -3196,3 +3196,26 @@ describe('mergeTenantGateways', () => {
     expect(lines).toHaveLength(2);
   });
 });
+
+describe('defaultWaitForLitellm — a listener that never answers', () => {
+  it('bounds each probe with an abort signal, so the deadline is reached', async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    // Accepts the connection and never answers — unless the signal aborts it.
+    const doFetch = ((_url: string, init?: RequestInit) => {
+      signals.push(init?.signal ?? undefined);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    }) as unknown as typeof fetch;
+    let clock = 0;
+    const waited = defaultWaitForLitellm(4010, 'sk', {
+      doFetch,
+      now: () => clock,
+      sleep: async () => { clock += 1_000; },
+      timeoutMs: 1_500,
+    });
+    await expect(waited).rejects.toThrow(/did not come up/);
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.every((signal) => signal !== undefined)).toBe(true);
+  }, 15_000);
+});
