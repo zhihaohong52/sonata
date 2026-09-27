@@ -707,11 +707,16 @@ export async function cmdRoute(
   }
 
   if (action === 'auto' || action === 'manual') {
-    const hasLiveSessions = action === 'auto'
-      && readSessions(routeSessionsFile(opts.cwd, scope, opts.home)).length > 0;
-    const after = await updateSettings(file, (current) => action === 'auto'
-      ? planRouteAuto(current, opts.packageRoot, scope, hasLiveSessions)
-      : planRouteManual(current, opts.packageRoot, scope));
+    // Under the session lock, the one session start registers and writes the
+    // env under: read without it, a session registering between this read and
+    // the write below had its routing env stripped as "no live sessions".
+    const sessions = routeSessionsFile(opts.cwd, scope, opts.home);
+    const after = await withSessionLock(sessions, async () => {
+      const hasLiveSessions = action === 'auto' && readSessions(sessions).length > 0;
+      return await updateSettings(file, (current) => action === 'auto'
+        ? planRouteAuto(current, opts.packageRoot, scope, hasLiveSessions)
+        : planRouteManual(current, opts.packageRoot, scope));
+    });
     return status(after);
   }
 

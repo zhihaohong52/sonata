@@ -1363,4 +1363,24 @@ describe('settings writes are serialised across writers', () => {
     expect(routeEnv(after).ANTHROPIC_BASE_URL).toBeUndefined();
     expect(after.marker).toBe(1);
   });
+
+  // `route auto` keeps the routing env when auto sessions are live, and strips
+  // it when none are. It read the registry without the session lock, so a
+  // session registering between that read and the write had its env stripped.
+  it('route auto decides "are sessions live?" under the session lock', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT };
+    await cmdRoute('on', o);
+    const registry = routeSessionsFile(cwd, 'project', home);
+
+    let auto!: Promise<unknown>;
+    await withSessionLock(registry, async () => {
+      auto = cmdRoute('auto', o);
+      await new Promise((r) => setTimeout(r, 150));
+      writeSessions(registry, ['s1']); // a session starting meanwhile
+    });
+    await auto;
+
+    expect(routeEnv(readSettings(routeSettingsFile(cwd, 'project', home))).ANTHROPIC_BASE_URL).toBeDefined();
+  });
 });
