@@ -26,7 +26,7 @@ import type { Settings } from '../settings.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { findLitellm } from '../native/litellm.js';
-import { litellmRequired } from '../native/providers.js';
+import { litellmRequired, sharedBaseUrls, sharedBaseUrlWarning } from '../native/providers.js';
 import { litellmStatus, type InstallerDeps } from '../native/litellm-venv.js';
 import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm.js';
 import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, catalogFamily, hasTaskCost, loadAaCatalog, normalizedFor, proposeTiers } from '../catalog.js';
@@ -743,6 +743,14 @@ export async function cmdDoctor(
           + 'so they price nothing; check the spelling or run `sonata catalog update`',
       });
     }
+  }
+
+  // Two gateways on one endpoint are usually one account under two names, and
+  // nothing else says so: the duplicate shows up only as every model offered
+  // twice. Advisory, since two keys on one endpoint is a legitimate setup.
+  const shared = sharedBaseUrls(gatewayEntries);
+  if (shared.length > 0) {
+    checks.push({ name: 'shared base_url', ok: true, detail: shared.map(sharedBaseUrlWarning).join('; ') });
   }
 
   // `sonata init` run in $HOME used to write here, and nothing reads it. It

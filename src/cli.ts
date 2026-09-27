@@ -544,6 +544,7 @@ export async function main(argv: string[]): Promise<number> {
         console.log(`catalog updated: ${result.aa.models} models`);
         console.log(`  path: ${result.aa.path}`);
         console.log(`  fetched: ${result.aa.fetchedAt}`);
+        for (const warning of result.aa.warnings ?? []) console.error(`  ! ${warning}`);
         console.log(AA_ATTRIBUTION);
       }
       if ('error' in result.modelsDev) {

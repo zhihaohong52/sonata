@@ -30,7 +30,7 @@ import type { WizardData } from '../tui-ink/app.js';
 import type { TuiResult } from '../tui-ink/types.js';
 import type { ConfigScope } from '../tui-ink/types.js';
 import type { InitEnvironment } from './discover.js';
-import { validate } from './validate.js';
+import { refusals, validate } from './validate.js';
 import { addByokCandidates, addLiveCandidates, rewriteOauthToApiKey } from './candidates.js';
 import type { InitLog } from '../commands/init-log.js';
 
@@ -183,7 +183,8 @@ export async function interactiveState(
     guidance: result.state.guidance ?? 'project',
     customProviders: result.state.customProviders,
   };
-  const problems = validate(env, state, { nativeByKey });
+  // Warnings are printed by `cmdInit`, which validates the chosen state again.
+  const problems = refusals(validate(env, state, { nativeByKey }));
   if (problems.length > 0) throw new Error(problems[0].message);
 
   // Build stateForPlan for interactive branch

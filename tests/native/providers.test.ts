@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { providerForBaseUrl, PROVIDER_FOR_GATEWAY } from '../../src/native/providers.js';
+import { providerForBaseUrl, PROVIDER_FOR_GATEWAY, sharedBaseUrls, sharedBaseUrlWarning } from '../../src/native/providers.js';
 
 describe('providerForBaseUrl', () => {
   it('gives a known vendor its native provider', () => {
@@ -124,5 +124,35 @@ describe('litellmRequired on a pre-[tiers] config', () => {
 
   it('is false when its gateway speaks anthropic', () => {
     expect(litellmRequired(legacy({ g: gw({ provider: 'anthropic' }) }))).toBe(false);
+  });
+});
+
+describe('sharedBaseUrls', () => {
+  // Measured on a real machine: opencode.json defined a provider NAMED
+  // `opencode` on the Go URL, detection mapped it onto the `opencode`
+  // gateway, and both `opencode` and `opencode-go` ended up on one endpoint —
+  // every model and agent duplicated under two names, with nothing saying so.
+  it('groups key-authenticated gateways on one endpoint, ignoring a trailing slash', () => {
+    const groups = sharedBaseUrls([
+      ['opencode-go', { baseUrl: 'https://opencode.ai/zen/go/v1', auth: 'api-key' }],
+      ['opencode', { baseUrl: 'https://opencode.ai/zen/go/v1/', auth: 'api-key' }],
+      ['other', { baseUrl: 'https://other.example/v1', auth: 'api-key' }],
+    ]);
+    expect(groups).toEqual([{ url: 'https://opencode.ai/zen/go/v1', gateways: ['opencode', 'opencode-go'] }]);
+  });
+
+  it('ignores OAuth gateways, whose URL is implied by their auth', () => {
+    expect(sharedBaseUrls([
+      ['codex', { baseUrl: 'https://chatgpt.com/backend-api/codex', auth: 'codex-oauth' }],
+      ['openai', { baseUrl: 'https://chatgpt.com/backend-api/codex', auth: 'codex-oauth' }],
+    ])).toEqual([]);
+  });
+
+  it('names both gateways and the likely cause', () => {
+    const text = sharedBaseUrlWarning({ url: 'https://opencode.ai/zen/go/v1', gateways: ['opencode', 'opencode-go'] });
+    expect(text).toContain('opencode, opencode-go');
+    expect(text).toContain('https://opencode.ai/zen/go/v1');
+    expect(text).toMatch(/one account under two names/);
+    expect(text).toMatch(/duplicate/);
   });
 });

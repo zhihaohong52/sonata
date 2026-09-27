@@ -270,6 +270,33 @@ describe('updateAaCatalog page fetches', () => {
     }
   });
 
+  it('writes the cache but warns when the page cap cuts the catalog short', async () => {
+    // The loop simply ended at the cap with `has_more` still true, so a
+    // truncated catalog was written and reported as a complete one.
+    cmdAuthAdd({ home, gateway: 'artificialanalysis', key: 'synthetic-key' });
+    const endless = { ...aaFixture(), pagination: { page_size: 200, has_more: true } };
+    let pages = 0;
+    const result = await cmdCatalogUpdate(home, {
+      fetch: async (input) => {
+        if (isModelsDev(input)) return response(modelsDevFixture());
+        pages += 1;
+        return response(endless);
+      },
+    });
+    expect(result.aa).not.toHaveProperty('error');
+    expect(loadAaCatalog(home)).toBeDefined();
+    const warnings = (result.aa as { warnings?: string[] }).warnings ?? [];
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(`${pages} pages`);
+    expect(warnings[0]).toMatch(/truncated|incomplete/);
+  });
+
+  it('adds no warning to a catalog that ended on its own', async () => {
+    cmdAuthAdd({ home, gateway: 'artificialanalysis', key: 'synthetic-key' });
+    const result = await cmdCatalogUpdate(home, { fetch: async (input, init) => bothFixtures(input, init) });
+    expect(result.aa).not.toHaveProperty('warnings');
+  });
+
   it('surfaces a redirect refusal as an update error rather than following it', async () => {
     cmdAuthAdd({ home, gateway: 'artificialanalysis', key: 'synthetic-key' });
     const result = await cmdCatalogUpdate(home, {
