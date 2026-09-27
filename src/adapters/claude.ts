@@ -93,7 +93,7 @@ function buildScript(input: PlanInput): LaunchPlan {
   // silentUntilExit: stdout goes to last-message.txt (see the no-tee comment
   // above), so the pane stays unchanged for the whole run and pane-silence
   // stall detection would mark every long run STALLED.
-  return { script, interactive: false, canWriteReport: !readOnly, silentUntilExit: true, effortHonoured };
+  return { script, interactive: false, canWriteReport: !readOnly, silentUntilExit: true, effortHonoured, routed: routerUrl !== '' };
 }
 
 /**
@@ -108,11 +108,15 @@ function buildScript(input: PlanInput): LaunchPlan {
  * written more than once under one `message.id`, so the last copy wins.
  */
 export function claudeUsage(query: UsageQuery): UsageResult {
-  let routed = false;
-  try {
-    routed = loadConfig(query.cwd, query.home).native !== undefined;
-  } catch {
-    // No loadable config: the plan could not have routed it either.
+  // Launch decided routing; re-deciding from today's config could count a run
+  // twice or not at all. Only a run predating `routed` falls back to that.
+  let routed = query.routed ?? false;
+  if (query.routed === undefined) {
+    try {
+      routed = loadConfig(query.cwd, query.home).native !== undefined;
+    } catch {
+      // No loadable config: the plan could not have routed it either.
+    }
   }
   if (routed) return { kind: 'router', session: query.sessionId };
   if (query.sessionId === undefined) {

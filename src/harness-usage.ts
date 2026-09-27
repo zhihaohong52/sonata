@@ -220,6 +220,7 @@ export function recordHarnessUsage(opts: RecordHarnessUsageOptions): RecordedUsa
         endMs,
         modelId: meta.harnessModelId ?? meta.model,
         ...(meta.harnessSessionId === undefined ? {} : { sessionId: meta.harnessSessionId }),
+        ...(meta.routed === undefined ? {} : { routed: meta.routed }),
       })
       : { kind: 'unobservable', reason: 'the run has no readable start time' };
   } catch (err) {
