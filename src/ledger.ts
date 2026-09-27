@@ -147,6 +147,7 @@ function collectRows(raw: string, sinceMs: number, now: number, out: LedgerRow[]
       row = parsed as LedgerRow;
       if (!Number.isFinite(Date.parse(row.ts))) continue;
       if (!hasRequiredFields(row)) continue;
+      normaliseCacheFields(row);
     } catch {
       // A torn final line (a crash mid-append) must not cost the whole report.
       continue;
@@ -215,9 +216,14 @@ function priceIsValid(price: LedgerRow['price']): boolean {
     // Legacy, still readable — see LedgerPrice.
     || price.source === 'ai-pricing'
   ) {
-    return typeof price.totalUsd === 'number' && Number.isFinite(price.totalUsd);
+    return isCount(price.totalUsd);
   }
   return false;
+}
+
+/** A finite, non-negative number — what every token count and cost must be. */
+function isCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 /**
@@ -227,14 +233,28 @@ function priceIsValid(price: LedgerRow['price']): boolean {
  * dropped here rather than crash those readers later. `aggregate` dereferences
  * `price.source` directly, so a `null` or otherwise malformed price must be
  * rejected too, not just an absent `tokens`/`attempts`.
+ *
+ * Negative counts and costs are refused too. No sonata writer produces one, so
+ * one can only come from a damaged or hand-edited file, and a negative
+ * `totalUsd` would lower `spentTodayUsd` — loosening `[budget]`.
+ *
+ * The cache fields are checked only when present: rows written before they
+ * existed carry none, and `normaliseCacheFields` reads those as 0.
  */
 function hasRequiredFields(row: LedgerRow): boolean {
   const tokens = row.tokens;
   if (tokens === null || typeof tokens !== 'object' || Array.isArray(tokens)) return false;
-  if (typeof tokens.input !== 'number' || !Number.isFinite(tokens.input)) return false;
-  if (typeof tokens.output !== 'number' || !Number.isFinite(tokens.output)) return false;
+  if (!isCount(tokens.input) || !isCount(tokens.output)) return false;
+  if ('cacheRead' in tokens && !isCount(tokens.cacheRead)) return false;
+  if ('cacheCreation' in tokens && !isCount(tokens.cacheCreation)) return false;
   if (!priceIsValid(row.price)) return false;
   return Array.isArray(row.attempts);
+}
+
+/** An absent cache field is 0, so every reader can sum all four without NaN. */
+function normaliseCacheFields(row: LedgerRow): void {
+  row.tokens.cacheRead ??= 0;
+  row.tokens.cacheCreation ??= 0;
 }
 
 /** Deletes whole day-files older than the window. Returns how many were removed. */
