@@ -371,10 +371,10 @@ export async function defaultWaitForLitellm(
       // Each probe is bounded: a listener that accepts and never answers
       // would otherwise hold this loop past its deadline, and every
       // LiteLLM-bound request awaits it. 2 s, as `isSonataRouter` uses.
-      const res = await doFetch(`http://localhost:${port}/health/liveliness`, { signal: AbortSignal.timeout(2000) });
+      const res = await doFetch(`http://${LITELLM_HOST}:${port}/health/liveliness`, { signal: AbortSignal.timeout(2000) });
       if (res.ok) {
         if (masterKey === undefined) return;
-        const mine = await doFetch(`http://localhost:${port}/v1/models`, {
+        const mine = await doFetch(`http://${LITELLM_HOST}:${port}/v1/models`, {
           headers: { authorization: `Bearer ${masterKey}` },
           signal: AbortSignal.timeout(2000),
         });
@@ -546,7 +546,7 @@ function defaultSpawnLitellm(
   // says a script exists, not that an importable LiteLLM does — measured on the
   // development machine, the PATH hit's shebang names an interpreter under
   // which `import litellm` fails outright.
-  const child = spawn(bin, ['--config', configPath, '--port', String(port)], {
+  const child = spawn(bin, ['--config', configPath, '--host', LITELLM_HOST, '--port', String(port)], {
     env,
     stdio: ['ignore', 'inherit', 'inherit'],
   });
@@ -714,6 +714,19 @@ export function listenOn(server: Server, port: number, host: string): Promise<vo
     server.listen(port, host);
   });
 }
+
+/**
+ * The one address the managed LiteLLM child binds, and the one the router
+ * reaches it at.
+ *
+ * LiteLLM's own default is `0.0.0.0` — every IPv4 interface, overridable by
+ * a stray `HOST` in the environment — while the router reached it as
+ * `localhost`, which tries `::1` first. So the child was exposed beyond
+ * loopback, and a foreign listener holding `::1` on that port would have
+ * answered in its place. Binding and connecting to one literal address
+ * removes both.
+ */
+export const LITELLM_HOST = '127.0.0.1';
 
 /**
  * The addresses the router binds: both loopback families, never a wildcard.
@@ -1324,7 +1337,7 @@ export async function cmdServe(
     uiDeps = { home: opts.home, port: ports.router, tenants: () => registry.summary() };
     router = createRouterServer({
       fetch,
-      litellmBase: `http://localhost:${ports.litellm}`,
+      litellmBase: `http://${LITELLM_HOST}:${ports.litellm}`,
       litellmKey: masterKey,
       health: true,
       healthReady: () => !needsLitellmAtStart || litellmReadyResolved,
