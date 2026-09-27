@@ -96,6 +96,11 @@ describe('runDetail', () => {
     expect(detail.truncated).toBe(false);
   });
 
+  it('accepts the twelve-character ids new runs carry', async () => {
+    makeRun(proj, 'aaaaaa111111', 'long id\n');
+    expect((await runDetail(deps(), 'aaaaaa111111', proj))!.transcript).toContain('long id');
+  });
+
   it('finds the run without a cwd hint by searching discovered projects', async () => {
     expect((await runDetail(deps(), 'aaa111', undefined))!.cwd).toBeTruthy();
   });
