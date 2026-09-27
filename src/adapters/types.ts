@@ -61,6 +61,12 @@ export interface LaunchPlan {
    * and reports what it can see rather than assuming the rest.
    */
   effortHonoured: boolean;
+  /**
+   * Whether this plan sent the run through sonata's router (claude only).
+   * Recorded on the run so its usage reader answers from what the run did at
+   * launch, not from the config as it stands when the run finishes.
+   */
+  routed?: boolean;
 }
 
 /**
@@ -80,6 +86,8 @@ export interface UsageQuery {
   modelId: string;
   /** Set when sonata told the harness which session id to use (claude). */
   sessionId?: string;
+  /** The run's `RunMeta.routed`; absent for a run launched before it existed. */
+  routed?: boolean;
 }
 
 /** One request's (or one cumulative session's) usage, as the harness recorded it. */

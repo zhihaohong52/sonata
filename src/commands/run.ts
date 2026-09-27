@@ -222,6 +222,7 @@ export async function cmdRun(opts: RunOptions): Promise<RunResult> {
     // control is unremarkable until a level was actually asked for.
     ...(opts.effort === undefined ? {} : { effort: opts.effort }),
     effortHonoured: plan.effortHonoured,
+    ...(plan.routed === undefined ? {} : { routed: plan.routed }),
     harnessModelId: modelCfg.id,
     harnessSessionId,
     // Sampled here, not before `createRun`, so that sonata's own scaffolding —

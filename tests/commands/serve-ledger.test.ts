@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { cmdServe, priceRow, serveHealthUrl } from '../../src/commands/serve.js';
+import { cmdServe as realCmdServe, priceRow, serveHealthUrl } from '../../src/commands/serve.js';
+
+// A no-op price refresh: the real one fetches models.dev over the network.
+const cmdServe: typeof realCmdServe = (opts) => realCmdServe({ refreshPrices: async () => {}, ...opts });
 import { managedLitellmPath, venvDir, LITELLM_VERSION } from '../../src/native/litellm-venv.js';
 import { parseConfig } from '../../src/config.js';
 import type { LedgerRow } from '../../src/ledger.js';
