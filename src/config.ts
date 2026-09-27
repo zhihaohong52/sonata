@@ -257,6 +257,25 @@ function num(v: unknown, fallback: number): number {
   return typeof v === 'number' ? v : fallback;
 }
 
+/**
+ * A `[run]` timing: absent means the default, anything else must be a
+ * positive, finite number of seconds. Refused rather than defaulted, the same
+ * way `[budget] daily_usd` is — `run_timeout_seconds = 0` killed every run the
+ * moment it started, and a quoted `"1800"` silently fell back to the default,
+ * so the value in force was not the one the user wrote.
+ */
+function runSeconds(table: Record<string, unknown> | undefined, key: string, fallback: number): number {
+  const v = table?.[key];
+  if (v === undefined) return fallback;
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
+    throw new Error(
+      `sonata.toml: [run] ${key} must be a positive number of seconds, got ${String(typeof v === 'string' ? JSON.stringify(v) : v)}. ` +
+      `Remove the key to use the default (${fallback}).`,
+    );
+  }
+  return v;
+}
+
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 function parseRates(raw: Record<string, unknown>, where: string): Rates {
@@ -830,10 +849,10 @@ export function parseConfig(text: string): SonataConfig {
     generate: { roles },
     native,
     run: {
-      tailWindowSeconds: num(raw.run?.tail_window_seconds, 20),
-      stallTimeoutSeconds: num(raw.run?.stall_timeout_seconds, 120),
-      runTimeoutSeconds: num(raw.run?.run_timeout_seconds, 1800),
-      dispatchWindowSeconds: num(raw.run?.dispatch_window_seconds, 1500),
+      tailWindowSeconds: runSeconds(raw.run, 'tail_window_seconds', 20),
+      stallTimeoutSeconds: runSeconds(raw.run, 'stall_timeout_seconds', 120),
+      runTimeoutSeconds: runSeconds(raw.run, 'run_timeout_seconds', 1800),
+      dispatchWindowSeconds: runSeconds(raw.run, 'dispatch_window_seconds', 1500),
     },
   };
 }
