@@ -271,8 +271,8 @@ export function normalizeModelName(raw: string, providers: readonly string[] = [
   // two segments are ours to remove. A `while` loop re-matches its own output
   // and keeps eating past that structure, corrupting a model whose real name
   // happens to begin with a reserved word (`openai-…`, `pi-…`). So stripping
-  // is two ordered passes — at most one harness prefix, then at most one
-  // provider prefix — never a loop that can run again.
+  // is two ordered passes — at most one harness or gateway prefix, then at
+  // most one provider prefix — never a loop that can run again.
   const HARNESS_PREFIXES = ['opencode-', 'codex-', 'pi-', 'reasonix-', 'claude-harness-'];
   // Configured gateways first and longest-first, so `openai-codex-x` loses the
   // whole gateway name rather than the shorter `openai-` that also matches.
@@ -280,16 +280,30 @@ export function normalizeModelName(raw: string, providers: readonly string[] = [
     ...providers.map((provider) => `${provider}-`),
     'openrouter-', 'openai-', 'google-', 'anthropic-',
   ].sort((a, b) => b.length - a.length);
-  for (const prefix of HARNESS_PREFIXES) {
+  // The first pass considers configured gateway names beside the harness
+  // prefixes, longest first. With the harness pass alone first, a gateway
+  // whose name begins with a harness's (`opencode-go`) lost `opencode-` as a
+  // harness and kept `go-`, so its models were looked up as `go-kimi-k3` and
+  // scored as nothing.
+  const gatewayPrefixes = providers.map((provider) => `${provider}-`);
+  const firstPass = [...new Set([...HARNESS_PREFIXES, ...gatewayPrefixes])].sort((a, b) => b.length - a.length);
+  let first: string | undefined;
+  for (const prefix of firstPass) {
     if (name.startsWith(prefix) && name.length > prefix.length) {
       name = name.slice(prefix.length);
+      first = prefix;
       break;
     }
   }
-  for (const prefix of PROVIDER_PREFIXES) {
-    if (name.startsWith(prefix) && name.length > prefix.length) {
-      name = name.slice(prefix.length);
-      break;
+  // A gateway match ends stripping: a key is `<gateway>-<id>`, and an id that
+  // begins with its own gateway's name (`deepseek-deepseek-v4-pro`) keeps it.
+  // A harness match — or none — goes on to the provider pass, as before.
+  if (first === undefined || HARNESS_PREFIXES.includes(first)) {
+    for (const prefix of PROVIDER_PREFIXES) {
+      if (name.startsWith(prefix) && name.length > prefix.length) {
+        name = name.slice(prefix.length);
+        break;
+      }
     }
   }
   // OpenRouter addresses a serving variant with a `:suffix` (`:free`,
