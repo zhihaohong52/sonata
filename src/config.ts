@@ -721,6 +721,25 @@ export function parseConfig(text: string): SonataConfig {
       keyVarOwners.set(keyVar, name);
     }
 
+    // LiteLLM reads a ChatGPT credential from one directory
+    // (CHATGPT_TOKEN_DIR) and a Copilot one from another
+    // (GITHUB_COPILOT_TOKEN_DIR), process-wide — so a second gateway of the
+    // same OAuth kind cannot have an account of its own. Serve would quietly
+    // give it the first one's.
+    const oauthOwners = new Map<string, string>();
+    for (const [name, gateway] of Object.entries(gateways)) {
+      if (gateway.auth !== 'codex-oauth' && gateway.auth !== 'copilot-oauth') continue;
+      const owner = oauthOwners.get(gateway.auth);
+      if (owner !== undefined) {
+        throw new Error(
+          `sonata.toml: gateways "${owner}" and "${name}" both use auth = "${gateway.auth}", ` +
+          'but LiteLLM holds one credential of that kind per process, so both would be served ' +
+          `"${owner}"'s account — keep one of them`,
+        );
+      }
+      oauthOwners.set(gateway.auth, name);
+    }
+
     const nativeModels: Record<string, NativeModelConfig> = {};
     for (const [name, def] of Object.entries((rawNative.models ?? {}) as Record<string, unknown>)) {
       const d = def as Record<string, unknown>;

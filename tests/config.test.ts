@@ -1305,6 +1305,40 @@ describe('loadConfig — effort pinning', () => {
   });
 });
 
+describe('one OAuth gateway per kind', () => {
+  // LiteLLM reads a ChatGPT credential from CHATGPT_TOKEN_DIR and a Copilot
+  // one from GITHUB_COPILOT_TOKEN_DIR — one directory each, process-wide — so
+  // a second gateway of the same kind could only ever be served the first
+  // one's account.
+  it('refuses two codex-oauth gateways, naming both', () => {
+    expect(() => parseConfig(`
+[native.gateways."codex"]
+auth = "codex-oauth"
+[native.gateways."codex-work"]
+auth = "codex-oauth"
+`)).toThrow(/gateways "codex" and "codex-work" both use auth = "codex-oauth"/);
+  });
+
+  it('refuses two copilot-oauth gateways', () => {
+    expect(() => parseConfig(`
+[native.gateways."copilot"]
+auth = "copilot-oauth"
+[native.gateways."copilot-2"]
+auth = "copilot-oauth"
+`)).toThrow(/both use auth = "copilot-oauth"/);
+  });
+
+  it('accepts one of each kind', () => {
+    const cfg = parseConfig(`
+[native.gateways."codex"]
+auth = "codex-oauth"
+[native.gateways."copilot"]
+auth = "copilot-oauth"
+`);
+    expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['codex', 'copilot']);
+  });
+});
+
 describe('native gateway key-variable collisions', () => {
   // envVarForGateway uppercases and turns hyphens into underscores, so two
   // distinct gateway names can collapse onto one key variable — and serve

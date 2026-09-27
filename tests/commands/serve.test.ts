@@ -3161,6 +3161,31 @@ describe('mergeTenantGateways', () => {
     expect(lines.join('\n')).toContain('SONATA_KEY_FOO_BAR');
   });
 
+  it('drops two differently named gateways of one OAuth kind from two projects', () => {
+    // One LiteLLM child holds ONE ChatGPT credential (CHATGPT_TOKEN_DIR), so
+    // two projects' codex-oauth gateways would both be served whichever
+    // account buildChildEnv found first.
+    const lines: string[] = [];
+    const merged = mergeTenantGateways([
+      { id: 'a', gateways: { codex: gw({ auth: 'codex-oauth', baseUrl: undefined }), keep: gw({}) } },
+      { id: 'b', gateways: { 'codex-work': gw({ auth: 'codex-oauth', baseUrl: undefined, credentialSource: 'sonata' }) } },
+    ], (l) => lines.push(l));
+    expect(merged.codex).toBeUndefined();
+    expect(merged['codex-work']).toBeUndefined();
+    expect(Object.keys(merged)).toEqual(['keep']);
+    expect(lines.join('\n')).toMatch(/"codex" \(a\) and "codex-work" \(b\) both use auth = "codex-oauth"/);
+  });
+
+  it('keeps one OAuth gateway that two projects name identically', () => {
+    const lines: string[] = [];
+    const merged = mergeTenantGateways([
+      { id: 'a', gateways: { codex: gw({ auth: 'codex-oauth', baseUrl: undefined }) } },
+      { id: 'b', gateways: { codex: gw({ auth: 'codex-oauth', baseUrl: undefined }) } },
+    ], (l) => lines.push(l));
+    expect(Object.keys(merged)).toEqual(['codex']);
+    expect(lines).toEqual([]);
+  });
+
   it('drops a gateway whose tenants disagree about how it authenticates', () => {
     // `buildChildEnv` resolves one credential per gateway NAME, so a name two
     // projects define with different credential sources would send one
