@@ -148,12 +148,19 @@ export async function fetchModels(
       return { outcome: 'unreadable' };
     }
 
-    const payload = await response.json() as unknown;
+    // The endpoint answered; a body that will not parse is unreadable, not
+    // unreachable — the outer catch is for failures to get an answer at all.
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      return { outcome: 'unreadable' };
+    }
     const models = google ? parseGoogleModels(payload) : parseOpenAiModels(payload);
     if (models === undefined) return { outcome: 'unreadable' };
     return { outcome: 'ok', models };
   } catch {
-    // Refused, timed out, DNS failure, or a body that would not parse.
+    // Refused, timed out, DNS failure, or a redirect it would not follow.
     return { outcome: 'unreachable' };
   }
 }
