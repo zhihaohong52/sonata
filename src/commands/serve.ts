@@ -805,6 +805,27 @@ export function mergeTenantGateways(
       'other\'s endpoint; rename one of them',
     );
   }
+  // Likewise one OAuth credential of each kind per LiteLLM child
+  // (CHATGPT_TOKEN_DIR / GITHUB_COPILOT_TOKEN_DIR): two differently named
+  // gateways of one kind would both be served whichever account
+  // buildChildEnv found first. parseConfig refuses the pair inside one file.
+  const byOauth = new Map<string, string>();
+  for (const name of Object.keys(merged)) {
+    const auth = merged[name]?.auth;
+    if (auth !== 'codex-oauth' && auth !== 'copilot-oauth') continue;
+    const other = byOauth.get(auth);
+    if (other === undefined) {
+      byOauth.set(auth, name);
+      continue;
+    }
+    delete merged[name];
+    delete merged[other];
+    log(
+      `gateways "${other}" (${owner[other]}) and "${name}" (${owner[name]}) both use auth = "${auth}" — ` +
+      'serving neither, since LiteLLM holds one credential of that kind and one project would be ' +
+      'served the other\'s account; keep one of them',
+    );
+  }
   return merged;
 }
 
