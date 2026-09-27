@@ -655,18 +655,32 @@ async function waitFor(cond: () => boolean, what: string, timeoutMs = 2000): Pro
   }
 }
 
+/**
+ * A fake child's `onExit` that keeps only the FIRST listener — the crash
+ * watcher `cmdServe` registers at spawn. `stop()` registers a second one to
+ * wait for the exit; a fake that let it overwrite the watcher would make a
+ * later simulated crash call the wrong listener.
+ */
+function firstExitOnly(
+  register: (cb: (code: number | null, signal: NodeJS.Signals | null) => void) => void,
+): (cb: (code: number | null, signal: NodeJS.Signals | null) => void) => void {
+  let registered = false;
+  return (cb) => { if (!registered) { registered = true; register(cb); } };
+}
+
 describe('cmdServe — litellm respawn', () => {
   it('respawns litellm when it exits on its own, and updates the recorded pid', async () => {
     let spawnCount = 0;
     let exitCb: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20, // its fake children never exit on SIGTERM; stop() would wait out the default
       waitForLitellm: async () => {},
       respawnDelayMs: 0,
       spawnLitellm: () => {
         spawnCount += 1;
         const pid = spawnCount;
-        return { pid, kill() {}, onExit: (cb) => { exitCb = cb; } };
+        return { pid, kill() {}, onExit: firstExitOnly((cb) => { exitCb = cb; }) };
       },
     });
     handles.push(handle);
@@ -686,12 +700,13 @@ describe('cmdServe — litellm respawn', () => {
     let exitCb: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20, // its fake children never exit on SIGTERM; stop() would wait out the default
       waitForLitellm: async () => {},
       respawnDelayMs: 0,
       maxRespawns: 2,
       spawnLitellm: () => {
         spawnCount += 1;
-        return { pid: spawnCount, kill() {}, onExit: (cb) => { exitCb = cb; } };
+        return { pid: spawnCount, kill() {}, onExit: firstExitOnly((cb) => { exitCb = cb; }) };
       },
     });
     handles.push(handle);
@@ -714,11 +729,12 @@ describe('cmdServe — litellm respawn', () => {
     let exitCb: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20, // its fake children never exit on SIGTERM; stop() would wait out the default
       waitForLitellm: async () => {},
       respawnDelayMs: 0,
       spawnLitellm: () => {
         spawnCount += 1;
-        return { pid: spawnCount, kill() {}, onExit: (cb) => { exitCb = cb; } };
+        return { pid: spawnCount, kill() {}, onExit: firstExitOnly((cb) => { exitCb = cb; }) };
       },
     });
     await handle.stop();
@@ -782,13 +798,14 @@ litellm = 39217
 
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20, // its fake children never exit on SIGTERM; stop() would wait out the default
       respawnDelayMs: 0,
       waitForLitellm: async () => {
         waitCalls += 1;
         if (waitCalls === 1) return;
         await new Promise<void>((resolve) => { releaseRespawnWait = resolve; });
       },
-      spawnLitellm: () => ({ pid: 1, kill() {}, onExit: (cb) => { exitCb = cb; } }),
+      spawnLitellm: () => ({ pid: 1, kill() {}, onExit: firstExitOnly((cb) => { exitCb = cb; }) }),
     });
     handles.push(handle);
     expect(waitCalls).toBe(1);
@@ -1082,6 +1099,7 @@ litellm = 43121
     const exits: Array<Array<(code: number | null, signal: NodeJS.Signals | null) => void>> = [];
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20, // its fake children never exit on SIGTERM; stop() would wait out the default
       waitForLitellm: async () => {},
       spawnLitellm: () => {
         spawnCount += 1;
@@ -1266,6 +1284,45 @@ litellm = 43117
     expect(response.status).toBe(529);
     expect(forceKillCalls).toBe(1);
     expect(spawnCount).toBe(2);
+  });
+
+  it('stop() escalates to forceKill for a litellm child that ignores SIGTERM, before removing its temp dir', async () => {
+    // stop() sent SIGTERM once and then deleted the child's config directory
+    // and the state file naming its pid: a SIGTERM-deaf child (one blocked on a
+    // device-code login) survived as an orphan nothing could find again.
+    writeMachineConfig(`
+[models."m"]
+gateway = "acme"
+id = "m-upstream"
+context_window = 128000
+
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+
+[native.ports]
+router = 0
+litellm = 43119
+`);
+    const exits: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
+    const events: string[] = [];
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {},
+      litellmExitTimeoutMs: 20,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      spawnLitellm: () => ({
+        pid: 1,
+        kill: () => { events.push('term'); },
+        onExit: (cb) => { exits.push(cb); },
+        forceKill: () => {
+          events.push(`kill:tempDir=${existsSync(tempDirFor())}`);
+          for (const cb of exits) cb(null, 'SIGKILL');
+        },
+      }),
+    });
+    await handle.stop();
+    expect(events).toEqual(['term', 'kill:tempDir=true']);
+    expect(existsSync(tempDirFor())).toBe(false);
   });
 
   it('retries the restart on the next request after a failed one, instead of marking the change handled', async () => {
@@ -2724,6 +2781,7 @@ litellm = 4000
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20, // its fake children never exit on SIGTERM; stop() would wait out the default
       respawnDelayMs: 0,
       waitForLitellm: async () => { waits += 1; if (waits === 1) await firstReady; },
       spawnLitellm: () => {
@@ -2895,6 +2953,7 @@ litellm = 4000
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20, // its fake children never exit on SIGTERM; stop() would wait out the default
       spawnLitellm: () => {
         spawns += 1;
         return {
