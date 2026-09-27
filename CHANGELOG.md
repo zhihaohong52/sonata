@@ -12,6 +12,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 From the full audit of 0.13.1 (`docs/reviews/2026-09-27-full-audit.md`):
 
+- **The managed LiteLLM listened on every network interface.** It was
+  started with LiteLLM's default host, `0.0.0.0`, so the child holding the
+  gateway keys and the master key was reachable off-machine. It now binds
+  `127.0.0.1` and is reached there. Restart the router (`sonata restart`) to
+  pick this up.
+- **The router listens on both loopback families.** It bound `localhost`,
+  which is `::1` alone on macOS, while clients connecting to `localhost`
+  fall back to `127.0.0.1` after 250 ms — so a briefly stalled client got
+  `fetch failed`. It now serves `127.0.0.1` and `::1` on one port.
+
 The audit's backlog, re-verified by Claude Opus agents and fixed (details in
 the review doc's Backlog note):
 
