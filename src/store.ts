@@ -48,8 +48,18 @@ export function readExit(cwd: string, id: string): number | null {
   return Number.isNaN(n) ? null : n;
 }
 
+/**
+ * The model's report, or null when there is none worth the name.
+ *
+ * An empty or whitespace-only file counts as none. A model can create
+ * report.md and never fill it, and the codex/reasonix quit watchers fire on
+ * the file merely existing — so a zero-length file is a real outcome, and read
+ * as "" it was trusted as a finished report while hiding the harness's own
+ * fallback file behind it.
+ */
 export function readReport(cwd: string, id: string): string | null {
-  return readIfExists(reportPathFor(runDir(cwd, id)));
+  const raw = readIfExists(reportPathFor(runDir(cwd, id)));
+  return raw === null || raw.trim().length === 0 ? null : raw;
 }
 
 export function readAnsweredPrompt(cwd: string, id: string): string | null {

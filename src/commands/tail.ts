@@ -110,6 +110,13 @@ export interface TailResult {
   report?: string;
   exitCode?: number;
   degraded?: boolean;
+  /**
+   * True when a finished run's report body — the part that is not sonata's own
+   * annotation — has no content. Decided here, before `cmdTail` appends the
+   * provenance line, because after that the text is never empty and a caller
+   * trimming it (`sonata dispatch`'s empty-report retry) could never fire.
+   */
+  reportEmpty?: boolean;
   /** Mirrors `DecideInput.worktreeUnchanged`; set only on a finished run. */
   worktreeUnchanged?: boolean;
 }
@@ -204,11 +211,17 @@ export function decide(input: DecideInput): TailResult {
           : degraded
             ? `[degraded: harness exited ${input.exitCode} without writing a report]\n\n${input.paneTail.join('\n')}`
             : `${effortNote}${noChange}${input.report!}`;
+    // Only the two trusted branches can be empty: every degraded branch
+    // already carries a verdict, and `dispatch` retries those anyway.
+    const reportEmpty = !degraded && (reportImpossible
+      ? harnessOutput(input.paneTail, input.launchMarker).length === 0
+      : (input.report ?? '').trim().length === 0);
     return {
       state: 'DONE',
       lines: input.newLines,
       exitCode: input.exitCode,
       degraded,
+      reportEmpty,
       report,
       worktreeUnchanged: input.worktreeUnchanged,
     };

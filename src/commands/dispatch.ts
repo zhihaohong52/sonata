@@ -197,7 +197,9 @@ export async function cmdDispatch(
 
     const degraded = result.degraded === true;
     attempts.push({ modelKey, state: result.state, degraded });
-    const emptyReport = result.state === 'DONE' && !(result.report?.trim());
+    // The verdict, not the text: every finished report carries the provenance
+    // line, so trimming the decorated text never finds it empty.
+    const emptyReport = result.state === 'DONE' && result.reportEmpty === true;
     if (result.state === 'DONE' && (degraded || emptyReport)) {
       continue;
     }
