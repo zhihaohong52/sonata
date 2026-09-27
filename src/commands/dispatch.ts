@@ -24,8 +24,12 @@ export function truncateReport(report: string, id: string, max = MAX_REPORT_CHAR
   if (report.length <= max) return report;
   const markerIndex = report.lastIndexOf(PROVENANCE_MARKER);
   const provenance = markerIndex !== -1 ? report.slice(markerIndex) : '';
-  const bodyMax = Math.max(0, max - provenance.length);
-  return `${report.slice(0, bodyMax)}\n\n[truncated: full transcript at \`sonata log ${id}\`]${provenance}`;
+  const marker = `\n\n[truncated: full transcript at \`sonata log ${id}\`]`;
+  // Room for the marker and the provenance line comes out of the body, so the
+  // result is `max` exactly. Only a provenance line longer than `max` itself
+  // could push past it, and that line is never dropped (see above).
+  const bodyMax = Math.max(0, max - provenance.length - marker.length);
+  return `${report.slice(0, bodyMax)}${marker}${provenance}`;
 }
 
 /** A dispatch refused before launch because a `[budget] daily_usd` cap is reached. */
