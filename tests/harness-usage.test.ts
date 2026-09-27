@@ -61,10 +61,10 @@ afterEach(() => {
 
 function finishedRun(model = 'kimi'): RunMeta {
   const meta: RunMeta = {
-    id: 'r1', role: 'code', model, harness: 'opencode', mode: 'acceptEdits', interactive: false,
+    id: 'aaa111', role: 'code', model, harness: 'opencode', mode: 'acceptEdits', interactive: false,
     session: 'sonata-r1', cwd, startedAt: START, harnessModelId: `openrouter/${model === 'kimi' ? 'kimi-k3' : model}`,
   };
-  const dir = join(cwd, '.sonata', 'runs', 'r1');
+  const dir = join(cwd, '.sonata', 'runs', 'aaa111');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'exit'), '0');
   utimesSync(join(dir, 'exit'), new Date(END), new Date(END));
@@ -94,7 +94,7 @@ describe('recordHarnessUsage', () => {
     const rows = readRows(home, 0, END + 1000);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
-      upstream: 'harness', harness: 'opencode', run: 'r1', key: 'kimi', session: 'ses_1', project: cwd,
+      upstream: 'harness', harness: 'opencode', run: 'aaa111', key: 'kimi', session: 'ses_1', project: cwd,
       tenant: tenantId(canonicalConfigPath(join(cwd, 'sonata.toml'))),
       tokens: { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheCreation: 0 },
     });
@@ -117,7 +117,7 @@ describe('recordHarnessUsage', () => {
   it('writes no row for an unobservable or router-counted run, and says why', () => {
     record({ kind: 'unobservable', reason: '2 opencode sessions ran here' });
     expect(readRows(home, 0, END + 1000)).toHaveLength(0);
-    expect(readRecordedUsage(cwd, 'r1')).toEqual({ kind: 'unobservable', reason: '2 opencode sessions ran here' });
+    expect(readRecordedUsage(cwd, 'aaa111')).toEqual({ kind: 'unobservable', reason: '2 opencode sessions ran here' });
   });
 
   it('writes an unpriced row rather than a free one when no cost is known', () => {
@@ -141,7 +141,7 @@ describe('recordHarnessUsage', () => {
       adapter: { usage: () => { throw new Error('boom'); } },
     });
     expect(out.kind).toBe('unobservable');
-    expect(existsSync(join(cwd, '.sonata', 'runs', 'r1', 'usage.json'))).toBe(true);
+    expect(existsSync(join(cwd, '.sonata', 'runs', 'aaa111', 'usage.json'))).toBe(true);
   });
 
   // Unknown is never zero. A session the adapter found but could not count
@@ -151,7 +151,7 @@ describe('recordHarnessUsage', () => {
   it('records a tokenless observed session as unobservable, never as zero', () => {
     record({ kind: 'observed', session: 'ses_1', records: [] });
     expect(readRows(home, 0, END + 1000)).toHaveLength(0);
-    expect(readRecordedUsage(cwd, 'r1')).toEqual({
+    expect(readRecordedUsage(cwd, 'aaa111')).toEqual({
       kind: 'unobservable',
       reason: 'the harness session was found but carried no token counts sonata could read',
     });
@@ -164,7 +164,7 @@ describe('recordHarnessUsage', () => {
       records: [{ ts: START, tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 } }],
     });
     expect(readRows(home, 0, END + 1000)).toHaveLength(0);
-    expect(readRecordedUsage(cwd, 'r1')).toEqual({
+    expect(readRecordedUsage(cwd, 'aaa111')).toEqual({
       kind: 'unobservable',
       reason: 'the harness session was found but carried no token counts sonata could read',
     });
@@ -184,7 +184,7 @@ describe('recordHarnessUsage', () => {
     expect(ledgerFault.failNext).toBe(false); // the fault was actually reached
     expect(out).toMatchObject({ kind: 'observed' });
     expect(readRows(home, 0, END + 1000)).toHaveLength(0);
-    expect(existsSync(join(cwd, '.sonata', 'runs', 'r1', 'usage.json'))).toBe(false);
+    expect(existsSync(join(cwd, '.sonata', 'runs', 'aaa111', 'usage.json'))).toBe(false);
     const again = recordHarnessUsage({
       cwd, home, meta, config: loadConfig(cwd, home), modelsDev: undefined,
       adapter: { usage: () => observed(0.75) },
