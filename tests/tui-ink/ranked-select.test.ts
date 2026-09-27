@@ -3,9 +3,8 @@ import React from 'react';
 import { render } from 'ink-testing-library';
 import { RankedSelect } from '../../src/tui-ink/components/ranked-select.js';
 import { boardWindow, dominatedRows, packedLines } from '../../src/tui-ink/components/ranked-select-state.js';
+import { tick } from './ink-wait.js';
 
-/** Lets Ink flush a render before the next keystroke is read. */
-const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
 
 const ITEMS = ['alpha', 'bravo', 'charlie', 'delta'].map((value) => ({ value, label: value }));
 

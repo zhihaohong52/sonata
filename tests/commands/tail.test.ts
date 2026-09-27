@@ -366,7 +366,7 @@ describe('cmdTail answered prompts', () => {
     await sendKeys(session, "printf 'Would you like to run the following command?\\n$ ls\\nPress Enter to confirm\\n'");
     await sendKeys(session, 'Enter');
     await waitForPane('Press Enter to confirm');
-  });
+  }, 30_000);
 
   afterEach(async () => { await killSession(session); });
 
@@ -392,7 +392,7 @@ describe('cmdTail answered prompts', () => {
    * than no gate — it teaches you to re-run a red suite instead of read it —
    * and this one sits in the release path, since `prepublishOnly` runs it.
    */
-  async function waitForPane(text: string, timeoutMs = 5_000): Promise<void> {
+  async function waitForPane(text: string, timeoutMs = 20_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       // A whole line, not a substring. tmux echoes the command being typed, so
@@ -743,11 +743,16 @@ describe('cmdTail records output that scrolled past the visible pane', () => {
     await newSession({ session, cwd });
     await sendKeys(session, "seq -f 'row-%g' 1 150");
     await sendKeys(session, 'Enter');
-    const deadline = Date.now() + 5_000;
-    while (!(await capturePane(session)).includes('row-150') && Date.now() < deadline) {
+    // The pane's shell is the user's own login shell, whose startup under a
+    // loaded full-suite run took past the old silent 5s deadline — the test
+    // then tailed a pane holding only the typed command. Wait long enough,
+    // and fail here, legibly, rather than in the assertion.
+    const deadline = Date.now() + 25_000;
+    while (!(await capturePane(session)).includes('row-150')) {
+      if (Date.now() > deadline) throw new Error('seq never printed row-150 in the pane');
       await new Promise((r) => setTimeout(r, 25));
     }
-  });
+  }, 30_000);
 
   afterEach(async () => { await killSession(session); });
 
@@ -762,8 +767,9 @@ describe('cmdTail records output that scrolled past the visible pane', () => {
     await cmdTail({ cwd, id, waitSeconds: 0 });
     await sendKeys(session, "echo 'after'");
     await sendKeys(session, 'Enter');
-    const deadline = Date.now() + 5_000;
-    while (!(await capturePane(session)).split('\n').some((l) => l.trim() === 'after') && Date.now() < deadline) {
+    const deadline = Date.now() + 20_000;
+    while (!(await capturePane(session)).split('\n').some((l) => l.trim() === 'after')) {
+      if (Date.now() > deadline) throw new Error("echo never printed 'after' in the pane");
       await new Promise((r) => setTimeout(r, 25));
     }
     await cmdTail({ cwd, id, waitSeconds: 0 });
