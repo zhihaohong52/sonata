@@ -15,6 +15,7 @@ import { outdatedAgents, plannedAgents } from './sync.js';
 import { staleAgents, disabledOpencodeAgents, enableOpencodeAgent, firstErrorLine,
 } from '../detect.js';
 import { getAdapter } from '../adapters/index.js';
+import type { HarnessProblem } from '../adapters/types.js';
 import { tmuxVersion } from '../tmux.js';
 import {
   modeHookPresent,
@@ -336,6 +337,13 @@ async function defaultClaudeVersion(): Promise<string | undefined> {
   }
 }
 
+/** A harness's version line, from the real binary — `cmdDoctor`'s default `harnessVersion`. */
+async function defaultHarnessVersion(command: string[]): Promise<string> {
+  const env = { ...process.env, PATH: `${process.env.HOME}/.opencode/bin:${process.env.PATH}` };
+  const { stdout } = await run(command[0], command.slice(1), { env });
+  return stdout;
+}
+
 export async function cmdDoctor(
   opts: {
     cwd: string; home?: string; packageRoot?: string; now?: () => Date;
@@ -351,6 +359,16 @@ export async function cmdDoctor(
      * nothing.
      */
     claudeVersion?: () => Promise<string | undefined>;
+    /**
+     * Test seams: a configured harness's version line, and its health
+     * problems. The defaults run the real binary (`opencode --version`,
+     * `codex login status`, …) against the real home — which in a test reads
+     * the maintainer's own installs, and under a loaded suite took `opencode
+     * --version` past the 30s test timeout. A test that is not about the
+     * harness checks answers both without spawning anything.
+     */
+    harnessVersion?: (command: string[]) => Promise<string>;
+    harnessHealth?: (name: string, env: { home: string; cwd: string }) => Promise<HarnessProblem[]>;
   },
 ): Promise<{ ok: boolean; checks: Check[] }> {
   const home = opts.home ?? homedir();
@@ -1257,9 +1275,7 @@ export async function cmdDoctor(
   for (const name of harnesses) {
     const adapter = getAdapter(name);
     try {
-      const env = { ...process.env, PATH: `${process.env.HOME}/.opencode/bin:${process.env.PATH}` };
-      const { stdout } = await run(adapter.versionCommand[0], adapter.versionCommand.slice(1), { env });
-      const version = stdout.trim();
+      const version = (await (opts.harnessVersion ?? defaultHarnessVersion)(adapter.versionCommand)).trim();
       // A known-bad build fails even when it sits inside the tested range:
       // `supportedVersions` says which versions were exercised, which is a
       // different question from whether this one is broken.
@@ -1275,8 +1291,12 @@ export async function cmdDoctor(
 
       // Version alone does not mean usable: a harness can be installed, current
       // and still unable to reach a model.
-      if (adapter.health) {
-        for (const p of await adapter.health({ home: homedir(), cwd: opts.cwd })) {
+      const harnessHealth = opts.harnessHealth;
+      const health = harnessHealth !== undefined
+        ? (env: { home: string; cwd: string }) => harnessHealth(name, env)
+        : adapter.health?.bind(adapter);
+      if (health) {
+        for (const p of await health({ home: homedir(), cwd: opts.cwd })) {
           checks.push({
             name: `${name} health`,
             ok: p.severity !== 'error',
