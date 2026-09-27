@@ -271,8 +271,8 @@ export function normalizeModelName(raw: string, providers: readonly string[] = [
   // two segments are ours to remove. A `while` loop re-matches its own output
   // and keeps eating past that structure, corrupting a model whose real name
   // happens to begin with a reserved word (`openai-…`, `pi-…`). So stripping
-  // is two ordered passes — at most one harness prefix, then at most one
-  // provider prefix — never a loop that can run again.
+  // is two ordered passes — at most one harness or gateway prefix, then at
+  // most one provider prefix — never a loop that can run again.
   const HARNESS_PREFIXES = ['opencode-', 'codex-', 'pi-', 'reasonix-', 'claude-harness-'];
   // Configured gateways first and longest-first, so `openai-codex-x` loses the
   // whole gateway name rather than the shorter `openai-` that also matches.
@@ -280,16 +280,30 @@ export function normalizeModelName(raw: string, providers: readonly string[] = [
     ...providers.map((provider) => `${provider}-`),
     'openrouter-', 'openai-', 'google-', 'anthropic-',
   ].sort((a, b) => b.length - a.length);
-  for (const prefix of HARNESS_PREFIXES) {
+  // The first pass considers configured gateway names beside the harness
+  // prefixes, longest first. With the harness pass alone first, a gateway
+  // whose name begins with a harness's (`opencode-go`) lost `opencode-` as a
+  // harness and kept `go-`, so its models were looked up as `go-kimi-k3` and
+  // scored as nothing.
+  const gatewayPrefixes = providers.map((provider) => `${provider}-`);
+  const firstPass = [...new Set([...HARNESS_PREFIXES, ...gatewayPrefixes])].sort((a, b) => b.length - a.length);
+  let first: string | undefined;
+  for (const prefix of firstPass) {
     if (name.startsWith(prefix) && name.length > prefix.length) {
       name = name.slice(prefix.length);
+      first = prefix;
       break;
     }
   }
-  for (const prefix of PROVIDER_PREFIXES) {
-    if (name.startsWith(prefix) && name.length > prefix.length) {
-      name = name.slice(prefix.length);
-      break;
+  // A gateway match ends stripping: a key is `<gateway>-<id>`, and an id that
+  // begins with its own gateway's name (`deepseek-deepseek-v4-pro`) keeps it.
+  // A harness match — or none — goes on to the provider pass, as before.
+  if (first === undefined || HARNESS_PREFIXES.includes(first)) {
+    for (const prefix of PROVIDER_PREFIXES) {
+      if (name.startsWith(prefix) && name.length > prefix.length) {
+        name = name.slice(prefix.length);
+        break;
+      }
     }
   }
   // OpenRouter addresses a serving variant with a `:suffix` (`:free`,
@@ -607,8 +621,18 @@ export function hasTaskCost(
   // Finite, not merely present: a hand-edited or foreign-written cache can
   // carry `null`, a string or a NaN, and `.toFixed(3)` on the ranking label
   // throws on the first two while the third ranks on a meaningless number.
-  const cost = scoreFor(candidate, aa, providers, upstreamFor)?.costPerTask;
-  return typeof cost === 'number' && Number.isFinite(cost);
+  //
+  // And positive: a zero cost per task is missing data, not a free model —
+  // `valueOf` already reads it that way. Admitted, a literal 0 was ranked last
+  // in the value tiers (value 0, "unscored") and first in `complex`, where the
+  // cheapest price breaks a capability tie: two opposite readings of one
+  // number. Treating it as uncosted keeps it out of offering and ranking alike.
+  return isTaskCost(scoreFor(candidate, aa, providers, upstreamFor)?.costPerTask);
+}
+
+/** A usable AA cost per task: finite and positive. */
+function isTaskCost(cost: unknown): cost is number {
+  return typeof cost === 'number' && Number.isFinite(cost) && cost > 0;
 }
 
 /** Keep only candidates AA can compare on its dollars-per-task scale. */
@@ -744,7 +768,7 @@ export function candidateLabel(
   const head = effort === undefined ? key : `${key} @${effort}`;
   const entry = scoreFor(candidate, aa, providers, upstreamFor);
   if (entry === undefined) return head;
-  if (entry.costPerTask === undefined) return `${head}  (AA publishes no cost-per-task — add by hand to sonata.toml)`;
+  if (!isTaskCost(entry.costPerTask)) return `${head}  (AA publishes no cost-per-task — add by hand to sonata.toml)`;
   return `${head.padEnd(32)} ${reasoningOf(entry).toFixed(1).padStart(4)}  $${entry.costPerTask.toFixed(3)}/task`;
 }
 
@@ -805,18 +829,22 @@ function valueOf(r: { index: number; price: number }): number {
 /**
  * Rank a role's selected models into the three tiers.
  *
- * Each tier is one sort key over the two quantities AA publishes — a coding
- * index and a cost per task. `complex` takes capability, cost breaking a
- * near-tie; `normal` takes capability per task-dollar; `simple` is `normal`
- * filtered to a cost cap, so it never sorts independently and cannot disagree
- * with `normal` about order.
+ * Each tier is built from two quantities AA publishes — an intelligence index
+ * (`reasoningOf`) and a cost per task. `complex` takes capability, cost
+ * breaking a near-tie; `simple` and `normal` both start from capability per
+ * task-dollar (the value order). `normal` leads with the frontier's knee — the
+ * best capability-for-cost balance point, unless avoided or gated — then the
+ * rest of the value order. `simple` is the value order filtered to a cost cap;
+ * it never sorts independently, but it follows the value order rather than
+ * `normal`, so where the knee falls under the cap the two disagree about the
+ * head: `simple` leads with the best-value model, `normal` with the knee.
  *
  * Only candidates AA prices per task are considered (`taskCostedCandidates`),
  * because capability-per-token and capability-per-task are different units and
  * ranking across them is an arithmetic error, not a judgement.
  *
  * Three properties are deliberate and easy to undo by accident:
- * `simple` is a *subsequence* of `normal`, not a prefix — value is not
+ * `simple` is a *subsequence* of the value order, not a prefix — value is not
  * monotonic in cost; the cap is anchored to the best-value model, which
  * therefore always clears it, so `simple` is never empty on any config; and
  * there is no capability floor, because a floor makes the value ranking
@@ -904,13 +932,15 @@ export function proposeTiers(
   /**
    * The frontier geometry for one metric.
    *
-   * Computed per tier rather than once, because the tiers measure different
-   * things — `capabilityOf` is throughput and `reasoningOf` is judgement, a
-   * split `catalog.ts` already makes for measured reasons — and bounding a
-   * value tier with a knee derived from a metric it does not rank on is the
-   * same unit-mixing error as comparing a per-task cost with a per-token one.
-   * They genuinely differ: on one real config the agentic knee is
-   * `glm-5.3-flash` and the intelligence knee is `mimo-v2.6-pro`.
+   * Parameterised by metric because a knee must come from the metric its tier
+   * ranks on — bounding a tier with a knee from another metric is the same
+   * unit-mixing error as comparing a per-task cost with a per-token one. Both
+   * geometries below now use `reasoningOf`: the value tiers moved off
+   * `capabilityOf` (agentic), which is missing for newly scored models and
+   * fell back per model, putting two scales on one axis — on one real config
+   * that made `glm-5.3-flash` the agentic knee where `mimo-v2.6-pro` is the
+   * intelligence one. So the two are computed identically today; they are
+   * kept separate so a tier can change metric without touching the other.
    *
    * The knee is taken from the FULL frontier and the gate applied after, never
    * the reverse. `kneeIndex` records why: Kneedle measures against a chord

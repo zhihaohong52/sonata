@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validate } from '../../src/init/validate.js';
+import { refusals, validate } from '../../src/init/validate.js';
 import type { InitEnvironment } from '../../src/init/discover.js';
 import type { InitState } from '../../src/tui-ink/types.js';
 import { byokProviderKey } from '../../src/tui-ink/app-state.js';
@@ -44,6 +44,30 @@ function makeState(overrides: Partial<InitState> = {}): InitState {
     ...overrides,
   };
 }
+
+describe('validate — shared base_url', () => {
+  it('warns, without refusing, when two selected gateways share a base_url', () => {
+    const env = makeEnv({
+      allNativeCandidates: [
+        { key: 'opencode-kimi-k3', gateway: 'opencode', id: 'kimi-k3', contextWindow: 128000, baseUrl: 'https://opencode.ai/zen/go/v1', auth: 'api-key' },
+        { key: 'opencode-go-kimi-k3', gateway: 'opencode-go', id: 'kimi-k3', contextWindow: 128000, baseUrl: 'https://opencode.ai/zen/go/v1/', auth: 'api-key' },
+      ],
+      offered: [
+        { harness: 'opencode', provider: 'opencode', key: 'opencode/opencode', count: 1 },
+        { harness: 'opencode', provider: 'opencode-go', key: 'opencode/opencode-go', count: 1 },
+      ],
+    });
+    const problems = validate(env, makeState({
+      providerKeys: ['opencode/opencode', 'opencode/opencode-go'],
+      nativeKeys: ['opencode-kimi-k3', 'opencode-go-kimi-k3'],
+    }));
+    expect(problems).toHaveLength(1);
+    expect(problems[0].severity).toBe('warn');
+    expect(problems[0].message).toContain('opencode, opencode-go');
+    // Every caller refuses on `refusals`, so a warning alone lets init proceed.
+    expect(refusals(problems)).toEqual([]);
+  });
+});
 
 describe('validate', () => {
   it('excludes custom providers from unknown-providers check', () => {

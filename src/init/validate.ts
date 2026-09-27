@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { isOauthGatewayAuth } from '../config.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { byokProviderKey } from '../tui-ink/app-state.js';
+import { sharedBaseUrls, sharedBaseUrlWarning } from '../native/providers.js';
 
 export interface ValidateOptions {
   /** Full map of native candidates including BYOK and live refresh additions. */
@@ -183,5 +184,17 @@ export function validate(env: InitEnvironment, state: InitState, opts?: Validate
     });
   }
 
+  // 11. Two selected gateways on one endpoint — a warning, never a refusal:
+  // two keys on one endpoint is a legitimate setup, but far more often it is
+  // one account imported under two names, duplicating every candidate.
+  for (const group of sharedBaseUrls([...nativeGateways].map(([gateway, candidate]) => [gateway, candidate] as const))) {
+    problems.push({ severity: 'warn', message: `sonata init: ${sharedBaseUrlWarning(group)}.` });
+  }
+
   return problems;
+}
+
+/** The problems that refuse an init; a `warn` is printed and the init goes on. */
+export function refusals(problems: readonly Problem[]): Problem[] {
+  return problems.filter((problem) => problem.severity === 'error');
 }

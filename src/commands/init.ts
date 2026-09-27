@@ -31,7 +31,7 @@ import { plan, fsCredentialProbe } from '../init/plan.js';
 import { apply } from '../init/apply.js';
 import { installLitellm as installLitellmVenv } from '../native/litellm-venv.js';
 import { defaultInstallerDeps } from './litellm.js';
-import { validate } from '../init/validate.js';
+import { refusals, validate } from '../init/validate.js';
 
 export { nativeTomlFor } from '../init/toml.js';
 import type { InitState } from '../tui-ink/types.js';
@@ -137,12 +137,16 @@ async function runInit(
   // is passed so BYOK and live-refresh candidates are visible to the
   // unknown-model check — they were added in the front end's own scope and
   // are not in `env.allNativeCandidates`.
-  const problems = validate(env, chosen.state, { nativeByKey: chosen.nativeByKey });
+  // Only an `error` refuses; a `warn` (two gateways on one endpoint, say) is
+  // printed and the init goes on.
+  const validation = validate(env, chosen.state, { nativeByKey: chosen.nativeByKey });
+  const problems = refusals(validation);
   if (problems.length > 0) {
     if (!interactive) throw new Error(problems[0].message);
     for (const p of problems) out(renderProblem(p));
     return cancelledResult(env.problems, chosen.state, opts);
   }
+  for (const p of validation) out(renderProblem(p));
 
   // ---- plan -------------------------------------------------------------
   const credentials = fsCredentialProbe(opts.home, env.copilotUsable);

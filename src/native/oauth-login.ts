@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { NativeGatewayAuth } from '../config.js';
@@ -137,8 +137,15 @@ export async function loginGateway(opts: {
         return resolve({ ok: false, problem: 'the login reported success but wrote no credential' });
       }
       // LiteLLM writes with the process umask, commonly 0644 - fix it up rather
-      // than trust an interpreter we don't control to have written 0600.
-      chmodSync(credentialPath, 0o600);
+      // than trust an interpreter we don't control to have written 0600. Every
+      // regular file, not only the one that proves the login: Copilot's
+      // long-lived GitHub token sits in `access-token` beside `api-key.json`.
+      // And the directory itself, since `mkdirSync`'s mode applies only to a
+      // directory it creates — a re-login into a looser one left it as found.
+      chmodSync(dir, 0o700);
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isFile()) chmodSync(join(dir, entry.name), 0o600);
+      }
       resolve({ ok: true });
     });
   });
