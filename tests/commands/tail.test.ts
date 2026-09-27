@@ -726,7 +726,7 @@ describe('cmdTail degrades a fallback report from a failed run', () => {
   // the suite green.
   let cwd: string;
   const session = 'sonata-test-tail-fallback';
-  const id = 'fb123';
+  const id = 'fb1234';
 
   beforeEach(async () => {
     cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-fallback-'));

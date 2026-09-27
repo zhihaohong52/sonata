@@ -11,22 +11,53 @@ export function sonataDir(cwd: string): string {
   return join(cwd, '.sonata');
 }
 
+/**
+ * What a run id looks like: lowercase hex, 6 characters for runs made before
+ * ids grew, 12 since. Checked by `runDir`, which every path into a run goes
+ * through, because every CLI entry (`log`, `tail`, `wait`, `approve`,
+ * `verify`) takes the id raw — and `../../x` is a path segment too.
+ */
+export const RUN_ID_PATTERN = /^[0-9a-f]{6,32}$/;
+
+export function isRunId(id: string): boolean {
+  return RUN_ID_PATTERN.test(id);
+}
+
 export function runDir(cwd: string, id: string): string {
+  if (!isRunId(id)) {
+    throw new Error(`sonata: "${id}" is not a sonata run id (expected lowercase hex, as \`sonata runs\` lists)`);
+  }
   return join(sonataDir(cwd), 'runs', id);
 }
 
+/**
+ * Six bytes. Three collided at about n^2/33.5M over a project's lifetime —
+ * run directories are never deleted — and a collision reused a finished run's
+ * directory, whose exit sentinel and report.md then read as the new run's
+ * instant, trusted result. `createRun` refuses to reuse one regardless.
+ */
 export function newRunId(): string {
-  return randomBytes(3).toString('hex');
+  return randomBytes(6).toString('hex');
 }
 
 export type RunInit = Omit<RunMeta, 'id' | 'session' | 'cwd'>;
 
-export function createRun(cwd: string, init: RunInit): RunMeta {
-  const id = newRunId();
-  const meta: RunMeta = { ...init, id, session: `sonata-${id}`, cwd };
-  mkdirSync(runDir(cwd, id), { recursive: true });
-  writeMeta(cwd, meta);
-  return meta;
+export function createRun(cwd: string, init: RunInit, nextId: () => string = newRunId): RunMeta {
+  mkdirSync(join(sonataDir(cwd), 'runs'), { recursive: true });
+  // The leaf is created without `recursive`, so an existing directory is an
+  // error rather than silently adopted with another run's files in it.
+  for (let attempt = 0; ; attempt++) {
+    const id = nextId();
+    try {
+      mkdirSync(runDir(cwd, id));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST' && attempt < 10) continue;
+      throw err;
+    }
+    const meta: RunMeta = { ...init, id, session: `sonata-${id}`, cwd };
+    writeMeta(cwd, meta);
+    return meta;
+  }
 }
 
 export function writeMeta(cwd: string, meta: RunMeta): void {
