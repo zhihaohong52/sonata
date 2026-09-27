@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,6 +11,24 @@ import { priceHarnessRun, readRecordedUsage, recordHarnessUsage } from '../src/h
 import { readRows } from '../src/ledger.js';
 import { canonicalConfigPath, tenantId } from '../src/native/tenants.js';
 import type { RunMeta } from '../src/types.js';
+
+// A ledger write that fails on demand. Forced by a mock rather than by
+// making the usage directory unwritable: chmod does not stop root, so a
+// suite run as root would write the row and assert nothing about the claim.
+const ledgerFault = vi.hoisted(() => ({ failNext: false }));
+vi.mock('../src/ledger.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../src/ledger.js')>();
+  return {
+    ...real,
+    appendRow: (...args: Parameters<typeof real.appendRow>) => {
+      if (ledgerFault.failNext) {
+        ledgerFault.failNext = false;
+        throw new Error('ENOSPC: no space left on device');
+      }
+      return real.appendRow(...args);
+    },
+  };
+});
 
 let home: string;
 let cwd: string;
@@ -151,20 +169,15 @@ describe('recordHarnessUsage', () => {
   // looked at again. The claim is released instead, so a later tail retries.
   it('releases the claim when the ledger cannot be written, so a later call retries the row', () => {
     const meta = finishedRun();
-    const usageDir = join(home, '.config', 'sonata', 'usage');
-    mkdirSync(usageDir, { recursive: true });
-    chmodSync(usageDir, 0o555);
-    try {
-      const out = recordHarnessUsage({
-        cwd, home, meta, config: loadConfig(cwd, home), modelsDev: undefined,
-        adapter: { usage: () => observed(0.75) },
-      });
-      expect(out).toMatchObject({ kind: 'observed' });
-      expect(readRows(home, 0, END + 1000)).toHaveLength(0);
-      expect(existsSync(join(cwd, '.sonata', 'runs', 'r1', 'usage.json'))).toBe(false);
-    } finally {
-      chmodSync(usageDir, 0o755);
-    }
+    ledgerFault.failNext = true;
+    const out = recordHarnessUsage({
+      cwd, home, meta, config: loadConfig(cwd, home), modelsDev: undefined,
+      adapter: { usage: () => observed(0.75) },
+    });
+    expect(ledgerFault.failNext).toBe(false); // the fault was actually reached
+    expect(out).toMatchObject({ kind: 'observed' });
+    expect(readRows(home, 0, END + 1000)).toHaveLength(0);
+    expect(existsSync(join(cwd, '.sonata', 'runs', 'r1', 'usage.json'))).toBe(false);
     const again = recordHarnessUsage({
       cwd, home, meta, config: loadConfig(cwd, home), modelsDev: undefined,
       adapter: { usage: () => observed(0.75) },

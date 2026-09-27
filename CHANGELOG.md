@@ -21,6 +21,10 @@ From the full audit of 0.13.1 (`docs/reviews/2026-09-27-full-audit.md`):
 - **Two gateways that would share one key variable are refused.**
   `acme-prod` and `acme_prod` (or `Foo` and `foo`) mapped to one
   `SONATA_KEY_*`, so one gateway's key was sent to the other's endpoint.
+  Across projects sharing the router, both gateways are dropped and logged.
+- **A finished run no longer leaves its watchdog `sleep` running.** The
+  wrapper killed the watchdog before its children, so the orphaned sleep held
+  the run's output open for the rest of `run_timeout_seconds`.
 - **API keys are never sent across a redirect.** `sonata catalog update`
   and the BYOK model listing followed redirects carrying the key; the
   catalog fetch also had no timeout.
