@@ -202,6 +202,26 @@ export function projectResolver(home: string): ProjectResolver {
   };
 }
 
+/**
+ * The nearest directory at or above `dir` that resolves to a project-local
+ * `sonata.toml` (its own, or a worktree's main checkout) — so `--project`
+ * accepts any directory inside a project, as documented. `configPath` checks
+ * only the directory it is given, so a subdirectory otherwise labelled as
+ * itself and matched no row. With no project above it, `dir` is kept.
+ */
+function enclosingProject(dir: string, home: string): string {
+  const machine = join(home, GLOBAL_CONFIG_RELATIVE);
+  for (let at = dir; ; at = dirname(at)) {
+    try {
+      const path = configPath(at, home);
+      if (path !== null && path !== machine) return at;
+    } catch {
+      // An unreadable ancestor is not a project; keep walking.
+    }
+    if (dirname(at) === at) return dir;
+  }
+}
+
 export function labelOf(
   row: LedgerRow,
   by: UsageDimension,
@@ -361,7 +381,7 @@ export async function cmdUsage(opts: {
     // Compare resolved labels, not raw paths: `--project .` from inside a
     // worktree must select the main checkout's rows too, exactly as the
     // budget pools them.
-    const wanted = resolve(resolve0(opts.project));
+    const wanted = resolve(enclosingProject(resolve0(opts.project), opts.home));
     rows = rows.filter((row) => labelOf(row, 'project', sessions, resolve) === wanted);
   }
 
