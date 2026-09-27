@@ -620,9 +620,9 @@ export const STICKY_MAX_CONVERSATIONS = 1000;
  * its own work. Remembering who served a conversation lets the router prefer
  * that candidate, and lets it know when it is about to switch.
  */
-const stickyCandidates = new Map<string, { key: string; at: number; prefer: boolean }>();
+const stickyCandidates = new Map<string, { key: string; at: number; prefer: boolean; served: Set<string> }>();
 
-function stickyGet(conversation: string, at: number): { key: string; prefer: boolean } | undefined {
+function stickyGet(conversation: string, at: number): { key: string; prefer: boolean; served: Set<string> } | undefined {
   const hit = stickyCandidates.get(conversation);
   if (hit === undefined) return undefined;
   if (at - hit.at > STICKY_TTL_MS) {
@@ -634,9 +634,13 @@ function stickyGet(conversation: string, at: number): { key: string; prefer: boo
 
 function stickySet(conversation: string, key: string, at: number): void {
   // Delete-then-set moves the entry to the end of the insertion order, so a
-  // conversation still in use is never the eviction victim.
+  // conversation still in use is never the eviction victim. `served` only
+  // grows: it is every candidate whose thinking blocks may be in a transcript
+  // carrying this key.
+  const served = stickyCandidates.get(conversation)?.served ?? new Set<string>();
+  served.add(key);
   stickyCandidates.delete(conversation);
-  stickyCandidates.set(conversation, { key, at, prefer: true });
+  stickyCandidates.set(conversation, { key, at, prefer: true, served });
   if (stickyCandidates.size > STICKY_MAX_CONVERSATIONS) {
     const oldest = stickyCandidates.keys().next();
     if (!oldest.done) stickyCandidates.delete(oldest.value);
@@ -672,10 +676,16 @@ function stickyDemote(conversation: string, key: string): void {
  * even when their opening message is identical, and two projects are never the
  * same conversation.
  *
- * A collision — two agents genuinely opened with the same text — costs nothing
- * beyond a shared preference, since this only reorders candidates that were
- * all eligible anyway. `undefined` (an unparseable or empty body) simply means
- * no stickiness, which is the behaviour that shipped before this existed.
+ * A collision — two agents genuinely opened with the same text — is NOT free.
+ * The two conversations share one record of who served them, so a candidate
+ * that served only the other one would otherwise look like the owner of this
+ * transcript's thinking blocks, and receive another model's blocks unstripped
+ * (the issue #30 failure). The record therefore keeps every candidate that has
+ * served the key, and a candidate is foreign whenever any *other* has: a
+ * collision strips thinking rather than keeping foreign blocks. Stripping costs
+ * reasoning continuity; keeping them kills the agent. `undefined` (an
+ * unparseable or empty body) simply means no stickiness, which is the
+ * behaviour that shipped before this existed.
  */
 export function conversationKey(body: Buffer, tenant: string, alias: string): string | undefined {
   try {
@@ -1165,11 +1175,12 @@ async function routeTierRequest(
   const conversation = conversationKey(req.body, tenant.id, alias);
   const headers = withSessionHeader(litellmHeaders(requestHeaders(req.headers), deps.litellmKey), conversation);
   const pinned = conversation === undefined ? undefined : stickyGet(conversation, now());
-  // Two different questions, deliberately read from two fields. `lastServed`
-  // is whose extended-thinking blocks the transcript carries, and stays true
-  // until another candidate actually serves. `sticky` is who to TRY first, and
-  // lapses the moment that candidate hands back a 400.
+  // Two different questions, deliberately read from two fields. `served` is
+  // every candidate whose extended-thinking blocks the transcript may carry,
+  // and only grows. `sticky` is who to TRY first, and lapses the moment that
+  // candidate hands back a 400.
   const lastServed = pinned?.key;
+  const served = pinned?.served;
   const sticky = pinned?.prefer === true ? pinned.key : undefined;
   // Preference, not a pin: the sticky candidate moves to the front and every
   // other keeps its rank behind it. Its cooldown still applies, so a candidate
@@ -1211,11 +1222,15 @@ async function routeTierRequest(
     // the candidate that is no longer serving, and the direct path's usual
     // byte-identical contract exists to echo vendor state back to the vendor
     // that issued it — which is exactly what has stopped being true here.
-    const foreign = lastServed !== undefined && lastServed !== route.key;
+    // Foreign when any OTHER candidate has served this key — not merely the
+    // last one. A switch leaves the earlier model's blocks in the client's
+    // transcript for every later turn, and a colliding conversation's
+    // candidate is indistinguishable from this one's (see `conversationKey`).
+    const foreign = served !== undefined && [...served].some((key) => key !== route.key);
     if (foreign) {
       deps.log?.(
-        `router: ${alias} conversation moving ${lastServed} -> ${route.key}, ` +
-        "dropping the previous model's thinking blocks",
+        `router: ${alias} conversation served by ${[...served!].join(', ')} now on ${route.key}` +
+        `${lastServed === route.key ? '' : ` (was ${lastServed})`}, dropping other models' thinking blocks`,
       );
     }
     const outbound = direct ? req.body : flattened;

@@ -2269,3 +2269,49 @@ describe('routeRequest — a bare model key on a direct gateway', () => {
     expect(url).toBe('http://litellm/v1/messages');
   });
 });
+
+describe('conversation key collisions', () => {
+  const ROUTES = {
+    role: 'code', tier: 'simple',
+    routes: [
+      { key: 'flash', native: { gateway: 'gf', id: 'flash-1' } },
+      { key: 'luna', native: { gateway: 'gl', id: 'luna-1' } },
+    ],
+  };
+  const THINKING = { type: 'thinking', thinking: 'flash reasoning', signature: 'sig-flash' };
+  const request = (messages: unknown[]) => ({
+    method: 'POST', url: '/v1/messages', headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages })),
+  });
+  beforeEach(() => clearCooldowns());
+
+  it('strips thinking when another conversation sharing the key was served by a different candidate', async () => {
+    const bodies: { model: string; messages: unknown[] }[] = [];
+    const state = { flashFails: false };
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const payload = JSON.parse(init.body as string) as { model: string; messages: unknown[] };
+        bodies.push(payload);
+        return new Response('{}', { status: payload.model === 'default/flash' && state.flashFails ? 503 : 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    };
+    const opener = { role: 'user', content: 'same task text' };
+    // Conversation A is served by flash.
+    await routeRequest(request([opener]), deps);
+    // Conversation B opens identically; flash fails, so luna serves it.
+    state.flashFails = true;
+    await routeRequest(request([opener]), deps);
+    // A's second turn carries flash's thinking. flash is cooling, luna serves:
+    // the blocks are foreign to luna and must not reach it.
+    await routeRequest(request([
+      opener,
+      { role: 'assistant', content: [THINKING, { type: 'text', text: 'ok' }] },
+      { role: 'user', content: 'continue' },
+    ]), deps);
+    const last = bodies.at(-1)!;
+    expect(last.model).toBe('default/luna');
+    expect(JSON.stringify(last.messages)).not.toContain('sig-flash');
+  });
+});
