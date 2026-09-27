@@ -973,6 +973,38 @@ describe('cmdRouteSubagent', () => {
     expect(readSessions(routeSessionsFile(cwd, 'global', home))).toEqual(['s1']);
   });
 
+  // Registration and the routing write are one step: an id left registered
+  // after the write threw is a reference nothing will release until its stop
+  // hook — which may never fire — and it holds routing on for a subagent that
+  // was never routed.
+  it('unregisters a subagent whose routing write threw', async () => {
+    const o = opts();
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'settings.json'), '{ not json');
+    await expect(cmdRouteSubagent('start', 'a1', o, OFFLINE)).rejects.toThrow();
+    expect(readSessions(routeSubagentsFile(cwd, 'global', home))).toEqual([]);
+  });
+
+  it('unregisters a session whose routing write threw', async () => {
+    const o = { ...opts(), serveArgv: ['node', 'cli.js', 'serve'] };
+    await cmdRouteSession('start', 's0', o, { ...deps, settle: () => {} });
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'settings.json'), '{ not json');
+    await expect(cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} })).rejects.toThrow();
+    expect(readSessions(routeSessionsFile(cwd, 'global', home))).toEqual(['s0']);
+  });
+
+  it('keeps an already-registered session registered when its re-entry write throws', async () => {
+    const o = { ...opts(), serveArgv: ['node', 'cli.js', 'serve'] };
+    await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
+    await cmdRouteSession('start', 's2', o, { ...deps, settle: () => {} });
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'settings.json'), '{ not json');
+    await expect(cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} })).rejects.toThrow();
+    // Still live, so its SessionEnd must still find it; the order is restored.
+    expect(readSessions(routeSessionsFile(cwd, 'global', home))).toEqual(['s1', 's2']);
+  });
+
   it('clears leaked subagent references when the last session ends', async () => {
     const o = opts();
     const sessionOpts = { ...o, serveArgv: ['node', 'cli.js', 'serve'] };
