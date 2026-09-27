@@ -931,8 +931,13 @@ export async function cmdRouteSession(
   // session's append and its write and answer that question against a list
   // that was about to change.
   await withSessionLock(registry, async () => {
+    // Moved to the END even when already registered: a session firing
+    // SessionStart again under its own id (resume, compaction) writes the env
+    // again, and `cmdRouteSettle` lets only the newest registration clear it.
+    // Left at its old position, its own settle returned early and the env
+    // stayed for as long as any session lived.
     const current = readSessions(registry);
-    writeSessions(registry, current.includes(sessionId) ? current : [...current, sessionId]);
+    writeSessions(registry, [...current.filter((id) => id !== sessionId), sessionId]);
     await cmdRoute('on', opts);
   });
 
