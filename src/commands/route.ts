@@ -49,10 +49,12 @@ export function routeSettingsFile(
  * The SessionStart command that keeps the router up for a routed session,
  * pointing at this installation's `ensure-serve.mjs` with the routing port.
  *
- * The `--global` marker matters: a daemon this hook starts for global-scope
- * routing is shared by every project, so it must resolve the machine config
- * regardless of which project's session happens to trigger it — `--global`
- * tells `ensure-serve.mjs` to start it from `home`, not its own inherited cwd.
+ * The `--global` marker changes nothing at run time: `ensure-serve.mjs` does
+ * not read it. There is one router per machine and it resolves each request's
+ * own config, so the hook starts the daemon the same way for either scope —
+ * beside the machine config file when one exists, else from the session's cwd.
+ * The marker stays because installed hooks are matched by their exact command
+ * string, and changing it would orphan every hook already written.
  */
 export function ensureServeCommand(packageRoot: string, port: number, scope: 'project' | 'global' = 'project'): string {
   const base = `node ${JSON.stringify(join(packageRoot, 'hooks', 'ensure-serve.mjs'))} ${port}`;
