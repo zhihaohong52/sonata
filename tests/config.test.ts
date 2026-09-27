@@ -155,6 +155,43 @@ dispatch_window_seconds = 600
   });
 });
 
+describe('[run] timings', () => {
+  const base = `
+[models.m]
+harness = "opencode"
+id = "p/m"
+
+[generate.roles]
+code = ["m"]
+`;
+  const keys = ['tail_window_seconds', 'stall_timeout_seconds', 'run_timeout_seconds', 'dispatch_window_seconds'];
+
+  // A timing that is not a positive, finite number of seconds is refused
+  // rather than read or defaulted. run_timeout_seconds = 0 killed every run the
+  // moment it started; a string silently fell back to the default, so a value
+  // the user believed they set was not the one in force.
+  for (const key of keys) {
+    for (const [what, value] of [
+      ['zero', '0'], ['negative', '-5'], ['a string', '"1800"'], ['infinite', 'inf'], ['NaN', 'nan'],
+    ] as const) {
+      it(`refuses ${key} = ${what}`, () => {
+        expect(() => parseConfig(`${base}\n[run]\n${key} = ${value}\n`))
+          .toThrow(new RegExp(`^sonata\\.toml: \\[run\\] ${key} must be a positive number of seconds`));
+      });
+    }
+
+    it(`accepts a positive ${key}, fractional included`, () => {
+      expect(() => parseConfig(`${base}\n[run]\n${key} = 2.5\n`)).not.toThrow();
+    });
+  }
+
+  it('still defaults every key that is absent', () => {
+    expect(parseConfig(base).run).toEqual({
+      tailWindowSeconds: 20, stallTimeoutSeconds: 120, runTimeoutSeconds: 1800, dispatchWindowSeconds: 1500,
+    });
+  });
+});
+
 describe('parseConfig — provider-qualified ids', () => {
   const cfg = (harness: string, id: string) => `
 [models."m"]
