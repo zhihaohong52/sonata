@@ -5,7 +5,7 @@ import { recordHarnessUsage } from '../harness-usage.js';
 import { loadConfig } from '../config.js';
 import { getAdapter } from '../adapters/index.js';
 import { tryCapturePane } from '../tmux.js';
-import { cleanPane, newLines } from '../normalize.js';
+import { cleanPane, newLines, stripAnsi } from '../normalize.js';
 import {
   readMeta, readExit, readReport, readCursor, writeCursor,
   appendEvents, readEvents, writeMeta, runDir, readAnsweredPrompt, clearAnsweredPrompt,
@@ -50,6 +50,13 @@ export interface DecideInput {
    * no report is then the expected outcome, not a failure.
    */
   canWriteReport?: boolean;
+  /**
+   * The run's `harness.log` — everything the harness printed, which the
+   * opencode/pi/reasonix/codex scripts tee there. A run whose terminal output
+   * IS its report takes its body from here, since the pane holds only the
+   * last screen and `paneTail` only its last 20 lines of that.
+   */
+  terminalLog?: string;
   /**
    * True when the harness writes nothing to the terminal until it exits
    * (headless `claude -p` sends stdout to last-message.txt). Silence is then
@@ -134,6 +141,20 @@ export interface TailResult {
   worktreeUnchanged?: boolean;
 }
 
+/**
+ * A read-only run's report: its whole harness log when there is one, else the
+ * pane tail. The log is the complete account; the pane was only ever the last
+ * 20 lines of the last screen, so a review longer than that lost its opening.
+ */
+function terminalOutput(input: DecideInput): string {
+  // Blank lines are kept — they are the report's paragraph breaks — so this
+  // strips escapes and trailing space rather than using the pane cleaner.
+  const log = input.terminalLog === undefined
+    ? ''
+    : stripAnsi(input.terminalLog).split('\n').map((l) => l.replace(/\s+$/, '')).join('\n').trim();
+  return log.length > 0 ? log : input.paneTail.join('\n');
+}
+
 /** Pure state machine. Order matters: completion beats a stale prompt match. */
 export function decide(input: DecideInput): TailResult {
   if (input.exitCode !== null) {
@@ -212,7 +233,7 @@ export function decide(input: DecideInput): TailResult {
     const report = input.timedOut
       ? `[timed out: sonata killed the run after the configured run_timeout_seconds]\n\n${input.paneTail.join('\n')}`
       : reportImpossible
-        ? `${effortNote}[read-only run: the harness cannot write a report file, so this is its terminal output]\n\n${input.paneTail.join('\n')}`
+        ? `${effortNote}[read-only run: the harness cannot write a report file, so this is its terminal output]\n\n${terminalOutput(input)}`
         // Before the generic degraded branches: this one has a report-shaped
         // file to speak of, and its text (the harness's own last message) is
         // exactly the evidence the reader needs, so it is kept rather than
@@ -401,6 +422,11 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       ? undefined
       : worktreeUnchangedSince(meta.worktreeAtLaunch, opts.cwd, runDir(opts.cwd, opts.id));
 
+    // Read only once the run has finished: the log is what a read-only run's
+    // report is built from, and nothing before then needs it.
+    const logPath = join(runDir(opts.cwd, opts.id), 'harness.log');
+    const terminalLog = exitCode !== null && existsSync(logPath) ? readFileSync(logPath, 'utf8') : undefined;
+
     const result = decide({
       newLines: fresh,
       exitCode,
@@ -412,6 +438,7 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       paneTail: pane.slice(-20),
       timedOut: existsSync(join(runDir(opts.cwd, opts.id), 'timeout')),
       canWriteReport: meta.canWriteReport,
+      terminalLog,
       silentUntilExit: meta.silentUntilExit,
       launchMarker: scriptPath,
       preLaunchPane: meta.preLaunchPane,
