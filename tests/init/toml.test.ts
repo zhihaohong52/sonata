@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { replaceBlock, nativeTomlFor, replaceTiersBlock, tomlKey } from '../../src/init/toml.js';
 import { parseConfig, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL } from '../../src/config.js';
+import { configNativeCandidates } from '../../src/init/helpers.js';
+import { DEFAULT_PORTS } from '../../src/commands/ports.js';
 import type { NativeCandidate } from '../../src/commands/init.js';
 
 describe('tomlKey', () => {
@@ -472,6 +474,91 @@ describe('nativeTomlFor — settings init must not silently drop', () => {
     expect(toml).not.toContain('pricing_provider');
     expect(toml).not.toContain('.price');
     expect(parseConfig(toml).native!.gateways.acme.pricingProvider).toBeUndefined();
+  });
+
+  it('round-trips a gateway provider', () => {
+    // `provider` names the LiteLLM transport: without it a `gemini` gateway
+    // silently falls back to `openai` on the next rewrite and every request
+    // speaks the wrong wire dialect. The writer's candidates carry `wireFormat`
+    // and no provider at all, so the only source is the config being rewritten.
+    const existing = parseConfig([
+      'schema_version = 1',
+      '[native.gateways."acme"]',
+      'base_url = "https://acme.example/v1"',
+      'provider = "gemini"',
+      '[models."acme-m"]',
+      'gateway = "acme"',
+      'id = "m"',
+      'context_window = 128000',
+    ].join('\n'));
+    const toml = write(existing);
+    expect(toml).toContain('provider = "gemini"');
+    expect(parseConfig(toml).native!.gateways.acme.provider).toBe('gemini');
+  });
+
+  it('keeps a provider written by a first run through a second', () => {
+    // Run one writes `provider = "anthropic"` from a candidate's wireFormat.
+    // The config it writes carries no `wire_format`, and the candidates init
+    // rebuilds from that config carry neither field — so without reading the
+    // provider back off the existing gateway, run two drops it and an
+    // anthropic-dialect gateway silently becomes an openai one.
+    const first = nativeTomlFor({ code: [{
+      key: 'custom-claude-clone', gateway: 'custom', id: 'claude-clone',
+      contextWindow: 128000, baseUrl: 'https://example.com/v1', auth: 'api-key',
+      wireFormat: 'anthropic',
+    }] });
+    const parsed = parseConfig(first);
+    expect(parsed.native!.gateways.custom.provider).toBe('anthropic');
+
+    const rebuilt = configNativeCandidates(parsed);
+    expect(rebuilt.some((c) => c.wireFormat !== undefined)).toBe(false);
+    const second = nativeTomlFor({ code: rebuilt }, {}, undefined, {}, rebuilt, undefined, [], parsed);
+    expect(parseConfig(second).native!.gateways.custom.provider).toBe('anthropic');
+  });
+
+  it('round-trips [native.ports] when they differ from the defaults', () => {
+    // parseConfig reads `[native.ports]` and `routerPorts` serves from it; the
+    // writer never emitted the table, so a hand-chosen port survived exactly
+    // until the next `sonata init` — and the router then answered on 4100
+    // against clients aimed at the port the config still names.
+    const existing = parseConfig([
+      'schema_version = 1',
+      '[native.ports]',
+      'router = 4200',
+      '[native.gateways."acme"]',
+      'base_url = "https://acme.example/v1"',
+      '[models."acme-m"]',
+      'gateway = "acme"',
+      'id = "m"',
+      'context_window = 128000',
+    ].join('\n'));
+    const toml = write(existing);
+    expect(toml).toContain('[native.ports]');
+    expect(toml).toContain('router = 4200');
+    // Non-default values only: emitting the defaults would add a table to
+    // every file for nothing.
+    expect(toml).not.toContain('litellm =');
+    expect(parseConfig(toml).native!.ports).toEqual({ router: 4200, litellm: DEFAULT_PORTS.litellm });
+  });
+
+  it('emits no [native.ports] table for the default ports', () => {
+    expect(write()).not.toContain('[native.ports]');
+    const existing = parseConfig([
+      'schema_version = 1',
+      '[native.ports]',
+      `router = ${DEFAULT_PORTS.router}`,
+      `litellm = ${DEFAULT_PORTS.litellm}`,
+      '[native.gateways."acme"]',
+      'base_url = "https://acme.example/v1"',
+      '[models."acme-m"]',
+      'gateway = "acme"',
+      'id = "m"',
+      'context_window = 128000',
+    ].join('\n'));
+    const toml = write(existing);
+    expect(toml).not.toContain('[native.ports]');
+    // The values survive either way: these are the defaults parseConfig fills.
+    expect(parseConfig(toml).native!.ports).toEqual({ router: DEFAULT_PORTS.router, litellm: DEFAULT_PORTS.litellm });
   });
 });
 
