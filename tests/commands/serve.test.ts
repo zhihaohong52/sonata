@@ -3540,14 +3540,19 @@ litellm = ${litellmPort}
     }
   });
 
-  describe('the ChatGPT token file LiteLLM reads', () => {
+  describe('the ChatGPT token directory LiteLLM owns', () => {
     // LiteLLM re-reads CHATGPT_TOKEN_DIR/auth.json on every access token it
-    // needs, refreshes it in place, and ChatGPT rotates refresh tokens — an
-    // old one is refused as `refresh_token_reused`. So the file is written
-    // only when the store's record is newer than what LiteLLM holds, on every
-    // path: startup, an in-place re-merge, and a respawn.
-    const jwt = (exp: number) => `h.${Buffer.from(JSON.stringify({ exp })).toString('base64url')}.s`;
-    const machine = (extra: string) => `
+    // needs, refreshes it in place with open("w"), and ChatGPT rotates
+    // refresh tokens — an old one is refused as `refresh_token_reused`. So
+    // sonata writes a token only into a directory it has just created for a
+    // spawn, and never into one a LiteLLM is using. A different login in the
+    // store — another store, or another account — restarts LiteLLM into a
+    // fresh directory; nothing else does.
+    const claimJwt = (exp: number, account?: string) => `h.${Buffer.from(JSON.stringify({
+      exp, client_id: 'app_EMoamEEZ73f0CkXaXp7hrann',
+      ...(account === undefined ? {} : { 'https://api.openai.com/auth': { chatgpt_account_id: account } }),
+    })).toString('base64url')}.s`;
+    const machine = (extra = '', source?: string) => `
 [models."luna"]
 gateway = "codex"
 id = "gpt-5.6-luna"
@@ -3557,6 +3562,7 @@ simple = ["luna"]
 complex = ["luna"]
 [native.gateways."codex"]
 auth = "codex-oauth"
+${source === undefined ? '' : `credential_source = "${source}"`}
 [native.ports]
 router = 0
 litellm = ${litellmPort}
@@ -3565,248 +3571,375 @@ litellm = ${litellmPort}
       mkdirSync(join(home, '.codex'), { recursive: true });
       writeFileSync(join(home, '.codex', 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens }));
     };
-    const start = async (tempDir: string) => {
-      let spawns = 0;
+    const writeOpencodeStore = (access: string, refresh: string) => {
+      mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+      writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({
+        openai: { type: 'oauth', access, refresh, expires: 1_900_000_000_000 },
+      }));
+    };
+    const ocDbPath = () => join(home, '.local', 'share', 'opencode', 'opencode.db');
+    const start = async (o: { onExitSupported?: boolean } = {}) => {
+      const envs: NodeJS.ProcessEnv[] = [];
+      const exits: ((code: number | null, signal: NodeJS.Signals | null) => void)[][] = [];
       vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
       const handle = await cmdServe({
-        cwd, home, tempDir, waitForLitellm: async () => {},
-        spawnLitellm: () => { spawns += 1; return { pid: 1, kill: () => {} }; },
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, respawnDelayMs: 0,
+        spawnLitellm: (_config, env) => {
+          envs.push({ ...env });
+          const listeners: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
+          exits.push(listeners);
+          return {
+            pid: envs.length,
+            kill: () => { setImmediate(() => listeners.forEach((cb) => cb(null, 'SIGTERM'))); },
+            ...(o.onExitSupported === false ? {} : { onExit: (cb: (code: number | null, signal: NodeJS.Signals | null) => void) => { listeners.push(cb); } }),
+          };
+        },
       });
       handles.push(handle);
       vi.unstubAllGlobals();
       const send = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
-      });
-      return { send, spawns: () => spawns };
+      }).then(async (res) => { await res.text(); return res.status; });
+      const dir = () => envs.at(-1)?.CHATGPT_TOKEN_DIR ?? '';
+      const tokenFile = () => join(dir(), 'auth.json');
+      const held = () => JSON.parse(readFileSync(tokenFile(), 'utf8')) as { refresh_token?: string };
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+      /** The latest child exiting on its own. */
+      const crash = () => exits.at(-1)!.forEach((cb) => cb(1, null));
+      return { send, envs, dir, tokenFile, held, settle, crash };
     };
+    let errors: string[];
     let errorSpy: ReturnType<typeof vi.spyOn>;
-    beforeEach(() => { errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {}); });
+    beforeEach(() => {
+      errors = [];
+      errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args.join(' ')); });
+    });
     afterEach(() => { errorSpy.mockRestore(); });
 
-    it('leaves a token LiteLLM has refreshed alone, on a re-merge and on a respawn', async () => {
-      writeMachineConfig(machine(''));
-      writeCodexStore({ access_token: jwt(1000), refresh_token: 'from-codex' });
-      const tempDir = tempDirFor();
-      const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
-      const { send, spawns } = await start(tempDir);
-      expect(spawns()).toBe(1);
-      expect(readFileSync(tokenFile, 'utf8')).toContain('from-codex');
-      // LiteLLM refreshes its own copy; the store now holds the older token.
-      const refreshed = JSON.stringify({ access_token: jwt(2000), refresh_token: 'refreshed', expires_at: 2000 });
-      writeFileSync(tokenFile, refreshed);
-      // A config edit that moves the fingerprint but not the model registry:
-      // an in-place re-merge, no respawn.
-      writeMachineConfig(`# edited\n${machine('')}`);
+    it('seeds a fresh directory for the first spawn and points LiteLLM at it', async () => {
+      writeMachineConfig(machine());
+      writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'FROM-CODEX' });
+      const { envs, held, tokenFile } = await start();
+      expect(envs).toHaveLength(1);
+      expect(held().refresh_token).toBe('FROM-CODEX');
+      expect(statSync(tokenFile()).mode & 0o777).toBe(0o600);
+      expect(readdirSync(tempDirFor()).filter((name) => name.startsWith('chatgpt'))).toEqual(['chatgpt']);
+    });
+
+    it('leaves a token LiteLLM has refreshed alone, through requests, config edits, re-merges and a registry restart', async () => {
+      writeMachineConfig(machine());
+      writeCodexStore({ access_token: claimJwt(1000, 'acct-a'), refresh_token: 'FROM-CODEX' });
+      const { send, envs, dir, tokenFile, settle } = await start();
+      const refreshed = JSON.stringify({
+        access_token: claimJwt(2000, 'acct-a'), refresh_token: 'REFRESHED', expires_at: 2000, account_id: 'acct-a',
+      });
+      writeFileSync(tokenFile(), refreshed);
+      const first = dir();
+      for (let i = 0; i < 5; i += 1) await send();
+      writeMachineConfig(`# edited\n${machine()}`);
       await send();
-      expect(spawns()).toBe(1);
-      expect(readFileSync(tokenFile, 'utf8')).toBe(refreshed);
-      // A registry change respawns the child, and the respawn must not put the
-      // store's older token back either: its refresh token was rotated away.
+      writeSonataKey(home, 'unrelated', 'k');
+      await send();
+      // A store that is re-read (its file rewritten, same login) re-merges too.
+      writeCodexStore({ access_token: claimJwt(1000, 'acct-a'), refresh_token: 'FROM-CODEX' });
+      await send();
+      expect(envs).toHaveLength(1);
+      expect(readFileSync(tokenFile(), 'utf8')).toBe(refreshed);
+      // A registry change restarts LiteLLM into the SAME directory, untouched.
       writeMachineConfig(machine('context_window = 64000'));
       await send();
-      expect(spawns()).toBe(2);
-      expect(readFileSync(tokenFile, 'utf8')).toBe(refreshed);
+      await settle();
+      expect(envs).toHaveLength(2);
+      expect(dir()).toBe(first);
+      expect(readFileSync(tokenFile(), 'utf8')).toBe(refreshed);
     });
 
-    it('writes the file when it is missing', async () => {
-      writeMachineConfig(machine(''));
-      writeCodexStore({ access_token: jwt(1000), refresh_token: 'from-codex' });
-      const tempDir = tempDirFor();
-      const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
-      const { send, spawns } = await start(tempDir);
-      expect(readFileSync(tokenFile, 'utf8')).toContain('from-codex');
-      rmSync(tokenFile);
-      writeMachineConfig(machine('context_window = 64000'));
-      await send();
-      expect(spawns()).toBe(2);
-      expect(readFileSync(tokenFile, 'utf8')).toContain('from-codex');
-    });
-
-    it('carries a newer `codex login` into the running LiteLLM without a respawn', async () => {
-      // `codex login` is the remedy serve's own error names. The in-place
-      // re-merge it triggers used to write nothing, so LiteLLM kept the old,
-      // revoked refresh token until something else respawned it.
-      writeMachineConfig(machine(''));
-      writeCodexStore({ access_token: jwt(1), refresh_token: 'OLD-REVOKED' });
-      const tempDir = tempDirFor();
-      const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
-      const { send, spawns } = await start(tempDir);
-      expect(readFileSync(tokenFile, 'utf8')).toContain('OLD-REVOKED');
-      writeCodexStore({ access_token: jwt(9_999_999_999), refresh_token: 'NEW-FRESH' });
-      await send();
-      expect(spawns()).toBe(1);
-      expect(readFileSync(tokenFile, 'utf8')).toContain('NEW-FRESH');
-    });
-
-    it('falls back to modification times when neither record carries an expiry', async () => {
-      writeMachineConfig(machine(''));
-      writeCodexStore({ access_token: 'opaque-1', refresh_token: 'from-codex' });
-      const tempDir = tempDirFor();
-      const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
-      const { send, spawns } = await start(tempDir);
-      writeFileSync(tokenFile, '{"refreshed":"by-litellm"}');
-      writeMachineConfig(machine('context_window = 64000'));
-      await send();
-      expect(spawns()).toBe(2);
-      expect(readFileSync(tokenFile, 'utf8')).toBe('{"refreshed":"by-litellm"}');
-      // A store written after LiteLLM's copy wins.
-      writeCodexStore({ access_token: 'opaque-2', refresh_token: 'relogged' });
-      const later = new Date(Date.now() + 60_000);
-      utimesSync(join(home, '.codex', 'auth.json'), later, later);
-      await send();
-      expect(spawns()).toBe(2);
-      expect(readFileSync(tokenFile, 'utf8')).toContain('relogged');
-    });
-
-    describe('newer-wins compares only within one lineage', () => {
-      // An expiry is comparable only between two tokens of one login. A token
-      // from another store, or another account, later-expiring or not, is a
-      // different credential: LiteLLM holding account A's longer-lived token
-      // must not outlive a switch to account B.
-      const ocJwt = (exp: number) =>
-        `h.${Buffer.from(JSON.stringify({ exp, client_id: 'app_EMoamEEZ73f0CkXaXp7hrann' })).toString('base64url')}.s`;
-      const withSource = (source: string) => machine('').replace(
-        'auth = "codex-oauth"', `auth = "codex-oauth"\ncredential_source = "${source}"`,
-      );
-      const writeOpencodeStore = (access: string, refresh: string, accountId?: string) => {
-        mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
-        writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({
-          openai: { type: 'oauth', access, refresh, expires: 1_900_000_000_000, ...(accountId ? { accountId } : {}) },
-        }));
-      };
-      const held = (tempDir: string) =>
-        JSON.parse(readFileSync(join(tempDir, 'chatgpt', 'auth.json'), 'utf8')) as { refresh_token?: string };
-
-      it('writes the new source\'s token when credential_source changes, though the old one expires later', async () => {
-        writeMachineConfig(withSource('codex'));
-        writeCodexStore({ access_token: jwt(2_000_000_000), refresh_token: 'CODEX-A' });
-        writeOpencodeStore(ocJwt(1_900_000_000), 'OPENCODE-B');
-        const tempDir = tempDirFor();
-        const { send } = await start(tempDir);
-        expect(held(tempDir).refresh_token).toBe('CODEX-A');
-        writeMachineConfig(withSource('opencode'));
-        await send();
-        expect(held(tempDir).refresh_token).toBe('OPENCODE-B');
+    it.runIf(sqliteAvailable())('leaves LiteLLM\'s rotated token alone for an opencode v2 login that carries no account id', async () => {
+      // The v2 credential row has no `accountId`. Read as "a different
+      // account", it overwrote LiteLLM's rotated token on every re-merge.
+      writeMachineConfig(machine('', 'opencode'));
+      writeOpencodeCredDb(ocDbPath(), [{
+        id: 'c1', integration: 'openai', timeCreated: 1,
+        value: JSON.stringify({ type: 'oauth', access: claimJwt(1_900_000_000, 'acct-1'), refresh: 'STORE', expires: 1_900_000_000_000 }),
+      }]);
+      const { send, envs, tokenFile } = await start();
+      const rotated = JSON.stringify({
+        access_token: claimJwt(1_900_864_000, 'acct-1'), refresh_token: 'LITELLM-ROTATED',
+        id_token: null, expires_at: 1_900_864_000, account_id: 'acct-1',
       });
+      writeFileSync(tokenFile(), rotated);
+      writeSonataKey(home, 'unrelated', 'k');
+      await send();
+      writeMachineConfig(`# edited\n${machine('', 'opencode')}`);
+      await send();
+      expect(envs).toHaveLength(1);
+      expect(readFileSync(tokenFile(), 'utf8')).toBe(rotated);
+    });
 
-      it('writes opencode\'s token when `codex logout` makes the default fall through to it', async () => {
-        writeMachineConfig(machine(''));
-        writeCodexStore({ access_token: jwt(2_000_000_000), refresh_token: 'CODEX-A' });
-        writeOpencodeStore(ocJwt(1_900_000_000), 'OPENCODE-B');
-        const tempDir = tempDirFor();
-        const { send } = await start(tempDir);
-        expect(held(tempDir).refresh_token).toBe('CODEX-A');
-        rmSync(join(home, '.codex', 'auth.json'));
-        await send();
-        expect(held(tempDir).refresh_token).toBe('OPENCODE-B');
+    it('never touches a half-written file in LiteLLM\'s directory', async () => {
+      writeMachineConfig(machine());
+      writeCodexStore({ access_token: claimJwt(1000, 'acct-a'), refresh_token: 'FROM-CODEX' });
+      const { send, envs, tokenFile } = await start();
+      // LiteLLM is mid-write (open("w") has truncated it) when a re-merge lands.
+      writeFileSync(tokenFile(), '{"access_token":"h.eyJ');
+      writeMachineConfig(`# edited\n${machine()}`);
+      await send();
+      writeSonataKey(home, 'unrelated', 'k');
+      await send();
+      expect(readFileSync(tokenFile(), 'utf8')).toBe('{"access_token":"h.eyJ');
+      expect(envs).toHaveLength(1);
+    });
+
+    it('restarts LiteLLM once, into a fresh directory holding the new account\'s token, when the account changes', async () => {
+      writeMachineConfig(machine());
+      writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'ACCOUNT-A' });
+      const { send, envs, dir, held, settle } = await start();
+      const first = dir();
+      expect(held().refresh_token).toBe('ACCOUNT-A');
+      writeCodexStore({ access_token: claimJwt(1_900_000_000, 'acct-b'), refresh_token: 'ACCOUNT-B' });
+      await send();
+      await waitFor(() => envs.length === 2, 'the restart for the new account');
+      expect(dir()).not.toBe(first);
+      expect(held().refresh_token).toBe('ACCOUNT-B');
+      expect(existsSync(first)).toBe(false);
+      expect(errors.some((line) => line.includes('gateway "codex": account changed — restarting litellm'))).toBe(true);
+      for (let i = 0; i < 4; i += 1) { await send(); await settle(); }
+      expect(envs).toHaveLength(2);
+    });
+
+    it('restarts LiteLLM into a fresh directory when credential_source moves to another store', async () => {
+      writeMachineConfig(machine('', 'codex'));
+      writeCodexStore({ access_token: claimJwt(2_000_000_000), refresh_token: 'CODEX-A' });
+      writeOpencodeStore(claimJwt(1_900_000_000), 'OPENCODE-B');
+      const { send, envs, dir, held } = await start();
+      const first = dir();
+      expect(held().refresh_token).toBe('CODEX-A');
+      writeMachineConfig(machine('', 'opencode'));
+      await send();
+      await waitFor(() => envs.length === 2, 'the restart for the new source');
+      expect(dir()).not.toBe(first);
+      expect(held().refresh_token).toBe('OPENCODE-B');
+      expect(errors.some((line) => line.includes('credential source changed (codex store → opencode store)'))).toBe(true);
+    });
+
+    it('does not restart for a same-account re-login, or for codex refreshing its own store', async () => {
+      writeMachineConfig(machine());
+      writeCodexStore({ access_token: claimJwt(1000, 'acct-a'), refresh_token: 'SEEDED' });
+      const { send, envs, tokenFile, settle } = await start();
+      const seeded = readFileSync(tokenFile(), 'utf8');
+      writeCodexStore({ access_token: claimJwt(9_999_999_999, 'acct-a'), refresh_token: 'RELOGGED' });
+      await send(); await settle();
+      writeCodexStore({ access_token: claimJwt(9_999_999_999, 'acct-a'), refresh_token: 'CODEX-REFRESHED', account_id: 'acct-a' });
+      await send(); await settle();
+      // An account learned only now (the seed had none) is not a switch either.
+      expect(envs).toHaveLength(1);
+      expect(readFileSync(tokenFile(), 'utf8')).toBe(seeded);
+    });
+
+    it('restarts when `codex logout` makes the default fall through to opencode\'s other account', async () => {
+      writeMachineConfig(machine());
+      writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'CODEX-A' });
+      writeOpencodeStore(claimJwt(1_900_000_000, 'acct-b'), 'OPENCODE-B');
+      const { send, envs, dir, held } = await start();
+      const first = dir();
+      rmSync(join(home, '.codex', 'auth.json'));
+      await send();
+      await waitFor(() => envs.length === 2, 'the restart for the fallback login');
+      expect(dir()).not.toBe(first);
+      expect(held().refresh_token).toBe('OPENCODE-B');
+    });
+
+    it('seeds a fresh directory when a login returns after positively going away', async () => {
+      writeMachineConfig(machine('', 'codex'));
+      writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'FIRST' });
+      const { send, envs, dir, held, settle } = await start();
+      const first = dir();
+      rmSync(join(home, '.codex', 'auth.json'));
+      expect(await send()).toBe(502);
+      await settle();
+      writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SECOND' });
+      await send();
+      await waitFor(() => envs.at(-1)?.CHATGPT_TOKEN_DIR !== undefined && envs.at(-1)?.CHATGPT_TOKEN_DIR !== first,
+        'a spawn into a new directory');
+      expect(held().refresh_token).toBe('SECOND');
+    });
+
+    it('respawns a crashed LiteLLM into the directory it was using, with LiteLLM\'s token as it left it', async () => {
+      writeMachineConfig(machine());
+      writeCodexStore({ access_token: claimJwt(1000, 'acct-a'), refresh_token: 'SEEDED' });
+      const { send, envs, dir, tokenFile, crash, settle } = await start();
+      const first = dir();
+      const refreshed = JSON.stringify({ access_token: claimJwt(3000, 'acct-a'), refresh_token: 'REFRESHED', expires_at: 3000 });
+      writeFileSync(tokenFile(), refreshed);
+      // codex refreshes its own copy meanwhile: newer than LiteLLM's, same account.
+      writeCodexStore({ access_token: claimJwt(9000, 'acct-a'), refresh_token: 'CODEX-OWN' });
+      await send(); await settle();
+      crash();
+      await waitFor(() => envs.length === 2, 'the crash respawn');
+      expect(dir()).toBe(first);
+      expect(readFileSync(tokenFile(), 'utf8')).toBe(refreshed);
+    });
+  });
+
+  describe('a credential store that reads wrong before anything has resolved', () => {
+    let errors: string[];
+    let errorSpy: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      errors = [];
+      errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args.join(' ')); });
+    });
+    afterEach(() => { errorSpy.mockRestore(); });
+    const claimJwt = (exp: number) => `h.${Buffer.from(JSON.stringify({ exp, client_id: 'app_EMoamEEZ73f0CkXaXp7hrann' })).toString('base64url')}.s`;
+    const codexRecord = (refresh: string) =>
+      JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: claimJwt(2_000_000_000), refresh_token: refresh } });
+
+    it('refuses a default ChatGPT gateway whose codex file is torn, rather than serve opencode\'s account', async () => {
+      writeMachineConfig(`
+[models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["luna"]
+complex = ["luna"]
+[native.gateways."codex"]
+auth = "codex-oauth"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+      mkdirSync(join(home, '.codex'), { recursive: true });
+      writeFileSync(join(home, '.codex', 'auth.json'), codexRecord('CODEX-A').slice(0, 30));
+      mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+      writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({
+        openai: { type: 'oauth', access: claimJwt(1_900_000_000), refresh: 'OPENCODE-B', expires: 1_900_000_000_000 },
+      }));
+      const envs: NodeJS.ProcessEnv[] = [];
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: (_config, env) => { envs.push({ ...env }); return { pid: 1, kill: () => {} }; },
       });
-
-      it('writes a different account\'s token from the same store, though the held one expires later', async () => {
-        writeMachineConfig(machine(''));
-        writeCodexStore({ access_token: jwt(2_000_000_000), refresh_token: 'ACCOUNT-A', account_id: 'acct-a' });
-        const tempDir = tempDirFor();
-        const { send } = await start(tempDir);
-        expect(held(tempDir).refresh_token).toBe('ACCOUNT-A');
-        writeCodexStore({ access_token: jwt(1_900_000_000), refresh_token: 'ACCOUNT-B', account_id: 'acct-b' });
-        await send();
-        expect(held(tempDir).refresh_token).toBe('ACCOUNT-B');
-      });
-
-      it('keeps a held token that is newer, within one store and one account', async () => {
-        writeMachineConfig(machine(''));
-        writeCodexStore({ access_token: jwt(1000), refresh_token: 'STORE', account_id: 'acct-a' });
-        const tempDir = tempDirFor();
-        const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
-        const { send } = await start(tempDir);
-        // LiteLLM's refresh keeps the account id.
-        const refreshed = JSON.stringify({
-          access_token: jwt(2000), refresh_token: 'REFRESHED', expires_at: 2000, account_id: 'acct-a',
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const send = async () => {
+        const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
         });
-        writeFileSync(tokenFile, refreshed);
-        writeCodexStore({ access_token: jwt(1500), refresh_token: 'STORE-2', account_id: 'acct-a' });
-        await send();
-        expect(readFileSync(tokenFile, 'utf8')).toBe(refreshed);
-      });
-
-      it('rewrites a held file that does not parse', async () => {
-        writeMachineConfig(machine(''));
-        writeCodexStore({ access_token: jwt(1000), refresh_token: 'STORE' });
-        const tempDir = tempDirFor();
-        const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
-        const { send } = await start(tempDir);
-        writeFileSync(tokenFile, '{"access_tok');
-        writeMachineConfig(`# edited\n${machine('')}`);
-        await send();
-        expect(held(tempDir).refresh_token).toBe('STORE');
-      });
+        return { status: res.status, text: await res.text() };
+      };
+      const refused = await send();
+      expect(refused.status).toBe(502);
+      expect(refused.text).toContain('could not be read');
+      const seededWith = () => envs.map((env) =>
+        (JSON.parse(readFileSync(join(env.CHATGPT_TOKEN_DIR!, 'auth.json'), 'utf8')) as { refresh_token: string }).refresh_token);
+      expect(seededWith()).not.toContain('OPENCODE-B');
+      writeFileSync(join(home, '.codex', 'auth.json'), codexRecord('CODEX-A'));
+      expect((await send()).status).toBe(200);
+      expect(seededWith()).toEqual(['CODEX-A']);
     });
 
-    describe('an opencode login while serving', () => {
-      // `codexStoreSignal` is what re-merged on a `codex login`; nothing
-      // watched opencode's stores, so `opencode auth login` while serving
-      // never reached LiteLLM until something else moved the fingerprint.
-      const ocJwt = (exp?: number) => `h.${Buffer.from(JSON.stringify({
-        ...(exp === undefined ? {} : { exp }), client_id: 'app_EMoamEEZ73f0CkXaXp7hrann',
-      })).toString('base64url')}.s`;
-      const ocConfig = () => machine('').replace('auth = "codex-oauth"', 'auth = "codex-oauth"\ncredential_source = "opencode"');
-      const ocAuthPath = () => join(home, '.local', 'share', 'opencode', 'auth.json');
-      const ocDbPath = () => join(home, '.local', 'share', 'opencode', 'opencode.db');
-      const writeOcAuth = (entry: Record<string, unknown>) => {
-        mkdirSync(dirname(ocAuthPath()), { recursive: true });
-        writeFileSync(ocAuthPath(), JSON.stringify({ openai: { type: 'oauth', ...entry } }));
-      };
-      const held = (tempDir: string) =>
-        JSON.parse(readFileSync(join(tempDir, 'chatgpt', 'auth.json'), 'utf8')) as { refresh_token?: string };
-
-      it('carries a newer `opencode auth login` in auth.json into the running LiteLLM', async () => {
-        writeMachineConfig(ocConfig());
-        writeOcAuth({ access: ocJwt(1_000), refresh: 'OLD', expires: 1_000_000 });
-        const tempDir = tempDirFor();
-        const { send, spawns } = await start(tempDir);
-        expect(held(tempDir).refresh_token).toBe('OLD');
-        writeOcAuth({ access: ocJwt(9_999_999_999), refresh: 'NEW', expires: 9_999_999_999_000 });
-        await send();
-        expect(held(tempDir).refresh_token).toBe('NEW');
-        expect(spawns()).toBe(1);
+    it('does not drop a served gateway for a conflict it cannot establish while codex\'s file is torn', async () => {
+      // "cx" reads codex and has resolved. A project arrives with a default
+      // ChatGPT gateway while codex's file is half-written: its identity
+      // cannot be told, and guessing "opencode" dropped every gateway of the
+      // kind — "cx" included — for the length of one write.
+      writeMachineConfig(`
+[models."luna"]
+gateway = "cx"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["luna"]
+complex = ["luna"]
+[native.gateways."cx"]
+auth = "codex-oauth"
+credential_source = "codex"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+      mkdirSync(join(home, '.codex'), { recursive: true });
+      writeFileSync(join(home, '.codex', 'auth.json'), codexRecord('CODEX-A'));
+      const project = mkdtempSync(join(tmpdir(), 'serve-torn-identity-'));
+      writeFileSync(join(project, 'sonata.toml'), `
+[models."other"]
+gateway = "dflt"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["other"]
+complex = ["other"]
+[native.gateways."dflt"]
+auth = "codex-oauth"
+`);
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
       });
-
-      it.runIf(sqliteAvailable())('carries a newer login written to opencode.db into the running LiteLLM', async () => {
-        writeMachineConfig(ocConfig());
-        const row = (refresh: string, exp: number, timeCreated: number) => ({
-          id: `c-${refresh}`, integration: 'openai', timeCreated,
-          value: JSON.stringify({ type: 'oauth', access: ocJwt(exp), refresh, expires: exp * 1000 }),
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const send = async (headers: Record<string, string> = {}) => {
+        const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+          method: 'POST', headers: { 'content-type': 'application/json', ...headers },
+          body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
         });
-        writeOpencodeCredDb(ocDbPath(), [row('OLD', 1_000, 1)]);
-        const tempDir = tempDirFor();
-        const { send, spawns } = await start(tempDir);
-        expect(held(tempDir).refresh_token).toBe('OLD');
-        rmSync(ocDbPath());
-        writeOpencodeCredDb(ocDbPath(), [row('OLD', 1_000, 1), row('NEW', 9_999_999_999, 2)]);
-        await send();
-        expect(held(tempDir).refresh_token).toBe('NEW');
-        expect(spawns()).toBe(1);
-      });
+        return { status: res.status, text: await res.text() };
+      };
+      expect((await send()).status).toBe(200);
+      writeFileSync(join(home, '.codex', 'auth.json'), codexRecord('CODEX-A').slice(0, 30));
+      const fromProject = await send(projectHeaders(project));
+      expect(fromProject.status).toBe(502);
+      expect(fromProject.text).toContain('could not be read');
+      expect((await send()).status).toBe(200);
+      expect(errors.some((line) => line.includes('read different credentials'))).toBe(false);
+      rmSync(project, { recursive: true, force: true });
+    });
 
-      it.runIf(sqliteAvailable())('does not read opencode.db being written as an auth.json login being newer', async () => {
-        // With no expiry on either side the modification times decide, and
-        // opencode.db is written constantly for reasons that have nothing to
-        // do with credentials. Counted, it overwrote LiteLLM's refreshed
-        // token with the store's older one.
-        writeMachineConfig(ocConfig());
-        writeOcAuth({ access: ocJwt(), refresh: 'STORE' });
-        const tempDir = tempDirFor();
-        const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
-        const { send } = await start(tempDir);
-        expect(held(tempDir).refresh_token).toBe('STORE');
-        writeFileSync(tokenFile, JSON.stringify({ access_token: ocJwt(), refresh_token: 'REFRESHED' }));
-        writeOpencodeCredDb(ocDbPath(), []);
-        const later = new Date(Date.now() + 60_000);
-        utimesSync(ocDbPath(), later, later);
-        writeMachineConfig(`# edited\n${ocConfig()}`);
-        await send();
-        expect(held(tempDir).refresh_token).toBe('REFRESHED');
+    it.runIf(sqliteAvailable())('refuses the first request after the last opencode.db credential row is removed', async () => {
+      writeMachineConfig(`
+[models."pdm"]
+gateway = "pd"
+id = "pd-1"
+[native.gateways."pd"]
+base_url = "https://pd.example"
+provider = "anthropic"
+credential_source = "opencode"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+      const db = join(home, '.local', 'share', 'opencode', 'opencode.db');
+      writeOpencodeCredDb(db, [{ id: 'c1', integration: 'pd', value: JSON.stringify({ type: 'key', key: 'REVOKED-KEY' }), timeCreated: 1 }]);
+      const forwarded: string[] = [];
+      const upstream = vi.fn(async (_url: string, init: RequestInit) => {
+        const headers = new Headers(init.headers);
+        forwarded.push(headers.get('x-api-key') ?? headers.get('authorization') ?? '(none)');
+        return new Response('{"id":"x","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}',
+          { status: 200, headers: { 'content-type': 'application/json' } });
       });
+      vi.stubGlobal('fetch', upstream);
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const send = async () => {
+        const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model: 'pdm', max_tokens: 1, messages: [] }),
+        });
+        await res.text();
+        return res.status;
+      };
+      expect(await send()).toBe(200);
+      expect(forwarded).toHaveLength(1);
+      // The last row goes (`opencode auth logout`): the table now reads empty.
+      rmSync(db);
+      writeOpencodeCredDb(db, []);
+      expect(await send()).toBe(502);
+      expect(forwarded).toHaveLength(1);
     });
   });
 

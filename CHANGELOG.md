@@ -127,12 +127,15 @@ the review doc's Backlog note):
   stored yet), it kept the previous credentials — so a project that had just
   taken over a gateway name another project dropped was sent that project's
   key. Each gateway's credential is now resolved on its own, and every other
-  gateway, in every project, keeps its own. The one that failed is not sent
-  anywhere: a request for it, by tier or by bare key, is answered with a 502
-  naming the gateway and `sonata auth add <gateway>`, and nothing is
-  forwarded — before, it went out with an empty key, and the upstream's 401
-  reached Claude Code as a 529 pointing at `sonata dispatch` or as a 401 it
-  reads as its own login failing. The rebuild is retried on the next request
+  gateway, in every project, keeps its own. A gateway with an explicit
+  `credential_source` whose credential failed is not sent anywhere: a request
+  for it, by tier or by bare key, is answered with a 502 naming the gateway
+  and `sonata auth add <gateway>`, and nothing is forwarded — before, it went
+  out with an empty key, and the upstream's 401 reached Claude Code as a 529
+  pointing at `sonata dispatch` or as a 401 it reads as its own login failing.
+  An api-key gateway with no `credential_source` is not held to this: a
+  default-sourced gateway may need no key at all, so one with no key found in
+  any store is still forwarded with none, as it always has been. The rebuild is retried on the next request
   so a later `sonata auth add` is picked up without a restart, and each
   failure is logged once rather than on every request.
 - **One project's missing login no longer stops LiteLLM for every project.**
@@ -156,21 +159,29 @@ the review doc's Backlog note):
   and a store that kept failing restarted LiteLLM without bound. A gateway that
   has resolved keeps its last credential through any read that fails except a
   store positively holding none (no file, or no entry in a file that parses):
-  a parse error, EACCES, EMFILE, a locked opencode.db or one whose credential
-  rows vanish between two reads is logged once and retried on the next
-  request. A read that succeeds while a store searched before it could not be
-  read is treated the same way, so a torn codex file cannot switch the
-  default ChatGPT gateway to opencode's account. A gateway that has never
-  resolved since it appeared is still left out, with its 502.
+  a parse error, EACCES, EMFILE or a locked opencode.db is logged once and
+  retried on the next request. A read that succeeds while a store searched
+  before it could not be read is treated the same way, so a torn codex file
+  cannot switch the default ChatGPT gateway to opencode's account. A gateway
+  that has not resolved since it appeared has nothing to keep: while a store
+  in its lookup cannot be read it is refused with a 502 saying so and retried
+  on the next request — never served from a later store's account, and never
+  a reason for startup to fail. The same holds when deciding whether two
+  ChatGPT gateways read different accounts: one whose store cannot be read
+  yet is refused on its own, rather than guessed to be on opencode's login
+  and taking every other ChatGPT gateway down with it. opencode.db's
+  credential table reading empty where it last held rows is read again at
+  once before anything is decided: empty twice is a logout and the gateway
+  is refused on that same request, where it used to go out once more on the
+  credential just logged out.
 - **`codex login` while the router runs now reaches LiteLLM.** Logging in can
   resolve two conflicting ChatGPT gateways to one account and un-drop them,
   but LiteLLM was only regenerated when a config file changed — so its model
   list stayed empty and every request answered "Invalid model name" until
   `sonata restart`. LiteLLM is now respawned whenever what it would be given
-  changes — its model list after drops and missing credentials, or the key or
-  token directory those models read — and not for a change that alters
-  neither: a ChatGPT gateway moving to another store's login is carried by
-  its token file, which LiteLLM re-reads, without a respawn.
+  changes — its model list after drops and missing credentials, the key those
+  models read, or the ChatGPT login LiteLLM was seeded with (see below) — and
+  not for a change that alters none of them.
 - **The router no longer re-reads every session record on every request.**
   Its per-request check of which projects it knows re-parsed `sessions.json`
   and re-resolved a config for each session record, costing 53 ms per request
@@ -197,20 +208,35 @@ the review doc's Backlog note):
 - **A tier whose every model is on a dropped gateway says so even while
   LiteLLM is unavailable.** It used to answer "run `sonata litellm install`",
   which would not have made any of them servable.
-- **A config edit or a LiteLLM restart no longer overwrites LiteLLM's
-  refreshed ChatGPT token, and a `codex login` while serving reaches it.**
-  Re-reading the configs rewrote the token file LiteLLM keeps refreshing from
-  the login store's possibly older copy, whose refresh token ChatGPT had
-  already rotated away. The store's login is now written over LiteLLM's copy
-  only when it is a different login — the copy is missing or unreadable, or
-  came from another store or another account — or the same login with a
-  later expiry. Where neither side has an expiry, a store file modified after
-  LiteLLM's copy wins; opencode.db is never that file, since it is written
-  constantly for other reasons. So a fresh `codex login` or `opencode auth
-  login`, a `codex logout` that leaves opencode's login to be read, or a
-  change of `credential_source` all reach the running LiteLLM without a
-  restart. Copilot's token carries no expiry to compare and is still written
-  only when LiteLLM is started or restarted.
+- **Nothing overwrites LiteLLM's refreshed ChatGPT token any more; a
+  different login restarts LiteLLM with it instead.** LiteLLM refreshes its
+  copy of the token in place and ChatGPT rotates refresh tokens, so sonata
+  writing the store's copy over it handed LiteLLM a refresh token already
+  spent (`refresh_token_reused`) — and every rule tried for deciding which
+  copy was newer had a hole: an opencode v2 login carries no account id and
+  always looked like a different account, and a re-merge landing while
+  LiteLLM was mid-write overwrote the half-written file. Sonata now writes a
+  ChatGPT token only into a new, empty directory it creates for a LiteLLM
+  start, and never into one a running LiteLLM uses; a crash respawn, and a
+  restart for any other reason, reuse the directory as LiteLLM left it. When
+  the store holds a different login from the one LiteLLM was started with —
+  another store (a `credential_source` change, or a `codex logout` that
+  leaves opencode's login to be read), or another account, where both sides
+  name one (the account comes from the token's
+  `https://api.openai.com/auth` claim, as LiteLLM derives it, else the
+  record's `account_id`) — serve logs which gateway and why and
+  restarts LiteLLM into a fresh directory seeded with the new login. A login
+  that returns after positively going away is seeded the same way. An
+  account merely unknown on one side is not a change. A same-account `codex
+  login`, and codex or opencode refreshing their own store, restart nothing:
+  LiteLLM's own token is still the live one. Copilot's token is likewise
+  written only when LiteLLM is started, never on a re-merge.
+  **Known limitation:** because a same-account re-login no longer reaches a
+  running LiteLLM, a login LiteLLM can no longer refresh — sessions revoked
+  server-side, or its refresh token spent by another client sharing it —
+  needs `sonata restart`, which seeds it afresh from the store. The router
+  logs that when LiteLLM reports the refused refresh, and `sonata doctor`
+  says so beside each ChatGPT gateway.
 
 ## [0.13.1] - 2026-09-27
 
