@@ -2070,6 +2070,20 @@ context_window = 128000
     expect(tuiMocks.data!.gatewayBaseUrls?.acme).toBe('https://stale.example/v1');
   });
 
+  it('hands the wizard each scope\'s base URLs, so a global init queries the global one', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'init-url-scope-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'init-url-scope-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '[native.gateways."acme"]\nbase_url = "https://project.example/v1"\n');
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), '[native.gateways."acme"]\nbase_url = "https://global.example/v1"\n');
+    tuiMocks.interactive = true;
+    tuiMocks.result = { cancelled: true, state: { configScope: 'global' } };
+    const detect = async () => ({ tmux: { installed: true, version: '3.7b', problems: [] }, harnesses: [] });
+    await cmdInit({ installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', detect, write: () => {} });
+    expect(tuiMocks.data!.gatewayBaseUrlsByScope?.global?.acme).toBe('https://global.example/v1');
+    expect(tuiMocks.data!.gatewayBaseUrlsByScope?.project?.acme).toBe('https://project.example/v1');
+  });
+
   it('keys the declared gateway names by scope, so each scope reads its own config', async () => {
     // The tier screens widen a scope's rankable gateway names with the ones
     // *that scope's* config declares, so a gateway no harness discovers any
