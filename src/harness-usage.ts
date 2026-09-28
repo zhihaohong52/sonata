@@ -136,16 +136,25 @@ function pricePerRecord(
   price: (tokens: UsageTokens, at: Date) => LedgerPrice,
 ): LedgerPrice {
   if (records.length === 0) return price(tokens, at);
-  let first: Exclude<LedgerPrice, { source: 'none' }> | undefined;
-  let totalUsd = 0;
+  const priced: Array<Exclude<LedgerPrice, { source: 'none' }>> = [];
   for (const record of records) {
     const ts = Date.parse(record.ts);
     const each = price(record.tokens, Number.isFinite(ts) ? new Date(ts) : at);
     if (each.source === 'none') return { source: 'none' };
-    first ??= each;
-    totalUsd += each.totalUsd;
+    priced.push(each);
   }
-  return { ...first!, totalUsd };
+  const totalUsd = priced.reduce((sum, each) => sum + each.totalUsd, 0);
+  // One label for the sum. Copying the first record's fields put its source
+  // and its models.dev `observedAt` on a total that may be part hand-set rate,
+  // part scraped — so the source is the one that contributed the most money,
+  // and `observedAt` survives only when every record was priced from the same
+  // snapshot.
+  const main = priced.reduce((a, b) => (b.totalUsd > a.totalUsd ? b : a));
+  const snapshots = new Set(priced.map((each) => ('observedAt' in each ? each.observedAt : undefined)));
+  const [observedAt] = snapshots;
+  return snapshots.size === 1 && observedAt !== undefined && main.source !== 'harness'
+    ? { source: main.source, totalUsd, observedAt }
+    : { source: main.source, totalUsd } as Exclude<LedgerPrice, { source: 'none' }>;
 }
 
 /** Exclusive create: true when this caller now owns recording the run. */

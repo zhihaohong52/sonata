@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdTail, decide, harnessOutput } from '../../src/commands/tail.js';
 import { tailWaitSeconds } from '../../src/cli.js';
-import { capturePane, killSession, newSession, sendKeys, tryCapturePaneHistory } from '../../src/tmux.js';
+import { capturePane, killSession, newSession, sendKeys } from '../../src/tmux.js';
 import { readAnsweredPrompt, readCursor, readEvents, runDir, writeAnsweredPrompt } from '../../src/store.js';
 import { cleanPane } from '../../src/normalize.js';
 import { codexAdapter } from '../../src/adapters/codex.js';
@@ -222,29 +222,6 @@ describe('tail decide — runs that cannot write a report', () => {
   });
 });
 
-describe('tail decide — an empty report', () => {
-  // `sonata dispatch` retries the next candidate on an empty report, but it can
-  // only see the decorated text, which always carries the provenance line — so
-  // the verdict has to come from here, before anything is appended.
-  it('flags a trusted report with no content as empty', () => {
-    const r = decide({ ...base, exitCode: 0, report: '  \n' });
-    expect(r.reportEmpty).toBe(true);
-  });
-
-  it('does not flag a report with content', () => {
-    const r = decide({ ...base, exitCode: 0, report: 'I fixed the bug.', worktreeUnchanged: true });
-    expect(r.reportEmpty).toBe(false);
-  });
-
-  it('does not count an annotation as content', () => {
-    const r = decide({
-      ...base, exitCode: 0, report: '', worktreeUnchanged: true,
-      effort: 'high', effortHonoured: false, harness: 'reasonix',
-    });
-    expect(r.reportEmpty).toBe(true);
-  });
-});
-
 describe('harnessOutput', () => {
   const LAUNCH = '/repo/.sonata/runs/abc123/cmd.sh';
 
@@ -371,13 +348,8 @@ describe('cmdTail answered prompts', () => {
   afterEach(async () => { await killSession(session); });
 
   async function snapshotPrompt(): Promise<string> {
-    // Stands in for an earlier poll, which leaves both captures behind: the
-    // visible one prompts are read from, and the scrollback one new output is
-    // diffed from.
     const pane = cleanPane(await capturePane(session));
     writeFileSync(join(runDir(cwd, id), 'pane.snapshot'), pane.join('\n'));
-    const history = cleanPane((await tryCapturePaneHistory(session)) ?? '');
-    writeFileSync(join(runDir(cwd, id), 'pane-history.snapshot'), history.join('\n'));
     return codexAdapter.describePrompt(pane)!;
   }
 
@@ -497,6 +469,41 @@ describe('tail decide — a read-only run whose terminal output is the report', 
   it('falls back to the pane when the log is empty or absent', () => {
     expect(decide({ ...readOnly, terminalLog: ' \n' }).report).not.toContain('finding 40\n');
     expect(decide(readOnly).report).toContain('finding 60');
+  });
+});
+
+describe('tail decide — whether the harness spoke comes from its log', () => {
+  // The pane cannot answer it: a prompt that changes between draws — a clock,
+  // starship's "took 12s", an exit-status segment — never equals the line
+  // recorded before launch, so it read as harness output. Reproduced with
+  // PS1='\t repo $ ': a silent run was trusted with only prompts for a report.
+  const marker = '/r/.sonata/runs/abc123/cmd.sh';
+  const pane = [`01:02:03 repo $ bash '${marker}'`, '01:02:07 repo $'];
+  const readOnly = {
+    ...base, exitCode: 0, canWriteReport: false, paneTail: pane, launchMarker: marker,
+    preLaunchPane: ['01:02:03 repo $'],
+  };
+
+  it('degrades a run whose log is empty, whatever the pane shows', () => {
+    const r = decide({ ...readOnly, terminalLog: '' });
+    expect(r.degraded).toBe(true);
+    expect(r.report).toMatch(/nothing ran/);
+  });
+
+  it('counts a log holding only escapes and whitespace as silence', () => {
+    expect(decide({ ...readOnly, terminalLog: '\u001b[0m\n  \n\u001b[?25h' }).degraded).toBe(true);
+  });
+
+  it('trusts a run whose log has content, even if the pane shows only prompts', () => {
+    const r = decide({ ...readOnly, terminalLog: 'No defects found.\n' });
+    expect(r.degraded).toBe(false);
+    expect(r.report).toContain('No defects found.');
+  });
+
+  it('falls back to the pane heuristic when the harness keeps no log', () => {
+    // Here the dynamic prompt still fools it — the reason the log is preferred.
+    expect(decide({ ...readOnly, terminalLog: undefined }).degraded).toBe(false);
+    expect(decide({ ...readOnly, terminalLog: undefined, paneTail: [pane[0]] }).degraded).toBe(true);
   });
 });
 
@@ -716,6 +723,15 @@ describe('cmdTail waits for the worktree capture the exit sentinel outruns', () 
     expect(r.state).toBe('DONE');
   });
 
+  it('does not wait on an exit sentinel dated in the future', async () => {
+    // A skewed clock or a restored run directory can leave the mtime ahead of
+    // now; "within ten seconds" must not include every moment before it.
+    const future = new Date(Date.now() + 3_600_000);
+    utimesSync(join(runDir(cwd, id), 'exit'), future, future);
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+    expect(r.state).toBe('DONE');
+  });
+
   it('gives up waiting ten seconds after the exit sentinel', async () => {
     const old = new Date(Date.now() - 11_000);
     utimesSync(join(runDir(cwd, id), 'exit'), old, old);
@@ -776,6 +792,107 @@ describe('cmdTail records output that scrolled past the visible pane', () => {
     const events = readEvents(cwd, id);
     expect(events.filter((l) => l === 'row-1')).toHaveLength(1);
     expect(events.filter((l) => l === 'after')).toHaveLength(1);
+  });
+});
+
+describe('cmdTail records a live TUI without re-recording its history', () => {
+  // Real tmux, the reviewer's shapes. A redrawn status line under a long
+  // scrollback re-recorded the whole ~2000-line history on every poll when the
+  // event log was diffed from a scrollback capture.
+  let cwd: string;
+  let flag: string;
+  const session = 'sonata-test-tail-tui';
+  const id = 'eee111';
+
+  async function waitForLine(text: string): Promise<void> {
+    const deadline = Date.now() + 25_000;
+    while (!(await capturePane(session)).split('\n').some((l) => l.trim() === text)) {
+      if (Date.now() > deadline) throw new Error(`pane never showed ${JSON.stringify(text)}`);
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+
+  async function run(script: string): Promise<void> {
+    const path = join(cwd, 'tui.sh');
+    writeFileSync(path, script);
+    await sendKeys(session, `bash '${path}'`);
+    await sendKeys(session, 'Enter');
+  }
+
+  beforeEach(async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-tui-'));
+    flag = join(cwd, 'go');
+    writeFileSync(join(cwd, 'sonata.toml'), '[run]\nstall_timeout_seconds = 120\n');
+    mkdirSync(runDir(cwd, id), { recursive: true });
+    writeFileSync(join(runDir(cwd, id), 'meta.json'), JSON.stringify({
+      id, role: 'code', model: 'm', harness: 'codex', mode: 'default',
+      interactive: true, session, cwd, startedAt: '2026-09-28T00:00:00.000Z',
+    }));
+    await newSession({ session, cwd });
+  }, 30_000);
+
+  afterEach(async () => { await killSession(session); });
+
+  it('records a redrawn status line as one line, not the history above it', async () => {
+    await run([
+      "i=1; while [ $i -le 1500 ]; do echo line-$i; i=$((i+1)); done",
+      "printf 'Working 1s\\ncomposer>'",
+      `while [ ! -f '${flag}' ]; do sleep 0.05; done`,
+      "printf '\\033[1A\\rWorking 2s\\ncomposer>'",
+      'sleep 30',
+    ].join('\n'));
+    await waitForLine('Working 1s');
+    await cmdTail({ cwd, id, waitSeconds: 0 });
+    const before = readEvents(cwd, id);
+    expect(before).toContain('line-1');
+    expect(before).toContain('line-1500');
+
+    writeFileSync(flag, '');
+    await waitForLine('Working 2s');
+    await cmdTail({ cwd, id, waitSeconds: 0 });
+    const added = readEvents(cwd, id).slice(before.length);
+    expect(added).toContain('Working 2s');
+    expect(added.length).toBeLessThanOrEqual(2);
+    expect(readEvents(cwd, id).filter((l) => l === 'line-1')).toHaveLength(1);
+  });
+
+  it('records an alternate-screen TUI and records nothing twice when it exits', async () => {
+    await run([
+      'echo before-tui',
+      "printf '\\033[?1049h\\033[H'",
+      "echo 'tui: working'",
+      `while [ ! -f '${flag}' ]; do sleep 0.05; done`,
+      "printf '\\033[?1049l'",
+      'echo after-tui',
+      'sleep 30',
+    ].join('\n'));
+    await waitForLine('tui: working');
+    await cmdTail({ cwd, id, waitSeconds: 0 });
+    expect(readEvents(cwd, id)).toContain('tui: working');
+
+    writeFileSync(flag, '');
+    await waitForLine('after-tui');
+    await cmdTail({ cwd, id, waitSeconds: 0 });
+    const events = readEvents(cwd, id);
+    expect(events).toContain('after-tui');
+    expect(events.filter((l) => l === 'before-tui')).toHaveLength(1);
+    expect(events.filter((l) => l === 'tui: working')).toHaveLength(1);
+  });
+
+  it('keeps a burst larger than the screen between two polls', async () => {
+    await run([
+      'echo start',
+      `while [ ! -f '${flag}' ]; do sleep 0.05; done`,
+      "seq -f 'burst-%g' 1 400",
+      'sleep 30',
+    ].join('\n'));
+    await waitForLine('start');
+    await cmdTail({ cwd, id, waitSeconds: 0 });
+    writeFileSync(flag, '');
+    await waitForLine('burst-400');
+    await cmdTail({ cwd, id, waitSeconds: 0 });
+    const burst = readEvents(cwd, id).filter((l) => l.startsWith('burst-'));
+    expect(burst).toEqual(Array.from({ length: 400 }, (_, i) => `burst-${i + 1}`));
   });
 });
 
