@@ -13,7 +13,7 @@ import { pruneSessions } from '../sessions.js';
 import { resolveKeyDetail, resolveKeys, sonataKeyStorePath } from '../native/credentials.js';
 import {
   boundUnreadable, boundUnreadableDb, fileStoreRead, jsonStoreRead, newUnreadableMemory, opencodeDbRead,
-  UNREADABLE_STORE_WINDOW_MS, type StoreRead, type UnreadableMemory,
+  UNREADABLE_SKIP_RULE, type StoreRead, type UnreadableMemory,
 } from '../native/credential-reads.js';
 import { chatgptAccountId, codexAuthPath, opencodeAuthPath, readChatGptOAuth, readCodexOAuth, readOpencodeChatGptOAuth, type ChatGptAuthRecord } from '../native/codex-auth.js';
 import { opencodeCredentialOrigin, opencodeCredentialStamp, opencodeDbPath } from '../native/opencode-store.js';
@@ -893,7 +893,7 @@ function resolveChildEnv(
     reads.set(id, fresh);
     return fresh;
   };
-  // A store that has stayed unreadable past UNREADABLE_STORE_WINDOW_MS
+  // A store `boundUnreadable` has stopped treating as mid-write
   // reads as absent here, and every credential reader already skips it, so
   // the lookup falls through to the next store exactly as it would for a
   // store that is not there.
@@ -951,8 +951,7 @@ function resolveChildEnv(
         unreadable: true,
         message: `gateway "${name}": its credential store could not be read (${unreadable.detail}) and it has ` +
           'not resolved before — not serving it while the store may be mid-write, rather than use whatever a ' +
-          `later store holds; retried on the next request, and skipped as absent once it has stayed unreadable ` +
-          `for ${UNREADABLE_STORE_WINDOW_MS / 1000}s`,
+          `later store holds; retried on the next request, and skipped as absent ${UNREADABLE_SKIP_RULE}`,
       });
       return undefined;
     }
@@ -1612,8 +1611,20 @@ export async function cmdServe(
    * Keyed on the file's stat, it was cleared by LiteLLM's own rewrite of
    * `auth.json` (`device_code_requested_at`) moments after the refusal.
    * A fresh process (`sonata restart`) starts with none.
+   *
+   * The token is read from `dir`, the directory the refused child was
+   * serving. A read at mark time can land mid-write and find none; it is
+   * then read again at every check (`refusedToken`) — the first readable
+   * token there is the refused one. With none captured yet, nothing clears it.
    */
-  let chatgptLoginRefused: { message: string; token: string | undefined } | undefined;
+  let chatgptLoginRefused: { message: string; dir: string | undefined; token: string | undefined } | undefined;
+  /** The refused token, captured from the refused directory the first time it reads. */
+  const refusedToken = (): string | undefined => {
+    const refused = chatgptLoginRefused;
+    if (refused === undefined) return undefined;
+    if (refused.token === undefined) refused.token = chatgptTokenHash(refused.dir);
+    return refused.token;
+  };
   /** The ChatGPT token directory the current child was spawned into; set once the child bookkeeping exists. */
   let currentChatgptTokenDir: () => string | undefined = () => undefined;
   const markChatgptLoginRefused = (): void => {
@@ -1626,10 +1637,12 @@ export async function cmdServe(
       ? sonataOwned.map((name) => `\`sonata auth login ${name}\``).join(' / ')
       : '`codex login` (or `opencode auth login`)';
     const remedy = `LiteLLM's ChatGPT login was refused by OpenAI — run ${relogin} and then \`sonata restart\``;
+    const dir = currentChatgptTokenDir();
     chatgptLoginRefused = {
       message: `gateway ${names}: ${remedy} (LiteLLM had fallen back to an interactive device-code ` +
         'login, which would hold each request for up to fifteen minutes)',
-      token: chatgptTokenHash(currentChatgptTokenDir()),
+      dir,
+      token: chatgptTokenHash(dir),
     };
     console.error(`sonata serve: ${remedy} — affects gateway ${names}`);
   };
@@ -1705,8 +1718,7 @@ export async function cmdServe(
       delete gateways[name];
       dropped.set(name, `gateway "${name}": ${codexAuthPath(opts.home)} could not be read (a write in progress?) ` +
         'and it has not resolved before, so which ChatGPT login it reads cannot be told — not serving it ' +
-        'while that file may be mid-write; retried on the next request, and skipped as absent once it has ' +
-        `stayed unreadable for ${UNREADABLE_STORE_WINDOW_MS / 1000}s`);
+        `while that file may be mid-write; retried on the next request, and skipped as absent ${UNREADABLE_SKIP_RULE}`);
     }
     droppedGateways = dropped;
     lastMergedGateways = gateways;
@@ -1752,22 +1764,25 @@ export async function cmdServe(
    * alone would re-merge on nearly every request; the rows are what decide
    * whether anything a gateway reads has changed. A read that fails keeps the
    * last stamp and is retried on the next change, so a moment's lock is not
-   * a login changing. The database's mode is part of the signal too: a
-   * `chmod` moves no rows, so without it a database made unreadable (or
-   * readable again) was never re-read.
+   * a login changing. The database's ctime is part of the signal too: a
+   * `chmod`, `chown` or ACL change moves no rows (and an ACL change not even
+   * the mode), so without it a database made unreadable (or readable again)
+   * was never re-read. ctime also moves when opencode writes the main file
+   * (a checkpoint, in WAL mode), which costs a re-merge and nothing more:
+   * LiteLLM restarts only when a credential a gateway reads has changed.
    */
   let opencodeDbStamp: { stat: string; stamp: string } | undefined;
   const opencodeDbSignal = (): string => {
     const path = opencodeDbPath(opts.home);
     const stat = `${statSignal(path)}|${statSignal(`${path}-wal`)}`;
-    let mode = '-';
-    try { mode = String(statSync(path).mode); } catch { /* absent: no mode */ }
+    let ctime = '-';
+    try { ctime = String(statSync(path).ctimeMs); } catch { /* absent: no ctime */ }
     if (opencodeDbStamp?.stat !== stat) {
       const stamp = opencodeCredentialStamp(opts.home);
       if (stamp !== 'unreadable') opencodeDbStamp = { stat, stamp };
-      else return `${mode}:${opencodeDbStamp?.stamp ?? stamp}`;
+      else return `${ctime}:${opencodeDbStamp?.stamp ?? stamp}`;
     }
-    return `${mode}:${opencodeDbStamp.stamp}`;
+    return `${ctime}:${opencodeDbStamp.stamp}`;
   };
   /**
    * What the gateway merge depends on, as a cheap comparable string: the
@@ -2235,14 +2250,17 @@ export async function cmdServe(
 
     const spawnLitellmChild = (deliberate = true): SpawnedLitellm => {
       if (deliberate) {
+        // Captured before seeding, which may rewrite the refused directory.
+        refusedToken();
         seedTokenDirs();
         // Cleared only when this spawn starts LiteLLM on a token that is
         // readable and not the refused one. None at all — no ChatGPT gateway
-        // just now, or a file that cannot be read — says nothing, and keeps it.
-        const refused = chatgptLoginRefused;
+        // just now, or a file that cannot be read — says nothing, and keeps it;
+        // so does a refused token never captured (`refusedToken`).
+        const refused = chatgptLoginRefused?.token;
         if (refused !== undefined) {
           const token = chatgptTokenHash(childEnv.CHATGPT_TOKEN_DIR);
-          if (token !== undefined && token !== refused.token) chatgptLoginRefused = undefined;
+          if (token !== undefined && token !== refused) chatgptLoginRefused = undefined;
         }
       }
       const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(
@@ -2539,7 +2557,7 @@ export async function cmdServe(
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
       gatewayUnavailable: (tenant, gateway) => droppedGateways.get(gateway) ?? credentialFailures.get(gateway) ??
         (chatgptLoginRefused !== undefined && tenant.config?.native?.gateways[gateway]?.auth === 'codex-oauth'
-          ? chatgptLoginRefused.message : undefined),
+          ? (refusedToken(), chatgptLoginRefused.message) : undefined),
       chatgptLoginRefused: () => markChatgptLoginRefused(),
       resolveNative: (key, tenant) => tenant.config === undefined ? undefined : nativeRouteFor(tenant.config, key),
       // Opt-in only: a captured request is a whole conversation.

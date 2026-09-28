@@ -170,14 +170,17 @@ the review doc's Backlog note):
   ChatGPT gateways read different accounts: one whose store cannot be read
   yet is refused on its own, rather than guessed to be on opencode's login
   and taking every other ChatGPT gateway down with it. "Mid-write" is
-  bounded: a file counts as torn only while its mtime is under 10 s old (or
-  its mtime or size changed since the last failed read less than 10 s ago)
-  and its current run of failed reads — failed reads each less than 10 s
-  after the one before — began less than 10 s ago, so a file kept freshly
-  written that never parses is not torn forever, and a torn read at startup
-  followed by another write after a quiet spell is two runs, not one;
-  opencode.db counts only for the first 10 s of a run of failed queries,
-  however far apart. Past that the store is steadily unreadable — corrupt,
+  judged by content: a file whose bytes do not parse counts as torn only
+  while those bytes are changing — they differ from the previous failed
+  read's, or were first seen under a second ago. The same bytes a second
+  apart are stuck and skipped, however freshly the file was touched and
+  however long ago it was last read; new bytes are torn again, however long
+  it was quiet. So a corrupt file found at startup costs one refused request,
+  and a file rewritten with different broken bytes on every read stays torn
+  as long as that goes on (it cannot be told from a write in progress). A
+  file that cannot be read at all (EACCES) is torn for 10 s from its first
+  failure; opencode.db counts only for the first 10 s of a run of failed
+  queries, however far apart. Past that the store is steadily unreadable — corrupt,
   zero bytes, EACCES — and is skipped as absent, logged once naming the file
   and the error. A skipped store reads as absent and the lookup goes on from
   the stores that remain, with one exception: a gateway whose last credential
@@ -192,9 +195,11 @@ the review doc's Backlog note):
   resolved falls through, so a default ChatGPT gateway reaches opencode's
   login as it always did; it used to answer 502 forever.
   A build that read anything as torn is never committed, so the retry the
-  502 promises really happens; a `chmod` on a store is noticed on the next
-  request (the router's change check now includes each file's mode, and
-  opencode.db's); and
+  502 promises really happens; a `chmod` on a store — and, for opencode.db,
+  a `chown` or ACL change too — is noticed on the next request (the router's
+  change check now includes each file's mode, and opencode.db's ctime, which
+  opencode's own writes also move: that costs a re-merge, never a restart
+  unless a credential changed); and
   `sonata doctor` warns, naming the file, when codex's `auth.json` or
   opencode.db cannot be read. opencode.db's credential table reading empty
   where it last held rows is read again at once before anything is decided:
@@ -286,8 +291,16 @@ the review doc's Backlog note):
   anywhere in it, and never for another gateway's error) —
   logs the remedy once, naming the ChatGPT gateways, and answers them with a
   502 saying `codex login` (or `opencode auth login`) then `sonata restart`
-  instead of forwarding into the hang. The mark is keyed on the refused
-  token itself, not on its file or directory, and clears only when LiteLLM
+  instead of forwarding into the hang. The request whose response showed the
+  refusal is answered the same way: in a tier its candidate and gateway cool
+  and the next candidate serves it, and with none left — or for a bare model
+  key — it gets the same named 502, Anthropic-shaped, and no ledger row. It
+  used to get LiteLLM's raw 400, which a tier took as final, so the next
+  candidate was never tried. The mark is keyed on the refused
+  token itself, not on its file or directory — read from the directory the
+  refused LiteLLM served, and, when that read lands mid-write and finds none,
+  read again there at every check until it does; until a token is captured
+  nothing clears the mark — and clears only when LiteLLM
   is started on a readable token that differs — a login change seeded into a
   new token directory, a sonata-owned login rewritten by `sonata auth login`,
   or a fresh process from `sonata restart`. A crash respawn, a restart for

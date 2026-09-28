@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import type { spawn as spawnType } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
@@ -20,6 +21,7 @@ import { ensureRouterToken } from '../../src/native/router-token.js';
 import { tenantId } from '../../src/native/tenants.js';
 import { appendRow } from '../../src/ledger.js';
 import { freePort } from '../free-port.js';
+import { TORN_REPEAT_MS, UNREADABLE_STORE_WINDOW_MS } from '../../src/native/credential-reads.js';
 import { sqliteAvailable, writeOpencodeCredDb } from '../opencode-db-fixture.js';
 
 // Every cmdServe starts the models.dev price refresh, and a fresh test home has
@@ -4103,6 +4105,31 @@ litellm = ${litellmPort}
         expect(upstreamCalls.length).toBe(forwarded);
       });
 
+      it('keeps the mark when the refused token could not be read at mark time — LiteLLM was mid-write', async () => {
+        // LiteLLM truncates auth.json and rewrites it as it records the
+        // device-code request. A mark taken then held no token, and the first
+        // readable one — the same refused token — cleared it on the next
+        // unrelated restart.
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
+        const { send, envs, emit, settle, upstreamCalls } = await start();
+        expect(await send()).toBe(200);
+        const file = join(envs[0].CHATGPT_TOKEN_DIR!, 'auth.json');
+        const saved = readFileSync(file, 'utf8');
+        writeFileSync(file, saved.slice(0, 10));
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        writeFileSync(file, JSON.stringify({ ...JSON.parse(saved), device_code_requested_at: Date.now() / 1000 }));
+        expect(await send()).toBe(502);
+        const forwarded = upstreamCalls.length;
+        writeMachineConfig(machine('[models."terra"]\ngateway = "codex"\nid = "gpt-5.6-terra"'));
+        await send();
+        await waitFor(() => envs.length === 2, 'the restart for the new model list');
+        await settle();
+        expect(await send()).toBe(502);
+        expect(await send()).toBe(502);
+        expect(upstreamCalls.length).toBe(forwarded);
+      });
+
       it('clears for a sonata-owned login once `sonata auth login` rewrites it and LiteLLM is restarted', async () => {
         writeMachineConfig(machine('', 'sonata'));
         const dir = credentialDir(home, 'codex');
@@ -4347,9 +4374,10 @@ auth = "codex-oauth"
     });
 
     describe('a store that stays unreadable', () => {
-      // Torn is bounded: a file that has not changed for
-      // UNREADABLE_STORE_WINDOW_MS is steadily unreadable — corrupt, zero
-      // bytes, EACCES — and is skipped as absent, as base did. Read as torn
+      // Torn is bounded: a file whose unparseable bytes have not moved for
+      // TORN_REPEAT_MS, or a read error lasting UNREADABLE_STORE_WINDOW_MS, is
+      // steadily unreadable — corrupt, zero bytes, EACCES — and is skipped as
+      // absent, as base did. Read as torn
       // forever, a default ChatGPT gateway opencode could serve answered 502
       // for good, promising a retry that never changed anything.
       const DEFAULT_CHATGPT = () => `
@@ -4397,13 +4425,18 @@ litellm = ${litellmPort}
         return { send, seededWith };
       };
 
-      it('serves a default ChatGPT gateway from opencode when codex\'s auth.json has been empty for longer than the window', async () => {
+      it('serves a default ChatGPT gateway from opencode once codex\'s auth.json has held the same empty content for a second', async () => {
+        // Torn on its first read, however old its mtime: only its bytes
+        // staying put says it is not mid-write.
         writeMachineConfig(DEFAULT_CHATGPT());
         mkdirSync(join(home, '.codex'), { recursive: true });
         writeFileSync(codexPath(), '');
         backdate(codexPath());
         writeOpencodeLogin();
-        const { send, seededWith } = await start();
+        let offset = 0;
+        const { send, seededWith } = await start(() => Date.now() + offset);
+        expect((await send()).status).toBe(502);
+        offset = TORN_REPEAT_MS;
         expect((await send()).status).toBe(200);
         expect(seededWith()).toEqual(['OPENCODE-B']);
         expect(errors.filter((line) => line.includes(codexPath()) && line.includes('skipped as if absent'))).toHaveLength(1);
@@ -4418,7 +4451,11 @@ litellm = ${litellmPort}
         backdate(codexPath());
         writeOpencodeLogin();
         try {
-          const { send, seededWith } = await start();
+          // No bytes to compare: torn for the 10 s cap from its first failure.
+          let offset = 0;
+          const { send, seededWith } = await start(() => Date.now() + offset);
+          expect((await send()).status).toBe(502);
+          offset = UNREADABLE_STORE_WINDOW_MS;
           expect((await send()).status).toBe(200);
           expect(seededWith()).toEqual(['OPENCODE-B']);
           expect(errors.some((line) => line.includes(codexPath()) && line.includes('EACCES'))).toBe(true);
@@ -4450,7 +4487,18 @@ litellm = ${litellmPort}
         expect(seededWith()).toEqual(['CODEX-A']);
       });
 
-      it.runIf(sqliteAvailable())('notices a chmod on opencode.db on the next request, though its rows do not change', async () => {
+      // An ACL entry moves neither the mode nor the stat the rows are keyed
+      // on — only ctime — so a signal carrying the mode missed it. macOS's
+      // `chmod +a` is the one portable-enough way to make one.
+      const accessChanges = [
+        { name: 'a chmod', runs: true, lock: (db: string) => chmodSync(db, 0o000), unlock: (db: string) => chmodSync(db, 0o600) },
+        {
+          name: 'an ACL change', runs: process.platform === 'darwin' && process.getuid?.() !== 0,
+          lock: (db: string) => execFileSync('/bin/chmod', ['+a', 'everyone deny read', db]),
+          unlock: (db: string) => execFileSync('/bin/chmod', ['-a#', '0', db]),
+        },
+      ];
+      for (const change of accessChanges) it.runIf(sqliteAvailable() && change.runs)(`notices ${change.name} on opencode.db on the next request, though its rows do not change`, async () => {
         // opencode.db's signal was its credential rows' hash, re-read when its
         // stat moved: a chmod moved the stat, the rows read the same (or not
         // at all), and the signal stood still, so nothing was re-read.
@@ -4487,12 +4535,12 @@ litellm = ${litellmPort}
           return res.status;
         };
         expect(await send()).toBe(200);
-        chmodSync(db, 0o000);
+        change.lock(db);
         try {
           await send();
           expect(errors.some((line) => line.includes('opencode.db') && line.includes('could not be'))).toBe(true);
         } finally {
-          chmodSync(db, 0o600);
+          change.unlock(db);
         }
       });
 
@@ -4600,8 +4648,9 @@ litellm = ${litellmPort}
           return new Response('{"id":"x","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}',
             { status: 200, headers: { 'content-type': 'application/json' } });
         }));
+        let offset = 0;
         const handle = await cmdServe({
-          cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+          cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, now: () => Date.now() + offset,
           spawnLitellm: () => ({ pid: 1, kill: () => {} }),
         });
         handles.push(handle);
@@ -4614,6 +4663,9 @@ litellm = ${litellmPort}
           await res.text();
           return res.status;
         };
+        // keys.json is torn on its first read; the same bytes a second later are skipped.
+        expect(await send()).toBe(502);
+        offset = TORN_REPEAT_MS;
         expect(await send()).toBe(200);
         expect(forwarded.at(-1)).toContain('KEY-OLD');
         writeFileSync(ocAuth, JSON.stringify({ pd: { type: 'api', key: 'KEY-ROTATED' } }));
@@ -4632,7 +4684,10 @@ litellm = ${litellmPort}
         writeFileSync(codexPath(), '');
         backdate(codexPath());
         writeOpencodeLogin();
-        const { send, seededWith } = await start();
+        let offset = 0;
+        const { send, seededWith } = await start(() => Date.now() + offset);
+        expect((await send()).status).toBe(502);
+        offset = TORN_REPEAT_MS;
         expect((await send()).status).toBe(200);
         expect(seededWith()).toEqual(['OPENCODE-B']);
         writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({}));

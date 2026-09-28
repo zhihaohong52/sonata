@@ -1357,6 +1357,29 @@ function isCodexOauth(tenant: RouterTenant, gateway: string | undefined): boolea
 }
 
 /**
+ * What `forwardToLitellm` answers. `loginRefused` marks a response that showed
+ * LiteLLM's ChatGPT login was refused: it is not the request's fault and no
+ * other request will do better through that gateway, so no caller hands it
+ * back as it arrived — the tier loop moves on, the bare path answers the
+ * named 502 (`loginRefusedMessage`).
+ */
+interface LitellmResponse extends RouterResponse {
+  loginRefused?: true;
+}
+
+/**
+ * Why a candidate on `gateway` is not served after its ChatGPT login was
+ * refused: serve's own `gatewayUnavailable` message, which is what every
+ * later request on the gateway is answered with, so the request that noticed
+ * reads the same. With no serve to mark it, the router's own remedy.
+ */
+function loginRefusedMessage(deps: RouterDeps, tenant: RouterTenant, gateway: string): string {
+  return deps.gatewayUnavailable?.(tenant, gateway) ??
+    `gateway "${gateway}": LiteLLM's ChatGPT login was refused by OpenAI — run ` +
+    '`codex login` (or `opencode auth login`) and then `sonata restart`';
+}
+
+/**
  * Forwards an already-litellm-shaped request (auth swapped, system flattened,
  * model rewritten if this is a tier candidate) and applies the 500->529
  * empty-completion rewrite. Shared by the plain litellm path and the tier
@@ -1369,7 +1392,7 @@ async function forwardToLitellm(
   deps: RouterDeps,
   /** The candidate is on a codex-oauth gateway: only then is a refused ChatGPT login looked for. */
   chatgpt = false,
-): Promise<RouterResponse> {
+): Promise<LitellmResponse> {
   try {
     await deps.litellmReady?.();
     const response = await deps.fetch(
@@ -1398,6 +1421,9 @@ async function forwardToLitellm(
           '`codex login` (or `opencode auth login`) and then `sonata restart`: serve copies a ChatGPT token ' +
           'into LiteLLM only when it starts LiteLLM',
         );
+      }
+      if (refused) {
+        return { status: response.status, headers: responseHeaders(response.headers), body: responseBodyBuf, loginRefused: true };
       }
       if (response.status === 500 && text.includes('Unknown items in responses API response')) {
         const msg = 'upstream returned empty completion (overloaded) — retry';
@@ -1662,6 +1688,21 @@ async function routeTierRequest(
         deps,
       )
       : await forwardToLitellm(body, headers, { ...req, body }, deps, isCodexOauth(tenant, gateway));
+    // A refused ChatGPT login is the gateway's, not the request's: handled
+    // like an unservable 400 (the candidate and its gateway cool, the next
+    // candidate is tried), and counted as not served, so a tier left with
+    // nothing else answers the same named 502 later requests get.
+    if ('loginRefused' in response && response.loginRefused === true) {
+      if (response.status === 400) {
+        capture400(deps, { alias, candidate: variant, status: response.status, outbound: body, response: response.body as Buffer });
+      }
+      attempts.push({ key: route.key, status: response.status });
+      cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+      if (gateway !== undefined) providerCooldowns.set(providerCooldownKey(tenant, gateway), now() + TIER_COOLDOWN_MS);
+      skippedDropped.push(loginRefusedMessage(deps, tenant, route.native!.gateway));
+      deps.log?.(`router: ${route.key} refused (ChatGPT login), cooling gateway ${gateway ?? '?'} and trying next`);
+      continue;
+    }
     // Retry by default; only a request that is wrong *everywhere* is terminal.
     //
     // This is a deny-list on purpose, and it used to be an allow-list of
@@ -2104,17 +2145,27 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     // key isn't a `sonata-*` alias), so this is the only place such a
     // request's config-change check can fire.
     deps.checkModelChange?.();
-    return withUsageRecording(
-      await forwardToLitellm(
-        body,
-        withSessionHeader(
-          litellmHeaders(headers, deps.litellmKey),
-          alias === undefined ? undefined : conversationKey(req.body, tenant.id, alias),
-        ),
-        req,
-        deps,
-        isCodexOauth(tenant, native?.gateway),
+    const response = await forwardToLitellm(
+      body,
+      withSessionHeader(
+        litellmHeaders(headers, deps.litellmKey),
+        alias === undefined ? undefined : conversationKey(req.body, tenant.id, alias),
       ),
+      req,
+      deps,
+      isCodexOauth(tenant, native?.gateway),
+    );
+    // Answered as every later request on the gateway is — the named 502 —
+    // and, like those, never a ledger row: nothing was served.
+    if (response.loginRefused === true && native !== undefined) {
+      return {
+        status: 502,
+        headers: { 'content-type': 'application/json' },
+        body: anthropicErrorBody('router_error', `${alias}: not served — ${loginRefusedMessage(deps, tenant, native.gateway)}`),
+      };
+    }
+    return withUsageRecording(
+      response,
       {
         startedAt,
         session,
