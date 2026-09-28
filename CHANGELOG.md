@@ -170,14 +170,22 @@ the review doc's Backlog note):
   ChatGPT gateways read different accounts: one whose store cannot be read
   yet is refused on its own, rather than guessed to be on opencode's login
   and taking every other ChatGPT gateway down with it. "Mid-write" is
-  bounded: a file counts as torn only while its mtime is under 10 s old or
-  its mtime or size changed since the last failed read less than 10 s ago,
-  and opencode.db only for the first 10 s of a run of failed queries. Past
-  that the store is steadily unreadable — corrupt, zero bytes, EACCES — and
-  is skipped as absent, logged once naming the file and the error, so a
-  default ChatGPT gateway falls through to opencode's login as it always
-  did; it used to answer 502 forever. A build that read anything as torn is
-  never committed, so the retry the 502 promises really happens, and
+  bounded: a file counts as torn only while its mtime is under 10 s old (or
+  its mtime or size changed since the last failed read less than 10 s ago)
+  and its run of failed reads began less than 10 s ago, so a file kept
+  freshly written that never parses is not torn forever; opencode.db counts
+  only for the first 10 s of a run of failed queries. Past that the store is
+  steadily unreadable — corrupt, zero bytes, EACCES — and is skipped as
+  absent, logged once naming the file and the error. Skipped is not a
+  logout: a gateway that has resolved keeps its last credential and login
+  through it, and the file reading again restarts and re-seeds nothing (it
+  used to drop the gateway, end its ChatGPT lineage, and on recovery
+  re-seed LiteLLM with a refresh token it had already spent). A gateway
+  that has never resolved falls through, so a default ChatGPT gateway
+  reaches opencode's login as it always did; it used to answer 502 forever.
+  A build that read anything as torn is never committed, so the retry the
+  502 promises really happens; a `chmod` on a store is noticed on the next
+  request (the router's change check now includes each file's mode); and
   `sonata doctor` warns, naming the file, when codex's `auth.json` or
   opencode.db cannot be read. opencode.db's credential table reading empty
   where it last held rows is read again at once before anything is decided:
@@ -257,14 +265,19 @@ the review doc's Backlog note):
   store. LiteLLM does not report that refusal to its caller: it logs "re-login
   required" and falls into an interactive device-code login that held each
   request for up to fifteen minutes. serve now pipes LiteLLM's output
-  (forwarding every line to its own, the device code's user code masked) and
-  on that line — or on a response ending "Polling failed", "Timed out waiting
-  for device authorization" or "Failed to request device code" — logs the
-  remedy once, naming the ChatGPT gateways, and answers them with a 502
-  saying `codex login` (or `opencode auth login`) then `sonata restart`
-  instead of forwarding into the hang. The next deliberate LiteLLM start
-  clears it; a crash respawn does not. `sonata doctor` says so beside each
-  ChatGPT gateway.
+  (forwarding every line to its own, with ChatGPT's and Copilot's device
+  codes masked, and surviving its own stdout or stderr closing, as in
+  `sonata serve | head`) and on that warning or the device-code prompt —
+  matched as LiteLLM writes them, after its log prefix, never on the phrase
+  anywhere in a line — or on a response ending "Polling failed", "Timed out
+  waiting for device authorization" or "Failed to request device code" —
+  logs the remedy once, naming the ChatGPT gateways, and answers them with a
+  502 saying `codex login` (or `opencode auth login`) then `sonata restart`
+  instead of forwarding into the hang. It clears only when LiteLLM is
+  started on a different token — a new token directory (a login change), a
+  sonata-owned login rewritten by `sonata auth login`, or a fresh process
+  from `sonata restart`; a crash respawn, or a restart for anything else,
+  keeps it. `sonata doctor` says so beside each ChatGPT gateway.
 
 ## [0.13.1] - 2026-09-27
 

@@ -921,6 +921,21 @@ function resolveChildEnv(
       });
       return undefined;
     }
+    const skipped = chain.find((store) => store.skipped !== undefined);
+    if (skipped !== undefined && last !== undefined) {
+      // A store skipped for staying unreadable is not a logout: it says
+      // nothing about the login it holds. A gateway that has resolved keeps
+      // what it resolved to — neither dropped nor handed whatever a later
+      // store holds — and its lineage does not end, so the file reading again
+      // restarts and re-seeds nothing. Only one that has never resolved falls
+      // through, as it would for a store that is not there.
+      transient.push({
+        gateway: name,
+        message: `gateway "${name}": its credential store has stayed unreadable (${skipped.skipped}) — ` +
+          'keeping the credential it last resolved to',
+      });
+      return last;
+    }
     if (resolved !== undefined) {
       memory.lastGood.set(lineage, resolved);
       return resolved;
@@ -1020,9 +1035,13 @@ function resolveChildEnv(
           `in ${codexAuthPath(home)} or ${opencodeAuthPath(home)} — ` +
           `run \`sonata auth login ${name}\`, or \`codex login\`.`,
       );
-      if (entries === undefined && !chain.some((store) => store.state === 'unreadable')) {
-        chatgptGone.push(...(source === 'codex' ? ['codex store'] : source === 'opencode' ? ['opencode store']
-          : ['codex store', 'opencode store']));
+      if (entries === undefined) {
+        // Gone means positively holding no login: a store that could not be
+        // read, or was skipped for staying unreadable, says nothing either way.
+        const answered = (stores: StoreRead[]) =>
+          stores.every((store) => store.state !== 'unreadable' && store.skipped === undefined);
+        if (source !== 'opencode' && answered([codexStore()])) chatgptGone.push('codex store');
+        if (source !== 'codex' && answered(opencodeChain('openai'))) chatgptGone.push('opencode store');
       }
       if (entries !== undefined) {
         if (entries === fresh && found !== null) {
@@ -1475,11 +1494,16 @@ export function resolvedOauthIdentity(
   return readChatGptOAuth(home, 'codex') !== null ? 'codex store' : 'opencode store';
 }
 
-/** A file as a stat-only token: its identity, mtime and size, or `-` when absent. */
+/**
+ * A file as a stat-only token: its identity, mtime, size and mode, or `-`
+ * when absent. The mode is there because `chmod` moves no mtime: a store
+ * made unreadable (EACCES) or readable again otherwise changed nothing the
+ * plan fingerprint could see, and was never re-read.
+ */
 function statSignal(path: string): string {
   try {
-    const { ino, mtimeMs, size } = statSync(path);
-    return `${ino}:${mtimeMs}:${size}`;
+    const { ino, mtimeMs, size, mode } = statSync(path);
+    return `${ino}:${mtimeMs}:${size}:${mode}`;
   } catch {
     return '-';
   }
@@ -1526,12 +1550,23 @@ export async function cmdServe(
   /**
    * Set when LiteLLM's ChatGPT login has been refused — its own output said
    * so (`LITELLM_CHATGPT_LOGIN_REFUSED`), or a response did (the router's
-   * backstop) — to the 502 every codex-oauth gateway is answered with until
-   * the next deliberate spawn. LiteLLM has one ChatGPT token directory, so
-   * every such gateway is served from it. Without this, each request hung in
-   * LiteLLM's device-code login for up to fifteen minutes.
+   * backstop) — to the 502 every codex-oauth gateway is answered with.
+   * LiteLLM has one ChatGPT token directory, so every such gateway is served
+   * from it. Without this, each request hung in LiteLLM's device-code login
+   * for up to fifteen minutes.
+   *
+   * Keyed on the token that was refused: the directory the child was using
+   * and, for a sonata-owned login whose directory never changes, its
+   * `auth.json` as it stood. A deliberate spawn clears it only when that
+   * token is gone — the gateway seeded into a new directory (a lineage
+   * change), or a sonata-owned re-login rewriting the file. Any other restart
+   * — a model-list edit, another project's gateway — spawns LiteLLM on the
+   * same refused token, and clearing on it served a device-code hang again.
+   * A fresh process (`sonata restart`) starts with none.
    */
-  let chatgptLoginRefused: string | undefined;
+  let chatgptLoginRefused: { message: string; dir: string | undefined; file?: string } | undefined;
+  /** The ChatGPT token directory the current child was spawned into; set once the child bookkeeping exists. */
+  let currentChatgptTokenDir: () => string | undefined = () => undefined;
   const markChatgptLoginRefused = (): void => {
     if (chatgptLoginRefused !== undefined) return;
     const affected = Object.entries(lastMergedGateways).filter(([, gateway]) => gateway.auth === 'codex-oauth');
@@ -1542,8 +1577,13 @@ export async function cmdServe(
       ? sonataOwned.map((name) => `\`sonata auth login ${name}\``).join(' / ')
       : '`codex login` (or `opencode auth login`)';
     const remedy = `LiteLLM's ChatGPT login was refused by OpenAI — run ${relogin} and then \`sonata restart\``;
-    chatgptLoginRefused = `gateway ${names}: ${remedy} (LiteLLM had fallen back to an interactive device-code ` +
-      'login, which would hold each request for up to fifteen minutes)';
+    const dir = currentChatgptTokenDir();
+    chatgptLoginRefused = {
+      message: `gateway ${names}: ${remedy} (LiteLLM had fallen back to an interactive device-code ` +
+        'login, which would hold each request for up to fifteen minutes)',
+      dir,
+      ...(sonataOwned.length > 0 && dir !== undefined ? { file: statSignal(join(dir, 'auth.json')) } : {}),
+    };
     console.error(`sonata serve: ${remedy} — affects gateway ${names}`);
   };
   /**
@@ -1591,12 +1631,17 @@ export async function cmdServe(
       log,
       (name, gateway) => {
         const lineage = lineageKey(name, gateway);
-        if (gateway.auth === 'codex-oauth' && gateway.credentialSource === undefined
-          && boundUnreadable(codexAuthPath(opts.home), jsonStoreRead(codexAuthPath(opts.home)),
-            credentialMemory.unreadable, clock(), warnSkipped).state === 'unreadable') {
+        if (gateway.auth === 'codex-oauth' && gateway.credentialSource === undefined) {
+          const codex = boundUnreadable(codexAuthPath(opts.home), jsonStoreRead(codexAuthPath(opts.home)),
+            credentialMemory.unreadable, clock(), warnSkipped);
           const held = lastOauthIdentity.get(lineage);
-          if (held === undefined) unknown.add(name);
-          return held;
+          if (codex.state === 'unreadable') {
+            if (held === undefined) unknown.add(name);
+            return held;
+          }
+          // Skipped for staying unreadable: a gateway that has resolved keeps
+          // the login it was reading; one that never has falls through.
+          if (codex.skipped !== undefined && held !== undefined) return held;
         }
         const identity = resolvedOauthIdentity(opts.home, name, gateway);
         lastOauthIdentity.set(lineage, identity);
@@ -2093,6 +2138,7 @@ export async function cmdServe(
       }
       for (const [spawned] of childTokenDir) if (exitObserved.has(spawned)) childTokenDir.delete(spawned);
     };
+    currentChatgptTokenDir = () => (child === undefined ? undefined : childTokenDir.get(child));
     /**
      * A crash respawn waiting out its delay. A deliberate restart that goes
      * ahead cancels it — the restart spawns the replacement — and one still
@@ -2138,10 +2184,16 @@ export async function cmdServe(
     const spawnLitellmChild = (deliberate = true): SpawnedLitellm => {
       if (deliberate) {
         seedTokenDirs();
-        // A deliberate spawn is what the remedy asks for — a restart, a
-        // lineage change, `sonata restart` — so the refusal is LiteLLM's to
-        // make again. A crash respawn reuses the refused token and keeps it.
-        chatgptLoginRefused = undefined;
+        // Cleared only when this spawn no longer holds the refused token: a
+        // new directory, or a sonata-owned login rewritten in place. A crash
+        // respawn, or a restart for anything else, reuses it and keeps it.
+        const refused = chatgptLoginRefused;
+        if (refused !== undefined) {
+          const dir = childEnv.CHATGPT_TOKEN_DIR;
+          const reLoggedIn = refused.file !== undefined && dir !== undefined
+            && statSignal(join(dir, 'auth.json')) !== refused.file;
+          if (dir !== refused.dir || reLoggedIn) chatgptLoginRefused = undefined;
+        }
       }
       const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(
         configPath, childEnv, ports.litellm, litellmBin,
@@ -2437,7 +2489,7 @@ export async function cmdServe(
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
       gatewayUnavailable: (tenant, gateway) => droppedGateways.get(gateway) ?? credentialFailures.get(gateway) ??
         (chatgptLoginRefused !== undefined && tenant.config?.native?.gateways[gateway]?.auth === 'codex-oauth'
-          ? chatgptLoginRefused : undefined),
+          ? chatgptLoginRefused.message : undefined),
       chatgptLoginRefused: () => markChatgptLoginRefused(),
       resolveNative: (key, tenant) => tenant.config === undefined ? undefined : nativeRouteFor(tenant.config, key),
       // Opt-in only: a captured request is a whole conversation.
