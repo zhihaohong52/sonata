@@ -136,6 +136,46 @@ base_url = "https://gateway.example/v1"
     expect(reads).toBe(2);
   });
 
+  it('does not cache a sessions.json read that failed, so a transient error does not stick', async () => {
+    // Two throws exhaust loadSessions' one retry. Caching the `{}` it then
+    // returned under the file's (valid) stamp sent every later request for
+    // that session to the machine config until sessions.json next changed.
+    await recordSession(home, { session: 's-a', cwd: a, started: new Date().toISOString() });
+    let failures = 2;
+    const reg = new TenantRegistry(home, {
+      readSessionsFile: (path) => {
+        if (failures-- > 0) throw Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' });
+        return readFileSync(path, 'utf8');
+      },
+    });
+    const machine = realpathSync(join(home, '.config', 'sonata', 'sonata.toml'));
+    expect(reg.resolve({ session: 's-a' }).configPath).toBe(machine);
+    for (let i = 0; i < 3; i++) {
+      expect(reg.resolve({ session: 's-a' }).configPath).toBe(realpathSync(join(a, 'sonata.toml')));
+    }
+  });
+
+  it('picks up a registered session\'s project that gains a sonata.toml, with sessions.json unchanged', async () => {
+    // `sonata init` in a project whose session is already registered writes
+    // ./sonata.toml and nothing else. A cwd -> config cache keyed by the
+    // sessions.json version kept answering "machine config" until the file
+    // changed, so the project never entered the LiteLLM union.
+    const fresh = mkdtempSync(join(tmpdir(), 'tenants-late-init-'));
+    await recordSession(home, { session: 's-late', cwd: fresh, started: new Date().toISOString() });
+    const reg = new TenantRegistry(home);
+    const path = join(fresh, 'sonata.toml');
+    const beforeFingerprint = reg.fingerprint();
+    const beforeSnapshot = reg.unionSnapshot();
+    expect(reg.loadable().map((t) => t.configPath)).not.toContain(path);
+    writeFileSync(path, NATIVE('late-model'));
+    const canonical = realpathSync(path);
+    expect(reg.loadable().map((t) => t.configPath)).toContain(canonical);
+    expect(reg.fingerprint()).not.toBe(beforeFingerprint);
+    expect(reg.fingerprint()).toContain(canonical);
+    expect(reg.unionSnapshot()).not.toBe(beforeSnapshot);
+    expect(reg.unionSnapshot()).toContain('late-model');
+  });
+
   it('unionSnapshot changes when any tenant\'s registry changes, and not otherwise', () => {
     const reg = new TenantRegistry(home);
     reg.noteProject(a);
