@@ -1044,6 +1044,7 @@ base_url = "${second}"
     expect(c?.ok).toBe(true);
     expect(c?.detail).toContain('opencode, opencode-go');
     expect(c?.detail).toMatch(/one account under two names/);
+    expect(c?.detail).toContain(`edit base_url in ${join(cwd, 'sonata.toml')}`);
 
     writeFileSync(join(cwd, 'sonata.toml'), toml('https://opencode.ai/zen/v1'));
     const clean = await doctorResult(cwd, home, at);

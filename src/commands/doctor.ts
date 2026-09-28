@@ -774,7 +774,11 @@ export async function cmdDoctor(
   // twice. Advisory, since two keys on one endpoint is a legitimate setup.
   const shared = sharedBaseUrls(gatewayEntries);
   if (shared.length > 0) {
-    checks.push({ name: 'shared base_url', ok: true, detail: shared.map(sharedBaseUrlWarning).join('; ') });
+    checks.push({
+      name: 'shared base_url',
+      ok: true,
+      detail: shared.map((group) => sharedBaseUrlWarning(group, resolved ?? undefined)).join('; '),
+    });
   }
 
   // `sonata init` run in $HOME used to write here, and nothing reads it. It
