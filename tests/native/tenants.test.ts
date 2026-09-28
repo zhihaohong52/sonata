@@ -155,6 +155,32 @@ base_url = "https://gateway.example/v1"
     }
   });
 
+  it('answers a failed sessions.json read with the last good one, not with no sessions', async () => {
+    // Not caching the failure was only half of it: the request that hit the
+    // failed read was still answered from `{}`, so that one request went to
+    // the machine config with another project's credentials.
+    await recordSession(home, { session: 's-a', cwd: a, started: new Date().toISOString() });
+    let failures = 0;
+    const reg = new TenantRegistry(home, {
+      readSessionsFile: (path) => {
+        if (failures > 0) {
+          failures -= 1;
+          throw Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' });
+        }
+        return readFileSync(path, 'utf8');
+      },
+    });
+    const projectA = realpathSync(join(a, 'sonata.toml'));
+    expect(reg.resolve({ session: 's-a' }).configPath).toBe(projectA);
+    // The file changes, and the read of its new version fails twice (the
+    // read and its one retry).
+    await recordSession(home, { session: 's-b', cwd: b, started: new Date().toISOString() });
+    failures = 2;
+    expect(reg.resolve({ session: 's-a' }).configPath).toBe(projectA);
+    // The next read succeeds, and the new version is seen.
+    expect(reg.resolve({ session: 's-b' }).configPath).toBe(realpathSync(join(b, 'sonata.toml')));
+  });
+
   it('picks up a registered session\'s project that gains a sonata.toml, with sessions.json unchanged', async () => {
     // `sonata init` in a project whose session is already registered writes
     // ./sonata.toml and nothing else. A cwd -> config cache keyed by the

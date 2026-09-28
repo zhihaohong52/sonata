@@ -13,10 +13,11 @@
  * writes, migrates, or prunes. Malformed rows are skipped, never thrown.
  * Nothing here logs a value — the stores hold live secrets in plaintext.
  */
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
-import { openReadOnlySync } from '../sqlite.js';
+import { openReadOnlySync, sqliteAvailable } from '../sqlite.js';
 
 export interface OpencodeCredential {
   /**
@@ -190,4 +191,30 @@ export function opencodeCredentialOrigin(
   env: NodeJS.ProcessEnv = process.env,
 ): 'auth.json' | 'opencode.db' | undefined {
   return readOpencodeCredentials(home, env)[integrationId]?.origin;
+}
+
+/**
+ * A comparable token for the `credential` table's contents: a hash of every
+ * row, `absent` when there is no database (or none this Node can read), and
+ * `unreadable` when one exists and could not be queried just now.
+ *
+ * For `sonata serve`, which re-merges when this moves: opencode.db is written
+ * constantly for reasons unrelated to credentials, so its modification time
+ * says nothing about whether a login changed. A hash, never the rows
+ * themselves, leaves this module — they are live secrets.
+ */
+export function opencodeCredentialStamp(home: string, env: NodeJS.ProcessEnv = process.env): string {
+  const path = opencodeDbPath(home, env);
+  if (!existsSync(path) || !sqliteAvailable()) return 'absent';
+  const db = openReadOnlySync(path);
+  if (db === undefined) return 'unreadable';
+  try {
+    const rows = db.all('SELECT * FROM credential ORDER BY id');
+    return createHash('sha256').update(JSON.stringify(rows)).digest('hex');
+  } catch (error) {
+    // A v1 database holds no credential table, which is a steady answer.
+    return /no such table/i.test(error instanceof Error ? error.message : String(error)) ? 'absent' : 'unreadable';
+  } finally {
+    try { db.close(); } catch { /* already closed */ }
+  }
 }

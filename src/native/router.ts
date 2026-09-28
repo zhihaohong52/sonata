@@ -125,10 +125,12 @@ export interface RouterDeps {
    */
   gatewayKeys?: (tenant: RouterTenant) => Record<string, string>;
   /**
-   * Why serve has dropped a gateway (two tenants' credentials conflict on it,
-   * or one child cannot hold both accounts), or undefined when it is served.
-   * A request for a model on a dropped gateway is never forwarded: LiteLLM
-   * would serve it from whatever credential it does hold — another account.
+   * Why serve is not serving a gateway, or undefined when it is: it was
+   * dropped (two tenants' credentials conflict on it, or one child cannot
+   * hold both accounts), or its credential did not resolve. A request for a
+   * model on one is never forwarded: LiteLLM would serve it from whatever
+   * credential it does hold — another account — and a direct gateway would
+   * send the conversation with no key at all.
    */
   gatewayUnavailable?: (tenant: RouterTenant, gateway: string) => string | undefined;
   /** Why LiteLLM cannot serve right now (venv missing, broken), or undefined when it can. A litellm-bound request is answered 502 with this text rather than forwarded. */
@@ -1814,7 +1816,7 @@ async function routeTierRequest(
   // dropped gateway. A tier whose other candidates were merely cooling, or
   // failed, is the ordinary exhaustion below, with the drops named in it.
   if (skippedDropped.length > 0 && skippedDropped.length === candidates.length) {
-    deps.log?.(`router: every native route for ${label} is on a gateway serve dropped`);
+    deps.log?.(`router: every native route for ${label} is on a gateway that serve is not serving (dropped, or no credential)`);
     return {
       status: 502,
       headers: { 'content-type': 'application/json' },
