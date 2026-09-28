@@ -64,6 +64,8 @@ describe('validate — shared base_url', () => {
     expect(problems).toHaveLength(1);
     expect(problems[0].severity).toBe('warn');
     expect(problems[0].message).toContain('opencode, opencode-go');
+    // The file being written, since re-init keeps a saved base_url.
+    expect(problems[0].message).toContain('edit base_url in /tmp/test/sonata.toml');
     // Every caller refuses on `refusals`, so a warning alone lets init proceed.
     expect(refusals(problems)).toEqual([]);
   });
