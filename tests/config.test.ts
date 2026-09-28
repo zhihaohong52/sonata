@@ -1434,38 +1434,27 @@ credential_source = "opencode"
     expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['codex', 'oc', 'openai']);
   });
 
-  it('refuses two sonata-sourced gateways of one kind: sonata stores a login per gateway name', () => {
-    // credentialDir(home, name): `codex` and `codex-work` are two logins, two
-    // accounts — and LiteLLM would serve both from the first.
-    expect(() => parseConfig(`
+  it('loads any OAuth identities: a config never fails to load over them', () => {
+    // v0.13.1's BYOK OAuth login writes exactly this pair. Two accounts cannot
+    // share one LiteLLM child, but that is serve's to handle (it drops both,
+    // answering their models with a typed 502) and doctor's to warn about —
+    // refusing the file made the whole tenant, every other model included,
+    // unusable.
+    for (const pair of [
+      ['credential_source = "codex"', 'credential_source = "sonata"'],
+      ['credential_source = "sonata"', 'credential_source = "sonata"'],
+      ['', 'credential_source = "sonata"'],
+    ]) {
+      const cfg = parseConfig(`
 [native.gateways."codex"]
 auth = "codex-oauth"
-credential_source = "sonata"
-[native.gateways."codex-work"]
+${pair[0]}
+[native.gateways."openai"]
 auth = "codex-oauth"
-credential_source = "sonata"
-`)).toThrow(/"codex" \(sonata:codex\).*"codex-work" \(sonata:codex-work\).*codex-oauth/s);
-  });
-
-  it('refuses two codex-oauth gateways whose credential sources differ, naming both', () => {
-    expect(() => parseConfig(`
-[native.gateways."codex"]
-auth = "codex-oauth"
-credential_source = "codex"
-[native.gateways."codex-work"]
-auth = "codex-oauth"
-credential_source = "sonata"
-`)).toThrow(/"codex" \(codex\).*"codex-work" \(sonata:codex-work\).*codex-oauth/s);
-  });
-
-  it('counts an absent credential_source as its own source', () => {
-    expect(() => parseConfig(`
-[native.gateways."codex"]
-auth = "codex-oauth"
-[native.gateways."codex-work"]
-auth = "codex-oauth"
-credential_source = "sonata"
-`)).toThrow(/"codex" \(default\)/);
+${pair[1]}
+`);
+      expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['codex', 'openai']);
+    }
   });
 });
 

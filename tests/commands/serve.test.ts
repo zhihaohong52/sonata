@@ -2936,13 +2936,184 @@ litellm = ${litellmPort}
         res = await send();
       }
       expect(res.status).toBe(502);
-      expect(await res.text()).toContain('kill -9 222');
+      const text = await res.text();
+      expect(text).toContain('kill -9 222');
+      expect(text).toContain('sonata restart');
+      // This router is live and holds routerPid in that file: deleting it is
+      // not a remedy here.
+      expect(text).not.toContain('delete');
+      expect(text).not.toContain(serveStatePath(home, 0));
     } finally {
       killSpy.mockRestore();
       errorSpy.mockRestore();
     }
     expect(spawns).toBe(0);
     expect(JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8')).litellmPid).toBe(222);
+  });
+
+  it('re-merges before routing a newly noted tenant, so its conflicting direct gateway is never served', async () => {
+    // A: machine config, direct `acme` whose key comes from opencode. B: a
+    // project that also names `acme`, default-sourced, pointing elsewhere. B
+    // is unknown at startup; its FIRST request is a bare direct key. Merged
+    // stale, B's request would carry A's key (SONATA_KEY_ACME) to B's base_url.
+    writeMachineConfig(`
+[models."a-flash"]
+gateway = "acme"
+id = "a-model"
+[native.gateways."acme"]
+base_url = "https://a.example/v1"
+provider = "anthropic"
+credential_source = "opencode"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+    writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({ acme: { type: 'api', key: 'A-KEY' } }));
+    const project = mkdtempSync(join(tmpdir(), 'serve-tenant-late-conflict-'));
+    writeFileSync(join(project, 'sonata.toml'), `
+[models."b-flash"]
+gateway = "acme"
+id = "b-model"
+[native.gateways."acme"]
+base_url = "https://b.example/v1"
+provider = "anthropic"
+`);
+    const forwarded: { url: string; auth?: string }[] = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+        forwarded.push({ url, auth: (init.headers as Record<string, string>).authorization });
+        return new Response('{}', { status: 200 });
+      }));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...projectHeaders(project) },
+        body: JSON.stringify({ model: 'b-flash', messages: [] }),
+      });
+      expect(res.status).toBe(502);
+      const message = (await res.json() as { error: { message: string } }).error.message;
+      expect(message).toContain('gateway "acme"');
+      expect(forwarded).toEqual([]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('re-resolves which ChatGPT store the default reads when `codex login` changes it while serving', async () => {
+    writeMachineConfig(`
+[models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+[models."byok"]
+gateway = "openai"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["luna", "byok"]
+complex = ["luna", "byok"]
+[native.gateways."codex"]
+auth = "codex-oauth"
+credential_source = "codex"
+[native.gateways."openai"]
+auth = "codex-oauth"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    const codexAuth = join(home, '.codex', 'auth.json');
+    const login = () => {
+      mkdirSync(join(home, '.codex'), { recursive: true });
+      writeFileSync(codexAuth, JSON.stringify({ tokens: { access_token: 'x', refresh_token: 'r' } }));
+    };
+    login();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const send = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      // Both read the codex store: one account, served.
+      expect((await send()).status).not.toBe(502);
+      // `codex logout`: the default now falls through to opencode's store.
+      rmSync(codexAuth);
+      expect((await send()).status).toBe(502);
+      // `codex login` again: one account once more.
+      login();
+      expect((await send()).status).not.toBe(502);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('loads the v0.13.1 BYOK pair in one config, drops both gateways, and keeps the rest serving', async () => {
+    writeMachineConfig(`
+[models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+[models."byok"]
+gateway = "openai"
+id = "gpt-5.6-luna"
+[models."flash"]
+gateway = "acme"
+id = "flash-1"
+[tiers.code]
+simple = ["luna", "byok"]
+complex = ["flash"]
+[native.gateways."codex"]
+auth = "codex-oauth"
+credential_source = "codex"
+[native.gateways."openai"]
+auth = "codex-oauth"
+credential_source = "sonata"
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'acme', 'k');
+    const configs: string[] = [];
+    const forwarded: string[] = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+        forwarded.push((JSON.parse(init.body as string) as { model: string }).model);
+        return new Response('{}', { status: 200 });
+      }));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: (configPath) => { configs.push(readFileSync(configPath, 'utf8')); return { pid: 1, kill: () => {} }; },
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      expect(configs.at(-1)).not.toContain('/luna');
+      expect(configs.at(-1)).not.toContain('/byok');
+      const send = (model: string) => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model, messages: [] }),
+      });
+      const simple = await send('sonata-code-simple');
+      expect(simple.status).toBe(502);
+      const message = (await simple.json() as { error: { message: string } }).error.message;
+      expect(message).toMatch(/"codex".*"openai"/s);
+      expect((await send('sonata-code-complex')).status).toBe(200);
+      expect(forwarded.every((model) => model.endsWith('/flash'))).toBe(true);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('leaves models on a dropped OAuth gateway out of LiteLLM, and answers them 502 naming the conflict', async () => {
@@ -3907,6 +4078,23 @@ describe('killRecordedOrphan — escalates and forgets only a dead pid', () => {
       timeoutMs: 50,
     });
     expect(signals).toEqual(['TERM 222']);
+    expect(stateOf().litellmPid).toBeUndefined();
+  });
+
+  it('logs a recorded pid that has simply exited as already gone', async () => {
+    record({ litellmPid: 222 });
+    const notes: string[] = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { notes.push(args.map(String).join(' ')); });
+    try {
+      await killRecordedOrphan(orphanHome, 4100, {
+        processCommand: () => undefined,
+        kill: () => {}, forceKill: () => {}, isAlive: () => false, sleep: async () => {}, timeoutMs: 50,
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+    expect(notes.join('\n')).toMatch(/222 .*already gone/);
+    expect(notes.join('\n')).not.toMatch(/could not be verified/);
     expect(stateOf().litellmPid).toBeUndefined();
   });
 

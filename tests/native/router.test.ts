@@ -2936,3 +2936,35 @@ describe('a gateway serve has dropped', () => {
     expect(seen).toEqual([]);
   });
 });
+
+describe('a dropped gateway beside candidates that are only cooling', () => {
+  beforeEach(() => clearCooldowns());
+  it('answers the normal 529, naming the dropped gateway beside the cooling ones', async () => {
+    // The reviewer's sequence: one candidate on a dropped gateway, one that
+    // fails. The first request tries flash (503) → 529. The second finds flash
+    // cooling — nothing was attempted, but not everything was dropped, so the
+    // 502 "not served" would misdescribe a transient failure as config.
+    let fetches = 0;
+    const deps = {
+      fetch: (async () => { fetches += 1; return new Response('{"error":"boom"}', { status: 503 }); }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ({ role: 'code', tier: 'simple', routes: [
+        { key: 'luna', native: { gateway: 'codex', id: 'l' } },
+        { key: 'flash', native: { gateway: 'acme', id: 'f' } },
+      ] }),
+      gatewayUnavailable: (_t: unknown, g: string) => (g === 'codex' ? 'gateway codex dropped (conflict)' : undefined),
+    };
+    const req = () => ({
+      method: 'POST', url: '/v1/messages', headers: {},
+      body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: 'hi' }] })),
+    });
+    const first = await routeRequest(req(), deps);
+    expect(first.status).toBe(529);
+    const second = await routeRequest(req(), deps);
+    expect(second.status).toBe(529);
+    const text = (second.body as Buffer).toString();
+    expect(text).toContain('gateway codex dropped (conflict)');
+    expect(text).toContain('sonata dispatch');
+    expect(fetches).toBe(1);
+  });
+});
