@@ -111,19 +111,6 @@ export async function tryCapturePane(session: string): Promise<string | null> {
   }
 }
 
-/**
- * The pane's whole history and screen, wrapped rows joined (`-J`), or null on
- * a failed capture. Joined, a line is one line whatever width it was drawn
- * at, so a resize's reflow between output and capture changes nothing.
- */
-export async function tryCaptureHistory(session: string): Promise<string | null> {
-  try {
-    return await tmux(['capture-pane', '-p', '-J', '-S', '-', '-E', '-', '-t', session]);
-  } catch {
-    return null;
-  }
-}
-
 export async function listSessions(): Promise<string[]> {
   try {
     const out = await tmux(['list-sessions', '-F', '#{session_name}']);

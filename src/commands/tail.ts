@@ -5,7 +5,6 @@ import { recordHarnessUsage } from '../harness-usage.js';
 import { loadConfig } from '../config.js';
 import { getAdapter } from '../adapters/index.js';
 import { tryCapturePane } from '../tmux.js';
-import { captureTranscript } from '../transcript.js';
 import { cleanPane, newLines, stripAnsi } from '../normalize.js';
 import {
   readMeta, readExit, readReport, readCursor, writeCursor,
@@ -487,10 +486,6 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
     });
 
     if (result.state === 'DONE') {
-      // The run is over, so its pane's history is final: capture it whole,
-      // once. `sonata log` prints it in place of the live, one-screen-per-poll
-      // event log. Best effort — a session already gone leaves the event log.
-      await captureTranscript(meta.session, runDir(opts.cwd, opts.id));
       const finished = {
         ...meta,
         endedAt: new Date().toISOString(),
