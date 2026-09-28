@@ -921,6 +921,21 @@ function resolveChildEnv(
       });
       return undefined;
     }
+    const skipped = chain.find((store) => store.skipped !== undefined);
+    if (skipped !== undefined && last !== undefined) {
+      // A store skipped for staying unreadable is not a logout: it says
+      // nothing about the login it holds. A gateway that has resolved keeps
+      // what it resolved to — neither dropped nor handed whatever a later
+      // store holds — and its lineage does not end, so the file reading again
+      // restarts and re-seeds nothing. Only one that has never resolved falls
+      // through, as it would for a store that is not there.
+      transient.push({
+        gateway: name,
+        message: `gateway "${name}": its credential store has stayed unreadable (${skipped.skipped}) — ` +
+          'keeping the credential it last resolved to',
+      });
+      return last;
+    }
     if (resolved !== undefined) {
       memory.lastGood.set(lineage, resolved);
       return resolved;
@@ -1020,9 +1035,13 @@ function resolveChildEnv(
           `in ${codexAuthPath(home)} or ${opencodeAuthPath(home)} — ` +
           `run \`sonata auth login ${name}\`, or \`codex login\`.`,
       );
-      if (entries === undefined && !chain.some((store) => store.state === 'unreadable')) {
-        chatgptGone.push(...(source === 'codex' ? ['codex store'] : source === 'opencode' ? ['opencode store']
-          : ['codex store', 'opencode store']));
+      if (entries === undefined) {
+        // Gone means positively holding no login: a store that could not be
+        // read, or was skipped for staying unreadable, says nothing either way.
+        const answered = (stores: StoreRead[]) =>
+          stores.every((store) => store.state !== 'unreadable' && store.skipped === undefined);
+        if (source !== 'opencode' && answered([codexStore()])) chatgptGone.push('codex store');
+        if (source !== 'codex' && answered(opencodeChain('openai'))) chatgptGone.push('opencode store');
       }
       if (entries !== undefined) {
         if (entries === fresh && found !== null) {
@@ -1591,12 +1610,17 @@ export async function cmdServe(
       log,
       (name, gateway) => {
         const lineage = lineageKey(name, gateway);
-        if (gateway.auth === 'codex-oauth' && gateway.credentialSource === undefined
-          && boundUnreadable(codexAuthPath(opts.home), jsonStoreRead(codexAuthPath(opts.home)),
-            credentialMemory.unreadable, clock(), warnSkipped).state === 'unreadable') {
+        if (gateway.auth === 'codex-oauth' && gateway.credentialSource === undefined) {
+          const codex = boundUnreadable(codexAuthPath(opts.home), jsonStoreRead(codexAuthPath(opts.home)),
+            credentialMemory.unreadable, clock(), warnSkipped);
           const held = lastOauthIdentity.get(lineage);
-          if (held === undefined) unknown.add(name);
-          return held;
+          if (codex.state === 'unreadable') {
+            if (held === undefined) unknown.add(name);
+            return held;
+          }
+          // Skipped for staying unreadable: a gateway that has resolved keeps
+          // the login it was reading; one that never has falls through.
+          if (codex.skipped !== undefined && held !== undefined) return held;
         }
         const identity = resolvedOauthIdentity(opts.home, name, gateway);
         lastOauthIdentity.set(lineage, identity);
