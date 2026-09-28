@@ -136,7 +136,8 @@ export interface RouterDeps {
   /**
    * Told when a LiteLLM response shows its ChatGPT login was refused
    * (`CHATGPT_LOGIN_REFUSED`). serve marks its codex-oauth gateways
-   * unavailable until the next deliberate spawn and logs the remedy once;
+   * unavailable until LiteLLM is started on a different token and logs the
+   * remedy once;
    * absent, the router logs the remedy itself.
    */
   chatgptLoginRefused?: () => void;
