@@ -302,10 +302,12 @@ export async function killRecordedOrphan(
     // In the last two cases the record is forgotten.
     command = (deps.processCommand ?? processCommand)(litellmPid);
     if (command === undefined) {
-      console.error(
-        `sonata serve: recorded litellm pid ${litellmPid} could not be verified (ps gave no command ` +
-        'line) — left alone and forgotten',
-      );
+      // ps has nothing to say about a pid that no longer exists, which is the
+      // common case — that is not "unverified", just finished.
+      console.error((deps.isAlive ?? defaultIsAlive)(litellmPid)
+        ? `sonata serve: recorded litellm pid ${litellmPid} could not be verified (ps gave no command ` +
+          'line) — left alone and forgotten'
+        : `sonata serve: recorded litellm pid ${litellmPid} is already gone — forgotten`);
     } else if (!/litellm/i.test(command)) {
       console.error(
         `sonata serve: recorded litellm pid ${litellmPid} is no longer LiteLLM ` +
@@ -342,11 +344,19 @@ export async function killRecordedOrphan(
  * here. Names the pid and its command line, and both remedies: `kill -9`, or
  * deleting the serve-state record if the pid is not what it seems.
  */
-export function orphanSurvivorMessage(survivor: { pid: number; command: string }, statePath: string): string {
-  return `sonata serve: a LiteLLM from an earlier daemon (pid ${survivor.pid}, running \`${survivor.command}\`) ` +
-    'is still alive after SIGTERM and SIGKILL and probably holds the LiteLLM port — not starting another. ' +
-    `Stop it with \`kill -9 ${survivor.pid}\`, or, if that pid is not what it seems, delete ${statePath} ` +
-    'to forget it; then retry (`sonata restart`).';
+export function orphanSurvivorMessage(
+  survivor: { pid: number; command: string },
+  statePath: string,
+  phase: 'eager' | 'lazy',
+): string {
+  const head = `sonata serve: a LiteLLM from an earlier daemon (pid ${survivor.pid}, running \`${survivor.command}\`) ` +
+    'is still alive after SIGTERM and SIGKILL and probably holds the LiteLLM port — not starting another. ';
+  // Lazily, this router is live: the state file also holds ITS routerPid, so
+  // deleting it would orphan the router itself from `sonata restart`.
+  return phase === 'lazy'
+    ? `${head}Stop it with \`kill -9 ${survivor.pid}\`, then run \`sonata restart\`.`
+    : `${head}Stop it with \`kill -9 ${survivor.pid}\`, then start sonata serve again — or, if that pid ` +
+      `is not what it seems, delete ${statePath} to forget it first.`;
 }
 
 /**
@@ -1175,14 +1185,14 @@ export async function cmdServe(
    */
   let orphanBlocking: string | undefined;
   let orphanPid: number | undefined;
-  const clearOrphan = async (): Promise<void> => {
+  const clearOrphan = async (phase: 'eager' | 'lazy'): Promise<void> => {
     const { survivor } = await killRecordedOrphan(opts.home, ports.router, {
       processCommand: opts.processCommand,
       timeoutMs: opts.litellmExitTimeoutMs,
     });
     if (survivor !== undefined) {
       orphanPid = survivor.pid;
-      orphanBlocking = orphanSurvivorMessage(survivor, serveStatePath(opts.home, ports.router));
+      orphanBlocking = orphanSurvivorMessage(survivor, serveStatePath(opts.home, ports.router), phase);
       throw new Error(orphanBlocking);
     }
     orphanBlocking = undefined;
@@ -1371,7 +1381,7 @@ export async function cmdServe(
           // A daemon that died without stopping its child leaves that child
           // recorded here; the lazy start is the first spawn after it, so it
           // clears it exactly as an eager start does.
-          await clearOrphan();
+          await clearOrphan('lazy');
           const spawned = spawnLitellmChild();
           child = spawned;
           // The readiness await owns this child. Its exit can race the failed
@@ -1602,7 +1612,7 @@ export async function cmdServe(
         if (!litellmHealthy()) {
           throw new Error(`sonata serve: this config routes through LiteLLM, which is ${litellmStatus(opts.home, true).state} — run \`sonata litellm install\``);
         }
-        await clearOrphan();
+        await clearOrphan('eager');
         child = spawnLitellmChild();
         await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
       })();
