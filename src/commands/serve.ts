@@ -13,7 +13,7 @@ import { pruneSessions } from '../sessions.js';
 import { resolveKeyDetail, resolveKeys, sonataKeyStorePath } from '../native/credentials.js';
 import {
   boundUnreadable, boundUnreadableDb, fileStoreRead, jsonStoreRead, newUnreadableMemory, opencodeDbRead,
-  UNREADABLE_STORE_WINDOW_MS, type StoreRead, type UnreadableMemory,
+  UNREADABLE_SKIP_RULE, type StoreRead, type UnreadableMemory,
 } from '../native/credential-reads.js';
 import { chatgptAccountId, codexAuthPath, opencodeAuthPath, readChatGptOAuth, readCodexOAuth, readOpencodeChatGptOAuth, type ChatGptAuthRecord } from '../native/codex-auth.js';
 import { opencodeCredentialOrigin, opencodeCredentialStamp, opencodeDbPath } from '../native/opencode-store.js';
@@ -893,7 +893,7 @@ function resolveChildEnv(
     reads.set(id, fresh);
     return fresh;
   };
-  // A store that has stayed unreadable past UNREADABLE_STORE_WINDOW_MS
+  // A store `boundUnreadable` has stopped treating as mid-write
   // reads as absent here, and every credential reader already skips it, so
   // the lookup falls through to the next store exactly as it would for a
   // store that is not there.
@@ -951,8 +951,7 @@ function resolveChildEnv(
         unreadable: true,
         message: `gateway "${name}": its credential store could not be read (${unreadable.detail}) and it has ` +
           'not resolved before — not serving it while the store may be mid-write, rather than use whatever a ' +
-          `later store holds; retried on the next request, and skipped as absent once it has stayed unreadable ` +
-          `for ${UNREADABLE_STORE_WINDOW_MS / 1000}s`,
+          `later store holds; retried on the next request, and skipped as absent ${UNREADABLE_SKIP_RULE}`,
       });
       return undefined;
     }
@@ -1719,8 +1718,7 @@ export async function cmdServe(
       delete gateways[name];
       dropped.set(name, `gateway "${name}": ${codexAuthPath(opts.home)} could not be read (a write in progress?) ` +
         'and it has not resolved before, so which ChatGPT login it reads cannot be told — not serving it ' +
-        'while that file may be mid-write; retried on the next request, and skipped as absent once it has ' +
-        `stayed unreadable for ${UNREADABLE_STORE_WINDOW_MS / 1000}s`);
+        `while that file may be mid-write; retried on the next request, and skipped as absent ${UNREADABLE_SKIP_RULE}`);
     }
     droppedGateways = dropped;
     lastMergedGateways = gateways;

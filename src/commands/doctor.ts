@@ -47,7 +47,7 @@ import { opencodeCredentialOrigin, opencodeDbPath, readOpencodeCredentials } fro
  */
 const LITELLM_HEALTH_TIMEOUT_MS = 3000;
 import { codexAuthPath, codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
-import { jsonStoreRead, opencodeDbRead, UNREADABLE_STORE_WINDOW_MS } from '../native/credential-reads.js';
+import { jsonStoreRead, opencodeDbRead, UNREADABLE_SKIP_RULE } from '../native/credential-reads.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { LITELLM_HOST, mergeTenantGateways, resolvedOauthIdentity, serveHealthUrl, healthReportsUi } from './serve.js';
@@ -1167,7 +1167,7 @@ export async function cmdDoctor(
     }
 
     // A credential store that exists but cannot be read. serve treats one as
-    // mid-write for UNREADABLE_STORE_WINDOW_MS and then skips it as absent —
+    // mid-write only while it may be (`boundUnreadable`) and then skips it as absent —
     // so a login in it is silently not the one served (a default ChatGPT
     // gateway falls through to opencode's), while everything above still
     // reads "fine". Named here, where it can be fixed.
@@ -1179,8 +1179,8 @@ export async function cmdDoctor(
       checks.push({
         name: 'credential store',
         ok: true,
-        detail: `${path} cannot be read (${read.detail ?? 'unreadable'}) — serve skips it as absent once it has stayed ` +
-          `that way for ${UNREADABLE_STORE_WINDOW_MS / 1000}s, so no login in it is used; fix or remove the file`,
+        detail: `${path} cannot be read (${read.detail ?? 'unreadable'}) — serve skips it as absent ` +
+          `${UNREADABLE_SKIP_RULE}, so no login in it is used; fix or remove the file`,
       });
     }
 
