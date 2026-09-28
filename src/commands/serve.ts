@@ -1752,18 +1752,22 @@ export async function cmdServe(
    * alone would re-merge on nearly every request; the rows are what decide
    * whether anything a gateway reads has changed. A read that fails keeps the
    * last stamp and is retried on the next change, so a moment's lock is not
-   * a login changing.
+   * a login changing. The database's mode is part of the signal too: a
+   * `chmod` moves no rows, so without it a database made unreadable (or
+   * readable again) was never re-read.
    */
   let opencodeDbStamp: { stat: string; stamp: string } | undefined;
   const opencodeDbSignal = (): string => {
     const path = opencodeDbPath(opts.home);
     const stat = `${statSignal(path)}|${statSignal(`${path}-wal`)}`;
+    let mode = '-';
+    try { mode = String(statSync(path).mode); } catch { /* absent: no mode */ }
     if (opencodeDbStamp?.stat !== stat) {
       const stamp = opencodeCredentialStamp(opts.home);
       if (stamp !== 'unreadable') opencodeDbStamp = { stat, stamp };
-      else return opencodeDbStamp?.stamp ?? stamp;
+      else return `${mode}:${opencodeDbStamp?.stamp ?? stamp}`;
     }
-    return opencodeDbStamp.stamp;
+    return `${mode}:${opencodeDbStamp.stamp}`;
   };
   /**
    * What the gateway merge depends on, as a cheap comparable string: the

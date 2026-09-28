@@ -4450,6 +4450,52 @@ litellm = ${litellmPort}
         expect(seededWith()).toEqual(['CODEX-A']);
       });
 
+      it.runIf(sqliteAvailable())('notices a chmod on opencode.db on the next request, though its rows do not change', async () => {
+        // opencode.db's signal was its credential rows' hash, re-read when its
+        // stat moved: a chmod moved the stat, the rows read the same (or not
+        // at all), and the signal stood still, so nothing was re-read.
+        writeMachineConfig(`
+[models."pdm"]
+gateway = "pd"
+id = "pd-1"
+[native.gateways."pd"]
+base_url = "https://pd.example"
+provider = "anthropic"
+credential_source = "opencode"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+        const db = join(home, '.local', 'share', 'opencode', 'opencode.db');
+        mkdirSync(dirname(db), { recursive: true });
+        writeOpencodeCredDb(db, [{ id: 'c1', integration: 'pd', timeCreated: 1, value: JSON.stringify({ type: 'key', key: 'FROM-DB' }) }]);
+        vi.stubGlobal('fetch', vi.fn(async () => new Response(
+          '{"id":"x","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}',
+          { status: 200, headers: { 'content-type': 'application/json' } })));
+        const handle = await cmdServe({
+          cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+          spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+        });
+        handles.push(handle);
+        vi.unstubAllGlobals();
+        const send = async () => {
+          const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'pdm', max_tokens: 1, messages: [] }),
+          });
+          await res.text();
+          return res.status;
+        };
+        expect(await send()).toBe(200);
+        chmodSync(db, 0o000);
+        try {
+          await send();
+          expect(errors.some((line) => line.includes('opencode.db') && line.includes('could not be'))).toBe(true);
+        } finally {
+          chmodSync(db, 0o600);
+        }
+      });
+
       it('refuses within the window, and serves from opencode once it lapses with nothing on disk changing', async () => {
         writeMachineConfig(DEFAULT_CHATGPT());
         mkdirSync(join(home, '.codex'), { recursive: true });
