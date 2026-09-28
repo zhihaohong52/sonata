@@ -121,14 +121,16 @@ export class TenantRegistry {
     }
     if (this.sessionsCache?.stamp === stamp) return this.sessionsCache;
     const { sessions: records, ok } = readSessions(this.home, this.deps.readSessionsFile);
-    const cwds = [...new Set(Object.values(records).map((record) => record.cwd).filter((cwd): cwd is string => typeof cwd === 'string'))];
-    const parsed = { stamp, records, cwds };
     // A failed read (EMFILE, say) returns `{}` under a stamp that is perfectly
-    // valid, and caching that would pin every session to the machine config
-    // until sessions.json next changed. Used for this call only, so the next
-    // one reads again.
-    if (ok) this.sessionsCache = parsed;
-    return parsed;
+    // valid. Cached, that pinned every session to the machine config until
+    // sessions.json next changed; answered even once, it sent this request
+    // there with the machine's credentials. The last good read answers
+    // instead, and is left under its own stamp so the next call reads again.
+    // `{}` only when there has never been a good read.
+    if (!ok) return this.sessionsCache ?? { stamp, records: {}, cwds: [] };
+    const cwds = [...new Set(Object.values(records).map((record) => record.cwd).filter((cwd): cwd is string => typeof cwd === 'string'))];
+    this.sessionsCache = { stamp, records, cwds };
+    return this.sessionsCache;
   }
 
   /** `cwd`'s canonical config path, resolved now. */
