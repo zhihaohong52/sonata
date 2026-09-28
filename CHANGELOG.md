@@ -10,7 +10,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Changed
 
-- **Two OAuth gateways of one kind on different accounts are not served,
+- **Two OAuth gateways of one kind reading different credential stores are
+  not served,
   and doctor says so.** LiteLLM holds one ChatGPT and one Copilot credential
   per process, so a second gateway of a kind was silently served the first
   one's account. The router now drops every gateway of such a kind — their
@@ -31,14 +32,6 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   so the agent died immediately and no fallback could help. The router now
   replaces that call, and its "No such tool available" result, with a short
   note before forwarding. Requests without one are passed through unchanged.
-- **A version probe no longer loses the version it was about to read.** Every
-  `--version` probe (`sonata doctor`, `sonata init`, the tmux check) settled
-  one event-loop turn after its command exited, but a command's last output
-  can be read after Node reports the exit — measured: exit at 3.1 ms, output
-  read at 5.4 ms, probe already resolved with nothing. About 1 probe in 450 on
-  a busy machine reported a working harness with an empty version, or a
-  failing one without its error. A probe now waits for its output to reach EOF,
-  bounded at 1 s for a command that leaves a background process holding it.
 - **The `route auto` hooks no longer drop the reason routing was refused.**
   The session and subagent hooks read the CLI's stderr at the moment its exit
   was reported, which can precede the last of that output, so on a loaded
@@ -72,8 +65,8 @@ the review doc's Backlog note):
 - **Router.** A message-less 400 falls through instead of killing the agent,
   every terminal 400 is logged, and `SONATA_CAPTURE_400_DIR` captures the
   request; a bare key on a direct gateway goes to that gateway; two OAuth
-  gateways of one kind that read different credential sources are refused
-  (see below); rows are priced under the config they
+  gateways of one kind that read different credential stores are refused
+  (see above); rows are priced under the config they
   were routed under; conversation collisions strip foreign thinking; a
   conversation is pinned only when its response completes; error-body reads
   are bounded; a failed stream is torn down, not appended to; `sessions.json`
@@ -174,7 +167,8 @@ the review doc's Backlog note):
   has resolved keeps its last credential through any read that fails except a
   store positively holding none (no file, or no entry in a file that parses):
   a parse error, EACCES, EMFILE or a locked opencode.db is logged once and
-  retried on the next request. Each store is read once per rebuild, and the
+  retried on the next request. Each store is read once while a rebuild
+  resolves credentials, and the
   read that decides whether it answered is the one its login is parsed from:
   read twice, a write landing in between read as the store answering with no
   login, which ended the ChatGPT login and restarted LiteLLM. A read that
@@ -256,11 +250,6 @@ the review doc's Backlog note):
   its session registered is picked up without `sessions.json` changing. A
   failed read of `sessions.json` is never kept, and the request that hit it is
   answered from the last good read rather than sent to the machine config.
-- **Ctrl-C during `sonata init` or `sonata doctor` exits again while harness
-  versions are being probed.** The probes run side by side, and each one
-  mistook the others' signal forwarding for the command's own handling — so
-  once one probe had finished, Ctrl-C stopped the slow one and the command
-  carried on.
 - **`sonata doctor` reports gateways the router drops because of another
   project's config.** It checked this file's OAuth gateways against each
   other only, while the router drops by every project it serves plus the

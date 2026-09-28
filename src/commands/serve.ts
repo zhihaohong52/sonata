@@ -2051,8 +2051,8 @@ export async function cmdServe(
      * names, so a credential store torn for the length of one write — or a
      * failing gateway no model uses — restarted LiteLLM for a config and env
      * identical to the running one, twice per flap. The configs are still
-     * compared too, as they always were. Reads the merge `refreshGatewayPlan`
-     * has already run for this request rather than merging again.
+     * compared too, as they always were. It merges again (`servableTenants`),
+     * in a read snapshot of its own rather than the build's.
      */
     const litellmPlanSnapshot = (): string => {
       // Every tenant config is parsed per `loadable()`, so once here, not
