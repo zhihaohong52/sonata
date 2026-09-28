@@ -13,6 +13,7 @@ import { readRowsAsync } from '../ledger.js';
 import { recentRoutes, type RouteLine } from '../commands/status.js';
 import { isRunId, runDir } from '../store.js';
 import { reportPathFor } from '../report-contract.js';
+import { cleanRunLog, runLogFile } from '../run-log.js';
 import { parseFilters } from './ui-usage.js';
 import { projectDiscovery } from './ui-runs.js';
 import type { UiDeps } from './ui.js';
@@ -139,17 +140,28 @@ export async function runDetail(
 
   for (const cwd of candidates) {
     const dir = runDir(cwd, id);
+    let meta: { interactive?: boolean };
     try {
-      await fsp.access(join(dir, 'meta.json'));
+      meta = JSON.parse(await fsp.readFile(join(dir, 'meta.json'), 'utf8')) as { interactive?: boolean };
     } catch {
       continue;
     }
+    // The same file `sonata log` prints (`runLogFile`): a non-interactive
+    // run's own harness.log, complete, else the event log.
+    const file = runLogFile(dir, meta);
     // Tail-first: the end of a run is what says how it finished. Only the tail
     // is read — the rest of the file is never loaded to be thrown away.
-    const window = await readWindow(join(dir, 'events.jsonl'), MAX_TRANSCRIPT_BYTES, 'tail');
-    // `readEvents` drops blank lines; the same shaping applied to the window.
+    const window = await readWindow(file.path, MAX_TRANSCRIPT_BYTES, 'tail');
+    // Shaped as the CLI shapes it: `readEvents` drops blank lines, and a
+    // harness log is cleaned by `cleanRunLog`. A window cut into a harness log
+    // starts mid-line — possibly mid-escape — so that first fragment goes.
+    const windowText = window === null
+      ? ''
+      : file.source === 'harness' && window.truncated
+        ? window.text.slice(window.text.indexOf('\n') + 1)
+        : window.text;
     const tail = {
-      text: window === null ? '' : window.text.split('\n').filter(Boolean).join('\n'),
+      text: file.source === 'harness' ? cleanRunLog(windowText) : windowText.split('\n').filter(Boolean).join('\n'),
       truncated: window?.truncated ?? false,
     };
     const head = await readWindow(reportPathFor(dir), MAX_REPORT_BYTES, 'head');
