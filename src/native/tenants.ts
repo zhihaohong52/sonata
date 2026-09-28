@@ -82,17 +82,23 @@ export class TenantRegistry {
   private readonly noted = new Set<string>();
   private readonly logged = new Map<string, string>();
   /**
-   * sessions.json as last parsed, keyed by the file's own stat, plus each cwd
-   * it names resolved to a canonical config path for that version.
+   * sessions.json as last parsed, keyed by the file's own stat, with the
+   * distinct cwds it names.
    *
    * `fingerprint()` runs on every request, and it used to re-read and
    * re-parse this file and run `configPath` + realpath once per session
    * RECORD — not per distinct cwd — every time: measured 53 ms per request
    * at 256 projects and 2000 sessions, synchronous, Anthropic passthrough
-   * included. A cwd's resolution is only re-run when the file changes; the
-   * resolved configs are still stat'ed every time, since that is the signal.
+   * included. Parsing is now once per version of the file, and resolution
+   * once per distinct cwd.
+   *
+   * What a cwd resolves to is deliberately NOT cached with it. `sonata init`
+   * in a project whose session is already registered writes ./sonata.toml
+   * and leaves sessions.json alone, so a resolution keyed by the file's
+   * version kept answering "the machine config" and the project never
+   * entered the LiteLLM union. The dedup is where the saving was.
    */
-  private sessionsCache?: { stamp: string; records: Record<string, SessionRecord>; cwds: string[]; resolved: Map<string, string | null> };
+  private sessionsCache?: { stamp: string; records: Record<string, SessionRecord>; cwds: string[] };
 
   constructor(
     private readonly home: string,
@@ -116,19 +122,15 @@ export class TenantRegistry {
     if (this.sessionsCache?.stamp !== stamp) {
       const records = loadSessions(this.home, this.deps.readSessionsFile);
       const cwds = [...new Set(Object.values(records).map((record) => record.cwd).filter((cwd): cwd is string => typeof cwd === 'string'))];
-      this.sessionsCache = { stamp, records, cwds, resolved: new Map() };
+      this.sessionsCache = { stamp, records, cwds };
     }
     return this.sessionsCache;
   }
 
-  /** `cwd`'s canonical config path, from this sessions.json version's cache when it has one. */
-  private configFor(cwd: string, cache?: Map<string, string | null>): string | null {
-    const hit = cache?.get(cwd);
-    if (hit !== undefined) return hit;
+  /** `cwd`'s canonical config path, resolved now. */
+  private configFor(cwd: string): string | null {
     const found = resolveConfigPath(cwd, this.home);
-    const path = found === null ? null : canonicalConfigPath(found);
-    cache?.set(cwd, path);
-    return path;
+    return found === null ? null : canonicalConfigPath(found);
   }
 
   private machinePath(): string | null {
@@ -226,17 +228,11 @@ export class TenantRegistry {
     const paths = new Set<string>();
     const machine = this.machinePath();
     if (machine !== null) paths.add(machine);
-    // Session cwds are distinct per sessions.json version and resolved once
-    // for it. A noted project is resolved fresh unless a session already
-    // resolved the same cwd this version: noting is per request, and a
-    // noted-only cwd is not something the file's version says anything about.
-    const { cwds, resolved } = this.sessions();
-    for (const cwd of cwds) {
-      const path = this.configFor(cwd, resolved);
-      if (path !== null) paths.add(path);
-    }
-    for (const cwd of this.noted) {
-      const path = resolved.get(cwd) ?? this.configFor(cwd);
+    // Every distinct cwd — session and noted alike, one resolution each — is
+    // resolved fresh on every call: a project gains its sonata.toml without
+    // either set changing.
+    for (const cwd of new Set([...this.sessions().cwds, ...this.noted])) {
+      const path = this.configFor(cwd);
       if (path !== null) paths.add(path);
     }
     return [...paths].sort();
