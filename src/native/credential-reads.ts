@@ -15,9 +15,10 @@
  * error code, never content.
  */
 import { createHash } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import { statSync } from 'node:fs';
 
-import { opencodeDbPath } from './opencode-store.js';
+import { opencodeDbPath, queryCredentialRows } from './opencode-store.js';
+import { readOnce } from './read-snapshot.js';
 import { openReadOnlySync, sqliteAvailable } from '../sqlite.js';
 
 /**
@@ -62,7 +63,7 @@ const ABSENT_CODES = new Set(['ENOENT', 'ENOTDIR']);
 export function jsonStoreRead(path: string): StoreRead {
   let bytes: Buffer;
   try {
-    bytes = readFileSync(path);
+    bytes = readOnce(path);
   } catch (error) {
     const code = errnoCode(error);
     return ABSENT_CODES.has(code) ? { state: 'absent' } : { state: 'unreadable', detail: `${path}: ${code}` };
@@ -116,7 +117,10 @@ export function opencodeDbRead(
   const present = fileStoreRead(path);
   if (present.state !== 'ok') return present;
   if (!sqliteAvailable()) return { state: 'absent' };
-  const first = countCredentialRows(path);
+  // The first read is the one `readOpencodeCredentials` parses within this
+  // build (`withReadSnapshot`), so the two cannot describe different rows.
+  const query = queryCredentialRows(path);
+  const first = { ...query, rows: query.rows?.length };
   if (first.rows === undefined) {
     if (!first.missingTable) return { state: 'unreadable', detail: first.detail };
     memory.rows = 0;
@@ -134,7 +138,7 @@ export function opencodeDbRead(
   return { state: 'ok' };
 }
 
-/** One count of opencode.db's credential rows, on its own read-only connection. */
+/** One count of opencode.db's credential rows, on its own fresh read-only connection — never a snapshot's. */
 function countCredentialRows(path: string): { rows?: number; missingTable?: true; detail?: string } {
   const db = openReadOnlySync(path);
   if (db === undefined) return { detail: `${path}: could not be opened` };
