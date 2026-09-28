@@ -155,6 +155,9 @@ the review doc's Backlog note):
   now merges the same set the router does and reports every drop affecting
   this config (OAuth accounts, one gateway name with two credentials, two
   names sharing a key variable), naming the other file.
+- **A tier whose every model is on a dropped gateway says so even while
+  LiteLLM is unavailable.** It used to answer "run `sonata litellm install`",
+  which would not have made any of them servable.
 
 ## [0.13.1] - 2026-09-27
 
