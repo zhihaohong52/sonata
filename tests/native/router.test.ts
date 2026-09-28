@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, withEffort, STICKY_TTL_MS, createRouterServer, respond, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
 
@@ -2679,5 +2679,109 @@ describe('message-less 400s', () => {
     const { deps } = harness(() => new Response(ENVELOPE_WITH_MESSAGE, { status: 400 }));
     const res = await routeRequest(request(), { ...deps, capture400Dir: undefined });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('respond — a client that disconnects mid-stream', () => {
+  const waitFor = async (check: () => boolean, ms = 4_000): Promise<void> => {
+    const until = Date.now() + ms;
+    while (!check()) {
+      if (Date.now() > until) throw new Error('timed out waiting');
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  };
+  const connectAndDrop = async (port: number): Promise<void> => {
+    const { request } = await import('node:http');
+    await new Promise<void>((resolve) => {
+      const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/v1/messages', headers: { 'content-type': 'application/json' } }, (res) => {
+        res.resume();
+        setTimeout(() => { req.destroy(); res.destroy(); resolve(); }, 150);
+      });
+      req.on('error', () => resolve());
+      req.end(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: 'x' }] }));
+    });
+  };
+  const endless = (state: { produced: number; cancelled: boolean }) => new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      await new Promise((r) => setTimeout(r, 10));
+      state.produced += 1;
+      // Big frames, so the socket's buffer fills and write() returns false.
+      controller.enqueue(new TextEncoder().encode(`event: ping\ndata: ${'x'.repeat(64 * 1024)}\n\n`));
+    },
+    cancel() { state.cancelled = true; },
+  });
+
+  it('settles, cancels the upstream and records an incomplete ledger row', async () => {
+    const state = { produced: 0, cancelled: false };
+    const rows: { complete: boolean; status: number }[] = [];
+    let settled = false;
+    const { createServer } = await import('node:http');
+    const deps = {
+      fetch: (async () => new Response(endless(state), { status: 200, headers: { 'content-type': 'text/event-stream' } })) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ({ role: 'code', tier: 'simple', routes: [{ key: 'flash', native: { gateway: 'g', id: 'f' } }] }),
+      recordUsage: (row: { complete: boolean; status: number }) => rows.push(row),
+    };
+    const server = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const routed = await routeRequest({ method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.concat(chunks) }, deps);
+      await respond(res, routed);
+      settled = true;
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      await connectAndDrop((server.address() as { port: number }).port);
+      await waitFor(() => settled && state.cancelled && rows.length === 1);
+      expect(rows[0].complete).toBe(false);
+      const producedAtSettle = state.produced;
+      await new Promise((r) => setTimeout(r, 200));
+      // Nothing keeps pulling from the upstream once the client is gone.
+      expect(state.produced - producedAtSettle).toBeLessThanOrEqual(1);
+    } finally {
+      server.close();
+    }
+  }, 10_000);
+
+  it('settles when the client is gone while the upstream is between chunks', async () => {
+    let cancelled = false;
+    let settled = false;
+    const { createServer } = await import('node:http');
+    const server = createServer((_req, res) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(c) { c.enqueue(new TextEncoder().encode('event: ping\ndata: {}\n\n')); /* then stalls */ },
+        cancel() { cancelled = true; },
+      });
+      void respond(res, { status: 200, headers: { 'content-type': 'text/event-stream' }, body: responseBodyForTest(body) })
+        .then(() => { settled = true; });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      await connectAndDrop((server.address() as { port: number }).port);
+      await waitFor(() => settled && cancelled);
+    } finally {
+      server.close();
+    }
+  }, 10_000);
+});
+
+describe('stickiness memory stays bounded when responses break', () => {
+  beforeEach(() => clearCooldowns());
+  it('evicts like stickySet when incomplete responses record new conversations', async () => {
+    const deps = {
+      fetch: (async () => new Response(new ReadableStream<Uint8Array>({
+        start(c) { c.enqueue(new TextEncoder().encode('event: ping\ndata: {}\n\n')); c.error(new Error('reset')); },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ({ role: 'code', tier: 'simple', routes: [{ key: 'flash', native: { gateway: 'g', id: 'f' } }] }),
+    };
+    for (let i = 0; i < STICKY_MAX_CONVERSATIONS + 5; i += 1) {
+      const res = await routeRequest({
+        method: 'POST', url: '/v1/messages', headers: {},
+        body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: `task ${i}` }] })),
+      }, deps);
+      try { for await (const _ of res.body as AsyncIterable<Uint8Array>) { /* read */ } } catch { /* broken */ }
+    }
+    expect(stickyConversationCount()).toBeLessThanOrEqual(STICKY_MAX_CONVERSATIONS);
   });
 });

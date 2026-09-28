@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
-  installHook, allowSonataTools, hookCommand, readSettings, settingsPath, writeSettings,
+  installHook, allowSonataTools, hookCommand, settingsPath, updateSettings,
 } from '../settings.js';
 import { pruneAgents } from '../detect.js';
 import { cmdSync } from '../commands/sync.js';
@@ -99,11 +99,21 @@ export async function apply(
     const allowListScope = plan.hook.allowListScope;
     const path = settingsPath(allowListScope, cwd, home);
     const cmd = hookCommand(packageRoot);
-    const withHook = plan.hook.scope !== 'skip'
-      ? installHook(readSettings(path), cmd)
-      : { settings: readSettings(path), changed: false };
-    const withAllow = allowSonataTools(withHook.settings);
-    if (withHook.changed || withAllow.changed) writeSettings(path, withAllow.settings);
+    // Read, changed and written under the settings lock, the same one route's
+    // hooks take: at global scope a route hook firing in another session
+    // writes this very file, and a read-modify-write outside the lock would
+    // discard whichever change landed second.
+    let withHook = { changed: false };
+    let withAllow = { changed: false };
+    await updateSettings(path, (current) => {
+      const hooked = plan.hook.scope !== 'skip'
+        ? installHook(current, cmd)
+        : { settings: current, changed: false };
+      const allowed = allowSonataTools(hooked.settings);
+      withHook = hooked;
+      withAllow = allowed;
+      return { settings: allowed.settings, changed: hooked.changed || allowed.changed };
+    });
     hookChanged = withHook.changed;
     if (plan.hook.scope !== 'skip') {
       io.out(withHook.changed ? `  ✓ installed hook in ${path}` : `  · hook already present in ${path}`);

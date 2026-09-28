@@ -200,19 +200,32 @@ function responseHeaders(headers: Headers): Record<string, string> {
 function responseBody(body: ReadableStream<Uint8Array>): AsyncIterable<Uint8Array> & { cancel(): void } {
   const reader = body.getReader();
   async function* chunks(): AsyncIterable<Uint8Array> {
+    let finished = false;
     try {
       while (true) {
         const { done, value } = await reader.read();
-        if (done) return;
+        if (done) { finished = true; return; }
         yield value;
       }
     } finally {
+      // Left early — the client went away, or a bounded read gave up — so the
+      // upstream is cancelled rather than merely unlocked: an unlocked body
+      // keeps its connection open with nobody left to read it.
+      if (!finished) reader.cancel().catch(() => { /* nothing left to tell */ });
       try { reader.releaseLock(); } catch { /* already released by a cancel */ }
     }
   }
   return Object.assign(chunks(), {
     cancel: () => { reader.cancel().catch(() => { /* nothing left to tell */ }); },
   });
+}
+
+/** Test seam: an upstream body as the router wraps it. */
+export const responseBodyForTest = responseBody;
+
+/** Cancels a routed body, through any wrappers that forward `cancel`. */
+function cancelBody(body: AsyncIterable<Uint8Array> | Buffer): void {
+  (body as { cancel?: () => void }).cancel?.();
 }
 
 /**
@@ -262,25 +275,30 @@ async function drainBody(body: AsyncIterable<Uint8Array> | Buffer, deps: RouterD
  * Lets the client advance before inspecting its chunk. This keeps accounting
  * off the response critical path; `finally` also accounts for disconnects.
  */
-async function* observe(
+function observe(
   body: AsyncIterable<Uint8Array>,
   onChunk: (chunk: Uint8Array) => void,
   onEnd: (complete: boolean) => void,
-): AsyncIterable<Uint8Array> {
-  let complete = false;
-  try {
-    for await (const chunk of body) {
-      yield chunk;
-      try {
-        onChunk(chunk);
-      } catch { /* A malformed frame must not interrupt the response. */ }
-    }
-    complete = true;
-  } finally {
+): AsyncIterable<Uint8Array> & { cancel(): void } {
+  async function* chunks(): AsyncIterable<Uint8Array> {
+    let complete = false;
     try {
-      onEnd(complete);
-    } catch { /* Ledger failures must not escape a disconnected stream either. */ }
+      for await (const chunk of body) {
+        yield chunk;
+        try {
+          onChunk(chunk);
+        } catch { /* A malformed frame must not interrupt the response. */ }
+      }
+      complete = true;
+    } finally {
+      try {
+        onEnd(complete);
+      } catch { /* Ledger failures must not escape a disconnected stream either. */ }
+    }
   }
+  // Forwarded, so whoever holds the outermost wrapper can still cancel the
+  // upstream underneath it — `respond` does, when its client disconnects.
+  return Object.assign(chunks(), { cancel: () => cancelBody(body) });
 }
 
 /** Most bytes of a non-SSE body kept to judge whether it completed. */
@@ -818,6 +836,20 @@ function stickyGet(conversation: string, at: number): { key: string; prefer: boo
   return hit;
 }
 
+/** Drops the least recently touched conversations beyond the cap. */
+function stickyEvict(): void {
+  while (stickyCandidates.size > STICKY_MAX_CONVERSATIONS) {
+    const oldest = stickyCandidates.keys().next();
+    if (oldest.done) return;
+    stickyCandidates.delete(oldest.value);
+  }
+}
+
+/** Test seam: how many conversations the router currently remembers. */
+export function stickyConversationCount(): number {
+  return stickyCandidates.size;
+}
+
 function stickySet(conversation: string, key: string, at: number): void {
   // Delete-then-set moves the entry to the end of the insertion order, so a
   // conversation still in use is never the eviction victim. `served` only
@@ -827,10 +859,7 @@ function stickySet(conversation: string, key: string, at: number): void {
   served.add(key);
   stickyCandidates.delete(conversation);
   stickyCandidates.set(conversation, { key, at, prefer: true, served });
-  if (stickyCandidates.size > STICKY_MAX_CONVERSATIONS) {
-    const oldest = stickyCandidates.keys().next();
-    if (!oldest.done) stickyCandidates.delete(oldest.value);
-  }
+  stickyEvict();
 }
 
 /**
@@ -861,7 +890,10 @@ function stickyDemote(conversation: string, key: string): void {
 function stickyIncomplete(conversation: string, key: string, at: number): void {
   const hit = stickyCandidates.get(conversation);
   if (hit === undefined) {
+    // Bounded exactly as `stickySet` is: a stream of broken responses from
+    // distinct conversations must not grow this map without limit.
     stickyCandidates.set(conversation, { key, at, prefer: false, served: new Set([key]) });
+    stickyEvict();
     return;
   }
   hit.served.add(key);
@@ -1942,17 +1974,36 @@ export async function respond(res: ServerResponse, routed: RouterResponse): Prom
     res.end(routed.body);
     return;
   }
-  for await (const chunk of routed.body) {
-    if (!res.write(chunk)) {
-      // 'close' as well as 'drain': a client that disconnects never drains.
-      await new Promise<void>((resolve) => {
-        const done = (): void => { res.off('drain', done); res.off('close', done); resolve(); };
-        res.once('drain', done);
-        res.once('close', done);
-      });
+  const body = routed.body;
+  // Registered before the first write: a client can be gone before the loop
+  // ever waits on it, and 'close' fires once. Cancelling the upstream here is
+  // what unblocks a loop waiting on the NEXT chunk, not just one waiting to
+  // drain; the wrappers' own finally blocks then record the incomplete row.
+  let closed = res.destroyed;
+  const onClose = (): void => {
+    if (res.writableEnded) return;
+    closed = true;
+    cancelBody(body);
+  };
+  res.once('close', onClose);
+  try {
+    for await (const chunk of body) {
+      if (closed || res.destroyed) break;
+      if (!res.write(chunk)) {
+        if (closed || res.destroyed) break;
+        // 'close' as well as 'drain': a client that disconnects never drains.
+        await new Promise<void>((resolve) => {
+          const done = (): void => { res.off('drain', done); res.off('close', done); resolve(); };
+          res.once('drain', done);
+          res.once('close', done);
+        });
+        if (closed || res.destroyed) break;
+      }
     }
+    if (!closed && !res.destroyed) res.end();
+  } finally {
+    res.off('close', onClose);
   }
-  res.end();
 }
 
 export function createRouterServer(deps: RouterDeps): Server {

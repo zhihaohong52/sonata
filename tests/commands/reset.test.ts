@@ -70,7 +70,7 @@ describe('applyReset', () => {
     await apply(p, { cwd, home, packageRoot }, { out: () => {}, prune: false });
     expect(existsSync(p.configPath)).toBe(true);
 
-    applyReset(planReset({ cwd, home, packageRoot }));
+    await applyReset(planReset({ cwd, home, packageRoot }));
 
     expect(existsSync(p.configPath)).toBe(false);
     expect(existsSync(p.skillPath)).toBe(false);
@@ -89,20 +89,20 @@ describe('applyReset', () => {
     const mine = join(p.agentsDir, 'mine.md');
     writeFileSync(mine, '---\nname: mine\n---\n\nMy own agent.\n');
 
-    applyReset(planReset({ cwd, home, packageRoot }));
+    await applyReset(planReset({ cwd, home, packageRoot }));
     expect(existsSync(mine)).toBe(true);
   });
 
-  it('leaves the text either side of the CLAUDE.md markers byte-identical', () => {
+  it('leaves the text either side of the CLAUDE.md markers byte-identical', async () => {
     const original = '# My project\n\nInstructions I wrote.\n';
     writeFileSync(join(cwd, 'CLAUDE.md'), mergeGuidance(original, guidanceBlock()));
-    applyReset(planReset({ cwd, home, packageRoot }));
+    await applyReset(planReset({ cwd, home, packageRoot }));
     expect(readFileSync(join(cwd, 'CLAUDE.md'), 'utf8')).toBe(original);
   });
 
   it('is idempotent — a second reset finds nothing left', async () => {
     await apply(planFor(), { cwd, home, packageRoot }, { out: () => {}, prune: false });
-    applyReset(planReset({ cwd, home, packageRoot }));
+    await applyReset(planReset({ cwd, home, packageRoot }));
     expect(planReset({ cwd, home, packageRoot }).actions).toEqual([]);
   });
 
@@ -112,7 +112,7 @@ describe('applyReset', () => {
     writeFileSync(globalConfig, '# machine config\n');
     await apply(planFor(), { cwd, home, packageRoot }, { out: () => {}, prune: false });
 
-    applyReset(planReset({ cwd, home, packageRoot }));
+    await applyReset(planReset({ cwd, home, packageRoot }));
     expect(existsSync(globalConfig)).toBe(true);
   });
 });
@@ -226,5 +226,38 @@ describe('describeReset', () => {
 
     const text = describeReset(planReset({ cwd, home, packageRoot })).join('\n');
     expect(text).toContain(`${settings}.bak`);
+  });
+});
+
+describe('applyReset — settings go through the settings lock', () => {
+  it('keeps a change another writer made after the plan was read', async () => {
+    await apply(planFor(), { cwd, home, packageRoot }, { out: () => {}, prune: false });
+    const plan = planReset({ cwd, home, packageRoot });
+    // A route hook (or anything else) writes the file between plan and apply.
+    const path = join(cwd, '.claude', 'settings.json');
+    const current = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    writeFileSync(path, JSON.stringify({ ...current, env: { KEEP_ME: '1' } }));
+    await applyReset(plan);
+    const after = readSettings(path) as { env?: Record<string, string> };
+    expect(after.env?.KEEP_ME).toBe('1');
+    expect(JSON.stringify(after)).not.toContain('capture-mode.mjs');
+  });
+
+  it('waits for a writer holding the settings lock', async () => {
+    const { withSessionLock } = await import('../../src/filelock.js');
+    await apply(planFor(), { cwd, home, packageRoot }, { out: () => {}, prune: false });
+    const path = join(cwd, '.claude', 'settings.json');
+    let released = false;
+    let release!: () => void;
+    const held = withSessionLock(path, () => new Promise<void>((r) => { release = () => { released = true; r(); }; }));
+    await new Promise((r) => setTimeout(r, 20));
+    const resetting = applyReset(planReset({ cwd, home, packageRoot }));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(readFileSync(path, 'utf8')).toContain('capture-mode.mjs');
+    release();
+    await held;
+    await resetting;
+    expect(released).toBe(true);
+    expect(readFileSync(path, 'utf8')).not.toContain('capture-mode.mjs');
   });
 });
