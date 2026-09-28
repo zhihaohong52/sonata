@@ -716,6 +716,15 @@ describe('cmdTail waits for the worktree capture the exit sentinel outruns', () 
     expect(r.state).toBe('DONE');
   });
 
+  it('does not wait on an exit sentinel dated in the future', async () => {
+    // A skewed clock or a restored run directory can leave the mtime ahead of
+    // now; "within ten seconds" must not include every moment before it.
+    const future = new Date(Date.now() + 3_600_000);
+    utimesSync(join(runDir(cwd, id), 'exit'), future, future);
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+    expect(r.state).toBe('DONE');
+  });
+
   it('gives up waiting ten seconds after the exit sentinel', async () => {
     const old = new Date(Date.now() - 11_000);
     utimesSync(join(runDir(cwd, id), 'exit'), old, old);
