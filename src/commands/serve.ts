@@ -1773,13 +1773,18 @@ export async function cmdServe(
      * key to its own base_url until some later merge.
      */
     //
-    // The fingerprint is committed only once the rebuild succeeds. A rebuild
-    // that throws — a gateway whose credential is not stored yet — is retried
-    // on the next request, which is also what picks up a later `sonata auth
-    // add`: that writes the key store, not a config, so no fingerprint moves.
-    let planFingerprint = gatewayPlanInputs();
+    // The fingerprint is committed only once the rebuild resolves every
+    // credential. One that failed — a gateway whose credential is not stored
+    // yet — is retried on the next request, which is also what picks up a
+    // later `sonata auth login`: that writes a login directory no fingerprint
+    // watches. The startup build is held to the same rule; committed
+    // regardless, a credential missing at startup was never retried unless a
+    // config or a watched store happened to change.
+    const startupInputs = gatewayPlanInputs();
+    const startupSettled = startup.failures.length === 0 && startup.transient.length === 0;
+    let planFingerprint: string | undefined = startupSettled ? startupInputs : undefined;
     /** The fingerprint whose rebuild last failed; a retry of it merges quietly, since its drops were already logged. */
-    let failedFingerprint: string | undefined;
+    let failedFingerprint: string | undefined = startupSettled ? undefined : startupInputs;
     const refreshGatewayPlan = (): void => {
       const now = gatewayPlanInputs();
       if (now === planFingerprint) return;

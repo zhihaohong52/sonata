@@ -3271,6 +3271,35 @@ litellm = ${litellmPort}
       expect((await send('sonata-code-simple', { 'x-claude-code-session-id': 'SB' })).status).toBe(502);
     });
 
+    it('startup: retries a credential that failed at startup, so a later login is loaded', async () => {
+      // The startup merge committed its fingerprint even when a credential
+      // failed, and a sonata OAuth login moves no fingerprint — so with no
+      // tenant or config changing afterwards, the failure was never retried.
+      const project = mkdtempSync(join(tmpdir(), 'serve-tenant-startup-retry-'));
+      writeFileSync(join(project, 'sonata.toml'), B_CONFIG);
+      await recordSession(home, { session: 'SB', cwd: project, started: new Date().toISOString() });
+      const { send, spawns } = await run(`
+[models."mflash"]
+gateway = "acme"
+id = "m-flash-1"
+[tiers.code]
+simple = ["mflash"]
+complex = ["mflash"]
+[native.gateways."acme"]
+base_url = "https://acme.example/v1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+      const b = { 'x-claude-code-session-id': 'SB' };
+      expect(spawns()).toBe(1);
+      expect((await send('sonata-code-simple', b)).status).toBe(502);
+      login();
+      await send('sonata-code-simple', b);
+      await waitFor(() => spawns() === 2, 'the respawn after login');
+      expect((await send('sonata-code-simple', b)).status).toBe(200);
+    });
+
     it('lazy start: starts LiteLLM for the gateways that resolve, and loads the missing one after login', async () => {
       const { project, send, spawns } = await run(`
 [models."mm"]
