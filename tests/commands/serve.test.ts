@@ -4460,6 +4460,13 @@ litellm = ${litellmPort}
     const claimJwt = (exp: number) => `h.${Buffer.from(JSON.stringify({ exp, client_id: 'app_EMoamEEZ73f0CkXaXp7hrann' })).toString('base64url')}.s`;
     const codexRecord = (refresh: string) =>
       JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: claimJwt(2_000_000_000), refresh_token: refresh } });
+    // "Torn" is a moment: the same unparseable bytes TORN_REPEAT_MS apart are
+    // judged stuck and skipped. The tests that need a file to still be
+    // mid-write therefore stop serve's clock where it started — on the wall
+    // clock they asserted the scheduler, since a loaded machine can take a
+    // second between serve's first read and the request (it did, in the suite:
+    // "expected 200 to be 502").
+    const stoppedClock = () => { const at = Date.now(); return () => at; };
 
     it('refuses a default ChatGPT gateway whose codex file is torn, rather than serve opencode\'s account', async () => {
       writeMachineConfig(`
@@ -4484,7 +4491,7 @@ litellm = ${litellmPort}
       const envs: NodeJS.ProcessEnv[] = [];
       vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
       const handle = await cmdServe({
-        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, now: stoppedClock(),
         spawnLitellm: (_config, env) => { envs.push({ ...env }); return { pid: 1, kill: () => {} }; },
       });
       handles.push(handle);
@@ -4541,7 +4548,7 @@ auth = "codex-oauth"
 `);
       vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
       const handle = await cmdServe({
-        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, now: stoppedClock(),
         spawnLitellm: () => ({ pid: 1, kill: () => {} }),
       });
       handles.push(handle);
@@ -4752,7 +4759,7 @@ litellm = ${litellmPort}
         mkdirSync(join(home, '.codex'), { recursive: true });
         writeFileSync(codexPath(), codexRecord('CODEX-A').slice(0, 30));
         writeOpencodeLogin();
-        const { send, seededWith } = await start();
+        const { send, seededWith } = await start(stoppedClock());
         expect((await send()).status).toBe(502);
         writeFileSync(codexPath(), codexRecord('CODEX-A'));
         expect((await send()).status).toBe(200);

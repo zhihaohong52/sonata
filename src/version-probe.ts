@@ -19,6 +19,21 @@ export const VERSION_PROBE_TIMEOUT_MS = 10_000;
 export const PROBE_MAX_BUFFER = 16 * 1024 * 1024;
 
 /**
+ * How long a probe waits, after its command has exited, for the command's
+ * output to finish arriving — i.e. for both pipes to reach EOF.
+ *
+ * `'exit'` is not "the output is in". Node emits it when the process is
+ * reaped, and the last bytes on the pipe can be read in a later turn of the
+ * event loop: measured in the suite, a stub that printed `works 1.2.3` exited
+ * at 3.1 ms and its output was read at 5.4 ms, after the probe had already
+ * resolved with an empty string. So a probe settles on EOF, and this bound
+ * exists only for the case EOF never comes — a descendant still holding the
+ * pipe — where waiting for it would be waiting on that descendant. Normal
+ * probes reach EOF within milliseconds and never wait this long.
+ */
+export const PROBE_STDIO_GRACE_MS = 1_000;
+
+/**
  * How many probes currently have their SIGINT/SIGTERM forwarders registered.
  * Those listeners are this module's own, not the parent's, so they are
  * subtracted before deciding whether the parent handles a signal itself.
@@ -47,8 +62,10 @@ export interface ProbeError extends Error {
  * shell-script launcher that runs a subprocess) keeps the pipe open after the
  * child dies — either way the "bounded" probe hung past its bound. So the
  * command runs in its own process group, the whole group gets SIGKILL when the
- * bound fires, and the promise settles on the child's exit rather than on
- * stdio closing, destroying the pipes a surviving descendant may still hold.
+ * bound fires, and once the child has exited the promise waits for its pipes
+ * to reach EOF for at most `PROBE_STDIO_GRACE_MS` — long enough for output
+ * still in flight, bounded so a surviving descendant holding the pipes cannot
+ * hold the probe too — then destroys them.
  */
 export function runProbe(
   cmd: string,
@@ -68,6 +85,9 @@ export function runProbe(
     let killed = false;
     let settled = false;
     let overflowed: 'stdout' | 'stderr' | undefined;
+    let exited: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+    let openPipes = 2;
+    let grace: NodeJS.Timeout | undefined;
     const maxBuffer = opts.maxBuffer ?? PROBE_MAX_BUFFER;
     const overflow = (stream: 'stdout' | 'stderr') => {
       if (overflowed !== undefined) return;
@@ -135,35 +155,50 @@ export function runProbe(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(grace);
       unforward();
       fn();
     };
     child.on('error', (error: ProbeError) => finish(() => { release(); reject(error); }));
-    child.on('exit', (code, signal) => {
-      // Give buffered output one turn to arrive, then stop waiting on stdio: a
-      // grandchild left holding the pipe must not hold this probe too.
-      setImmediate(() => finish(() => {
-        // Reap anything the command left behind in its group.
-        if (killed || code !== 0) killGroup();
-        release();
-        if (overflowed !== undefined) {
-          const error = new RangeError(`${overflowed} maxBuffer length exceeded`) as ProbeError;
-          error.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
-          error.killed = true;
-          error.stdout = stdout;
-          error.stderr = stderr;
-          return reject(error);
-        }
-        if (!killed && code === 0) return resolve({ stdout, stderr });
-        const error = new Error(killed
-          ? `\`${cmd}\` did not answer within ${opts.timeoutMs}ms`
-          : `\`${cmd}\` exited with ${code ?? signal}`) as ProbeError;
-        error.code = code ?? undefined;
-        error.killed = killed;
+    const complete = () => finish(() => {
+      const { code, signal } = exited!;
+      // Reap anything the command left behind in its group.
+      if (killed || code !== 0) killGroup();
+      release();
+      if (overflowed !== undefined) {
+        const error = new RangeError(`${overflowed} maxBuffer length exceeded`) as ProbeError;
+        error.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+        error.killed = true;
         error.stdout = stdout;
         error.stderr = stderr;
-        reject(error);
-      }));
+        return reject(error);
+      }
+      if (!killed && code === 0) return resolve({ stdout, stderr });
+      const error = new Error(killed
+        ? `\`${cmd}\` did not answer within ${opts.timeoutMs}ms`
+        : `\`${cmd}\` exited with ${code ?? signal}`) as ProbeError;
+      error.code = code ?? undefined;
+      error.killed = killed;
+      error.stdout = stdout;
+      error.stderr = stderr;
+      reject(error);
+    });
+    // Settle once the command has exited AND both pipes are at EOF — in
+    // whichever order those arrive, since either can come first.
+    const pipeClosed = () => {
+      openPipes -= 1;
+      if (openPipes === 0 && exited !== undefined) complete();
+    };
+    child.stdout!.on('close', pipeClosed);
+    child.stderr!.on('close', pipeClosed);
+    child.on('exit', (code, signal) => {
+      exited = { code, signal };
+      if (openPipes === 0) return complete();
+      // A descendant may be holding a pipe open, so EOF may never come: stop
+      // waiting after the grace period. The final setImmediate gives the poll
+      // phase one more pass first — a timer fires before poll in a loop turn,
+      // so bytes already sitting in the pipe would otherwise be dropped.
+      grace = setTimeout(() => setImmediate(complete), PROBE_STDIO_GRACE_MS);
     });
   });
 }

@@ -31,6 +31,20 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   so the agent died immediately and no fallback could help. The router now
   replaces that call, and its "No such tool available" result, with a short
   note before forwarding. Requests without one are passed through unchanged.
+- **A version probe no longer loses the version it was about to read.** Every
+  `--version` probe (`sonata doctor`, `sonata init`, the tmux check) settled
+  one event-loop turn after its command exited, but a command's last output
+  can be read after Node reports the exit — measured: exit at 3.1 ms, output
+  read at 5.4 ms, probe already resolved with nothing. About 1 probe in 450 on
+  a busy machine reported a working harness with an empty version, or a
+  failing one without its error. A probe now waits for its output to reach EOF,
+  bounded at 1 s for a command that leaves a background process holding it.
+- **The `route auto` hooks no longer drop the reason routing was refused.**
+  The session and subagent hooks read the CLI's stderr at the moment its exit
+  was reported, which can precede the last of that output, so on a loaded
+  machine a refusal such as "router predates multi-tenant routing" was shown
+  as "the CLI ended with exit code 1, with no output". The hooks now wait for
+  stderr to close, bounded at 2 s after exit.
 
 From the full audit of 0.13.1 (`docs/reviews/2026-09-27-full-audit.md`):
 
