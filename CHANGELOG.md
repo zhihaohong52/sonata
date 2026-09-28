@@ -192,9 +192,11 @@ the review doc's Backlog note):
   resolved falls through, so a default ChatGPT gateway reaches opencode's
   login as it always did; it used to answer 502 forever.
   A build that read anything as torn is never committed, so the retry the
-  502 promises really happens; a `chmod` on a store is noticed on the next
-  request (the router's change check now includes each file's mode, and
-  opencode.db's); and
+  502 promises really happens; a `chmod` on a store — and, for opencode.db,
+  a `chown` or ACL change too — is noticed on the next request (the router's
+  change check now includes each file's mode, and opencode.db's ctime, which
+  opencode's own writes also move: that costs a re-merge, never a restart
+  unless a credential changed); and
   `sonata doctor` warns, naming the file, when codex's `auth.json` or
   opencode.db cannot be read. opencode.db's credential table reading empty
   where it last held rows is read again at once before anything is decided:
@@ -286,8 +288,16 @@ the review doc's Backlog note):
   anywhere in it, and never for another gateway's error) —
   logs the remedy once, naming the ChatGPT gateways, and answers them with a
   502 saying `codex login` (or `opencode auth login`) then `sonata restart`
-  instead of forwarding into the hang. The mark is keyed on the refused
-  token itself, not on its file or directory, and clears only when LiteLLM
+  instead of forwarding into the hang. The request whose response showed the
+  refusal is answered the same way: in a tier its candidate and gateway cool
+  and the next candidate serves it, and with none left — or for a bare model
+  key — it gets the same named 502, Anthropic-shaped, and no ledger row. It
+  used to get LiteLLM's raw 400, which a tier took as final, so the next
+  candidate was never tried. The mark is keyed on the refused
+  token itself, not on its file or directory — read from the directory the
+  refused LiteLLM served, and, when that read lands mid-write and finds none,
+  read again there at every check until it does; until a token is captured
+  nothing clears the mark — and clears only when LiteLLM
   is started on a readable token that differs — a login change seeded into a
   new token directory, a sonata-owned login rewritten by `sonata auth login`,
   or a fresh process from `sonata restart`. A crash respawn, a restart for
