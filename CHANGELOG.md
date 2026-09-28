@@ -137,6 +137,11 @@ the review doc's Backlog note):
   `sonata restart`. A change in which gateways are dropped, or in which
   credential store an OAuth gateway reads, now rewrites LiteLLM's config and
   respawns it.
+- **The router no longer re-reads every session record on every request.**
+  Its per-request check of which projects it knows re-parsed `sessions.json`
+  and re-resolved a config for each session record, costing 53 ms per request
+  (Anthropic passthrough included) with 256 projects and 2000 sessions. It
+  now does that once per change to the file: 0.7 ms on the same machine.
 
 ## [0.13.1] - 2026-09-27
 
