@@ -1361,37 +1361,71 @@ describe('loadConfig — effort pinning', () => {
   });
 });
 
-describe('one OAuth gateway per kind', () => {
+describe('OAuth gateways of one kind', () => {
   // LiteLLM reads a ChatGPT credential from CHATGPT_TOKEN_DIR and a Copilot
   // one from GITHUB_COPILOT_TOKEN_DIR — one directory each, process-wide — so
-  // a second gateway of the same kind could only ever be served the first
-  // one's account.
-  it('refuses two codex-oauth gateways, naming both', () => {
+  // two gateways of one kind can only ever be served one account. That is
+  // harmless when both name the same credential source, and a leak when not.
+  it('loads the pre-v0.10 shape: codex and openai, both codex-oauth, no credential_source', () => {
+    // `sonata init` before 56f4ede wrote the ChatGPT subscription twice, and
+    // those configs survive re-init. Refusing them made the tenant unloadable.
+    const cfg = parseConfig(`
+[models."gpt-5.6-luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+context_window = 400000
+
+[models."openai-gpt-5.6-luna"]
+gateway = "openai"
+id = "gpt-5.6-luna"
+context_window = 400000
+
+[native.gateways."codex"]
+auth = "codex-oauth"
+
+[native.gateways."openai"]
+auth = "codex-oauth"
+
+[tiers.code]
+simple = ["gpt-5.6-luna", "openai-gpt-5.6-luna"]
+complex = ["openai-gpt-5.6-luna"]
+`);
+    expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['codex', 'openai']);
+    const routes = resolveTierAlias(cfg, 'sonata-code-simple')!.routes;
+    expect(routes.map((r) => r.native?.gateway)).toEqual(['codex', 'openai']);
+  });
+
+  it('loads two copilot-oauth gateways that name the same credential source', () => {
+    const cfg = parseConfig(`
+[native.gateways."copilot"]
+auth = "copilot-oauth"
+credential_source = "sonata"
+[native.gateways."copilot-2"]
+auth = "copilot-oauth"
+credential_source = "sonata"
+`);
+    expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['copilot', 'copilot-2']);
+  });
+
+  it('refuses two codex-oauth gateways whose credential sources differ, naming both', () => {
+    expect(() => parseConfig(`
+[native.gateways."codex"]
+auth = "codex-oauth"
+credential_source = "codex"
+[native.gateways."codex-work"]
+auth = "codex-oauth"
+credential_source = "sonata"
+`)).toThrow(/gateways "codex" \(credential_source = "codex"\) and "codex-work" \(credential_source = "sonata"\) both use auth = "codex-oauth"/);
+  });
+
+  it('counts an absent credential_source as its own source', () => {
     expect(() => parseConfig(`
 [native.gateways."codex"]
 auth = "codex-oauth"
 [native.gateways."codex-work"]
 auth = "codex-oauth"
-`)).toThrow(/gateways "codex" and "codex-work" both use auth = "codex-oauth"/);
-  });
-
-  it('refuses two copilot-oauth gateways', () => {
-    expect(() => parseConfig(`
-[native.gateways."copilot"]
-auth = "copilot-oauth"
-[native.gateways."copilot-2"]
-auth = "copilot-oauth"
-`)).toThrow(/both use auth = "copilot-oauth"/);
-  });
-
-  it('accepts one of each kind', () => {
-    const cfg = parseConfig(`
-[native.gateways."codex"]
-auth = "codex-oauth"
-[native.gateways."copilot"]
-auth = "copilot-oauth"
-`);
-    expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['codex', 'copilot']);
+credential_source = "sonata"
+`)).toThrow(/credential_source = default/);
   });
 });
 

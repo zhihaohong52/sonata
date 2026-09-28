@@ -991,24 +991,31 @@ export function mergeTenantGateways(
     );
   }
   // Likewise one OAuth credential of each kind per LiteLLM child
-  // (CHATGPT_TOKEN_DIR / GITHUB_COPILOT_TOKEN_DIR): two differently named
-  // gateways of one kind would both be served whichever account
-  // buildChildEnv found first. parseConfig refuses the pair inside one file.
+  // (CHATGPT_TOKEN_DIR / GITHUB_COPILOT_TOKEN_DIR). Two differently named
+  // gateways of one kind that read the SAME credential source (the default
+  // included) are one account and are both kept; only differing sources are
+  // dropped, since one project would be served the other's account.
+  // parseConfig applies the same rule inside one file.
   const byOauth = new Map<string, string>();
   for (const name of Object.keys(merged)) {
-    const auth = merged[name]?.auth;
+    const gateway = merged[name];
+    const auth = gateway?.auth;
     if (auth !== 'codex-oauth' && auth !== 'copilot-oauth') continue;
     const other = byOauth.get(auth);
     if (other === undefined) {
       byOauth.set(auth, name);
       continue;
     }
+    const mine = gateway.credentialSource ?? 'default';
+    const theirs = merged[other]?.credentialSource ?? 'default';
+    if (mine === theirs) continue;
     delete merged[name];
     delete merged[other];
     log(
-      `gateways "${other}" (${owner[other]}) and "${name}" (${owner[name]}) both use auth = "${auth}" — ` +
-      'serving neither, since LiteLLM holds one credential of that kind and one project would be ' +
-      'served the other\'s account; keep one of them',
+      `gateways "${other}" (${owner[other]}, credential_source = ${theirs}) and ` +
+      `"${name}" (${owner[name]}, credential_source = ${mine}) both use auth = "${auth}" but read ` +
+      'different credentials — serving neither, since LiteLLM holds one credential of that kind ' +
+      "and one project would be served the other's account; give them the same credential_source",
     );
   }
   return merged;

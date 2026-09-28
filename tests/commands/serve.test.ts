@@ -3317,7 +3317,19 @@ describe('mergeTenantGateways', () => {
     expect(merged.codex).toBeUndefined();
     expect(merged['codex-work']).toBeUndefined();
     expect(Object.keys(merged)).toEqual(['keep']);
-    expect(lines.join('\n')).toMatch(/"codex" \(a\) and "codex-work" \(b\) both use auth = "codex-oauth"/);
+    expect(lines.join('\n')).toMatch(/"codex" \(a, credential_source = default\) and "codex-work" \(b, credential_source = sonata\) both use auth = "codex-oauth" but read different credentials/);
+  });
+
+  it('keeps two differently named OAuth gateways of one kind that read the same credential', () => {
+    // Same source (the default included) means one account: nothing can reach
+    // the wrong endpoint, so dropping them would only break both projects.
+    const lines: string[] = [];
+    const merged = mergeTenantGateways([
+      { id: 'a', gateways: { codex: gw({ auth: 'codex-oauth', baseUrl: undefined }) } },
+      { id: 'b', gateways: { openai: gw({ auth: 'codex-oauth', baseUrl: undefined }) } },
+    ], (l) => lines.push(l));
+    expect(Object.keys(merged).sort()).toEqual(['codex', 'openai']);
+    expect(lines).toEqual([]);
   });
 
   it('keeps one OAuth gateway that two projects name identically', () => {

@@ -8,6 +8,18 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Changed
+
+- **A config with two OAuth gateways of one kind that read different
+  credential sources no longer loads.** LiteLLM holds one ChatGPT and one
+  Copilot credential per process, so the second gateway was silently served
+  the first one's account. `sonata.toml` now refuses such a pair — e.g.
+  `codex` with `credential_source = "codex"` beside `codex-work` with
+  `credential_source = "sonata"` — naming both; give them the same
+  `credential_source`, or keep one. Gateways that read the *same* source
+  (the default included) still load: that covers the `codex` + `openai` pair
+  `sonata init` wrote before v0.10.0.
+
 ### Fixed
 
 From the full audit of 0.13.1 (`docs/reviews/2026-09-27-full-audit.md`):
@@ -35,8 +47,9 @@ the review doc's Backlog note):
   daily; the daemon's log fd is closed.
 - **Router.** A message-less 400 falls through instead of killing the agent,
   every terminal 400 is logged, and `SONATA_CAPTURE_400_DIR` captures the
-  request; a bare key on a direct gateway goes to that gateway; a second
-  OAuth gateway of one kind is refused; rows are priced under the config they
+  request; a bare key on a direct gateway goes to that gateway; two OAuth
+  gateways of one kind that read different credential sources are refused
+  (see below); rows are priced under the config they
   were routed under; conversation collisions strip foreign thinking; a
   conversation is pinned only when its response completes; error-body reads
   are bounded; a failed stream is torn down, not appended to; `sessions.json`
