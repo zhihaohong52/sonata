@@ -1694,6 +1694,13 @@ export async function cmdServe(
   // be duplicated on two failure branches and absent from every other throw, so
   // a run that died in between left its config behind.
   let child: SpawnedLitellm | undefined;
+  /**
+   * Every child whose exit has been observed, however it came about. A
+   * restart of a child already in here skips its bounded wait, and stopping
+   * skips signalling it: that exit will not fire again, and waiting on it
+   * gave a crash respawn time to spawn a second child beside the restart's.
+   */
+  const exitObserved = new WeakSet<SpawnedLitellm>();
   let router: ReturnType<typeof createRouterServer> | undefined;
   /** Every loopback server the router listens on — one per family the machine has. */
   let listening: Server[] = [];
@@ -2026,13 +2033,39 @@ export async function cmdServe(
     // Retain exit knowledge long enough for the readiness owner to avoid
     // signalling a process whose exit callback already ran.
     const exitedChildren = new Set<SpawnedLitellm>();
+    /** The ChatGPT token directory each child was spawned into. */
+    const childTokenDir = new Map<SpawnedLitellm, string | undefined>();
+    /**
+     * Token directories no future spawn will use, removed only once no child
+     * spawned into one can still be running: a LiteLLM whose directory is
+     * pulled out from under it answers every request with a device-code login.
+     */
+    const retiredTokenDirs = new Set<string>();
+    const sweepRetiredTokenDirs = (): void => {
+      for (const dir of retiredTokenDirs) {
+        const inUse = [...childTokenDir].some(([spawned, used]) => used === dir && !exitObserved.has(spawned));
+        if (inUse) continue;
+        rmSync(dir, { recursive: true, force: true });
+        retiredTokenDirs.delete(dir);
+      }
+      for (const [spawned] of childTokenDir) if (exitObserved.has(spawned)) childTokenDir.delete(spawned);
+    };
+    /**
+     * A crash respawn waiting out its delay. A deliberate restart that goes
+     * ahead cancels it — the restart spawns the replacement — and one still
+     * waiting when a model-change check is in flight waits for that check,
+     * so the two never spawn side by side.
+     */
+    let pendingCrashRespawn: { cancel: () => void } | undefined;
 
     /**
      * Before a deliberate spawn — never a crash respawn — seeds the OAuth
      * token directories that spawn will own. The ChatGPT one is new and
      * empty when `chatgptReseed` says the login changed, and otherwise the
-     * directory the previous child left, untouched. The previous child has
-     * exited by now (a restart waits for it), so its directory is removed.
+     * directory the previous child left, untouched. The previous directory
+     * is retired, and removed once every child spawned into it has been seen
+     * to exit — normally already, since a restart waits for the old child,
+     * but a child that outlived its SIGKILL keeps its directory until it goes.
      */
     const seedTokenDirs = (): void => {
       const store = seeds.chatgpt;
@@ -2044,7 +2077,10 @@ export async function cmdServe(
         writeFileSync(join(dir, 'auth.json'), JSON.stringify(store.record), { mode: 0o600, flag: 'wx' });
         const previous = chatgptSeeded?.dir;
         chatgptSeeded = { gateway: store.gateway, dir, lineage: store.lineage, generation };
-        if (previous !== undefined && previous !== dir) rmSync(previous, { recursive: true, force: true });
+        if (previous !== undefined && previous !== dir) {
+          retiredTokenDirs.add(previous);
+          sweepRetiredTokenDirs();
+        }
       }
       if (store !== undefined && chatgptSeeded !== undefined && childEnv.CHATGPT_TOKEN_DIR !== undefined) {
         childEnv = { ...childEnv, CHATGPT_TOKEN_DIR: chatgptSeeded.dir };
@@ -2062,8 +2098,11 @@ export async function cmdServe(
         configPath, childEnv, ports.litellm, litellmBin,
       );
       recordLitellmPid(opts.home, ports.router, spawned.pid);
+      childTokenDir.set(spawned, childEnv.CHATGPT_TOKEN_DIR);
       spawned.onExit?.((code, signal) => {
+        exitObserved.add(spawned);
         if (stopping) return;
+        sweepRetiredTokenDirs();
         const deliberate = expectedRestartChild === spawned;
         if (expectedRestartChild === spawned) expectedRestartChild = undefined;
         if (abandonedChildren.delete(spawned)) {
@@ -2085,9 +2124,22 @@ export async function cmdServe(
           );
           return;
         }
+        let cancelled = false;
+        let wake: () => void = () => {};
+        const woken = new Promise<void>((resolve) => { wake = resolve; });
+        const pending = { cancel: () => { cancelled = true; wake(); } };
+        pendingCrashRespawn?.cancel();
+        pendingCrashRespawn = pending;
         litellmReady = (async () => {
-          await sleep(respawnDelayMs);
-          if (stopping) return;
+          await Promise.race([sleep(respawnDelayMs), woken]);
+          // A model-change check in flight may restart LiteLLM itself; wait
+          // for it rather than spawn beside it, then respawn only if nothing
+          // has replaced the crashed child meanwhile.
+          while (!cancelled && !stopping && restartInFlight !== undefined) {
+            await restartInFlight.catch(() => { /* reported by its own caller */ });
+          }
+          if (pendingCrashRespawn === pending) pendingCrashRespawn = undefined;
+          if (stopping || cancelled || child !== spawned) return;
           console.error('sonata serve: respawning litellm...');
           // Into the directory the crashed child used: its latest token is there.
           child = spawnLitellmChild(false);
@@ -2204,8 +2256,15 @@ export async function cmdServe(
         if (planned === activeModelsJson) return;
         writeFileSync(configPath, litellmConfigYamlForTenants(servableTenants(), masterKey), { mode: 0o600 });
         console.error(`sonata serve: ${chatgptReseed()?.why ?? 'model registry changed — restarting litellm to pick it up...'}`);
+        // This restart spawns the replacement, so a crash respawn still
+        // waiting out its delay is superseded rather than raced.
+        pendingCrashRespawn?.cancel();
+        pendingCrashRespawn = undefined;
         const oldChild = child;
-        expectedRestartChild = oldChild;
+        // A child that has already exited — crashed, awaiting a respawn this
+        // restart has just cancelled — is neither signalled nor waited on.
+        const alreadyExited = exitObserved.has(oldChild);
+        if (!alreadyExited) expectedRestartChild = oldChild;
         litellmReady = (async () => {
           // Wait for the old child's actual exit before spawning its
           // replacement: kill() only requests termination, and racing a new
@@ -2226,11 +2285,16 @@ export async function cmdServe(
           // process holding the port fails the following bind/probe loudly,
           // which is recoverable; a hung `litellmReady` is not.
           const exited = new Promise<void>((resolve) => {
-            if (oldChild?.onExit) oldChild.onExit(() => resolve());
-            else resolve();
+            if (alreadyExited) resolve();
+            else if (oldChild?.onExit) oldChild.onExit(() => resolve());
+            else {
+              // No exit to observe: the kill below is all there is to go on.
+              exitObserved.add(oldChild);
+              resolve();
+            }
           });
           const exitTimeoutMs = opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS;
-          if (await raceTimeout(exited, exitTimeoutMs, sleep)) {
+          if (!alreadyExited && await raceTimeout(exited, exitTimeoutMs, sleep)) {
             console.error(
               `sonata serve: old litellm child did not exit within ${exitTimeoutMs}ms — sending SIGKILL`,
             );
@@ -2253,7 +2317,7 @@ export async function cmdServe(
         })().catch((error) => {
           console.error(`sonata serve: restarted litellm never came up: ${String(error)}`);
         });
-        oldChild?.kill();
+        if (!alreadyExited) oldChild.kill();
         await litellmReady;
       } catch (error) {
         console.error(`sonata serve: failed to restart litellm for a model registry change: ${String(error)}`);
@@ -2472,7 +2536,9 @@ export async function cmdServe(
       // holding its config are removed. A bare SIGTERM left a SIGTERM-deaf
       // child (one blocked on a device-code login) running as an orphan that
       // nothing recorded any more.
-      if (child !== undefined) await terminateLitellm(child, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep);
+      if (child !== undefined && !exitObserved.has(child)) {
+        await terminateLitellm(child, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep);
+      }
       try { unlinkSync(serveStatePath(opts.home, ports.router)); } catch { /* already gone */ }
       try {
         await Promise.all(startedServers.map((server) => close(server)));
