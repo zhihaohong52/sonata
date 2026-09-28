@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { PassThrough } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 
 import {
   LITELLM_CHATGPT_LOGIN_REFUSED, lineSplitter, pipeLitellmOutput, redactDeviceCode,
@@ -88,6 +88,41 @@ describe('pipeLitellmOutput', () => {
     const { out, seen } = await run(deviceCodeStdout);
     expect(out).toBe(deviceCodeStdout.replace('Enter code: U', 'Enter code: ****'));
     expect(seen).toContain('2) Enter code: U');
+  });
+
+  it('survives a sink that fails asynchronously (EPIPE), stops writing to it, and keeps scanning', async () => {
+    // `sonata serve | head`: the pipe closes, write() returns, and the sink
+    // emits 'error' later. With no listener that crashed serve.
+    let writes = 0;
+    const sink = new Writable({
+      write(_chunk, _encoding, callback) {
+        writes += 1;
+        callback(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+      },
+    });
+    const uncaught: unknown[] = [];
+    const onUncaught = (error: unknown) => { uncaught.push(error); };
+    process.on('uncaughtException', onUncaught);
+    try {
+      const first = new PassThrough();
+      const second = new PassThrough();
+      const seen: string[] = [];
+      pipeLitellmOutput(first, sink, (line) => seen.push(line));
+      pipeLitellmOutput(second, sink, (line) => seen.push(line));
+      expect(sink.listenerCount('error')).toBe(1);
+      first.write('one\n');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      first.write(refusedStderr);
+      second.write('two\n');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(uncaught).toEqual([]);
+      expect(writes).toBe(1);
+      expect(seen).toContain('one');
+      expect(seen).toContain('two');
+      expect(seen.some((line) => LITELLM_CHATGPT_LOGIN_REFUSED.test(line))).toBe(true);
+    } finally {
+      process.off('uncaughtException', onUncaught);
+    }
   });
 
   it('still forwards a partial final line when the stream ends', async () => {

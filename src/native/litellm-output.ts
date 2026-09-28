@@ -61,16 +61,42 @@ export function lineSplitter(onLine: (line: string) => void): { push(chunk: Buff
   };
 }
 
+/** Sinks that have a listener for their asynchronous 'error' event, and those that have emitted one. */
+const guardedSinks = new WeakSet<Writable>();
+const brokenSinks = new WeakSet<Writable>();
+
+/**
+ * A write to a closed pipe fails asynchronously: `write` returns, and the
+ * sink emits 'error' (EPIPE) later. With no listener that is an uncaught
+ * exception — `sonata serve | head` killed serve and orphaned its LiteLLM —
+ * and a try/catch around `write` cannot see it. One listener per sink, never
+ * more however many children are piped to it, marks the sink broken.
+ */
+function guardSink(sink: Writable): void {
+  if (guardedSinks.has(sink)) return;
+  guardedSinks.add(sink);
+  sink.on('error', () => { brokenSinks.add(sink); });
+}
+
+/** A sink that has errored, or been closed, is written to no more. */
+function sinkBroken(sink: Writable): boolean {
+  return brokenSinks.has(sink) || sink.destroyed || sink.writableEnded;
+}
+
 /**
  * Forwards `stream` to `sink` one line at a time — each line as it was, but
  * for a device code's user code — and hands every line to `onLine`. A final
  * line with no newline is still forwarded when the stream ends. A sink that
  * cannot be written to (a closed log) never stops the child's output being
- * read, since a full pipe would stall LiteLLM itself.
+ * read, since a full pipe would stall LiteLLM itself; one that fails
+ * asynchronously (EPIPE) is marked broken and skipped from then on.
  */
 export function pipeLitellmOutput(stream: Readable, sink: Writable, onLine: (line: string) => void): void {
+  guardSink(sink);
   const lines = lineSplitter((line) => {
-    try { sink.write(`${redactDeviceCode(line)}\n`); } catch { /* the log is gone; keep reading */ }
+    if (!sinkBroken(sink)) {
+      try { sink.write(`${redactDeviceCode(line)}\n`); } catch { /* the log is gone; keep reading */ }
+    }
     try { onLine(line); } catch { /* a listener never breaks forwarding */ }
   });
   stream.on('data', (chunk: Buffer | string) => lines.push(chunk));
