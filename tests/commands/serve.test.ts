@@ -2951,6 +2951,75 @@ litellm = ${litellmPort}
     expect(JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8')).litellmPid).toBe(222);
   });
 
+  it('never serves a direct request on another project\'s key when the re-merge cannot resolve its own', async () => {
+    // A defines direct `acme` (opencode, A-KEY), then drops it. B defines its
+    // own `acme` elsewhere, sonata-sourced, with no key stored yet. The
+    // re-merge throws for B's missing key; the child env it would have
+    // replaced still held A's SONATA_KEY_ACME, and B's request carried it.
+    const machineA = (withAcme: boolean) => `
+[models."a-flash"]
+gateway = "${withAcme ? 'acme' : 'other'}"
+id = "a-model"
+${withAcme
+    ? '[native.gateways."acme"]\nbase_url = "https://a.example/v1"\nprovider = "anthropic"\ncredential_source = "opencode"'
+    : '[native.gateways."other"]\nbase_url = "https://other.example/v1"\nprovider = "anthropic"'}
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`;
+    writeMachineConfig(machineA(true));
+    mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+    writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({ acme: { type: 'api', key: 'A-KEY' } }));
+    const project = mkdtempSync(join(tmpdir(), 'serve-tenant-failed-rebuild-'));
+    writeFileSync(join(project, 'sonata.toml'), `
+[models."b-flash"]
+gateway = "acme"
+id = "b-model"
+[native.gateways."acme"]
+base_url = "https://b.example/v1"
+provider = "anthropic"
+credential_source = "sonata"
+`);
+    const forwarded: { url: string; auth?: string; xkey?: string }[] = [];
+    const errors: string[] = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args.join(' ')); });
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+        const headers = init.headers as Record<string, string>;
+        forwarded.push({ url, auth: headers.authorization, xkey: headers['x-api-key'] });
+        return new Response('{}', { status: 200 });
+      }));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const send = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...projectHeaders(project) },
+        body: JSON.stringify({ model: 'b-flash', messages: [] }),
+      });
+      writeMachineConfig(machineA(false));
+      await send();
+      await send();
+      expect(JSON.stringify(forwarded)).not.toContain('A-KEY');
+      // Logged once per distinct failure, not once per request, and with one prefix.
+      const failures = errors.filter((line) => line.includes('gateway "acme" takes its credential from sonata'));
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).not.toContain('sonata serve: sonata serve:');
+      // `sonata auth add acme` changes no config: the next request retries anyway.
+      writeSonataKey(home, 'acme', 'B-KEY');
+      forwarded.length = 0;
+      await send();
+      expect(forwarded).toHaveLength(1);
+      expect(forwarded[0].url).toContain('https://b.example/v1');
+      expect(JSON.stringify(forwarded[0])).toContain('B-KEY');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('re-merges before routing a newly noted tenant, so its conflicting direct gateway is never served', async () => {
     // A: machine config, direct `acme` whose key comes from opencode. B: a
     // project that also names `acme`, default-sourced, pointing elsewhere. B

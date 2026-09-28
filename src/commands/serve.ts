@@ -1171,9 +1171,11 @@ export async function cmdServe(
     return gateways;
   };
   /** Merged gateways across every loadable tenant — what credential resolution and the child env are built from. */
-  const mergedNative = (): NativeConfig => ({
+  const mergedNative = (
+    log: (line: string) => void = (line) => console.error(`sonata serve: ${line}`),
+  ): NativeConfig => ({
     models: {},
-    gateways: mergeGateways((line) => console.error(`sonata serve: ${line}`)),
+    gateways: mergeGateways(log),
     ports,
     generate: {},
   });
@@ -1268,6 +1270,34 @@ export async function cmdServe(
 
     let childEnv = buildChildEnv(mergedNative(), opts.home, tempDir);
 
+    /**
+     * `env` without the key variable of any direct gateway any tenant names.
+     * Every tenant's, not only the merged set's: a gateway the merge has just
+     * dropped is exactly the one whose stale key must not survive.
+     */
+    const withoutDirectKeys = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+      const next = { ...env };
+      for (const { config } of registry.loadable()) {
+        for (const [name, gateway] of Object.entries(config.native?.gateways ?? {})) {
+          if (transportFor(gateway, name) === 'direct') delete next[envVarForGateway(name)];
+        }
+      }
+      return next;
+    };
+    /**
+     * A credential rebuild failure, logged once per distinct message rather
+     * than once per request — a missing key is retried on every request until
+     * it is added. `buildChildEnv`'s messages already carry the `sonata serve:`
+     * prefix, which printed it twice.
+     */
+    let lastCredentialFailure: string | undefined;
+    const reportCredentialFailure = (error: unknown): void => {
+      const message = (error instanceof Error ? error.message : String(error)).replace(/^sonata serve: /, '');
+      if (message === lastCredentialFailure) return;
+      lastCredentialFailure = message;
+      console.error(`sonata serve: ${message}`);
+    };
+
     // The direct transport bypasses LiteLLM entirely, so the gateway's own
     // credential has to reach the router rather than the child's environment.
     // Mutated in place (not rebuilt) so the object the router closed over stays
@@ -1293,17 +1323,38 @@ export async function cmdServe(
      * on the previous merge: its direct request carried the other project's
      * key to its own base_url until some later merge.
      */
+    //
+    // The fingerprint is committed only once the rebuild succeeds. A rebuild
+    // that throws — a gateway whose credential is not stored yet — is retried
+    // on the next request, which is also what picks up a later `sonata auth
+    // add`: that writes the key store, not a config, so no fingerprint moves.
     let planFingerprint = gatewayPlanInputs();
+    /** The fingerprint whose rebuild last failed; a retry of it merges quietly, since its drops were already logged. */
+    let failedFingerprint: string | undefined;
     const refreshGatewayPlan = (): void => {
       const now = gatewayPlanInputs();
       if (now === planFingerprint) return;
-      planFingerprint = now;
-      const cfg = mergedNative();
+      const cfg = now === failedFingerprint ? mergedNative(() => { /* logged by the first attempt */ }) : mergedNative();
       try {
         childEnv = buildChildEnv(cfg, opts.home, tempDir);
       } catch (error) {
-        console.error(`sonata serve: ${error instanceof Error ? error.message : String(error)}`);
+        // The previous env still holds whatever the previous merge resolved,
+        // and a direct gateway's key is looked up in it BY NAME — so a
+        // project that has just taken over a name another project dropped
+        // would be sent that project's key. With no current key to offer, a
+        // direct request goes out with none and fails upstream with a 401,
+        // which names the problem; another project's credential does not.
+        // Replaced rather than mutated: `childEnv` is also the environment a
+        // LiteLLM child was spawned with.
+        childEnv = withoutDirectKeys(childEnv);
+        failedFingerprint = now;
+        reportCredentialFailure(error);
+        refreshGatewayKeys(cfg);
+        return;
       }
+      planFingerprint = now;
+      failedFingerprint = undefined;
+      lastCredentialFailure = undefined;
       refreshGatewayKeys(cfg);
     };
 
@@ -1428,7 +1479,9 @@ export async function cmdServe(
           childEnv = buildChildEnv(mergedNative(), opts.home, tempDir);
           refreshGatewayKeys(mergedNative());
         } catch (error) {
-          console.error(`sonata serve: could not refresh gateway credentials: ${String(error)}`);
+          // Same failure `refreshGatewayPlan` has already stripped the direct
+          // keys for and reported; this only keeps a retry from re-logging it.
+          reportCredentialFailure(error);
           return;
         }
         if (!unionNeedsLitellm()) {
