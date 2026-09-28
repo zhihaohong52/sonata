@@ -20,8 +20,9 @@ beforeAll(() => {
   bin = mkdtempSync(join(tmpdir(), 'probe-stub-'));
   // Traps TERM, and `sleep` is a grandchild holding the stdout pipe.
   stub('stubborn', "trap '' TERM\necho starting\nsleep 30\necho never");
-  // Holds stdout from a detached-looking background grandchild, then exits.
-  stub('leaves-child', 'sleep 30 &\necho hi\nwait');
+  // Backgrounds a grandchild that inherits (and so holds) stdout, prints, and
+  // exits at once — no `wait`. The direct child is gone; the pipe is not.
+  stub('leaves-child', 'sleep 30 &\necho hi');
   stub('works', 'echo "works 1.2.3"');
   stub('fails', 'echo "Error: boom" >&2\nexit 3');
 });
@@ -46,7 +47,12 @@ describe('runProbe', () => {
   });
 
   it('settles when a grandchild still holds stdout', async () => {
-    await settlesWithin(runProbe(join(bin, 'leaves-child'), ['--version'], { timeoutMs: 300 }), 3_000);
+    // The bound is long, so settling fast proves it settled on the child's
+    // exit — not on the timeout killing the group.
+    const start = Date.now();
+    const result = await runProbe(join(bin, 'leaves-child'), ['--version'], { timeoutMs: 20_000 });
+    expect(Date.now() - start).toBeLessThan(3_000);
+    expect(result.stdout.trim()).toBe('hi');
   });
 
   it('reports a missing binary as ENOENT', async () => {
