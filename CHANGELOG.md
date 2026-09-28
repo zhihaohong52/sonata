@@ -158,6 +158,10 @@ the review doc's Backlog note):
 - **A tier whose every model is on a dropped gateway says so even while
   LiteLLM is unavailable.** It used to answer "run `sonata litellm install`",
   which would not have made any of them servable.
+- **A config edit while the router runs no longer overwrites LiteLLM's
+  refreshed ChatGPT or Copilot token.** Re-reading the configs rewrote the
+  token file LiteLLM keeps refreshing, from the login store's possibly older
+  copy. The file is now written only when LiteLLM is started or restarted.
 
 ## [0.13.1] - 2026-09-27
 

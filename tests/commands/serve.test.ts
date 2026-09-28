@@ -3191,6 +3191,63 @@ litellm = ${litellmPort}
     }
   });
 
+  it('leaves the running LiteLLM\'s ChatGPT token file alone on a re-merge, and rewrites it on a respawn', async () => {
+    // LiteLLM refreshes the token in CHATGPT_TOKEN_DIR itself. A re-merge
+    // while it runs rebuilt the child env, which rewrote that file from
+    // codex's store — putting codex's older token over the refreshed one.
+    const machine = (extra: string) => `
+[models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+${extra}
+[tiers.code]
+simple = ["luna"]
+complex = ["luna"]
+[native.gateways."codex"]
+auth = "codex-oauth"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`;
+    writeMachineConfig(machine(''));
+    mkdirSync(join(home, '.codex'), { recursive: true });
+    writeFileSync(join(home, '.codex', 'auth.json'), JSON.stringify({ tokens: { access_token: 'from-codex', refresh_token: 'r' } }));
+    const tempDir = tempDirFor();
+    const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
+    let spawns = 0;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const handle = await cmdServe({
+        cwd, home, tempDir, waitForLitellm: async () => {},
+        spawnLitellm: () => { spawns += 1; return { pid: 1, kill: () => {} }; },
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const send = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      expect(spawns).toBe(1);
+      expect(readFileSync(tokenFile, 'utf8')).toContain('from-codex');
+      // LiteLLM refreshes its own copy.
+      writeFileSync(tokenFile, '{"refreshed":"by-litellm"}');
+      // A config edit that moves the fingerprint but not the model registry:
+      // an in-place re-merge, no respawn.
+      writeMachineConfig(`# edited\n${machine('')}`);
+      await send();
+      expect(spawns).toBe(1);
+      expect(readFileSync(tokenFile, 'utf8')).toBe('{"refreshed":"by-litellm"}');
+      // A registry change respawns the child, and the respawn writes it.
+      writeMachineConfig(machine('context_window = 64000'));
+      await send();
+      expect(spawns).toBe(2);
+      expect(readFileSync(tokenFile, 'utf8')).toContain('from-codex');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('loads the v0.13.1 BYOK pair in one config, drops both gateways, and keeps the rest serving', async () => {
     writeMachineConfig(`
 [models."luna"]

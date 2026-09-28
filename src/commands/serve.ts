@@ -647,7 +647,23 @@ function defaultSpawnLitellm(
   };
 }
 
-function buildChildEnv(native: NativeConfig, home: string, tempDir: string): NodeJS.ProcessEnv {
+/**
+ * The LiteLLM child's environment, and — unless `writeTokens` is false — the
+ * OAuth token files it points at, copied out of the store each gateway reads.
+ *
+ * Those files are LiteLLM's own once it runs: it refreshes the token in
+ * place. So only a (re)spawn writes them; an in-place re-merge while the
+ * child runs passes `writeTokens: false`, since rewriting then would put the
+ * store's possibly older token over the one LiteLLM has refreshed. The env it
+ * returns still names the same directories either way.
+ */
+function buildChildEnv(
+  native: NativeConfig,
+  home: string,
+  tempDir: string,
+  opts: { writeTokens?: boolean } = {},
+): NodeJS.ProcessEnv {
+  const writeTokens = opts.writeTokens ?? true;
   // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
   const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
   const automaticallyResolved = Object.entries(native.gateways)
@@ -694,8 +710,10 @@ function buildChildEnv(native: NativeConfig, home: string, tempDir: string): Nod
         );
       }
       const tokenDir = join(tempDir, 'chatgpt');
-      mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
-      writeFileSync(join(tokenDir, 'auth.json'), JSON.stringify(record), { mode: 0o600 });
+      if (writeTokens) {
+        mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+        writeFileSync(join(tokenDir, 'auth.json'), JSON.stringify(record), { mode: 0o600 });
+      }
       childEnv.CHATGPT_TOKEN_DIR = tokenDir;
     }
   }
@@ -725,8 +743,10 @@ function buildChildEnv(native: NativeConfig, home: string, tempDir: string): Nod
         );
       }
       const tokenDir = join(tempDir, 'copilot');
-      mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
-      writeFileSync(join(tokenDir, 'access-token'), token, { mode: 0o600 });
+      if (writeTokens) {
+        mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+        writeFileSync(join(tokenDir, 'access-token'), token, { mode: 0o600 });
+      }
       childEnv.GITHUB_COPILOT_TOKEN_DIR = tokenDir;
     }
   }
@@ -1366,7 +1386,10 @@ export async function cmdServe(
       if (now === planFingerprint) return;
       const cfg = now === failedFingerprint ? mergedNative(() => { /* logged by the first attempt */ }) : mergedNative();
       try {
-        childEnv = buildChildEnv(cfg, opts.home, tempDir);
+        // Direct keys only: the token files belong to the running child, and
+        // a change that needs new ones also moves `litellmPlanSnapshot`, whose
+        // respawn writes them.
+        childEnv = buildChildEnv(cfg, opts.home, tempDir, { writeTokens: false });
       } catch (error) {
         // The previous env still holds whatever the previous merge resolved,
         // and a direct gateway's key is looked up in it BY NAME — so a
