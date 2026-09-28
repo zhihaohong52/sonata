@@ -3006,6 +3006,58 @@ provider = "anthropic"
     }
   });
 
+  it('re-resolves which ChatGPT store the default reads when `codex login` changes it while serving', async () => {
+    writeMachineConfig(`
+[models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+[models."byok"]
+gateway = "openai"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["luna", "byok"]
+complex = ["luna", "byok"]
+[native.gateways."codex"]
+auth = "codex-oauth"
+credential_source = "codex"
+[native.gateways."openai"]
+auth = "codex-oauth"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    const codexAuth = join(home, '.codex', 'auth.json');
+    const login = () => {
+      mkdirSync(join(home, '.codex'), { recursive: true });
+      writeFileSync(codexAuth, JSON.stringify({ tokens: { access_token: 'x', refresh_token: 'r' } }));
+    };
+    login();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const send = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      // Both read the codex store: one account, served.
+      expect((await send()).status).not.toBe(502);
+      // `codex logout`: the default now falls through to opencode's store.
+      rmSync(codexAuth);
+      expect((await send()).status).toBe(502);
+      // `codex login` again: one account once more.
+      login();
+      expect((await send()).status).not.toBe(502);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('loads the v0.13.1 BYOK pair in one config, drops both gateways, and keeps the rest serving', async () => {
     writeMachineConfig(`
 [models."luna"]
