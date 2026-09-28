@@ -1114,10 +1114,10 @@ describe('routeRequest — a ChatGPT login LiteLLM cannot refresh', () => {
   });
 
   for (const entry of proxied) {
-    it(`tells serve, and passes the ${entry.status} through, when LiteLLM's proxy answers "${entry.case}"`, async () => {
+    it(`tells serve, and answers the named 502, when LiteLLM's proxy answers "${entry.case}"`, async () => {
       let told = 0;
       const result = await route(entry.status, entry.body, () => { told += 1; });
-      expect(result.status).toBe(entry.status);
+      expect(result.status).toBe(502);
       expect(told).toBe(1);
     });
 
@@ -1142,6 +1142,87 @@ describe('routeRequest — a ChatGPT login LiteLLM cannot refresh', () => {
       expect(told).toBe(1);
     });
   }
+
+  // The request that notices is answered as every later one is, rather than
+  // with LiteLLM's raw 400 — which the tier loop read as the request's fault
+  // and returned, never trying the next candidate.
+  describe('the request that notices', () => {
+    beforeEach(() => clearCooldowns());
+    const refusedBody = proxied[0]!.body;
+    const serveMark = () => {
+      let marked = false;
+      return {
+        chatgptLoginRefused: () => { marked = true; },
+        gatewayUnavailable: (_t: unknown, g: string) =>
+          (marked && g === 'codex' ? 'gateway "codex": LiteLLM\'s ChatGPT login was refused by OpenAI — run `codex login`' : undefined),
+      };
+    };
+    const tierDeps = (routes: { key: string; native: { gateway: string; id: string } }[], seen: string[], records: unknown[]) => ({
+      fetch: (async (_u: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return model.includes('luna')
+          ? new Response(refusedBody, { status: 400 })
+          : new Response(COMPLETE_BODY, { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTenant: () => tenant,
+      resolveTier: () => ({ role: 'code', tier: 'simple', routes }),
+      recordUsage: (row: unknown) => { records.push(row); },
+      ...serveMark(),
+    });
+    const tierReq = () => ({
+      method: 'POST', url: '/v1/messages', headers: {},
+      body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: 'hi' }] })),
+    });
+
+    it('falls through to the next tier candidate, which serves it', async () => {
+      const seen: string[] = [];
+      const deps = tierDeps([
+        { key: 'luna', native: { gateway: 'codex', id: 'gpt-5.6-luna' } },
+        { key: 'byok', native: { gateway: 'or', id: 'm' } },
+      ], seen, []);
+      const res = await serveFully(tierReq(), deps);
+      expect(res.status).toBe(200);
+      expect(seen).toEqual(['t/luna', 't/byok']);
+    });
+
+    it('answers the named 502, Anthropic-shaped, when it was the last candidate — no ledger row', async () => {
+      const records: unknown[] = [];
+      const deps = tierDeps([{ key: 'luna', native: { gateway: 'codex', id: 'gpt-5.6-luna' } }], [], records);
+      const first = await serveFully(tierReq(), deps);
+      const later = await serveFully(tierReq(), deps);
+      expect(first.status).toBe(502);
+      const body = JSON.parse((first.body as Buffer).toString()) as { type: string; error: { type: string; message: string } };
+      expect(body.type).toBe('error');
+      expect(body.error.type).toBe('router_error');
+      expect(body.error.message).toContain('codex login');
+      expect((first.body as Buffer).toString()).toBe((later.body as Buffer).toString());
+      expect(records).toEqual([]);
+    });
+
+    it('answers a bare key with the named 502, Anthropic-shaped, the same as the next request', async () => {
+      const records: unknown[] = [];
+      const mark = serveMark();
+      const deps = {
+        fetch: (async () => new Response(refusedBody, { status: 400 })) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTenant: () => tenant,
+        resolveNative: () => ({ gateway: 'codex', id: 'gpt-5.6-luna', transport: 'litellm' as const }),
+        recordUsage: (row: unknown) => { records.push(row); },
+        ...mark,
+      };
+      const req = () => ({ method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from(JSON.stringify({ model: 'luna', messages: [] })) });
+      const first = await serveFully(req(), deps);
+      const later = await serveFully(req(), deps);
+      expect(first.status).toBe(502);
+      const body = JSON.parse((first.body as Buffer).toString()) as { type: string; error: { type: string; message: string } };
+      expect(body.type).toBe('error');
+      expect(body.error.message).toContain('luna: not served');
+      expect((first.body as Buffer).toString()).toBe((later.body as Buffer).toString());
+      expect(records).toEqual([]);
+    });
+  });
 
   it('says nothing for an unrelated error', async () => {
     let told = 0;
