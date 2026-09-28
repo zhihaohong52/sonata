@@ -118,3 +118,33 @@ await runProbe(${JSON.stringify(sleeper)}, [], { timeoutMs: 30_000 }).catch(() =
     expect(alive(probePid)).toBe(false);
   }, 30_000);
 });
+
+describe('runProbe — a parent that handles SIGINT itself', () => {
+  it('does not re-raise when the parent had its own listener, even a once() one', async () => {
+    const { spawn } = await import('node:child_process');
+    const { existsSync, readFileSync } = await import('node:fs');
+    const pidFile = join(bin, 'sleeper2.pid');
+    const doneFile = join(bin, 'parent.done');
+    const sleeper = stub('sleeper2', `echo $$ > ${pidFile}\nsleep 30`);
+    const script = join(bin, 'run-probe-once.mts');
+    writeFileSync(script, `
+import { writeFileSync } from 'node:fs';
+import { runProbe } from ${JSON.stringify(join(process.cwd(), 'src/version-probe.ts'))};
+process.once('SIGINT', () => { /* the parent's own handling: carry on */ });
+await runProbe(${JSON.stringify(sleeper)}, [], { timeoutMs: 30_000 }).catch(() => {});
+writeFileSync(${JSON.stringify(doneFile)}, 'survived');
+`);
+    const parent = spawn(process.execPath, ['--import', 'tsx', script], { stdio: 'ignore', cwd: process.cwd() });
+    const until = Date.now() + 15_000;
+    while (!existsSync(pidFile) || readFileSync(pidFile, 'utf8').trim() === '') {
+      if (Date.now() > until) throw new Error('probe never started');
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const exited = new Promise<{ code: number | null; signal: string | null }>((resolve) =>
+      parent.on('exit', (code, signal) => resolve({ code, signal })));
+    parent.kill('SIGINT');
+    const outcome = await exited;
+    expect(outcome).toEqual({ code: 0, signal: null });
+    expect(readFileSync(doneFile, 'utf8')).toBe('survived');
+  }, 30_000);
+});
