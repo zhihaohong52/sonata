@@ -39,6 +39,12 @@ export interface StoreRead {
    */
   skipped?: string;
   /**
+   * For `unreadable` when bytes were read but did not parse: a sha256 of
+   * exactly those bytes, which `boundUnreadable` compares across reads.
+   * Absent for a read error, which returned no bytes. Compared, never logged.
+   */
+  contentHash?: string;
+  /**
    * For opencode.db, `ok`: the table read empty twice where the previous read
    * found rows. A logout — or a gap: callers refuse on it but do not yet treat
    * the login as gone for good.
@@ -54,17 +60,21 @@ const ABSENT_CODES = new Set(['ENOENT', 'ENOTDIR']);
 
 /** A JSON credential file: codex's or opencode's `auth.json`, sonata's `keys.json`. */
 export function jsonStoreRead(path: string): StoreRead {
-  let text: string;
+  let bytes: Buffer;
   try {
-    text = readFileSync(path, 'utf8');
+    bytes = readFileSync(path);
   } catch (error) {
     const code = errnoCode(error);
     return ABSENT_CODES.has(code) ? { state: 'absent' } : { state: 'unreadable', detail: `${path}: ${code}` };
   }
   try {
-    JSON.parse(text);
+    JSON.parse(bytes.toString('utf8'));
   } catch {
-    return { state: 'unreadable', detail: `${path}: not valid JSON (a write in progress?)` };
+    return {
+      state: 'unreadable',
+      detail: `${path}: not valid JSON (a write in progress?)`,
+      contentHash: createHash('sha256').update(bytes).digest('hex'),
+    };
   }
   return { state: 'ok' };
 }
@@ -161,9 +171,21 @@ export const UNREADABLE_STORE_WINDOW_MS = 10_000;
  */
 export const TORN_REPEAT_MS = 1_000;
 
+/**
+ * How far in the past a file's mtime must be before an unparseable file seen
+ * for the first time is skipped on that first read, counted from the mtime
+ * rather than from now. FAT stores mtime to 2 s, and a file on a network
+ * mount carries the server's clock, which can lag the host's: a write in
+ * progress can carry an mtime a second or two behind now. 5 s covers that
+ * granularity with room for a reasonable skew; a file newer than this is
+ * treated as torn on first sight and then judged by its content.
+ */
+export const FIRST_SIGHT_STALE_MS = 5_000;
+
 /** When `boundUnreadable` stops treating a file as mid-write, in words, for the messages that promise it. */
 export const UNREADABLE_SKIP_RULE = `once it stops changing (the same unparseable content ${TORN_REPEAT_MS / 1000}s ` +
-  `apart), or once a read error has lasted ${UNREADABLE_STORE_WINDOW_MS / 1000}s`;
+  `apart, or unmodified for ${FIRST_SIGHT_STALE_MS / 1000}s when first seen), or once a read error has lasted ` +
+  `${UNREADABLE_STORE_WINDOW_MS / 1000}s`;
 
 /** What `boundUnreadable` remembers between reads; one per process, shared by every caller. */
 export interface UnreadableMemory {
@@ -183,15 +205,6 @@ export function newUnreadableMemory(): UnreadableMemory {
   return { files: new Map(), db: new Map(), torn: 0 };
 }
 
-/** A sha256 of a file's bytes, or undefined when they cannot be read at all. Compared, never logged. */
-function bytesHash(path: string): string | undefined {
-  try {
-    return createHash('sha256').update(readFileSync(path)).digest('hex');
-  } catch {
-    return undefined;
-  }
-}
-
 /** A file's mtime, or undefined when it cannot be stat'ed. */
 function mtimeOf(path: string): number | undefined {
   try {
@@ -206,8 +219,10 @@ function mtimeOf(path: string): number | undefined {
  *
  * A file whose bytes can be read (so what failed was their parse) counts as
  * torn — answered `unreadable`, so the caller keeps its last resolution or
- * refuses for now — only while those bytes, hashed here, are
- * still changing: they differ from the previous failed read's, or were first
+ * refuses for now — only while those bytes are still changing. They are
+ * the bytes the caller parsed (`contentHash`), never a second read, which
+ * could find a file renamed into place since and compare valid bytes. Torn
+ * while they differ from the previous failed read's, or were first
  * seen less than `TORN_REPEAT_MS` ago. The same bytes a second apart are
  * stuck, not mid-write, however recently the file was touched and however
  * long ago it was last read; different bytes start again, however long the
@@ -216,10 +231,12 @@ function mtimeOf(path: string): number | undefined {
  * here can tell it from a writer mid-write.
  *
  * Bytes seen for the first time — no failed read on record — count from the
- * file's mtime when that is earlier than now: they have been there since the
- * last write. A file corrupt since before serve started is skipped on its
- * first read, rather than refusing every request for a second. After that
- * first sighting only the bytes count, as above.
+ * file's mtime when that is at least `FIRST_SIGHT_STALE_MS` in the past: they
+ * have been there since the last write. A file corrupt since before serve
+ * started is skipped on its first read, rather than refusing every request
+ * for a second. A newer mtime says nothing a coarse or lagging clock could
+ * not also produce, so those bytes count from now. After that first sighting
+ * only the bytes count, as above.
  *
  * A file whose bytes cannot be read (EACCES, EISDIR) has nothing to compare, and
  * is torn only for `windowMs` from the first failure of its run — never
@@ -242,9 +259,10 @@ export function boundUnreadable(
     return read;
   }
   const recorded = memory.files.get(path);
-  const hash = bytesHash(path);
+  const hash = read.contentHash;
   const same = recorded !== undefined && recorded.hash === hash;
-  const firstSeen = recorded === undefined && hash !== undefined ? Math.min(now, mtimeOf(path) ?? now) : now;
+  const mtime = recorded === undefined && hash !== undefined ? mtimeOf(path) : undefined;
+  const firstSeen = mtime !== undefined && now - mtime >= FIRST_SIGHT_STALE_MS ? mtime : now;
   const record: { hash?: string; since: number; warned?: true } =
     { ...(hash === undefined ? {} : { hash }), since: same ? recorded.since : firstSeen };
   if (same && recorded.warned === true) record.warned = true;
@@ -256,9 +274,13 @@ export function boundUnreadable(
   const detail = read.detail ?? `${path}: unreadable`;
   if (record.warned !== true) {
     record.warned = true;
+    const seconds = Math.max(1, Math.round((now - record.since) / 1000));
     warn(`${detail} — ${hash === undefined
       ? `it has not read for ${Math.round(windowMs / 1000)}s`
-      : `the same unparseable content for ${Math.max(1, Math.round((now - record.since) / 1000))}s, so not a write in progress`
+      : recorded === undefined
+        // Skipped on its first sighting: nothing has been watched yet, only the file's age.
+        ? `unparseable, and has not been modified for ${seconds}s, so not a write in progress`
+        : `the same unparseable content for ${seconds}s, so not a write in progress`
     }, so it is skipped as if absent until it reads cleanly`);
   }
   return { state: 'absent', skipped: detail };

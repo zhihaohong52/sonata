@@ -175,10 +175,17 @@ the review doc's Backlog note):
   read's, or were first seen under a second ago. The same bytes a second
   apart are stuck and skipped, however freshly the file was touched and
   however long ago it was last read; new bytes are torn again, however long
-  it was quiet. Bytes seen for the first time count from the file's mtime
-  when that is earlier, so a file corrupt since before serve started — last
-  written over a second ago — is skipped on its first read and costs no
-  refused request (one written under a second earlier costs one), and a
+  it was quiet. The bytes compared are the ones the read parsed, never a
+  second read of the file, which could find a valid file renamed into place
+  in between. Bytes seen for the first time count from the file's mtime
+  when that is at least 5 s in the past, so a file corrupt since before
+  serve started — last written over 5 s ago — is skipped on its first read
+  and costs no refused request. The margin assumes a write in progress is
+  never dated more than a few seconds back: FAT stores mtime to 2 s, and a
+  file server's clock can lag the host's, so a newer mtime is no evidence
+  and such a file is torn on its first read, then judged by its content
+  (costing one refused request). A first-sight skip is logged as the file's
+  age, never as content watched for that long. A
   file rewritten with different broken bytes on every read stays torn as
   long as that goes on (it cannot be told from a write in progress). A
   file that cannot be read at all (EACCES) is torn for 10 s from its first
@@ -317,7 +324,15 @@ the review doc's Backlog note):
   from `sonata restart`. The same directory with no token captured keeps it
   (`sonata restart` is the remedy), as do a crash respawn, a restart for
   anything else, a restart with no ChatGPT gateway at all, and LiteLLM's own
-  rewrite of `auth.json` (`device_code_requested_at`). `sonata
+  rewrite of `auth.json` (`device_code_requested_at`). A refusal the
+  crashed LiteLLM gives between its exit and its respawn — stdout it had
+  buffered, or a response to a request forwarded to it — is attributed to
+  the directory it was serving: it stays the current LiteLLM until the
+  respawn replaces it. Its directory used to be forgotten on its exit, so
+  such a refusal marked no directory, which the next restart on that same
+  directory — the refused token — then cleared, or was dropped as coming
+  from a replaced LiteLLM. A mark that knows no directory at all is never
+  cleared by a spawn; `sonata restart` is the remedy. `sonata
   doctor` says so beside each ChatGPT gateway.
 
 ## [0.13.1] - 2026-09-27

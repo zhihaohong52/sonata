@@ -1,10 +1,12 @@
 import { describe, expect, it, beforeEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  boundUnreadable, boundUnreadableDb, jsonStoreRead, newUnreadableMemory, TORN_REPEAT_MS, UNREADABLE_STORE_WINDOW_MS,
+  boundUnreadable, boundUnreadableDb, FIRST_SIGHT_STALE_MS, jsonStoreRead, newUnreadableMemory, TORN_REPEAT_MS,
+  UNREADABLE_STORE_WINDOW_MS,
 } from '../../src/native/credential-reads.js';
 
 // A store that cannot be read is torn only while it is plausibly mid-write:
@@ -39,6 +41,54 @@ describe('boundUnreadable', () => {
     expect(memory.torn).toBe(0);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('so not a write in progress');
+  });
+
+  it('says a first-sight skip is judged by the file\'s age, not by content it has watched', () => {
+    // One sighting is no observation of "the same content for Ns".
+    const path = join(dir, 'auth.json');
+    writeFileSync(path, '{"tok');
+    const old = (Date.now() - 60_000) / 1000;
+    utimesSync(path, old, old);
+    const warnings: string[] = [];
+    expect(boundUnreadable(path, jsonStoreRead(path), newUnreadableMemory(), Date.now(), (l) => warnings.push(l)).state)
+      .toBe('absent');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('not been modified for 60s');
+    expect(warnings[0]).not.toContain('the same unparseable content');
+  });
+
+  it('is torn on its first read when its mtime is under the stale margin in the past — a coarse or lagging clock', () => {
+    // FAT stores mtime to 2 s, and a file server's clock can lag the host's:
+    // a write in progress can carry an mtime well behind now. Counted from
+    // that mtime, a torn codex auth.json was skipped on its first read and
+    // opencode's account served in its place (r17/tornskew.mts).
+    const path = join(dir, 'auth.json');
+    writeFileSync(path, '{"auth_mode": "chatgpt", "tok');
+    const t0 = Date.now();
+    const lagging = (t0 - (FIRST_SIGHT_STALE_MS - 1000)) / 1000;
+    utimesSync(path, lagging, lagging);
+    const memory = newUnreadableMemory();
+    expect(boundUnreadable(path, jsonStoreRead(path), memory, t0).state).toBe('unreadable');
+    // Then judged by its content, as any other file: the same bytes 1 s on are stuck.
+    expect(boundUnreadable(path, jsonStoreRead(path), memory, t0 + TORN_REPEAT_MS).state).toBe('absent');
+  });
+
+  it('hashes the bytes the caller parsed, not a second read that may find a file renamed into place since', () => {
+    // Re-reading to hash raced a writer: both failed reads hashed the valid
+    // file that had landed between parse and hash, matched, and the second
+    // skipped a file that had in fact moved.
+    const path = join(dir, 'auth.json');
+    const memory = newUnreadableMemory();
+    const t0 = Date.now();
+    const racedRead = (torn: string) => {
+      writeFileSync(path, torn);
+      const read = jsonStoreRead(path);
+      writeFileSync(path, '{"auth_mode": "chatgpt"}');
+      return read;
+    };
+    expect(boundUnreadable(path, racedRead('{"a'), memory, t0).state).toBe('unreadable');
+    expect(boundUnreadable(path, racedRead('{"ab'), memory, t0 + TORN_REPEAT_MS).state).toBe('unreadable');
+    expect(memory.files.get(path)?.hash).toBe(createHash('sha256').update('{"ab').digest('hex'));
   });
 
   it('is torn on its first read when just written, then skipped once the same bytes are seen 1 s later, warning once', () => {
