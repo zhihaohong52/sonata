@@ -40,18 +40,32 @@ export function loadSessions(
   home: string,
   read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
 ): Record<string, SessionRecord> {
+  return readSessions(home, read).sessions;
+}
+
+/**
+ * `loadSessions`, plus whether the file was actually read. `ok` is false only
+ * when the file exists and both attempts failed: the `{}` returned then says
+ * nothing about which sessions exist, so a caller that caches the result must
+ * not keep it. An absent file, or one that parses to a non-object, is a real
+ * answer and is `ok`.
+ */
+export function readSessions(
+  home: string,
+  read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+): { sessions: Record<string, SessionRecord>; ok: boolean } {
   const path = sessionsPath(home);
-  if (!existsSync(path)) return {};
+  if (!existsSync(path)) return { sessions: {}, ok: true };
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const doc: unknown = JSON.parse(read(path));
-      if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) return {};
-      return doc as Record<string, SessionRecord>;
+      if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) return { sessions: {}, ok: true };
+      return { sessions: doc as Record<string, SessionRecord>, ok: true };
     } catch {
       // Fall through to the one retry.
     }
   }
-  return {};
+  return { sessions: {}, ok: false };
 }
 
 /** Writes via a sibling temp file and a rename, so no reader sees half a file. */

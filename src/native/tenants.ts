@@ -28,7 +28,7 @@ import { GLOBAL_CONFIG_RELATIVE, configPath as resolveConfigPath, parseConfig, t
 import { assertEffortsPinned, loadAaCatalog } from '../catalog.js';
 import { loadModelsDev } from '../modelsdev.js';
 import { configUpstreamFor } from '../pricing.js';
-import { loadSessions, sessionsPath, type SessionRecord } from '../sessions.js';
+import { readSessions, sessionsPath, type SessionRecord } from '../sessions.js';
 import type { RouterTenant } from './router.js';
 
 /**
@@ -119,12 +119,16 @@ export class TenantRegistry {
     } catch {
       stamp = 'absent';
     }
-    if (this.sessionsCache?.stamp !== stamp) {
-      const records = loadSessions(this.home, this.deps.readSessionsFile);
-      const cwds = [...new Set(Object.values(records).map((record) => record.cwd).filter((cwd): cwd is string => typeof cwd === 'string'))];
-      this.sessionsCache = { stamp, records, cwds };
-    }
-    return this.sessionsCache;
+    if (this.sessionsCache?.stamp === stamp) return this.sessionsCache;
+    const { sessions: records, ok } = readSessions(this.home, this.deps.readSessionsFile);
+    const cwds = [...new Set(Object.values(records).map((record) => record.cwd).filter((cwd): cwd is string => typeof cwd === 'string'))];
+    const parsed = { stamp, records, cwds };
+    // A failed read (EMFILE, say) returns `{}` under a stamp that is perfectly
+    // valid, and caching that would pin every session to the machine config
+    // until sessions.json next changed. Used for this call only, so the next
+    // one reads again.
+    if (ok) this.sessionsCache = parsed;
+    return parsed;
   }
 
   /** `cwd`'s canonical config path, resolved now. */
