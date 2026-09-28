@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runProbe } from '../src/version-probe.js';
+import { PROBE_MAX_BUFFER, runProbe } from '../src/version-probe.js';
 import { probeVersion } from '../src/detect.js';
 
 // A bound that fires is only half of a bound: the probe also has to SETTLE.
@@ -74,3 +74,19 @@ describe('probeVersion settles a stubborn binary', () => {
     expect(Date.now() - start).toBeLessThan(3_000);
   });
 });
+
+describe('runProbe — output cap', () => {
+  it('kills the group and rejects once output passes the cap', async () => {
+    const noisy = stub('noisy', 'yes 0123456789abcdef');
+    const probe = runProbe(noisy, [], { timeoutMs: 10_000, maxBuffer: 64 * 1024 });
+    await expect(probe).rejects.toMatchObject({
+      code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+      message: expect.stringMatching(/stdout maxBuffer length exceeded/),
+    });
+  });
+
+  it('caps at 16 MB by default', () => {
+    expect(PROBE_MAX_BUFFER).toBe(16 * 1024 * 1024);
+  });
+});
+
