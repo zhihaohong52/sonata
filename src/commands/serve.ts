@@ -11,7 +11,8 @@ import { GLOBAL_CONFIG_RELATIVE, loadConfig, nativeRouteFor, oauthCredentialIden
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
 import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
-import { codexAuthPath, opencodeAuthPath, readChatGptOAuth } from '../native/codex-auth.js';
+import { codexAuthPath, jwtExpiry, opencodeAuthPath, readChatGptOAuth, readCodexOAuth, type ChatGptAuthRecord } from '../native/codex-auth.js';
+import { opencodeDbPath } from '../native/opencode-store.js';
 import { credentialDir } from '../native/oauth-login.js';
 import { readCopilotToken } from '../native/copilot-auth.js';
 import { envVarForGateway, litellmConfigYamlForTenants } from '../native/litellm.js';
@@ -658,15 +659,86 @@ interface ChildEnvResolution {
   failures: CredentialFailure[];
 }
 
+/** When a ChatGPT record expires, in epoch seconds: its own field, else its access token's `exp`. */
+function chatgptExpiry(record: Partial<ChatGptAuthRecord>): number | undefined {
+  if (typeof record.expires_at === 'number' && Number.isFinite(record.expires_at)) return record.expires_at;
+  return typeof record.access_token === 'string' ? jwtExpiry(record.access_token) : undefined;
+}
+
 /**
- * The LiteLLM child's environment, and — unless `writeTokens` is false — the
- * OAuth token files it points at, copied out of the store each gateway reads.
+ * The latest modification time of the store `readChatGptOAuth` read for this
+ * source, or undefined when none can be stat'ed. opencode's credential may sit
+ * in either of its two stores, so both count.
+ */
+function chatgptStoreMtimeMs(home: string, source: 'codex' | 'opencode' | undefined): number | undefined {
+  const fromCodex = source === 'codex' || (source === undefined && readCodexOAuth(home) !== null);
+  const paths = fromCodex ? [codexAuthPath(home)] : [opencodeAuthPath(home), opencodeDbPath(home)];
+  let latest: number | undefined;
+  for (const path of paths) {
+    try {
+      const { mtimeMs } = statSync(path);
+      if (latest === undefined || mtimeMs > latest) latest = mtimeMs;
+    } catch { /* absent: this store says nothing */ }
+  }
+  return latest;
+}
+
+/**
+ * Writes the store's ChatGPT record into LiteLLM's token dir only when that
+ * file is missing or holds an older credential.
  *
- * Those files are LiteLLM's own once it runs: it refreshes the token in
- * place. So only a (re)spawn writes them; an in-place re-merge while the
- * child runs passes `writeTokens: false`, since rewriting then would put the
- * store's possibly older token over the one LiteLLM has refreshed. The env it
- * returns still names the same directories either way.
+ * The file is LiteLLM's own once it runs: it re-reads it on every access
+ * token it needs and refreshes it in place, and ChatGPT rotates refresh
+ * tokens — writing the store's older record over a refreshed one hands
+ * LiteLLM a refresh token already refused as `refresh_token_reused`. Never
+ * writing it on a re-merge had the opposite failure: a `codex login` while
+ * serving, the remedy serve's own error names, never reached a running
+ * LiteLLM. "Newer" is a later expiry — both LiteLLM (`_build_auth_record`)
+ * and sonata write `expires_at`, and the access token's JWT `exp` stands in
+ * where it is absent. Where neither side has one, a store whose contents
+ * differ and that was modified after LiteLLM's copy wins.
+ */
+function syncChatGptTokenFile(tokenDir: string, record: ChatGptAuthRecord, storeMtimeMs: number | undefined): void {
+  const path = join(tokenDir, 'auth.json');
+  const next = JSON.stringify(record);
+  let write = false;
+  let current: string | undefined;
+  try {
+    current = readFileSync(path, 'utf8');
+  } catch {
+    write = true;
+  }
+  if (current !== undefined && current !== next) {
+    let held: Partial<ChatGptAuthRecord> = {};
+    try {
+      const parsed: unknown = JSON.parse(current);
+      if (parsed !== null && typeof parsed === 'object') held = parsed as Partial<ChatGptAuthRecord>;
+    } catch { /* unreadable: compared by modification time below */ }
+    const storeExpiry = chatgptExpiry(record);
+    const heldExpiry = chatgptExpiry(held);
+    if (storeExpiry !== undefined && heldExpiry !== undefined) {
+      write = storeExpiry > heldExpiry;
+    } else {
+      let heldMtimeMs: number | undefined;
+      try { heldMtimeMs = statSync(path).mtimeMs; } catch { /* raced away: write */ }
+      write = heldMtimeMs === undefined || (storeMtimeMs !== undefined && storeMtimeMs > heldMtimeMs);
+    }
+  }
+  if (!write) return;
+  mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+  writeFileSync(path, next, { mode: 0o600 });
+}
+
+/**
+ * The LiteLLM child's environment, and the OAuth token files it points at,
+ * copied out of the store each gateway reads.
+ *
+ * The ChatGPT file is written on every path under `syncChatGptTokenFile`'s
+ * newer-wins rule. Copilot's `access-token` carries no expiry to compare —
+ * it is a bare `gho_` string, and the short-lived `api-key.json` LiteLLM
+ * exchanges it for is its own — so it is still written only when `spawning`,
+ * i.e. when a child is about to start on this env. The env it returns names
+ * the same directories either way.
  *
  * Each gateway is resolved on its own, and one whose credential is missing is
  * reported in `failures` and left out of the env rather than aborting the
@@ -680,9 +752,9 @@ function resolveChildEnv(
   native: NativeConfig,
   home: string,
   tempDir: string,
-  opts: { writeTokens?: boolean } = {},
+  opts: { spawning?: boolean } = {},
 ): ChildEnvResolution {
-  const writeTokens = opts.writeTokens ?? true;
+  const spawning = opts.spawning ?? true;
   const failures: CredentialFailure[] = [];
   // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
   const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
@@ -735,10 +807,7 @@ function resolveChildEnv(
         });
       } else {
         const tokenDir = join(tempDir, 'chatgpt');
-        if (writeTokens) {
-          mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
-          writeFileSync(join(tokenDir, 'auth.json'), JSON.stringify(record), { mode: 0o600 });
-        }
+        syncChatGptTokenFile(tokenDir, record, chatgptStoreMtimeMs(home, gateway.credentialSource));
         childEnv.CHATGPT_TOKEN_DIR = tokenDir;
       }
     }
@@ -772,7 +841,7 @@ function resolveChildEnv(
         });
       } else {
         const tokenDir = join(tempDir, 'copilot');
-        if (writeTokens) {
+        if (spawning) {
           mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
           writeFileSync(join(tokenDir, 'access-token'), token, { mode: 0o600 });
         }
@@ -793,7 +862,7 @@ function buildChildEnv(
   native: NativeConfig,
   home: string,
   tempDir: string,
-  opts: { writeTokens?: boolean } = {},
+  opts: { spawning?: boolean } = {},
 ): NodeJS.ProcessEnv {
   const { env, failures } = resolveChildEnv(native, home, tempDir, opts);
   if (failures.length > 0) throw new Error(`sonata serve: ${failures[0].message}`);
@@ -1425,9 +1494,10 @@ export async function cmdServe(
       const now = gatewayPlanInputs();
       if (now === planFingerprint) return;
       const cfg = now === failedFingerprint ? mergedNative(() => { /* logged by the first attempt */ }) : mergedNative();
-      // Direct keys only: the token files belong to the running child, and
-      // a change that needs new ones also moves `litellmPlanSnapshot`, whose
-      // respawn writes them.
+      // Not spawning: Copilot's token file belongs to the running child. The
+      // ChatGPT file is synced under its newer-wins rule, which is how a
+      // `codex login` while serving — it moves `codexStoreSignal`, so it
+      // lands here — reaches a LiteLLM that re-reads the file per token.
       //
       // Per gateway: a failing gateway is left out of the new env and every
       // other one keeps its key. Replaced rather than mutated: `childEnv` is
@@ -1437,7 +1507,7 @@ export async function cmdServe(
       // another project dropped would otherwise be sent that project's key.
       // With no key, its request fails upstream with a 401 that names the
       // problem; another project's credential does not.
-      const { env, failures } = resolveChildEnv(cfg, opts.home, tempDir, { writeTokens: false });
+      const { env, failures } = resolveChildEnv(cfg, opts.home, tempDir, { spawning: false });
       childEnv = env;
       reportCredentialFailures(failures);
       refreshGatewayKeys(cfg);
