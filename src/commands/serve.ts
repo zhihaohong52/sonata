@@ -1647,10 +1647,15 @@ export async function cmdServe(
    * was spawned into. One that is no longer the current child's is from a
    * LiteLLM a new login has since replaced: a response forwarded before the
    * restart and answered after it says nothing about the new one.
+   *
+   * The mark records the current child's directory. Undefined only when no
+   * directory is known at all — then no spawn clears it (see
+   * `spawnLitellmChild`) and it stays until `sonata restart`.
    */
   const markChatgptLoginRefused = (served: string | undefined): void => {
     if (chatgptLoginRefused !== undefined) return;
-    if (served !== currentChatgptTokenDir()) {
+    const current = currentChatgptTokenDir();
+    if (served !== current) {
       console.error('sonata serve: ignoring a ChatGPT login refusal from a LiteLLM that has since been replaced');
       return;
     }
@@ -1665,8 +1670,8 @@ export async function cmdServe(
     chatgptLoginRefused = {
       message: `gateway ${names}: ${remedy} (LiteLLM had fallen back to an interactive device-code ` +
         'login, which would hold each request for up to fifteen minutes)',
-      dir: served,
-      token: chatgptTokenHash(served),
+      dir: current,
+      token: chatgptTokenHash(current),
       markedAt: clock(),
     };
     console.error(`sonata serve: ${remedy} — affects gateway ${names}`);
@@ -2227,7 +2232,13 @@ export async function cmdServe(
         rmSync(dir, { recursive: true, force: true });
         retiredTokenDirs.delete(dir);
       }
-      for (const [spawned] of childTokenDir) if (exitObserved.has(spawned)) childTokenDir.delete(spawned);
+      // Never the current child's entry, even once it has exited: until the
+      // respawn replaces it, a crashed child is still the one a refusal —
+      // buffered stdout delivered after its exit, or a response it gave — is
+      // attributed to, and without its entry that refusal marked no directory.
+      for (const [spawned] of childTokenDir) {
+        if (exitObserved.has(spawned) && spawned !== child) childTokenDir.delete(spawned);
+      }
     };
     currentChatgptTokenDir = () => (child === undefined ? undefined : childTokenDir.get(child));
     /**
@@ -2281,10 +2292,12 @@ export async function cmdServe(
         // login, seeded fresh — or on the refused one holding a readable token
         // that is not the refused one. No directory at all (no ChatGPT gateway
         // just now), an unreadable file, or no refused token captured says
-        // nothing about the token LiteLLM will use, and keeps it.
+        // nothing about the token LiteLLM will use, and keeps it. So does a
+        // mark that knows no directory: no spawn's directory can be told apart
+        // from it, and it stays until `sonata restart`.
         const refused = chatgptLoginRefused;
         const dir = childEnv.CHATGPT_TOKEN_DIR;
-        if (refused !== undefined && dir !== undefined) {
+        if (refused !== undefined && refused.dir !== undefined && dir !== undefined) {
           const token = dir === refused.dir && refused.token !== undefined ? chatgptTokenHash(dir) : undefined;
           if (dir !== refused.dir || (token !== undefined && token !== refused.token)) chatgptLoginRefused = undefined;
         }
