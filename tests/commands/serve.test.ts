@@ -2951,6 +2951,61 @@ litellm = ${litellmPort}
     expect(JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8')).litellmPid).toBe(222);
   });
 
+  it('re-merges before routing a newly noted tenant, so its conflicting direct gateway is never served', async () => {
+    // A: machine config, direct `acme` whose key comes from opencode. B: a
+    // project that also names `acme`, default-sourced, pointing elsewhere. B
+    // is unknown at startup; its FIRST request is a bare direct key. Merged
+    // stale, B's request would carry A's key (SONATA_KEY_ACME) to B's base_url.
+    writeMachineConfig(`
+[models."a-flash"]
+gateway = "acme"
+id = "a-model"
+[native.gateways."acme"]
+base_url = "https://a.example/v1"
+provider = "anthropic"
+credential_source = "opencode"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+    writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({ acme: { type: 'api', key: 'A-KEY' } }));
+    const project = mkdtempSync(join(tmpdir(), 'serve-tenant-late-conflict-'));
+    writeFileSync(join(project, 'sonata.toml'), `
+[models."b-flash"]
+gateway = "acme"
+id = "b-model"
+[native.gateways."acme"]
+base_url = "https://b.example/v1"
+provider = "anthropic"
+`);
+    const forwarded: { url: string; auth?: string }[] = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+        forwarded.push({ url, auth: (init.headers as Record<string, string>).authorization });
+        return new Response('{}', { status: 200 });
+      }));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...projectHeaders(project) },
+        body: JSON.stringify({ model: 'b-flash', messages: [] }),
+      });
+      expect(res.status).toBe(502);
+      const message = (await res.json() as { error: { message: string } }).error.message;
+      expect(message).toContain('gateway "acme"');
+      expect(forwarded).toEqual([]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('loads the v0.13.1 BYOK pair in one config, drops both gateways, and keeps the rest serving', async () => {
     writeMachineConfig(`
 [models."luna"]

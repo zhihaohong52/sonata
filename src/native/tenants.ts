@@ -21,7 +21,7 @@ export class TenantError extends Error {
   }
 }
 
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { GLOBAL_CONFIG_RELATIVE, configPath as resolveConfigPath, parseConfig, type SonataConfig } from '../config.js';
@@ -161,7 +161,24 @@ export class TenantRegistry {
     return { id: tenantId(path), project: cwd, configPath: path, config };
   }
 
-  known(): KnownTenant[] {
+  /**
+   * A cheap token that changes whenever the set of known tenants, or any of
+   * their config files, does: each known path with its mtime and size, no
+   * parsing. Serve compares it per request to know when the gateway merge
+   * (and so which gateways are dropped, and their keys) is out of date.
+   */
+  fingerprint(): string {
+    return this.knownPaths().map((path) => {
+      try {
+        const { mtimeMs, size } = statSync(path);
+        return `${path}:${mtimeMs}:${size}`;
+      } catch {
+        return `${path}:missing`;
+      }
+    }).join('\n');
+  }
+
+  private knownPaths(): string[] {
     const paths = new Set<string>();
     const machine = this.machinePath();
     if (machine !== null) paths.add(machine);
@@ -173,8 +190,12 @@ export class TenantRegistry {
       const path = resolveConfigPath(cwd, this.home);
       if (path !== null) paths.add(canonicalConfigPath(path));
     }
+    return [...paths].sort();
+  }
+
+  known(): KnownTenant[] {
     const out: KnownTenant[] = [];
-    for (const path of [...paths].sort()) {
+    for (const path of this.knownPaths()) {
       const id = tenantId(path);
       try {
         out.push({ id, configPath: path, config: this.load(path) });
