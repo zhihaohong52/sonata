@@ -1,6 +1,6 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createServer as createHttpServer, type RequestListener, type Server } from 'node:http';
@@ -1113,6 +1113,16 @@ export function resolvedOauthIdentity(
   return readChatGptOAuth(home, 'codex') !== null ? 'codex store' : 'opencode store';
 }
 
+/** codex's ChatGPT store as a stat-only token: its mtime and size, or absent. */
+function codexStoreSignal(home: string): string {
+  try {
+    const { mtimeMs, size } = statSync(codexAuthPath(home));
+    return `codex:${mtimeMs}:${size}`;
+  } catch {
+    return 'codex:absent';
+  }
+}
+
 export async function cmdServe(
   opts: { cwd: string; home: string; daemon?: boolean } & ServeDeps,
 ): Promise<ServeHandle> {
@@ -1190,8 +1200,14 @@ export async function cmdServe(
       };
     });
   };
-  /** What the gateway merge depends on, as a cheap comparable string. */
-  const gatewayPlanInputs = (): string => registry.fingerprint();
+  /**
+   * What the gateway merge depends on, as a cheap comparable string: the
+   * known configs, and whether codex's ChatGPT store holds a login — which
+   * `resolvedOauthIdentity` consults for a default-sourced codex-oauth
+   * gateway, so `codex login`/`logout` while serving changes the answer.
+   * Both are stat-only.
+   */
+  const gatewayPlanInputs = (): string => `${registry.fingerprint()}\n${codexStoreSignal(opts.home)}`;
   const unionNeedsLitellm = (): boolean => registry.loadable().some(({ config }) => litellmRequired(config));
 
   const litellmBin = managedLitellmPath(opts.home);
