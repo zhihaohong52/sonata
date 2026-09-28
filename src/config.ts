@@ -751,21 +751,31 @@ export function parseConfig(text: string): SonataConfig {
 
     // LiteLLM reads a ChatGPT credential from one directory
     // (CHATGPT_TOKEN_DIR) and a Copilot one from another
-    // (GITHUB_COPILOT_TOKEN_DIR), process-wide — so a second gateway of the
-    // same OAuth kind cannot have an account of its own. Serve would quietly
-    // give it the first one's.
-    const oauthOwners = new Map<string, string>();
+    // (GITHUB_COPILOT_TOKEN_DIR), process-wide — so every gateway of one OAuth
+    // kind is served ONE account. That is harmless when they all name the same
+    // credential source (the default included): one account, nothing can
+    // leak. `sonata init` before v0.10.0 wrote the ChatGPT subscription twice,
+    // as `codex` and `openai`, and those configs must keep loading. Only
+    // sources that differ are refused, since one of them would silently be
+    // served the other's account.
+    const oauthOwners = new Map<string, { name: string; source: string }>();
     for (const [name, gateway] of Object.entries(gateways)) {
       if (gateway.auth !== 'codex-oauth' && gateway.auth !== 'copilot-oauth') continue;
+      const source = gateway.credentialSource ?? 'default';
       const owner = oauthOwners.get(gateway.auth);
-      if (owner !== undefined) {
+      if (owner === undefined) {
+        oauthOwners.set(gateway.auth, { name, source });
+        continue;
+      }
+      if (owner.source !== source) {
+        const quote = (s: string) => (s === 'default' ? 'default' : `"${s}"`);
         throw new Error(
-          `sonata.toml: gateways "${owner}" and "${name}" both use auth = "${gateway.auth}", ` +
-          'but LiteLLM holds one credential of that kind per process, so both would be served ' +
-          `"${owner}"'s account — keep one of them`,
+          `sonata.toml: gateways "${owner.name}" (credential_source = ${quote(owner.source)}) and ` +
+          `"${name}" (credential_source = ${quote(source)}) both use auth = "${gateway.auth}", ` +
+          'but LiteLLM holds one credential of that kind per process, so one would be served the ' +
+          "other's account — give them the same credential_source, or keep one of them",
         );
       }
-      oauthOwners.set(gateway.auth, name);
     }
 
     const nativeModels: Record<string, NativeModelConfig> = {};
