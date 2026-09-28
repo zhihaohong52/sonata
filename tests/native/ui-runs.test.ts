@@ -353,12 +353,18 @@ describe('uiRunSummaries', () => {
       makeRun(cwd, '000003', { role: 'code' }, { exit: 0, report: '' });
       makeRun(cwd, '000004', { role: 'code' }, { exit: 0, report: ' \n\t\n' });
       makeRun(cwd, '000005', { role: 'code' }, { exit: 0, report: `${' '.repeat(70_000)}late` });
+      // Whitespace exactly as String.prototype.trim sees it, which is what
+      // readReport uses: a BOM and non-breaking spaces are whitespace too.
+      makeRun(cwd, '000006', { role: 'code' }, { exit: 0, report: '\uFEFF\u00A0\u2003\n' });
+      makeRun(cwd, '000007', { role: 'code' }, { exit: 0, report: `${'\u00A0'.repeat(3000)}é` });
       const mine = await uiRunSummaries(cwd);
       expect(mine).toEqual(summarizeRuns(cwd));
       expect(mine.map((r) => [r.degraded, r.report])).toEqual([
         [false, false],
         [true, true],
         [true, false],
+        [true, false],
+        [false, true],
         [true, false],
         [false, true],
       ]);
