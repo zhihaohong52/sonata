@@ -333,6 +333,24 @@ describe('cmdUsage --project — subdirectory rows, $HOME and deleted directorie
     expect(await pick(sub)).toBe(2);
   });
 
+  it('keeps a nested project out of its parent, and its parent out of it', async () => {
+    // A nested sonata.toml is a different project. Selecting by path prefix
+    // alone folded ~/repo/packages/app's rows into ~/repo.
+    const app = join(repo, 'packages', 'app');
+    const appSrc = join(app, 'src');
+    mkdirSync(appSrc, { recursive: true });
+    writeFileSync(join(app, 'sonata.toml'), MINIMAL);
+    appendRow(home, row({ ts: recent(), project: app }));
+    appendRow(home, row({ ts: recent(), project: appSrc }));
+    // repo + repo/sub, not app or app/src.
+    expect(await pick(repo)).toBe(2);
+    // app + app/src, not repo.
+    expect(await pick(app)).toBe(2);
+    expect(await pick(appSrc)).toBe(2);
+    // A plain subdirectory of repo still counts for repo.
+    expect(await pick(sub)).toBe(2);
+  });
+
   it('keeps a deleted directory as recorded rather than walking to its parent', async () => {
     const gone = join(repo, 'gone');
     mkdirSync(gone);

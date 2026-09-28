@@ -31,7 +31,7 @@ import type { TuiResult } from '../tui-ink/types.js';
 import type { ConfigScope } from '../tui-ink/types.js';
 import type { InitEnvironment } from './discover.js';
 import { refusals, validate } from './validate.js';
-import { addByokCandidates, addLiveCandidates, rewriteOauthToApiKey, applyScopeBaseUrls } from './candidates.js';
+import { addByokCandidates, addLiveCandidates, rewriteOauthToApiKey, applyScopeBaseUrls, scopeQueryUrls } from './candidates.js';
 import type { InitLog } from '../commands/init-log.js';
 
 /** The wizard front end of `sonata init`: builds `WizardData`, runs the wizard (or the host's), and returns the chosen `InitState`. */
@@ -169,8 +169,8 @@ export async function interactiveState(
   }
   addByokCandidates(nativeByKey, byokUrls, result.state.byokModels ?? {}, result.state.customWireFormats, env.gatewayAuth);
   addLiveCandidates(env, nativeByKey, result.state.liveModels ?? {}, env.providerBaseUrlsByScope?.[configScope]);
+  applyScopeBaseUrls(nativeByKey, scopeQueryUrls(env, configScope, result.state.customProviders));
   rewriteOauthToApiKey(nativeByKey, result.state.byokKeys ?? {});
-  applyScopeBaseUrls(nativeByKey, env.configBaseUrlsByScope?.[configScope] ?? {});
   const credentialSources = result.state.credentialSources ?? {};
   const nativeKeys = result.state.nativeKeys ?? [];
   const roles = result.state.roles ?? [...KNOWN_ROLES];

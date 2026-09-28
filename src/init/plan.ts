@@ -20,7 +20,7 @@ import { readChatGptOAuth } from '../native/codex-auth.js';
 import { GLOBAL_CONFIG_RELATIVE } from '../config.js';
 import { isOauthGatewayAuth } from '../config.js';
 import { splitCandidate } from '../effort.js';
-import { addByokCandidates, addLiveCandidates, applyScopeBaseUrls, rewriteOauthToApiKey } from './candidates.js';
+import { addByokCandidates, addLiveCandidates, applyScopeBaseUrls, rewriteOauthToApiKey, scopeQueryUrls } from './candidates.js';
 
 /** A resolvable bearer key for this gateway from this source. */
 export interface CredentialProbe {
@@ -141,8 +141,8 @@ export function plan(
     }
     addByokCandidates(built, providerBaseUrls, state.byokModels ?? {}, state.customWireFormats ?? {});
     addLiveCandidates(env, built, state.liveModels ?? {}, env.providerBaseUrlsByScope?.[configScope]);
+    applyScopeBaseUrls(built, scopeQueryUrls(env, configScope, state.customProviders));
     rewriteOauthToApiKey(built, state.byokKeys ?? {});
-    applyScopeBaseUrls(built, env.configBaseUrlsByScope?.[configScope] ?? {});
     nativeByKey = built;
   }
 
