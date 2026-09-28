@@ -10,6 +10,10 @@ import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from
 import { join } from 'node:path';
 import { checkVersion } from './commands/doctor.js';
 import { TIER_AGENT_MARKER } from './agent-markers.js';
+import { VERSION_PROBE_TIMEOUT_MS } from './version-probe.js';
+
+// Re-exported: the default for every probe, so a new caller cannot forget it.
+export { VERSION_PROBE_TIMEOUT_MS };
 import { parsePiRefs } from './adapters/pi.js';
 import { parseCodexModels, codexModelList } from './adapters/codex.js';
 import { parseReasonixRefs, reasonixDoctorJson } from './adapters/reasonix.js';
@@ -303,14 +307,6 @@ export type VersionProbe =
  * the reason is the harness's own error line, since that is usually the fix
  * (codex's names the reinstall command).
  */
-/**
- * How long any `--version` probe may take. Only opencode's was bounded, so a
- * pi, codex, reasonix or tmux binary that hung on `--version` hung `sonata
- * init` and `sonata doctor` outright. The default for every probe, so a new
- * caller cannot forget it.
- */
-export const VERSION_PROBE_TIMEOUT_MS = 10_000;
-
 export async function probeVersion(
   cmd: string,
   env: NodeJS.ProcessEnv,
