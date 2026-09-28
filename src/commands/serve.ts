@@ -759,6 +759,12 @@ interface ChildEnvResolution {
  */
 interface CredentialMemory {
   lastGood: Map<string, Record<string, string>>;
+  /**
+   * The store each `lastGood` entry was read from, under the same key and the
+   * same lifetime: a store skipped for staying unreadable keeps a lineage's
+   * credential only when it is the store that credential came from.
+   */
+  lastGoodSource: Map<string, string>;
   seeds: Map<string, ChatGptSeed | string>;
   /** opencode.db's credential row count at the last read; see `opencodeDbRead`. */
   opencodeDb: { rows?: number };
@@ -767,8 +773,11 @@ interface CredentialMemory {
 }
 
 function newCredentialMemory(): CredentialMemory {
-  return { lastGood: new Map(), seeds: new Map(), opencodeDb: {}, unreadable: newUnreadableMemory() };
+  return { lastGood: new Map(), lastGoodSource: new Map(), seeds: new Map(), opencodeDb: {}, unreadable: newUnreadableMemory() };
 }
+
+/** A store's read, tagged with which store it is, as `resolveChildEnv` chains them. */
+type ChainStore = StoreRead & { id: string };
 
 function lineageKey(name: string, gateway: { auth?: string; credentialSource?: string }): string {
   return `${name}|${gateway.auth ?? 'api-key'}|${gateway.credentialSource ?? 'default'}`;
@@ -853,12 +862,12 @@ function resolveChildEnv(
   // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
   const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
 
-  // Each store read at most once per build.
-  const reads = new Map<string, StoreRead>();
-  const read = (id: string, how: () => StoreRead): StoreRead => {
+  // Each store read at most once per build, tagged with which store it is.
+  const reads = new Map<string, ChainStore>();
+  const read = (id: string, how: () => StoreRead): ChainStore => {
     const cached = reads.get(id);
     if (cached !== undefined) return cached;
-    const fresh = how();
+    const fresh = { ...how(), id };
     reads.set(id, fresh);
     return fresh;
   };
@@ -876,7 +885,7 @@ function resolveChildEnv(
     read('opencode', () => fileRead(opencodeAuthPath(home))),
   ];
   /** opencode's stores an entry's answer depends on: the table alone when it answered, since it wins over auth.json. */
-  const opencodeChain = (integration: string): StoreRead[] => {
+  const opencodeChain = (integration: string): ChainStore[] => {
     const [db, file] = opencodeStores();
     return opencodeCredentialOrigin(home, integration) === 'opencode.db' ? [db] : [db, file];
   };
@@ -888,12 +897,16 @@ function resolveChildEnv(
    * is neither — refused for now when a store could not be read (whatever a
    * later store answered), else reported with `missing` (a gateway that needs
    * no credential passes none).
+   *
+   * `chain` is the stores the lookup consulted, in order, ending at the one
+   * that answered when `resolved` is set; that last store is recorded as the
+   * source of the entries kept.
    */
   const settle = (
     name: string,
     lineage: string,
     resolved: Record<string, string> | undefined,
-    chain: StoreRead[],
+    chain: ChainStore[],
     missing: string | undefined,
   ): Record<string, string> | undefined => {
     live.add(lineage);
@@ -921,14 +934,18 @@ function resolveChildEnv(
       });
       return undefined;
     }
-    const skipped = chain.find((store) => store.skipped !== undefined);
+    // A store skipped for staying unreadable reads as absent, and resolution
+    // goes on from the stores that remain — with one exception: when it is
+    // the store this lineage's last credential came from. That store not
+    // reading is not a logout — it says nothing about the login it holds —
+    // so the lineage keeps what it resolved to and does not end, and the file
+    // reading again restarts and re-seeds nothing. A skipped store the
+    // credential did NOT come from says nothing about that credential either:
+    // keeping it there pinned a key rotated or removed in the store that
+    // actually holds it.
+    const source = memory.lastGoodSource.get(lineage);
+    const skipped = chain.find((store) => store.skipped !== undefined && store.id === source);
     if (skipped !== undefined && last !== undefined) {
-      // A store skipped for staying unreadable is not a logout: it says
-      // nothing about the login it holds. A gateway that has resolved keeps
-      // what it resolved to — neither dropped nor handed whatever a later
-      // store holds — and its lineage does not end, so the file reading again
-      // restarts and re-seeds nothing. Only one that has never resolved falls
-      // through, as it would for a store that is not there.
       transient.push({
         gateway: name,
         message: `gateway "${name}": its credential store has stayed unreadable (${skipped.skipped}) — ` +
@@ -938,6 +955,9 @@ function resolveChildEnv(
     }
     if (resolved !== undefined) {
       memory.lastGood.set(lineage, resolved);
+      const answeredBy = chain.at(-1);
+      if (answeredBy === undefined) memory.lastGoodSource.delete(lineage);
+      else memory.lastGoodSource.set(lineage, answeredBy.id);
       return resolved;
     }
     if (last !== undefined && chain.some((store) => store.emptied === true)) {
@@ -953,6 +973,7 @@ function resolveChildEnv(
       return last;
     }
     memory.lastGood.delete(lineage);
+    memory.lastGoodSource.delete(lineage);
     memory.seeds.delete(lineage);
     if (missing !== undefined) failures.push({ gateway: name, message: missing });
     return undefined;
@@ -960,8 +981,8 @@ function resolveChildEnv(
 
   // The stores a key lookup's answer depends on: the one that answered and
   // every store searched before it, or all of them when none answered.
-  const keyChain = (answeredBy: string | undefined, order: ('sonata' | 'opencode')[]): StoreRead[] => {
-    const chain: StoreRead[] = [];
+  const keyChain = (answeredBy: string | undefined, order: ('sonata' | 'opencode')[]): ChainStore[] => {
+    const chain: ChainStore[] = [];
     for (const store of order) {
       if (store === 'sonata') {
         chain.push(keysStore());
@@ -1015,7 +1036,7 @@ function resolveChildEnv(
     const lineage = lineageKey(name, gateway);
     if (gateway.credentialSource === 'sonata') {
       const dir = credentialDir(home, name);
-      const store = fileStoreRead(join(dir, 'auth.json'));
+      const store = { ...fileStoreRead(join(dir, 'auth.json')), id: join(dir, 'auth.json') };
       const entries = settle(
         name, lineage, store.state === 'ok' ? { CHATGPT_TOKEN_DIR: dir } : undefined, [store],
         `gateway "${name}" takes its credential from sonata but none is stored — ` +
@@ -1069,7 +1090,7 @@ function resolveChildEnv(
     const lineage = lineageKey(name, gateway);
     if (gateway.credentialSource === 'sonata') {
       const dir = credentialDir(home, name);
-      const store = fileStoreRead(join(dir, 'api-key.json'));
+      const store = { ...fileStoreRead(join(dir, 'api-key.json')), id: join(dir, 'api-key.json') };
       const entries = settle(
         name, lineage, store.state === 'ok' ? { GITHUB_COPILOT_TOKEN_DIR: dir } : undefined, [store],
         `gateway "${name}" takes its credential from sonata but none is stored — ` +
@@ -1097,6 +1118,9 @@ function resolveChildEnv(
 
   for (const lineage of [...memory.lastGood.keys()]) {
     if (!live.has(lineage)) memory.lastGood.delete(lineage);
+  }
+  for (const lineage of [...memory.lastGoodSource.keys()]) {
+    if (!live.has(lineage)) memory.lastGoodSource.delete(lineage);
   }
   for (const lineage of [...memory.seeds.keys()]) {
     if (!live.has(lineage)) memory.seeds.delete(lineage);
@@ -1639,9 +1663,10 @@ export async function cmdServe(
             if (held === undefined) unknown.add(name);
             return held;
           }
-          // Skipped for staying unreadable: a gateway that has resolved keeps
-          // the login it was reading; one that never has falls through.
-          if (codex.skipped !== undefined && held !== undefined) return held;
+          // Skipped for staying unreadable: a gateway that was reading codex's
+          // login keeps it; any other falls through, codex's file reading as
+          // absent — the same rule `resolveChildEnv` settles credentials by.
+          if (codex.skipped !== undefined && held === 'codex store') return held;
         }
         const identity = resolvedOauthIdentity(opts.home, name, gateway);
         lastOauthIdentity.set(lineage, identity);

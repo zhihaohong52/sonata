@@ -4463,6 +4463,74 @@ litellm = ${litellmPort}
         expect(forwarded[0]).toContain('FROM-AUTH-JSON');
         expect(errors.some((line) => line.includes('opencode.db') && line.includes('skipped as if absent'))).toBe(true);
       });
+
+      it('picks up a key rotated, then removed, in opencode while sonata\'s own keys.json is skipped', async () => {
+        // The skipped store is not the one the key came from, so it says
+        // nothing about that key. Kept through it, the rotated key never
+        // reached the gateway and the removed one was sent indefinitely.
+        writeMachineConfig(`
+[models."pdm"]
+gateway = "pd"
+id = "pd-1"
+[native.gateways."pd"]
+base_url = "https://pd.example"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+        const keys = join(home, '.config', 'sonata', 'keys.json');
+        writeFileSync(keys, '{"pd": "sk-');
+        backdate(keys);
+        const ocAuth = join(home, '.local', 'share', 'opencode', 'auth.json');
+        mkdirSync(dirname(ocAuth), { recursive: true });
+        writeFileSync(ocAuth, JSON.stringify({ pd: { type: 'api', key: 'KEY-OLD' } }));
+        const forwarded: string[] = [];
+        vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+          const headers = new Headers(init.headers);
+          forwarded.push(headers.get('x-api-key') ?? headers.get('authorization') ?? '(none)');
+          return new Response('{"id":"x","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}',
+            { status: 200, headers: { 'content-type': 'application/json' } });
+        }));
+        const handle = await cmdServe({
+          cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+          spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+        });
+        handles.push(handle);
+        vi.unstubAllGlobals();
+        const send = async () => {
+          const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'pdm', max_tokens: 1, messages: [] }),
+          });
+          await res.text();
+          return res.status;
+        };
+        expect(await send()).toBe(200);
+        expect(forwarded.at(-1)).toContain('KEY-OLD');
+        writeFileSync(ocAuth, JSON.stringify({ pd: { type: 'api', key: 'KEY-ROTATED' } }));
+        expect(await send()).toBe(200);
+        expect(forwarded.at(-1)).toContain('KEY-ROTATED');
+        writeFileSync(ocAuth, JSON.stringify({}));
+        await send();
+        expect(forwarded.at(-1)).not.toContain('KEY-');
+      });
+
+      it('ends a default ChatGPT gateway read from opencode when opencode logs out while codex\'s file is skipped', async () => {
+        // codex's skipped file never held the login served, so it cannot
+        // vouch for it: kept, opencode's logout left LiteLLM on account B.
+        writeMachineConfig(DEFAULT_CHATGPT());
+        mkdirSync(join(home, '.codex'), { recursive: true });
+        writeFileSync(codexPath(), '');
+        backdate(codexPath());
+        writeOpencodeLogin();
+        const { send, seededWith } = await start();
+        expect((await send()).status).toBe(200);
+        expect(seededWith()).toEqual(['OPENCODE-B']);
+        writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({}));
+        expect((await send()).status).toBe(502);
+        expect((await send()).status).toBe(502);
+      });
     });
 
     it.runIf(sqliteAvailable())('refuses the first request after the last opencode.db credential row is removed', async () => {
