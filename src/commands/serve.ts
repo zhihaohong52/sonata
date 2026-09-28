@@ -1,6 +1,6 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createServer as createHttpServer, type RequestListener, type Server } from 'node:http';
@@ -11,7 +11,7 @@ import { GLOBAL_CONFIG_RELATIVE, loadConfig, nativeRouteFor, oauthCredentialIden
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
 import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
-import { codexAuthPath, jwtExpiry, opencodeAuthPath, readChatGptOAuth, readCodexOAuth, type ChatGptAuthRecord } from '../native/codex-auth.js';
+import { codexAuthPath, jwtExpiry, opencodeAuthPath, readChatGptOAuth, readCodexOAuth, readOpencodeChatGptOAuth, type ChatGptAuthRecord } from '../native/codex-auth.js';
 import { opencodeDbPath } from '../native/opencode-store.js';
 import { credentialDir } from '../native/oauth-login.js';
 import { readCopilotToken } from '../native/copilot-auth.js';
@@ -684,8 +684,29 @@ function chatgptStoreMtimeMs(home: string, source: 'codex' | 'opencode' | undefi
 }
 
 /**
- * Writes the store's ChatGPT record into LiteLLM's token dir only when that
- * file is missing or holds an older credential.
+ * Beside LiteLLM's ChatGPT token file: which credential store, and which
+ * account, the file was last written from. LiteLLM rewrites `auth.json` in
+ * place and never touches this, so it still names the file's lineage after
+ * any number of LiteLLM refreshes.
+ */
+const CHATGPT_LINEAGE_FILE = 'sonata-source.json';
+
+interface ChatGptLineage {
+  /** `resolvedOauthIdentity`'s spelling of the store the record was read from. */
+  identity: string;
+  accountId?: string;
+}
+
+/** Written through a sibling temp file and a rename, so LiteLLM never reads half a token. */
+function writeAtomic(path: string, content: string): void {
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, content, { mode: 0o600 });
+  renameSync(temp, path);
+}
+
+/**
+ * Writes the store's ChatGPT record into LiteLLM's token dir unless LiteLLM
+ * already holds a newer token of the SAME login.
  *
  * The file is LiteLLM's own once it runs: it re-reads it on every access
  * token it needs and refreshes it in place, and ChatGPT rotates refresh
@@ -693,40 +714,88 @@ function chatgptStoreMtimeMs(home: string, source: 'codex' | 'opencode' | undefi
  * LiteLLM a refresh token already refused as `refresh_token_reused`. Never
  * writing it on a re-merge had the opposite failure: a `codex login` while
  * serving, the remedy serve's own error names, never reached a running
- * LiteLLM. "Newer" is a later expiry — both LiteLLM (`_build_auth_record`)
- * and sonata write `expires_at`, and the access token's JWT `exp` stands in
- * where it is absent. Where neither side has one, a store whose contents
- * differ and that was modified after LiteLLM's copy wins.
+ * LiteLLM.
+ *
+ * "Newer" is only meaningful within one lineage — one store, one account.
+ * An expiry compared across two of them kept account A's longer-lived token
+ * in LiteLLM indefinitely after `credential_source` moved to another store,
+ * or after `codex logout` let the default fall through to opencode's login.
+ * So the record is written outright when the held file is missing or does
+ * not parse, when the lineage file beside it is missing or names another
+ * store, or when the held account (LiteLLM keeps `account_id` through a
+ * refresh; the lineage file remembers it otherwise) differs from the
+ * store's. Only within one lineage does the later expiry win — both LiteLLM
+ * (`_build_auth_record`) and sonata write `expires_at`, and the access
+ * token's JWT `exp` stands in where it is absent. Where neither side has
+ * one, a store whose contents differ and that was modified after LiteLLM's
+ * copy wins.
  */
-function syncChatGptTokenFile(tokenDir: string, record: ChatGptAuthRecord, storeMtimeMs: number | undefined): void {
+function syncChatGptTokenFile(
+  tokenDir: string,
+  record: ChatGptAuthRecord,
+  identity: string,
+  storeMtimeMs: number | undefined,
+): void {
   const path = join(tokenDir, 'auth.json');
+  const lineagePath = join(tokenDir, CHATGPT_LINEAGE_FILE);
   const next = JSON.stringify(record);
-  let write = false;
-  let current: string | undefined;
-  try {
-    current = readFileSync(path, 'utf8');
-  } catch {
-    write = true;
-  }
-  if (current !== undefined && current !== next) {
-    let held: Partial<ChatGptAuthRecord> = {};
+  const write = ((): boolean => {
+    let current: string;
+    try {
+      current = readFileSync(path, 'utf8');
+    } catch {
+      return true;
+    }
+    let held: Partial<ChatGptAuthRecord>;
     try {
       const parsed: unknown = JSON.parse(current);
-      if (parsed !== null && typeof parsed === 'object') held = parsed as Partial<ChatGptAuthRecord>;
-    } catch { /* unreadable: compared by modification time below */ }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return true;
+      held = parsed as Partial<ChatGptAuthRecord>;
+    } catch {
+      return true; // torn: nothing in it can be trusted, and LiteLLM cannot use it either
+    }
+    let lineage: Partial<ChatGptLineage>;
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(lineagePath, 'utf8'));
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return true;
+      lineage = parsed as Partial<ChatGptLineage>;
+    } catch {
+      return true;
+    }
+    if (lineage.identity !== identity) return true;
+    const heldAccount = typeof held.account_id === 'string' ? held.account_id : lineage.accountId;
+    if (heldAccount !== record.account_id) return true;
+    if (current === next) return false;
     const storeExpiry = chatgptExpiry(record);
     const heldExpiry = chatgptExpiry(held);
-    if (storeExpiry !== undefined && heldExpiry !== undefined) {
-      write = storeExpiry > heldExpiry;
-    } else {
-      let heldMtimeMs: number | undefined;
-      try { heldMtimeMs = statSync(path).mtimeMs; } catch { /* raced away: write */ }
-      write = heldMtimeMs === undefined || (storeMtimeMs !== undefined && storeMtimeMs > heldMtimeMs);
-    }
-  }
+    if (storeExpiry !== undefined && heldExpiry !== undefined) return storeExpiry > heldExpiry;
+    let heldMtimeMs: number | undefined;
+    try { heldMtimeMs = statSync(path).mtimeMs; } catch { return true; }
+    return storeMtimeMs !== undefined && storeMtimeMs > heldMtimeMs;
+  })();
   if (!write) return;
   mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
-  writeFileSync(path, next, { mode: 0o600 });
+  writeAtomic(path, next);
+  const lineage: ChatGptLineage = { identity, ...(record.account_id === undefined ? {} : { accountId: record.account_id }) };
+  writeAtomic(lineagePath, JSON.stringify(lineage));
+}
+
+/**
+ * The ChatGPT record a codex-oauth gateway reads, and the store it came from
+ * in `resolvedOauthIdentity`'s spelling — the same order `readChatGptOAuth`
+ * reads them in, so the lineage names the store that actually answered.
+ */
+function readChatGptWithIdentity(
+  home: string,
+  source: 'codex' | 'opencode' | undefined,
+): { record: ChatGptAuthRecord; identity: string } | null {
+  if (source !== 'opencode') {
+    const record = readCodexOAuth(home);
+    if (record !== null) return { record, identity: 'codex store' };
+    if (source === 'codex') return null;
+  }
+  const record = readOpencodeChatGptOAuth(home);
+  return record === null ? null : { record, identity: 'opencode store' };
 }
 
 /**
@@ -797,8 +866,8 @@ function resolveChildEnv(
         childEnv.CHATGPT_TOKEN_DIR = dir;
       }
     } else {
-      const record = readChatGptOAuth(home, gateway.credentialSource);
-      if (record === null) {
+      const read = readChatGptWithIdentity(home, gateway.credentialSource);
+      if (read === null) {
         failures.push({
           gateway: name,
           message: `gateway "${name}" uses codex-oauth but no ChatGPT credential was found ` +
@@ -807,7 +876,7 @@ function resolveChildEnv(
         });
       } else {
         const tokenDir = join(tempDir, 'chatgpt');
-        syncChatGptTokenFile(tokenDir, record, chatgptStoreMtimeMs(home, gateway.credentialSource));
+        syncChatGptTokenFile(tokenDir, read.record, read.identity, chatgptStoreMtimeMs(home, gateway.credentialSource));
         childEnv.CHATGPT_TOKEN_DIR = tokenDir;
       }
     }

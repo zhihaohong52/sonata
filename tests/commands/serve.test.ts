@@ -3525,6 +3525,89 @@ litellm = ${litellmPort}
       expect(spawns()).toBe(2);
       expect(readFileSync(tokenFile, 'utf8')).toContain('relogged');
     });
+
+    describe('newer-wins compares only within one lineage', () => {
+      // An expiry is comparable only between two tokens of one login. A token
+      // from another store, or another account, later-expiring or not, is a
+      // different credential: LiteLLM holding account A's longer-lived token
+      // must not outlive a switch to account B.
+      const ocJwt = (exp: number) =>
+        `h.${Buffer.from(JSON.stringify({ exp, client_id: 'app_EMoamEEZ73f0CkXaXp7hrann' })).toString('base64url')}.s`;
+      const withSource = (source: string) => machine('').replace(
+        'auth = "codex-oauth"', `auth = "codex-oauth"\ncredential_source = "${source}"`,
+      );
+      const writeOpencodeStore = (access: string, refresh: string, accountId?: string) => {
+        mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+        writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({
+          openai: { type: 'oauth', access, refresh, expires: 1_900_000_000_000, ...(accountId ? { accountId } : {}) },
+        }));
+      };
+      const held = (tempDir: string) =>
+        JSON.parse(readFileSync(join(tempDir, 'chatgpt', 'auth.json'), 'utf8')) as { refresh_token?: string };
+
+      it('writes the new source\'s token when credential_source changes, though the old one expires later', async () => {
+        writeMachineConfig(withSource('codex'));
+        writeCodexStore({ access_token: jwt(2_000_000_000), refresh_token: 'CODEX-A' });
+        writeOpencodeStore(ocJwt(1_900_000_000), 'OPENCODE-B');
+        const tempDir = tempDirFor();
+        const { send } = await start(tempDir);
+        expect(held(tempDir).refresh_token).toBe('CODEX-A');
+        writeMachineConfig(withSource('opencode'));
+        await send();
+        expect(held(tempDir).refresh_token).toBe('OPENCODE-B');
+      });
+
+      it('writes opencode\'s token when `codex logout` makes the default fall through to it', async () => {
+        writeMachineConfig(machine(''));
+        writeCodexStore({ access_token: jwt(2_000_000_000), refresh_token: 'CODEX-A' });
+        writeOpencodeStore(ocJwt(1_900_000_000), 'OPENCODE-B');
+        const tempDir = tempDirFor();
+        const { send } = await start(tempDir);
+        expect(held(tempDir).refresh_token).toBe('CODEX-A');
+        rmSync(join(home, '.codex', 'auth.json'));
+        await send();
+        expect(held(tempDir).refresh_token).toBe('OPENCODE-B');
+      });
+
+      it('writes a different account\'s token from the same store, though the held one expires later', async () => {
+        writeMachineConfig(machine(''));
+        writeCodexStore({ access_token: jwt(2_000_000_000), refresh_token: 'ACCOUNT-A', account_id: 'acct-a' });
+        const tempDir = tempDirFor();
+        const { send } = await start(tempDir);
+        expect(held(tempDir).refresh_token).toBe('ACCOUNT-A');
+        writeCodexStore({ access_token: jwt(1_900_000_000), refresh_token: 'ACCOUNT-B', account_id: 'acct-b' });
+        await send();
+        expect(held(tempDir).refresh_token).toBe('ACCOUNT-B');
+      });
+
+      it('keeps a held token that is newer, within one store and one account', async () => {
+        writeMachineConfig(machine(''));
+        writeCodexStore({ access_token: jwt(1000), refresh_token: 'STORE', account_id: 'acct-a' });
+        const tempDir = tempDirFor();
+        const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
+        const { send } = await start(tempDir);
+        // LiteLLM's refresh keeps the account id.
+        const refreshed = JSON.stringify({
+          access_token: jwt(2000), refresh_token: 'REFRESHED', expires_at: 2000, account_id: 'acct-a',
+        });
+        writeFileSync(tokenFile, refreshed);
+        writeCodexStore({ access_token: jwt(1500), refresh_token: 'STORE-2', account_id: 'acct-a' });
+        await send();
+        expect(readFileSync(tokenFile, 'utf8')).toBe(refreshed);
+      });
+
+      it('rewrites a held file that does not parse', async () => {
+        writeMachineConfig(machine(''));
+        writeCodexStore({ access_token: jwt(1000), refresh_token: 'STORE' });
+        const tempDir = tempDirFor();
+        const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
+        const { send } = await start(tempDir);
+        writeFileSync(tokenFile, '{"access_tok');
+        writeMachineConfig(`# edited\n${machine('')}`);
+        await send();
+        expect(held(tempDir).refresh_token).toBe('STORE');
+      });
+    });
   });
 
   it('loads the v0.13.1 BYOK pair in one config, drops both gateways, and keeps the rest serving', async () => {
