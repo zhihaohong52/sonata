@@ -647,6 +647,17 @@ function defaultSpawnLitellm(
   };
 }
 
+/** A gateway whose credential could not be resolved, and why. */
+interface CredentialFailure {
+  gateway: string;
+  message: string;
+}
+
+interface ChildEnvResolution {
+  env: NodeJS.ProcessEnv;
+  failures: CredentialFailure[];
+}
+
 /**
  * The LiteLLM child's environment, and — unless `writeTokens` is false — the
  * OAuth token files it points at, copied out of the store each gateway reads.
@@ -656,14 +667,23 @@ function defaultSpawnLitellm(
  * child runs passes `writeTokens: false`, since rewriting then would put the
  * store's possibly older token over the one LiteLLM has refreshed. The env it
  * returns still names the same directories either way.
+ *
+ * Each gateway is resolved on its own, and one whose credential is missing is
+ * reported in `failures` and left out of the env rather than aborting the
+ * rest. The union spans every project, so a single project's missing login
+ * used to stop every other project's gateways from resolving at all. Left
+ * out means absent, never carried over from an earlier env: a direct key is
+ * looked up by gateway NAME, and a stale one under a name another project has
+ * since taken would be sent to that project's base_url.
  */
-function buildChildEnv(
+function resolveChildEnv(
   native: NativeConfig,
   home: string,
   tempDir: string,
   opts: { writeTokens?: boolean } = {},
-): NodeJS.ProcessEnv {
+): ChildEnvResolution {
   const writeTokens = opts.writeTokens ?? true;
+  const failures: CredentialFailure[] = [];
   // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
   const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
   const automaticallyResolved = Object.entries(native.gateways)
@@ -677,10 +697,12 @@ function buildChildEnv(
     if (gateway.auth !== 'api-key' || (source !== 'sonata' && source !== 'opencode')) continue;
     const key = resolveKeyFromSource(name, home, source);
     if (key === undefined) {
-      throw new Error(
-        `sonata serve: gateway "${name}" takes its credential from ${source} but none was found — ` +
-        `run \`sonata auth add ${name}\` (for sonata) or check opencode's own credential store.`,
-      );
+      failures.push({
+        gateway: name,
+        message: `gateway "${name}" takes its credential from ${source} but none was found — ` +
+          `run \`sonata auth add ${name}\` (for sonata) or check opencode's own credential store.`,
+      });
+      continue;
     }
     childEnv[envVarForGateway(name)] = key;
   }
@@ -694,27 +716,31 @@ function buildChildEnv(
     if (gateway.credentialSource === 'sonata') {
       const dir = credentialDir(home, name);
       if (!existsSync(join(dir, 'auth.json'))) {
-        throw new Error(
-          `sonata serve: gateway "${name}" takes its credential from sonata but none is stored — ` +
-          `run \`sonata auth login ${name}\`.`,
-        );
+        failures.push({
+          gateway: name,
+          message: `gateway "${name}" takes its credential from sonata but none is stored — ` +
+            `run \`sonata auth login ${name}\`.`,
+        });
+      } else {
+        childEnv.CHATGPT_TOKEN_DIR = dir;
       }
-      childEnv.CHATGPT_TOKEN_DIR = dir;
     } else {
       const record = readChatGptOAuth(home, gateway.credentialSource);
       if (record === null) {
-        throw new Error(
-          'sonata serve: a native gateway uses codex-oauth but no ChatGPT credential was found ' +
-          `in ${codexAuthPath(home)} or ${opencodeAuthPath(home)} — ` +
-          `run \`sonata auth login ${name}\`, or \`codex login\`.`,
-        );
+        failures.push({
+          gateway: name,
+          message: `gateway "${name}" uses codex-oauth but no ChatGPT credential was found ` +
+            `in ${codexAuthPath(home)} or ${opencodeAuthPath(home)} — ` +
+            `run \`sonata auth login ${name}\`, or \`codex login\`.`,
+        });
+      } else {
+        const tokenDir = join(tempDir, 'chatgpt');
+        if (writeTokens) {
+          mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+          writeFileSync(join(tokenDir, 'auth.json'), JSON.stringify(record), { mode: 0o600 });
+        }
+        childEnv.CHATGPT_TOKEN_DIR = tokenDir;
       }
-      const tokenDir = join(tempDir, 'chatgpt');
-      if (writeTokens) {
-        mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
-        writeFileSync(join(tokenDir, 'auth.json'), JSON.stringify(record), { mode: 0o600 });
-      }
-      childEnv.CHATGPT_TOKEN_DIR = tokenDir;
     }
   }
 
@@ -727,31 +753,51 @@ function buildChildEnv(
     if (gateway.credentialSource === 'sonata') {
       const dir = credentialDir(home, name);
       if (!existsSync(join(dir, 'api-key.json'))) {
-        throw new Error(
-          `sonata serve: gateway "${name}" takes its credential from sonata but none is stored — ` +
-          `run \`sonata auth login ${name}\`.`,
-        );
+        failures.push({
+          gateway: name,
+          message: `gateway "${name}" takes its credential from sonata but none is stored — ` +
+            `run \`sonata auth login ${name}\`.`,
+        });
+      } else {
+        childEnv.GITHUB_COPILOT_TOKEN_DIR = dir;
       }
-      childEnv.GITHUB_COPILOT_TOKEN_DIR = dir;
     } else {
       const token = readCopilotToken(home);
       if (token === null) {
-        throw new Error(
-          'sonata serve: a native gateway uses copilot-oauth but no Copilot login was found ' +
-          `in ${opencodeAuthPath(home)} — run \`sonata auth login ${name}\`, ` +
-          'or `opencode auth login` and choose github-copilot.',
-        );
+        failures.push({
+          gateway: name,
+          message: `gateway "${name}" uses copilot-oauth but no Copilot login was found ` +
+            `in ${opencodeAuthPath(home)} — run \`sonata auth login ${name}\`, ` +
+            'or `opencode auth login` and choose github-copilot.',
+        });
+      } else {
+        const tokenDir = join(tempDir, 'copilot');
+        if (writeTokens) {
+          mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+          writeFileSync(join(tokenDir, 'access-token'), token, { mode: 0o600 });
+        }
+        childEnv.GITHUB_COPILOT_TOKEN_DIR = tokenDir;
       }
-      const tokenDir = join(tempDir, 'copilot');
-      if (writeTokens) {
-        mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
-        writeFileSync(join(tokenDir, 'access-token'), token, { mode: 0o600 });
-      }
-      childEnv.GITHUB_COPILOT_TOKEN_DIR = tokenDir;
     }
   }
 
-  return childEnv;
+  return { env: childEnv, failures };
+}
+
+/**
+ * `resolveChildEnv` for the paths that cannot start LiteLLM on a partial
+ * environment — startup and a (re)spawn — which fail on the first gateway
+ * whose credential is missing, exactly as they always have.
+ */
+function buildChildEnv(
+  native: NativeConfig,
+  home: string,
+  tempDir: string,
+  opts: { writeTokens?: boolean } = {},
+): NodeJS.ProcessEnv {
+  const { env, failures } = resolveChildEnv(native, home, tempDir, opts);
+  if (failures.length > 0) throw new Error(`sonata serve: ${failures[0].message}`);
+  return env;
 }
 
 /** Default bound on how long a model-registry restart waits for the old litellm child to exit (see `litellmExitTimeoutMs`). */
@@ -1321,30 +1367,24 @@ export async function cmdServe(
     let childEnv = buildChildEnv(mergedNative(), opts.home, tempDir);
 
     /**
-     * `env` without the key variable of any direct gateway any tenant names.
-     * Every tenant's, not only the merged set's: a gateway the merge has just
-     * dropped is exactly the one whose stale key must not survive.
+     * Credential failures, each logged once per distinct message rather than
+     * once per request — a missing key is retried on every request until it
+     * is added. A message is forgotten once it stops failing, so a gateway
+     * that breaks again is reported again.
      */
-    const withoutDirectKeys = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
-      const next = { ...env };
-      for (const { config } of registry.loadable()) {
-        for (const [name, gateway] of Object.entries(config.native?.gateways ?? {})) {
-          if (transportFor(gateway, name) === 'direct') delete next[envVarForGateway(name)];
-        }
+    let loggedCredentialFailures = new Set<string>();
+    const reportCredentialFailures = (failures: CredentialFailure[]): void => {
+      const now = new Set(failures.map(({ message }) => message));
+      for (const message of now) {
+        if (!loggedCredentialFailures.has(message)) console.error(`sonata serve: ${message}`);
       }
-      return next;
+      loggedCredentialFailures = now;
     };
-    /**
-     * A credential rebuild failure, logged once per distinct message rather
-     * than once per request — a missing key is retried on every request until
-     * it is added. `buildChildEnv`'s messages already carry the `sonata serve:`
-     * prefix, which printed it twice.
-     */
-    let lastCredentialFailure: string | undefined;
+    /** A respawn's throw: the same log-once, for the one message `buildChildEnv` raised. */
     const reportCredentialFailure = (error: unknown): void => {
       const message = (error instanceof Error ? error.message : String(error)).replace(/^sonata serve: /, '');
-      if (message === lastCredentialFailure) return;
-      lastCredentialFailure = message;
+      if (loggedCredentialFailures.has(message)) return;
+      loggedCredentialFailures.add(message);
       console.error(`sonata serve: ${message}`);
     };
 
@@ -1385,30 +1425,28 @@ export async function cmdServe(
       const now = gatewayPlanInputs();
       if (now === planFingerprint) return;
       const cfg = now === failedFingerprint ? mergedNative(() => { /* logged by the first attempt */ }) : mergedNative();
-      try {
-        // Direct keys only: the token files belong to the running child, and
-        // a change that needs new ones also moves `litellmPlanSnapshot`, whose
-        // respawn writes them.
-        childEnv = buildChildEnv(cfg, opts.home, tempDir, { writeTokens: false });
-      } catch (error) {
-        // The previous env still holds whatever the previous merge resolved,
-        // and a direct gateway's key is looked up in it BY NAME — so a
-        // project that has just taken over a name another project dropped
-        // would be sent that project's key. With no current key to offer, a
-        // direct request goes out with none and fails upstream with a 401,
-        // which names the problem; another project's credential does not.
-        // Replaced rather than mutated: `childEnv` is also the environment a
-        // LiteLLM child was spawned with.
-        childEnv = withoutDirectKeys(childEnv);
+      // Direct keys only: the token files belong to the running child, and
+      // a change that needs new ones also moves `litellmPlanSnapshot`, whose
+      // respawn writes them.
+      //
+      // Per gateway: a failing gateway is left out of the new env and every
+      // other one keeps its key. Replaced rather than mutated: `childEnv` is
+      // also the environment a LiteLLM child was spawned with. A failing
+      // DIRECT gateway's key is therefore absent, not carried over — it is
+      // looked up by name, so a project that has just taken over a name
+      // another project dropped would otherwise be sent that project's key.
+      // With no key, its request fails upstream with a 401 that names the
+      // problem; another project's credential does not.
+      const { env, failures } = resolveChildEnv(cfg, opts.home, tempDir, { writeTokens: false });
+      childEnv = env;
+      reportCredentialFailures(failures);
+      refreshGatewayKeys(cfg);
+      if (failures.length > 0) {
         failedFingerprint = now;
-        reportCredentialFailure(error);
-        refreshGatewayKeys(cfg);
         return;
       }
       planFingerprint = now;
       failedFingerprint = undefined;
-      lastCredentialFailure = undefined;
-      refreshGatewayKeys(cfg);
     };
 
     // The litellm child dying on its own (not via `stop()`) used to go

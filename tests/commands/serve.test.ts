@@ -3020,6 +3020,74 @@ credential_source = "sonata"
     }
   });
 
+  it('keeps every other gateway\'s direct key when one unrelated project\'s credential cannot resolve', async () => {
+    // The machine serves direct `machdirect` on its own sonata key. Project B,
+    // unrelated, arrives with a sonata-sourced codex-oauth gateway and no login
+    // yet. B's failure used to strip every direct key in every tenant, so the
+    // machine's next request went out with no credential at all.
+    writeMachineConfig(`
+[models."mm"]
+gateway = "machdirect"
+id = "x-1"
+[tiers.code]
+simple = ["mm"]
+complex = ["mm"]
+[native.gateways."machdirect"]
+base_url = "https://direct.example"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'machdirect', 'sk-machine-key');
+    const project = mkdtempSync(join(tmpdir(), 'serve-tenant-unrelated-failure-'));
+    writeFileSync(join(project, 'sonata.toml'), `
+[models."luna"]
+gateway = "bcodex"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["luna"]
+complex = ["luna"]
+[native.gateways."bcodex"]
+auth = "codex-oauth"
+credential_source = "sonata"
+`);
+    const keys: string[] = [];
+    const errors: string[] = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args.join(' ')); });
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+        if (String(url).startsWith('https://direct.example')) {
+          const headers = init.headers as Record<string, string>;
+          keys.push(headers['x-api-key'] ?? headers.authorization ?? '(none)');
+        }
+        return new Response('{}', { status: 200 });
+      }));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const send = (headers: Record<string, string> = {}) => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      await send();
+      expect(keys.at(-1)).toContain('sk-machine-key');
+      await send(projectHeaders(project));
+      await send();
+      await send();
+      expect(keys).toHaveLength(3);
+      for (const key of keys) expect(key).toContain('sk-machine-key');
+      // B's failure is still reported, once, naming its gateway.
+      expect(errors.filter((line) => line.includes('bcodex'))).toHaveLength(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('re-merges before routing a newly noted tenant, so its conflicting direct gateway is never served', async () => {
     // A: machine config, direct `acme` whose key comes from opencode. B: a
     // project that also names `acme`, default-sourced, pointing elsewhere. B
