@@ -4199,12 +4199,13 @@ litellm = ${litellmPort}
       });
 
       it('marks it from a response too, when LiteLLM answers a request with how its device-code login ended', async () => {
-        const captured = JSON.parse(fixture('chatgpt-refresh-refused-errors.json')) as { type: string; message: string }[];
-        const polling = captured.find((entry) => entry.message.includes('Polling failed'))!;
+        // As LiteLLM's proxy renders it, measured: a 400.
+        const captured = JSON.parse(fixture('chatgpt-refresh-refused-proxy.json')) as { case: string; status: number; body: string }[];
+        const polling = captured.find((entry) => entry.case === 'polling failed')!;
         writeMachineConfig(machine());
         writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
         const { send, upstreamCalls } = await start({
-          upstream: () => new Response(JSON.stringify({ error: { message: polling.message, type: 'auth_error', code: '401' } }), { status: 401 }),
+          upstream: () => new Response(polling.body, { status: polling.status }),
         });
         await send();
         const forwarded = upstreamCalls.length;

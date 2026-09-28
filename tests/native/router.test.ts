@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, repairNamelessToolCalls, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import type { RouterTenant } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
 import { readFileSync } from 'node:fs';
@@ -1074,23 +1075,33 @@ describe('routeRequest — logging', () => {
 describe('routeRequest — a ChatGPT login LiteLLM cannot refresh', () => {
   // LiteLLM 1.98.0 catches a refused ChatGPT refresh inside
   // `get_access_token`, falls into a device-code login, and surfaces only how
-  // THAT ended. The messages below were captured from the real authenticator
-  // (tests/fixtures/litellm/), wrapped the way LiteLLM's proxy wraps an
-  // exception in its error envelope.
-  const captured = JSON.parse(readFileSync(
+  // THAT ended. The bodies below were captured from a real 1.98.0 proxy
+  // serving `chatgpt/<id>` in `responses` mode, its authenticator's HTTP
+  // client stubbed to refuse the refresh and end the device-code login each
+  // way (tests/fixtures/litellm/chatgpt-refresh-refused-proxy.json): every one
+  // is a 400. The authenticator's messages as raised, before the proxy wraps
+  // them, are in chatgpt-refresh-refused-errors.json.
+  const proxied = JSON.parse(readFileSync(
+    join(import.meta.dirname, '..', 'fixtures', 'litellm', 'chatgpt-refresh-refused-proxy.json'), 'utf8',
+  )) as { case: string; status: number; body: string }[];
+  const raised = JSON.parse(readFileSync(
     join(import.meta.dirname, '..', 'fixtures', 'litellm', 'chatgpt-refresh-refused-errors.json'), 'utf8',
   )) as { type: string; message: string; case: string }[];
-  const statusFor = (type: string) => (type === 'AuthenticationError' ? 401 : 500);
   const envelope = (message: string, status: number) =>
-    JSON.stringify({ error: { message, type: status === 401 ? 'auth_error' : 'None', param: 'None', code: String(status) } });
-  const route = async (status: number, body: string, refused?: () => void) => {
+    JSON.stringify({ error: { message, type: null, param: null, code: String(status) } });
+  const tenant = {
+    id: 't', config: { native: { gateways: { codex: { auth: 'codex-oauth' }, or: { auth: 'api-key' } } } },
+  } as unknown as RouterTenant;
+  const route = async (status: number, body: string, refused?: () => void, gateway = 'codex') => {
     const lines: string[] = [];
     const result = await routeRequest({
       method: 'POST', url: '/v1/messages', headers: {},
-      body: Buffer.from(JSON.stringify({ model: 'gpt-5.6-luna', messages: [] })),
+      body: Buffer.from(JSON.stringify({ model: 'luna', messages: [] })),
     }, {
       fetch: (async () => new Response(body, { status })) as unknown as typeof fetch,
       litellmBase: 'http://litellm', anthropicBase: 'http://anthropic', litellmKey: 'k',
+      resolveTenant: () => tenant,
+      resolveNative: () => ({ gateway, id: 'gpt-5.6-luna', transport: 'litellm' as const }),
       log: (line) => lines.push(line),
       ...(refused === undefined ? {} : { chatgptLoginRefused: refused }),
     });
@@ -1098,24 +1109,37 @@ describe('routeRequest — a ChatGPT login LiteLLM cannot refresh', () => {
   };
 
   it('has a captured case for each way the device-code fallback ends', () => {
-    expect(captured.map((entry) => entry.case)).toEqual(
+    expect(proxied.map((entry) => entry.case)).toEqual(
       ['polling failed', 'device authorization timed out', 'device code request failed']);
   });
 
-  for (const entry of captured) {
-    it(`tells serve, and passes the ${statusFor(entry.type)} through, when LiteLLM answers "${entry.case}"`, async () => {
+  for (const entry of proxied) {
+    it(`tells serve, and passes the ${entry.status} through, when LiteLLM's proxy answers "${entry.case}"`, async () => {
       let told = 0;
-      const status = statusFor(entry.type);
-      const result = await route(status, envelope(entry.message, status), () => { told += 1; });
-      expect(result.status).toBe(status);
+      const result = await route(entry.status, entry.body, () => { told += 1; });
+      expect(result.status).toBe(entry.status);
       expect(told).toBe(1);
     });
 
     it(`names \`codex login\` and \`sonata restart\` itself when nothing is told, for "${entry.case}"`, async () => {
-      const status = statusFor(entry.type);
-      const { log } = await route(status, envelope(entry.message, status));
+      const { log } = await route(entry.status, entry.body);
       expect(log).toContain('codex login');
       expect(log).toContain('sonata restart');
+    });
+
+    it(`says nothing for "${entry.case}" from a gateway that is not codex-oauth`, async () => {
+      let told = 0;
+      const { log } = await route(entry.status, entry.body, () => { told += 1; }, 'or');
+      expect(told).toBe(0);
+      expect(log).not.toContain('sonata restart');
+    });
+  }
+
+  for (const entry of raised.filter((e) => e.message.startsWith('litellm.'))) {
+    it(`tells serve for the authenticator's own "${entry.case}" rendered without the provider-lookup prefix`, async () => {
+      let told = 0;
+      await route(401, envelope(entry.message, 401), () => { told += 1; });
+      expect(told).toBe(1);
     });
   }
 
@@ -1123,6 +1147,19 @@ describe('routeRequest — a ChatGPT login LiteLLM cannot refresh', () => {
     let told = 0;
     const result = await route(500, '{"error":"something else"}', () => { told += 1; });
     expect(result.log).not.toContain('sonata restart');
+    expect(told).toBe(0);
+  });
+
+  it('says nothing for an upstream error that merely mentions a re-login, on any gateway', async () => {
+    // Unanchored, "re-login required" anywhere in any 401 — an api-key
+    // gateway's own session message included — took every ChatGPT gateway down.
+    const body = envelope('litellm.AuthenticationError: OpenAIException - Session expired, re-login required', 401);
+    const mention = envelope('litellm.BadRequestError: OpenAIException - the user wrote "Polling failed: x"', 400);
+    let told = 0;
+    for (const gateway of ['or', 'codex']) {
+      await route(401, body, () => { told += 1; }, gateway);
+      await route(400, mention, () => { told += 1; }, gateway);
+    }
     expect(told).toBe(0);
   });
 });
