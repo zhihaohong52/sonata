@@ -3789,6 +3789,79 @@ litellm = ${litellmPort}
       expect(held().refresh_token).toBe('SECOND');
     });
 
+    it('detects a logout and re-login by the login\'s identity, not by the gateway\'s name', async () => {
+      // Renaming the gateway keeps the login it reads. Keyed on the name, the
+      // logout under the new name was never seen, and a same-account re-login
+      // left LiteLLM on the spent token.
+      writeMachineConfig(machine('', 'codex'));
+      writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'FIRST' });
+      const { send, envs, dir, held, settle } = await start();
+      const first = dir();
+      writeMachineConfig(machine('', 'codex').replaceAll('"codex"', '"chatgpt"').replace('credential_source = "chatgpt"', 'credential_source = "codex"'));
+      await send(); await settle();
+      expect(held().refresh_token).toBe('FIRST');
+      rmSync(join(home, '.codex', 'auth.json'));
+      expect(await send()).toBe(502);
+      await settle();
+      writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SECOND' });
+      await send();
+      await waitFor(() => envs.at(-1)?.CHATGPT_TOKEN_DIR !== first && held().refresh_token === 'SECOND',
+        'a spawn into a new directory with the returning login');
+      expect(errors.some((line) => line.includes('logged in again'))).toBe(true);
+    });
+
+    it.runIf(sqliteAvailable())('refuses through one empty read of opencode.db, and restarts nothing when the row returns', async () => {
+      // "Empty twice" is how opencodeDbRead reads a logout, and a request
+      // landing there is refused — but one such read may be a gap. Marking
+      // the lineage ended on it re-seeded LiteLLM from the store when the row
+      // came back, putting back a refresh token LiteLLM may already have spent.
+      writeMachineConfig(machine('', 'opencode'));
+      const row = [{
+        id: 'c1', integration: 'openai', timeCreated: 1,
+        value: JSON.stringify({ type: 'oauth', access: claimJwt(1_900_000_000, 'acct-1'), refresh: 'STORE', expires: 1_900_000_000_000 }),
+      }];
+      writeOpencodeCredDb(ocDbPath(), row);
+      const { send, envs, dir, tokenFile, settle } = await start();
+      const first = dir();
+      const rotated = JSON.stringify({ access_token: claimJwt(1_900_864_000, 'acct-1'), refresh_token: 'LITELLM-ROTATED' });
+      writeFileSync(tokenFile(), rotated);
+      rmSync(ocDbPath());
+      writeOpencodeCredDb(ocDbPath(), []);
+      expect(await send()).toBe(502);
+      await settle();
+      rmSync(ocDbPath());
+      writeOpencodeCredDb(ocDbPath(), row);
+      expect(await send()).toBe(200);
+      await settle();
+      expect(await send()).toBe(200);
+      await settle();
+      expect(envs).toHaveLength(1);
+      expect(dir()).toBe(first);
+      expect(readFileSync(tokenFile(), 'utf8')).toBe(rotated);
+    });
+
+    it.runIf(sqliteAvailable())('treats opencode.db still empty on a later read as a logout, and re-seeds when a login returns', async () => {
+      writeMachineConfig(machine('', 'opencode'));
+      const row = (refresh: string) => [{
+        id: 'c1', integration: 'openai', timeCreated: 1,
+        value: JSON.stringify({ type: 'oauth', access: claimJwt(1_900_000_000, 'acct-1'), refresh, expires: 1_900_000_000_000 }),
+      }];
+      writeOpencodeCredDb(ocDbPath(), row('FIRST'));
+      const { send, envs, dir, held, settle } = await start();
+      const first = dir();
+      rmSync(ocDbPath());
+      writeOpencodeCredDb(ocDbPath(), []);
+      expect(await send()).toBe(502);
+      expect(await send()).toBe(502);
+      await settle();
+      rmSync(ocDbPath());
+      writeOpencodeCredDb(ocDbPath(), row('SECOND'));
+      await send();
+      await waitFor(() => envs.at(-1)?.CHATGPT_TOKEN_DIR !== first && held().refresh_token === 'SECOND',
+        'a spawn into a new directory with the returning login');
+      expect(envs.length).toBeGreaterThanOrEqual(2);
+    });
+
     it('respawns a crashed LiteLLM into the directory it was using, with LiteLLM\'s token as it left it', async () => {
       writeMachineConfig(machine());
       writeCodexStore({ access_token: claimJwt(1000, 'acct-a'), refresh_token: 'SEEDED' });
