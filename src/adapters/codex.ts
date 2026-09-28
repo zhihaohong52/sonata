@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { connect } from 'node:net';
 import { reportPathFor } from '../report-contract.js';
 import { spawn } from 'node:child_process';
-import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput, UsageQuery, UsageResult } from './types.js';
+import type { HarnessAdapter, HarnessProblem, LaunchPlan, PlanInput, UsageQuery, UsageRecord, UsageResult } from './types.js';
 import { ambiguous, asRecord, canonicalPath, count, epochMs, fileContains, filesIn, inWindow, narrowByMarker, readJsonl } from './usage-files.js';
 import type { ModelRef } from '../types.js';
 import { isReadOnlyRole } from '../config.js';
@@ -383,12 +383,19 @@ function rolloutDays(root: string, startMs: number, endMs: number): string[] {
 /**
  * A finished run's usage, from codex's rollout file.
  *
- * Sonata owns the whole codex session — one launch, one rollout — so the
- * LAST `token_count` event's `total_token_usage` is the run's total and no
- * diffing is needed. Codex counts cached input INSIDE `input_tokens`
- * (OpenAI's convention) while the ledger keeps cache reads apart, so they are
- * subtracted out; `reasoning_output_tokens` is already inside `output_tokens`
- * and is not added again. Codex reports no cost of its own.
+ * Sonata owns the whole codex session — one launch, one rollout — and every
+ * `token_count` event carries the session's running `total_token_usage`. Each
+ * event becomes one record: the step from the previous total, at that event's
+ * own time, so the records sum to the last total and a run crossing a
+ * `[price].windows` edge is priced step by step rather than all at its end. A
+ * repeated total is no step and is skipped. A total that ever shrinks is not a
+ * series that can be differenced without inventing negative usage, so the run
+ * then falls back to one record carrying the last total, as before.
+ *
+ * Codex counts cached input INSIDE `input_tokens` (OpenAI's convention) while
+ * the ledger keeps cache reads apart, so they are subtracted out;
+ * `reasoning_output_tokens` is already inside `output_tokens` and is not
+ * added again. Codex reports no cost of its own.
  */
 export function codexUsage(query: UsageQuery): UsageResult {
   const root = join(query.home, '.codex', 'sessions');
@@ -409,8 +416,7 @@ export function codexUsage(query: UsageQuery): UsageResult {
   if (matches.length === 0) return { kind: 'unobservable', reason: 'no codex session was recorded for this run' };
   if (matches.length > 1) return { kind: 'unobservable', reason: ambiguous('codex', matches.length) };
 
-  let total: Record<string, unknown> | undefined;
-  let at: string | undefined;
+  const totals: Array<{ at?: string; tokens: UsageRecord['tokens'] }> = [];
   let model: string | undefined;
   for (const line of readJsonl(matches[0]!.path)) {
     const event = asRecord(line);
@@ -419,24 +425,43 @@ export function codexUsage(query: UsageQuery): UsageResult {
     if (event?.type !== 'event_msg' || payload?.type !== 'token_count') continue;
     const usage = asRecord(asRecord(payload.info)?.total_token_usage);
     if (usage === undefined) continue;
-    total = usage;
-    at = typeof event.timestamp === 'string' ? event.timestamp : at;
+    const cached = count(usage.cached_input_tokens ?? usage.cache_read_input_tokens);
+    totals.push({
+      at: typeof event.timestamp === 'string' ? event.timestamp : undefined,
+      tokens: {
+        input: Math.max(0, count(usage.input_tokens) - cached),
+        output: count(usage.output_tokens),
+        cacheRead: cached,
+        cacheCreation: count(usage.cache_write_input_tokens),
+      },
+    });
   }
-  if (total === undefined) return { kind: 'unobservable', reason: 'the codex session recorded no token counts' };
-  const cached = count(total.cached_input_tokens ?? total.cache_read_input_tokens);
+  if (totals.length === 0) return { kind: 'unobservable', reason: 'the codex session recorded no token counts' };
+  const fallbackTs = new Date(query.endMs).toISOString();
+  const name = model ?? query.modelId;
+  const last = totals[totals.length - 1]!;
+  // The last timestamp seen, which is where the old single record was dated.
+  const lastAt = [...totals].reverse().find((t) => t.at !== undefined)?.at ?? fallbackTs;
+
+  const fields = ['input', 'output', 'cacheRead', 'cacheCreation'] as const;
+  const steps: UsageRecord[] = [];
+  let prev = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+  let monotonic = true;
+  for (const total of totals) {
+    const delta = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+    for (const f of fields) delta[f] = total.tokens[f] - prev[f];
+    if (fields.some((f) => delta[f] < 0)) { monotonic = false; break; }
+    if (fields.some((f) => delta[f] > 0)) {
+      steps.push({ ts: total.at ?? lastAt, model: name, tokens: delta });
+    }
+    prev = total.tokens;
+  }
   return {
     kind: 'observed',
     session: matches[0]!.id,
-    records: [{
-      ts: at ?? new Date(query.endMs).toISOString(),
-      model: model ?? query.modelId,
-      tokens: {
-        input: Math.max(0, count(total.input_tokens) - cached),
-        output: count(total.output_tokens),
-        cacheRead: cached,
-        cacheCreation: count(total.cache_write_input_tokens),
-      },
-    }],
+    records: monotonic && steps.length > 0
+      ? steps
+      : [{ ts: lastAt, model: name, tokens: last.tokens }],
   };
 }
 

@@ -341,6 +341,32 @@ describe('uiRunSummaries', () => {
     }
   });
 
+  it('agrees on the recorded verdict and on an empty report.md', async () => {
+    // Both lists take the verdict tail recorded when it is present, and both
+    // read an empty or whitespace-only report.md as no report — the store's
+    // rule. The UI used to re-derive degraded from report.md presence, so a
+    // clean read-only run showed degraded and a timed-out one showed trusted.
+    const cwd = mkdtempSync(join(tmpdir(), 'agree-verdict-'));
+    try {
+      makeRun(cwd, '000001', { role: 'review', degraded: false }, { exit: 0 });
+      makeRun(cwd, '000002', { role: 'code', degraded: true }, { exit: 0, report: 'partial' });
+      makeRun(cwd, '000003', { role: 'code' }, { exit: 0, report: '' });
+      makeRun(cwd, '000004', { role: 'code' }, { exit: 0, report: ' \n\t\n' });
+      makeRun(cwd, '000005', { role: 'code' }, { exit: 0, report: `${' '.repeat(70_000)}late` });
+      const mine = await uiRunSummaries(cwd);
+      expect(mine).toEqual(summarizeRuns(cwd));
+      expect(mine.map((r) => [r.degraded, r.report])).toEqual([
+        [false, false],
+        [true, true],
+        [true, false],
+        [true, false],
+        [false, true],
+      ]);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('skips a half-written run directory exactly as summarizeRuns does', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'agree-half-'));
     try {
