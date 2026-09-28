@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { observeLock, reclaimStaleLock, withSessionLock } from '../src/filelock.js';
+import { acquireLock, observeLock, reclaimStaleLock, withSessionLock } from '../src/filelock.js';
 
 let dir: string;
 let file: string;
@@ -113,5 +113,48 @@ describe('reclaimStaleLock — two reclaimers', () => {
     const seen = observeLock(lock);
     rmSync(lock, { recursive: true });
     expect(reclaimStaleLock(lock, seen!)).toBe(false);
+  });
+});
+
+describe('reclaimStaleLock — a third party arrives during the put-back', () => {
+  // The reclaimer moved a lock that was NOT the one it saw, so it puts it back.
+  // A third process that took the lock in that window must not be replaced by
+  // the put-back — and renameSync onto an EMPTY directory replaces it.
+  const setup = () => {
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'owner'), 'live-a');
+    return { ino: -1, mtimeMs: 0, token: 'dead' };
+  };
+
+  it('does not clobber a lock another process acquired meanwhile', () => {
+    const seen = setup();
+    let acquired: boolean | undefined;
+    expect(reclaimStaleLock(lock, seen, { beforePutBack: () => { acquired = acquireLock(lock, 'third'); } })).toBe(false);
+    expect(acquired).toBe(true);
+    expect(readFileSync(join(lock, 'owner'), 'utf8')).toBe('third');
+  });
+
+  it('does not clobber a lock directory created but not yet given its owner', () => {
+    const seen = setup();
+    expect(reclaimStaleLock(lock, seen, { beforePutBack: () => { mkdirSync(lock); } })).toBe(false);
+    // The third process's directory is still there, still waiting for its token.
+    expect(existsSync(lock)).toBe(true);
+    expect(existsSync(join(lock, 'owner'))).toBe(false);
+  });
+
+  it('puts the lock back when nothing took its place', () => {
+    const seen = setup();
+    expect(reclaimStaleLock(lock, seen)).toBe(false);
+    expect(readFileSync(join(lock, 'owner'), 'utf8')).toBe('live-a');
+  });
+});
+
+describe('acquireLock', () => {
+  it('never takes an existing lock, and the lock appears with its owner already inside', () => {
+    expect(acquireLock(lock, 'first')).toBe(true);
+    expect(readFileSync(join(lock, 'owner'), 'utf8')).toBe('first');
+    expect(acquireLock(lock, 'second')).toBe(false);
+    expect(readFileSync(join(lock, 'owner'), 'utf8')).toBe('first');
+    expect(readdirSync(dir).filter((name) => name.includes('.new-'))).toEqual([]);
   });
 });

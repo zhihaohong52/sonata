@@ -23,7 +23,7 @@
  * if another process reclaimed it in the meantime (a stale lock the holder
  * failed to renew), that process's live lock is left alone.
  */
-import { mkdirSync, renameSync, rmSync, statSync, writeFileSync, readFileSync, utimesSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync, readFileSync, utimesSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -63,8 +63,20 @@ export function observeLock(lock: string): LockObservation | undefined {
  * lock and is deleted; anything else is someone's live lock and is put back.
  *
  * Returns whether the observed lock was removed.
+ *
+ * The put-back must never replace a lock that appeared meanwhile. `rename`
+ * onto a NON-empty directory fails, and `acquireLock` only ever installs a
+ * lock that already holds its owner, so a lock taken by the current code is
+ * safe by construction; the existence check covers the one lock that can
+ * still be empty — one mkdir'd by an older sonata that has not yet written
+ * its owner. A lock that cannot be put back is left in its tomb.
  */
-export function reclaimStaleLock(lock: string, seen: LockObservation): boolean {
+export function reclaimStaleLock(
+  lock: string,
+  seen: LockObservation,
+  /** Test seam: runs between the move to the tomb and the put-back. */
+  hooks: { beforePutBack?: () => void } = {},
+): boolean {
   const tomb = `${lock}.tomb-${randomUUID()}`;
   try {
     renameSync(lock, tomb);
@@ -77,11 +89,38 @@ export function reclaimStaleLock(lock: string, seen: LockObservation): boolean {
     rmSync(tomb, { recursive: true, force: true });
     return true;
   }
-  // Not the lock we saw. Best effort to return it: the rename fails if a new
-  // lock has been created at the path meanwhile, and then this one is left
-  // where it is rather than replacing that one.
-  try { renameSync(tomb, lock); } catch { /* the path has a newer lock now */ }
+  // Not the lock we saw. Best effort to return it, never over a newer one.
+  hooks.beforePutBack?.();
+  if (!existsSync(lock)) {
+    try { renameSync(tomb, lock); } catch { /* the path has a newer lock now */ }
+  }
   return false;
+}
+
+/**
+ * Takes the lock at `lock` for `token`, or answers false if it is held.
+ *
+ * The lock is prepared under a private name with its owner already written,
+ * then renamed into place. It therefore never exists at the lock path without
+ * an owner, which is what makes `reclaimStaleLock`'s put-back unable to
+ * replace it (rename refuses a non-empty target) — the old mkdir-then-write
+ * left an empty directory at the path for a moment, and a put-back could
+ * replace it, after which this process's token landed in someone else's lock.
+ */
+export function acquireLock(lock: string, token: string): boolean {
+  if (existsSync(lock)) return false;
+  const staging = `${lock}.new-${randomUUID()}`;
+  try {
+    mkdirSync(staging);
+    writeFileSync(join(staging, 'owner'), token);
+    renameSync(staging, lock);
+  } catch {
+    rmSync(staging, { recursive: true, force: true });
+    return false;
+  }
+  // A legacy writer's empty directory is the one thing the rename can replace;
+  // the owner check says whether this lock is the one at the path.
+  return readToken(lock) === token;
 }
 
 export async function withSessionLock<T>(
@@ -98,23 +137,10 @@ export async function withSessionLock<T>(
   const token = randomUUID();
   let waited = false;
   for (;;) {
-    let acquired = false;
-    try {
-      mkdirSync(lock);
-      acquired = true;
-    } catch {
-      waited = true;
-      const seen = observeLock(lock);
-      if (seen !== undefined && Date.now() - seen.mtimeMs > STALE_MS) reclaimStaleLock(lock, seen);
-    }
-    if (acquired) {
-      // The token can fail to land only if a reclaimer moved the directory in
-      // the instant after the mkdir; then this lock is not held, so try again.
-      try {
-        writeFileSync(ownerPath, token);
-        break;
-      } catch { /* lost the lock before claiming it */ }
-    }
+    if (acquireLock(lock, token)) break;
+    waited = true;
+    const seen = observeLock(lock);
+    if (seen !== undefined && Date.now() - seen.mtimeMs > STALE_MS) reclaimStaleLock(lock, seen);
     if (Date.now() > deadline) {
       throw new Error(`sonata: timed out waiting for lock on ${file}`);
     }
