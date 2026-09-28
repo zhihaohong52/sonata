@@ -174,15 +174,20 @@ export function projectDirs(deps: UiDeps): string[] {
 /**
  * `summarizeRuns` for the UI: the same fields, without reading report bodies.
  *
- * `src/commands/runs.ts` is shared with `sonata runs` and stays unchanged; it
- * calls `readReport` — loading a whole report into memory — purely to decide
- * `degraded`, which is a fine cost in a one-shot CLI process and not one the
- * router's event loop gets to pay per page load. Its definition of `degraded`
- * is `exit !== null && (exit !== 0 || report === null)`, and `readReport`
- * returns `null` exactly when the file is absent, so report **presence** is
- * that predicate's whole contribution. Everything else here is field-for-field
- * `summarizeRuns`, including skipping a half-written run directory rather than
- * failing the page.
+ * `src/commands/runs.ts` is shared with `sonata runs`; it calls `readReport` —
+ * loading a whole report into memory — which is a fine cost in a one-shot CLI
+ * process and not one the router's event loop gets to pay per page load. The
+ * two must still agree, field for field (a test pins them together):
+ *
+ * - `degraded` is the verdict tail recorded in meta.json when the run
+ *   finished, and only for a finished run tail never finalised the old
+ *   `exit !== 0 || no report` rule. Re-deriving it here from report.md
+ *   presence badged every clean read-only run and trusted a timed-out one.
+ * - `report` follows `readReport`: an empty or whitespace-only report.md is
+ *   no report. Decided by reading only until the first non-whitespace byte
+ *   (`hasContent`), so a real report costs one small read.
+ *
+ * A half-written run directory is skipped rather than failing the page.
  */
 export async function uiRunSummaries(cwd: string): Promise<RunSummary[]> {
   let ids: string[];
@@ -196,14 +201,14 @@ export async function uiRunSummaries(cwd: string): Promise<RunSummary[]> {
     try {
       const dir = runDir(cwd, id);
       const meta = JSON.parse(await fsp.readFile(join(dir, 'meta.json'), 'utf8')) as {
-        role?: string; model?: string; startedAt?: string;
+        role?: string; model?: string; startedAt?: string; degraded?: boolean;
       };
       const exit = await readExitAsync(join(dir, 'exit'));
-      const report = await exists(reportPathFor(dir));
+      const report = await hasContent(reportPathFor(dir));
       out.push({
         id,
         state: exit === null ? 'RUNNING' : 'DONE',
-        degraded: exit !== null && (exit !== 0 || !report),
+        degraded: exit === null ? false : meta.degraded ?? (exit !== 0 || !report),
         role: meta.role,
         model: meta.model,
         started: meta.startedAt,
@@ -217,12 +222,31 @@ export async function uiRunSummaries(cwd: string): Promise<RunSummary[]> {
   return out;
 }
 
-async function exists(path: string): Promise<boolean> {
+/**
+ * Whether a file exists and holds anything but whitespace — `readReport`'s
+ * test, answered by reading only as far as the first non-whitespace byte.
+ */
+async function hasContent(path: string): Promise<boolean> {
+  let handle: fsp.FileHandle;
   try {
-    await fsp.access(path);
-    return true;
+    handle = await fsp.open(path, 'r');
   } catch {
     return false;
+  }
+  try {
+    const buf = Buffer.alloc(4096);
+    for (;;) {
+      const { bytesRead } = await handle.read(buf, 0, buf.length, null);
+      if (bytesRead === 0) return false;
+      // Same set `String.prototype.trim` strips, for the ASCII range; a
+      // multi-byte character is content whichever way it is split.
+      for (let i = 0; i < bytesRead; i++) {
+        const b = buf[i];
+        if (b !== 0x20 && b !== 0x09 && b !== 0x0a && b !== 0x0b && b !== 0x0c && b !== 0x0d) return true;
+      }
+    }
+  } finally {
+    await handle.close();
   }
 }
 
