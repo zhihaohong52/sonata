@@ -273,13 +273,21 @@ export function processCommand(pid: number): string | undefined {
   }
 }
 
-function killRecordedOrphan(
+export async function killRecordedOrphan(
   home: string,
   routerPort: number,
-  commandOf: (pid: number) => string | undefined = processCommand,
-): void {
+  deps: {
+    processCommand?: (pid: number) => string | undefined;
+    kill?: (pid: number) => void;
+    forceKill?: (pid: number) => void;
+    isAlive?: (pid: number) => boolean;
+    sleep?: (ms: number) => Promise<void>;
+    timeoutMs?: number;
+  } = {},
+): Promise<void> {
   const found = readServeStateFrom(home, routerPort);
   const litellmPid = found?.state.litellmPid;
+  let stillRunning = false;
   if (litellmPid !== undefined) {
     // Refuse only on POSITIVE evidence of a mismatch — the same rule as the
     // routerPid port-holder check in `stopServe`. A command line that is
@@ -287,14 +295,14 @@ function killRecordedOrphan(
     // something else, and signalling it would kill an unrelated process at
     // every serve start. Unknown (`undefined`) is not evidence: it proceeds
     // exactly as before.
-    const command = commandOf(litellmPid);
+    const command = (deps.processCommand ?? processCommand)(litellmPid);
     if (command !== undefined && !/litellm/i.test(command)) {
       console.error(
         `sonata serve: recorded litellm pid ${litellmPid} is no longer LiteLLM ` +
         `(${command}) — leaving it alone`,
       );
     } else {
-      killPid(litellmPid);
+      stillRunning = !(await terminatePid(litellmPid, deps));
     }
   }
   // Only this port's own record is ever read here, so the file cleared is
@@ -304,9 +312,46 @@ function killRecordedOrphan(
   if (found !== undefined) {
     // Keep the router's ownership record: lazy startup can run after the
     // router has recorded its pid, and a losing serve can run before it binds
-    // while another router is still using this file.
-    writeServeState(home, routerPort, { routerPid: found.state.routerPid });
+    // while another router is still using this file. The litellm pid is kept
+    // too while it is still running — forgetting a live process is how it
+    // becomes an orphan nothing will ever stop.
+    writeServeState(home, routerPort, {
+      routerPid: found.state.routerPid,
+      ...(stillRunning ? { litellmPid } : {}),
+    });
   }
+}
+
+/**
+ * The pid form of `terminateLitellm`: SIGTERM, a bounded wait for the exit,
+ * then SIGKILL (once), then a second bounded wait. True once the process is
+ * gone; false if it outlived both signals.
+ */
+async function terminatePid(
+  pid: number,
+  deps: {
+    kill?: (pid: number) => void;
+    forceKill?: (pid: number) => void;
+    isAlive?: (pid: number) => boolean;
+    sleep?: (ms: number) => Promise<void>;
+    timeoutMs?: number;
+  },
+): Promise<boolean> {
+  const isAlive = deps.isAlive ?? defaultIsAlive;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const timeoutMs = deps.timeoutMs ?? LITELLM_EXIT_TIMEOUT_MS;
+  const gone = async (): Promise<boolean> => {
+    for (let waited = 0; waited < timeoutMs; waited += 50) {
+      if (!isAlive(pid)) return true;
+      await sleep(50);
+    }
+    return !isAlive(pid);
+  };
+  (deps.kill ?? killPid)(pid);
+  if (await gone()) return true;
+  console.error(`sonata serve: recorded litellm pid ${pid} did not exit after SIGTERM — sending SIGKILL`);
+  (deps.forceKill ?? forcePid)(pid);
+  return gone();
 }
 
 function recordLitellmPid(home: string, routerPort: number, pid: number): void {
@@ -1430,7 +1475,10 @@ export async function cmdServe(
         if (!litellmHealthy()) {
           throw new Error(`sonata serve: this config routes through LiteLLM, which is ${litellmStatus(opts.home, true).state} — run \`sonata litellm install\``);
         }
-        killRecordedOrphan(opts.home, ports.router, opts.processCommand);
+        await killRecordedOrphan(opts.home, ports.router, {
+          processCommand: opts.processCommand,
+          timeoutMs: opts.litellmExitTimeoutMs,
+        });
         child = spawnLitellmChild();
         await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
       })();

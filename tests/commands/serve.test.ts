@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
-  cmdServe as realCmdServe, listenOn, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
+  cmdServe as realCmdServe, listenOn, killRecordedOrphan, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
   serveStatePath, stopServe, cmdRestart, defaultWaitForLitellm, sonataRouterMultiTenant, processCommand,
   budgetStatusesFor,
 } from '../../src/commands/serve.js';
@@ -3567,5 +3567,72 @@ describe('cmdServe — the managed LiteLLM is bound and reached on one family', 
     });
     expect(seen.some((url) => url.startsWith(`http://127.0.0.1:${litellmPort}/`))).toBe(true);
     expect(seen.some((url) => url.includes('localhost'))).toBe(false);
+  });
+});
+
+describe('killRecordedOrphan — escalates and forgets only a dead pid', () => {
+  let orphanHome: string;
+  beforeEach(() => { orphanHome = mkdtempSync(join(tmpdir(), 'sonata-orphan-')); });
+  afterEach(() => { rmSync(orphanHome, { recursive: true, force: true }); });
+  const record = (state: Record<string, unknown>) => {
+    mkdirSync(dirname(serveStatePath(orphanHome, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(orphanHome, 4100), JSON.stringify(state));
+  };
+  const stateOf = () => JSON.parse(readFileSync(serveStatePath(orphanHome, 4100), 'utf8')) as { routerPid?: number; litellmPid?: number };
+
+  it('sends SIGKILL when SIGTERM is ignored, then drops the pid once it is gone', async () => {
+    record({ routerPid: 11, litellmPid: 222 });
+    const signals: string[] = [];
+    let alive = true;
+    await killRecordedOrphan(orphanHome, 4100, {
+      processCommand: () => '/opt/venv/bin/python /opt/venv/bin/litellm --config x',
+      kill: (pid) => signals.push(`TERM ${pid}`),
+      forceKill: (pid) => { signals.push(`KILL ${pid}`); alive = false; },
+      isAlive: () => alive,
+      sleep: async () => {},
+      timeoutMs: 50,
+    });
+    expect(signals).toEqual(['TERM 222', 'KILL 222']);
+    expect(stateOf()).toMatchObject({ routerPid: 11 });
+    expect(stateOf().litellmPid).toBeUndefined();
+  });
+
+  it('does not escalate a process that exits on SIGTERM', async () => {
+    record({ litellmPid: 222 });
+    const signals: string[] = [];
+    let alive = true;
+    await killRecordedOrphan(orphanHome, 4100, {
+      processCommand: () => 'litellm --config x',
+      kill: (pid) => { signals.push(`TERM ${pid}`); alive = false; },
+      forceKill: (pid) => signals.push(`KILL ${pid}`),
+      isAlive: () => alive,
+      sleep: async () => {},
+      timeoutMs: 50,
+    });
+    expect(signals).toEqual(['TERM 222']);
+    expect(stateOf().litellmPid).toBeUndefined();
+  });
+
+  it('keeps the pid on record when it survives SIGKILL too', async () => {
+    record({ routerPid: 11, litellmPid: 222 });
+    await killRecordedOrphan(orphanHome, 4100, {
+      processCommand: () => 'litellm --config x',
+      kill: () => {}, forceKill: () => {}, isAlive: () => true,
+      sleep: async () => {}, timeoutMs: 50,
+    });
+    expect(stateOf()).toMatchObject({ routerPid: 11, litellmPid: 222 });
+  });
+
+  it('never signals a pid whose command line is no longer LiteLLM', async () => {
+    record({ litellmPid: 222 });
+    const signals: string[] = [];
+    await killRecordedOrphan(orphanHome, 4100, {
+      processCommand: () => '/usr/bin/vim notes.txt',
+      kill: (pid) => signals.push(`TERM ${pid}`), forceKill: (pid) => signals.push(`KILL ${pid}`),
+      isAlive: () => true, sleep: async () => {}, timeoutMs: 50,
+    });
+    expect(signals).toEqual([]);
+    // Not ours: forgetting it is right, since it will never be our child again.
+    expect(stateOf().litellmPid).toBeUndefined();
   });
 });
