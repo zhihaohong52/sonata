@@ -4081,6 +4081,52 @@ litellm = ${litellmPort}
         expect(await send()).toBe(200);
       });
 
+      it('keeps the mark through a restart for anything else, which spawns LiteLLM on the same refused token', async () => {
+        // An unrelated model-list edit is a deliberate spawn, but it reuses
+        // the refused directory. Clearing the mark on every deliberate spawn
+        // served the next request into a fifteen-minute device-code login.
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
+        const { send, sendFull, envs, emit, settle, upstreamCalls } = await start();
+        expect(await send()).toBe(200);
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        expect(await send()).toBe(502);
+        const forwarded = upstreamCalls.length;
+        writeMachineConfig(machine('[models."terra"]\ngateway = "codex"\nid = "gpt-5.6-terra"'));
+        await send();
+        await waitFor(() => envs.length === 2, 'the restart for the new model list');
+        await settle();
+        expect(envs[1].CHATGPT_TOKEN_DIR).toBe(envs[0].CHATGPT_TOKEN_DIR);
+        const refused = await sendFull();
+        expect(refused.status).toBe(502);
+        expect(refused.text).toContain('ChatGPT login was refused by OpenAI');
+        expect(upstreamCalls.length).toBe(forwarded);
+      });
+
+      it('clears for a sonata-owned login once `sonata auth login` rewrites it and LiteLLM is restarted', async () => {
+        writeMachineConfig(machine('', 'sonata'));
+        const dir = credentialDir(home, 'codex');
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'auth.json'), JSON.stringify({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'OLD' }));
+        const { send, envs, emit, settle } = await start();
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        expect(await send()).toBe(502);
+        // An unrelated restart first: the refused file is still there.
+        writeMachineConfig(machine('[models."terra"]\ngateway = "codex"\nid = "gpt-5.6-terra"', 'sonata'));
+        await send();
+        await waitFor(() => envs.length === 2, 'the restart for the new model list');
+        await settle();
+        expect(await send()).toBe(502);
+        // The re-login rewrites auth.json; the next restart holds a new token.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        writeFileSync(join(dir, 'auth.json'), JSON.stringify({ access_token: claimJwt(2_000_000_001, 'acct-a'), refresh_token: 'NEW-LOGIN' }));
+        writeMachineConfig(machine('', 'sonata'));
+        await send();
+        await waitFor(() => envs.length === 3, 'the restart after the re-login');
+        await settle();
+        expect(await send()).toBe(200);
+      });
+
       it('keeps the mark through a crash respawn, which reuses the refused token', async () => {
         writeMachineConfig(machine());
         writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
