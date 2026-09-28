@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, readFileSync, existsSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdTail, decide, harnessOutput } from '../../src/commands/tail.js';
@@ -743,16 +742,14 @@ describe('cmdTail waits for the worktree capture the exit sentinel outruns', () 
 
 /**
  * Real tmux on the suite's private server. The live event log is a diff of
- * the visible screen, one screen per poll; a finished run's whole history is
- * captured once, as transcript.txt, from tmux's own scrollback.
+ * the visible screen, bounded to one screen per poll whatever the harness
+ * redraws.
  */
-describe('a finished run`s transcript', () => {
+describe('the live event log', () => {
   let cwd: string;
   let flag: string;
-  const session = 'sonata-test-tail-transcript';
+  const session = 'sonata-test-tail-live';
   const id = 'fff111';
-  const tmux = (...args: string[]) => execFileSync('tmux', args, { encoding: 'utf8' });
-  const transcript = () => join(runDir(cwd, id), 'transcript.txt');
 
   async function waitForLine(text: string): Promise<void> {
     const deadline = Date.now() + 25_000;
@@ -769,7 +766,6 @@ describe('a finished run`s transcript', () => {
     await sendKeys(session, 'Enter');
   }
 
-  const finish = () => writeFileSync(join(runDir(cwd, id), 'exit'), '0\n');
 
   beforeEach(async () => {
     cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-transcript-'));
@@ -786,73 +782,10 @@ describe('a finished run`s transcript', () => {
 
   afterEach(async () => { await killSession(session); });
 
-  it('holds every line of a long run exactly once', async () => {
-    await run("seq -f 'row-%g' 1 3000");
-    await waitForLine('row-3000');
-    finish();
-    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
-    expect(r.state).toBe('DONE');
-    const rows = readFileSync(transcript(), 'utf8').split('\n').filter((l) => l.startsWith('row-'));
-    expect(rows).toEqual(Array.from({ length: 3000 }, (_, i) => `row-${i + 1}`));
-  });
-
-  it('keeps what history-limit kept, once each', async () => {
-    tmux('set-option', '-t', session, 'history-limit', '100');
-    await run("seq -f 'row-%g' 1 400");
-    await waitForLine('row-400');
-    finish();
-    await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
-    const rows = readFileSync(transcript(), 'utf8').split('\n').filter((l) => l.startsWith('row-'));
-    expect(rows.at(-1)).toBe('row-400');
-    expect(new Set(rows).size).toBe(rows.length);
-    // 100 rows of history plus the screen; what tmux trimmed is gone.
-    expect(rows.length).toBeGreaterThanOrEqual(100);
-    expect(rows.length).toBeLessThan(400);
-    const first = Number(rows[0]!.slice(4));
-    expect(rows).toEqual(Array.from({ length: 400 - first + 1 }, (_, i) => `row-${first + i}`));
-  });
-
-  it('joins wrapped rows, so a resize before the capture changes nothing', async () => {
-    const long = (n: number) => `wide-${n}-${'x'.repeat(150)}`;
-    await run(`for i in $(seq 1 60); do echo "wide-$i-${'x'.repeat(150)}"; done`);
-    const deadline = Date.now() + 25_000;
-    while (!(await capturePane(session)).includes('wide-60-')) {
-      if (Date.now() > deadline) throw new Error('output never finished');
-      await new Promise((r) => setTimeout(r, 25));
-    }
-    tmux('resize-window', '-t', session, '-x', '70');
-    tmux('resize-window', '-t', session, '-x', '130');
-    finish();
-    await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
-    const rows = readFileSync(transcript(), 'utf8').split('\n').filter((l) => l.startsWith('wide-'));
-    expect(rows).toEqual(Array.from({ length: 60 }, (_, i) => long(i + 1)));
-  });
-
-  it('is written once, and a later tail leaves it alone', async () => {
-    await run("echo 'first'");
-    await waitForLine('first');
-    finish();
-    await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
-    expect(readFileSync(transcript(), 'utf8')).toContain('first');
-    await sendKeys(session, "echo 'after the run'");
-    await sendKeys(session, 'Enter');
-    await waitForLine('after the run');
-    await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
-    expect(readFileSync(transcript(), 'utf8')).not.toContain('after the run');
-  });
-
-  it('is not written while the run is still going', async () => {
-    await run("echo 'working'");
-    await waitForLine('working');
-    await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
-    expect(existsSync(transcript())).toBe(false);
-  });
-
   it('bounds the live event log to one screen per poll under a redrawn status line', async () => {
     // The reviewer's shape: long output, then a status line rewritten in place.
     // A scrollback-diffing log re-recorded the whole history on each redraw;
-    // the visible diff costs at most one screen, and the transcript at the end
-    // still holds everything once.
+    // the visible diff costs at most one screen.
     await run([
       "i=1; while [ $i -le 1500 ]; do echo line-$i; i=$((i+1)); done",
       "printf 'Working 1s\\ncomposer>'",
@@ -867,12 +800,6 @@ describe('a finished run`s transcript', () => {
     await waitForLine('Working 2s');
     await cmdTail({ cwd, id, waitSeconds: 0 });
     expect(readEvents(cwd, id).length - before).toBeLessThanOrEqual(50);
-
-    finish();
-    await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
-    const rows = readFileSync(transcript(), 'utf8').split('\n');
-    expect(rows.filter((l) => l === 'line-1')).toHaveLength(1);
-    expect(rows.filter((l) => l === 'line-1500')).toHaveLength(1);
   });
 });
 

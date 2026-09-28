@@ -383,7 +383,7 @@ killed and the run is reported `DONE`, `degraded`, with a report beginning
 | `sonata dispatch (--tier <role>-<tier> \| --model <key>)` | Blocking harness dispatch with ranked fallback — the fallback lane a tier agent reaches for when every native route fails |
 | `sonata tail` | Human/debugging view of a run |
 | `sonata approve` | Answer a pending approval |
-| `sonata log <id>` | Print a run's whole transcript |
+| `sonata log <id>` | Print what a run printed |
 | `sonata verify <id> [--model <key>]` | Verify a completed run |
 | `sonata auth` | Manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`, `login <gateway>`) |
 | `sonata catalog [update]` | Show the cached Artificial Analysis catalog's age, or refresh it (needs a stored `artificialanalysis` key). `sonata doctor` warns when it goes stale |

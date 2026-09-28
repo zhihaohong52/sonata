@@ -1,14 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdGc } from '../../src/commands/gc.js';
 import { capturePane, hasSession, killSession, newSession, sendKeys } from '../../src/tmux.js';
 import { runDir } from '../../src/store.js';
 
-// Real tmux on the suite's private server (TMUX_TMPDIR). Killing a finished
-// run's session destroys the only full record of what it printed, so gc
-// captures the transcript first.
+// Real tmux on the suite's private server (TMUX_TMPDIR).
 describe('cmdGc', () => {
   let cwd: string;
   const finished = 'abc001';
@@ -38,19 +36,10 @@ describe('cmdGc', () => {
     await killSession(`sonata-${live}`);
   });
 
-  it('captures a finished run`s transcript before killing its session', async () => {
+  it('kills a finished run`s session', async () => {
     await start(finished, 'the finished output', true);
-    const killed = await cmdGc({ cwd });
-    expect(killed).toEqual([`sonata-${finished}`]);
+    expect(await cmdGc({ cwd })).toEqual([`sonata-${finished}`]);
     expect(await hasSession(`sonata-${finished}`)).toBe(false);
-    expect(readFileSync(join(runDir(cwd, finished), 'transcript.txt'), 'utf8')).toContain('the finished output');
-  }, 30_000);
-
-  it('leaves a transcript tail already wrote untouched', async () => {
-    await start(finished, 'late output', true);
-    writeFileSync(join(runDir(cwd, finished), 'transcript.txt'), 'captured at DONE\n');
-    await cmdGc({ cwd });
-    expect(readFileSync(join(runDir(cwd, finished), 'transcript.txt'), 'utf8')).toBe('captured at DONE\n');
   }, 30_000);
 
   it('skips a stray directory that is not a run id', async () => {
@@ -59,10 +48,9 @@ describe('cmdGc', () => {
     expect(await cmdGc({ cwd })).toEqual([`sonata-${finished}`]);
   }, 30_000);
 
-  it('neither captures nor kills a run that is still going', async () => {
+  it('does not kill a run that is still going', async () => {
     await start(live, 'still working', false);
     expect(await cmdGc({ cwd })).toEqual([]);
     expect(await hasSession(`sonata-${live}`)).toBe(true);
-    expect(existsSync(join(runDir(cwd, live), 'transcript.txt'))).toBe(false);
   }, 30_000);
 });

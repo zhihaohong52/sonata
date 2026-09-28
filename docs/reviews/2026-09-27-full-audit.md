@@ -82,15 +82,15 @@ on one branch; the rest are recorded here as the backlog.
 > - *Dispatch, claude read-only Bash:* `--allowedTools` only pre-approves, so
 >   the fix restricts the tool set with `--tools=Read,Grep,Glob`; not yet
 >   verified by a live run.
-> - *Dispatch, `sonata log` misses lines that scroll off:* fixed by
->   capturing a finished run's whole tmux history once, as `transcript.txt`
->   (also by `sonata gc` before it kills the session), which `sonata log`
->   prints. The live log is still the visible-screen diff, one screen per
->   poll, and still misses a burst larger than a screen until the run
->   finishes. Two attempts at reconstructing the full history live were
->   reverted: diffing a scrollback capture re-recorded the whole history on
->   every redraw, and counting rows by `#{history_size}` broke on tmux
->   trimming history in blocks at the limit and on resizes.
+> - *Dispatch, `sonata log` misses lines that scroll off:* fixed for
+>   non-interactive runs by printing the harness's own `harness.log`, which
+>   every non-interactive adapter tees its complete output into; the web UI's
+>   run detail follows the same rule. An interactive TUI's log is still the
+>   visible-screen diff, one screen per poll, and still misses a burst. Two
+>   earlier designs that rebuilt the record from tmux were reverted: diffing a
+>   scrollback capture re-recorded the whole history on every redraw, and
+>   counting rows / capturing history at the end broke on tmux trimming
+>   history in blocks, on resizes, and on alternate-screen TUIs writing none.
 > - *Router, conversation collisions:* once a conversation has been served by
 >   more than one candidate, thinking blocks are stripped on every later
 >   turn, including the current candidate's own — the accepted cost of never
