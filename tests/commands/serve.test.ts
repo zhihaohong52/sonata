@@ -3327,6 +3327,47 @@ litellm = ${litellmPort}
       await waitFor(() => spawns() === 2, 'the respawn after login');
       expect((await send('sonata-code-simple', b)).status).toBe(200);
     });
+
+    it('startup: spawns no LiteLLM when the only gateway needing one is left out', async () => {
+      // Whether LiteLLM is needed was asked of the configs before any gateway
+      // was excluded, so a union whose one LiteLLM gateway had no credential
+      // started a child with an empty model list.
+      const project = mkdtempSync(join(tmpdir(), 'serve-tenant-only-litellm-excluded-'));
+      writeFileSync(join(project, 'sonata.toml'), `
+[models."luna"]
+gateway = "bcodex"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["luna"]
+complex = ["luna"]
+[native.gateways."bcodex"]
+auth = "codex-oauth"
+credential_source = "sonata"
+`);
+      await recordSession(home, { session: 'SB', cwd: project, started: new Date().toISOString() });
+      const { send, spawns } = await run(`
+[models."mm"]
+gateway = "machdirect"
+id = "x-1"
+[tiers.code]
+simple = ["mm"]
+complex = ["mm"]
+[native.gateways."machdirect"]
+base_url = "https://direct.example"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+      const b = { 'x-claude-code-session-id': 'SB' };
+      expect(spawns()).toBe(0);
+      expect((await send('sonata-code-simple', b)).status).toBe(502);
+      expect(spawns()).toBe(0);
+      login();
+      await send('sonata-code-simple', b);
+      await waitFor(() => spawns() === 1, 'the lazy start after login');
+      expect((await send('sonata-code-simple', b)).status).toBe(200);
+    });
   });
 
   it('re-merges before routing a newly noted tenant, so its conflicting direct gateway is never served', async () => {
@@ -3436,10 +3477,10 @@ litellm = ${litellmPort}
     }
   });
 
-  it('regenerates LiteLLM\'s model list and respawns it when `codex login` un-drops the gateways', async () => {
+  it('regenerates LiteLLM\'s model list and starts it when `codex login` un-drops the gateways', async () => {
     // Started logged OUT: the two gateways read different stores, so both are
-    // dropped and LiteLLM's config.json is written with neither's models, and
-    // its child env has no ChatGPT token dir. A login un-drops them — but the
+    // dropped — no model is left for LiteLLM, so none is started, and
+    // config.json has neither's models. A login un-drops them — but the
     // configs are untouched, so a restart keyed on the configs alone never
     // fired, and requests reached a LiteLLM that answered "Invalid model name".
     writeMachineConfig(`
@@ -3485,15 +3526,14 @@ litellm = ${litellmPort}
       });
       expect((await send()).status).toBe(502);
       expect(configJson()).not.toContain('gpt-5.6-luna');
-      expect(spawnEnvs).toHaveLength(1);
-      expect(spawnEnvs[0].CHATGPT_TOKEN_DIR).toBeUndefined();
+      expect(spawnEnvs).toHaveLength(0);
 
       mkdirSync(join(home, '.codex'), { recursive: true });
       writeFileSync(join(home, '.codex', 'auth.json'), JSON.stringify({ tokens: { access_token: 'x', refresh_token: 'r' } }));
       const res = await send();
       expect(configJson()).toContain('gpt-5.6-luna');
-      expect(spawnEnvs).toHaveLength(2);
-      expect(spawnEnvs[1].CHATGPT_TOKEN_DIR).toBeDefined();
+      expect(spawnEnvs).toHaveLength(1);
+      expect(spawnEnvs[0].CHATGPT_TOKEN_DIR).toBeDefined();
       expect(res.status).toBe(200);
     } finally {
       errorSpy.mockRestore();

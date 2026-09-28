@@ -1603,7 +1603,13 @@ export async function cmdServe(
     `opencode:${statSignal(opencodeAuthPath(opts.home))}`,
     `opencode.db:${opencodeDbSignal()}`,
   ].join('\n');
-  const unionNeedsLitellm = (): boolean => registry.loadable().some(({ config }) => litellmRequired(config));
+  /**
+   * Whether anything LiteLLM would be given needs it: asked of the servable
+   * tenants, after drops and credential failures, not of the configs. Asked
+   * of the configs, a union whose only LiteLLM gateway was left out started
+   * a child with an empty model list, at startup and on the lazy path alike.
+   */
+  const unionNeedsLitellm = (): boolean => servableTenants().some(({ config }) => litellmRequired(config));
 
   const litellmBin = managedLitellmPath(opts.home);
   /** Why litellm cannot serve, or undefined. Set lazily; cleared when a later check finds the venv healthy. */
