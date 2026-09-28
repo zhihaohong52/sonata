@@ -1532,14 +1532,18 @@ async function routeTierRequest(
   for (const route of candidates) {
     const cool = litellmModelName(tenant, route.key);
     const direct = route.native?.transport === 'direct';
-    if (!direct && unavailable !== undefined) {
-      // This is router state, not a candidate failure: leave its cooldown intact.
-      skippedUnavailableLitellm = true;
-      continue;
-    }
+    // Dropped before the LiteLLM check: a candidate on a dropped gateway is
+    // unservable whether or not LiteLLM is up, and counted the other way round
+    // a tier made only of dropped candidates answered "run `sonata litellm
+    // install`" — a fix that would not have made one of them servable.
     const dropped = route.native === undefined ? undefined : deps.gatewayUnavailable?.(tenant, route.native.gateway);
     if (dropped !== undefined) {
       skippedDropped.push(dropped);
+      continue;
+    }
+    if (!direct && unavailable !== undefined) {
+      // This is router state, not a candidate failure: leave its cooldown intact.
+      skippedUnavailableLitellm = true;
       continue;
     }
     const until = cooldowns.get(cool);
