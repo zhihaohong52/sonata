@@ -477,6 +477,41 @@ describe('tail decide — a read-only run whose terminal output is the report', 
   });
 });
 
+describe('tail decide — whether the harness spoke comes from its log', () => {
+  // The pane cannot answer it: a prompt that changes between draws — a clock,
+  // starship's "took 12s", an exit-status segment — never equals the line
+  // recorded before launch, so it read as harness output. Reproduced with
+  // PS1='\t repo $ ': a silent run was trusted with only prompts for a report.
+  const marker = '/r/.sonata/runs/abc123/cmd.sh';
+  const pane = [`01:02:03 repo $ bash '${marker}'`, '01:02:07 repo $'];
+  const readOnly = {
+    ...base, exitCode: 0, canWriteReport: false, paneTail: pane, launchMarker: marker,
+    preLaunchPane: ['01:02:03 repo $'],
+  };
+
+  it('degrades a run whose log is empty, whatever the pane shows', () => {
+    const r = decide({ ...readOnly, terminalLog: '' });
+    expect(r.degraded).toBe(true);
+    expect(r.report).toMatch(/nothing ran/);
+  });
+
+  it('counts a log holding only escapes and whitespace as silence', () => {
+    expect(decide({ ...readOnly, terminalLog: '\u001b[0m\n  \n\u001b[?25h' }).degraded).toBe(true);
+  });
+
+  it('trusts a run whose log has content, even if the pane shows only prompts', () => {
+    const r = decide({ ...readOnly, terminalLog: 'No defects found.\n' });
+    expect(r.degraded).toBe(false);
+    expect(r.report).toContain('No defects found.');
+  });
+
+  it('falls back to the pane heuristic when the harness keeps no log', () => {
+    // Here the dynamic prompt still fools it — the reason the log is preferred.
+    expect(decide({ ...readOnly, terminalLog: undefined }).degraded).toBe(false);
+    expect(decide({ ...readOnly, terminalLog: undefined, paneTail: [pane[0]] }).degraded).toBe(true);
+  });
+});
+
 describe('harnessOutput — the shell prompt around the run', () => {
   const marker = '/r/.sonata/runs/abc123/cmd.sh';
   const prompt = 'james@Zhis-MacBook-Air r1 %';

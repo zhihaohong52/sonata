@@ -52,9 +52,10 @@ export interface DecideInput {
   canWriteReport?: boolean;
   /**
    * The run's `harness.log` — everything the harness printed, which the
-   * opencode/pi/reasonix/codex scripts tee there. A run whose terminal output
-   * IS its report takes its body from here, since the pane holds only the
-   * last screen and `paneTail` only its last 20 lines of that.
+   * opencode/pi/reasonix/codex scripts tee there; undefined when the run has
+   * none. It answers whether the harness said anything at all, and a run
+   * whose terminal output IS its report takes its body from here, since the
+   * pane holds only the last screen and `paneTail` only its last 20 lines.
    */
   terminalLog?: string;
   /**
@@ -140,12 +141,16 @@ export interface TailResult {
  * 20 lines of the last screen, so a review longer than that lost its opening.
  */
 function terminalOutput(input: DecideInput): string {
-  // Blank lines are kept — they are the report's paragraph breaks — so this
-  // strips escapes and trailing space rather than using the pane cleaner.
-  const log = input.terminalLog === undefined
-    ? ''
-    : stripAnsi(input.terminalLog).split('\n').map((l) => l.replace(/\s+$/, '')).join('\n').trim();
+  const log = input.terminalLog === undefined ? '' : cleanLog(input.terminalLog);
   return log.length > 0 ? log : input.paneTail.join('\n');
+}
+
+/**
+ * A harness log as text: escapes and trailing space stripped, blank lines kept
+ * — they are a report's paragraph breaks — so not the pane cleaner.
+ */
+function cleanLog(raw: string): string {
+  return stripAnsi(raw).split('\n').map((l) => l.replace(/\s+$/, '')).join('\n').trim();
 }
 
 /** Pure state machine. Order matters: completion beats a stale prompt match. */
@@ -162,7 +167,16 @@ export function decide(input: DecideInput): TailResult {
     // echo standing in for a report. That is the silent success this whole
     // design exists to prevent: nothing else downstream can tell the
     // difference between "answered" and "never ran".
-    const spoke = harnessOutput(input.paneTail, input.launchMarker, input.preLaunchPane).length > 0;
+    //
+    // The evidence is the harness's own log wherever the adapter keeps one
+    // (opencode, pi, reasonix `run` and codex `exec` all tee into it): it holds
+    // only what the harness printed, so no shell prompt can be mistaken for
+    // it. The pane is the fallback, and a weak one — a prompt that changes
+    // between draws (a clock, "took 12s", an exit-status segment) never equals
+    // the line recorded before launch, so it reads as the harness speaking.
+    const spoke = input.terminalLog !== undefined
+      ? cleanLog(input.terminalLog).length > 0
+      : harnessOutput(input.paneTail, input.launchMarker, input.preLaunchPane).length > 0;
     const reportImpossible = input.canWriteReport === false
       && input.report === null
       && input.exitCode === 0
