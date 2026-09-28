@@ -30,7 +30,9 @@ describe('sonata log', () => {
     // Its harness.log is a TUI's redraws, not lines; the screen diff is the
     // record, exactly as before.
     const text = cmdLog({ cwd, id }).text;
+    // Whether the record also holds the burst's first lines depends on
+    // whether a poll landed while they were on screen, so asserting their
+    // absence tested timing, not the source (it failed once in five runs).
     expect(text.startsWith(`${readEvents(cwd, id).join('\n')}\n\n— sonata `)).toBe(true);
-    expect(text.split('\n')).not.toContain('burst-1');
   }, 60_000);
 });

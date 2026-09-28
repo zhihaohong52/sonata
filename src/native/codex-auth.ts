@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { readOpencodeCredentials } from './opencode-store.js';
+import { readOnce } from './read-snapshot.js';
 
 /** The flat record LiteLLM's chatgpt Authenticator reads. */
 export interface ChatGptAuthRecord {
@@ -110,7 +111,7 @@ function str(value: unknown): string | undefined {
 export function readCodexOAuth(home: string): ChatGptAuthRecord | null {
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(codexAuthPath(home), 'utf8'));
+    raw = JSON.parse(readOnce(codexAuthPath(home)).toString('utf8'));
   } catch {
     return null;
   }
