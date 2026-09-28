@@ -1,6 +1,6 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createServer as createHttpServer, type RequestListener, type Server } from 'node:http';
@@ -302,10 +302,12 @@ export async function killRecordedOrphan(
     // In the last two cases the record is forgotten.
     command = (deps.processCommand ?? processCommand)(litellmPid);
     if (command === undefined) {
-      console.error(
-        `sonata serve: recorded litellm pid ${litellmPid} could not be verified (ps gave no command ` +
-        'line) — left alone and forgotten',
-      );
+      // ps has nothing to say about a pid that no longer exists, which is the
+      // common case — that is not "unverified", just finished.
+      console.error((deps.isAlive ?? defaultIsAlive)(litellmPid)
+        ? `sonata serve: recorded litellm pid ${litellmPid} could not be verified (ps gave no command ` +
+          'line) — left alone and forgotten'
+        : `sonata serve: recorded litellm pid ${litellmPid} is already gone — forgotten`);
     } else if (!/litellm/i.test(command)) {
       console.error(
         `sonata serve: recorded litellm pid ${litellmPid} is no longer LiteLLM ` +
@@ -342,11 +344,19 @@ export async function killRecordedOrphan(
  * here. Names the pid and its command line, and both remedies: `kill -9`, or
  * deleting the serve-state record if the pid is not what it seems.
  */
-export function orphanSurvivorMessage(survivor: { pid: number; command: string }, statePath: string): string {
-  return `sonata serve: a LiteLLM from an earlier daemon (pid ${survivor.pid}, running \`${survivor.command}\`) ` +
-    'is still alive after SIGTERM and SIGKILL and probably holds the LiteLLM port — not starting another. ' +
-    `Stop it with \`kill -9 ${survivor.pid}\`, or, if that pid is not what it seems, delete ${statePath} ` +
-    'to forget it; then retry (`sonata restart`).';
+export function orphanSurvivorMessage(
+  survivor: { pid: number; command: string },
+  statePath: string,
+  phase: 'eager' | 'lazy',
+): string {
+  const head = `sonata serve: a LiteLLM from an earlier daemon (pid ${survivor.pid}, running \`${survivor.command}\`) ` +
+    'is still alive after SIGTERM and SIGKILL and probably holds the LiteLLM port — not starting another. ';
+  // Lazily, this router is live: the state file also holds ITS routerPid, so
+  // deleting it would orphan the router itself from `sonata restart`.
+  return phase === 'lazy'
+    ? `${head}Stop it with \`kill -9 ${survivor.pid}\`, then run \`sonata restart\`.`
+    : `${head}Stop it with \`kill -9 ${survivor.pid}\`, then start sonata serve again — or, if that pid ` +
+      `is not what it seems, delete ${statePath} to forget it first.`;
 }
 
 /**
@@ -974,6 +984,38 @@ export function budgetStatusesFor(args: {
  * it to the other project's endpoint. Dropping the name leaves neither with a
  * key, so both fail visibly rather than one silently borrowing the other's.
  */
+/**
+ * OAuth kinds whose gateways would be served different accounts: LiteLLM
+ * holds one credential per kind, so every gateway of such a kind has to go.
+ * Pure — the one definition `mergeTenantGateways` drops by and
+ * `sonata doctor` warns by.
+ */
+export function oauthConflicts(
+  entries: { name: string; owner: string; gateway: { auth?: string; credentialSource?: string } }[],
+  identity: (name: string, gateway: { auth?: string; credentialSource?: string }) => string,
+): { auth: string; names: string[]; why: string }[] {
+  const byKind = new Map<string, typeof entries>();
+  for (const entry of entries) {
+    const auth = entry.gateway.auth;
+    if (auth !== 'codex-oauth' && auth !== 'copilot-oauth') continue;
+    byKind.set(auth, [...(byKind.get(auth) ?? []), entry]);
+  }
+  const out: { auth: string; names: string[]; why: string }[] = [];
+  for (const [auth, group] of byKind) {
+    const ids = group.map((entry) => identity(entry.name, entry.gateway));
+    if (new Set(ids).size <= 1) continue;
+    const listed = group.map((entry, k) => `"${entry.name}" (${entry.owner}, ${ids[k]})`).join(', ');
+    out.push({
+      auth,
+      names: group.map((entry) => entry.name),
+      why: `gateways with auth = "${auth}" read different credentials — ${listed} — serving none of them, ` +
+        "since LiteLLM holds one credential of that kind and a project would be served another's " +
+        'account; point them at one credential',
+    });
+  }
+  return out;
+}
+
 export function mergeTenantGateways(
   tenants: { id: string; gateways: NativeConfig['gateways'] }[],
   log: (line: string) => void,
@@ -1037,23 +1079,15 @@ export function mergeTenantGateways(
   // `resolvedOauthIdentity` — the store actually read); when any two do not,
   // EVERY gateway of that kind is dropped — dropping only the odd one out
   // still leaves one child deciding between accounts it cannot tell apart.
-  const byKind = new Map<string, string[]>();
-  for (const [name, gateway] of Object.entries(merged)) {
-    if (gateway.auth !== 'codex-oauth' && gateway.auth !== 'copilot-oauth') continue;
-    byKind.set(gateway.auth, [...(byKind.get(gateway.auth) ?? []), name]);
-  }
-  for (const [auth, names] of byKind) {
-    const idOf = (name: string): string => identity(name, merged[name]!);
-    if (new Set(names.map(idOf)).size <= 1) continue;
-    const listed = names.map((name) => `"${name}" (${owner[name]}, ${idOf(name)})`).join(', ');
-    const why = `gateways with auth = "${auth}" read different credentials — ${listed} — serving none of them, ` +
-      "since LiteLLM holds one credential of that kind and a project would be served another's " +
-      'account; point them at one credential';
-    for (const name of names) {
+  for (const conflict of oauthConflicts(
+    Object.entries(merged).map(([name, gateway]) => ({ name, owner: owner[name] ?? '?', gateway })),
+    identity,
+  )) {
+    for (const name of conflict.names) {
       delete merged[name];
-      dropped?.set(name, why);
+      dropped?.set(name, conflict.why);
     }
-    log(why);
+    log(conflict.why);
   }
   return merged;
 }
@@ -1077,6 +1111,16 @@ export function resolvedOauthIdentity(
   if (source === 'codex') return 'codex store';
   if (source === 'opencode') return 'opencode store';
   return readChatGptOAuth(home, 'codex') !== null ? 'codex store' : 'opencode store';
+}
+
+/** codex's ChatGPT store as a stat-only token: its mtime and size, or absent. */
+function codexStoreSignal(home: string): string {
+  try {
+    const { mtimeMs, size } = statSync(codexAuthPath(home));
+    return `codex:${mtimeMs}:${size}`;
+  } catch {
+    return 'codex:absent';
+  }
 }
 
 export async function cmdServe(
@@ -1156,6 +1200,14 @@ export async function cmdServe(
       };
     });
   };
+  /**
+   * What the gateway merge depends on, as a cheap comparable string: the
+   * known configs, and whether codex's ChatGPT store holds a login — which
+   * `resolvedOauthIdentity` consults for a default-sourced codex-oauth
+   * gateway, so `codex login`/`logout` while serving changes the answer.
+   * Both are stat-only.
+   */
+  const gatewayPlanInputs = (): string => `${registry.fingerprint()}\n${codexStoreSignal(opts.home)}`;
   const unionNeedsLitellm = (): boolean => registry.loadable().some(({ config }) => litellmRequired(config));
 
   const litellmBin = managedLitellmPath(opts.home);
@@ -1175,14 +1227,14 @@ export async function cmdServe(
    */
   let orphanBlocking: string | undefined;
   let orphanPid: number | undefined;
-  const clearOrphan = async (): Promise<void> => {
+  const clearOrphan = async (phase: 'eager' | 'lazy'): Promise<void> => {
     const { survivor } = await killRecordedOrphan(opts.home, ports.router, {
       processCommand: opts.processCommand,
       timeoutMs: opts.litellmExitTimeoutMs,
     });
     if (survivor !== undefined) {
       orphanPid = survivor.pid;
-      orphanBlocking = orphanSurvivorMessage(survivor, serveStatePath(opts.home, ports.router));
+      orphanBlocking = orphanSurvivorMessage(survivor, serveStatePath(opts.home, ports.router), phase);
       throw new Error(orphanBlocking);
     }
     orphanBlocking = undefined;
@@ -1230,6 +1282,30 @@ export async function cmdServe(
       }
     };
     refreshGatewayKeys(mergedNative());
+
+    /**
+     * Keeps the gateway merge — which gateways are dropped, and the direct
+     * gateways' keys — current for the request about to be routed. Called
+     * right after tenant resolution, which is where a new project is noted,
+     * so it runs before EVERY path (tier, bare litellm, bare direct) rather
+     * than only where a model-change check happens to fire. Without it, a
+     * newly noted project whose gateway conflicts with another's was routed
+     * on the previous merge: its direct request carried the other project's
+     * key to its own base_url until some later merge.
+     */
+    let planFingerprint = gatewayPlanInputs();
+    const refreshGatewayPlan = (): void => {
+      const now = gatewayPlanInputs();
+      if (now === planFingerprint) return;
+      planFingerprint = now;
+      const cfg = mergedNative();
+      try {
+        childEnv = buildChildEnv(cfg, opts.home, tempDir);
+      } catch (error) {
+        console.error(`sonata serve: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      refreshGatewayKeys(cfg);
+    };
 
     // The litellm child dying on its own (not via `stop()`) used to go
     // unnoticed until the next request 502'd and someone ran `sonata restart`
@@ -1371,7 +1447,7 @@ export async function cmdServe(
           // A daemon that died without stopping its child leaves that child
           // recorded here; the lazy start is the first spawn after it, so it
           // clears it exactly as an eager start does.
-          await clearOrphan();
+          await clearOrphan('lazy');
           const spawned = spawnLitellmChild();
           child = spawned;
           // The readiness await owns this child. Its exit can race the failed
@@ -1516,7 +1592,11 @@ export async function cmdServe(
       log: (line) => console.log(line),
       tenants: () => registry.summary(),
       ui: uiDeps,
-      resolveTenant: (hint) => registry.resolve(hint),
+      resolveTenant: (hint) => {
+        const tenant = registry.resolve(hint);
+        refreshGatewayPlan();
+        return tenant;
+      },
       // Created here, not per request: a settings file written once has to keep
       // authorising its project hint across restarts.
       projectHintToken: ensureRouterToken(opts.home),
@@ -1602,7 +1682,7 @@ export async function cmdServe(
         if (!litellmHealthy()) {
           throw new Error(`sonata serve: this config routes through LiteLLM, which is ${litellmStatus(opts.home, true).state} — run \`sonata litellm install\``);
         }
-        await clearOrphan();
+        await clearOrphan('eager');
         child = spawnLitellmChild();
         await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
       })();

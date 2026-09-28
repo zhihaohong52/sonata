@@ -749,34 +749,12 @@ export function parseConfig(text: string): SonataConfig {
       keyVarOwners.set(keyVar, name);
     }
 
-    // LiteLLM reads a ChatGPT credential from one directory
-    // (CHATGPT_TOKEN_DIR) and a Copilot one from another
-    // (GITHUB_COPILOT_TOKEN_DIR), process-wide — so every gateway of one OAuth
-    // kind is served ONE account. Refused here only when that is PROVABLY
-    // wrong: two different sonata logins (sonata stores one per gateway name),
-    // or a sonata login beside a machine store. Machine stores (default,
-    // `codex`, `opencode`) may or may not be one account — the default reads
-    // whichever store exists — so that is decided at serve time against the
-    // store actually read (`resolvedOauthIdentity` in serve), not here.
-    // `sonata init` before v0.10.0 wrote the ChatGPT subscription twice, as
-    // `codex` and `openai`, both on the default store; those keep loading.
-    const identities = new Map<string, Map<string, string>>();
-    for (const [name, gateway] of Object.entries(gateways)) {
-      if (gateway.auth !== 'codex-oauth' && gateway.auth !== 'copilot-oauth') continue;
-      const byName = identities.get(gateway.auth) ?? new Map<string, string>();
-      byName.set(name, oauthCredentialIdentity(name, gateway));
-      identities.set(gateway.auth, byName);
-    }
-    for (const [auth, byName] of identities) {
-      const provable = new Set([...byName.values()].map((id) => (id.startsWith('sonata:') ? id : 'machine')));
-      if (provable.size <= 1) continue;
-      const listed = [...byName].map(([name, identity]) => `"${name}" (${identity})`).join(', ');
-      throw new Error(
-        `sonata.toml: gateways ${listed} all use auth = "${auth}" but read different credentials, ` +
-        'and LiteLLM holds one credential of that kind per process, so one would be served ' +
-        "another's account — point them at one credential, or keep one of them",
-      );
-    }
+    // OAuth identities are deliberately NOT checked here. LiteLLM holds one
+    // credential per OAuth kind, so two gateways of one kind on different
+    // accounts cannot both be served — but refusing the file made the whole
+    // tenant unusable, every other model included, and v0.13.1's own BYOK
+    // OAuth login writes such a pair. Serve drops the conflicting gateways
+    // (answering their models with a typed 502) and `sonata doctor` warns.
 
     const nativeModels: Record<string, NativeModelConfig> = {};
     for (const [name, def] of Object.entries((rawNative.models ?? {}) as Record<string, unknown>)) {
