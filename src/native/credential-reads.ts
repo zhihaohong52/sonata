@@ -32,9 +32,10 @@ export interface StoreRead {
   /** For `unreadable`: which store, and why, with no content. */
   detail?: string;
   /**
-   * For `absent`: set when the store exists but has stayed unreadable past
-   * `UNREADABLE_STORE_WINDOW_MS` (`boundUnreadable`), so it is skipped as if
-   * it were not there. Carries the same path-and-error detail.
+   * For `absent`: set when the store exists but `boundUnreadable` (or
+   * `boundUnreadableDb`) judges it steadily unreadable rather than mid-write,
+   * so it is skipped as if it were not there. Carries the same
+   * path-and-error detail.
    */
   skipped?: string;
   /**

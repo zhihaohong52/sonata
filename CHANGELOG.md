@@ -175,9 +175,12 @@ the review doc's Backlog note):
   read's, or were first seen under a second ago. The same bytes a second
   apart are stuck and skipped, however freshly the file was touched and
   however long ago it was last read; new bytes are torn again, however long
-  it was quiet. So a corrupt file found at startup costs one refused request,
-  and a file rewritten with different broken bytes on every read stays torn
-  as long as that goes on (it cannot be told from a write in progress). A
+  it was quiet. Bytes seen for the first time count from the file's mtime
+  when that is earlier, so a file corrupt since before serve started — last
+  written over a second ago — is skipped on its first read and costs no
+  refused request (one written under a second earlier costs one), and a
+  file rewritten with different broken bytes on every read stays torn as
+  long as that goes on (it cannot be told from a write in progress). A
   file that cannot be read at all (EACCES) is torn for 10 s from its first
   failure; opencode.db counts only for the first 10 s of a run of failed
   queries, however far apart. Past that the store is steadily unreadable — corrupt,
@@ -285,27 +288,36 @@ the review doc's Backlog note):
   matched as LiteLLM writes them, after its log prefix, never on the phrase
   anywhere in a line — or on a codex-oauth candidate's response whose error
   message is how LiteLLM's proxy renders the device-code login ending (a
-  400, measured: `litellm.BadRequestError: GetLLMProvider Exception - ` then
+  400, 401 or 500 alike; measured as a 400:
+  `litellm.BadRequestError: GetLLMProvider Exception - ` then
   "Polling failed", "Timed out waiting for device authorization" or "Failed
   to request device code", matched from the start of the message, never
   anywhere in it, and never for another gateway's error) —
   logs the remedy once, naming the ChatGPT gateways, and answers them with a
   502 saying `codex login` (or `opencode auth login`) then `sonata restart`
   instead of forwarding into the hang. The request whose response showed the
-  refusal is answered the same way: in a tier its candidate and gateway cool
-  and the next candidate serves it, and with none left — or for a bare model
-  key — it gets the same named 502, Anthropic-shaped, and no ledger row. It
-  used to get LiteLLM's raw 400, which a tier took as final, so the next
-  candidate was never tried. The mark is keyed on the refused
-  token itself, not on its file or directory — read from the directory the
-  refused LiteLLM served, and, when that read lands mid-write and finds none,
-  read again there at every check until it does; until a token is captured
-  nothing clears the mark — and clears only when LiteLLM
-  is started on a readable token that differs — a login change seeded into a
-  new token directory, a sonata-owned login rewritten by `sonata auth login`,
-  or a fresh process from `sonata restart`. A crash respawn, a restart for
+  refusal is answered the same way: in a tier the next candidate serves it,
+  and with none left — or for a bare model key — it gets the same named 502,
+  Anthropic-shaped, and no ledger row. It used to get LiteLLM's raw 400,
+  which a tier took as final, so the next candidate was never tried. That
+  request cools nothing once serve's mark covers the gateway: the mark clears
+  the moment LiteLLM starts on a new login, and a 60 s cooldown on top
+  answered that new login 529; with no mark (no serve), the candidate and
+  gateway cool. A refusal is attributed to the LiteLLM its request was
+  forwarded to, so one arriving after a new login replaced that LiteLLM marks
+  and cools nothing. The mark is keyed on the refused token itself, not on
+  its file — read from the directory the refused LiteLLM served at mark
+  time, and, when that read lands mid-write or finds no token, retried for
+  one second only, never later (a later read took a sonata-owned re-login,
+  written into that same directory, for the refused token). It clears when
+  LiteLLM is started on a different token directory — a login change,
+  seeded fresh — whether or not a token was captured; on the same directory
+  holding a readable token that differs from the captured one — a
+  sonata-owned login rewritten by `sonata auth login`; or by a fresh process
+  from `sonata restart`. The same directory with no token captured keeps it
+  (`sonata restart` is the remedy), as do a crash respawn, a restart for
   anything else, a restart with no ChatGPT gateway at all, and LiteLLM's own
-  rewrite of `auth.json` (`device_code_requested_at`) all keep it. `sonata
+  rewrite of `auth.json` (`device_code_requested_at`). `sonata
   doctor` says so beside each ChatGPT gateway.
 
 ## [0.13.1] - 2026-09-27
