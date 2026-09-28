@@ -49,7 +49,7 @@ const LITELLM_HEALTH_TIMEOUT_MS = 3000;
 import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
-import { LITELLM_HOST, serveHealthUrl, healthReportsUi } from './serve.js';
+import { LITELLM_HOST, oauthConflicts, resolvedOauthIdentity, serveHealthUrl, healthReportsUi } from './serve.js';
 import { routerPorts } from './ports.js';
 import { nativeSessionEnv } from './code.js';
 import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile, diagnoseRouteAuto, isLocalhostUrl } from './route.js';
@@ -1070,6 +1070,22 @@ export async function cmdDoctor(
         detail: present
           ? `${name}: credential from ${from}`
           : `${name}: credential from ${source}\n  ! ${name}: no credential from ${source} — ${repairHint}`,
+      });
+    }
+
+    // Two OAuth gateways of one kind on different accounts load fine but
+    // cannot be served: LiteLLM holds one credential per kind, so serve drops
+    // every gateway of that kind. Say so here, where it can be fixed, rather
+    // than only as a 502 on the first request.
+    const oauthConflictList = oauthConflicts(
+      Object.entries(config.native.gateways).map(([name, gateway]) => ({ name, owner: 'this config', gateway })),
+      (name, gateway) => resolvedOauthIdentity(home, name, gateway),
+    ).map((conflict) => conflict.why);
+    if (oauthConflictList.length > 0) {
+      checks.push({
+        name: 'oauth accounts',
+        ok: false,
+        detail: `${oauthConflictList.join('\n')}\n  ! serve will not route either — their models answer 502 until they read one account`,
       });
     }
 

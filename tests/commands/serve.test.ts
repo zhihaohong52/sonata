@@ -2951,6 +2951,64 @@ litellm = ${litellmPort}
     expect(JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8')).litellmPid).toBe(222);
   });
 
+  it('loads the v0.13.1 BYOK pair in one config, drops both gateways, and keeps the rest serving', async () => {
+    writeMachineConfig(`
+[models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+[models."byok"]
+gateway = "openai"
+id = "gpt-5.6-luna"
+[models."flash"]
+gateway = "acme"
+id = "flash-1"
+[tiers.code]
+simple = ["luna", "byok"]
+complex = ["flash"]
+[native.gateways."codex"]
+auth = "codex-oauth"
+credential_source = "codex"
+[native.gateways."openai"]
+auth = "codex-oauth"
+credential_source = "sonata"
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'acme', 'k');
+    const configs: string[] = [];
+    const forwarded: string[] = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+        forwarded.push((JSON.parse(init.body as string) as { model: string }).model);
+        return new Response('{}', { status: 200 });
+      }));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: (configPath) => { configs.push(readFileSync(configPath, 'utf8')); return { pid: 1, kill: () => {} }; },
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      expect(configs.at(-1)).not.toContain('/luna');
+      expect(configs.at(-1)).not.toContain('/byok');
+      const send = (model: string) => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model, messages: [] }),
+      });
+      const simple = await send('sonata-code-simple');
+      expect(simple.status).toBe(502);
+      const message = (await simple.json() as { error: { message: string } }).error.message;
+      expect(message).toMatch(/"codex".*"openai"/s);
+      expect((await send('sonata-code-complex')).status).toBe(200);
+      expect(forwarded.every((model) => model.endsWith('/flash'))).toBe(true);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('leaves models on a dropped OAuth gateway out of LiteLLM, and answers them 502 naming the conflict', async () => {
     // The machine's `codex` reads the default store; a project's `codex-work`
     // has its own sonata login. One LiteLLM child cannot hold both, so both

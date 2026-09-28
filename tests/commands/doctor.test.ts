@@ -439,6 +439,50 @@ credential_source = "codex"
     }
   });
 
+  it('warns about two OAuth gateways of one kind that read different accounts', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-oauth-pair-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-oauth-pair-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.codex]
+auth = "codex-oauth"
+credential_source = "codex"
+[native.gateways.openai]
+auth = "codex-oauth"
+credential_source = "sonata"
+`);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      const check = checks.find((c) => c.name === 'oauth accounts');
+      expect(check?.ok).toBe(false);
+      expect(check?.detail).toContain('"codex"');
+      expect(check?.detail).toContain('"openai"');
+      expect(check?.detail).toMatch(/serve will not route either|will not route any/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('says nothing about OAuth accounts when they agree', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-oauth-one-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-oauth-one-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.codex]
+auth = "codex-oauth"
+[native.gateways.openai]
+auth = "codex-oauth"
+`);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      expect(checks.find((c) => c.name === 'oauth accounts')).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('reports a healthy sonata-sourced credential', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-source-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-source-home-'));
