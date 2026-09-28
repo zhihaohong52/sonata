@@ -4,6 +4,7 @@ import { openReadOnlySync } from '../sqlite.js';
 import { ambiguous, asRecord, canonicalPath, count, epochMs, inWindow, money, narrowByMarker, WINDOW_SLACK_MS } from './usage-files.js';
 import { isReadOnlyRole } from '../config.js';
 import { wireEffort } from '../effort.js';
+import { shellQuote } from '../shell.js';
 
 /**
  * Empty, and that is the finding rather than an omission.
@@ -68,7 +69,7 @@ function buildScript(input: PlanInput): LaunchPlan {
   // to be prefixed with a hardcoded `opencode/`, which sent every run to the
   // free tier whatever the user selected — and that tier serves almost none of
   // the models people configure, so the run died before the model saw the task.
-  const flags = ['run', `--agent ${agent}`, `-m ${input.modelId}`, '--interactive'];
+  const flags = ['run', `--agent ${agent}`, `-m ${shellQuote(input.modelId)}`, '--interactive'];
   if (auto) flags.push('--auto');
   // Probed 2026-09-14 against opencode 1.18.29: `--variant <level>` is applied
   // on the `run` path — reasoning tokens moved with it on an identical prompt
@@ -97,9 +98,9 @@ function buildScript(input: PlanInput): LaunchPlan {
     '#!/bin/bash',
     'set -o pipefail',
     'export PATH="$HOME/.opencode/bin:$PATH"',
-    `cd '${input.cwd}' || exit 97`,
-    `opencode ${flags.join(' ')} 'Follow the attached instructions.' -f '${input.instructionsPath}' 2>&1 | tee -a '${input.runDir}/harness.log'`,
-    `echo $? > '${input.runDir}/exit'`,
+    `cd ${shellQuote(input.cwd)} || exit 97`,
+    `opencode ${flags.join(' ')} 'Follow the attached instructions.' -f ${shellQuote(input.instructionsPath)} 2>&1 | tee -a ${shellQuote(`${input.runDir}/harness.log`)}`,
+    `echo $? > ${shellQuote(`${input.runDir}/exit`)}`,
     '',
   ].join('\n');
 

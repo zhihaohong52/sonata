@@ -39,6 +39,15 @@ Two consequences worth knowing. First, `ANTHROPIC_BASE_URL` is process-wide and
 model keys and ids beginning with `claude-` are refused at parse time, because
 the router sends that prefix to Anthropic.
 
+**OpenCode Zen and Go.** The two are separate endpoints on one opencode.ai
+account: Zen (pay as you go) is `https://opencode.ai/zen/v1`, Go (the
+subscription) is `https://opencode.ai/zen/go/v1`. Both route a conversation by
+an `x-opencode-session` header and refuse a request without one (400
+`MissingSessionID`). Since 0.13.1 the router sends it — a stable id per
+conversation — and LiteLLM forwards it only to models on an `opencode.ai`
+gateway; no other client `x-*` header reaches them. Earlier versions sent none,
+so no native request to an opencode.ai gateway could succeed.
+
 See also: [Codex subscription auth](codex-subscription.md), for how the
 `codex-oauth` gateway type authenticates against a ChatGPT subscription rather
 than a metered API key.

@@ -230,3 +230,38 @@ describe('byokCandidateKey', () => {
     expect(byokCandidateKey('openrouter', 'qwen/qwen4-max')).toBe('openrouter-qwen-qwen4-max');
   });
 });
+
+describe('fetchModels — redirect safety', () => {
+  it('refuses to follow redirects so the bearer key never leaves the origin', async () => {
+    let seen: RequestInit | undefined;
+    const spy = (async (_url: string, init: RequestInit) => {
+      seen = init;
+      return new Response(JSON.stringify({ data: [{ id: 'gpt-5.6-luna' }] }));
+    }) as unknown as typeof fetch;
+
+    await fetchModels('https://api.example.com/v1', 'sk-test', { fetch: spy });
+    expect(seen?.redirect).toBe('error');
+  });
+
+  it('refuses to follow redirects on the Google endpoint too', async () => {
+    let seen: RequestInit | undefined;
+    const spy = (async (_url: string, init: RequestInit) => {
+      seen = init;
+      return new Response(JSON.stringify({ models: [{ name: 'models/gemini-2.5-pro' }] }));
+    }) as unknown as typeof fetch;
+
+    await fetchModels('https://generativelanguage.googleapis.com/v1beta', 'AIza-test', { fetch: spy });
+    expect(seen?.redirect).toBe('error');
+  });
+
+  it('reports a redirect refusal as unreachable, never a new outcome kind', async () => {
+    // redirect: 'error' makes fetch throw; that throw has to land on the
+    // existing unreachable mapping rather than invent a case the caller
+    // cannot act on.
+    const refused = (async () => {
+      throw new TypeError('fetch failed: unexpected redirect');
+    }) as unknown as typeof fetch;
+    expect(await fetchModels('https://api.example.com/v1', 'sk-test', { fetch: refused }))
+      .toEqual({ outcome: 'unreachable' });
+  });
+});

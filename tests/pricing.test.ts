@@ -234,6 +234,23 @@ base_url = "https://example.invalid/v1"
     expect(resolvePrice(oauth, 'plain', tokens, now, cache)).toEqual({ source: 'covered', totalUsd: 2 });
   });
 
+  // The relabel is the native lane's rule: an OAuth subscription values work
+  // at list rates but never bills per token. The harness lane authenticates on
+  // its own, so `priceHarnessRun` opts out — a metered dispatch of a model
+  // that also has an OAuth native route must count as spend. The default
+  // stays true so every existing caller is unchanged.
+  it('skips the covered relabel only when the caller opts out', () => {
+    const oauth = parseConfig(TOML.replace(
+      'base_url = "https://example.invalid/v1"',
+      'auth = "codex-oauth"',
+    ));
+    expect(resolvePrice(oauth, 'plain', tokens, now, cache, { relabelCovered: false })).toEqual({
+      source: 'gateway', totalUsd: 2,
+    });
+    expect(resolvePrice(oauth, 'plain', tokens, now, cache, {})).toEqual({ source: 'covered', totalUsd: 2 });
+    expect(resolvePrice(oauth, 'plain', tokens, now, cache)).toEqual({ source: 'covered', totalUsd: 2 });
+  });
+
   it('treats a non-finite computed price as unpriced, not a fabricated zero', () => {
     // A malformed models.dev cache (e.g. a non-numeric scraped rate that JSON
     // loaded as Infinity) used to multiply out to Infinity silently, then

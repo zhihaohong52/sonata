@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { loadModelsDev } from '../modelsdev.js';
-import { spentTodayUsd, type BudgetStatus } from '../budget.js';
+import { spentTodayUsd, unreadableMachineBudget, type BudgetStatus } from '../budget.js';
 import { GLOBAL_CONFIG_RELATIVE, loadConfig, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
@@ -102,6 +102,12 @@ export interface ServeDeps {
    * bind the real default 4100.
    */
   ports?: { router: number; litellm: number };
+  /**
+   * Test seam — production default is `processCommand` (the pid's `ps` command
+   * line). Handed to `killRecordedOrphan`, which refuses to signal a recorded
+   * litellm pid the OS has since reused for something else.
+   */
+  processCommand?: (pid: number) => string | undefined;
 }
 
 /**
@@ -231,9 +237,54 @@ function forcePid(pid: number | undefined): void {
   try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
 }
 
-function killRecordedOrphan(home: string, routerPort: number): void {
+/**
+ * What `ps` says a pid is running, or `undefined` when it cannot tell.
+ *
+ * This is the "positive evidence" a recorded litellm pid is checked against
+ * before it is signalled: the OS reuses pid numbers, so a record that outlived
+ * its child can name a process that has nothing to do with sonata. An answer
+ * of `undefined` — no ps, no permission, pid already gone — is "cannot tell",
+ * never "reused", so callers proceed as before on it (the same rule as
+ * `findPortPid` in `stopServe`): treating unknown as mismatch would strand a
+ * real orphan litellm on every machine where ps is unavailable.
+ */
+export function processCommand(pid: number): string | undefined {
+  try {
+    const out = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {
+      encoding: 'utf8',
+      stdio: 'pipe',
+      timeout: 2000,
+    }).trim();
+    return out === '' ? undefined : out;
+  } catch {
+    return undefined;
+  }
+}
+
+function killRecordedOrphan(
+  home: string,
+  routerPort: number,
+  commandOf: (pid: number) => string | undefined = processCommand,
+): void {
   const found = readServeStateFrom(home, routerPort);
-  killPid(found?.state.litellmPid);
+  const litellmPid = found?.state.litellmPid;
+  if (litellmPid !== undefined) {
+    // Refuse only on POSITIVE evidence of a mismatch — the same rule as the
+    // routerPid port-holder check in `stopServe`. A command line that is
+    // known and names no litellm means the OS has since reused this pid for
+    // something else, and signalling it would kill an unrelated process at
+    // every serve start. Unknown (`undefined`) is not evidence: it proceeds
+    // exactly as before.
+    const command = commandOf(litellmPid);
+    if (command !== undefined && !/litellm/i.test(command)) {
+      console.error(
+        `sonata serve: recorded litellm pid ${litellmPid} is no longer LiteLLM ` +
+        `(${command}) — leaving it alone`,
+      );
+    } else {
+      killPid(litellmPid);
+    }
+  }
   // Only this port's own record is ever read here, so the file cleared is
   // always this router's. The unkeyed legacy record is deliberately out of
   // reach: it names no port, so it could just as easily describe another
@@ -729,6 +780,27 @@ export function mergeTenantGateways(
       );
     }
   }
+  // Two DIFFERENT names can still share one key variable across projects:
+  // parseConfig refuses `foo-bar` beside `foo_bar` inside one file, but the
+  // child env is keyed by envVarForGateway over the merged set, so one
+  // project's `foo-bar` and another's `foo_bar` would write the same
+  // SONATA_KEY_FOO_BAR. Serve neither, as above.
+  const byKeyVar = new Map<string, string>();
+  for (const name of Object.keys(merged)) {
+    const keyVar = envVarForGateway(name);
+    const other = byKeyVar.get(keyVar);
+    if (other === undefined) {
+      byKeyVar.set(keyVar, name);
+      continue;
+    }
+    delete merged[name];
+    delete merged[other];
+    log(
+      `gateways "${other}" (${owner[other]}) and "${name}" (${owner[name]}) would share the key ` +
+      `variable ${keyVar} — serving neither, since one project's credential must not reach the ` +
+      'other\'s endpoint; rename one of them',
+    );
+  }
   return merged;
 }
 
@@ -1116,13 +1188,23 @@ export async function cmdServe(
       projectHintToken: ensureRouterToken(opts.home),
       resolveTier: (alias, tenant) => tenant.config === undefined ? undefined : resolveTierAlias(tenant.config, alias),
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
-      budget: (tenant) => budgetStatusesFor({
-        tenant,
-        machineConfigPath,
-        machineDailyUsd: machineConfig()?.budget?.dailyUsd,
-        projectSpend: () => spentTodayUsd(opts.home, Date.now(), { tenant: tenant.id }),
-        machineSpend: () => spentTodayUsd(opts.home),
-      }),
+      budget: (tenant) => {
+        const statuses = budgetStatusesFor({
+          tenant,
+          machineConfigPath,
+          machineDailyUsd: machineConfig()?.budget?.dailyUsd,
+          projectSpend: () => spentTodayUsd(opts.home, Date.now(), { tenant: tenant.id }),
+          machineSpend: () => spentTodayUsd(opts.home),
+        });
+        // `machineConfig()` swallows a load failure and answers undefined, so
+        // a machine config that sets [budget] but will not parse would lose
+        // its machine-wide cap and read exactly like one that never set one.
+        // `unreadableMachineBudget` recovers the refusal; a broken file with
+        // no [budget] table had no cap to lose and is left alone. Other
+        // callers of `machineConfig()` keep their present behaviour.
+        const unreadable = unreadableMachineBudget(opts.home);
+        return unreadable === undefined ? statuses : [...(statuses ?? []), unreadable];
+      },
       gatewayKeys: (tenant) => {
         const out: Record<string, string> = {};
         for (const [name, gateway] of Object.entries(tenant.config?.native?.gateways ?? {})) {
@@ -1179,7 +1261,7 @@ export async function cmdServe(
         if (!litellmHealthy()) {
           throw new Error(`sonata serve: this config routes through LiteLLM, which is ${litellmStatus(opts.home, true).state} — run \`sonata litellm install\``);
         }
-        killRecordedOrphan(opts.home, ports.router);
+        killRecordedOrphan(opts.home, ports.router, opts.processCommand);
         child = spawnLitellmChild();
         await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
       })();
@@ -1386,6 +1468,11 @@ export interface StopDeps {
    * (0 or more than 1 pid found).
    */
   findPortPid?: (port: number) => string | undefined;
+  /**
+   * Test seam — production default is `processCommand` (the pid's `ps` command
+   * line). Consulted for the recorded litellm pid before it is signalled.
+   */
+  processCommand?: (pid: number) => string | undefined;
 }
 
 /**
@@ -1485,7 +1572,35 @@ export async function stopServe(
 
   const kill = opts.kill ?? killPid;
   const isAlive = opts.isAlive ?? defaultIsAlive;
-  const pids = [state.routerPid, state.litellmPid].filter((pid): pid is number => pid !== undefined);
+  const commandOf = opts.processCommand ?? processCommand;
+  // The recorded litellm child is checked against its command line before it
+  // is signalled — unlike the routerPid above, this check happens at kill
+  // time rather than against the port holder, because nothing else proves
+  // which process the number is. A serve-state file outlives its child, and
+  // the OS reuses pids, so a stale record can name a process that has nothing
+  // to do with sonata.
+  //
+  // Refused only on POSITIVE evidence of a mismatch, the same rule as the
+  // routerPid check above: `commandOf` answers `undefined` whenever it cannot
+  // tell — no ps, no permission — and "cannot tell" proceeds exactly as
+  // before, or a real orphan litellm would be stranded (and keep its port) on
+  // every machine where ps is unavailable. A known command naming no litellm
+  // is that positive evidence, and the pid is left off the kill list below
+  // entirely — signalling, waiting, and the SIGKILL escalation alike, which
+  // would otherwise escalate against a stranger that is simply still running.
+  const pids = [state.routerPid];
+  const litellmPid = state.litellmPid;
+  if (litellmPid !== undefined) {
+    const command = commandOf(litellmPid);
+    if (command !== undefined && !/litellm/i.test(command)) {
+      console.error(
+        `sonata restart: recorded litellm pid ${litellmPid} is no longer LiteLLM ` +
+        `(${command}) — leaving it alone`,
+      );
+    } else {
+      pids.push(litellmPid);
+    }
+  }
   for (const pid of pids) kill(pid);
   // The file the record actually came from, which may be the legacy path when
   // the daemon being stopped predates per-port state.

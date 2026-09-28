@@ -2211,3 +2211,103 @@ describe('repairNamelessToolCalls', () => {
     expect(sent[0]).toContain('"name":"Edit"');
   });
 });
+
+describe('OpenCode session header', () => {
+  // OpenCode Go refuses a request that names no conversation: 400
+  // `MissingSessionID` ("Request is missing x-opencode-session and cannot be
+  // routed efficiently"). Measured 2026-09-26 against opencode.ai/zen/go/v1 —
+  // the same body with `x-opencode-session` set answered 200. LiteLLM drops
+  // the client's headers unless told to forward them, so every native request
+  // to an opencode.ai gateway failed, and a tier leading with one died whole.
+  const ROUTES_2GW = {
+    role: 'review', tier: 'normal',
+    routes: [
+      { key: 'mimo', native: { gateway: 'opencode-go', id: 'mimo-v2.6-pro' } },
+      { key: 'luna', native: { gateway: 'codex', id: 'gpt-6-luna' } },
+    ],
+  };
+  const MISSING_SESSION_400 = JSON.stringify({
+    error: {
+      message: 'litellm.BadRequestError: OpenAIException - Request is missing x-opencode-session and cannot be routed efficiently.',
+      type: 'MissingSessionID',
+    },
+  });
+  const turn = (messages: unknown[], headers: Record<string, string> = {}) => ({
+    method: 'POST', url: '/v1/messages',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: Buffer.from(JSON.stringify({ model: 'sonata-review-normal', messages })),
+  });
+  const opener = { role: 'user', content: 'review this' };
+
+  beforeEach(() => clearCooldowns());
+
+  it('sends LiteLLM a session id that stays the same across a conversation\'s turns', async () => {
+    const sessions: (string | undefined)[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        sessions.push((init.headers as Record<string, string>)['x-opencode-session']);
+        return new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES_2GW,
+    };
+    await routeRequest(turn([opener]), deps);
+    await routeRequest(turn([opener, { role: 'assistant', content: 'ok' }, { role: 'user', content: 'more' }]), deps);
+    expect(sessions[0]).toBe(conversationKey(turn([opener]).body, DEFAULT_TENANT.id, 'sonata-review-normal'));
+    expect(sessions[1]).toBe(sessions[0]);
+  });
+
+  it('falls back to Claude Code\'s session id when there is no conversation to key on', async () => {
+    let session: string | undefined;
+    await routeRequest(turn([], { 'x-claude-code-session-id': 'cc-123' }), {
+      fetch: (async (_url: string, init: RequestInit) => {
+        session = (init.headers as Record<string, string>)['x-opencode-session'];
+        return new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES_2GW,
+    });
+    expect(session).toBe('cc-123');
+  });
+
+  it('sends LiteLLM no client x-* header but the session, since it forwards them upstream', async () => {
+    // Forwarding is switched on for opencode.ai model groups, and LiteLLM then
+    // hands the upstream every client `x-*` header. The session is the one it
+    // needs; Claude Code's own ids and metadata are not the upstream's business.
+    let sent: Record<string, string> = {};
+    await routeRequest(turn([opener], { 'x-claude-code-session-id': 'cc-123', 'x-app': 'cli', 'anthropic-version': '2023-06-01' }), {
+      fetch: (async (_url: string, init: RequestInit) => {
+        sent = init.headers as Record<string, string>;
+        return new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES_2GW,
+    });
+    expect(Object.keys(sent).filter((name) => name.toLowerCase().startsWith('x-'))).toEqual(['x-opencode-session']);
+    expect(sent['anthropic-version']).toBe('2023-06-01');
+    expect(sent.authorization).toBe('Bearer k');
+  });
+
+  it('treats MissingSessionID as the gateway being unservable: falls through at once and cools the gateway', async () => {
+    // Not a capability fingerprint that needs three in a row: it refuses every
+    // request to that gateway regardless of shape, so the first one is proof,
+    // and making two agents die first to learn it would be the absorbing state
+    // the fingerprints exist to prevent.
+    const seen: string[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return model === 'default/mimo'
+          ? new Response(MISSING_SESSION_400, { status: 400 })
+          : new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES_2GW,
+    };
+    expect((await routeRequest(turn([opener]), deps)).status).toBe(200);
+    expect(seen).toEqual(['default/mimo', 'default/luna']);
+    await routeRequest(turn([{ role: 'user', content: 'another agent' }]), deps);
+    expect(seen).toEqual(['default/mimo', 'default/luna', 'default/luna']);
+  });
+});

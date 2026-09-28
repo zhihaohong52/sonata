@@ -505,6 +505,35 @@ export function reconcileTierList(
   return result;
 }
 
+/**
+ * Every model key a role's tier lists name, deduplicated, in a stable order.
+ *
+ * `normal` used to be left out: a key only a hand-ranked `normal` named never
+ * reached the role's model selection, so a rewrite could drop the very
+ * `[models]` entry the tier still names. Folding it in must not re-order
+ * anything the caller already had — `simple` then `complex`, first-seen wins,
+ * exactly as before — so `normal` contributes only keys neither of those
+ * lists names, landing between them. A key shared with `simple` or `complex`
+ * keeps the slot that list already gave it: a key in both `normal` and
+ * `complex` stays at its `complex` position instead of jumping ahead of it.
+ * Effort variants collapse to their bare model, as before (`big@high` and
+ * `big@max` are one `big`).
+ */
+export function roleModelKeys(lists: {
+  simple: readonly string[];
+  normal?: readonly string[];
+  complex: readonly string[];
+}): string[] {
+  const keysOf = (candidates: readonly string[]): string[] =>
+    [...new Set(candidates.map((candidate) => splitCandidate(candidate).key))];
+  const simpleKeys = keysOf(lists.simple);
+  const complexKeys = keysOf(lists.complex);
+  const simpleHeld = new Set(simpleKeys);
+  const simpleOrComplex = new Set([...simpleHeld, ...complexKeys]);
+  const normalKeys = keysOf(lists.normal ?? []).filter((key) => !simpleOrComplex.has(key));
+  return [...simpleKeys, ...normalKeys, ...complexKeys.filter((key) => !simpleHeld.has(key))];
+}
+
 export function deriveInitState(
   config: SonataConfig,
   configScope: ConfigScope,
@@ -570,13 +599,21 @@ export function deriveInitState(
       ? Object.keys(config.tiers ?? config.native?.generate ?? {})
       : undefined,
     tiers: config.tiers
-      ? Object.fromEntries(Object.entries(config.tiers).map(([role, lists]) => [role, { simple: [...lists.simple], complex: [...lists.complex] }]))
+      ? Object.fromEntries(Object.entries(config.tiers).map(([role, lists]) => [role, {
+          simple: [...lists.simple],
+          // `normal` is optional and was missing here: this state seeds the
+          // wizard's tiers, and `plan` prefers `state.tiers` over the existing
+          // config — so a hand-ranked `normal` was replaced by a fresh catalog
+          // proposal on every re-init, for the one tier nothing else re-seeds.
+          ...(lists.normal ? { normal: [...lists.normal] } : {}),
+          complex: [...lists.complex],
+        }]))
       : undefined,
     perRoleModels: Object.fromEntries(
       Object.entries(config.tiers ?? config.native?.generate ?? {}).map(([role, models]) => [
         role,
         config.tiers
-          ? [...new Set([...models.simple, ...models.complex].map((candidate) => splitCandidate(candidate).key))]
+          ? roleModelKeys({ simple: models.simple, normal: models.normal, complex: models.complex })
           : [...models],
       ]),
     ),

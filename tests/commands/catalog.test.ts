@@ -244,3 +244,43 @@ describe('cmdCatalogUpdate — a model AA has scored on intelligence only', () =
     expect(entries[0]!.intelligenceIndex).toBe(20.9);
   });
 });
+
+describe('updateAaCatalog page fetches', () => {
+  it('passes redirect error and a timeout signal on every page request', async () => {
+    cmdAuthAdd({ home, gateway: 'artificialanalysis', key: 'synthetic-key' });
+    // Two pages, so "every page request" is measured rather than assumed.
+    const pageOne = { ...aaFixture(), pagination: { page: 1, page_size: 200, total_pages: 2, has_more: true } };
+    const pageTwo = { ...aaFixture(), pagination: { page: 2, page_size: 200, total_pages: 2, has_more: false } };
+    const inits: (RequestInit | undefined)[] = [];
+    const result = await cmdCatalogUpdate(home, {
+      fetch: async (input, init) => {
+        if (isModelsDev(input)) return response(modelsDevFixture());
+        inits.push(init);
+        return String(input).endsWith('page=1') ? response(pageOne) : response(pageTwo);
+      },
+    });
+
+    expect(result.aa).not.toHaveProperty('error');
+    expect(inits).toHaveLength(2);
+    for (const init of inits) {
+      // Same reasoning as validateAaKey: a redirect must never carry
+      // x-api-key to another origin, and a page must not hang past a bound.
+      expect(init?.redirect).toBe('error');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+    }
+  });
+
+  it('surfaces a redirect refusal as an update error rather than following it', async () => {
+    cmdAuthAdd({ home, gateway: 'artificialanalysis', key: 'synthetic-key' });
+    const result = await cmdCatalogUpdate(home, {
+      fetch: async (input) => {
+        if (isModelsDev(input)) return response(modelsDevFixture());
+        throw new TypeError('fetch failed: unexpected redirect');
+      },
+    });
+    expect(result.aa).toMatchObject({
+      error: expect.objectContaining({ message: expect.stringMatching(/redirect/i) }),
+    });
+    expect(result.modelsDev).not.toHaveProperty('error');
+  });
+});

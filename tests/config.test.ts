@@ -1304,3 +1304,37 @@ describe('loadConfig — effort pinning', () => {
     expect(() => loadConfig(cwd, home)).toThrow(/tiers\.code\.simple "luna"/);
   });
 });
+
+describe('native gateway key-variable collisions', () => {
+  // envVarForGateway uppercases and turns hyphens into underscores, so two
+  // distinct gateway names can collapse onto one key variable — and serve
+  // builds the LiteLLM child env from those names, so one gateway's key
+  // overwrites the other's.
+  it('refuses a hyphen/underscore pair sharing one key variable, naming both and the variable', () => {
+    expect(() => parseConfig(`
+[native.gateways."acme-prod"]
+base_url="https://prod.example/v1"
+[native.gateways."acme_prod"]
+base_url="https://other.example/v1"
+`)).toThrow(/gateways "acme-prod" and "acme_prod" would share the key variable SONATA_KEY_ACME_PROD.*rename one of them/s);
+  });
+
+  it('refuses a case-only pair sharing one key variable', () => {
+    expect(() => parseConfig(`
+[native.gateways."Foo"]
+base_url="https://foo.example/v1"
+[native.gateways."foo"]
+base_url="https://bar.example/v1"
+`)).toThrow(/gateways "Foo" and "foo" would share the key variable SONATA_KEY_FOO.*rename one of them/s);
+  });
+
+  it('accepts two gateway names that map to distinct variables', () => {
+    const cfg = parseConfig(`
+[native.gateways."acme"]
+base_url="https://a.example/v1"
+[native.gateways."acme-2"]
+base_url="https://b.example/v1"
+`);
+    expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['acme', 'acme-2']);
+  });
+});

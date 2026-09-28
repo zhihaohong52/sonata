@@ -6,6 +6,7 @@ import { isOauthGatewayAuth, oauthGatewayBaseUrl } from '../config.js';
 import { proposeTiers } from '../catalog.js';
 import { proposePricingProvider } from '../pricing.js';
 import { gatewayNamesOf, avoidedKeysOf, duplicateKeys, gatewayRankOf } from './helpers.js';
+import { DEFAULT_PORTS } from '../commands/ports.js';
 import { CURRENT_SCHEMA_VERSION, SCHEMA_VERSION_KEY } from '../migrations.js';
 
 const TOML_ESCAPES: Record<string, string> = {
@@ -184,8 +185,22 @@ export function nativeTomlFor(
     // `provider` supersedes `wire_format`, so the wizard writes the current
     // key. Reading `wire_format` stays supported for configs already on disk;
     // continuing to WRITE it would mean every new config is born legacy.
-    if (wireFormat === 'anthropic') lines.push(`provider = ${tomlKey(wireFormat)}`);
+    //
+    // A gateway already in the config keeps exactly what it has — `provider`
+    // included. It can only come from the config being rewritten: this
+    // function's candidates carry `wireFormat` and no provider at all, so
+    // writing from the candidate alone dropped `provider = "gemini"` on every
+    // re-init and the transport silently fell back to openai.
     const kept = existing?.native?.gateways?.[gateway];
+    const providerToWrite = kept !== undefined
+      ? kept.provider
+      : (wireFormat === 'anthropic' ? wireFormat : undefined);
+    // Never on an OAuth gateway: its provider is fixed by its auth kind and
+    // `parseConfig` refuses the key there, so emitting it would write a config
+    // that will not load.
+    if (providerToWrite !== undefined && !isOauthGatewayAuth(auth)) {
+      lines.push(`provider = ${tomlKey(providerToWrite)}`);
+    }
     // A gateway already in the config keeps exactly what it has — INCLUDING
     // nothing. That is what makes an origination declinable: delete the key
     // once and no later rewrite puts it back, the same way a hand-reordered
@@ -209,6 +224,22 @@ export function nativeTomlFor(
     if (kept?.price !== undefined) {
       lines.push(...priceLines(`native.gateways.${tomlKey(gateway)}`, kept.price));
     }
+  }
+
+  // `[native.ports]` is read by `parseConfig` and served by `routerPorts`, and
+  // this writer never emitted it — so a hand-chosen port survived exactly
+  // until the next `sonata init`, and the router then answered on the default
+  // against clients aimed at the port the config still names. Only values that
+  // differ from the defaults are worth writing: `parseConfig` fills the rest
+  // in, and a table emitted on every file would put one in every config for
+  // nothing. Beside the other `[native.*]` tables, where a reader looks for it.
+  const ports = existing?.native?.ports;
+  const portLines = ports === undefined ? [] : [
+    ports.router !== DEFAULT_PORTS.router ? `router = ${ports.router}` : undefined,
+    ports.litellm !== DEFAULT_PORTS.litellm ? `litellm = ${ports.litellm}` : undefined,
+  ].filter((l): l is string => l !== undefined);
+  if (portLines.length > 0) {
+    lines.push('[native.ports]', ...portLines, '');
   }
 
   for (const [key, c] of allModels) {

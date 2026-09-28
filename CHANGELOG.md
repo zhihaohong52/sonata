@@ -18,6 +18,64 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   replaces that call, and its "No such tool available" result, with a short
   note before forwarding. Requests without one are passed through unchanged.
 
+From the full audit of 0.13.1 (`docs/reviews/2026-09-27-full-audit.md`):
+
+- **A crashed dispatch run is no longer reported as a clean success.** A
+  harness that failed still leaves its fallback report file (claude writes
+  its own error output there), so a run exiting 1 with "API Error: 404" was
+  DONE and trusted, and `sonata dispatch` never tried the next ranked model.
+- **Launch scripts shell-quote every path.** A project path containing `'`
+  broke every launch in it; one containing `$(…)` ran it.
+- **Two gateways that would share one key variable are refused.**
+  `acme-prod` and `acme_prod` (or `Foo` and `foo`) mapped to one
+  `SONATA_KEY_*`, so one gateway's key was sent to the other's endpoint.
+  Across projects sharing the router, both gateways are dropped and logged.
+- **A finished run no longer leaves its watchdog `sleep` running.** The
+  wrapper killed the watchdog before its children, so the orphaned sleep held
+  the run's output open for the rest of `run_timeout_seconds`.
+- **API keys are never sent across a redirect.** `sonata catalog update`
+  and the BYOK model listing followed redirects carrying the key; the
+  catalog fetch also had no timeout.
+- **`sonata restart` no longer signals a pid the OS has reused.** The
+  recorded LiteLLM pid is checked against its command line first.
+- **`sonata code` / `sonata run` no longer time out starting the router.**
+  They launched `serve --daemon`, which re-daemonised under a new instance
+  id, so the readiness check never matched.
+- **Re-running `sonata init` keeps a gateway's `provider`, a hand-ranked
+  `normal` tier, and a non-default `[native.ports]`.** All three were
+  silently deleted.
+- **Dispatch-run spend no longer vanishes from the budget.** A metered
+  harness run of a model with an OAuth native route was counted as covered;
+  a session with unreadable token counts was recorded as zero; a failed
+  ledger write was never retried.
+- **A machine `sonata.toml` that will not load no longer switches its cap
+  off.** When it has a `[budget]` table, the router and `sonata dispatch`
+  refuse, naming the file and the error.
+
+## [0.13.1] - 2026-09-27
+
+### Fixed
+
+- **OpenCode Zen and Go models work on the native path.** opencode.ai refuses
+  a request that names no conversation with 400 `MissingSessionID`, and
+  LiteLLM drops every client header it is not told to forward — so every
+  native request to an opencode.ai gateway failed, and none had ever
+  succeeded. The generated LiteLLM config now forwards client headers for
+  opencode.ai models only, and the router sends `x-opencode-session` set to
+  the conversation key (Claude Code's session id when there is none).
+  Verified live through LiteLLM 1.98.0: 400 without the header, 200 with it.
+- **A tier no longer dies on a gateway that refuses every request.** A 400 is
+  normally returned to the caller, so a tier ranking an opencode.ai model
+  first killed every agent that reached it — including agents already running
+  when the model above it hit a 5xx. `MissingSessionID` now falls through to
+  the next candidate on the first occurrence and cools the whole gateway.
+- **A dispatch no longer fails to launch because another run just ended.** A
+  tmux server exits when its last session closes, and a `new-session` that
+  connects while it is exiting fails with "server exited unexpectedly" —
+  sonata's parallel dispatches share the user's server, so one run finishing
+  as another starts was enough. That failure is now retried, and only that
+  one. Reproduced 3 in 300 under session churn; 0 in 300 with the retry.
+
 ## [0.13.0] - 2026-09-25
 
 ### Added
