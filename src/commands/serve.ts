@@ -979,7 +979,7 @@ function resolveChildEnv(
     if (skipped !== undefined && last !== undefined) {
       transient.push({
         gateway: name,
-        message: `gateway "${name}": its credential store has stayed unreadable (${skipped.skipped}) — ` +
+        message: `gateway "${name}": its credential store is skipped as unreadable (${skipped.skipped}) — ` +
           'keeping the credential it last resolved to',
       });
       return last;

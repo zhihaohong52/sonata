@@ -191,6 +191,15 @@ function bytesHash(path: string): string | undefined {
   }
 }
 
+/** A file's mtime, or undefined when it cannot be stat'ed. */
+function mtimeOf(path: string): number | undefined {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * A file store's read, with "cannot be read" bounded.
  *
@@ -204,6 +213,12 @@ function bytesHash(path: string): string | undefined {
  * file was quiet. A file rewritten with different unparseable bytes on every
  * read therefore stays torn for as long as that goes on — accepted: nothing
  * here can tell it from a writer mid-write.
+ *
+ * Bytes seen for the first time — no failed read on record — count from the
+ * file's mtime when that is earlier than now: they have been there since the
+ * last write. A file corrupt since before serve started is skipped on its
+ * first read, rather than refusing every request for a second. After that
+ * first sighting only the bytes count, as above.
  *
  * A file whose bytes cannot be read (EACCES, EISDIR) has nothing to compare, and
  * is torn only for `windowMs` from the first failure of its run — never
@@ -228,8 +243,9 @@ export function boundUnreadable(
   const recorded = memory.files.get(path);
   const hash = bytesHash(path);
   const same = recorded !== undefined && recorded.hash === hash;
+  const firstSeen = recorded === undefined && hash !== undefined ? Math.min(now, mtimeOf(path) ?? now) : now;
   const record: { hash?: string; since: number; warned?: true } =
-    { ...(hash === undefined ? {} : { hash }), since: same ? recorded.since : now };
+    { ...(hash === undefined ? {} : { hash }), since: same ? recorded.since : firstSeen };
   if (same && recorded.warned === true) record.warned = true;
   memory.files.set(path, record);
   if (now - record.since < (hash === undefined ? windowMs : TORN_REPEAT_MS)) {
@@ -241,7 +257,7 @@ export function boundUnreadable(
     record.warned = true;
     warn(`${detail} — ${hash === undefined
       ? `it has not read for ${Math.round(windowMs / 1000)}s`
-      : `the same unparseable content for ${Math.round(TORN_REPEAT_MS / 1000)}s, so not a write in progress`
+      : `the same unparseable content for ${Math.max(1, Math.round((now - record.since) / 1000))}s, so not a write in progress`
     }, so it is skipped as if absent until it reads cleanly`);
   }
   return { state: 'absent', skipped: detail };
