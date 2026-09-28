@@ -1806,7 +1806,10 @@ async function routeTierRequest(
   // `sonata litellm install`" would misdiagnose that failure, and returning
   // before `withUsageRecording` would drop the ledger row for a request the
   // router really did send upstream.
-  if (skippedDropped.length > 0 && attempts.length === 0 && !skippedUnavailableLitellm) {
+  // "Not served" only when it is the WHOLE story: every candidate was on a
+  // dropped gateway. A tier whose other candidates were merely cooling, or
+  // failed, is the ordinary exhaustion below, with the drops named in it.
+  if (skippedDropped.length > 0 && skippedDropped.length === candidates.length) {
     deps.log?.(`router: every native route for ${label} is on a gateway serve dropped`);
     return {
       status: 502,
@@ -1841,10 +1844,12 @@ async function routeTierRequest(
     }, deps);
   }
   deps.log?.(`router: all native routes for ${label} failed`);
-  const cooling = skippedCoolingProviders.size > 0
+  const cooling = (skippedCoolingProviders.size > 0
     ? ` (skipped ${[...skippedCoolingProviders].sort().join(', ')}: cooling down after an ` +
       'account-level refusal — an expired key, a rejected credential or an exhausted budget)'
-    : '';
+    : '') + (skippedDropped.length > 0
+    ? ` (not served: ${[...new Set(skippedDropped)].join('; ')})`
+    : '');
   return withUsageRecording({
     status: 529,
     headers: { 'content-type': 'application/json' },
