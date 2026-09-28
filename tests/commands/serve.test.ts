@@ -4137,13 +4137,75 @@ litellm = ${litellmPort}
         expect(await send()).toBe(502);
       });
 
+      it('keeps the mark through a spawn with no ChatGPT gateway at all, and when the gateway returns on the same token', async () => {
+        // A restart while no project names a ChatGPT gateway starts LiteLLM
+        // with no token directory. That is no evidence of a new login, but
+        // "not the refused directory" cleared the mark on it, and putting the
+        // gateway back served the refused token into a device-code login.
+        const withByok = (chat: boolean) => `
+[models."byok"]
+gateway = "or"
+id = "some/model"
+${chat ? '[models."luna"]\ngateway = "codex"\nid = "gpt-5.6-luna"\n[native.gateways."codex"]\nauth = "codex-oauth"\ncredential_source = "codex"' : ''}
+[tiers.code]
+simple = ["${chat ? 'luna' : 'byok'}"]
+complex = ["${chat ? 'luna' : 'byok'}"]
+[native.gateways."or"]
+base_url = "https://or.example/v1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`;
+        writeSonataKey(home, 'or', 'sk-or');
+        writeMachineConfig(withByok(true));
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED', account_id: 'acct-a' });
+        const { send, envs, emit, settle } = await start();
+        expect(await send()).toBe(200);
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        expect(await send()).toBe(502);
+        writeMachineConfig(withByok(false));
+        await send();
+        await waitFor(() => envs.length === 2, 'the restart without the ChatGPT gateway');
+        await settle();
+        expect(envs[1].CHATGPT_TOKEN_DIR).toBeUndefined();
+        writeMachineConfig(withByok(true));
+        await send();
+        await waitFor(() => envs.length === 3, 'the restart with it back');
+        await settle();
+        expect(await send()).toBe(502);
+      });
+
+      it('keeps the mark for a sonata-owned login through LiteLLM\'s own rewrite of auth.json', async () => {
+        // After the refusal LiteLLM records `device_code_requested_at` in the
+        // same auth.json. Keyed on the file's stat, that write cleared the
+        // mark on the next unrelated restart, serving a device-code hang.
+        writeMachineConfig(machine('', 'sonata'));
+        const dir = credentialDir(home, 'codex');
+        mkdirSync(dir, { recursive: true });
+        const record = { access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'REFUSED' };
+        writeFileSync(join(dir, 'auth.json'), JSON.stringify(record));
+        const { send, envs, emit, settle, upstreamCalls } = await start();
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        writeFileSync(join(dir, 'auth.json'), JSON.stringify({ ...record, device_code_requested_at: Date.now() / 1000 }));
+        expect(await send()).toBe(502);
+        const forwarded = upstreamCalls.length;
+        writeMachineConfig(machine('[models."terra"]\ngateway = "codex"\nid = "gpt-5.6-terra"', 'sonata'));
+        await send();
+        await waitFor(() => envs.length === 2, 'the restart for the new model list');
+        await settle();
+        expect(await send()).toBe(502);
+        expect(upstreamCalls.length).toBe(forwarded);
+      });
+
       it('marks it from a response too, when LiteLLM answers a request with how its device-code login ended', async () => {
-        const captured = JSON.parse(fixture('chatgpt-refresh-refused-errors.json')) as { type: string; message: string }[];
-        const polling = captured.find((entry) => entry.message.includes('Polling failed'))!;
+        // As LiteLLM's proxy renders it, measured: a 400.
+        const captured = JSON.parse(fixture('chatgpt-refresh-refused-proxy.json')) as { case: string; status: number; body: string }[];
+        const polling = captured.find((entry) => entry.case === 'polling failed')!;
         writeMachineConfig(machine());
         writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
         const { send, upstreamCalls } = await start({
-          upstream: () => new Response(JSON.stringify({ error: { message: polling.message, type: 'auth_error', code: '401' } }), { status: 401 }),
+          upstream: () => new Response(polling.body, { status: polling.status }),
         });
         await send();
         const forwarded = upstreamCalls.length;
@@ -4388,6 +4450,52 @@ litellm = ${litellmPort}
         expect(seededWith()).toEqual(['CODEX-A']);
       });
 
+      it.runIf(sqliteAvailable())('notices a chmod on opencode.db on the next request, though its rows do not change', async () => {
+        // opencode.db's signal was its credential rows' hash, re-read when its
+        // stat moved: a chmod moved the stat, the rows read the same (or not
+        // at all), and the signal stood still, so nothing was re-read.
+        writeMachineConfig(`
+[models."pdm"]
+gateway = "pd"
+id = "pd-1"
+[native.gateways."pd"]
+base_url = "https://pd.example"
+provider = "anthropic"
+credential_source = "opencode"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+        const db = join(home, '.local', 'share', 'opencode', 'opencode.db');
+        mkdirSync(dirname(db), { recursive: true });
+        writeOpencodeCredDb(db, [{ id: 'c1', integration: 'pd', timeCreated: 1, value: JSON.stringify({ type: 'key', key: 'FROM-DB' }) }]);
+        vi.stubGlobal('fetch', vi.fn(async () => new Response(
+          '{"id":"x","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}',
+          { status: 200, headers: { 'content-type': 'application/json' } })));
+        const handle = await cmdServe({
+          cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+          spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+        });
+        handles.push(handle);
+        vi.unstubAllGlobals();
+        const send = async () => {
+          const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'pdm', max_tokens: 1, messages: [] }),
+          });
+          await res.text();
+          return res.status;
+        };
+        expect(await send()).toBe(200);
+        chmodSync(db, 0o000);
+        try {
+          await send();
+          expect(errors.some((line) => line.includes('opencode.db') && line.includes('could not be'))).toBe(true);
+        } finally {
+          chmodSync(db, 0o600);
+        }
+      });
+
       it('refuses within the window, and serves from opencode once it lapses with nothing on disk changing', async () => {
         writeMachineConfig(DEFAULT_CHATGPT());
         mkdirSync(join(home, '.codex'), { recursive: true });
@@ -4462,6 +4570,74 @@ litellm = ${litellmPort}
         expect(forwarded).toHaveLength(1);
         expect(forwarded[0]).toContain('FROM-AUTH-JSON');
         expect(errors.some((line) => line.includes('opencode.db') && line.includes('skipped as if absent'))).toBe(true);
+      });
+
+      it('picks up a key rotated, then removed, in opencode while sonata\'s own keys.json is skipped', async () => {
+        // The skipped store is not the one the key came from, so it says
+        // nothing about that key. Kept through it, the rotated key never
+        // reached the gateway and the removed one was sent indefinitely.
+        writeMachineConfig(`
+[models."pdm"]
+gateway = "pd"
+id = "pd-1"
+[native.gateways."pd"]
+base_url = "https://pd.example"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+        const keys = join(home, '.config', 'sonata', 'keys.json');
+        writeFileSync(keys, '{"pd": "sk-');
+        backdate(keys);
+        const ocAuth = join(home, '.local', 'share', 'opencode', 'auth.json');
+        mkdirSync(dirname(ocAuth), { recursive: true });
+        writeFileSync(ocAuth, JSON.stringify({ pd: { type: 'api', key: 'KEY-OLD' } }));
+        const forwarded: string[] = [];
+        vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+          const headers = new Headers(init.headers);
+          forwarded.push(headers.get('x-api-key') ?? headers.get('authorization') ?? '(none)');
+          return new Response('{"id":"x","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}',
+            { status: 200, headers: { 'content-type': 'application/json' } });
+        }));
+        const handle = await cmdServe({
+          cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+          spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+        });
+        handles.push(handle);
+        vi.unstubAllGlobals();
+        const send = async () => {
+          const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'pdm', max_tokens: 1, messages: [] }),
+          });
+          await res.text();
+          return res.status;
+        };
+        expect(await send()).toBe(200);
+        expect(forwarded.at(-1)).toContain('KEY-OLD');
+        writeFileSync(ocAuth, JSON.stringify({ pd: { type: 'api', key: 'KEY-ROTATED' } }));
+        expect(await send()).toBe(200);
+        expect(forwarded.at(-1)).toContain('KEY-ROTATED');
+        writeFileSync(ocAuth, JSON.stringify({}));
+        await send();
+        expect(forwarded.at(-1)).not.toContain('KEY-');
+      });
+
+      it('ends a default ChatGPT gateway read from opencode when opencode logs out while codex\'s file is skipped', async () => {
+        // codex's skipped file never held the login served, so it cannot
+        // vouch for it: kept, opencode's logout left LiteLLM on account B.
+        writeMachineConfig(DEFAULT_CHATGPT());
+        mkdirSync(join(home, '.codex'), { recursive: true });
+        writeFileSync(codexPath(), '');
+        backdate(codexPath());
+        writeOpencodeLogin();
+        const { send, seededWith } = await start();
+        expect((await send()).status).toBe(200);
+        expect(seededWith()).toEqual(['OPENCODE-B']);
+        writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({}));
+        expect((await send()).status).toBe(502);
+        expect((await send()).status).toBe(502);
       });
     });
 

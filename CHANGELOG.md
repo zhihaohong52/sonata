@@ -172,20 +172,29 @@ the review doc's Backlog note):
   and taking every other ChatGPT gateway down with it. "Mid-write" is
   bounded: a file counts as torn only while its mtime is under 10 s old (or
   its mtime or size changed since the last failed read less than 10 s ago)
-  and its run of failed reads began less than 10 s ago, so a file kept
-  freshly written that never parses is not torn forever; opencode.db counts
-  only for the first 10 s of a run of failed queries. Past that the store is
-  steadily unreadable — corrupt, zero bytes, EACCES — and is skipped as
-  absent, logged once naming the file and the error. Skipped is not a
-  logout: a gateway that has resolved keeps its last credential and login
-  through it, and the file reading again restarts and re-seeds nothing (it
-  used to drop the gateway, end its ChatGPT lineage, and on recovery
-  re-seed LiteLLM with a refresh token it had already spent). A gateway
-  that has never resolved falls through, so a default ChatGPT gateway
-  reaches opencode's login as it always did; it used to answer 502 forever.
+  and its current run of failed reads — failed reads each less than 10 s
+  after the one before — began less than 10 s ago, so a file kept freshly
+  written that never parses is not torn forever, and a torn read at startup
+  followed by another write after a quiet spell is two runs, not one;
+  opencode.db counts only for the first 10 s of a run of failed queries,
+  however far apart. Past that the store is steadily unreadable — corrupt,
+  zero bytes, EACCES — and is skipped as absent, logged once naming the file
+  and the error. A skipped store reads as absent and the lookup goes on from
+  the stores that remain, with one exception: a gateway whose last credential
+  (or seeded ChatGPT login) came from that very store keeps it, since the
+  store not reading is not a logout, and the file reading again restarts and
+  re-seeds nothing (it used to drop the gateway, end its ChatGPT lineage, and
+  on recovery re-seed LiteLLM with a refresh token it had already spent). A
+  credential that came from another store is not kept through it: a key
+  rotated or removed in opencode while sonata's `keys.json` is skipped is
+  picked up, and an opencode logout ends a default ChatGPT gateway reading
+  opencode while codex's `auth.json` is skipped. A gateway that has never
+  resolved falls through, so a default ChatGPT gateway reaches opencode's
+  login as it always did; it used to answer 502 forever.
   A build that read anything as torn is never committed, so the retry the
   502 promises really happens; a `chmod` on a store is noticed on the next
-  request (the router's change check now includes each file's mode); and
+  request (the router's change check now includes each file's mode, and
+  opencode.db's); and
   `sonata doctor` warns, naming the file, when codex's `auth.json` or
   opencode.db cannot be read. opencode.db's credential table reading empty
   where it last held rows is read again at once before anything is decided:
@@ -269,15 +278,22 @@ the review doc's Backlog note):
   codes masked, and surviving its own stdout or stderr closing, as in
   `sonata serve | head`) and on that warning or the device-code prompt —
   matched as LiteLLM writes them, after its log prefix, never on the phrase
-  anywhere in a line — or on a response ending "Polling failed", "Timed out
-  waiting for device authorization" or "Failed to request device code" —
+  anywhere in a line — or on a codex-oauth candidate's response whose error
+  message is how LiteLLM's proxy renders the device-code login ending (a
+  400, measured: `litellm.BadRequestError: GetLLMProvider Exception - ` then
+  "Polling failed", "Timed out waiting for device authorization" or "Failed
+  to request device code", matched from the start of the message, never
+  anywhere in it, and never for another gateway's error) —
   logs the remedy once, naming the ChatGPT gateways, and answers them with a
   502 saying `codex login` (or `opencode auth login`) then `sonata restart`
-  instead of forwarding into the hang. It clears only when LiteLLM is
-  started on a different token — a new token directory (a login change), a
-  sonata-owned login rewritten by `sonata auth login`, or a fresh process
-  from `sonata restart`; a crash respawn, or a restart for anything else,
-  keeps it. `sonata doctor` says so beside each ChatGPT gateway.
+  instead of forwarding into the hang. The mark is keyed on the refused
+  token itself, not on its file or directory, and clears only when LiteLLM
+  is started on a readable token that differs — a login change seeded into a
+  new token directory, a sonata-owned login rewritten by `sonata auth login`,
+  or a fresh process from `sonata restart`. A crash respawn, a restart for
+  anything else, a restart with no ChatGPT gateway at all, and LiteLLM's own
+  rewrite of `auth.json` (`device_code_requested_at`) all keep it. `sonata
+  doctor` says so beside each ChatGPT gateway.
 
 ## [0.13.1] - 2026-09-27
 
