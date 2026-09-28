@@ -13,7 +13,7 @@ import { pruneSessions } from '../sessions.js';
 import { resolveKeyDetail, resolveKeys, sonataKeyStorePath } from '../native/credentials.js';
 import { fileStoreRead, jsonStoreRead, opencodeDbRead, type StoreRead } from '../native/credential-reads.js';
 import { codexAuthPath, jwtExpiry, opencodeAuthPath, readChatGptOAuth, readCodexOAuth, readOpencodeChatGptOAuth, type ChatGptAuthRecord } from '../native/codex-auth.js';
-import { opencodeDbPath } from '../native/opencode-store.js';
+import { opencodeCredentialOrigin, opencodeCredentialStamp, opencodeDbPath } from '../native/opencode-store.js';
 import { credentialDir } from '../native/oauth-login.js';
 import { readCopilotToken } from '../native/copilot-auth.js';
 import { envVarForGateway, litellmConfigForTenants, litellmConfigYamlForTenants } from '../native/litellm.js';
@@ -694,21 +694,24 @@ function chatgptExpiry(record: Partial<ChatGptAuthRecord>): number | undefined {
 }
 
 /**
- * The latest modification time of the store `readChatGptOAuth` read for this
- * source, or undefined when none can be stat'ed. opencode's credential may sit
- * in either of its two stores, so both count.
+ * When the file the ChatGPT record was read from last changed, for
+ * `syncChatGptTokenFile`'s last-resort comparison — or undefined when that
+ * says nothing about the record. opencode.db is the undefined case: opencode
+ * writes it constantly for reasons unrelated to credentials, so its mtime
+ * made a store whose login had not changed look newer than LiteLLM's
+ * refreshed copy, and overwrote it. A record read from the table is compared
+ * by expiry alone (which it nearly always carries) or not replaced.
  */
-function chatgptStoreMtimeMs(home: string, source: 'codex' | 'opencode' | undefined): number | undefined {
-  const fromCodex = source === 'codex' || (source === undefined && readCodexOAuth(home) !== null);
-  const paths = fromCodex ? [codexAuthPath(home)] : [opencodeAuthPath(home), opencodeDbPath(home)];
-  let latest: number | undefined;
-  for (const path of paths) {
-    try {
-      const { mtimeMs } = statSync(path);
-      if (latest === undefined || mtimeMs > latest) latest = mtimeMs;
-    } catch { /* absent: this store says nothing */ }
+function chatgptStoreMtimeMs(home: string, identity: string): number | undefined {
+  let path: string;
+  if (identity === 'codex store') path = codexAuthPath(home);
+  else if (opencodeCredentialOrigin(home, 'openai') === 'auth.json') path = opencodeAuthPath(home);
+  else return undefined;
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return undefined;
   }
-  return latest;
 }
 
 /**
@@ -1005,7 +1008,7 @@ function resolveChildEnv(
       // Synced only when the fresh read is what is being used: a kept last
       // resolution leaves LiteLLM's own file exactly as it is.
       if (entries !== undefined && entries === fresh && found !== null) {
-        syncChatGptTokenFile(tokenDir, found.record, found.identity, chatgptStoreMtimeMs(home, source));
+        syncChatGptTokenFile(tokenDir, found.record, found.identity, chatgptStoreMtimeMs(home, found.identity));
       }
       if (entries !== undefined) Object.assign(childEnv, entries);
     }
@@ -1435,13 +1438,13 @@ export function resolvedOauthIdentity(
   return readChatGptOAuth(home, 'codex') !== null ? 'codex store' : 'opencode store';
 }
 
-/** codex's ChatGPT store as a stat-only token: its mtime and size, or absent. */
-function codexStoreSignal(home: string): string {
+/** A file as a stat-only token: its identity, mtime and size, or `-` when absent. */
+function statSignal(path: string): string {
   try {
-    const { mtimeMs, size } = statSync(codexAuthPath(home));
-    return `codex:${mtimeMs}:${size}`;
+    const { ino, mtimeMs, size } = statSync(path);
+    return `${ino}:${mtimeMs}:${size}`;
   } catch {
-    return 'codex:absent';
+    return '-';
   }
 }
 
@@ -1564,13 +1567,42 @@ export async function cmdServe(
     });
   };
   /**
-   * What the gateway merge depends on, as a cheap comparable string: the
-   * known configs, and whether codex's ChatGPT store holds a login — which
-   * `resolvedOauthIdentity` consults for a default-sourced codex-oauth
-   * gateway, so `codex login`/`logout` while serving changes the answer.
-   * Both are stat-only.
+   * opencode.db's credential rows as a hash, re-read only when the database
+   * or its WAL changes on disk. The file is written constantly, so its stat
+   * alone would re-merge on nearly every request; the rows are what decide
+   * whether anything a gateway reads has changed. A read that fails keeps the
+   * last stamp and is retried on the next change, so a moment's lock is not
+   * a login changing.
    */
-  const gatewayPlanInputs = (): string => `${registry.fingerprint()}\n${codexStoreSignal(opts.home)}`;
+  let opencodeDbStamp: { stat: string; stamp: string } | undefined;
+  const opencodeDbSignal = (): string => {
+    const path = opencodeDbPath(opts.home);
+    const stat = `${statSignal(path)}|${statSignal(`${path}-wal`)}`;
+    if (opencodeDbStamp?.stat !== stat) {
+      const stamp = opencodeCredentialStamp(opts.home);
+      if (stamp !== 'unreadable') opencodeDbStamp = { stat, stamp };
+      else return opencodeDbStamp?.stamp ?? stamp;
+    }
+    return opencodeDbStamp.stamp;
+  };
+  /**
+   * What the gateway merge depends on, as a cheap comparable string: the
+   * known configs, and every credential store a gateway reads — codex's
+   * `auth.json` (which `resolvedOauthIdentity` also consults for a
+   * default-sourced ChatGPT gateway, so `codex login`/`logout` while serving
+   * changes the answer), sonata's `keys.json`, and opencode's `auth.json` and
+   * credential table. A login or `sonata auth add`/`remove` while serving
+   * moves it, and the re-merge — under the last-good and lineage rules —
+   * decides whether anything a gateway reads actually changed. Stat-only but
+   * for the table's rows, which are read only when the database changes.
+   */
+  const gatewayPlanInputs = (): string => [
+    registry.fingerprint(),
+    `codex:${statSignal(codexAuthPath(opts.home))}`,
+    `keys:${statSignal(sonataKeyStorePath(opts.home))}`,
+    `opencode:${statSignal(opencodeAuthPath(opts.home))}`,
+    `opencode.db:${opencodeDbSignal()}`,
+  ].join('\n');
   const unionNeedsLitellm = (): boolean => registry.loadable().some(({ config }) => litellmRequired(config));
 
   const litellmBin = managedLitellmPath(opts.home);
@@ -1754,7 +1786,7 @@ export async function cmdServe(
       const cfg = now === failedFingerprint ? mergedNative(() => { /* logged by the first attempt */ }) : mergedNative();
       // Not spawning: Copilot's token file belongs to the running child. The
       // ChatGPT file is synced under its newer-wins rule, which is how a
-      // `codex login` while serving — it moves `codexStoreSignal`, so it
+      // `codex login` while serving — it moves `gatewayPlanInputs`, so it
       // lands here — reaches a LiteLLM that re-reads the file per token.
       //
       // Per gateway: a failing gateway is left out of the new env and every
