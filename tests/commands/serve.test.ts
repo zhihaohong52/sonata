@@ -3862,6 +3862,96 @@ litellm = ${litellmPort}
       expect(envs.length).toBeGreaterThanOrEqual(2);
     });
 
+    it('ends a crash racing a login change with one live LiteLLM, in the new directory, and no child in a deleted one', async () => {
+      // The child crashes and, inside the respawn delay, a request sees a new
+      // account. The deliberate restart waited on an exit that had already
+      // fired, the crash respawn spawned a second child into the old
+      // directory meanwhile, and the restart then spawned a third — deleting
+      // the directory the second was still running in and orphaning it.
+      writeMachineConfig(machine('', 'codex'));
+      writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'ACCOUNT-A', account_id: 'acct-a' });
+      type Kid = { dir: string; alive: boolean; exits: ((code: number | null, signal: NodeJS.Signals | null) => void)[]; ranInDeletedDir: boolean };
+      const kids: Kid[] = [];
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, respawnDelayMs: 100, litellmExitTimeoutMs: 200,
+        spawnLitellm: (_config, env) => {
+          const kid: Kid = { dir: env.CHATGPT_TOKEN_DIR ?? '', alive: true, exits: [], ranInDeletedDir: false };
+          kids.push(kid);
+          return {
+            pid: 100 + kids.length,
+            kill: () => {
+              if (!kid.alive) return;
+              kid.alive = false;
+              setTimeout(() => kid.exits.forEach((cb) => cb(null, 'SIGTERM')), 5);
+            },
+            onExit: (cb) => { kid.exits.push(cb); },
+          };
+        },
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const watch = setInterval(() => {
+        for (const kid of kids) if (kid.alive && !existsSync(kid.dir)) kid.ranInDeletedDir = true;
+      }, 2);
+      try {
+        const send = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+        }).then(async (res) => { await res.text(); return res.status; });
+        expect(await send()).toBe(200);
+        writeCodexStore({ access_token: claimJwt(1_900_000_000, 'acct-b'), refresh_token: 'ACCOUNT-B', account_id: 'acct-b' });
+        const first = kids[0];
+        first.alive = false;
+        first.exits.forEach((cb) => cb(1, null));
+        await send();
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await send();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      } finally {
+        clearInterval(watch);
+      }
+      const alive = kids.filter((kid) => kid.alive);
+      expect(alive).toHaveLength(1);
+      const held = JSON.parse(readFileSync(join(alive[0].dir, 'auth.json'), 'utf8')) as { refresh_token?: string };
+      expect(held.refresh_token).toBe('ACCOUNT-B');
+      expect(kids.some((kid) => kid.ranInDeletedDir)).toBe(false);
+      expect(errors.some((line) => line.includes('did not exit within'))).toBe(false);
+    });
+
+    it('keeps a retired token directory until the child spawned into it is seen to exit', async () => {
+      // A LiteLLM that outlives its SIGTERM and SIGKILL is still running in
+      // its directory; removing it then leaves that process with no login.
+      writeMachineConfig(machine('', 'codex'));
+      writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'ACCOUNT-A', account_id: 'acct-a' });
+      const exits: ((code: number | null, signal: NodeJS.Signals | null) => void)[][] = [];
+      const dirs: string[] = [];
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, litellmExitTimeoutMs: 20,
+        spawnLitellm: (_config, env) => {
+          const listeners: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
+          exits.push(listeners);
+          dirs.push(env.CHATGPT_TOKEN_DIR ?? '');
+          // Deaf to every signal: exits only when the test says so.
+          return { pid: dirs.length, kill: () => {}, forceKill: () => {}, onExit: (cb) => { listeners.push(cb); } };
+        },
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      writeCodexStore({ access_token: claimJwt(1_900_000_000, 'acct-b'), refresh_token: 'ACCOUNT-B', account_id: 'acct-b' });
+      await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      }).then((res) => res.text());
+      await waitFor(() => dirs.length === 2, 'the restart for the new account');
+      expect(dirs[1]).not.toBe(dirs[0]);
+      expect(existsSync(dirs[0])).toBe(true);
+      exits[0].forEach((cb) => cb(null, 'SIGKILL'));
+      expect(existsSync(dirs[0])).toBe(false);
+      expect(existsSync(dirs[1])).toBe(true);
+    });
+
     it('respawns a crashed LiteLLM into the directory it was using, with LiteLLM\'s token as it left it', async () => {
       writeMachineConfig(machine());
       writeCodexStore({ access_token: claimJwt(1000, 'acct-a'), refresh_token: 'SEEDED' });
