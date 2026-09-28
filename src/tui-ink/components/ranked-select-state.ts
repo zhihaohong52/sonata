@@ -123,7 +123,10 @@ export function dominatedRows(rows: ReadonlyArray<Measured | undefined>): Set<nu
   const scored = rows
     .map((row, index) => ({ index, row }))
     .filter((entry): entry is { index: number; row: Measured } =>
-      entry.row?.capability !== undefined && entry.row?.costPerTask !== undefined);
+      entry.row?.capability !== undefined && entry.row?.costPerTask !== undefined
+      // A zero or negative cost is missing data, not the cheapest row: read
+      // as a price it "dominated" every real one it out-scored.
+      && Number.isFinite(entry.row.costPerTask) && entry.row.costPerTask > 0);
   for (const a of scored) {
     const beaten = scored.some((b) => b.index !== a.index
       && b.row.capability! >= a.row.capability!

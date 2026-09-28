@@ -2,7 +2,7 @@ import type { InitEnvironment } from './discover.js';
 import type { InitState } from '../tui-ink/types.js';
 import { KNOWN_ROLES } from '../config.js';
 import type { Problem } from '../detect.js';
-import type { NativeCandidate } from './helpers.js';
+import { configPathFor, type NativeCandidate } from './helpers.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { isOauthGatewayAuth } from '../config.js';
@@ -188,7 +188,8 @@ export function validate(env: InitEnvironment, state: InitState, opts?: Validate
   // two keys on one endpoint is a legitimate setup, but far more often it is
   // one account imported under two names, duplicating every candidate.
   for (const group of sharedBaseUrls([...nativeGateways].map(([gateway, candidate]) => [gateway, candidate] as const))) {
-    problems.push({ severity: 'warn', message: `sonata init: ${sharedBaseUrlWarning(group)}.` });
+    const written = configPathFor(configScope, env.cwd, env.home);
+    problems.push({ severity: 'warn', message: `sonata init: ${sharedBaseUrlWarning(group, written)}.` });
   }
 
   return problems;

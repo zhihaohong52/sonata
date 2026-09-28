@@ -155,4 +155,12 @@ describe('sharedBaseUrls', () => {
     expect(text).toMatch(/one account under two names/);
     expect(text).toMatch(/duplicate/);
   });
+
+  it('names the file to edit, since re-init keeps a saved base_url', () => {
+    // An existing gateway's base_url is now kept on re-init, so a stale one is
+    // no longer replaced by running init again — the fix is a hand edit.
+    const text = sharedBaseUrlWarning(
+      { url: 'https://opencode.ai/zen/go/v1', gateways: ['opencode', 'opencode-go'] }, '/work/repo/sonata.toml');
+    expect(text).toContain('edit base_url in /work/repo/sonata.toml');
+  });
 });

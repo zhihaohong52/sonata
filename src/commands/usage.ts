@@ -12,7 +12,7 @@
  */
 import { existsSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { dirname, join, resolve as resolve0 } from 'node:path';
+import { dirname, join, resolve as resolve0, sep } from 'node:path';
 
 import { configPath, GLOBAL_CONFIG_RELATIVE } from '../config.js';
 import { loadModelsDev } from '../modelsdev.js';
@@ -208,10 +208,19 @@ export function projectResolver(home: string): ProjectResolver {
  * accepts any directory inside a project, as documented. `configPath` checks
  * only the directory it is given, so a subdirectory otherwise labelled as
  * itself and matched no row. With no project above it, `dir` is kept.
+ *
+ * Two bounds keep the walk honest. It stops before `$HOME` and never answers
+ * `$HOME` itself: a stray `~/sonata.toml` otherwise made every unconfigured
+ * directory under home resolve to home, selecting nothing it named. And it
+ * does not walk from a directory that no longer exists — `projectResolver`
+ * keeps such a row's recorded path, so the argument must stay that path too
+ * rather than become its parent.
  */
 function enclosingProject(dir: string, home: string): string {
+  if (!existsSync(dir)) return dir;
   const machine = join(home, GLOBAL_CONFIG_RELATIVE);
   for (let at = dir; ; at = dirname(at)) {
+    if (at === home) return dir;
     try {
       const path = configPath(at, home);
       if (path !== null && path !== machine) return at;
@@ -220,6 +229,13 @@ function enclosingProject(dir: string, home: string): string {
     }
     if (dirname(at) === at) return dir;
   }
+}
+
+/** Whether `path` is `dir` or lies inside it, compared on whole path segments. */
+function isWithin(path: string, dir: string): boolean {
+  if (path === dir) return true;
+  const prefix = dir.endsWith(sep) ? dir : `${dir}${sep}`;
+  return path.startsWith(prefix);
 }
 
 export function labelOf(
@@ -381,8 +397,19 @@ export async function cmdUsage(opts: {
     // Compare resolved labels, not raw paths: `--project .` from inside a
     // worktree must select the main checkout's rows too, exactly as the
     // budget pools them.
+    //
+    // A row is labelled by its exact recorded cwd, so one recorded in a
+    // subdirectory with no config of its own is labelled as that
+    // subdirectory. Matching labels alone made such a row selectable by no
+    // argument at all — the walk turns the subdirectory into its project —
+    // so a row whose recorded path lies inside the selected project counts
+    // too.
     const wanted = resolve(enclosingProject(resolve0(opts.project), opts.home));
-    rows = rows.filter((row) => labelOf(row, 'project', sessions, resolve) === wanted);
+    rows = rows.filter((row) => {
+      if (labelOf(row, 'project', sessions, resolve) === wanted) return true;
+      const cwd = row.project ?? (row.session === undefined ? undefined : sessions[row.session]?.cwd);
+      return cwd !== undefined && isWithin(resolve0(cwd), wanted);
+    });
   }
 
   const report = aggregate(rows, opts.by, sessions, resolve);

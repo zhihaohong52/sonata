@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { shellQuote } from './shell.js';
+import { VERSION_PROBE_TIMEOUT_MS } from './version-probe.js';
 
 const run = promisify(execFile);
 
@@ -41,9 +42,14 @@ export async function retryWhenServerExits<T>(
   }
 }
 
-export async function tmuxVersion(): Promise<string> {
-  const out = await tmux(['-V']);
-  return out.trim().replace(/^tmux\s+/, '');
+/**
+ * `tmux -V`, bounded: `sonata doctor` awaits it first, so a tmux that hangs
+ * here hung doctor outright. Bounded by default rather than opt-in — doctor is
+ * the only caller, and an unbounded probe is never what anyone wants.
+ */
+export async function tmuxVersion(timeoutMs: number = VERSION_PROBE_TIMEOUT_MS): Promise<string> {
+  const { stdout } = await run('tmux', ['-V'], { encoding: 'utf8', timeout: timeoutMs });
+  return stdout.trim().replace(/^tmux\s+/, '');
 }
 
 /**

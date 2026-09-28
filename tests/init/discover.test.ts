@@ -108,4 +108,34 @@ describe('discover', () => {
     expect(env.offered.map((p) => p.key)).toEqual(
       expect.arrayContaining(['opencode/shared-gw', 'pi/shared-gw']));
   });
+
+  it('resolves base URLs per config scope, so a global init queries the global URL', async () => {
+    // Project-then-global first-wins meant a global-scope init queried the
+    // PROJECT config's URL while nativeTomlFor wrote back the global one —
+    // asking one endpoint what it serves and writing another.
+    writeFileSync(join(cwd, 'sonata.toml'), [
+      '[native.gateways."acme"]', 'base_url = "https://project.example/v1"',
+    ].join('\n'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), [
+      '[native.gateways."acme"]', 'base_url = "https://global.example/v1"',
+    ].join('\n'));
+    const harnessDetector: Detector = async () => ({
+      tmux: { installed: true, version: '3.4', problems: [] },
+      harnesses: [{
+        name: 'opencode', installed: true, version: '1.18.16', supported: true, problems: [],
+        refs: [{ harness: 'opencode', provider: 'acme', id: 'a', ref: 'acme/a' }],
+        authedProviders: ['acme'],
+        providerBaseUrls: { acme: 'https://harness.example/v1', fresh: 'https://fresh.example/v1' },
+      }],
+    });
+    const env = await discover({ cwd, home, packageRoot: cwd, detect: harnessDetector }, () => {});
+    expect(env.providerBaseUrlsByScope!.project.acme).toBe('https://project.example/v1');
+    expect(env.providerBaseUrlsByScope!.global.acme).toBe('https://global.example/v1');
+    // A gateway no config holds takes the harness URL in either scope.
+    expect(env.providerBaseUrlsByScope!.global.fresh).toBe('https://fresh.example/v1');
+    // And only the config's own URLs are what a candidate is re-pointed at.
+    expect(env.configBaseUrlsByScope!.global).toEqual({ acme: 'https://global.example/v1' });
+    expect(env.configBaseUrlsByScope!.project).toEqual({ acme: 'https://project.example/v1' });
+  });
 });

@@ -20,7 +20,7 @@ import { readChatGptOAuth } from '../native/codex-auth.js';
 import { GLOBAL_CONFIG_RELATIVE } from '../config.js';
 import { isOauthGatewayAuth } from '../config.js';
 import { splitCandidate } from '../effort.js';
-import { addByokCandidates, addLiveCandidates, rewriteOauthToApiKey } from './candidates.js';
+import { addByokCandidates, addLiveCandidates, applyScopeBaseUrls, rewriteOauthToApiKey } from './candidates.js';
 
 /** A resolvable bearer key for this gateway from this source. */
 export interface CredentialProbe {
@@ -133,15 +133,16 @@ export function plan(
     }
     // Custom providers extend env's url map so a model the user added
     // this run can be minted.
-    const providerBaseUrls = new Map(Object.entries(env.providerBaseUrls ?? {}));
+    const providerBaseUrls = new Map(Object.entries(env.providerBaseUrlsByScope?.[configScope] ?? env.providerBaseUrls ?? {}));
     for (const provider of state.customProviders ?? []) {
       if (!providerBaseUrls.has(provider.name)) {
         providerBaseUrls.set(provider.name, provider.url);
       }
     }
     addByokCandidates(built, providerBaseUrls, state.byokModels ?? {}, state.customWireFormats ?? {});
-    addLiveCandidates(env, built, state.liveModels ?? {});
+    addLiveCandidates(env, built, state.liveModels ?? {}, env.providerBaseUrlsByScope?.[configScope]);
     rewriteOauthToApiKey(built, state.byokKeys ?? {});
+    applyScopeBaseUrls(built, env.configBaseUrlsByScope?.[configScope] ?? {});
     nativeByKey = built;
   }
 

@@ -25,7 +25,7 @@ import {
   type NativeCandidate, type InitOptions,
 } from './helpers.js';
 import { refusals, validate } from './validate.js';
-import { addByokCandidates } from './candidates.js';
+import { addByokCandidates, applyScopeBaseUrls } from './candidates.js';
 import type { InitState } from '../tui-ink/types.js';
 import type { InitEnvironment } from './discover.js';
 
@@ -101,6 +101,11 @@ export function scriptedState(
     );
     inScopeNative = [...inScopeNative, ...byokAdded];
   }
+
+  // Candidates were minted before the scope was known; an existing gateway's
+  // URL is the written scope's config's, as `nativeTomlFor` writes it.
+  applyScopeBaseUrls(nativeByKey, env.configBaseUrlsByScope?.[configScope] ?? {});
+  inScopeNative = inScopeNative.map((candidate) => nativeByKey.get(candidate.key) ?? candidate);
 
   const nativeKeys = opts.models ?? d.nativeKeys
     ?? inScopeNative.filter((c) => ticked.has(c.key)).map((c) => c.key);
