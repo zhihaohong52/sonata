@@ -776,6 +776,28 @@ function newCredentialMemory(): CredentialMemory {
   return { lastGood: new Map(), lastGoodSource: new Map(), seeds: new Map(), opencodeDb: {}, unreadable: newUnreadableMemory() };
 }
 
+/**
+ * The ChatGPT token in a LiteLLM token directory, as a comparable string: a
+ * sha256 of its `auth.json`'s `refresh_token`, else its `access_token` (the
+ * record LiteLLM's authenticator reads and writes). Undefined when there is
+ * no directory, no file, or no token in it. A hash of the token and not the
+ * file, so LiteLLM rewriting other fields — `device_code_requested_at` —
+ * leaves it unchanged.
+ */
+function chatgptTokenHash(dir: string | undefined): string | undefined {
+  if (dir === undefined) return undefined;
+  try {
+    const record: unknown = JSON.parse(readFileSync(join(dir, 'auth.json'), 'utf8'));
+    if (record === null || typeof record !== 'object') return undefined;
+    const { refresh_token: refresh, access_token: access } = record as Record<string, unknown>;
+    const token = typeof refresh === 'string' && refresh !== '' ? refresh
+      : typeof access === 'string' && access !== '' ? access : undefined;
+    return token === undefined ? undefined : createHash('sha256').update(token).digest('hex');
+  } catch {
+    return undefined;
+  }
+}
+
 /** A store's read, tagged with which store it is, as `resolveChildEnv` chains them. */
 type ChainStore = StoreRead & { id: string };
 
@@ -1579,16 +1601,19 @@ export async function cmdServe(
    * from it. Without this, each request hung in LiteLLM's device-code login
    * for up to fifteen minutes.
    *
-   * Keyed on the token that was refused: the directory the child was using
-   * and, for a sonata-owned login whose directory never changes, its
-   * `auth.json` as it stood. A deliberate spawn clears it only when that
-   * token is gone — the gateway seeded into a new directory (a lineage
-   * change), or a sonata-owned re-login rewriting the file. Any other restart
-   * — a model-list edit, another project's gateway — spawns LiteLLM on the
-   * same refused token, and clearing on it served a device-code hang again.
+   * Keyed on the token that was refused (`chatgptTokenHash`: the refresh
+   * token in the child's `auth.json`, else its access token), never on the
+   * file or its directory. A deliberate spawn clears it only when the
+   * directory it starts LiteLLM on holds a readable token that differs — a
+   * lineage seeded into a new directory, or a sonata-owned re-login. Any
+   * other restart — a model-list edit, another project's gateway, a spawn
+   * with no ChatGPT gateway at all — keeps it: LiteLLM would start on the
+   * same refused token, and clearing then served a device-code hang again.
+   * Keyed on the file's stat, it was cleared by LiteLLM's own rewrite of
+   * `auth.json` (`device_code_requested_at`) moments after the refusal.
    * A fresh process (`sonata restart`) starts with none.
    */
-  let chatgptLoginRefused: { message: string; dir: string | undefined; file?: string } | undefined;
+  let chatgptLoginRefused: { message: string; token: string | undefined } | undefined;
   /** The ChatGPT token directory the current child was spawned into; set once the child bookkeeping exists. */
   let currentChatgptTokenDir: () => string | undefined = () => undefined;
   const markChatgptLoginRefused = (): void => {
@@ -1601,12 +1626,10 @@ export async function cmdServe(
       ? sonataOwned.map((name) => `\`sonata auth login ${name}\``).join(' / ')
       : '`codex login` (or `opencode auth login`)';
     const remedy = `LiteLLM's ChatGPT login was refused by OpenAI — run ${relogin} and then \`sonata restart\``;
-    const dir = currentChatgptTokenDir();
     chatgptLoginRefused = {
       message: `gateway ${names}: ${remedy} (LiteLLM had fallen back to an interactive device-code ` +
         'login, which would hold each request for up to fifteen minutes)',
-      dir,
-      ...(sonataOwned.length > 0 && dir !== undefined ? { file: statSignal(join(dir, 'auth.json')) } : {}),
+      token: chatgptTokenHash(currentChatgptTokenDir()),
     };
     console.error(`sonata serve: ${remedy} — affects gateway ${names}`);
   };
@@ -2209,15 +2232,13 @@ export async function cmdServe(
     const spawnLitellmChild = (deliberate = true): SpawnedLitellm => {
       if (deliberate) {
         seedTokenDirs();
-        // Cleared only when this spawn no longer holds the refused token: a
-        // new directory, or a sonata-owned login rewritten in place. A crash
-        // respawn, or a restart for anything else, reuses it and keeps it.
+        // Cleared only when this spawn starts LiteLLM on a token that is
+        // readable and not the refused one. None at all — no ChatGPT gateway
+        // just now, or a file that cannot be read — says nothing, and keeps it.
         const refused = chatgptLoginRefused;
         if (refused !== undefined) {
-          const dir = childEnv.CHATGPT_TOKEN_DIR;
-          const reLoggedIn = refused.file !== undefined && dir !== undefined
-            && statSignal(join(dir, 'auth.json')) !== refused.file;
-          if (dir !== refused.dir || reLoggedIn) chatgptLoginRefused = undefined;
+          const token = chatgptTokenHash(childEnv.CHATGPT_TOKEN_DIR);
+          if (token !== undefined && token !== refused.token) chatgptLoginRefused = undefined;
         }
       }
       const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(

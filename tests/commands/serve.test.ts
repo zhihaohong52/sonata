@@ -4137,6 +4137,29 @@ litellm = ${litellmPort}
         expect(await send()).toBe(502);
       });
 
+      it('keeps the mark for a sonata-owned login through LiteLLM\'s own rewrite of auth.json', async () => {
+        // After the refusal LiteLLM records `device_code_requested_at` in the
+        // same auth.json. Keyed on the file's stat, that write cleared the
+        // mark on the next unrelated restart, serving a device-code hang.
+        writeMachineConfig(machine('', 'sonata'));
+        const dir = credentialDir(home, 'codex');
+        mkdirSync(dir, { recursive: true });
+        const record = { access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'REFUSED' };
+        writeFileSync(join(dir, 'auth.json'), JSON.stringify(record));
+        const { send, envs, emit, settle, upstreamCalls } = await start();
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        writeFileSync(join(dir, 'auth.json'), JSON.stringify({ ...record, device_code_requested_at: Date.now() / 1000 }));
+        expect(await send()).toBe(502);
+        const forwarded = upstreamCalls.length;
+        writeMachineConfig(machine('[models."terra"]\ngateway = "codex"\nid = "gpt-5.6-terra"', 'sonata'));
+        await send();
+        await waitFor(() => envs.length === 2, 'the restart for the new model list');
+        await settle();
+        expect(await send()).toBe(502);
+        expect(upstreamCalls.length).toBe(forwarded);
+      });
+
       it('marks it from a response too, when LiteLLM answers a request with how its device-code login ended', async () => {
         const captured = JSON.parse(fixture('chatgpt-refresh-refused-errors.json')) as { type: string; message: string }[];
         const polling = captured.find((entry) => entry.message.includes('Polling failed'))!;
