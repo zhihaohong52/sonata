@@ -12,6 +12,7 @@ import {
 } from '../../src/commands/serve.js';
 import type { RouterTenant } from '../../src/native/router.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
+import { credentialDir } from '../../src/native/oauth-login.js';
 import { recordSession } from '../../src/sessions.js';
 import { managedLitellmPath, venvDir, LITELLM_VERSION } from '../../src/native/litellm-venv.js';
 import { clearCooldowns } from '../../src/native/router.js';
@@ -1430,11 +1431,11 @@ litellm = ${litellmPort}
 
   it('retries the restart on the next request after a failed one, instead of marking the change handled', async () => {
     // A gateway added with `credential_source = "sonata"` but no key stored
-    // yet makes buildChildEnv throw. If the model snapshot were committed
-    // before that point, a later request — after the credential is fixed —
-    // would see no difference from the (already-updated) snapshot and skip
-    // the restart forever, leaving the new model unreachable short of a
-    // manual `sonata restart`.
+    // yet cannot be loaded. If the snapshot recorded only the configs, a
+    // later request — after the credential is fixed — would see no
+    // difference and skip the restart forever, leaving the new model
+    // unreachable short of a manual `sonata restart`. The failed-credential
+    // set is part of the snapshot, so its clearing is a change.
     writeSonataKey(home, 'acme', 'acme-key');
     writeMachineConfig( `
 [models."first"]
@@ -1506,33 +1507,29 @@ litellm = ${litellmPort}
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
-    // "newgw" has no stored key yet, so the restart's buildChildEnv step
-    // throws internally (logged, not surfaced) and no restart happens —
-    // the request still resolves the "second" tier candidate fine (config
-    // parsing doesn't require the credential to exist) and fails the same
-    // way any candidate with nothing listening does.
-    expect(firstAttempt.status).toBe(529);
-    expect(spawnCount).toBe(1);
+    // "newgw" has no stored key yet, so its model is left out of LiteLLM's
+    // config and the router answers it by name rather than forwarding it to
+    // a LiteLLM that never loaded it.
+    expect(firstAttempt.status).toBe(502);
+    const message = (await firstAttempt.json() as { error: { message: string } }).error.message;
+    expect(message).toContain('newgw');
+    expect(message).toContain('sonata auth add newgw');
+    expect(configs.every((config) => !config.includes('second-upstream'))).toBe(true);
 
     writeSonataKey(home, 'newgw', 'new-key');
-    const secondAttempt = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+    await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
-    expect(secondAttempt.status).toBe(529);
-    // The one candidate ("second") is still cooling down from the first
-    // attempt's real connection failure, so this response returns without
-    // attempting a forward at all — the restart itself runs fire-and-forget
-    // from checkModelChange and is not on the response's critical path, so
-    // poll for it rather than assume it's finished the instant the response
-    // itself resolves.
+    // The restart runs fire-and-forget from checkModelChange and is not on
+    // the response's critical path, so poll for it rather than assume it's
+    // finished the instant the response itself resolves.
     const deadline = Date.now() + 2000;
-    while (spawnCount < 2 && Date.now() < deadline) {
+    while (!configs.some((config) => config.includes('second-upstream')) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    expect(spawnCount).toBe(2);
-    expect(configs[1]).toContain('second-upstream');
+    expect(configs.at(-1)).toContain('second-upstream');
   });
 });
 
@@ -3086,6 +3083,157 @@ credential_source = "sonata"
     } finally {
       errorSpy.mockRestore();
     }
+  });
+
+  describe('a LiteLLM gateway whose credential cannot resolve', () => {
+    // One project's missing login used to make every LiteLLM (re)spawn throw,
+    // so no project's new model was ever loaded, and the missing one reached
+    // LiteLLM anyway to be answered "Invalid model name". Its models are now
+    // left out of LiteLLM's config like a dropped gateway's, answered with a
+    // 502 naming the credential, and loaded once it appears.
+    const B_CONFIG = `
+[models."luna"]
+gateway = "bcodex"
+id = "gpt-5.6-luna"
+[models."bflash"]
+gateway = "bgw"
+id = "b-flash-1"
+[tiers.code]
+simple = ["luna"]
+complex = ["bflash"]
+[native.gateways."bcodex"]
+auth = "codex-oauth"
+credential_source = "sonata"
+[native.gateways."bgw"]
+base_url = "https://bgw.example/v1"
+`;
+    const run = async (machineToml: string) => {
+      writeMachineConfig(machineToml);
+      const project = mkdtempSync(join(tmpdir(), 'serve-tenant-litellm-credential-'));
+      writeFileSync(join(project, 'sonata.toml'), B_CONFIG);
+      writeSonataKey(home, 'bgw', 'bgw-key');
+      writeSonataKey(home, 'acme', 'acme-key');
+      const tempDir = tempDirFor();
+      const configJson = () => (existsSync(join(tempDir, 'config.json')) ? readFileSync(join(tempDir, 'config.json'), 'utf8') : '');
+      let spawns = 0;
+      vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(String(init.body)) as { model: string }).model;
+        return configJson().includes(`"${model}"`)
+          ? new Response('{}', { status: 200 })
+          : new Response('{"error":{"message":"Invalid model name"}}', { status: 400 });
+      }));
+      const handle = await cmdServe({
+        cwd, home, tempDir, waitForLitellm: async () => {},
+        spawnLitellm: () => { spawns += 1; return { pid: spawns, kill: () => {} }; },
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const send = (model: string, headers: Record<string, string> = {}) => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify({ model, messages: [] }),
+      });
+      return { project, send, spawns: () => spawns };
+    };
+    const login = () => {
+      mkdirSync(credentialDir(home, 'bcodex'), { recursive: true });
+      writeFileSync(join(credentialDir(home, 'bcodex'), 'auth.json'), JSON.stringify({ access_token: 'x', refresh_token: 'r' }));
+    };
+    let errors: string[];
+    let errorSpy: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      errors = [];
+      errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args.join(' ')); });
+    });
+    afterEach(() => { errorSpy.mockRestore(); });
+
+    it('restart: keeps serving everyone else, answers the missing one with a named 502, and loads it after login', async () => {
+      const { project, send, spawns } = await run(`
+[models."mflash"]
+gateway = "acme"
+id = "m-flash-1"
+[tiers.code]
+simple = ["mflash"]
+complex = ["mflash"]
+[native.gateways."acme"]
+base_url = "https://acme.example/v1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+      expect(spawns()).toBe(1);
+      const b = projectHeaders(project);
+      const missing = await send('sonata-code-simple', b);
+      expect(missing.status).toBe(502);
+      const message = (await missing.json() as { error: { message: string } }).error.message;
+      expect(message).toContain('bcodex');
+      expect(message).toContain('sonata auth login bcodex');
+      await waitFor(() => spawns() === 2, 'the restart that loads B\'s other gateway');
+      // B's other gateway, and the machine's, are served by the restarted LiteLLM.
+      expect((await send('sonata-code-complex', b)).status).toBe(200);
+      expect((await send('sonata-code-simple')).status).toBe(200);
+      for (let i = 0; i < 3; i++) expect((await send('sonata-code-simple', b)).status).toBe(502);
+      expect(errors.filter((line) => line.includes('failed to restart litellm'))).toHaveLength(0);
+      expect(errors.filter((line) => line.includes('bcodex'))).toHaveLength(1);
+      expect(spawns()).toBe(2);
+      // B logs in: the next request picks it up, and LiteLLM is respawned with it.
+      login();
+      await send('sonata-code-simple', b);
+      await waitFor(() => spawns() === 3, 'the respawn after login');
+      expect((await send('sonata-code-simple', b)).status).toBe(200);
+    });
+
+    it('startup: a registered session\'s missing login does not stop the router starting', async () => {
+      // Startup fails outright only for the machine config's own gateways;
+      // before, any registered project's missing credential killed the daemon.
+      const project = mkdtempSync(join(tmpdir(), 'serve-tenant-startup-credential-'));
+      writeFileSync(join(project, 'sonata.toml'), B_CONFIG);
+      await recordSession(home, { session: 'SB', cwd: project, started: new Date().toISOString() });
+      const { send, spawns } = await run(`
+[models."mflash"]
+gateway = "acme"
+id = "m-flash-1"
+[tiers.code]
+simple = ["mflash"]
+complex = ["mflash"]
+[native.gateways."acme"]
+base_url = "https://acme.example/v1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+      expect(spawns()).toBe(1);
+      expect((await send('sonata-code-simple')).status).toBe(200);
+      expect((await send('sonata-code-simple', { 'x-claude-code-session-id': 'SB' })).status).toBe(502);
+    });
+
+    it('lazy start: starts LiteLLM for the gateways that resolve, and loads the missing one after login', async () => {
+      const { project, send, spawns } = await run(`
+[models."mm"]
+gateway = "machdirect"
+id = "x-1"
+[tiers.code]
+simple = ["mm"]
+complex = ["mm"]
+[native.gateways."machdirect"]
+base_url = "https://direct.example"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+      writeSonataKey(home, 'machdirect', 'sk-machine-key');
+      expect(spawns()).toBe(0);
+      const b = projectHeaders(project);
+      expect((await send('sonata-code-simple', b)).status).toBe(502);
+      await waitFor(() => spawns() === 1, 'the lazy start');
+      expect((await send('sonata-code-complex', b)).status).toBe(200);
+      expect((await send('sonata-code-simple', b)).status).toBe(502);
+      login();
+      await send('sonata-code-simple', b);
+      await waitFor(() => spawns() === 2, 'the respawn after login');
+      expect((await send('sonata-code-simple', b)).status).toBe(200);
+    });
   });
 
   it('re-merges before routing a newly noted tenant, so its conflicting direct gateway is never served', async () => {
