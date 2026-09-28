@@ -249,6 +249,44 @@ describe('cmdInit (non-interactive)', () => {
       expect(lines.join('\n')).toContain('Nothing written.');
     });
 
+    it('puts a validation warning into the confirm question, and a warning still writes', async () => {
+      // Two gateways on one endpoint is a `warn`: printed before `confirm`,
+      // which draws in the alternate screen, so the user approved without
+      // ever seeing it. The question has to carry it. And a warning must not
+      // refuse — this drives the real init path through to the write.
+      const shared = 'https://opencode.ai/zen/go/v1';
+      const sharedDetect = makeDetect({
+        authed: ['opencode-go'],
+        extraRefs: 'opencode/deepseek-v4-flash\nopencode-go/kimi-k3\n',
+        providerBaseUrls: { opencode: shared, 'opencode-go': `${shared}/` },
+      });
+      const asked: string[] = [];
+      await cmdInit({
+        installLitellm: NO_INSTALL,
+        cwd, home, packageRoot: process.cwd(), detect: sharedDetect, write,
+        host: {
+          runTui: async (data) => ({
+            cancelled: false,
+            state: {
+              configScope: 'project',
+              providerKeys: ['opencode/opencode', 'opencode/opencode-go'],
+              nativeKeys: ['opencode-deepseek-v4-flash', 'opencode-go-kimi-k3'],
+              roles: ['code'],
+              hookScope: 'project', routing: 'skip', guidance: 'skip',
+              tiers: data.initialState?.tiers,
+            },
+          }),
+          confirm: async (question) => { asked.push(question); return true; },
+        },
+      });
+
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toMatch(/share base_url/);
+      expect(asked[0]).toContain('opencode, opencode-go');
+      expect(asked[0].indexOf('share base_url')).toBeLessThan(asked[0].indexOf('Write these changes?'));
+      expect(existsSync(join(cwd, 'sonata.toml'))).toBe(true);
+    });
+
     it('is interactive because a host is present, without a TTY', async () => {
       // `isInteractive()` inspects this process's stdin, which inside the
       // shell has already been claimed by Ink — so the host's presence is
