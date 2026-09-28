@@ -18,17 +18,37 @@
 import { StringDecoder } from 'node:string_decoder';
 import type { Readable, Writable } from 'node:stream';
 
-/** A line of LiteLLM's output saying its ChatGPT login has been refused and it is falling back to a device code. */
-export const LITELLM_CHATGPT_LOGIN_REFUSED = /re-login required|Sign in with ChatGPT using device code/;
+/**
+ * A line of LiteLLM's output saying its ChatGPT login has been refused and it
+ * is falling back to a device code — anchored on the exact lines LiteLLM
+ * writes, never a substring anywhere: every line of the child's output is
+ * scanned, including request bodies echoed in a debug log, and a conversation
+ * that merely mentions "re-login required" must not take ChatGPT down.
+ *
+ * - the warning, after LiteLLM's plain log prefix
+ *   (`\x1b[92m<HH:MM:SS> - LiteLLM:WARNING\x1b[0m: authenticator.py:55 - `),
+ *   colour codes optional; or as the `message` of LiteLLM's JSON log line;
+ * - the device-code prompt, which is a bare `print` and so begins its line.
+ */
+export const LITELLM_CHATGPT_LOGIN_REFUSED = new RegExp([
+  '^(?:\\x1b\\[[\\d;]*m)?\\d{2}:\\d{2}:\\d{2} - LiteLLM[\\w ]*:[A-Z]+(?:\\x1b\\[[\\d;]*m)?: \\S+:\\d+ - ' +
+    'ChatGPT refresh token failed, re-login required',
+  '^\\{"message": "ChatGPT refresh token failed, re-login required',
+  '^Sign in with ChatGPT using device code',
+].join('|'));
 
 /**
  * The line with a device-code login's user code masked. Nobody should act on
  * that code — the login it starts would be LiteLLM's, into a token directory
  * serve throws away, and a device code is a phishing target besides — so the
- * one a user reads in serve's log is never live.
+ * one a user reads in serve's log is never live. ChatGPT's prompt
+ * (`2) Enter code: XXXX-XXXX`) and Copilot's (`Please visit … and enter code
+ * XXXX-XXXX to authenticate.`), either case.
  */
 export function redactDeviceCode(line: string): string {
-  return line.replace(/(Enter code:\s*)\S.*$/, '$1****');
+  return line
+    .replace(/(Enter code:\s*)\S.*$/i, '$1****')
+    .replace(/(enter code\s+)\S+(\s+to authenticate)/i, '$1****$2');
 }
 
 /**
