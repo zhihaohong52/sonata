@@ -44,6 +44,20 @@ describe('cmdLog', () => {
     expect(cmdLog({ cwd, id }).text).toMatch(/^live line\n\n— sonata /);
   });
 
+  it('prints a non-interactive run`s own harness log, cleaned, in place of the event log', () => {
+    const id = newRun();
+    appendEvents(cwd, id, ['line 9']);
+    writeFileSync(join(runDir(cwd, id), 'harness.log'), 'line 1\n\u001b[32mline 2\u001b[0m\nline 9\n');
+    expect(cmdLog({ cwd, id }).text).toMatch(/^line 1\nline 2\nline 9\n\n— sonata /);
+  });
+
+  it('prints the event log when harness.log is empty', () => {
+    const id = newRun();
+    appendEvents(cwd, id, ['live line']);
+    writeFileSync(join(runDir(cwd, id), 'harness.log'), '  \n');
+    expect(cmdLog({ cwd, id }).text).toMatch(/^live line\n\n— sonata /);
+  });
+
   it('says so plainly when a run recorded nothing', () => {
     const id = newRun();
     const res = cmdLog({ cwd, id });
