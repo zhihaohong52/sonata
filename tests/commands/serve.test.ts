@@ -3737,6 +3737,30 @@ litellm = ${litellmPort}
       expect(readFileSync(tokenFile(), 'utf8')).toBe(seeded);
     });
 
+    it('does not restart while one account\'s store alternates between records with and without account_id or an id token', async () => {
+      // LiteLLM reads the record's `account_id` first, then the JWT claim;
+      // `chatgptAccountId` now follows that order. Every shape one login's
+      // record takes must still name one account, or the seed generation
+      // would move and restart LiteLLM on every rewrite.
+      writeMachineConfig(machine());
+      writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED', account_id: 'acct-a' });
+      const { send, envs, tokenFile, settle } = await start();
+      const seeded = readFileSync(tokenFile(), 'utf8');
+      const shapes: Record<string, string>[] = [
+        { access_token: claimJwt(2_000_000_001, 'acct-a'), refresh_token: 'R1' },
+        { access_token: claimJwt(2_000_000_002), refresh_token: 'R2', account_id: 'acct-a' },
+        { access_token: claimJwt(2_000_000_003), id_token: claimJwt(2_000_000_003, 'acct-a'), refresh_token: 'R3' },
+        { access_token: claimJwt(2_000_000_004, 'acct-a'), id_token: claimJwt(2_000_000_004, 'acct-a'), refresh_token: 'R4', account_id: 'acct-a' },
+        { access_token: claimJwt(2_000_000_005), refresh_token: 'R5' },
+      ];
+      for (let round = 0; round < 2; round += 1) {
+        for (const tokens of shapes) { writeCodexStore(tokens); await send(); await settle(); }
+      }
+      expect(envs).toHaveLength(1);
+      expect(readFileSync(tokenFile(), 'utf8')).toBe(seeded);
+      expect(errors.some((line) => line.includes('restarting litellm'))).toBe(false);
+    });
+
     it('restarts when `codex logout` makes the default fall through to opencode\'s other account', async () => {
       writeMachineConfig(machine());
       writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'CODEX-A' });
