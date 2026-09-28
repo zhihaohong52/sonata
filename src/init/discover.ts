@@ -43,6 +43,14 @@ export interface InitEnvironment {
   offered: ProviderSummary[];
   allNativeCandidates: NativeCandidate[];
   providerBaseUrls: Record<string, string>;
+  /**
+   * Base URLs to query per config scope: that scope's config, then harnesses,
+   * then any config. Optional only so hand-built environments stay valid;
+   * `discover` always sets it, and a reader falls back to `providerBaseUrls`.
+   */
+  providerBaseUrlsByScope?: Record<ConfigScope, Record<string, string>>;
+  /** Each scope's own key-authenticated `base_url`s — what `nativeTomlFor` writes back. Optional as above. */
+  configBaseUrlsByScope?: Record<ConfigScope, Record<string, string>>;
   gatewayAuth: Map<string, NativeGatewayAuth>;
   oauthProviders: Map<string, NativeGatewayAuth>;
   byokProviders: Array<{ name: string; url: string }>;
@@ -150,32 +158,46 @@ export async function discover(
   // silently replacing a hand-edited one on re-init. Key-authenticated
   // gateways only: an OAuth gateway's recorded URL is its backend's, which a
   // harness's metered URL must still be able to supply for a switch to a key.
-  const providerBaseUrls: Record<string, string> = {};
-  for (const config of Object.values(configsByScope)) {
-    for (const [gateway, gatewayConfig] of Object.entries(config?.native?.gateways ?? {})) {
-      if (!providerBaseUrls[gateway] && !isOauthGatewayAuth(gatewayConfig.auth)
-        && gatewayConfig.baseUrl !== undefined) {
-        providerBaseUrls[gateway] = gatewayConfig.baseUrl;
+  //
+  // Per scope, because the config written back is the one for the scope being
+  // written: resolving project-then-global once meant a global-scope init
+  // queried the project's URL and wrote the global one.
+  const configBaseUrlsByScope: Record<ConfigScope, Record<string, string>> = { project: {}, global: {} };
+  for (const scope of ['project', 'global'] as const) {
+    for (const [gateway, gatewayConfig] of Object.entries(configsByScope[scope]?.native?.gateways ?? {})) {
+      if (!isOauthGatewayAuth(gatewayConfig.auth) && gatewayConfig.baseUrl !== undefined) {
+        configBaseUrlsByScope[scope][gateway] = gatewayConfig.baseUrl;
       }
     }
   }
-  for (const h of harnesses) {
-    for (const [k, v] of Object.entries(h.providerBaseUrls ?? {})) {
-      if (!providerBaseUrls[k]) providerBaseUrls[k] = v;
-    }
-  }
-  // A gateway a harness no longer discovers (removed from opencode, say) but
-  // that is still configured in sonata.toml has no live-detected base URL, so
-  // re-authenticating it through the wizard could never fetch a fresh model
-  // list — only the models already persisted from whenever it was first
-  // imported. Fall back to the config's own base_url so it can.
-  for (const config of Object.values(configsByScope)) {
-    for (const [gateway, gatewayConfig] of Object.entries(config?.native?.gateways ?? {})) {
-      if (!providerBaseUrls[gateway] && gatewayConfig.baseUrl !== undefined) {
-        providerBaseUrls[gateway] = gatewayConfig.baseUrl;
+  const baseUrlsFor = (scope: ConfigScope): Record<string, string> => {
+    const urls: Record<string, string> = { ...configBaseUrlsByScope[scope] };
+    for (const h of harnesses) {
+      for (const [k, v] of Object.entries(h.providerBaseUrls ?? {})) {
+        if (!urls[k]) urls[k] = v;
       }
     }
-  }
+    // A gateway a harness no longer discovers (removed from opencode, say) but
+    // that is still configured in sonata.toml has no live-detected base URL,
+    // so re-authenticating it through the wizard could never fetch a fresh
+    // model list — only the models already persisted from whenever it was
+    // first imported. Fall back to a config's own base_url so it can: this
+    // scope's first, then the other's.
+    for (const config of [configsByScope[scope], ...Object.values(configsByScope)]) {
+      for (const [gateway, gatewayConfig] of Object.entries(config?.native?.gateways ?? {})) {
+        if (!urls[gateway] && gatewayConfig.baseUrl !== undefined) urls[gateway] = gatewayConfig.baseUrl;
+      }
+    }
+    return urls;
+  };
+  const providerBaseUrlsByScope: Record<ConfigScope, Record<string, string>> = {
+    project: baseUrlsFor('project'),
+    global: baseUrlsFor('global'),
+  };
+  // The scope-free view, for the callers that mint candidates before a scope
+  // is chosen. Project first, as before; `applyScopeBaseUrls` re-points an
+  // existing gateway's candidates once the scope is known.
+  const providerBaseUrls = providerBaseUrlsByScope.project;
   // A harness logged in with a subscription holds an OAuth credential, not an
   // API key. Writing such a provider with a metered base URL produces a gateway
   // that authenticates and is then refused for quota, which reads to the user as
@@ -273,6 +295,8 @@ export async function discover(
     offered,
     allNativeCandidates,
     providerBaseUrls,
+    providerBaseUrlsByScope,
+    configBaseUrlsByScope,
     gatewayAuth,
     oauthProviders,
     byokProviders,

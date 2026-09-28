@@ -56,6 +56,8 @@ export interface WizardData {
    * gateway no harness discovers anymore.
    */
   gatewayBaseUrls?: Record<string, string>;
+  /** `gatewayBaseUrls` per config scope: the URL asked is the one that scope writes back. */
+  gatewayBaseUrlsByScope?: Partial<Record<'project' | 'global', Record<string, string>>>;
   /** Gateways the config asks to rank last; see SonataConfig.avoidGateways. */
   avoidGateways?: string[];
   /**
@@ -286,7 +288,11 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         key="models"
         candidates={candidates}
         addedGateways={addedGateways}
-        gatewayBaseUrls={{ ...data.gatewayBaseUrls, ...addedBaseUrls }}
+        gatewayBaseUrls={{
+          ...((state.configScope !== undefined ? data.gatewayBaseUrlsByScope?.[state.configScope] : undefined)
+            ?? data.gatewayBaseUrls),
+          ...addedBaseUrls,
+        }}
         gatewayAuth={data.gatewayAuth ?? {}}
         keys={{ ...data.storedKeys, ...state.byokKeys }}
         aa={catalog}
