@@ -1513,10 +1513,13 @@ export async function cmdServe(
    * codex's file cannot be read, the last answer stands.
    */
   const lastOauthIdentity = new Map<string, string>();
-  const mergeGateways = (log: (line: string) => void): NativeConfig['gateways'] => {
+  const mergeGateways = (
+    log: (line: string) => void,
+    loaded: ReturnType<TenantRegistry['loadable']> = registry.loadable(),
+  ): NativeConfig['gateways'] => {
     const dropped = new Map<string, string>();
     const gateways = mergeTenantGateways(
-      registry.loadable().map(({ id, config }) => ({ id, gateways: config.native?.gateways ?? {} })),
+      loaded.map(({ id, config }) => ({ id, gateways: config.native?.gateways ?? {} })),
       log,
       (name, gateway) => {
         const lineage = lineageKey(name, gateway);
@@ -1547,11 +1550,11 @@ export async function cmdServe(
    * does hold — for an OAuth kind, another project's account, or a blocking
    * device-code login.
    */
-  const servableTenants = () => {
-    mergeGateways(() => { /* logged by mergedNative */ });
+  const servableTenants = (loaded: ReturnType<TenantRegistry['loadable']> = registry.loadable()) => {
+    mergeGateways(() => { /* logged by mergedNative */ }, loaded);
     const dropped = droppedGateways;
     const unresolved = litellmCredentialFailures;
-    return registry.loadable().map((tenant) => {
+    return loaded.map((tenant) => {
       const native = tenant.config.native;
       const keep = <T extends { gateway?: string }>(models: Record<string, T>) =>
         Object.fromEntries(Object.entries(models).filter(([, model]) =>
@@ -1711,7 +1714,10 @@ export async function cmdServe(
      * has already run for this request rather than merging again.
      */
     const litellmPlanSnapshot = (): string => {
-      const tenants = servableTenants();
+      // Every tenant config is parsed per `loadable()`, so once here, not
+      // once for each of the three things read off it.
+      const loaded = registry.loadable();
+      const tenants = servableTenants(loaded);
       const vars = new Set<string>();
       for (const { config } of tenants) {
         const gateways = config.native?.gateways ?? {};
@@ -1731,7 +1737,7 @@ export async function cmdServe(
         const value = childEnv[name];
         return `${name}=${value === undefined ? '-' : createHash('sha256').update(value).digest('hex').slice(0, 16)}`;
       });
-      return `${registry.unionSnapshot()}\n${JSON.stringify(litellmConfigForTenants(tenants, ''))}\n${env.join(',')}`;
+      return `${registry.unionSnapshot(loaded)}\n${JSON.stringify(litellmConfigForTenants(tenants, ''))}\n${env.join(',')}`;
     };
     applyCredentialFailures(startup.failures, startupNative);
     writeFileSync(configPath, litellmConfigYamlForTenants(servableTenants(), masterKey), { mode: 0o600 });
