@@ -984,6 +984,38 @@ export function budgetStatusesFor(args: {
  * it to the other project's endpoint. Dropping the name leaves neither with a
  * key, so both fail visibly rather than one silently borrowing the other's.
  */
+/**
+ * OAuth kinds whose gateways would be served different accounts: LiteLLM
+ * holds one credential per kind, so every gateway of such a kind has to go.
+ * Pure — the one definition `mergeTenantGateways` drops by and
+ * `sonata doctor` warns by.
+ */
+export function oauthConflicts(
+  entries: { name: string; owner: string; gateway: { auth?: string; credentialSource?: string } }[],
+  identity: (name: string, gateway: { auth?: string; credentialSource?: string }) => string,
+): { auth: string; names: string[]; why: string }[] {
+  const byKind = new Map<string, typeof entries>();
+  for (const entry of entries) {
+    const auth = entry.gateway.auth;
+    if (auth !== 'codex-oauth' && auth !== 'copilot-oauth') continue;
+    byKind.set(auth, [...(byKind.get(auth) ?? []), entry]);
+  }
+  const out: { auth: string; names: string[]; why: string }[] = [];
+  for (const [auth, group] of byKind) {
+    const ids = group.map((entry) => identity(entry.name, entry.gateway));
+    if (new Set(ids).size <= 1) continue;
+    const listed = group.map((entry, k) => `"${entry.name}" (${entry.owner}, ${ids[k]})`).join(', ');
+    out.push({
+      auth,
+      names: group.map((entry) => entry.name),
+      why: `gateways with auth = "${auth}" read different credentials — ${listed} — serving none of them, ` +
+        "since LiteLLM holds one credential of that kind and a project would be served another's " +
+        'account; point them at one credential',
+    });
+  }
+  return out;
+}
+
 export function mergeTenantGateways(
   tenants: { id: string; gateways: NativeConfig['gateways'] }[],
   log: (line: string) => void,
@@ -1047,23 +1079,15 @@ export function mergeTenantGateways(
   // `resolvedOauthIdentity` — the store actually read); when any two do not,
   // EVERY gateway of that kind is dropped — dropping only the odd one out
   // still leaves one child deciding between accounts it cannot tell apart.
-  const byKind = new Map<string, string[]>();
-  for (const [name, gateway] of Object.entries(merged)) {
-    if (gateway.auth !== 'codex-oauth' && gateway.auth !== 'copilot-oauth') continue;
-    byKind.set(gateway.auth, [...(byKind.get(gateway.auth) ?? []), name]);
-  }
-  for (const [auth, names] of byKind) {
-    const idOf = (name: string): string => identity(name, merged[name]!);
-    if (new Set(names.map(idOf)).size <= 1) continue;
-    const listed = names.map((name) => `"${name}" (${owner[name]}, ${idOf(name)})`).join(', ');
-    const why = `gateways with auth = "${auth}" read different credentials — ${listed} — serving none of them, ` +
-      "since LiteLLM holds one credential of that kind and a project would be served another's " +
-      'account; point them at one credential';
-    for (const name of names) {
+  for (const conflict of oauthConflicts(
+    Object.entries(merged).map(([name, gateway]) => ({ name, owner: owner[name] ?? '?', gateway })),
+    identity,
+  )) {
+    for (const name of conflict.names) {
       delete merged[name];
-      dropped?.set(name, why);
+      dropped?.set(name, conflict.why);
     }
-    log(why);
+    log(conflict.why);
   }
   return merged;
 }
