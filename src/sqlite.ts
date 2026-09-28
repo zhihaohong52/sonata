@@ -57,6 +57,15 @@ function sqliteModule(): SqliteModule | null {
 }
 
 /**
+ * Whether `node:sqlite` can be loaded at all. Where it cannot, every database
+ * reads as "no rows" every time — a steady answer, unlike a database that
+ * exists and fails to open this once.
+ */
+export function sqliteAvailable(): boolean {
+  return sqliteModule() !== null;
+}
+
+/**
  * The database at `path`, opened read-only, or `undefined` when it cannot be
  * opened — never throws.
  */
