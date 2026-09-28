@@ -1395,16 +1395,29 @@ complex = ["openai-gpt-5.6-luna"]
     expect(routes.map((r) => r.native?.gateway)).toEqual(['codex', 'openai']);
   });
 
-  it('loads two copilot-oauth gateways that name the same credential source', () => {
+  it('loads two copilot-oauth gateways that read one machine store', () => {
     const cfg = parseConfig(`
 [native.gateways."copilot"]
 auth = "copilot-oauth"
-credential_source = "sonata"
+credential_source = "opencode"
 [native.gateways."copilot-2"]
 auth = "copilot-oauth"
-credential_source = "sonata"
+credential_source = "opencode"
 `);
     expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['copilot', 'copilot-2']);
+  });
+
+  it('refuses two sonata-sourced gateways of one kind: sonata stores a login per gateway name', () => {
+    // credentialDir(home, name): `codex` and `codex-work` are two logins, two
+    // accounts — and LiteLLM would serve both from the first.
+    expect(() => parseConfig(`
+[native.gateways."codex"]
+auth = "codex-oauth"
+credential_source = "sonata"
+[native.gateways."codex-work"]
+auth = "codex-oauth"
+credential_source = "sonata"
+`)).toThrow(/"codex" \(sonata:codex\).*"codex-work" \(sonata:codex-work\).*codex-oauth/s);
   });
 
   it('refuses two codex-oauth gateways whose credential sources differ, naming both', () => {
@@ -1415,7 +1428,7 @@ credential_source = "codex"
 [native.gateways."codex-work"]
 auth = "codex-oauth"
 credential_source = "sonata"
-`)).toThrow(/gateways "codex" \(credential_source = "codex"\) and "codex-work" \(credential_source = "sonata"\) both use auth = "codex-oauth"/);
+`)).toThrow(/"codex" \(codex\).*"codex-work" \(sonata:codex-work\).*codex-oauth/s);
   });
 
   it('counts an absent credential_source as its own source', () => {
@@ -1425,7 +1438,7 @@ auth = "codex-oauth"
 [native.gateways."codex-work"]
 auth = "codex-oauth"
 credential_source = "sonata"
-`)).toThrow(/credential_source = default/);
+`)).toThrow(/"codex" \(default\)/);
   });
 });
 

@@ -752,30 +752,27 @@ export function parseConfig(text: string): SonataConfig {
     // LiteLLM reads a ChatGPT credential from one directory
     // (CHATGPT_TOKEN_DIR) and a Copilot one from another
     // (GITHUB_COPILOT_TOKEN_DIR), process-wide — so every gateway of one OAuth
-    // kind is served ONE account. That is harmless when they all name the same
-    // credential source (the default included): one account, nothing can
-    // leak. `sonata init` before v0.10.0 wrote the ChatGPT subscription twice,
-    // as `codex` and `openai`, and those configs must keep loading. Only
-    // sources that differ are refused, since one of them would silently be
-    // served the other's account.
-    const oauthOwners = new Map<string, { name: string; source: string }>();
+    // kind is served ONE account. Harmless when they all resolve to one
+    // credential (`oauthCredentialIdentity`): `sonata init` before v0.10.0
+    // wrote the ChatGPT subscription twice, as `codex` and `openai`, both on
+    // the default store, and those configs must keep loading. A kind with two
+    // identities is refused — one gateway would silently be served the other's
+    // account.
+    const identities = new Map<string, Map<string, string>>();
     for (const [name, gateway] of Object.entries(gateways)) {
       if (gateway.auth !== 'codex-oauth' && gateway.auth !== 'copilot-oauth') continue;
-      const source = gateway.credentialSource ?? 'default';
-      const owner = oauthOwners.get(gateway.auth);
-      if (owner === undefined) {
-        oauthOwners.set(gateway.auth, { name, source });
-        continue;
-      }
-      if (owner.source !== source) {
-        const quote = (s: string) => (s === 'default' ? 'default' : `"${s}"`);
-        throw new Error(
-          `sonata.toml: gateways "${owner.name}" (credential_source = ${quote(owner.source)}) and ` +
-          `"${name}" (credential_source = ${quote(source)}) both use auth = "${gateway.auth}", ` +
-          'but LiteLLM holds one credential of that kind per process, so one would be served the ' +
-          "other's account — give them the same credential_source, or keep one of them",
-        );
-      }
+      const byName = identities.get(gateway.auth) ?? new Map<string, string>();
+      byName.set(name, oauthCredentialIdentity(name, gateway));
+      identities.set(gateway.auth, byName);
+    }
+    for (const [auth, byName] of identities) {
+      if (new Set(byName.values()).size <= 1) continue;
+      const listed = [...byName].map(([name, identity]) => `"${name}" (${identity})`).join(', ');
+      throw new Error(
+        `sonata.toml: gateways ${listed} all use auth = "${auth}" but read different credentials, ` +
+        'and LiteLLM holds one credential of that kind per process, so one would be served ' +
+        "another's account — point them at one credential, or keep one of them",
+      );
     }
 
     const nativeModels: Record<string, NativeModelConfig> = {};
@@ -952,6 +949,22 @@ export function resolveTierAlias(
     };
   });
   return { role, tier, routes };
+}
+
+/**
+ * Which credential an OAuth gateway is served from, as a comparable string.
+ *
+ * `sonata` stores its login per gateway NAME (`credentialDir(home, name)`),
+ * so two sonata-sourced gateways are two logins — two accounts. Every other
+ * source (`codex`, `opencode`, and the default search of both) is one machine
+ * store, shared by every gateway that names it.
+ */
+export function oauthCredentialIdentity(
+  name: string,
+  gateway: { credentialSource?: string },
+): string {
+  const source = gateway.credentialSource ?? 'default';
+  return source === 'sonata' ? `sonata:${name}` : source;
 }
 
 /**

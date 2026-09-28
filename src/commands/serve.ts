@@ -7,7 +7,7 @@ import { createServer as createHttpServer, type RequestListener, type Server } f
 
 import { loadModelsDev } from '../modelsdev.js';
 import { spentTodayUsd, unreadableMachineBudget, type BudgetStatus } from '../budget.js';
-import { GLOBAL_CONFIG_RELATIVE, loadConfig, nativeRouteFor, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
+import { GLOBAL_CONFIG_RELATIVE, loadConfig, nativeRouteFor, oauthCredentialIdentity, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
 import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
@@ -284,10 +284,11 @@ export async function killRecordedOrphan(
     sleep?: (ms: number) => Promise<void>;
     timeoutMs?: number;
   } = {},
-): Promise<void> {
+): Promise<{ survivor?: { pid: number; command: string | undefined } }> {
   const found = readServeStateFrom(home, routerPort);
   const litellmPid = found?.state.litellmPid;
   let stillRunning = false;
+  let command: string | undefined;
   if (litellmPid !== undefined) {
     // Refuse only on POSITIVE evidence of a mismatch — the same rule as the
     // routerPid port-holder check in `stopServe`. A command line that is
@@ -295,14 +296,17 @@ export async function killRecordedOrphan(
     // something else, and signalling it would kill an unrelated process at
     // every serve start. Unknown (`undefined`) is not evidence: it proceeds
     // exactly as before.
-    const command = (deps.processCommand ?? processCommand)(litellmPid);
+    command = (deps.processCommand ?? processCommand)(litellmPid);
     if (command !== undefined && !/litellm/i.test(command)) {
       console.error(
         `sonata serve: recorded litellm pid ${litellmPid} is no longer LiteLLM ` +
         `(${command}) — leaving it alone`,
       );
     } else {
-      stillRunning = !(await terminatePid(litellmPid, deps));
+      // SIGKILL only on positive identification. "ps could not say" was
+      // enough for the SIGTERM this always sent, but not for a signal that
+      // cannot be caught: the pid may have been reused by anything.
+      stillRunning = !(await terminatePid(litellmPid, { ...deps, escalate: command !== undefined }));
     }
   }
   // Only this port's own record is ever read here, so the file cleared is
@@ -320,6 +324,21 @@ export async function killRecordedOrphan(
       ...(stillRunning ? { litellmPid } : {}),
     });
   }
+  return stillRunning && litellmPid !== undefined ? { survivor: { pid: litellmPid, command } } : {};
+}
+
+/**
+ * Why a recorded LiteLLM that outlived every signal blocks a new spawn: it
+ * very likely still holds the port, and recording the new child's pid would
+ * forget the old one for good. Names the pid, what it runs, and the command
+ * that clears it by hand.
+ */
+export function orphanSurvivorMessage(survivor: { pid: number; command: string | undefined }): string {
+  return `sonata serve: a LiteLLM from an earlier daemon (pid ${survivor.pid}, ` +
+    `${survivor.command === undefined ? 'command line unknown' : `running \`${survivor.command}\``}) ` +
+    'is still alive after being signalled and probably holds the LiteLLM port — not starting another. ' +
+    `Check it with \`ps -p ${survivor.pid} -o command=\`, stop it with \`kill -9 ${survivor.pid}\`, ` +
+    'then retry (`sonata restart`).';
 }
 
 /**
@@ -335,6 +354,8 @@ async function terminatePid(
     isAlive?: (pid: number) => boolean;
     sleep?: (ms: number) => Promise<void>;
     timeoutMs?: number;
+    /** False sends SIGTERM alone: the pid's identity was not confirmed. */
+    escalate?: boolean;
   },
 ): Promise<boolean> {
   const isAlive = deps.isAlive ?? defaultIsAlive;
@@ -349,6 +370,7 @@ async function terminatePid(
   };
   (deps.kill ?? killPid)(pid);
   if (await gone()) return true;
+  if (deps.escalate === false) return false;
   console.error(`sonata serve: recorded litellm pid ${pid} did not exit after SIGTERM — sending SIGKILL`);
   (deps.forceKill ?? forcePid)(pid);
   return gone();
@@ -370,9 +392,16 @@ function recordRouterPid(home: string, routerPort: number, pid: number): void {
  * the keyed state. The child is killed separately by the caller, so removing
  * the whole record cannot strand its LiteLLM pid; the legacy file is never read.
  */
-function clearFailedRouterRecord(home: string, routerPort: number): void {
+function clearFailedRouterRecord(home: string, routerPort: number, orphanPid?: number): void {
   const state = readServeState(home, routerPort);
   if (state?.routerPid !== process.pid) return;
+  // An orphan LiteLLM that outlived its signals and blocked this start is not
+  // our child, and must stay recorded — dropped here, nothing would ever
+  // find it again.
+  if (orphanPid !== undefined && state.litellmPid === orphanPid) {
+    writeServeState(home, routerPort, { litellmPid: orphanPid });
+    return;
+  }
   try { unlinkSync(serveStatePath(home, routerPort)); } catch { /* already gone */ }
 }
 
@@ -991,31 +1020,26 @@ export function mergeTenantGateways(
     );
   }
   // Likewise one OAuth credential of each kind per LiteLLM child
-  // (CHATGPT_TOKEN_DIR / GITHUB_COPILOT_TOKEN_DIR). Two differently named
-  // gateways of one kind that read the SAME credential source (the default
-  // included) are one account and are both kept; only differing sources are
-  // dropped, since one project would be served the other's account.
+  // (CHATGPT_TOKEN_DIR / GITHUB_COPILOT_TOKEN_DIR): every gateway of a kind is
+  // served whichever credential buildChildEnv finds first. Kept when they all
+  // resolve to one credential (`oauthCredentialIdentity`); when any two do
+  // not, EVERY gateway of that kind is dropped — dropping only the odd one out
+  // still leaves one child deciding between accounts it cannot tell apart.
   // parseConfig applies the same rule inside one file.
-  const byOauth = new Map<string, string>();
-  for (const name of Object.keys(merged)) {
-    const gateway = merged[name];
-    const auth = gateway?.auth;
-    if (auth !== 'codex-oauth' && auth !== 'copilot-oauth') continue;
-    const other = byOauth.get(auth);
-    if (other === undefined) {
-      byOauth.set(auth, name);
-      continue;
-    }
-    const mine = gateway.credentialSource ?? 'default';
-    const theirs = merged[other]?.credentialSource ?? 'default';
-    if (mine === theirs) continue;
-    delete merged[name];
-    delete merged[other];
+  const byKind = new Map<string, string[]>();
+  for (const [name, gateway] of Object.entries(merged)) {
+    if (gateway.auth !== 'codex-oauth' && gateway.auth !== 'copilot-oauth') continue;
+    byKind.set(gateway.auth, [...(byKind.get(gateway.auth) ?? []), name]);
+  }
+  for (const [auth, names] of byKind) {
+    const identity = (name: string): string => oauthCredentialIdentity(name, merged[name]!);
+    if (new Set(names.map(identity)).size <= 1) continue;
+    const listed = names.map((name) => `"${name}" (${owner[name]}, ${identity(name)})`).join(', ');
+    for (const name of names) delete merged[name];
     log(
-      `gateways "${other}" (${owner[other]}, credential_source = ${theirs}) and ` +
-      `"${name}" (${owner[name]}, credential_source = ${mine}) both use auth = "${auth}" but read ` +
-      'different credentials — serving neither, since LiteLLM holds one credential of that kind ' +
-      "and one project would be served the other's account; give them the same credential_source",
+      `gateways with auth = "${auth}" read different credentials — ${listed} — serving none of them, ` +
+      "since LiteLLM holds one credential of that kind and a project would be served another's " +
+      'account; point them at one credential',
     );
   }
   return merged;
@@ -1073,6 +1097,26 @@ export async function cmdServe(
     return false;
   };
   const needsLitellmAtStart = unionNeedsLitellm();
+  /**
+   * Set while a recorded LiteLLM from an earlier daemon outlives its signals.
+   * Nothing is spawned over it, and every LiteLLM-bound request is answered
+   * with this instead of reaching whatever holds the port.
+   */
+  let orphanBlocking: string | undefined;
+  let orphanPid: number | undefined;
+  const clearOrphan = async (): Promise<void> => {
+    const { survivor } = await killRecordedOrphan(opts.home, ports.router, {
+      processCommand: opts.processCommand,
+      timeoutMs: opts.litellmExitTimeoutMs,
+    });
+    if (survivor !== undefined) {
+      orphanPid = survivor.pid;
+      orphanBlocking = orphanSurvivorMessage(survivor);
+      throw new Error(orphanBlocking);
+    }
+    orphanBlocking = undefined;
+    orphanPid = undefined;
+  };
 
   const masterKey = `sk-sonata-${randomBytes(32).toString('hex')}`;
   const instanceId = opts.instanceId ?? process.env.SONATA_SERVE_INSTANCE_ID ?? randomUUID();
@@ -1253,6 +1297,10 @@ export async function cmdServe(
         writeFileSync(configPath, litellmConfigYamlForTenants(registry.loadable(), masterKey), { mode: 0o600 });
         console.error('sonata serve: a project now routes through LiteLLM — starting it');
         litellmReady = (async () => {
+          // A daemon that died without stopping its child leaves that child
+          // recorded here; the lazy start is the first spawn after it, so it
+          // clears it exactly as an eager start does.
+          await clearOrphan();
           const spawned = spawnLitellmChild();
           child = spawned;
           // The readiness await owns this child. Its exit can race the failed
@@ -1440,7 +1488,7 @@ export async function cmdServe(
         // for its effect on `litellmUnavailable`, which is the answer either
         // way.
         if (child === undefined && unionNeedsLitellm()) litellmHealthy();
-        return litellmUnavailable;
+        return orphanBlocking ?? litellmUnavailable;
       },
       checkModelChange: () => {
         void maybeRestartForModelChange().catch((error) => {
@@ -1482,10 +1530,7 @@ export async function cmdServe(
         if (!litellmHealthy()) {
           throw new Error(`sonata serve: this config routes through LiteLLM, which is ${litellmStatus(opts.home, true).state} — run \`sonata litellm install\``);
         }
-        await killRecordedOrphan(opts.home, ports.router, {
-          processCommand: opts.processCommand,
-          timeoutMs: opts.litellmExitTimeoutMs,
-        });
+        await clearOrphan();
         child = spawnLitellmChild();
         await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
       })();
@@ -1515,7 +1560,7 @@ export async function cmdServe(
     if (child !== undefined) await terminateLitellm(child, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep);
     // Clear the record while this process still owns the bound port. A
     // replacement cannot have written a new record until after close begins.
-    if (listening.length > 0) clearFailedRouterRecord(opts.home, ports.router);
+    if (listening.length > 0) clearFailedRouterRecord(opts.home, ports.router, orphanPid);
     for (const server of listening) {
       try { await close(server); } catch { /* preserve the startup error */ }
     }
