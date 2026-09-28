@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { shellQuote } from './shell.js';
-import { VERSION_PROBE_TIMEOUT_MS } from './version-probe.js';
+import { VERSION_PROBE_TIMEOUT_MS, runProbe } from './version-probe.js';
 import type { PaneSource } from './pane-record.js';
 
 const run = promisify(execFile);
@@ -49,7 +49,7 @@ export async function retryWhenServerExits<T>(
  * the only caller, and an unbounded probe is never what anyone wants.
  */
 export async function tmuxVersion(timeoutMs: number = VERSION_PROBE_TIMEOUT_MS): Promise<string> {
-  const { stdout } = await run('tmux', ['-V'], { encoding: 'utf8', timeout: timeoutMs });
+  const { stdout } = await runProbe('tmux', ['-V'], { timeoutMs });
   return stdout.trim().replace(/^tmux\s+/, '');
 }
 
