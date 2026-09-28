@@ -3,6 +3,8 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdDispatch, truncateReport, taskPath } from '../../src/commands/dispatch.js';
+import { createRun, runDir } from '../../src/store.js';
+import { killSession, newSession } from '../../src/tmux.js';
 
 const TIERED = `
 [models."flash"]
@@ -46,18 +48,35 @@ describe('cmdDispatch', () => {
     expect(outcome.attempts).toHaveLength(1);
   });
 
-  it('falls through on an empty report even though provenance was appended', async () => {
-    // cmdTail appends the provenance line to every finished report, so the
-    // decorated text is never empty; the retry must key off the verdict.
+  it('falls through when a candidate leaves an empty report.md behind', async () => {
+    // The reachable shape of an empty report, through the real wait/tail path:
+    // report.md exists but is empty, the harness exited cleanly. The store
+    // reads that as no report, tail degrades the run, and dispatch moves on.
+    const sessions: string[] = [];
     const ran: string[] = [];
-    const outcome = await cmdDispatch(opts(), {
-      run: async (o) => { ran.push(o.model); return { id: `r${ran.length}`, session: 's', interactive: false }; },
-      wait: async (o) => (o.id === 'r1'
-        ? { id: 'r1', state: 'DONE', report: '\n\n— sonata verified run r1', reportEmpty: true, degraded: false, lines: [] }
-        : { id: 'r2', state: 'DONE', report: 'terra did it', degraded: false, lines: [] }) as never,
-    });
-    expect(ran).toEqual(['flash', 'terra']);
-    expect(outcome.modelKey).toBe('terra');
+    try {
+      const outcome = await cmdDispatch(opts(), {
+        run: async (o) => {
+          ran.push(o.model);
+          const meta = createRun(cwd, {
+            role: 'code', model: o.model, harness: 'opencode', mode: 'acceptEdits',
+            interactive: false, startedAt: new Date().toISOString(),
+          });
+          const dir = runDir(cwd, meta.id);
+          writeFileSync(join(dir, 'report.md'), o.model === 'flash' ? '' : 'terra did it');
+          writeFileSync(join(dir, 'exit'), '0\n');
+          await newSession({ session: meta.session, cwd });
+          sessions.push(meta.session);
+          return { id: meta.id, session: meta.session, interactive: false };
+        },
+      });
+      expect(ran).toEqual(['flash', 'terra']);
+      expect(outcome.attempts.map((a) => a.degraded)).toEqual([true, false]);
+      expect(outcome.modelKey).toBe('terra');
+      expect(outcome.report).toContain('terra did it');
+    } finally {
+      for (const s of sessions) await killSession(s);
+    }
   });
 
   it('falls through to the next candidate on a degraded finish', async () => {

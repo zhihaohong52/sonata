@@ -222,29 +222,6 @@ describe('tail decide — runs that cannot write a report', () => {
   });
 });
 
-describe('tail decide — an empty report', () => {
-  // `sonata dispatch` retries the next candidate on an empty report, but it can
-  // only see the decorated text, which always carries the provenance line — so
-  // the verdict has to come from here, before anything is appended.
-  it('flags a trusted report with no content as empty', () => {
-    const r = decide({ ...base, exitCode: 0, report: '  \n' });
-    expect(r.reportEmpty).toBe(true);
-  });
-
-  it('does not flag a report with content', () => {
-    const r = decide({ ...base, exitCode: 0, report: 'I fixed the bug.', worktreeUnchanged: true });
-    expect(r.reportEmpty).toBe(false);
-  });
-
-  it('does not count an annotation as content', () => {
-    const r = decide({
-      ...base, exitCode: 0, report: '', worktreeUnchanged: true,
-      effort: 'high', effortHonoured: false, harness: 'reasonix',
-    });
-    expect(r.reportEmpty).toBe(true);
-  });
-});
-
 describe('harnessOutput', () => {
   const LAUNCH = '/repo/.sonata/runs/abc123/cmd.sh';
 
