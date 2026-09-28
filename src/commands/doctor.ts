@@ -1,5 +1,6 @@
 import { extendedContextAdvice } from '../extended-context.js';
 import { splitCandidate } from '../effort.js';
+import { VERSION_PROBE_TIMEOUT_MS } from '../version-probe.js';
 import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { promisify } from 'node:util';
@@ -338,9 +339,14 @@ async function defaultClaudeVersion(): Promise<string | undefined> {
 }
 
 /** A harness's version line, from the real binary — `cmdDoctor`'s default `harnessVersion`. */
-async function defaultHarnessVersion(command: string[]): Promise<string> {
+/**
+ * A harness's version, bounded like every other `--version` probe: doctor
+ * awaits each in turn, so one hung binary hung the whole command. A timeout
+ * throws, which doctor already reports as a failed version check.
+ */
+export async function defaultHarnessVersion(command: string[]): Promise<string> {
   const env = { ...process.env, PATH: `${process.env.HOME}/.opencode/bin:${process.env.PATH}` };
-  const { stdout } = await run(command[0], command.slice(1), { env });
+  const { stdout } = await run(command[0], command.slice(1), { env, timeout: VERSION_PROBE_TIMEOUT_MS });
   return stdout;
 }
 
