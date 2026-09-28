@@ -1494,11 +1494,16 @@ export function resolvedOauthIdentity(
   return readChatGptOAuth(home, 'codex') !== null ? 'codex store' : 'opencode store';
 }
 
-/** A file as a stat-only token: its identity, mtime and size, or `-` when absent. */
+/**
+ * A file as a stat-only token: its identity, mtime, size and mode, or `-`
+ * when absent. The mode is there because `chmod` moves no mtime: a store
+ * made unreadable (EACCES) or readable again otherwise changed nothing the
+ * plan fingerprint could see, and was never re-read.
+ */
 function statSignal(path: string): string {
   try {
-    const { ino, mtimeMs, size } = statSync(path);
-    return `${ino}:${mtimeMs}:${size}`;
+    const { ino, mtimeMs, size, mode } = statSync(path);
+    return `${ino}:${mtimeMs}:${size}:${mode}`;
   } catch {
     return '-';
   }

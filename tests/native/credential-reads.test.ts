@@ -64,6 +64,31 @@ describe('boundUnreadable', () => {
     expect(boundUnreadable(path, jsonStoreRead(path), memory, t0 + W + 2).state).toBe('absent');
   });
 
+  it('skips a file that is kept freshly written but never parses, once its run of failures passes the window', () => {
+    // Its mtime is always recent, so the mtime rule alone read it as torn
+    // forever. A write takes a moment; a run of failures ten seconds long is
+    // not one.
+    const path = join(dir, 'auth.json');
+    const memory = newUnreadableMemory();
+    const t0 = Date.now();
+    const touch = (at: number, text: string) => {
+      writeFileSync(path, text);
+      utimesSync(path, at / 1000, at / 1000);
+    };
+    touch(t0, '{"a');
+    expect(boundUnreadable(path, jsonStoreRead(path), memory, t0).state).toBe('unreadable');
+    touch(t0 + 5000, '{"ab');
+    expect(boundUnreadable(path, jsonStoreRead(path), memory, t0 + 5000).state).toBe('unreadable');
+    touch(t0 + W + 1000, '{"abc');
+    const late = boundUnreadable(path, jsonStoreRead(path), memory, t0 + W + 1000);
+    expect(late).toEqual({ state: 'absent', skipped: expect.stringContaining(path) });
+    // A clean read ends the run; the next failure is torn again.
+    touch(t0 + W + 2000, '{}');
+    expect(boundUnreadable(path, jsonStoreRead(path), memory, t0 + W + 2000).state).toBe('ok');
+    touch(t0 + W + 3000, '{"x');
+    expect(boundUnreadable(path, jsonStoreRead(path), memory, t0 + W + 3000).state).toBe('unreadable');
+  });
+
   it('forgets a file that reads cleanly, so its next failure starts fresh', () => {
     const path = join(dir, 'auth.json');
     writeFileSync(path, '{}');

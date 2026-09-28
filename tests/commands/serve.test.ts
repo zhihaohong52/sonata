@@ -4365,6 +4365,29 @@ litellm = ${litellmPort}
         }
       });
 
+      it('notices a chmod on the next request, though chmod moves no mtime', async () => {
+        // The plan fingerprint was ino:mtime:size, which chmod leaves alone,
+        // so a store made unreadable (or readable again) was never re-read.
+        // Sourced from codex alone: a default source's identity check reads
+        // codex's file on every merge anyway, which would hide the gap.
+        writeMachineConfig(DEFAULT_CHATGPT().replace('auth = "codex-oauth"', 'auth = "codex-oauth"\ncredential_source = "codex"'));
+        mkdirSync(join(home, '.codex'), { recursive: true });
+        writeFileSync(codexPath(), codexRecord('CODEX-A'));
+        backdate(codexPath());
+        const { send, seededWith } = await start();
+        expect((await send()).status).toBe(200);
+        chmodSync(codexPath(), 0o000);
+        try {
+          expect((await send()).status).toBe(200);
+          expect(errors.some((line) => line.includes(codexPath()) && line.includes('EACCES'))).toBe(true);
+        } finally {
+          chmodSync(codexPath(), 0o600);
+        }
+        expect((await send()).status).toBe(200);
+        // Kept through it: the gateway had resolved, so nothing re-seeded.
+        expect(seededWith()).toEqual(['CODEX-A']);
+      });
+
       it('refuses within the window, and serves from opencode once it lapses with nothing on disk changing', async () => {
         writeMachineConfig(DEFAULT_CHATGPT());
         mkdirSync(join(home, '.codex'), { recursive: true });

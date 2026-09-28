@@ -152,8 +152,11 @@ export const UNREADABLE_STORE_WINDOW_MS = 10_000;
 
 /** What `boundUnreadable` remembers between reads; one per process, shared by every caller. */
 export interface UnreadableMemory {
-  /** A file store's stat at its last unreadable read, and when that last changed. */
-  files: Map<string, { sig: string; changedAt?: number; warned?: true }>;
+  /**
+   * A file store's stat at its last unreadable read, when that last changed,
+   * and when its current run of failed reads began.
+   */
+  files: Map<string, { sig: string; since: number; changedAt?: number; warned?: true }>;
   /** When opencode.db's current run of failed reads began. */
   db: Map<string, { since: number; warned?: true }>;
   /** Unreadable reads answered as mid-write since this memory was made; a caller compares counts. */
@@ -178,11 +181,15 @@ function statSig(path: string): { sig: string; mtimeMs?: number } {
  *
  * An unreadable file counts as torn — answered `unreadable`, so the caller
  * keeps its last resolution or refuses for now — only while it is plausibly
- * mid-write: its mtime is within `windowMs` of `now`, or its mtime or size
- * changed since the previous unreadable read less than `windowMs` ago. Past
- * that it is steadily unreadable and answered `absent`, with `skipped` naming
- * the path and the error; `warn` is called once per such stretch. Any read
- * that is not unreadable forgets the file, so the next failure starts fresh.
+ * mid-write, which takes both: its mtime is within `windowMs` of `now` (or
+ * its mtime or size changed since the previous unreadable read less than
+ * `windowMs` ago), AND its current run of failed reads began less than
+ * `windowMs` ago. A write takes a moment; a file that something keeps
+ * touching while it never once parses is not mid-write, and without the
+ * second bound it read as torn forever. Past either it is steadily
+ * unreadable and answered `absent`, with `skipped` naming the path and the
+ * error; `warn` is called once per such stretch. Any read that is not
+ * unreadable forgets the file, so the next failure starts a fresh run.
  */
 export function boundUnreadable(
   path: string,
@@ -199,12 +206,15 @@ export function boundUnreadable(
   const { sig, mtimeMs } = statSig(path);
   const previous = memory.files.get(path);
   const changedAt = previous !== undefined && previous.sig !== sig ? now : previous?.changedAt;
-  const record: { sig: string; changedAt?: number; warned?: true } = { sig, ...(changedAt === undefined ? {} : { changedAt }) };
+  const since = previous?.since ?? now;
+  const record: { sig: string; since: number; changedAt?: number; warned?: true } =
+    { sig, since, ...(changedAt === undefined ? {} : { changedAt }) };
   if (previous?.warned === true && previous.sig === sig) record.warned = true;
   memory.files.set(path, record);
   const recentlyWritten = mtimeMs !== undefined && Math.abs(now - mtimeMs) < windowMs;
   const recentlyChanged = changedAt !== undefined && now - changedAt < windowMs;
-  if (recentlyWritten || recentlyChanged) {
+  const runIsYoung = now - since < windowMs;
+  if ((recentlyWritten || recentlyChanged) && runIsYoung) {
     memory.torn += 1;
     return read;
   }
