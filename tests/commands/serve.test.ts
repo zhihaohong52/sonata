@@ -12,6 +12,7 @@ import {
 } from '../../src/commands/serve.js';
 import type { RouterTenant } from '../../src/native/router.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
+import { recordSession } from '../../src/sessions.js';
 import { managedLitellmPath, venvDir, LITELLM_VERSION } from '../../src/native/litellm-venv.js';
 import { clearCooldowns } from '../../src/native/router.js';
 import { ensureRouterToken } from '../../src/native/router-token.js';
@@ -2942,6 +2943,82 @@ litellm = ${litellmPort}
     }
     expect(spawns).toBe(0);
     expect(JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8')).litellmPid).toBe(222);
+  });
+
+  it('leaves models on a dropped OAuth gateway out of LiteLLM, and answers them 502 naming the conflict', async () => {
+    // The machine's `codex` reads the default store; a project's `codex-work`
+    // has its own sonata login. One LiteLLM child cannot hold both, so both
+    // gateways are dropped — and their models must not be served from
+    // LiteLLM's default token dir either, which is another account.
+    writeMachineConfig(`
+[models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["luna"]
+complex = ["luna"]
+[native.gateways."codex"]
+auth = "codex-oauth"
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+[models."flash"]
+gateway = "acme"
+id = "flash-1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'acme', 'k');
+    const project = mkdtempSync(join(tmpdir(), 'serve-tenant-oauth-conflict-'));
+    writeFileSync(join(project, 'sonata.toml'), `
+[models."work"]
+gateway = "codex-work"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["work"]
+complex = ["work"]
+[native.gateways."codex-work"]
+auth = "codex-oauth"
+credential_source = "sonata"
+`);
+    // Register the project before startup, so the union sees the conflict.
+    await recordSession(home, { session: 'conflict-session', cwd: project, started: new Date().toISOString() });
+    const configs: string[] = [];
+    const forwarded: string[] = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+        forwarded.push((JSON.parse(init.body as string) as { model: string }).model);
+        return new Response('{}', { status: 200 });
+      }));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: (configPath) => { configs.push(readFileSync(configPath, 'utf8')); return { pid: 1, kill: () => {} }; },
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      expect(configs.length).toBeGreaterThan(0);
+      const last = configs.at(-1)!;
+      expect(last).not.toContain('/luna');
+      expect(last).not.toContain('/work');
+      expect(last).toContain('/flash');
+      for (const [headers, model] of [[{}, 'sonata-code-simple'], [projectHeaders(project), 'sonata-code-simple'], [{}, 'luna']] as const) {
+        const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...headers },
+          body: JSON.stringify({ model, messages: [] }),
+        });
+        expect(res.status).toBe(502);
+        const body = await res.json() as { type: string; error: { type: string; message: string } };
+        expect(body.type).toBe('error');
+        expect(body.error.message).toContain('codex-oauth');
+        expect(body.error.message).toContain('"codex"');
+        expect(body.error.message).toContain('"codex-work"');
+      }
+      expect(forwarded).toEqual([]);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('serialises the model-change check, so two concurrent first requests spawn one child and a later crash still respawns', async () => {
