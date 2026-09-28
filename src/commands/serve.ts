@@ -977,6 +977,9 @@ export function budgetStatusesFor(args: {
 export function mergeTenantGateways(
   tenants: { id: string; gateways: NativeConfig['gateways'] }[],
   log: (line: string) => void,
+  /** Which credential a gateway is served from; serve passes `resolvedOauthIdentity`. */
+  identity: (name: string, gateway: { auth?: string; credentialSource?: string }) => string =
+    (name, gateway) => oauthCredentialIdentity(name, gateway),
 ): NativeConfig['gateways'] {
   const merged: NativeConfig['gateways'] = {};
   const owner: Record<string, string> = {};
@@ -1027,19 +1030,19 @@ export function mergeTenantGateways(
   // Likewise one OAuth credential of each kind per LiteLLM child
   // (CHATGPT_TOKEN_DIR / GITHUB_COPILOT_TOKEN_DIR): every gateway of a kind is
   // served whichever credential buildChildEnv finds first. Kept when they all
-  // resolve to one credential (`oauthCredentialIdentity`); when any two do
-  // not, EVERY gateway of that kind is dropped — dropping only the odd one out
+  // resolve to one credential (`identity`, which serve binds to
+  // `resolvedOauthIdentity` — the store actually read); when any two do not,
+  // EVERY gateway of that kind is dropped — dropping only the odd one out
   // still leaves one child deciding between accounts it cannot tell apart.
-  // parseConfig applies the same rule inside one file.
   const byKind = new Map<string, string[]>();
   for (const [name, gateway] of Object.entries(merged)) {
     if (gateway.auth !== 'codex-oauth' && gateway.auth !== 'copilot-oauth') continue;
     byKind.set(gateway.auth, [...(byKind.get(gateway.auth) ?? []), name]);
   }
   for (const [auth, names] of byKind) {
-    const identity = (name: string): string => oauthCredentialIdentity(name, merged[name]!);
-    if (new Set(names.map(identity)).size <= 1) continue;
-    const listed = names.map((name) => `"${name}" (${owner[name]}, ${identity(name)})`).join(', ');
+    const idOf = (name: string): string => identity(name, merged[name]!);
+    if (new Set(names.map(idOf)).size <= 1) continue;
+    const listed = names.map((name) => `"${name}" (${owner[name]}, ${idOf(name)})`).join(', ');
     for (const name of names) delete merged[name];
     log(
       `gateways with auth = "${auth}" read different credentials — ${listed} — serving none of them, ` +
@@ -1048,6 +1051,27 @@ export function mergeTenantGateways(
     );
   }
   return merged;
+}
+
+/**
+ * The credential store an OAuth gateway will actually be served from, on this
+ * machine, as a comparable string. `sonata` is a login per gateway name.
+ * Copilot's machine sources both read opencode's login (`readCopilotToken`).
+ * ChatGPT: `codex` reads codex's store, `opencode` opencode's, and the
+ * default reads codex's when it holds a login, else opencode's — exactly
+ * `readChatGptOAuth`'s order.
+ */
+export function resolvedOauthIdentity(
+  home: string,
+  name: string,
+  gateway: { auth?: string; credentialSource?: string },
+): string {
+  const source = gateway.credentialSource ?? 'default';
+  if (source === 'sonata') return `sonata:${name}`;
+  if (gateway.auth === 'copilot-oauth') return 'opencode store';
+  if (source === 'codex') return 'codex store';
+  if (source === 'opencode') return 'opencode store';
+  return readChatGptOAuth(home, 'codex') !== null ? 'codex store' : 'opencode store';
 }
 
 export async function cmdServe(
@@ -1086,6 +1110,7 @@ export async function cmdServe(
     gateways: mergeTenantGateways(
       registry.loadable().map(({ id, config }) => ({ id, gateways: config.native?.gateways ?? {} })),
       (line) => console.error(`sonata serve: ${line}`),
+      (name, gateway) => resolvedOauthIdentity(opts.home, name, gateway),
     ),
     ports,
     generate: {},

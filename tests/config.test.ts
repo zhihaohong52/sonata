@@ -1407,6 +1407,33 @@ credential_source = "opencode"
     expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['copilot', 'copilot-2']);
   });
 
+  it('loads a copilot pair on opencode and the default: both read the one opencode login', () => {
+    const cfg = parseConfig(`
+[native.gateways."copilot"]
+auth = "copilot-oauth"
+credential_source = "opencode"
+[native.gateways."copilot-2"]
+auth = "copilot-oauth"
+`);
+    expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['copilot', 'copilot-2']);
+  });
+
+  it('loads codex-oauth gateways on different machine stores: only serve can tell which store is read', () => {
+    // `codex` beside the default (which reads codex's store when it exists) may
+    // well be one account; parseConfig refuses only what is PROVABLY two.
+    const cfg = parseConfig(`
+[native.gateways."codex"]
+auth = "codex-oauth"
+credential_source = "codex"
+[native.gateways."openai"]
+auth = "codex-oauth"
+[native.gateways."oc"]
+auth = "codex-oauth"
+credential_source = "opencode"
+`);
+    expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['codex', 'oc', 'openai']);
+  });
+
   it('refuses two sonata-sourced gateways of one kind: sonata stores a login per gateway name', () => {
     // credentialDir(home, name): `codex` and `codex-work` are two logins, two
     // accounts — and LiteLLM would serve both from the first.

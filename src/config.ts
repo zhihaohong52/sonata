@@ -752,12 +752,14 @@ export function parseConfig(text: string): SonataConfig {
     // LiteLLM reads a ChatGPT credential from one directory
     // (CHATGPT_TOKEN_DIR) and a Copilot one from another
     // (GITHUB_COPILOT_TOKEN_DIR), process-wide — so every gateway of one OAuth
-    // kind is served ONE account. Harmless when they all resolve to one
-    // credential (`oauthCredentialIdentity`): `sonata init` before v0.10.0
-    // wrote the ChatGPT subscription twice, as `codex` and `openai`, both on
-    // the default store, and those configs must keep loading. A kind with two
-    // identities is refused — one gateway would silently be served the other's
-    // account.
+    // kind is served ONE account. Refused here only when that is PROVABLY
+    // wrong: two different sonata logins (sonata stores one per gateway name),
+    // or a sonata login beside a machine store. Machine stores (default,
+    // `codex`, `opencode`) may or may not be one account — the default reads
+    // whichever store exists — so that is decided at serve time against the
+    // store actually read (`resolvedOauthIdentity` in serve), not here.
+    // `sonata init` before v0.10.0 wrote the ChatGPT subscription twice, as
+    // `codex` and `openai`, both on the default store; those keep loading.
     const identities = new Map<string, Map<string, string>>();
     for (const [name, gateway] of Object.entries(gateways)) {
       if (gateway.auth !== 'codex-oauth' && gateway.auth !== 'copilot-oauth') continue;
@@ -766,7 +768,8 @@ export function parseConfig(text: string): SonataConfig {
       identities.set(gateway.auth, byName);
     }
     for (const [auth, byName] of identities) {
-      if (new Set(byName.values()).size <= 1) continue;
+      const provable = new Set([...byName.values()].map((id) => (id.startsWith('sonata:') ? id : 'machine')));
+      if (provable.size <= 1) continue;
       const listed = [...byName].map(([name, identity]) => `"${name}" (${identity})`).join(', ');
       throw new Error(
         `sonata.toml: gateways ${listed} all use auth = "${auth}" but read different credentials, ` +
@@ -952,12 +955,14 @@ export function resolveTierAlias(
 }
 
 /**
- * Which credential an OAuth gateway is served from, as a comparable string.
+ * Which credential an OAuth gateway DECLARES, as a comparable string — what
+ * can be known from the config alone.
  *
  * `sonata` stores its login per gateway NAME (`credentialDir(home, name)`),
- * so two sonata-sourced gateways are two logins — two accounts. Every other
- * source (`codex`, `opencode`, and the default search of both) is one machine
- * store, shared by every gateway that names it.
+ * so it is `sonata:<name>` and two such gateways are two logins. Every other
+ * source is returned as written (`codex`, `opencode`, `default`): each is a
+ * machine store, and whether two of them are one account depends on which
+ * store actually holds a login — `resolvedOauthIdentity` in serve decides that.
  */
 export function oauthCredentialIdentity(
   name: string,
