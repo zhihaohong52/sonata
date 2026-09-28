@@ -49,7 +49,8 @@ const LITELLM_HEALTH_TIMEOUT_MS = 3000;
 import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
-import { LITELLM_HOST, oauthConflicts, resolvedOauthIdentity, serveHealthUrl, healthReportsUi } from './serve.js';
+import { LITELLM_HOST, mergeTenantGateways, resolvedOauthIdentity, serveHealthUrl, healthReportsUi } from './serve.js';
+import { TenantRegistry, canonicalConfigPath } from '../native/tenants.js';
 import { routerPorts } from './ports.js';
 import { nativeSessionEnv } from './code.js';
 import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile, diagnoseRouteAuto, isLocalhostUrl } from './route.js';
@@ -1073,19 +1074,36 @@ export async function cmdDoctor(
       });
     }
 
-    // Two OAuth gateways of one kind on different accounts load fine but
-    // cannot be served: LiteLLM holds one credential per kind, so serve drops
-    // every gateway of that kind. Say so here, where it can be fixed, rather
-    // than only as a 502 on the first request.
-    const oauthConflictList = oauthConflicts(
-      Object.entries(config.native.gateways).map(([name, gateway]) => ({ name, owner: 'this config', gateway })),
-      (name, gateway) => resolvedOauthIdentity(home, name, gateway),
-    ).map((conflict) => conflict.why);
-    if (oauthConflictList.length > 0) {
+    // Gateways that load fine but cannot be served: two OAuth gateways of one
+    // kind on different accounts (LiteLLM holds one credential per kind), one
+    // name defined with different credentials, two names sharing a key
+    // variable. Serve drops by the union of every tenant's gateways, not this
+    // file's alone — and the machine config is always a tenant of the same
+    // router — so the conflict is computed over the same tenants, by the same
+    // function, serve merges with. A project on a sonata login beside a
+    // machine config on codex's store is fine in each file and dropped in
+    // both. Say so here, where it can be fixed, rather than only as a 502 on
+    // the first request.
+    const thisConfig = resolved === null ? undefined : canonicalConfigPath(resolved);
+    const registry = new TenantRegistry(home);
+    registry.noteProject(opts.cwd);
+    const tenants = registry.loadable().map(({ configPath, config: tenant }) => ({
+      id: configPath, gateways: tenant.native?.gateways ?? {},
+    }));
+    if (!tenants.some(({ id }) => id === thisConfig)) {
+      tenants.push({ id: thisConfig ?? 'this config', gateways: config.native.gateways });
+    }
+    const dropped = new Map<string, string>();
+    mergeTenantGateways(tenants, () => { /* reported below */ },
+      (name, gateway) => resolvedOauthIdentity(home, name, gateway), dropped);
+    const droppedHere = Object.keys(config.native.gateways).filter((name) => dropped.has(name)).sort();
+    if (droppedHere.length > 0) {
+      const reasons = [...new Set(droppedHere.map((name) => dropped.get(name)!))];
       checks.push({
-        name: 'oauth accounts',
+        name: 'gateway conflicts',
         ok: false,
-        detail: `${oauthConflictList.join('\n')}\n  ! serve will not route either — their models answer 502 until they read one account`,
+        detail: `${reasons.join('\n')}\n  ! serve drops ${droppedHere.map((name) => `"${name}"`).join(', ')} — ` +
+          'their models answer 502 until this is resolved',
       });
     }
 

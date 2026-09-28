@@ -147,6 +147,14 @@ the review doc's Backlog note):
   mistook the others' signal forwarding for the command's own handling — so
   once one probe had finished, Ctrl-C stopped the slow one and the command
   carried on.
+- **`sonata doctor` reports gateways the router drops because of another
+  project's config.** It checked this file's OAuth gateways against each
+  other only, while the router drops by every project it serves plus the
+  machine config — so a project on a sonata ChatGPT login beside a machine
+  config on codex's store got 502s on every tier and a clean doctor. Doctor
+  now merges the same set the router does and reports every drop affecting
+  this config (OAuth accounts, one gateway name with two credentials, two
+  names sharing a key variable), naming the other file.
 
 ## [0.13.1] - 2026-09-27
 

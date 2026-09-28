@@ -987,10 +987,9 @@ export function budgetStatusesFor(args: {
 /**
  * OAuth kinds whose gateways would be served different accounts: LiteLLM
  * holds one credential per kind, so every gateway of such a kind has to go.
- * Pure — the one definition `mergeTenantGateways` drops by and
- * `sonata doctor` warns by.
+ * Pure; `mergeTenantGateways` drops by it.
  */
-export function oauthConflicts(
+function oauthConflicts(
   entries: { name: string; owner: string; gateway: { auth?: string; credentialSource?: string } }[],
   identity: (name: string, gateway: { auth?: string; credentialSource?: string }) => string,
 ): { auth: string; names: string[]; why: string }[] {
@@ -1016,6 +1015,12 @@ export function oauthConflicts(
   return out;
 }
 
+/**
+ * The one definition serve drops gateways by and `sonata doctor` warns by.
+ * Sharing the function is not enough on its own: doctor also passes the same
+ * inputs — every tenant the router would merge, the machine config included —
+ * because a conflict can span two files that are each fine alone.
+ */
 export function mergeTenantGateways(
   tenants: { id: string; gateways: NativeConfig['gateways'] }[],
   log: (line: string) => void,
