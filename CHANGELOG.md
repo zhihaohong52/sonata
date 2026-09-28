@@ -142,6 +142,11 @@ the review doc's Backlog note):
   and re-resolved a config for each session record, costing 53 ms per request
   (Anthropic passthrough included) with 256 projects and 2000 sessions. It
   now does that once per change to the file: 0.7 ms on the same machine.
+- **Ctrl-C during `sonata init` or `sonata doctor` exits again while harness
+  versions are being probed.** The probes run side by side, and each one
+  mistook the others' signal forwarding for the command's own handling — so
+  once one probe had finished, Ctrl-C stopped the slow one and the command
+  carried on.
 
 ## [0.13.1] - 2026-09-27
 

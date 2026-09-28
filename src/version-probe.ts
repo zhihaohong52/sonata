@@ -18,6 +18,13 @@ export const VERSION_PROBE_TIMEOUT_MS = 10_000;
  */
 export const PROBE_MAX_BUFFER = 16 * 1024 * 1024;
 
+/**
+ * How many probes currently have their SIGINT/SIGTERM forwarders registered.
+ * Those listeners are this module's own, not the parent's, so they are
+ * subtracted before deciding whether the parent handles a signal itself.
+ */
+let activeForwarders = 0;
+
 /** A probe's failure, shaped like `execFile`'s so existing callers read it unchanged. */
 export interface ProbeError extends Error {
   /**
@@ -97,9 +104,14 @@ export function runProbe(
     // signal lands: a parent's `process.once('SIGINT')` runs (and removes
     // itself) before this listener does, so counting then would read a parent
     // that handled the signal as one that did not, and re-raise into its exit.
+    //
+    // Other probes' forwarders are not the parent: `detectHarnesses` probes
+    // concurrently, and counting a sibling's forwarder as a parent handler
+    // meant that once the sibling finished, Ctrl-C killed this probe and the
+    // parent carried on as though it had handled the signal.
     const parentHandles = {
-      SIGINT: process.listenerCount('SIGINT') > 0,
-      SIGTERM: process.listenerCount('SIGTERM') > 0,
+      SIGINT: process.listenerCount('SIGINT') - activeForwarders > 0,
+      SIGTERM: process.listenerCount('SIGTERM') - activeForwarders > 0,
     };
     const forward = (signal: 'SIGINT' | 'SIGTERM') => {
       killGroup();
@@ -108,10 +120,15 @@ export function runProbe(
     };
     const onSigint = () => forward('SIGINT');
     const onSigterm = () => forward('SIGTERM');
+    let forwarding = true;
     const unforward = () => {
+      if (!forwarding) return;
+      forwarding = false;
+      activeForwarders -= 1;
       process.off('SIGINT', onSigint);
       process.off('SIGTERM', onSigterm);
     };
+    activeForwarders += 1;
     process.on('SIGINT', onSigint);
     process.on('SIGTERM', onSigterm);
     const finish = (fn: () => void) => {
