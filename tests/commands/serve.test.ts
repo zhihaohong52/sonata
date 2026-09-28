@@ -4137,6 +4137,44 @@ litellm = ${litellmPort}
         expect(await send()).toBe(502);
       });
 
+      it('keeps the mark through a spawn with no ChatGPT gateway at all, and when the gateway returns on the same token', async () => {
+        // A restart while no project names a ChatGPT gateway starts LiteLLM
+        // with no token directory. That is no evidence of a new login, but
+        // "not the refused directory" cleared the mark on it, and putting the
+        // gateway back served the refused token into a device-code login.
+        const withByok = (chat: boolean) => `
+[models."byok"]
+gateway = "or"
+id = "some/model"
+${chat ? '[models."luna"]\ngateway = "codex"\nid = "gpt-5.6-luna"\n[native.gateways."codex"]\nauth = "codex-oauth"\ncredential_source = "codex"' : ''}
+[tiers.code]
+simple = ["${chat ? 'luna' : 'byok'}"]
+complex = ["${chat ? 'luna' : 'byok'}"]
+[native.gateways."or"]
+base_url = "https://or.example/v1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`;
+        writeSonataKey(home, 'or', 'sk-or');
+        writeMachineConfig(withByok(true));
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED', account_id: 'acct-a' });
+        const { send, envs, emit, settle } = await start();
+        expect(await send()).toBe(200);
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        expect(await send()).toBe(502);
+        writeMachineConfig(withByok(false));
+        await send();
+        await waitFor(() => envs.length === 2, 'the restart without the ChatGPT gateway');
+        await settle();
+        expect(envs[1].CHATGPT_TOKEN_DIR).toBeUndefined();
+        writeMachineConfig(withByok(true));
+        await send();
+        await waitFor(() => envs.length === 3, 'the restart with it back');
+        await settle();
+        expect(await send()).toBe(502);
+      });
+
       it('keeps the mark for a sonata-owned login through LiteLLM\'s own rewrite of auth.json', async () => {
         // After the refusal LiteLLM records `device_code_requested_at` in the
         // same auth.json. Keyed on the file's stat, that write cleared the
