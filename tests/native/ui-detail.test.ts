@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { sessionDetail, runDetail, readWindow, MAX_TRANSCRIPT_BYTES, MAX_REPORT_BYTES } from '../../src/native/ui-detail.js';
 import { handleUiRequest } from '../../src/native/ui.js';
 import { clearUiRunCache } from '../../src/native/ui-runs.js';
+import { cmdLog } from '../../src/commands/log.js';
 
 let home: string;
 let proj: string;
@@ -99,6 +100,38 @@ describe('runDetail', () => {
   it('accepts the twelve-character ids new runs carry', async () => {
     makeRun(proj, 'aaaaaa111111', 'long id\n');
     expect((await runDetail(deps(), 'aaaaaa111111', proj))!.transcript).toContain('long id');
+  });
+
+  it('serves the same log `sonata log` prints, from the one shared rule', async () => {
+    // A non-interactive run's own harness.log, cleaned; an interactive run's
+    // event log. The UI and the CLI must not tell two different stories.
+    for (const [id, interactive] of [['bbbbbb000001', false], ['bbbbbb000002', true]] as const) {
+      const dir = join(proj, '.sonata', 'runs', id);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'meta.json'), JSON.stringify({
+        id, session: `sonata-${id}`, cwd: proj, role: 'code', model: 'flash', harness: 'opencode', interactive,
+      }));
+      writeFileSync(join(dir, 'events.jsonl'), 'last screen\n');
+      writeFileSync(join(dir, 'harness.log'), 'first\r\n\u001b[1mmiddle\u001b[0m\nlast screen\n');
+      const detail = (await runDetail(deps(), id, proj))!;
+      const cli = cmdLog({ cwd: proj, id }).text.split('\n\n— sonata ')[0];
+      expect(detail.transcript).toBe(cli);
+      expect(detail.transcript).toBe(interactive ? 'last screen' : 'first\nmiddle\nlast screen');
+    }
+  });
+
+  it('serves the tail of a long harness log from a line boundary', async () => {
+    const id = 'bbbbbb000003';
+    const dir = join(proj, '.sonata', 'runs', id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'meta.json'), JSON.stringify({ id, session: `sonata-${id}`, cwd: proj, interactive: false }));
+    const lines = Array.from({ length: 40_000 }, (_, i) => `\u001b[2mrow-${i + 1}\u001b[0m`);
+    writeFileSync(join(dir, 'harness.log'), `${lines.join('\n')}\n`);
+    const detail = (await runDetail(deps(), id, proj))!;
+    expect(detail.truncated).toBe(true);
+    const rows = detail.transcript.split('\n');
+    expect(rows.at(-1)).toBe('row-40000');
+    expect(rows.every((r) => /^row-\d+$/.test(r))).toBe(true);
   });
 
   it('finds the run without a cwd hint by searching discovered projects', async () => {
