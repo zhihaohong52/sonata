@@ -121,6 +121,47 @@ the review doc's Backlog note):
 - **A machine `sonata.toml` that will not load no longer switches its cap
   off.** When it has a `[budget]` table, the router and `sonata dispatch`
   refuse, naming the file and the error.
+- **A project's direct request no longer carries another project's key when
+  its own is missing.** When the router re-merged gateways after a config
+  change and could not resolve a key (a sonata-sourced gateway with nothing
+  stored yet), it kept the previous credentials — so a project that had just
+  taken over a gateway name another project dropped was sent that project's
+  key. The direct keys are now cleared on such a failure (the request fails
+  upstream with a 401), the rebuild is retried on the next request so a later
+  `sonata auth add` is picked up without a restart, and the failure is logged
+  once rather than on every request.
+- **`codex login` while the router runs now reaches LiteLLM.** Logging in can
+  resolve two conflicting ChatGPT gateways to one account and un-drop them,
+  but LiteLLM was only regenerated when a config file changed — so its model
+  list stayed empty and every request answered "Invalid model name" until
+  `sonata restart`. A change in which gateways are dropped, or in which
+  credential store an OAuth gateway reads, now rewrites LiteLLM's config and
+  respawns it.
+- **The router no longer re-reads every session record on every request.**
+  Its per-request check of which projects it knows re-parsed `sessions.json`
+  and re-resolved a config for each session record, costing 53 ms per request
+  (Anthropic passthrough included) with 256 projects and 2000 sessions. It
+  now does that once per change to the file: 0.7 ms on the same machine.
+- **Ctrl-C during `sonata init` or `sonata doctor` exits again while harness
+  versions are being probed.** The probes run side by side, and each one
+  mistook the others' signal forwarding for the command's own handling — so
+  once one probe had finished, Ctrl-C stopped the slow one and the command
+  carried on.
+- **`sonata doctor` reports gateways the router drops because of another
+  project's config.** It checked this file's OAuth gateways against each
+  other only, while the router drops by every project it serves plus the
+  machine config — so a project on a sonata ChatGPT login beside a machine
+  config on codex's store got 502s on every tier and a clean doctor. Doctor
+  now merges the same set the router does and reports every drop affecting
+  this config (OAuth accounts, one gateway name with two credentials, two
+  names sharing a key variable), naming the other file.
+- **A tier whose every model is on a dropped gateway says so even while
+  LiteLLM is unavailable.** It used to answer "run `sonata litellm install`",
+  which would not have made any of them servable.
+- **A config edit while the router runs no longer overwrites LiteLLM's
+  refreshed ChatGPT or Copilot token.** Re-reading the configs rewrote the
+  token file LiteLLM keeps refreshing, from the login store's possibly older
+  copy. The file is now written only when LiteLLM is started or restarted.
 
 ## [0.13.1] - 2026-09-27
 

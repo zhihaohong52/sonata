@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { beforeEach, describe, it, expect } from 'vitest';
@@ -115,6 +115,25 @@ base_url = "https://gateway.example/v1"
     expect(reg.loadable().map((t) => t.configPath)).not.toContain(realpathSync(join(b, 'sonata.toml')));
     reg.known(); reg.known();
     expect(lines.filter((l) => l.includes(join(b, 'sonata.toml')))).toHaveLength(1);
+  });
+
+  it('reads sessions.json once per version of the file, not once per fingerprint', async () => {
+    let reads = 0;
+    const reg = new TenantRegistry(home, {
+      readSessionsFile: (path) => { reads += 1; return readFileSync(path, 'utf8'); },
+    });
+    await recordSession(home, { session: 's-a', cwd: a, started: new Date().toISOString() });
+    await recordSession(home, { session: 's-a2', cwd: a, started: new Date().toISOString() });
+    const first = reg.fingerprint();
+    expect(first).toContain(realpathSync(join(a, 'sonata.toml')));
+    reg.fingerprint();
+    reg.fingerprint();
+    reg.resolve({ session: 's-a' });
+    expect(reads).toBe(1);
+    // A changed file is re-read, and what it names is resolved afresh.
+    await recordSession(home, { session: 's-b', cwd: b, started: new Date().toISOString() });
+    expect(reg.fingerprint()).toContain(realpathSync(join(b, 'sonata.toml')));
+    expect(reads).toBe(2);
   });
 
   it('unionSnapshot changes when any tenant\'s registry changes, and not otherwise', () => {

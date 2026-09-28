@@ -148,3 +148,42 @@ writeFileSync(${JSON.stringify(doneFile)}, 'survived');
     expect(readFileSync(doneFile, 'utf8')).toBe('survived');
   }, 30_000);
 });
+
+describe('runProbe — concurrent probes', () => {
+  it('re-raises SIGINT when only other probes were listening, even after one of them has finished', async () => {
+    // `detectHarnesses` probes concurrently. Counting listeners at probe start
+    // counted a sibling probe's own forwarder as "the parent handles SIGINT",
+    // so once the fast probe had finished, Ctrl-C killed the slow probe and
+    // the parent carried on instead of exiting.
+    const { spawn } = await import('node:child_process');
+    const { existsSync, readFileSync } = await import('node:fs');
+    const pidFile = join(bin, 'sleeper3.pid');
+    const doneFile = join(bin, 'parent3.done');
+    const fast = stub('fast3', 'sleep 0.2\necho ok');
+    const slow = stub('sleeper3', `echo $$ > ${pidFile}\nsleep 30`);
+    const script = join(bin, 'run-probe-concurrent.mts');
+    writeFileSync(script, `
+import { writeFileSync } from 'node:fs';
+import { runProbe } from ${JSON.stringify(join(process.cwd(), 'src/version-probe.ts'))};
+await Promise.all([
+  runProbe(${JSON.stringify(fast)}, [], { timeoutMs: 30_000 }).catch(() => {}),
+  runProbe(${JSON.stringify(slow)}, [], { timeoutMs: 30_000 }).catch(() => {}),
+]);
+writeFileSync(${JSON.stringify(doneFile)}, 'continued after Ctrl-C');
+`);
+    const parent = spawn(process.execPath, ['--import', 'tsx', script], { stdio: 'ignore', cwd: process.cwd() });
+    const until = Date.now() + 15_000;
+    while (!existsSync(pidFile) || readFileSync(pidFile, 'utf8').trim() === '') {
+      if (Date.now() > until) throw new Error('probe never started');
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    // Let the fast probe finish first.
+    await new Promise((r) => setTimeout(r, 1_000));
+    const exited = new Promise<{ code: number | null; signal: string | null }>((resolve) =>
+      parent.on('exit', (code, signal) => resolve({ code, signal })));
+    parent.kill('SIGINT');
+    const outcome = await exited;
+    expect(outcome).toEqual({ code: null, signal: 'SIGINT' });
+    expect(existsSync(doneFile)).toBe(false);
+  }, 30_000);
+});
