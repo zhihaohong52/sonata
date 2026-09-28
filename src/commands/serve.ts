@@ -1190,6 +1190,8 @@ export async function cmdServe(
       };
     });
   };
+  /** What the gateway merge depends on, as a cheap comparable string. */
+  const gatewayPlanInputs = (): string => registry.fingerprint();
   const unionNeedsLitellm = (): boolean => registry.loadable().some(({ config }) => litellmRequired(config));
 
   const litellmBin = managedLitellmPath(opts.home);
@@ -1264,6 +1266,30 @@ export async function cmdServe(
       }
     };
     refreshGatewayKeys(mergedNative());
+
+    /**
+     * Keeps the gateway merge — which gateways are dropped, and the direct
+     * gateways' keys — current for the request about to be routed. Called
+     * right after tenant resolution, which is where a new project is noted,
+     * so it runs before EVERY path (tier, bare litellm, bare direct) rather
+     * than only where a model-change check happens to fire. Without it, a
+     * newly noted project whose gateway conflicts with another's was routed
+     * on the previous merge: its direct request carried the other project's
+     * key to its own base_url until some later merge.
+     */
+    let planFingerprint = gatewayPlanInputs();
+    const refreshGatewayPlan = (): void => {
+      const now = gatewayPlanInputs();
+      if (now === planFingerprint) return;
+      planFingerprint = now;
+      const cfg = mergedNative();
+      try {
+        childEnv = buildChildEnv(cfg, opts.home, tempDir);
+      } catch (error) {
+        console.error(`sonata serve: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      refreshGatewayKeys(cfg);
+    };
 
     // The litellm child dying on its own (not via `stop()`) used to go
     // unnoticed until the next request 502'd and someone ran `sonata restart`
@@ -1550,7 +1576,11 @@ export async function cmdServe(
       log: (line) => console.log(line),
       tenants: () => registry.summary(),
       ui: uiDeps,
-      resolveTenant: (hint) => registry.resolve(hint),
+      resolveTenant: (hint) => {
+        const tenant = registry.resolve(hint);
+        refreshGatewayPlan();
+        return tenant;
+      },
       // Created here, not per request: a settings file written once has to keep
       // authorising its project hint across restarts.
       projectHintToken: ensureRouterToken(opts.home),
