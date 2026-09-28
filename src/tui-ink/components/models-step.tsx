@@ -153,7 +153,7 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
     <Box flexDirection="column">
       {excluded.length > 0 && (
         <Text color={palette.MUTED}>
-          excluded {excluded.map((candidate) => candidate.key).join(', ')} — AA publishes no cost-per-task; add by hand to sonata.toml
+          excluded {excluded.map((candidate) => candidate.key).join(', ')} — AA publishes no usable cost-per-task; add by hand to sonata.toml
         </Text>
       )}
       {refreshed > 0 && (

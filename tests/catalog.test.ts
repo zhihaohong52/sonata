@@ -8,7 +8,7 @@ import {
   normalizeModelName, lookupModel, proposeTiers, loadAaCatalog, aaCatalogPath,
   aaCatalogAgeDays, aaLookupNames, catalogCoverage, SIMPLE_COST_CEILING,
   catalogFamily, expandCandidates, hasEffortVariants, unpinnedVariants, candidateLabel,
-  unpinnedCandidates, assertEffortsPinned, hasTaskCost,
+  unpinnedCandidates, assertEffortsPinned, hasTaskCost, candidateFacts, reasoningOf,
   type AaCatalog,
 } from '../src/catalog.js';
 import { plan, type CredentialProbe } from '../src/init/plan.js';
@@ -603,7 +603,14 @@ describe('loadAaCatalog', () => {
     for (const tier of [tiers.simple, tiers.normal, tiers.complex]) {
       expect(tier.map((c) => c.split('@')[0])).toEqual(['alpha-1']);
     }
-    expect(candidateLabel('beta-1', aa)).toContain('AA publishes no cost-per-task');
+    // A published 0 is not "no cost-per-task": AA published one, and it is
+    // not usable. Say which.
+    expect(candidateLabel('beta-1', aa)).toContain('not a usable cost');
+    expect(candidateLabel('beta-1', aa)).not.toContain('publishes no cost-per-task');
+    // The board's facts drop it too, so it neither shows $0.0000 nor ranks as cheapest.
+    expect(candidateFacts('beta-1', aa, [], undefined, reasoningOf)).toEqual({ key: 'beta-1', effort: undefined, capability: 50 });
+    expect(candidateFacts('gamma-1', aa, [], undefined, reasoningOf).costPerTask).toBeUndefined();
+    expect(candidateFacts('alpha-1', aa, [], undefined, reasoningOf).costPerTask).toBe(0.5);
   });
 
   it('keeps family and effort, and drops an effort that is not a known level', () => {

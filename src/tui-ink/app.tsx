@@ -444,7 +444,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         ...Object.keys(harnessOnlyUpstreams),
       ])].filter((key) => !taskCostedCandidates([key], catalog, gateways, upstreamFor).length);
       const excludedNotice = excluded.length > 0
-        ? ` · excluded ${excluded.join(', ')} — AA publishes no cost-per-task; add by hand to sonata.toml`
+        ? ` · excluded ${excluded.join(', ')} — AA publishes no usable cost-per-task; add by hand to sonata.toml`
         : '';
       const footer = catalog
         ? `rankings: Artificial Analysis (fetched ${catalog.fetchedAt}) — artificialanalysis.ai${excludedNotice}`

@@ -75,7 +75,7 @@ describe('the wizard on a first run', () => {
     await w.press(ENTER);
     await w.press(ENTER, ENTER, 'test-key', ENTER, DOWN, ENTER);
     expect(w.lastFrame()).toContain('excluded acme-deep');
-    expect(w.lastFrame()).toContain('AA publishes no cost-per-task');
+    expect(w.lastFrame()).toContain('AA publishes no usable cost-per-task');
     expect(w.lastFrame()).toContain('opencode/acme/fast');
   });
 
