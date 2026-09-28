@@ -798,6 +798,16 @@ function chatgptTokenHash(dir: string | undefined): string | undefined {
   }
 }
 
+/**
+ * How long after a ChatGPT refusal is marked a torn or tokenless read of the
+ * refused directory is retried. LiteLLM truncates and rewrites `auth.json` as
+ * it records the device-code request, so the mark can land mid-write; the
+ * first readable token within this window is the refused one. Never later: a
+ * sonata-owned login is re-written into that same directory, and a read
+ * after the window caught the user's new login and kept the mark on it.
+ */
+const REFUSED_TOKEN_CAPTURE_MS = 1000;
+
 /** A store's read, tagged with which store it is, as `resolveChildEnv` chains them. */
 type ChainStore = StoreRead & { id: string };
 
@@ -969,7 +979,7 @@ function resolveChildEnv(
     if (skipped !== undefined && last !== undefined) {
       transient.push({
         gateway: name,
-        message: `gateway "${name}": its credential store has stayed unreadable (${skipped.skipped}) — ` +
+        message: `gateway "${name}": its credential store is skipped as unreadable (${skipped.skipped}) — ` +
           'keeping the credential it last resolved to',
       });
       return last;
@@ -1590,6 +1600,7 @@ export async function cmdServe(
    * reason instead of forwarding it.
    */
   let droppedGateways = new Map<string, string>();
+  const clock = opts.now ?? Date.now;
   /** The gateways the last merge kept — what a LiteLLM child is serving. */
   let lastMergedGateways: NativeConfig['gateways'] = {};
   /**
@@ -1600,35 +1611,49 @@ export async function cmdServe(
    * from it. Without this, each request hung in LiteLLM's device-code login
    * for up to fifteen minutes.
    *
-   * Keyed on the token that was refused (`chatgptTokenHash`: the refresh
-   * token in the child's `auth.json`, else its access token), never on the
-   * file or its directory. A deliberate spawn clears it only when the
-   * directory it starts LiteLLM on holds a readable token that differs — a
-   * lineage seeded into a new directory, or a sonata-owned re-login. Any
-   * other restart — a model-list edit, another project's gateway, a spawn
-   * with no ChatGPT gateway at all — keeps it: LiteLLM would start on the
-   * same refused token, and clearing then served a device-code hang again.
-   * Keyed on the file's stat, it was cleared by LiteLLM's own rewrite of
-   * `auth.json` (`device_code_requested_at`) moments after the refusal.
-   * A fresh process (`sonata restart`) starts with none.
+   * `dir` is the directory the refused child was serving, and `token` the
+   * token that was refused there (`chatgptTokenHash`: the refresh token in
+   * its `auth.json`, else its access token), read at mark time. That read
+   * can land mid-write and find none; it is retried at later checks for
+   * `REFUSED_TOKEN_CAPTURE_MS` only (`refusedToken`), then never.
    *
-   * The token is read from `dir`, the directory the refused child was
-   * serving. A read at mark time can land mid-write and find none; it is
-   * then read again at every check (`refusedToken`) — the first readable
-   * token there is the refused one. With none captured yet, nothing clears it.
+   * A deliberate spawn clears it when it starts LiteLLM on a different
+   * directory — a new login, seeded fresh — whether or not a token was
+   * captured; or on the same directory when that holds a readable token
+   * that differs from the captured one — a sonata-owned re-login. Any other
+   * restart — a model-list edit, another project's gateway, a spawn with no
+   * ChatGPT gateway at all, the same directory with no token captured —
+   * keeps it: LiteLLM may start on the same refused token, and clearing then
+   * served a device-code hang again. Keyed on the token and not the file's
+   * stat, LiteLLM's own rewrite of `auth.json` (`device_code_requested_at`)
+   * does not clear it. A fresh process (`sonata restart`) starts with none.
    */
-  let chatgptLoginRefused: { message: string; dir: string | undefined; token: string | undefined } | undefined;
-  /** The refused token, captured from the refused directory the first time it reads. */
+  let chatgptLoginRefused: {
+    message: string; dir: string | undefined; token: string | undefined; markedAt: number;
+  } | undefined;
+  /** The refused token: read at mark time, and again only within `REFUSED_TOKEN_CAPTURE_MS` of it. */
   const refusedToken = (): string | undefined => {
     const refused = chatgptLoginRefused;
     if (refused === undefined) return undefined;
-    if (refused.token === undefined) refused.token = chatgptTokenHash(refused.dir);
+    if (refused.token === undefined && clock() - refused.markedAt <= REFUSED_TOKEN_CAPTURE_MS) {
+      refused.token = chatgptTokenHash(refused.dir);
+    }
     return refused.token;
   };
   /** The ChatGPT token directory the current child was spawned into; set once the child bookkeeping exists. */
   let currentChatgptTokenDir: () => string | undefined = () => undefined;
-  const markChatgptLoginRefused = (): void => {
+  /**
+   * Marks the refusal of the child serving `served` — the token directory it
+   * was spawned into. One that is no longer the current child's is from a
+   * LiteLLM a new login has since replaced: a response forwarded before the
+   * restart and answered after it says nothing about the new one.
+   */
+  const markChatgptLoginRefused = (served: string | undefined): void => {
     if (chatgptLoginRefused !== undefined) return;
+    if (served !== currentChatgptTokenDir()) {
+      console.error('sonata serve: ignoring a ChatGPT login refusal from a LiteLLM that has since been replaced');
+      return;
+    }
     const affected = Object.entries(lastMergedGateways).filter(([, gateway]) => gateway.auth === 'codex-oauth');
     if (affected.length === 0) return;
     const names = affected.map(([name]) => `"${name}"`).join(', ');
@@ -1637,12 +1662,12 @@ export async function cmdServe(
       ? sonataOwned.map((name) => `\`sonata auth login ${name}\``).join(' / ')
       : '`codex login` (or `opencode auth login`)';
     const remedy = `LiteLLM's ChatGPT login was refused by OpenAI — run ${relogin} and then \`sonata restart\``;
-    const dir = currentChatgptTokenDir();
     chatgptLoginRefused = {
       message: `gateway ${names}: ${remedy} (LiteLLM had fallen back to an interactive device-code ` +
         'login, which would hold each request for up to fifteen minutes)',
-      dir,
-      token: chatgptTokenHash(dir),
+      dir: served,
+      token: chatgptTokenHash(served),
+      markedAt: clock(),
     };
     console.error(`sonata serve: ${remedy} — affects gateway ${names}`);
   };
@@ -1667,7 +1692,6 @@ export async function cmdServe(
   let litellmCredentialFailures = new Set<string>();
   /** Each gateway's last good credential, across child-env builds; see `resolveChildEnv`. */
   const credentialMemory = newCredentialMemory();
-  const clock = opts.now ?? Date.now;
   /** A credential store skipped for staying unreadable, reported once per stretch by `boundUnreadable`. */
   const warnSkipped = (line: string): void => { console.error(`sonata serve: ${line}`); };
   /**
@@ -2250,17 +2274,19 @@ export async function cmdServe(
 
     const spawnLitellmChild = (deliberate = true): SpawnedLitellm => {
       if (deliberate) {
-        // Captured before seeding, which may rewrite the refused directory.
+        // The last chance to capture the refused token, if still in its window.
         refusedToken();
         seedTokenDirs();
-        // Cleared only when this spawn starts LiteLLM on a token that is
-        // readable and not the refused one. None at all — no ChatGPT gateway
-        // just now, or a file that cannot be read — says nothing, and keeps it;
-        // so does a refused token never captured (`refusedToken`).
-        const refused = chatgptLoginRefused?.token;
-        if (refused !== undefined) {
-          const token = chatgptTokenHash(childEnv.CHATGPT_TOKEN_DIR);
-          if (token !== undefined && token !== refused) chatgptLoginRefused = undefined;
+        // Cleared when this spawn starts LiteLLM on another directory — a new
+        // login, seeded fresh — or on the refused one holding a readable token
+        // that is not the refused one. No directory at all (no ChatGPT gateway
+        // just now), an unreadable file, or no refused token captured says
+        // nothing about the token LiteLLM will use, and keeps it.
+        const refused = chatgptLoginRefused;
+        const dir = childEnv.CHATGPT_TOKEN_DIR;
+        if (refused !== undefined && dir !== undefined) {
+          const token = dir === refused.dir && refused.token !== undefined ? chatgptTokenHash(dir) : undefined;
+          if (dir !== refused.dir || (token !== undefined && token !== refused.token)) chatgptLoginRefused = undefined;
         }
       }
       const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(
@@ -2269,7 +2295,7 @@ export async function cmdServe(
       spawned.onOutputLine?.((line) => {
         // Only the child serving now: an old one's last words during a
         // restart say nothing about its replacement.
-        if (child === spawned && LITELLM_CHATGPT_LOGIN_REFUSED.test(line)) markChatgptLoginRefused();
+        if (child === spawned && LITELLM_CHATGPT_LOGIN_REFUSED.test(line)) markChatgptLoginRefused(childTokenDir.get(spawned));
       });
       recordLitellmPid(opts.home, ports.router, spawned.pid);
       childTokenDir.set(spawned, childEnv.CHATGPT_TOKEN_DIR);
@@ -2558,7 +2584,8 @@ export async function cmdServe(
       gatewayUnavailable: (tenant, gateway) => droppedGateways.get(gateway) ?? credentialFailures.get(gateway) ??
         (chatgptLoginRefused !== undefined && tenant.config?.native?.gateways[gateway]?.auth === 'codex-oauth'
           ? (refusedToken(), chatgptLoginRefused.message) : undefined),
-      chatgptLoginRefused: () => markChatgptLoginRefused(),
+      chatgptTokenDir: () => currentChatgptTokenDir(),
+      chatgptLoginRefused: (served) => markChatgptLoginRefused(served),
       resolveNative: (key, tenant) => tenant.config === undefined ? undefined : nativeRouteFor(tenant.config, key),
       // Opt-in only: a captured request is a whole conversation.
       capture400Dir: process.env.SONATA_CAPTURE_400_DIR,

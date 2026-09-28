@@ -135,12 +135,19 @@ export interface RouterDeps {
   gatewayUnavailable?: (tenant: RouterTenant, gateway: string) => string | undefined;
   /**
    * Told when a LiteLLM response shows its ChatGPT login was refused
-   * (`CHATGPT_LOGIN_REFUSED`). serve marks its codex-oauth gateways
+   * (`CHATGPT_LOGIN_REFUSED`), with what `chatgptTokenDir` answered when
+   * that request was forwarded. serve marks its codex-oauth gateways
    * unavailable until LiteLLM is started on a different token and logs the
-   * remedy once;
+   * remedy once — unless the child that answered has since been replaced;
    * absent, the router logs the remedy itself.
    */
-  chatgptLoginRefused?: () => void;
+  chatgptLoginRefused?: (served: string | undefined) => void;
+  /**
+   * The ChatGPT token directory of the LiteLLM a request is forwarded to,
+   * read as it is forwarded, so a refusal answered after a restart is
+   * attributed to the child that gave it and not to its replacement.
+   */
+  chatgptTokenDir?: () => string | undefined;
   /** Why LiteLLM cannot serve right now (venv missing, broken), or undefined when it can. A litellm-bound request is answered 502 with this text rather than forwarded. */
   litellmUnavailable?: () => string | undefined;
   /**
@@ -1365,6 +1372,12 @@ function isCodexOauth(tenant: RouterTenant, gateway: string | undefined): boolea
  */
 interface LitellmResponse extends RouterResponse {
   loginRefused?: true;
+  /**
+   * The refusal came from a LiteLLM that has since been replaced
+   * (`chatgptTokenDir` answers differently now than when it was forwarded):
+   * it says nothing about the child serving now, so nothing is cooled for it.
+   */
+  replaced?: true;
 }
 
 /**
@@ -1395,6 +1408,7 @@ async function forwardToLitellm(
 ): Promise<LitellmResponse> {
   try {
     await deps.litellmReady?.();
+    const served = chatgpt ? deps.chatgptTokenDir?.() : undefined;
     const response = await deps.fetch(
       targetUrl(deps.litellmBase, req.url),
       { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined },
@@ -1414,7 +1428,7 @@ async function forwardToLitellm(
       const text = responseBodyBuf.toString();
       const refused = chatgpt && chatgptLoginRefused(text);
       if (refused && deps.chatgptLoginRefused !== undefined) {
-        deps.chatgptLoginRefused();
+        deps.chatgptLoginRefused(served);
       } else if (refused) {
         deps.log?.(
           `router: LiteLLM's ChatGPT login was refused by OpenAI (${requestedModel(body) ?? '?'}) — run ` +
@@ -1423,7 +1437,11 @@ async function forwardToLitellm(
         );
       }
       if (refused) {
-        return { status: response.status, headers: responseHeaders(response.headers), body: responseBodyBuf, loginRefused: true };
+        const replaced = deps.chatgptTokenDir !== undefined && deps.chatgptTokenDir() !== served;
+        return {
+          status: response.status, headers: responseHeaders(response.headers), body: responseBodyBuf, loginRefused: true,
+          ...(replaced ? { replaced: true as const } : {}),
+        };
       }
       if (response.status === 500 && text.includes('Unknown items in responses API response')) {
         const msg = 'upstream returned empty completion (overloaded) — retry';
@@ -1688,19 +1706,31 @@ async function routeTierRequest(
         deps,
       )
       : await forwardToLitellm(body, headers, { ...req, body }, deps, isCodexOauth(tenant, gateway));
-    // A refused ChatGPT login is the gateway's, not the request's: handled
-    // like an unservable 400 (the candidate and its gateway cool, the next
-    // candidate is tried), and counted as not served, so a tier left with
-    // nothing else answers the same named 502 later requests get.
+    // A refused ChatGPT login is the gateway's, not the request's: the next
+    // candidate is tried, and it is counted as not served, so a tier left
+    // with nothing else answers the same named 502 later requests get.
+    //
+    // Cooled only when nothing else will keep the gateway away. serve's mark
+    // (`gatewayUnavailable` answering once `chatgptLoginRefused` has run)
+    // already skips it, and clears the moment LiteLLM starts on a new login;
+    // a cooldown on top outlived that by up to a minute, answering the new
+    // login 529. A refusal from a LiteLLM already replaced says nothing about
+    // the one serving now, and cools nothing either. With no serve to mark
+    // it — or one that did not — the candidate and its gateway cool, as for
+    // an unservable 400.
     if ('loginRefused' in response && response.loginRefused === true) {
       if (response.status === 400) {
         capture400(deps, { alias, candidate: variant, status: response.status, outbound: body, response: response.body as Buffer });
       }
       attempts.push({ key: route.key, status: response.status });
-      cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
-      if (gateway !== undefined) providerCooldowns.set(providerCooldownKey(tenant, gateway), now() + TIER_COOLDOWN_MS);
+      const cooling = !('replaced' in response && response.replaced === true) &&
+        deps.gatewayUnavailable?.(tenant, route.native!.gateway) === undefined;
+      if (cooling) {
+        cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+        if (gateway !== undefined) providerCooldowns.set(providerCooldownKey(tenant, gateway), now() + TIER_COOLDOWN_MS);
+      }
       skippedDropped.push(loginRefusedMessage(deps, tenant, route.native!.gateway));
-      deps.log?.(`router: ${route.key} refused (ChatGPT login), cooling gateway ${gateway ?? '?'} and trying next`);
+      deps.log?.(`router: ${route.key} refused (ChatGPT login), ${cooling ? `cooling gateway ${gateway ?? '?'} and ` : ''}trying next`);
       continue;
     }
     // Retry by default; only a request that is wrong *everywhere* is terminal.

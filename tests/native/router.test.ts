@@ -1201,6 +1201,40 @@ describe('routeRequest — a ChatGPT login LiteLLM cannot refresh', () => {
       expect(records).toEqual([]);
     });
 
+    it('cools nothing when serve marks the gateway, so a cleared mark serves the next request at once', async () => {
+      const seen: string[] = [];
+      let marked = false;
+      let refuse = true;
+      const deps = {
+        ...tierDeps([{ key: 'luna', native: { gateway: 'codex', id: 'gpt-5.6-luna' } }], seen, []),
+        fetch: (async (_u: string, init: RequestInit) => {
+          seen.push((JSON.parse(init.body as string) as { model: string }).model);
+          return refuse
+            ? new Response(refusedBody, { status: 400 })
+            : new Response(COMPLETE_BODY, { status: 200, headers: { 'content-type': 'application/json' } });
+        }) as unknown as typeof fetch,
+        chatgptLoginRefused: () => { marked = true; },
+        gatewayUnavailable: (_t: unknown, g: string) => (marked && g === 'codex' ? 'gateway "codex": refused' : undefined),
+      };
+      expect((await serveFully(tierReq(), deps)).status).toBe(502);
+      marked = false;
+      refuse = false;
+      expect((await serveFully(tierReq(), deps)).status).toBe(200);
+      expect(seen).toEqual(['t/luna', 't/luna']);
+    });
+
+    it('still cools the candidate when nothing marks the gateway', async () => {
+      const seen: string[] = [];
+      const deps = {
+        ...tierDeps([{ key: 'luna', native: { gateway: 'codex', id: 'gpt-5.6-luna' } }], seen, []),
+        chatgptLoginRefused: () => {},
+        gatewayUnavailable: () => undefined,
+      };
+      await serveFully(tierReq(), deps);
+      expect((await serveFully(tierReq(), deps)).status).toBe(529);
+      expect(seen).toEqual(['t/luna']);
+    });
+
     it('answers a bare key with the named 502, Anthropic-shaped, the same as the next request', async () => {
       const records: unknown[] = [];
       const mark = serveMark();
