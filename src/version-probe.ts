@@ -193,6 +193,9 @@ export function runProbe(
     child.stderr!.on('close', pipeClosed);
     child.on('exit', (code, signal) => {
       exited = { code, signal };
+      // It answered inside its bound, so the bound is done: left running, it
+      // could fire during the grace below and relabel that answer a timeout.
+      clearTimeout(timer);
       if (openPipes === 0) return complete();
       // A descendant may be holding a pipe open, so EOF may never come: stop
       // waiting after the grace period. The final setImmediate gives the poll

@@ -86,6 +86,15 @@ describe('runProbe', () => {
       .rejects.toMatchObject({ code: 3, stderr: expect.stringContaining('Error: late boom') });
   });
 
+  // A command that answered inside its bound has answered: the bound must not
+  // keep running through the stdio grace and relabel it a timeout because a
+  // grandchild still holds the pipe.
+  it('does not report a timeout for a command that exited inside its bound', async () => {
+    const answered = stub('answers-late', 'sleep 0.8\necho "v9"\n(sleep 5 &)\nexit 0');
+    await expect(runProbe(answered, ['--version'], { timeoutMs: 1_200 }))
+      .resolves.toMatchObject({ stdout: 'v9\n' });
+  });
+
   it('reports a missing binary as ENOENT', async () => {
     await expect(runProbe(join(bin, 'nope'), [], { timeoutMs: VERSION_PROBE_TIMEOUT_MS })).rejects.toMatchObject({ code: 'ENOENT' });
   });
