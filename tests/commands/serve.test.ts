@@ -20,6 +20,7 @@ import { ensureRouterToken } from '../../src/native/router-token.js';
 import { tenantId } from '../../src/native/tenants.js';
 import { appendRow } from '../../src/ledger.js';
 import { freePort } from '../free-port.js';
+import { sqliteAvailable, writeOpencodeCredDb } from '../opencode-db-fixture.js';
 
 // Every cmdServe starts the models.dev price refresh, and a fresh test home has
 // no cache, so each one fetched models.dev over the real network — unawaited
@@ -3669,6 +3670,73 @@ litellm = ${litellmPort}
         writeMachineConfig(`# edited\n${machine('')}`);
         await send();
         expect(held(tempDir).refresh_token).toBe('STORE');
+      });
+    });
+
+    describe('an opencode login while serving', () => {
+      // `codexStoreSignal` is what re-merged on a `codex login`; nothing
+      // watched opencode's stores, so `opencode auth login` while serving
+      // never reached LiteLLM until something else moved the fingerprint.
+      const ocJwt = (exp?: number) => `h.${Buffer.from(JSON.stringify({
+        ...(exp === undefined ? {} : { exp }), client_id: 'app_EMoamEEZ73f0CkXaXp7hrann',
+      })).toString('base64url')}.s`;
+      const ocConfig = () => machine('').replace('auth = "codex-oauth"', 'auth = "codex-oauth"\ncredential_source = "opencode"');
+      const ocAuthPath = () => join(home, '.local', 'share', 'opencode', 'auth.json');
+      const ocDbPath = () => join(home, '.local', 'share', 'opencode', 'opencode.db');
+      const writeOcAuth = (entry: Record<string, unknown>) => {
+        mkdirSync(dirname(ocAuthPath()), { recursive: true });
+        writeFileSync(ocAuthPath(), JSON.stringify({ openai: { type: 'oauth', ...entry } }));
+      };
+      const held = (tempDir: string) =>
+        JSON.parse(readFileSync(join(tempDir, 'chatgpt', 'auth.json'), 'utf8')) as { refresh_token?: string };
+
+      it('carries a newer `opencode auth login` in auth.json into the running LiteLLM', async () => {
+        writeMachineConfig(ocConfig());
+        writeOcAuth({ access: ocJwt(1_000), refresh: 'OLD', expires: 1_000_000 });
+        const tempDir = tempDirFor();
+        const { send, spawns } = await start(tempDir);
+        expect(held(tempDir).refresh_token).toBe('OLD');
+        writeOcAuth({ access: ocJwt(9_999_999_999), refresh: 'NEW', expires: 9_999_999_999_000 });
+        await send();
+        expect(held(tempDir).refresh_token).toBe('NEW');
+        expect(spawns()).toBe(1);
+      });
+
+      it.runIf(sqliteAvailable())('carries a newer login written to opencode.db into the running LiteLLM', async () => {
+        writeMachineConfig(ocConfig());
+        const row = (refresh: string, exp: number, timeCreated: number) => ({
+          id: `c-${refresh}`, integration: 'openai', timeCreated,
+          value: JSON.stringify({ type: 'oauth', access: ocJwt(exp), refresh, expires: exp * 1000 }),
+        });
+        writeOpencodeCredDb(ocDbPath(), [row('OLD', 1_000, 1)]);
+        const tempDir = tempDirFor();
+        const { send, spawns } = await start(tempDir);
+        expect(held(tempDir).refresh_token).toBe('OLD');
+        rmSync(ocDbPath());
+        writeOpencodeCredDb(ocDbPath(), [row('OLD', 1_000, 1), row('NEW', 9_999_999_999, 2)]);
+        await send();
+        expect(held(tempDir).refresh_token).toBe('NEW');
+        expect(spawns()).toBe(1);
+      });
+
+      it.runIf(sqliteAvailable())('does not read opencode.db being written as an auth.json login being newer', async () => {
+        // With no expiry on either side the modification times decide, and
+        // opencode.db is written constantly for reasons that have nothing to
+        // do with credentials. Counted, it overwrote LiteLLM's refreshed
+        // token with the store's older one.
+        writeMachineConfig(ocConfig());
+        writeOcAuth({ access: ocJwt(), refresh: 'STORE' });
+        const tempDir = tempDirFor();
+        const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
+        const { send } = await start(tempDir);
+        expect(held(tempDir).refresh_token).toBe('STORE');
+        writeFileSync(tokenFile, JSON.stringify({ access_token: ocJwt(), refresh_token: 'REFRESHED' }));
+        writeOpencodeCredDb(ocDbPath(), []);
+        const later = new Date(Date.now() + 60_000);
+        utimesSync(ocDbPath(), later, later);
+        writeMachineConfig(`# edited\n${ocConfig()}`);
+        await send();
+        expect(held(tempDir).refresh_token).toBe('REFRESHED');
       });
     });
   });
