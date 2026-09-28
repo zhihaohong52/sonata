@@ -2921,6 +2921,28 @@ describe('a gateway serve has dropped', () => {
     expect(seen).toEqual([]);
   });
 
+  it('names the drop, not LiteLLM, when every candidate is dropped while LiteLLM is also unavailable', async () => {
+    // The LiteLLM skip ran first, so dropped candidates were never counted as
+    // dropped and the 502 sent the user to `sonata litellm install` — which
+    // would not have made a single one of them servable.
+    const seen: string[] = [];
+    const res = await routeRequest(
+      { method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [] })) },
+      {
+        fetch: (async (u: string) => { seen.push(u); return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTier: () => ({ role: 'code', tier: 'simple', routes: [{ key: 'luna', native: { gateway: 'codex', id: 'l' } }] }),
+        gatewayUnavailable: blocked,
+        litellmUnavailable: () => 'a project routes through LiteLLM, which is missing — run `sonata litellm install`',
+      },
+    );
+    expect(res.status).toBe(502);
+    const message = (JSON.parse((res.body as Buffer).toString()) as { error: { message: string } }).error.message;
+    expect(message).toContain('"codex" (a, codex store)');
+    expect(message).not.toContain('sonata litellm install');
+    expect(seen).toEqual([]);
+  });
+
   it('answers a bare key on it with the same 502', async () => {
     const seen: string[] = [];
     const res = await routeRequest(

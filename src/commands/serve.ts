@@ -647,7 +647,23 @@ function defaultSpawnLitellm(
   };
 }
 
-function buildChildEnv(native: NativeConfig, home: string, tempDir: string): NodeJS.ProcessEnv {
+/**
+ * The LiteLLM child's environment, and — unless `writeTokens` is false — the
+ * OAuth token files it points at, copied out of the store each gateway reads.
+ *
+ * Those files are LiteLLM's own once it runs: it refreshes the token in
+ * place. So only a (re)spawn writes them; an in-place re-merge while the
+ * child runs passes `writeTokens: false`, since rewriting then would put the
+ * store's possibly older token over the one LiteLLM has refreshed. The env it
+ * returns still names the same directories either way.
+ */
+function buildChildEnv(
+  native: NativeConfig,
+  home: string,
+  tempDir: string,
+  opts: { writeTokens?: boolean } = {},
+): NodeJS.ProcessEnv {
+  const writeTokens = opts.writeTokens ?? true;
   // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
   const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
   const automaticallyResolved = Object.entries(native.gateways)
@@ -694,8 +710,10 @@ function buildChildEnv(native: NativeConfig, home: string, tempDir: string): Nod
         );
       }
       const tokenDir = join(tempDir, 'chatgpt');
-      mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
-      writeFileSync(join(tokenDir, 'auth.json'), JSON.stringify(record), { mode: 0o600 });
+      if (writeTokens) {
+        mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+        writeFileSync(join(tokenDir, 'auth.json'), JSON.stringify(record), { mode: 0o600 });
+      }
       childEnv.CHATGPT_TOKEN_DIR = tokenDir;
     }
   }
@@ -725,8 +743,10 @@ function buildChildEnv(native: NativeConfig, home: string, tempDir: string): Nod
         );
       }
       const tokenDir = join(tempDir, 'copilot');
-      mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
-      writeFileSync(join(tokenDir, 'access-token'), token, { mode: 0o600 });
+      if (writeTokens) {
+        mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+        writeFileSync(join(tokenDir, 'access-token'), token, { mode: 0o600 });
+      }
       childEnv.GITHUB_COPILOT_TOKEN_DIR = tokenDir;
     }
   }
@@ -987,10 +1007,9 @@ export function budgetStatusesFor(args: {
 /**
  * OAuth kinds whose gateways would be served different accounts: LiteLLM
  * holds one credential per kind, so every gateway of such a kind has to go.
- * Pure — the one definition `mergeTenantGateways` drops by and
- * `sonata doctor` warns by.
+ * Pure; `mergeTenantGateways` drops by it.
  */
-export function oauthConflicts(
+function oauthConflicts(
   entries: { name: string; owner: string; gateway: { auth?: string; credentialSource?: string } }[],
   identity: (name: string, gateway: { auth?: string; credentialSource?: string }) => string,
 ): { auth: string; names: string[]; why: string }[] {
@@ -1016,6 +1035,12 @@ export function oauthConflicts(
   return out;
 }
 
+/**
+ * The one definition serve drops gateways by and `sonata doctor` warns by.
+ * Sharing the function is not enough on its own: doctor also passes the same
+ * inputs — every tenant the router would merge, the machine config included —
+ * because a conflict can span two files that are each fine alone.
+ */
 export function mergeTenantGateways(
   tenants: { id: string; gateways: NativeConfig['gateways'] }[],
   log: (line: string) => void,
@@ -1159,21 +1184,34 @@ export async function cmdServe(
    * reason instead of forwarding it.
    */
   let droppedGateways = new Map<string, string>();
+  /**
+   * Which credential store each OAuth gateway resolved to in the last merge,
+   * as a comparable string. Refreshed with `droppedGateways`.
+   */
+  let oauthIdentities = '';
   const mergeGateways = (log: (line: string) => void): NativeConfig['gateways'] => {
     const dropped = new Map<string, string>();
+    const identities: string[] = [];
     const gateways = mergeTenantGateways(
       registry.loadable().map(({ id, config }) => ({ id, gateways: config.native?.gateways ?? {} })),
       log,
-      (name, gateway) => resolvedOauthIdentity(opts.home, name, gateway),
+      (name, gateway) => {
+        const identity = resolvedOauthIdentity(opts.home, name, gateway);
+        identities.push(`${gateway.auth}:${name}=${identity}`);
+        return identity;
+      },
       dropped,
     );
     droppedGateways = dropped;
+    oauthIdentities = [...new Set(identities)].sort().join(',');
     return gateways;
   };
   /** Merged gateways across every loadable tenant — what credential resolution and the child env are built from. */
-  const mergedNative = (): NativeConfig => ({
+  const mergedNative = (
+    log: (line: string) => void = (line) => console.error(`sonata serve: ${line}`),
+  ): NativeConfig => ({
     models: {},
-    gateways: mergeGateways((line) => console.error(`sonata serve: ${line}`)),
+    gateways: mergeGateways(log),
     ports,
     generate: {},
   });
@@ -1208,6 +1246,20 @@ export async function cmdServe(
    * Both are stat-only.
    */
   const gatewayPlanInputs = (): string => `${registry.fingerprint()}\n${codexStoreSignal(opts.home)}`;
+  /**
+   * What LiteLLM's config.json and child env are generated from: the tenants'
+   * models and gateways, AND the last merge's drops and OAuth identities.
+   * `servableTenants` removes a dropped gateway's models from the model list
+   * and `buildChildEnv` points the token dir at the resolved store, so either
+   * moving is a change to what LiteLLM must be given — and `codex login` moves
+   * them with every config untouched. Compared on the configs alone, a login
+   * that un-dropped two gateways left LiteLLM on an empty model list, with no
+   * ChatGPT token dir, answering "Invalid model name". Reads the merge
+   * `refreshGatewayPlan` has already run for this request rather than merging
+   * again.
+   */
+  const litellmPlanSnapshot = (): string =>
+    `${registry.unionSnapshot()}\n${[...droppedGateways.keys()].sort().join(',')}\n${oauthIdentities}`;
   const unionNeedsLitellm = (): boolean => registry.loadable().some(({ config }) => litellmRequired(config));
 
   const litellmBin = managedLitellmPath(opts.home);
@@ -1268,6 +1320,34 @@ export async function cmdServe(
 
     let childEnv = buildChildEnv(mergedNative(), opts.home, tempDir);
 
+    /**
+     * `env` without the key variable of any direct gateway any tenant names.
+     * Every tenant's, not only the merged set's: a gateway the merge has just
+     * dropped is exactly the one whose stale key must not survive.
+     */
+    const withoutDirectKeys = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+      const next = { ...env };
+      for (const { config } of registry.loadable()) {
+        for (const [name, gateway] of Object.entries(config.native?.gateways ?? {})) {
+          if (transportFor(gateway, name) === 'direct') delete next[envVarForGateway(name)];
+        }
+      }
+      return next;
+    };
+    /**
+     * A credential rebuild failure, logged once per distinct message rather
+     * than once per request — a missing key is retried on every request until
+     * it is added. `buildChildEnv`'s messages already carry the `sonata serve:`
+     * prefix, which printed it twice.
+     */
+    let lastCredentialFailure: string | undefined;
+    const reportCredentialFailure = (error: unknown): void => {
+      const message = (error instanceof Error ? error.message : String(error)).replace(/^sonata serve: /, '');
+      if (message === lastCredentialFailure) return;
+      lastCredentialFailure = message;
+      console.error(`sonata serve: ${message}`);
+    };
+
     // The direct transport bypasses LiteLLM entirely, so the gateway's own
     // credential has to reach the router rather than the child's environment.
     // Mutated in place (not rebuilt) so the object the router closed over stays
@@ -1293,17 +1373,41 @@ export async function cmdServe(
      * on the previous merge: its direct request carried the other project's
      * key to its own base_url until some later merge.
      */
+    //
+    // The fingerprint is committed only once the rebuild succeeds. A rebuild
+    // that throws — a gateway whose credential is not stored yet — is retried
+    // on the next request, which is also what picks up a later `sonata auth
+    // add`: that writes the key store, not a config, so no fingerprint moves.
     let planFingerprint = gatewayPlanInputs();
+    /** The fingerprint whose rebuild last failed; a retry of it merges quietly, since its drops were already logged. */
+    let failedFingerprint: string | undefined;
     const refreshGatewayPlan = (): void => {
       const now = gatewayPlanInputs();
       if (now === planFingerprint) return;
-      planFingerprint = now;
-      const cfg = mergedNative();
+      const cfg = now === failedFingerprint ? mergedNative(() => { /* logged by the first attempt */ }) : mergedNative();
       try {
-        childEnv = buildChildEnv(cfg, opts.home, tempDir);
+        // Direct keys only: the token files belong to the running child, and
+        // a change that needs new ones also moves `litellmPlanSnapshot`, whose
+        // respawn writes them.
+        childEnv = buildChildEnv(cfg, opts.home, tempDir, { writeTokens: false });
       } catch (error) {
-        console.error(`sonata serve: ${error instanceof Error ? error.message : String(error)}`);
+        // The previous env still holds whatever the previous merge resolved,
+        // and a direct gateway's key is looked up in it BY NAME — so a
+        // project that has just taken over a name another project dropped
+        // would be sent that project's key. With no current key to offer, a
+        // direct request goes out with none and fails upstream with a 401,
+        // which names the problem; another project's credential does not.
+        // Replaced rather than mutated: `childEnv` is also the environment a
+        // LiteLLM child was spawned with.
+        childEnv = withoutDirectKeys(childEnv);
+        failedFingerprint = now;
+        reportCredentialFailure(error);
+        refreshGatewayKeys(cfg);
+        return;
       }
+      planFingerprint = now;
+      failedFingerprint = undefined;
+      lastCredentialFailure = undefined;
       refreshGatewayKeys(cfg);
     };
 
@@ -1337,7 +1441,7 @@ export async function cmdServe(
     // builds the model list from `native.models` first, unconditionally, so
     // a transitional config editing a legacy entry's id/gateway needs the
     // same restart a unified edit gets.
-    let activeModelsJson = registry.unionSnapshot();
+    let activeModelsJson = litellmPlanSnapshot();
     // The child a deliberate kill-for-config-change is about to terminate, so
     // the crash-exit handler below (which fires for ANY exit, deliberate or
     // not) does not also schedule its own duplicate respawn on top of the one
@@ -1410,7 +1514,7 @@ export async function cmdServe(
     // every request already awaits before reaching litellm.
     const runRestartForModelChange = async (): Promise<void> => {
       if (stopping) return;
-      const freshModelsJson = registry.unionSnapshot();
+      const freshModelsJson = litellmPlanSnapshot();
       if (freshModelsJson === activeModelsJson) return;
       if (registry.loadable().length === 0) {
         activeModelsJson = freshModelsJson;
@@ -1428,7 +1532,9 @@ export async function cmdServe(
           childEnv = buildChildEnv(mergedNative(), opts.home, tempDir);
           refreshGatewayKeys(mergedNative());
         } catch (error) {
-          console.error(`sonata serve: could not refresh gateway credentials: ${String(error)}`);
+          // Same failure `refreshGatewayPlan` has already stripped the direct
+          // keys for and reported; this only keeps a retry from re-logging it.
+          reportCredentialFailure(error);
           return;
         }
         if (!unionNeedsLitellm()) {

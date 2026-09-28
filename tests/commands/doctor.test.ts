@@ -12,7 +12,10 @@ import { credentialDir } from '../../src/native/oauth-login.js';
 import { cmdRoute } from '../../src/commands/route.js';
 import { nativeAgentMarkdown } from '../../src/commands/sync.js';
 
-vi.mock('../../src/native/litellm.js', () => ({
+vi.mock('../../src/native/litellm.js', async (importOriginal) => ({
+  // The rest is real: doctor merges gateways through serve's own function,
+  // which keys credentials by `envVarForGateway`.
+  ...await importOriginal<typeof import('../../src/native/litellm.js')>(),
   findLitellm: () => '/usr/local/bin/litellm',
 }));
 
@@ -454,11 +457,12 @@ credential_source = "sonata"
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
       const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
-      const check = checks.find((c) => c.name === 'oauth accounts');
+      const check = checks.find((c) => c.name === 'gateway conflicts');
       expect(check?.ok).toBe(false);
-      expect(check?.detail).toContain('"codex"');
-      expect(check?.detail).toContain('"openai"');
-      expect(check?.detail).toMatch(/serve will not route either|will not route any/);
+      expect(check?.detail).toContain('gateways with auth = "codex-oauth" read different credentials');
+      expect(check?.detail).toContain('"codex" (');
+      expect(check?.detail).toContain('"openai" (');
+      expect(check?.detail).toContain('! serve drops "codex", "openai" — their models answer 502 until this is resolved');
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -477,7 +481,87 @@ auth = "codex-oauth"
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
       const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
-      expect(checks.find((c) => c.name === 'oauth accounts')).toBeUndefined();
+      expect(checks.find((c) => c.name === 'gateway conflicts')).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  // Serve drops by the union of every tenant's gateways, and the machine
+  // config is always one of them — so a conflict can span two files, each
+  // fine on its own.
+  it('warns about an OAuth conflict between this project and the machine config, naming the machine file', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-oauth-cross-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-oauth-cross-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.codex]
+auth = "codex-oauth"
+credential_source = "sonata"
+`);
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), `
+[native.gateways.openai]
+auth = "codex-oauth"
+`);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      const check = checks.find((c) => c.name === 'gateway conflicts');
+      expect(check?.ok).toBe(false);
+      expect(check?.detail).toContain('gateways with auth = "codex-oauth" read different credentials');
+      expect(check?.detail).toContain(join('.config', 'sonata', 'sonata.toml'));
+      expect(check?.detail).toContain('! serve drops "codex" — their models answer 502 until this is resolved');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('warns about a gateway name the machine config defines with a different credential', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-name-cross-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-name-cross-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://b.example/v1"
+credential_source = "sonata"
+`);
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://a.example/v1"
+credential_source = "opencode"
+`);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      const check = checks.find((c) => c.name === 'gateway conflicts');
+      expect(check?.ok).toBe(false);
+      expect(check?.detail).toContain('gateway "acme" is defined by two projects with different credentials');
+      expect(check?.detail).toContain(join('.config', 'sonata', 'sonata.toml'));
+      expect(check?.detail).toContain('! serve drops "acme" — their models answer 502 until this is resolved');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('says nothing when this project and the machine config agree on an OAuth account', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-oauth-agree-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-oauth-agree-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.codex]
+auth = "codex-oauth"
+`);
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), `
+[native.gateways.openai]
+auth = "codex-oauth"
+`);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      expect(checks.find((c) => c.name === 'gateway conflicts')).toBeUndefined();
     } finally {
       globalThis.fetch = originalFetch;
     }
