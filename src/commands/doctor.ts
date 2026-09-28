@@ -1,6 +1,6 @@
 import { extendedContextAdvice } from '../extended-context.js';
 import { splitCandidate } from '../effort.js';
-import { VERSION_PROBE_TIMEOUT_MS } from '../version-probe.js';
+import { VERSION_PROBE_TIMEOUT_MS, runProbe } from '../version-probe.js';
 import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { promisify } from 'node:util';
@@ -328,17 +328,20 @@ export function routingFailureDetail(input: {
 }
 
 
-/** The running Claude Code version, or `undefined` when there is no `claude`. */
-async function defaultClaudeVersion(): Promise<string | undefined> {
+/**
+ * The running Claude Code version, or `undefined` when there is no `claude`
+ * (or it did not answer within the bound — unbounded, one hung `claude` hung
+ * the whole of `sonata doctor`).
+ */
+export async function defaultClaudeVersion(): Promise<string | undefined> {
   try {
-    const { stdout } = await run('claude', ['--version'], { env: { ...process.env } });
+    const { stdout } = await runProbe('claude', ['--version'], { env: { ...process.env }, timeoutMs: VERSION_PROBE_TIMEOUT_MS });
     return stdout.trim();
   } catch {
     return undefined;
   }
 }
 
-/** A harness's version line, from the real binary — `cmdDoctor`'s default `harnessVersion`. */
 /**
  * A harness's version, bounded like every other `--version` probe: doctor
  * awaits each in turn, so one hung binary hung the whole command. A timeout
@@ -346,7 +349,7 @@ async function defaultClaudeVersion(): Promise<string | undefined> {
  */
 export async function defaultHarnessVersion(command: string[]): Promise<string> {
   const env = { ...process.env, PATH: `${process.env.HOME}/.opencode/bin:${process.env.PATH}` };
-  const { stdout } = await run(command[0], command.slice(1), { env, timeout: VERSION_PROBE_TIMEOUT_MS });
+  const { stdout } = await runProbe(command[0], command.slice(1), { env, timeoutMs: VERSION_PROBE_TIMEOUT_MS });
   return stdout;
 }
 
