@@ -881,6 +881,19 @@ is worth more than a clean document.
   chasing a dead subagent, read the `fell past` line before concluding the
   router never saw the request.
 
+- **`sonata log` has two sources, and only one of them is complete.** A
+  finished run prints `transcript.txt` — tmux's whole history, up to
+  history-limit (10000 rows), captured once at DONE or by `sonata gc` before
+  it kills the session. A live run (or one whose session died uncaptured)
+  prints `events.jsonl`, the visible-screen diff, one screen per poll, which
+  misses any burst larger than a screen between polls. Do not try to make the
+  live log complete by reading scrollback per poll: that was built twice on
+  `fix/audit-backlog` and reverted twice. Diffing a scrollback capture
+  re-recorded the whole history on every redraw. Counting rows by
+  `#{history_size}` broke on real tmux: it trims a tenth of the history at
+  once at the limit, a taller client pulls rows back out of history, and a
+  wider one reflows them.
+
 ### Git, PRs and review
 
 - **CodeRabbit no longer auto-reviews this repository, and `pr-status.mjs`

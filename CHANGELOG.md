@@ -61,7 +61,9 @@ the review doc's Backlog note):
   tail waits for the worktree capture; a refused launch leaves no run behind;
   a timed-out run keeps its report; `sonata runs` shows tail's verdict; run
   ids are 12 hex, never reused, never a path; read-only claude roles get no
-  shell; `sonata log` keeps output that scrolls past; `[run]` timings must be
+  shell; a finished run's `sonata log` is its whole tmux history, captured
+  once as `transcript.txt` (also by `sonata gc` before it kills the session);
+  a live run's is still one screen per poll; `[run]` timings must be
   positive seconds; truncated reports fit their limit.
 - **Config, init and catalog.** Re-init keeps an existing gateway's
   `base_url`; a user's `native-*` agent is no longer claimed; collapsed
