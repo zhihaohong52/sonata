@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, withEffort, STICKY_TTL_MS, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
 
@@ -2763,4 +2763,25 @@ describe('respond — a client that disconnects mid-stream', () => {
       server.close();
     }
   }, 10_000);
+});
+
+describe('stickiness memory stays bounded when responses break', () => {
+  beforeEach(() => clearCooldowns());
+  it('evicts like stickySet when incomplete responses record new conversations', async () => {
+    const deps = {
+      fetch: (async () => new Response(new ReadableStream<Uint8Array>({
+        start(c) { c.enqueue(new TextEncoder().encode('event: ping\ndata: {}\n\n')); c.error(new Error('reset')); },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ({ role: 'code', tier: 'simple', routes: [{ key: 'flash', native: { gateway: 'g', id: 'f' } }] }),
+    };
+    for (let i = 0; i < STICKY_MAX_CONVERSATIONS + 5; i += 1) {
+      const res = await routeRequest({
+        method: 'POST', url: '/v1/messages', headers: {},
+        body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: `task ${i}` }] })),
+      }, deps);
+      try { for await (const _ of res.body as AsyncIterable<Uint8Array>) { /* read */ } } catch { /* broken */ }
+    }
+    expect(stickyConversationCount()).toBeLessThanOrEqual(STICKY_MAX_CONVERSATIONS);
+  });
 });

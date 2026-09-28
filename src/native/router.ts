@@ -836,6 +836,20 @@ function stickyGet(conversation: string, at: number): { key: string; prefer: boo
   return hit;
 }
 
+/** Drops the least recently touched conversations beyond the cap. */
+function stickyEvict(): void {
+  while (stickyCandidates.size > STICKY_MAX_CONVERSATIONS) {
+    const oldest = stickyCandidates.keys().next();
+    if (oldest.done) return;
+    stickyCandidates.delete(oldest.value);
+  }
+}
+
+/** Test seam: how many conversations the router currently remembers. */
+export function stickyConversationCount(): number {
+  return stickyCandidates.size;
+}
+
 function stickySet(conversation: string, key: string, at: number): void {
   // Delete-then-set moves the entry to the end of the insertion order, so a
   // conversation still in use is never the eviction victim. `served` only
@@ -845,10 +859,7 @@ function stickySet(conversation: string, key: string, at: number): void {
   served.add(key);
   stickyCandidates.delete(conversation);
   stickyCandidates.set(conversation, { key, at, prefer: true, served });
-  if (stickyCandidates.size > STICKY_MAX_CONVERSATIONS) {
-    const oldest = stickyCandidates.keys().next();
-    if (!oldest.done) stickyCandidates.delete(oldest.value);
-  }
+  stickyEvict();
 }
 
 /**
@@ -879,7 +890,10 @@ function stickyDemote(conversation: string, key: string): void {
 function stickyIncomplete(conversation: string, key: string, at: number): void {
   const hit = stickyCandidates.get(conversation);
   if (hit === undefined) {
+    // Bounded exactly as `stickySet` is: a stream of broken responses from
+    // distinct conversations must not grow this map without limit.
     stickyCandidates.set(conversation, { key, at, prefer: false, served: new Set([key]) });
+    stickyEvict();
     return;
   }
   hit.served.add(key);
