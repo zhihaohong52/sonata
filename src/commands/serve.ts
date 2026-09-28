@@ -663,6 +663,15 @@ interface CredentialFailure {
    * request, but never fatal at startup: it is a moment, not a missing login.
    */
   unreadable?: true;
+  /**
+   * Set when nothing was resolved because opencode.db's credential table has
+   * just read empty where it last held rows (`StoreRead.emptied`). The
+   * request is refused like any failure, but the gateway keeps its last
+   * resolution — its LiteLLM config and its seed — until a later read agrees:
+   * one empty read may be a gap, and treating it as a logout restarted
+   * LiteLLM twice and re-seeded it from the store when the row came back.
+   */
+  tentative?: true;
 }
 
 /**
@@ -710,6 +719,13 @@ interface ChildEnvResolution {
    * running LiteLLM is using.
    */
   seeds: { chatgpt?: ChatGptSeed; copilot?: string };
+  /**
+   * The ChatGPT stores (`resolvedOauthIdentity`'s spelling) a harness-sourced
+   * codex-oauth gateway read this build and found positively holding no
+   * login — neither unreadable nor a tentative empty read. How serve tells a
+   * login has ended, by the login and not by the gateway's name.
+   */
+  chatgptGone: string[];
 }
 
 /**
@@ -816,6 +832,7 @@ function resolveChildEnv(
   const failures: CredentialFailure[] = [];
   const transient: CredentialFailure[] = [];
   const seeds: ChildEnvResolution['seeds'] = {};
+  const chatgptGone: string[] = [];
   // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
   const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
 
@@ -890,6 +907,18 @@ function resolveChildEnv(
     if (resolved !== undefined) {
       memory.lastGood.set(lineage, resolved);
       return resolved;
+    }
+    if (last !== undefined && chain.some((store) => store.emptied === true)) {
+      // opencode.db's table read empty twice where it last held rows: a
+      // logout, or a gap. Refused now; kept, so nothing restarts for it, until
+      // a later read — which then has no `emptied` — says which.
+      failures.push({
+        gateway: name,
+        tentative: true,
+        message: `gateway "${name}": opencode's credential table has just read empty — not serving it until ` +
+          'the next read confirms a logout or finds the login again; retried on the next request',
+      });
+      return last;
     }
     memory.lastGood.delete(lineage);
     memory.seeds.delete(lineage);
@@ -974,6 +1003,10 @@ function resolveChildEnv(
           `in ${codexAuthPath(home)} or ${opencodeAuthPath(home)} — ` +
           `run \`sonata auth login ${name}\`, or \`codex login\`.`,
       );
+      if (entries === undefined && !chain.some((store) => store.state === 'unreadable')) {
+        chatgptGone.push(...(source === 'codex' ? ['codex store'] : source === 'opencode' ? ['opencode store']
+          : ['codex store', 'opencode store']));
+      }
       if (entries !== undefined) {
         if (entries === fresh && found !== null) {
           memory.seeds.set(lineage, {
@@ -1032,7 +1065,7 @@ function resolveChildEnv(
   for (const lineage of [...memory.seeds.keys()]) {
     if (!live.has(lineage)) memory.seeds.delete(lineage);
   }
-  return { env: childEnv, failures, transient, seeds };
+  return { env: childEnv, failures, transient, seeds, chatgptGone };
 }
 
 /** Default bound on how long a model-registry restart waits for the old litellm child to exit (see `litellmExitTimeoutMs`). */
@@ -1685,11 +1718,13 @@ export async function cmdServe(
     const applyCredentialFailures = (failures: CredentialFailure[], cfg: NativeConfig): void => {
       const all = new Map<string, string>();
       const litellm = new Set<string>();
-      for (const { gateway, message } of failures) {
+      for (const { gateway, message, tentative } of failures) {
         const gw = cfg.gateways[gateway];
         if (gw === undefined) continue;
         all.set(gateway, message);
-        if (transportFor(gw, gateway) !== 'direct') litellm.add(gateway);
+        // A tentative failure keeps its models in LiteLLM's config: the
+        // router refuses them, and a gap that closes restarts nothing.
+        if (transportFor(gw, gateway) !== 'direct' && tentative !== true) litellm.add(gateway);
       }
       credentialFailures = all;
       litellmCredentialFailures = litellm;
@@ -1718,6 +1753,9 @@ export async function cmdServe(
      * generation the next spawn would seed.
      */
     let chatgptSeeded: { gateway: string; dir: string; lineage: ChatGptLineage; generation: number; ended?: true } | undefined;
+    // `gateway` is only the name for messages: every decision is keyed on the
+    // login — `lineage` (store and account) — so a renamed gateway reading the
+    // same login still sees its logout and its return.
     /** The OAuth tokens the latest child-env build read; see `ChildEnvResolution.seeds`. */
     let seeds: ChildEnvResolution['seeds'] = {};
     const chatgptDirFor = (generation: number): string =>
@@ -1757,17 +1795,19 @@ export async function cmdServe(
       const held = chatgptSeeded;
       const store = built.seeds.chatgpt;
       if (held !== undefined && held.ended === undefined) {
-        if (store === undefined) {
-          // Positively gone — `codex logout`, a removed row — rather than
-          // unreadable for a moment: whatever login comes back is a new one.
-          if (built.failures.some(({ gateway, unreadable }) => gateway === held.gateway && unreadable === undefined)) {
-            held.ended = true;
-          }
-        } else if (held.lineage.account === undefined && store.lineage.account !== undefined
-          && !chatgptLineageChanged(held.lineage, store.lineage)) {
+        if (built.chatgptGone.includes(held.lineage.identity)) {
+          // The store the seeded login came from positively holds none —
+          // `codex logout`, a removed row, opencode.db still empty on a
+          // second build — rather than unreadable for a moment or empty for
+          // one read: whatever login comes back there is a new one.
+          held.ended = true;
+        } else if (store !== undefined && !chatgptLineageChanged(held.lineage, store.lineage)) {
           // Unknown to known is not a switch; learning the account now lets a
           // later switch away from it be seen.
-          held.lineage = { ...held.lineage, account: store.lineage.account };
+          if (held.lineage.account === undefined && store.lineage.account !== undefined) {
+            held.lineage = { ...held.lineage, account: store.lineage.account };
+          }
+          held.gateway = store.gateway;
         }
       }
       return built;
@@ -1924,6 +1964,11 @@ export async function cmdServe(
       // fingerprint would keep the refusal forever.
       if (failures.length > 0 || transient.length > 0 || readTorn(tornBefore)) {
         failedFingerprint = now;
+        // And the last committed fingerprint is forgotten: inputs that return
+        // to it — opencode.db's rows are hashed, not stat'd, so a row removed
+        // and restored reads identical — must still rebuild, or the refusal
+        // this build recorded would stand with nothing left to clear it.
+        planFingerprint = undefined;
         return;
       }
       planFingerprint = now;
