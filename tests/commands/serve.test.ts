@@ -6,12 +6,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
-  cmdServe as realCmdServe, listenOn, killRecordedOrphan, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
+  cmdServe as realCmdServe, listenOn, killRecordedOrphan, mergeTenantGateways, resolvedOauthIdentity, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
   serveStatePath, stopServe, cmdRestart, defaultWaitForLitellm, sonataRouterMultiTenant, processCommand,
   budgetStatusesFor,
 } from '../../src/commands/serve.js';
 import type { RouterTenant } from '../../src/native/router.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
+import { recordSession } from '../../src/sessions.js';
 import { managedLitellmPath, venvDir, LITELLM_VERSION } from '../../src/native/litellm-venv.js';
 import { clearCooldowns } from '../../src/native/router.js';
 import { ensureRouterToken } from '../../src/native/router-token.js';
@@ -519,46 +520,32 @@ litellm = ${litellmPort}
     expect(signalled).toContain(222);
   });
 
-  it('kills the recorded litellm pid when its command cannot be determined', async () => {
-    // Unknown (ps failed) is not evidence of a mismatch — refusing on it would
-    // strand a real orphan litellm holding the port on any machine where ps is
-    // unavailable. "Cannot tell" proceeds as today.
+  it('starts, signals nothing and forgets the record when ps cannot say what the pid is', async () => {
+    // No procps, hidepid, a ps timeout: the recorded pid may since have been
+    // reused by anything long-lived. Signalling it risks a stranger; blocking
+    // on it would wedge every start (Anthropic and direct routing included)
+    // on a process sonata cannot even name. Neither is acceptable.
     mkdirSync(dirname(serveStatePath(home, 0)), { recursive: true });
     writeFileSync(serveStatePath(home, 0), JSON.stringify({ litellmPid: 222 }));
-
-    const signalled: number[] = [];
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(orphanKill(signalled, 'SIGTERM'));
+    const signals: string[] = [];
+    const notes: string[] = [];
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(orphanKill([], 'never', signals));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { notes.push(args.map(String).join(' ')); });
     try {
       const handle = await cmdServe({
-        cwd, home, tempDir: tempDirFor(),
+        cwd, home, tempDir: tempDirFor(), litellmExitTimeoutMs: 100,
         waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 4242, kill() {} }),
         processCommand: () => undefined,
       });
       handles.push(handle);
     } finally {
       killSpy.mockRestore();
-    }
-
-    expect(signalled).toContain(222);
-  });
-
-  it('sends only SIGTERM to a recorded pid whose command cannot be determined', async () => {
-    mkdirSync(dirname(serveStatePath(home, 0)), { recursive: true });
-    writeFileSync(serveStatePath(home, 0), JSON.stringify({ litellmPid: 222 }));
-    const signals: string[] = [];
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(orphanKill([], 'never', signals));
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      await expect(cmdServe({
-        cwd, home, tempDir: tempDirFor(), litellmExitTimeoutMs: 100,
-        waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 4242, kill() {} }),
-        processCommand: () => undefined,
-      })).rejects.toThrow(/pid 222, command line unknown/);
-    } finally {
-      killSpy.mockRestore();
       errorSpy.mockRestore();
     }
-    expect(signals).toEqual(['SIGTERM']);
+    expect(signals).toEqual([]);
+    expect(notes.join('\n')).toMatch(/222 could not be verified/);
+    // The new child is on record; the unverified pid is not.
+    expect(JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8')).litellmPid).toBe(4242);
   });
 
   it('refuses to start over a recorded LiteLLM that survives SIGKILL, and keeps its record', async () => {
@@ -573,7 +560,9 @@ litellm = ${litellmPort}
         cwd, home, tempDir: tempDirFor(), litellmExitTimeoutMs: 100,
         waitForLitellm: async () => {}, spawnLitellm: () => { spawned += 1; return { pid: 4242, kill() {} }; },
         processCommand: () => '/opt/venv/bin/python /opt/venv/bin/litellm --config x',
-      })).rejects.toThrow(/pid 222, running `\/opt\/venv\/bin\/python \/opt\/venv\/bin\/litellm --config x`.*kill -9 222/s);
+      })).rejects.toThrow(new RegExp(
+        'pid 222, running `/opt/venv/bin/python /opt/venv/bin/litellm --config x`.*kill -9 222.*' +
+        `delete ${serveStatePath(home, 0).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 's'));
     } finally {
       killSpy.mockRestore();
       errorSpy.mockRestore();
@@ -2956,6 +2945,82 @@ litellm = ${litellmPort}
     expect(JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8')).litellmPid).toBe(222);
   });
 
+  it('leaves models on a dropped OAuth gateway out of LiteLLM, and answers them 502 naming the conflict', async () => {
+    // The machine's `codex` reads the default store; a project's `codex-work`
+    // has its own sonata login. One LiteLLM child cannot hold both, so both
+    // gateways are dropped — and their models must not be served from
+    // LiteLLM's default token dir either, which is another account.
+    writeMachineConfig(`
+[models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["luna"]
+complex = ["luna"]
+[native.gateways."codex"]
+auth = "codex-oauth"
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+[models."flash"]
+gateway = "acme"
+id = "flash-1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'acme', 'k');
+    const project = mkdtempSync(join(tmpdir(), 'serve-tenant-oauth-conflict-'));
+    writeFileSync(join(project, 'sonata.toml'), `
+[models."work"]
+gateway = "codex-work"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["work"]
+complex = ["work"]
+[native.gateways."codex-work"]
+auth = "codex-oauth"
+credential_source = "sonata"
+`);
+    // Register the project before startup, so the union sees the conflict.
+    await recordSession(home, { session: 'conflict-session', cwd: project, started: new Date().toISOString() });
+    const configs: string[] = [];
+    const forwarded: string[] = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+        forwarded.push((JSON.parse(init.body as string) as { model: string }).model);
+        return new Response('{}', { status: 200 });
+      }));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: (configPath) => { configs.push(readFileSync(configPath, 'utf8')); return { pid: 1, kill: () => {} }; },
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      expect(configs.length).toBeGreaterThan(0);
+      const last = configs.at(-1)!;
+      expect(last).not.toContain('/luna');
+      expect(last).not.toContain('/work');
+      expect(last).toContain('/flash');
+      for (const [headers, model] of [[{}, 'sonata-code-simple'], [projectHeaders(project), 'sonata-code-simple'], [{}, 'luna']] as const) {
+        const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...headers },
+          body: JSON.stringify({ model, messages: [] }),
+        });
+        expect(res.status).toBe(502);
+        const body = await res.json() as { type: string; error: { type: string; message: string } };
+        expect(body.type).toBe('error');
+        expect(body.error.message).toContain('codex-oauth');
+        expect(body.error.message).toContain('"codex"');
+        expect(body.error.message).toContain('"codex-work"');
+      }
+      expect(forwarded).toEqual([]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('serialises the model-change check, so two concurrent first requests spawn one child and a later crash still respawns', async () => {
     // Without an in-flight guard, request 2 saw request 1's not-yet-ready child
     // and took the *restart* branch: an extra kill/respawn, and a deliberate-
@@ -3510,6 +3575,48 @@ describe('mergeTenantGateways', () => {
     expect(text).toContain('"chatgpt" (c, sonata:chatgpt)');
   });
 
+  describe('by the credential store serve would actually read', () => {
+    let storeHome: string;
+    beforeEach(() => { storeHome = mkdtempSync(join(tmpdir(), 'sonata-oauth-store-')); });
+    afterEach(() => { rmSync(storeHome, { recursive: true, force: true }); });
+    const withCodexStore = () => {
+      mkdirSync(join(storeHome, '.codex'), { recursive: true });
+      writeFileSync(join(storeHome, '.codex', 'auth.json'), JSON.stringify({ tokens: { access_token: 'x' } }));
+    };
+    const codexPair = (): Parameters<typeof mergeTenantGateways>[0] => [
+      { id: 'a', gateways: { codex: gw({ auth: 'codex-oauth', baseUrl: undefined, credentialSource: 'codex' }) } },
+      { id: 'b', gateways: { openai: gw({ auth: 'codex-oauth', baseUrl: undefined }) } },
+    ];
+
+    it('keeps codex `codex` beside the default when the default reads the codex store', () => {
+      withCodexStore();
+      const lines: string[] = [];
+      const merged = mergeTenantGateways(codexPair(), (l) => lines.push(l), (name, g) => resolvedOauthIdentity(storeHome, name, g));
+      expect(Object.keys(merged).sort()).toEqual(['codex', 'openai']);
+      expect(lines).toEqual([]);
+    });
+
+    it('drops them when the default falls through to the opencode store', () => {
+      const lines: string[] = [];
+      const merged = mergeTenantGateways(codexPair(), (l) => lines.push(l), (name, g) => resolvedOauthIdentity(storeHome, name, g));
+      expect(merged).toEqual({});
+      expect(lines.join('\n')).toMatch(/"codex" \(a, codex store\).*"openai" \(b, opencode store\)/s);
+    });
+
+    it('treats copilot on opencode and on the default as one login', () => {
+      expect(resolvedOauthIdentity(storeHome, 'x', { auth: 'copilot-oauth', credentialSource: 'opencode' }))
+        .toBe(resolvedOauthIdentity(storeHome, 'y', { auth: 'copilot-oauth' }));
+    });
+
+    it('never treats two sonata logins, or one beside a machine store, as one', () => {
+      expect(resolvedOauthIdentity(storeHome, 'a', { auth: 'codex-oauth', credentialSource: 'sonata' }))
+        .not.toBe(resolvedOauthIdentity(storeHome, 'b', { auth: 'codex-oauth', credentialSource: 'sonata' }));
+      withCodexStore();
+      expect(resolvedOauthIdentity(storeHome, 'a', { auth: 'codex-oauth', credentialSource: 'sonata' }))
+        .not.toBe(resolvedOauthIdentity(storeHome, 'b', { auth: 'codex-oauth' }));
+    });
+  });
+
   it('keeps one OAuth gateway that two projects name identically', () => {
     const lines: string[] = [];
     const merged = mergeTenantGateways([
@@ -3803,16 +3910,18 @@ describe('killRecordedOrphan — escalates and forgets only a dead pid', () => {
     expect(stateOf().litellmPid).toBeUndefined();
   });
 
-  it('sends only SIGTERM when ps cannot say what the pid is', async () => {
-    record({ litellmPid: 222 });
+  it('sends nothing and forgets the record when ps cannot say what the pid is', async () => {
+    record({ routerPid: 11, litellmPid: 222 });
     const signals: string[] = [];
-    await killRecordedOrphan(orphanHome, 4100, {
+    const result = await killRecordedOrphan(orphanHome, 4100, {
       processCommand: () => undefined,
       kill: (pid) => signals.push(`TERM ${pid}`), forceKill: (pid) => signals.push(`KILL ${pid}`),
       isAlive: () => true, sleep: async () => {}, timeoutMs: 50,
     });
-    expect(signals).toEqual(['TERM 222']);
-    expect(stateOf().litellmPid).toBe(222);
+    expect(signals).toEqual([]);
+    expect(result.survivor).toBeUndefined();
+    expect(stateOf()).toMatchObject({ routerPid: 11 });
+    expect(stateOf().litellmPid).toBeUndefined();
   });
 
   it('keeps the pid on record when it survives SIGKILL too', async () => {

@@ -124,6 +124,13 @@ export interface RouterDeps {
    * unresolvable credential.
    */
   gatewayKeys?: (tenant: RouterTenant) => Record<string, string>;
+  /**
+   * Why serve has dropped a gateway (two tenants' credentials conflict on it,
+   * or one child cannot hold both accounts), or undefined when it is served.
+   * A request for a model on a dropped gateway is never forwarded: LiteLLM
+   * would serve it from whatever credential it does hold — another account.
+   */
+  gatewayUnavailable?: (tenant: RouterTenant, gateway: string) => string | undefined;
   /** Why LiteLLM cannot serve right now (venv missing, broken), or undefined when it can. A litellm-bound request is answered 502 with this text rather than forwarded. */
   litellmUnavailable?: () => string | undefined;
   /**
@@ -1398,6 +1405,9 @@ async function routeTierRequest(
   // against them reads as a tier that has no candidates rather than one whose
   // candidates are waiting out an account problem.
   const skippedCoolingProviders = new Set<string>();
+  // Why candidates on a gateway serve has dropped were skipped. Never tried,
+  // so never cooled — the conflict is config, not a failing model.
+  const skippedDropped: string[] = [];
   // The most recent message-less 400, and how many attempts had been made
   // when it arrived. If it is the LAST thing the loop saw, it is returned
   // rather than a 529: a request every candidate refuses may really be
@@ -1431,6 +1441,11 @@ async function routeTierRequest(
     if (!direct && unavailable !== undefined) {
       // This is router state, not a candidate failure: leave its cooldown intact.
       skippedUnavailableLitellm = true;
+      continue;
+    }
+    const dropped = route.native === undefined ? undefined : deps.gatewayUnavailable?.(tenant, route.native.gateway);
+    if (dropped !== undefined) {
+      skippedDropped.push(dropped);
       continue;
     }
     const until = cooldowns.get(cool);
@@ -1697,6 +1712,14 @@ async function routeTierRequest(
   // `sonata litellm install`" would misdiagnose that failure, and returning
   // before `withUsageRecording` would drop the ledger row for a request the
   // router really did send upstream.
+  if (skippedDropped.length > 0 && attempts.length === 0 && !skippedUnavailableLitellm) {
+    deps.log?.(`router: every native route for ${label} is on a gateway serve dropped`);
+    return {
+      status: 502,
+      headers: { 'content-type': 'application/json' },
+      body: anthropicErrorBody('router_error', `${label}: not served — ${[...new Set(skippedDropped)].join('; ')}`),
+    };
+  }
   if (skippedUnavailableLitellm && attempts.length === 0) {
     return {
       status: 502,
@@ -1858,6 +1881,15 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   // (no child is started) and loses the direct path's pass-through contract
   // on a mixed one.
   const native = !anthropic && alias !== undefined ? deps.resolveNative?.(alias, tenant) : undefined;
+  const droppedGateway = native === undefined ? undefined : deps.gatewayUnavailable?.(tenant, native.gateway);
+  if (droppedGateway !== undefined) {
+    deps.log?.(`router: refused model=${requested ?? '?'} — its gateway is not served`);
+    return {
+      status: 502,
+      headers: { 'content-type': 'application/json' },
+      body: anthropicErrorBody('router_error', `${alias}: not served — ${droppedGateway}`),
+    };
+  }
   if (native?.transport === 'direct' && alias !== undefined) {
     deps.log?.(`${req.method} ${req.url} model=${requested ?? '?'} -> direct`);
     return withUsageRecording(

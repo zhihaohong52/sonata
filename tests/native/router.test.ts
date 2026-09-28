@@ -2785,3 +2785,61 @@ describe('stickiness memory stays bounded when responses break', () => {
     expect(stickyConversationCount()).toBeLessThanOrEqual(STICKY_MAX_CONVERSATIONS);
   });
 });
+
+describe('a gateway serve has dropped', () => {
+  beforeEach(() => clearCooldowns());
+  const blocked = (_tenant: unknown, gateway: string) => gateway === 'codex'
+    ? 'gateways with auth = "codex-oauth" read different credentials — "codex" (a, codex store), "work" (b, sonata:work)'
+    : undefined;
+
+  it('skips its tier candidates and serves the next', async () => {
+    const seen: string[] = [];
+    const res = await routeRequest(
+      { method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [] })) },
+      {
+        fetch: (async (_u: string, init: RequestInit) => { seen.push((JSON.parse(init.body as string) as { model: string }).model); return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTier: () => ({ role: 'code', tier: 'simple', routes: [
+          { key: 'luna', native: { gateway: 'codex', id: 'l' } },
+          { key: 'flash', native: { gateway: 'acme', id: 'f' } },
+        ] }),
+        gatewayUnavailable: blocked,
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(seen).toEqual(['default/flash']);
+  });
+
+  it('answers a typed 502 naming the conflict when every candidate is on it, forwarding nothing', async () => {
+    const seen: string[] = [];
+    const res = await routeRequest(
+      { method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [] })) },
+      {
+        fetch: (async (u: string) => { seen.push(u); return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTier: () => ({ role: 'code', tier: 'simple', routes: [{ key: 'luna', native: { gateway: 'codex', id: 'l' } }] }),
+        gatewayUnavailable: blocked,
+      },
+    );
+    expect(res.status).toBe(502);
+    const body = JSON.parse((res.body as Buffer).toString()) as { error: { type: string; message: string } };
+    expect(body.error.type).toBe('router_error');
+    expect(body.error.message).toContain('"codex" (a, codex store)');
+    expect(seen).toEqual([]);
+  });
+
+  it('answers a bare key on it with the same 502', async () => {
+    const seen: string[] = [];
+    const res = await routeRequest(
+      { method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from(JSON.stringify({ model: 'luna', messages: [] })) },
+      {
+        fetch: (async (u: string) => { seen.push(u); return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveNative: () => ({ gateway: 'codex', id: 'l', transport: 'litellm' as const }),
+        gatewayUnavailable: blocked,
+      },
+    );
+    expect(res.status).toBe(502);
+    expect(seen).toEqual([]);
+  });
+});

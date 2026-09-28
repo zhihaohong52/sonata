@@ -11,9 +11,19 @@ import { spawn } from 'node:child_process';
  */
 export const VERSION_PROBE_TIMEOUT_MS = 10_000;
 
+/**
+ * The most output a probe may produce on either stream before it is killed —
+ * `execFile`'s own cap was dropped with it, and a binary that streams forever
+ * would otherwise grow this process's memory until the bound fired.
+ */
+export const PROBE_MAX_BUFFER = 16 * 1024 * 1024;
+
 /** A probe's failure, shaped like `execFile`'s so existing callers read it unchanged. */
 export interface ProbeError extends Error {
-  /** `'ENOENT'` for a missing binary, else the exit code. */
+  /**
+   * `'ENOENT'` for a missing binary, `'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'`
+   * (execFile's own code) when the output cap was passed, else the exit code.
+   */
   code?: string | number;
   /** True when the bound fired and the process group was killed. */
   killed?: boolean;
@@ -36,7 +46,7 @@ export interface ProbeError extends Error {
 export function runProbe(
   cmd: string,
   args: readonly string[],
-  opts: { timeoutMs: number; env?: NodeJS.ProcessEnv },
+  opts: { timeoutMs: number; env?: NodeJS.ProcessEnv; maxBuffer?: number },
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     let child;
@@ -50,8 +60,23 @@ export function runProbe(
     let stderr = '';
     let killed = false;
     let settled = false;
-    child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
-    child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    let overflowed: 'stdout' | 'stderr' | undefined;
+    const maxBuffer = opts.maxBuffer ?? PROBE_MAX_BUFFER;
+    const overflow = (stream: 'stdout' | 'stderr') => {
+      if (overflowed !== undefined) return;
+      overflowed = stream;
+      killGroup();
+    };
+    child.stdout!.setEncoding('utf8').on('data', (chunk: string) => {
+      if (overflowed !== undefined) return;
+      stdout += chunk;
+      if (stdout.length > maxBuffer) overflow('stdout');
+    });
+    child.stderr!.setEncoding('utf8').on('data', (chunk: string) => {
+      if (overflowed !== undefined) return;
+      stderr += chunk;
+      if (stderr.length > maxBuffer) overflow('stderr');
+    });
     // Drop the pipes a surviving descendant may still hold, so nothing keeps
     // the event loop (or this probe) waiting on it.
     const release = () => { child.stdout?.destroy(); child.stderr?.destroy(); };
@@ -63,10 +88,28 @@ export function runProbe(
       killed = true;
       killGroup();
     }, opts.timeoutMs);
+    // The probe runs in its own process group (detached), so the terminal's
+    // Ctrl-C no longer reaches it. Forward SIGINT/SIGTERM to that group while
+    // it runs; then, if nothing else was listening, re-raise so this process
+    // gets the default handling it would have had without our listener.
+    const forward = (signal: NodeJS.Signals) => {
+      killGroup();
+      unforward();
+      if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+    };
+    const onSigint = () => forward('SIGINT');
+    const onSigterm = () => forward('SIGTERM');
+    const unforward = () => {
+      process.off('SIGINT', onSigint);
+      process.off('SIGTERM', onSigterm);
+    };
+    process.on('SIGINT', onSigint);
+    process.on('SIGTERM', onSigterm);
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      unforward();
       fn();
     };
     child.on('error', (error: ProbeError) => finish(() => { release(); reject(error); }));
@@ -77,6 +120,14 @@ export function runProbe(
         // Reap anything the command left behind in its group.
         if (killed || code !== 0) killGroup();
         release();
+        if (overflowed !== undefined) {
+          const error = new RangeError(`${overflowed} maxBuffer length exceeded`) as ProbeError;
+          error.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+          error.killed = true;
+          error.stdout = stdout;
+          error.stderr = stderr;
+          return reject(error);
+        }
         if (!killed && code === 0) return resolve({ stdout, stderr });
         const error = new Error(killed
           ? `\`${cmd}\` did not answer within ${opts.timeoutMs}ms`
