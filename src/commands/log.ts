@@ -23,7 +23,10 @@ export function cmdLog(opts: LogOptions): { ok: boolean; text: string } {
 
   const file = runLogFile(runDir(opts.cwd, opts.id), readMeta(opts.cwd, opts.id));
   if (file.source === 'harness') {
-    return { ok: true, text: `${cleanRunLog(readFileSync(file.path, 'utf8'))}\n\n— sonata ${verified.detail}` };
+    // hasContent looks for any visible character; a log that cleans down to
+    // nothing (only carriage-return noise) falls through to the event log.
+    const cleaned = cleanRunLog(readFileSync(file.path, 'utf8'));
+    if (cleaned.length > 0) return { ok: true, text: `${cleaned}\n\n— sonata ${verified.detail}` };
   }
 
   const lines = readEvents(opts.cwd, opts.id);

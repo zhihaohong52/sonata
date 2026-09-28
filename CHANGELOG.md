@@ -74,8 +74,9 @@ the review doc's Backlog note):
   a timed-out run keeps its report; `sonata runs` shows tail's verdict; run
   ids are 12 hex, never reused, never a path; read-only claude roles get no
   shell; `sonata log` (and the web UI's run detail) prints a non-interactive
-  run's own `harness.log`, which holds everything it printed — an interactive
-  run's log is still one screen per poll; `[run]` timings must be
+  run's own `harness.log` (opencode, pi, reasonix and codex runs tee their
+  complete output there) — claude and interactive runs still get the
+  one-screen-per-poll log; `[run]` timings must be
   positive seconds; truncated reports fit their limit.
 - **Config, init and catalog.** Re-init keeps an existing gateway's
   `base_url`; a user's `native-*` agent is no longer claimed; collapsed
