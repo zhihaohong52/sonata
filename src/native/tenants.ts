@@ -270,8 +270,9 @@ export class TenantRegistry {
       .sort((x, y) => x.id.localeCompare(y.id));
   }
 
-  unionSnapshot(): string {
-    return JSON.stringify(this.loadable().map(({ id, config }) => ({ id, snapshot: nativeSnapshot(config) })));
+  /** `loaded` lets a caller that already has `loadable()` skip parsing every config again. */
+  unionSnapshot(loaded: { id: string; config: SonataConfig }[] = this.loadable()): string {
+    return JSON.stringify(loaded.map(({ id, config }) => ({ id, snapshot: nativeSnapshot(config) })));
   }
 
   summary(): { id: string; configPath: string | null }[] {
