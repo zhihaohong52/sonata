@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdTail, decide, harnessOutput } from '../../src/commands/tail.js';
@@ -740,69 +741,18 @@ describe('cmdTail waits for the worktree capture the exit sentinel outruns', () 
   });
 });
 
-describe('cmdTail records output that scrolled past the visible pane', () => {
-  // `sonata log` prints events.jsonl, which was diffed from a visible-only
-  // capture: anything more than one screen (50 rows) between polls was never
-  // recorded, and a run nobody tailed kept only its last screen.
-  let cwd: string;
-  const session = 'sonata-test-tail-scroll';
-  const id = 'ddd111';
-
-  beforeEach(async () => {
-    cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-scroll-'));
-    writeFileSync(join(cwd, 'sonata.toml'), '[run]\nstall_timeout_seconds = 120\n');
-    mkdirSync(runDir(cwd, id), { recursive: true });
-    writeFileSync(join(runDir(cwd, id), 'meta.json'), JSON.stringify({
-      id, role: 'code', model: 'm', harness: 'opencode', mode: 'acceptEdits',
-      interactive: false, session, cwd, startedAt: '2026-09-27T00:00:00.000Z',
-    }));
-    await newSession({ session, cwd });
-    await sendKeys(session, "seq -f 'row-%g' 1 150");
-    await sendKeys(session, 'Enter');
-    // The pane's shell is the user's own login shell, whose startup under a
-    // loaded full-suite run took past the old silent 5s deadline — the test
-    // then tailed a pane holding only the typed command. Wait long enough,
-    // and fail here, legibly, rather than in the assertion.
-    const deadline = Date.now() + 25_000;
-    while (!(await capturePane(session)).includes('row-150')) {
-      if (Date.now() > deadline) throw new Error('seq never printed row-150 in the pane');
-      await new Promise((r) => setTimeout(r, 25));
-    }
-  }, 30_000);
-
-  afterEach(async () => { await killSession(session); });
-
-  it('keeps every line in the event log, not just the last screen', async () => {
-    await cmdTail({ cwd, id, waitSeconds: 0 });
-    const events = readEvents(cwd, id);
-    expect(events).toContain('row-1');
-    expect(events).toContain('row-150');
-  });
-
-  it('does not record a line twice across polls', async () => {
-    await cmdTail({ cwd, id, waitSeconds: 0 });
-    await sendKeys(session, "echo 'after'");
-    await sendKeys(session, 'Enter');
-    const deadline = Date.now() + 20_000;
-    while (!(await capturePane(session)).split('\n').some((l) => l.trim() === 'after')) {
-      if (Date.now() > deadline) throw new Error("echo never printed 'after' in the pane");
-      await new Promise((r) => setTimeout(r, 25));
-    }
-    await cmdTail({ cwd, id, waitSeconds: 0 });
-    const events = readEvents(cwd, id);
-    expect(events.filter((l) => l === 'row-1')).toHaveLength(1);
-    expect(events.filter((l) => l === 'after')).toHaveLength(1);
-  });
-});
-
-describe('cmdTail records a live TUI without re-recording its history', () => {
-  // Real tmux, the reviewer's shapes. A redrawn status line under a long
-  // scrollback re-recorded the whole ~2000-line history on every poll when the
-  // event log was diffed from a scrollback capture.
+/**
+ * Real tmux on the suite's private server. The live event log is a diff of
+ * the visible screen, one screen per poll; a finished run's whole history is
+ * captured once, as transcript.txt, from tmux's own scrollback.
+ */
+describe('a finished run`s transcript', () => {
   let cwd: string;
   let flag: string;
-  const session = 'sonata-test-tail-tui';
-  const id = 'eee111';
+  const session = 'sonata-test-tail-transcript';
+  const id = 'fff111';
+  const tmux = (...args: string[]) => execFileSync('tmux', args, { encoding: 'utf8' });
+  const transcript = () => join(runDir(cwd, id), 'transcript.txt');
 
   async function waitForLine(text: string): Promise<void> {
     const deadline = Date.now() + 25_000;
@@ -813,27 +763,96 @@ describe('cmdTail records a live TUI without re-recording its history', () => {
   }
 
   async function run(script: string): Promise<void> {
-    const path = join(cwd, 'tui.sh');
+    const path = join(cwd, 'harness.sh');
     writeFileSync(path, script);
     await sendKeys(session, `bash '${path}'`);
     await sendKeys(session, 'Enter');
   }
 
+  const finish = () => writeFileSync(join(runDir(cwd, id), 'exit'), '0\n');
+
   beforeEach(async () => {
-    cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-tui-'));
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-transcript-'));
     flag = join(cwd, 'go');
     writeFileSync(join(cwd, 'sonata.toml'), '[run]\nstall_timeout_seconds = 120\n');
     mkdirSync(runDir(cwd, id), { recursive: true });
     writeFileSync(join(runDir(cwd, id), 'meta.json'), JSON.stringify({
-      id, role: 'code', model: 'm', harness: 'codex', mode: 'default',
-      interactive: true, session, cwd, startedAt: '2026-09-28T00:00:00.000Z',
+      id, role: 'code', model: 'm', harness: 'opencode', mode: 'acceptEdits',
+      interactive: false, session, cwd, startedAt: '2026-09-28T00:00:00.000Z',
     }));
+    writeFileSync(join(runDir(cwd, id), 'report.md'), 'done');
     await newSession({ session, cwd });
   }, 30_000);
 
   afterEach(async () => { await killSession(session); });
 
-  it('records a redrawn status line as one line, not the history above it', async () => {
+  it('holds every line of a long run exactly once', async () => {
+    await run("seq -f 'row-%g' 1 3000");
+    await waitForLine('row-3000');
+    finish();
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+    expect(r.state).toBe('DONE');
+    const rows = readFileSync(transcript(), 'utf8').split('\n').filter((l) => l.startsWith('row-'));
+    expect(rows).toEqual(Array.from({ length: 3000 }, (_, i) => `row-${i + 1}`));
+  });
+
+  it('keeps what history-limit kept, once each', async () => {
+    tmux('set-option', '-t', session, 'history-limit', '100');
+    await run("seq -f 'row-%g' 1 400");
+    await waitForLine('row-400');
+    finish();
+    await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+    const rows = readFileSync(transcript(), 'utf8').split('\n').filter((l) => l.startsWith('row-'));
+    expect(rows.at(-1)).toBe('row-400');
+    expect(new Set(rows).size).toBe(rows.length);
+    // 100 rows of history plus the screen; what tmux trimmed is gone.
+    expect(rows.length).toBeGreaterThanOrEqual(100);
+    expect(rows.length).toBeLessThan(400);
+    const first = Number(rows[0]!.slice(4));
+    expect(rows).toEqual(Array.from({ length: 400 - first + 1 }, (_, i) => `row-${first + i}`));
+  });
+
+  it('joins wrapped rows, so a resize before the capture changes nothing', async () => {
+    const long = (n: number) => `wide-${n}-${'x'.repeat(150)}`;
+    await run(`for i in $(seq 1 60); do echo "wide-$i-${'x'.repeat(150)}"; done`);
+    const deadline = Date.now() + 25_000;
+    while (!(await capturePane(session)).includes('wide-60-')) {
+      if (Date.now() > deadline) throw new Error('output never finished');
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    tmux('resize-window', '-t', session, '-x', '70');
+    tmux('resize-window', '-t', session, '-x', '130');
+    finish();
+    await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+    const rows = readFileSync(transcript(), 'utf8').split('\n').filter((l) => l.startsWith('wide-'));
+    expect(rows).toEqual(Array.from({ length: 60 }, (_, i) => long(i + 1)));
+  });
+
+  it('is written once, and a later tail leaves it alone', async () => {
+    await run("echo 'first'");
+    await waitForLine('first');
+    finish();
+    await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+    expect(readFileSync(transcript(), 'utf8')).toContain('first');
+    await sendKeys(session, "echo 'after the run'");
+    await sendKeys(session, 'Enter');
+    await waitForLine('after the run');
+    await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+    expect(readFileSync(transcript(), 'utf8')).not.toContain('after the run');
+  });
+
+  it('is not written while the run is still going', async () => {
+    await run("echo 'working'");
+    await waitForLine('working');
+    await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+    expect(existsSync(transcript())).toBe(false);
+  });
+
+  it('bounds the live event log to one screen per poll under a redrawn status line', async () => {
+    // The reviewer's shape: long output, then a status line rewritten in place.
+    // A scrollback-diffing log re-recorded the whole history on each redraw;
+    // the visible diff costs at most one screen, and the transcript at the end
+    // still holds everything once.
     await run([
       "i=1; while [ $i -le 1500 ]; do echo line-$i; i=$((i+1)); done",
       "printf 'Working 1s\\ncomposer>'",
@@ -843,56 +862,17 @@ describe('cmdTail records a live TUI without re-recording its history', () => {
     ].join('\n'));
     await waitForLine('Working 1s');
     await cmdTail({ cwd, id, waitSeconds: 0 });
-    const before = readEvents(cwd, id);
-    expect(before).toContain('line-1');
-    expect(before).toContain('line-1500');
-
+    const before = readEvents(cwd, id).length;
     writeFileSync(flag, '');
     await waitForLine('Working 2s');
     await cmdTail({ cwd, id, waitSeconds: 0 });
-    const added = readEvents(cwd, id).slice(before.length);
-    expect(added).toContain('Working 2s');
-    expect(added.length).toBeLessThanOrEqual(2);
-    expect(readEvents(cwd, id).filter((l) => l === 'line-1')).toHaveLength(1);
-  });
+    expect(readEvents(cwd, id).length - before).toBeLessThanOrEqual(50);
 
-  it('records an alternate-screen TUI and records nothing twice when it exits', async () => {
-    await run([
-      'echo before-tui',
-      "printf '\\033[?1049h\\033[H'",
-      "echo 'tui: working'",
-      `while [ ! -f '${flag}' ]; do sleep 0.05; done`,
-      "printf '\\033[?1049l'",
-      'echo after-tui',
-      'sleep 30',
-    ].join('\n'));
-    await waitForLine('tui: working');
-    await cmdTail({ cwd, id, waitSeconds: 0 });
-    expect(readEvents(cwd, id)).toContain('tui: working');
-
-    writeFileSync(flag, '');
-    await waitForLine('after-tui');
-    await cmdTail({ cwd, id, waitSeconds: 0 });
-    const events = readEvents(cwd, id);
-    expect(events).toContain('after-tui');
-    expect(events.filter((l) => l === 'before-tui')).toHaveLength(1);
-    expect(events.filter((l) => l === 'tui: working')).toHaveLength(1);
-  });
-
-  it('keeps a burst larger than the screen between two polls', async () => {
-    await run([
-      'echo start',
-      `while [ ! -f '${flag}' ]; do sleep 0.05; done`,
-      "seq -f 'burst-%g' 1 400",
-      'sleep 30',
-    ].join('\n'));
-    await waitForLine('start');
-    await cmdTail({ cwd, id, waitSeconds: 0 });
-    writeFileSync(flag, '');
-    await waitForLine('burst-400');
-    await cmdTail({ cwd, id, waitSeconds: 0 });
-    const burst = readEvents(cwd, id).filter((l) => l.startsWith('burst-'));
-    expect(burst).toEqual(Array.from({ length: 400 }, (_, i) => `burst-${i + 1}`));
+    finish();
+    await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+    const rows = readFileSync(transcript(), 'utf8').split('\n');
+    expect(rows.filter((l) => l === 'line-1')).toHaveLength(1);
+    expect(rows.filter((l) => l === 'line-1500')).toHaveLength(1);
   });
 });
 

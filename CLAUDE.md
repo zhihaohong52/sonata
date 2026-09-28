@@ -264,7 +264,7 @@ src/
 ├── settings.ts           permission-hook scope settings, SONATA_TOOLS allow-list
 ├── store.ts              run state storage
 ├── tmux.ts               tmux session lifecycle (detached sessions, pane diffing)
-├── pane-record.ts        the event log `sonata log` prints: rows counted into tmux scrollback via #{history_size} (fetched exactly when no poll saw them), plus visible rows compared by position — each printed line once, a redrawn status line as one line, the alternate screen by best row alignment
+├── transcript.ts       a finished run's transcript.txt: tmux's whole history, wrapped rows joined, captured once when the run is DONE (and by gc before it kills the session)
 ├── tui.ts                Minimal zero-dependency TUI primitives — pure parseKey/reduce/renderList so list behaviour is testable without a TTY; retained for the non-Ink prompts (init's hook scope, tier-routing offer, prune confirm)
 ├── watchdog.ts           run timeout enforcement
 ├── git-worktree.ts       resolves a linked git worktree to its main checkout (pure fs: the `.git` pointer file + its gitdir's `commondir`), so `configPath` can borrow that checkout's sonata.toml — distinct from worktree.ts, which fingerprints *changes*
