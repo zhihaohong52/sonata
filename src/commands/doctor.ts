@@ -1144,7 +1144,12 @@ export async function cmdDoctor(
           ?? `ChatGPT subscription from ${
                report.source === 'opencode' ? opencodeSourceLabel(home, 'openai') : report.source ?? 'codex'
              }` +
-             (report.expired ? ' (expired, refreshes on use)' : ''),
+             (report.expired ? ' (expired, refreshes on use)' : '') +
+             // serve seeds LiteLLM's token directory only when it starts
+             // LiteLLM, and restarts it by itself only for another store or
+             // another account, so this is the one re-login it does not follow.
+             ' — serve copies it into LiteLLM when it starts LiteLLM; after re-logging in to the same ' +
+             'account, run `sonata restart`',
       });
     }
 

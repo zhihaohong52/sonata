@@ -1308,6 +1308,12 @@ function litellmBody(body: Buffer): Buffer {
 }
 
 /**
+ * What LiteLLM's chatgpt authenticator says when its refresh token is refused
+ * (`RefreshAccessTokenError`, and ChatGPT's own `refresh_token_reused`).
+ */
+const CHATGPT_REFRESH_FAILED = /refresh token failed|re-login required|refresh_token_reused/i;
+
+/**
  * Forwards an already-litellm-shaped request (auth swapped, system flattened,
  * model rewritten if this is a tier candidate) and applies the 500->529
  * empty-completion rewrite. Shared by the plain litellm path and the tier
@@ -1329,12 +1335,22 @@ async function forwardToLitellm(
     // usually means the upstream was overloaded and returned an empty completion
     // rather than a real error. Re-emitting it as 529 (overloaded) lets Claude
     // Code treat it as a retriable backpressure signal rather than a hard fault.
-    if (response.status === 500) {
+    // A 500 or 401 is also where LiteLLM reports a ChatGPT refresh it could
+    // not make, which only a restart (a fresh seed from the store) can mend.
+    if (response.status === 500 || response.status === 401) {
       const responseBodyBuf = response.body === null
         ? Buffer.alloc(0)
         : await bufferBody(responseBody(response.body), deps);
       const text = responseBodyBuf.toString();
-      if (text.includes('Unknown items in responses API response')) {
+      if (CHATGPT_REFRESH_FAILED.test(text)) {
+        deps.log?.(
+          `router: litellm could not refresh its ChatGPT login (${requestedModel(body) ?? '?'}) — serve copies a ` +
+          'ChatGPT token into LiteLLM only when it starts LiteLLM, so a login LiteLLM can no longer refresh ' +
+          '(sessions revoked, or its refresh token spent by another client) is re-seeded from the store by ' +
+          '`sonata restart`',
+        );
+      }
+      if (response.status === 500 && text.includes('Unknown items in responses API response')) {
         const msg = 'upstream returned empty completion (overloaded) — retry';
         deps.log?.(`router: 500 from litellm rewritten to 529 (${requestedModel(body) ?? '?'}): empty output`);
         return {

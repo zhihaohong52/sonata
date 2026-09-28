@@ -72,11 +72,15 @@ export function fileStoreRead(path: string): StoreRead {
  * A database that is not there, or one `node:sqlite` cannot load on this Node,
  * answers the same "no rows" every time, and one with no `credential` table is
  * a v1 database that holds none — all steady answers. One that exists and
- * cannot be opened or queried (locked, mid-checkpoint) is unreadable. So is an
- * EMPTY table when the previous read in this process found rows: a login
- * vanishing between two reads is what a torn read looks like, while a real
- * logout of the last row reads empty again next time and is then believed.
- * `memory.rows` carries that previous count; pass the same object each call.
+ * cannot be opened or queried (locked, mid-checkpoint) is unreadable.
+ *
+ * An EMPTY table when the previous read in this process found rows is read a
+ * second time, on a fresh connection, before anything is concluded: a login
+ * vanishing between two reads is what a torn read looks like, but deferring
+ * the verdict to the next request — as this once did — served that request
+ * on the credential just logged out. Empty twice is a logout and is `ok`;
+ * rows on the second read make the first one `unreadable`. `memory.rows`
+ * carries the previous count; pass the same object each call.
  */
 export function opencodeDbRead(
   home: string,
@@ -87,23 +91,34 @@ export function opencodeDbRead(
   const present = fileStoreRead(path);
   if (present.state !== 'ok') return present;
   if (!sqliteAvailable()) return { state: 'absent' };
-  const db = openReadOnlySync(path);
-  if (db === undefined) return { state: 'unreadable', detail: `${path}: could not be opened` };
-  try {
-    const rows = Number(db.all('SELECT COUNT(*) AS n FROM credential')[0]?.n ?? 0);
-    const previous = memory.rows;
-    memory.rows = rows;
-    if (rows === 0 && previous !== undefined && previous > 0) {
-      return { state: 'unreadable', detail: `${path}: the credential table read empty` };
-    }
+  const first = countCredentialRows(path);
+  if (first.rows === undefined) {
+    if (!first.missingTable) return { state: 'unreadable', detail: first.detail };
+    memory.rows = 0;
     return { state: 'ok' };
+  }
+  const previous = memory.rows;
+  if (first.rows === 0 && previous !== undefined && previous > 0) {
+    const again = countCredentialRows(path);
+    if (again.rows === undefined && !again.missingTable) return { state: 'unreadable', detail: again.detail };
+    const rows = again.rows ?? 0;
+    memory.rows = rows;
+    return rows === 0 ? { state: 'ok' } : { state: 'unreadable', detail: `${path}: the credential table read empty` };
+  }
+  memory.rows = first.rows;
+  return { state: 'ok' };
+}
+
+/** One count of opencode.db's credential rows, on its own read-only connection. */
+function countCredentialRows(path: string): { rows?: number; missingTable?: true; detail?: string } {
+  const db = openReadOnlySync(path);
+  if (db === undefined) return { detail: `${path}: could not be opened` };
+  try {
+    return { rows: Number(db.all('SELECT COUNT(*) AS n FROM credential')[0]?.n ?? 0) };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/no such table/i.test(message)) {
-      memory.rows = 0;
-      return { state: 'ok' };
-    }
-    return { state: 'unreadable', detail: `${path}: ${message}` };
+    if (/no such table/i.test(message)) return { missingTable: true };
+    return { detail: `${path}: ${message}` };
   } finally {
     try { db.close(); } catch { /* already closed */ }
   }

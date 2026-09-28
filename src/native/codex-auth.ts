@@ -55,19 +55,48 @@ export function opencodeAuthPath(home: string): string {
  */
 export const CHATGPT_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 
-/** The `exp` claim of a JWT, without verifying the signature. */
-export function jwtExpiry(token: string): number | undefined {
+/** A JWT's payload claims, without verifying the signature; undefined when it does not decode. */
+function jwtClaims(token: string): Record<string, unknown> | undefined {
   const payload = token.split('.')[1];
   if (payload === undefined) return undefined;
   try {
     const padded = payload.padEnd(payload.length + ((4 - (payload.length % 4)) % 4), '=');
     const claims: unknown = JSON.parse(Buffer.from(padded, 'base64url').toString('utf8'));
-    if (claims === null || typeof claims !== 'object') return undefined;
-    const exp = (claims as Record<string, unknown>).exp;
-    return typeof exp === 'number' ? exp : undefined;
+    if (claims === null || typeof claims !== 'object' || Array.isArray(claims)) return undefined;
+    return claims as Record<string, unknown>;
   } catch {
     return undefined;
   }
+}
+
+/** The `exp` claim of a JWT, without verifying the signature. */
+export function jwtExpiry(token: string): number | undefined {
+  const exp = jwtClaims(token)?.exp;
+  return typeof exp === 'number' ? exp : undefined;
+}
+
+/**
+ * The ChatGPT account a record belongs to, or undefined when nothing in it
+ * says.
+ *
+ * Derived the way LiteLLM's chatgpt authenticator derives it
+ * (`_extract_account_id`): the `https://api.openai.com/auth` claim's
+ * `chatgpt_account_id`, read from the id token when there is one and the
+ * access token otherwise. The record's own `account_id` is the fallback, for
+ * a token that does not carry the claim. Both stores and LiteLLM's own
+ * refresh keep one account's claim across every token they mint, so this is
+ * stable where a refresh token or an expiry is not — and an absent field is
+ * "unknown", never a different account: opencode v2's credential row has no
+ * `accountId` at all.
+ */
+export function chatgptAccountId(record: Partial<ChatGptAuthRecord>): string | undefined {
+  const token = str(record.id_token) ?? str(record.access_token);
+  const auth = token === undefined ? undefined : jwtClaims(token)?.['https://api.openai.com/auth'];
+  if (auth !== null && typeof auth === 'object' && !Array.isArray(auth)) {
+    const claim = str((auth as Record<string, unknown>).chatgpt_account_id);
+    if (claim !== undefined) return claim;
+  }
+  return str(record.account_id);
 }
 
 function str(value: unknown): string | undefined {
