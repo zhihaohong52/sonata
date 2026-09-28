@@ -154,9 +154,9 @@ export const UNREADABLE_STORE_WINDOW_MS = 10_000;
 export interface UnreadableMemory {
   /**
    * A file store's stat at its last unreadable read, when that last changed,
-   * and when its current run of failed reads began.
+   * when its current run of failed reads began, and when the last of them was.
    */
-  files: Map<string, { sig: string; since: number; changedAt?: number; warned?: true }>;
+  files: Map<string, { sig: string; since: number; last: number; changedAt?: number; warned?: true }>;
   /** When opencode.db's current run of failed reads began. */
   db: Map<string, { since: number; warned?: true }>;
   /** Unreadable reads answered as mid-write since this memory was made; a caller compares counts. */
@@ -188,8 +188,12 @@ function statSig(path: string): { sig: string; mtimeMs?: number } {
  * touching while it never once parses is not mid-write, and without the
  * second bound it read as torn forever. Past either it is steadily
  * unreadable and answered `absent`, with `skipped` naming the path and the
- * error; `warn` is called once per such stretch. Any read that is not
- * unreadable forgets the file, so the next failure starts a fresh run.
+ * error; `warn` is called once per such stretch. A run is continuous only
+ * while each failed read follows the previous one within `windowMs`: any
+ * read that is not unreadable forgets the file, and so does a gap — a torn
+ * read at startup and another after a quiet minute are two writes, not one
+ * run that has gone on for a minute. A file that stays broken is still
+ * skipped across gaps, since it is torn only while recently written.
  */
 export function boundUnreadable(
   path: string,
@@ -204,12 +208,16 @@ export function boundUnreadable(
     return read;
   }
   const { sig, mtimeMs } = statSig(path);
-  const previous = memory.files.get(path);
+  const recorded = memory.files.get(path);
+  const previous = recorded !== undefined && now - recorded.last < windowMs ? recorded : undefined;
   const changedAt = previous !== undefined && previous.sig !== sig ? now : previous?.changedAt;
   const since = previous?.since ?? now;
-  const record: { sig: string; since: number; changedAt?: number; warned?: true } =
-    { sig, since, ...(changedAt === undefined ? {} : { changedAt }) };
-  if (previous?.warned === true && previous.sig === sig) record.warned = true;
+  const record: { sig: string; since: number; last: number; changedAt?: number; warned?: true } =
+    { sig, since, last: now, ...(changedAt === undefined ? {} : { changedAt }) };
+  // Warned once per unchanged file, across gaps: a file that stays broken
+  // and is read once a minute starts a new run each time, and is still one
+  // stretch to report.
+  if (recorded?.warned === true && recorded.sig === sig) record.warned = true;
   memory.files.set(path, record);
   const recentlyWritten = mtimeMs !== undefined && Math.abs(now - mtimeMs) < windowMs;
   const recentlyChanged = changedAt !== undefined && now - changedAt < windowMs;
@@ -232,7 +240,10 @@ export function boundUnreadable(
  * has failed every read for `windowMs` — locked for good, corrupt — is
  * skipped as absent (logged once) rather than refusing its gateways forever.
  * The database is written constantly, so its mtime says nothing about a torn
- * read; the length of the run of failures does.
+ * read; the length of the run of failures does. Unlike a file's, the run is
+ * not ended by a gap between failed reads: the run's length is the only
+ * evidence here, and a database locked for good but read once a minute
+ * would otherwise start a new run on every read and never be skipped.
  */
 export function boundUnreadableDb(
   path: string,
