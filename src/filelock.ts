@@ -23,8 +23,8 @@
  * if another process reclaimed it in the meantime (a stale lock the holder
  * failed to renew), that process's live lock is left alone.
  */
-import { existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync, readFileSync, utimesSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, readFileSync, utimesSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 const RENEW_INTERVAL_MS = 2000;
@@ -97,6 +97,29 @@ export function reclaimStaleLock(
   return false;
 }
 
+/** How old a staging or tomb directory must be before it counts as litter. */
+const LITTER_MAX_AGE_MS = 10 * 60_000;
+
+/**
+ * Removes `<lock>.new-*` staging directories and `<lock>.tomb-*` tombs left by
+ * a process that died mid-acquire or mid-reclaim. Only this lock's, and only
+ * ones far older than any acquire or reclaim takes, so the caller's own
+ * in-flight staging directory (and anyone else's) is never touched.
+ */
+function sweepLitter(lock: string): void {
+  const prefix = basename(lock);
+  let names: string[];
+  try { names = readdirSync(dirname(lock)); } catch { return; }
+  const cutoff = Date.now() - LITTER_MAX_AGE_MS;
+  for (const name of names) {
+    if (!name.startsWith(`${prefix}.new-`) && !name.startsWith(`${prefix}.tomb-`)) continue;
+    const path = join(dirname(lock), name);
+    try {
+      if (statSync(path).mtimeMs < cutoff) rmSync(path, { recursive: true, force: true });
+    } catch { /* gone already, or not ours to read */ }
+  }
+}
+
 /**
  * Takes the lock at `lock` for `token`, or answers false if it is held.
  *
@@ -108,6 +131,7 @@ export function reclaimStaleLock(
  * replace it, after which this process's token landed in someone else's lock.
  */
 export function acquireLock(lock: string, token: string): boolean {
+  sweepLitter(lock);
   if (existsSync(lock)) return false;
   const staging = `${lock}.new-${randomUUID()}`;
   try {
@@ -120,6 +144,14 @@ export function acquireLock(lock: string, token: string): boolean {
   }
   // A legacy writer's empty directory is the one thing the rename can replace;
   // the owner check says whether this lock is the one at the path.
+  //
+  // Accepted, not closed: an older sonata acquires with a bare mkdir, then
+  // writes its owner, so for that instant its lock is an EMPTY directory — and
+  // this rename replaces an empty directory. The older process's owner write
+  // then lands in this lock. It needs two sonata versions racing for one lock
+  // within microseconds, during an upgrade; Node exposes no rename that
+  // refuses an existing target, and the owner check above catches the case
+  // where the older process wins the write.
   return readToken(lock) === token;
 }
 

@@ -158,3 +158,29 @@ describe('acquireLock', () => {
     expect(readdirSync(dir).filter((name) => name.includes('.new-'))).toEqual([]);
   });
 });
+
+describe('acquireLock — litter from interrupted locks', () => {
+  it('removes staging and tomb directories older than the litter age, and nothing else', () => {
+    const old = new Date(Date.now() - 20 * 60_000);
+    const make = (name: string, aged: boolean) => {
+      const path = join(dir, name);
+      mkdirSync(path);
+      writeFileSync(join(path, 'owner'), 'x');
+      if (aged) utimesSync(path, old, old);
+      return path;
+    };
+    const staleStaging = make('state.json.lock.new-dead', true);
+    const staleTomb = make('state.json.lock.tomb-dead', true);
+    const freshStaging = make('state.json.lock.new-live', false);
+    const freshTomb = make('state.json.lock.tomb-live', false);
+    const otherLock = make('other.json.lock.tomb-dead', true);
+    expect(acquireLock(lock, 'me')).toBe(true);
+    expect(existsSync(staleStaging)).toBe(false);
+    expect(existsSync(staleTomb)).toBe(false);
+    expect(existsSync(freshStaging)).toBe(true);
+    expect(existsSync(freshTomb)).toBe(true);
+    // Another file's lock litter is that lock's business.
+    expect(existsSync(otherLock)).toBe(true);
+    expect(readFileSync(join(lock, 'owner'), 'utf8')).toBe('me');
+  });
+});
