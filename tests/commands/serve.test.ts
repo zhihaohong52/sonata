@@ -26,6 +26,28 @@ import { freePort } from '../free-port.js';
 const cmdServe: typeof realCmdServe = (opts) => realCmdServe({ refreshPrices: async () => {}, ...opts });
 
 let cwd: string;
+
+/**
+ * A `process.kill` stand-in for a recorded orphan (pid 222): signal 0 answers
+ * "alive" until the orphan has been sent `diesOn`. Every other pid behaves as
+ * a live process that ignores signals. Pids and signals are recorded as
+ * `signalled` (pids) and on the returned function's `signals`.
+ */
+function orphanKill(signalled: number[], diesOn: 'SIGTERM' | 'SIGKILL' | 'never', signals: string[] = []): typeof process.kill {
+  let dead = false;
+  return ((pid: number, signal?: string | number) => {
+    if (signal === 0) {
+      if (pid === 222 && dead) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+      return true;
+    }
+    signalled.push(pid);
+    const name = signal === undefined ? 'SIGTERM' : String(signal);
+    if (pid === 222) signals.push(name);
+    if (pid === 222 && diesOn !== 'never' && name === diesOn) dead = true;
+    return true;
+  }) as unknown as typeof process.kill;
+}
+
 let home: string;
 let handles: ServeHandle[];
 /** This test's LiteLLM port: free, and never the machine's real 4000. */
@@ -482,9 +504,7 @@ litellm = ${litellmPort}
     writeFileSync(serveStatePath(home, 0), JSON.stringify({ litellmPid: 222 }));
 
     const signalled: number[] = [];
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(
-      ((pid: number) => { signalled.push(pid); return true; }) as unknown as typeof process.kill,
-    );
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(orphanKill(signalled, 'SIGTERM'));
     try {
       const handle = await cmdServe({
         cwd, home, tempDir: tempDirFor(),
@@ -507,9 +527,7 @@ litellm = ${litellmPort}
     writeFileSync(serveStatePath(home, 0), JSON.stringify({ litellmPid: 222 }));
 
     const signalled: number[] = [];
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(
-      ((pid: number) => { signalled.push(pid); return true; }) as unknown as typeof process.kill,
-    );
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(orphanKill(signalled, 'SIGTERM'));
     try {
       const handle = await cmdServe({
         cwd, home, tempDir: tempDirFor(),
@@ -522,6 +540,47 @@ litellm = ${litellmPort}
     }
 
     expect(signalled).toContain(222);
+  });
+
+  it('sends only SIGTERM to a recorded pid whose command cannot be determined', async () => {
+    mkdirSync(dirname(serveStatePath(home, 0)), { recursive: true });
+    writeFileSync(serveStatePath(home, 0), JSON.stringify({ litellmPid: 222 }));
+    const signals: string[] = [];
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(orphanKill([], 'never', signals));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(cmdServe({
+        cwd, home, tempDir: tempDirFor(), litellmExitTimeoutMs: 100,
+        waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 4242, kill() {} }),
+        processCommand: () => undefined,
+      })).rejects.toThrow(/pid 222, command line unknown/);
+    } finally {
+      killSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+    expect(signals).toEqual(['SIGTERM']);
+  });
+
+  it('refuses to start over a recorded LiteLLM that survives SIGKILL, and keeps its record', async () => {
+    mkdirSync(dirname(serveStatePath(home, 0)), { recursive: true });
+    writeFileSync(serveStatePath(home, 0), JSON.stringify({ litellmPid: 222 }));
+    const signals: string[] = [];
+    let spawned = 0;
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(orphanKill([], 'never', signals));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(cmdServe({
+        cwd, home, tempDir: tempDirFor(), litellmExitTimeoutMs: 100,
+        waitForLitellm: async () => {}, spawnLitellm: () => { spawned += 1; return { pid: 4242, kill() {} }; },
+        processCommand: () => '/opt/venv/bin/python /opt/venv/bin/litellm --config x',
+      })).rejects.toThrow(/pid 222, running `\/opt\/venv\/bin\/python \/opt\/venv\/bin\/litellm --config x`.*kill -9 222/s);
+    } finally {
+      killSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+    expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(spawned).toBe(0);
+    expect(JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8')).litellmPid).toBe(222);
   });
 
   it('starts even when a state file parses to something that is not a record', async () => {
@@ -2803,6 +2862,98 @@ litellm = ${litellmPort}
     const state = JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8'));
     expect(state.routerPid).toBe(process.pid);
     expect(state.litellmPid).toBe(1);
+  });
+
+  const LAZY_MACHINE = () => `
+[models."sonnet-like"]
+gateway = "anth"
+id = "some-model"
+[tiers.code]
+simple = ["sonnet-like"]
+complex = ["sonnet-like"]
+[native.gateways."anth"]
+base_url = "https://anth.example"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`;
+
+  it('clears a crashed daemon\'s recorded LiteLLM before the lazy start spawns', async () => {
+    writeMachineConfig(LAZY_MACHINE());
+    writeSonataKey(home, 'anth', 'k');
+    mkdirSync(dirname(serveStatePath(home, 0)), { recursive: true });
+    writeFileSync(serveStatePath(home, 0), JSON.stringify({ litellmPid: 222 }));
+    const project = mkdtempSync(join(tmpdir(), 'serve-tenant-lazy-orphan-'));
+    writeFileSync(join(project, 'sonata.toml'), TENANT('needs-litellm'));
+    const signals: string[] = [];
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(orphanKill([], 'SIGTERM', signals));
+    let spawns = 0;
+    try {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => { spawns += 1; return { pid: 7000 + spawns, kill: () => {} }; },
+        processCommand: () => 'litellm --config x',
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      expect(signals).toEqual([]);
+      await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...projectHeaders(project) },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      await waitFor(() => spawns === 1, 'the lazy litellm child');
+    } finally {
+      killSpy.mockRestore();
+    }
+    expect(signals).toEqual(['SIGTERM']);
+    expect(JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8')).litellmPid).toBe(7001);
+  });
+
+  it('does not lazily spawn over a recorded LiteLLM that survives, and says why', async () => {
+    writeMachineConfig(LAZY_MACHINE());
+    writeSonataKey(home, 'anth', 'k');
+    mkdirSync(dirname(serveStatePath(home, 0)), { recursive: true });
+    writeFileSync(serveStatePath(home, 0), JSON.stringify({ litellmPid: 222 }));
+    const project = mkdtempSync(join(tmpdir(), 'serve-tenant-lazy-survivor-'));
+    writeFileSync(join(project, 'sonata.toml'), TENANT('needs-litellm'));
+    const signals: string[] = [];
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(orphanKill([], 'never', signals));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let spawns = 0;
+    try {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, litellmExitTimeoutMs: 100,
+        spawnLitellm: () => { spawns += 1; return { pid: 7000 + spawns, kill: () => {} }; },
+        processCommand: () => 'litellm --config x',
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const send = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...projectHeaders(project) },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      await send();
+      await waitFor(() => signals.length === 2, 'the escalation');
+      // Every later LiteLLM-bound request is refused with the reason, not
+      // forwarded to whatever holds the port.
+      let res = await send();
+      for (let i = 0; i < 50 && res.status !== 502; i += 1) {
+        await new Promise((r) => setTimeout(r, 20));
+        res = await send();
+      }
+      expect(res.status).toBe(502);
+      expect(await res.text()).toContain('kill -9 222');
+    } finally {
+      killSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+    expect(spawns).toBe(0);
+    expect(JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8')).litellmPid).toBe(222);
   });
 
   it('serialises the model-change check, so two concurrent first requests spawn one child and a later crash still respawns', async () => {
