@@ -87,8 +87,9 @@ export function jsonResponse(status: number, value: unknown): RouterResponse {
 }
 
 /**
- * Loopback origin is established by the bind (`listen(port, 'localhost')`).
- * What remains is DNS rebinding: a hostname resolving to 127.0.0.1 carries an
+ * Loopback origin is established by the bind: `cmdServe` listens on
+ * `127.0.0.1` and `::1` only (`ROUTER_LOOPBACK_HOSTS`), never a wildcard, so
+ * no off-machine peer can connect at all. What remains is DNS rebinding: a hostname resolving to 127.0.0.1 carries an
  * attacker's origin. The Host header is what tells the two apart.
  */
 function isLoopbackHost(host: string | undefined, port: number): boolean {
