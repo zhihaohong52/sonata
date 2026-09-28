@@ -1766,22 +1766,25 @@ export async function cmdServe(
    * alone would re-merge on nearly every request; the rows are what decide
    * whether anything a gateway reads has changed. A read that fails keeps the
    * last stamp and is retried on the next change, so a moment's lock is not
-   * a login changing. The database's mode is part of the signal too: a
-   * `chmod` moves no rows, so without it a database made unreadable (or
-   * readable again) was never re-read.
+   * a login changing. The database's ctime is part of the signal too: a
+   * `chmod`, `chown` or ACL change moves no rows (and an ACL change not even
+   * the mode), so without it a database made unreadable (or readable again)
+   * was never re-read. ctime also moves when opencode writes the main file
+   * (a checkpoint, in WAL mode), which costs a re-merge and nothing more:
+   * LiteLLM restarts only when a credential a gateway reads has changed.
    */
   let opencodeDbStamp: { stat: string; stamp: string } | undefined;
   const opencodeDbSignal = (): string => {
     const path = opencodeDbPath(opts.home);
     const stat = `${statSignal(path)}|${statSignal(`${path}-wal`)}`;
-    let mode = '-';
-    try { mode = String(statSync(path).mode); } catch { /* absent: no mode */ }
+    let ctime = '-';
+    try { ctime = String(statSync(path).ctimeMs); } catch { /* absent: no ctime */ }
     if (opencodeDbStamp?.stat !== stat) {
       const stamp = opencodeCredentialStamp(opts.home);
       if (stamp !== 'unreadable') opencodeDbStamp = { stat, stamp };
-      else return `${mode}:${opencodeDbStamp?.stamp ?? stamp}`;
+      else return `${ctime}:${opencodeDbStamp?.stamp ?? stamp}`;
     }
-    return `${mode}:${opencodeDbStamp.stamp}`;
+    return `${ctime}:${opencodeDbStamp.stamp}`;
   };
   /**
    * What the gateway merge depends on, as a cheap comparable string: the

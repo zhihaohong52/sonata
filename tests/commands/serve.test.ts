@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import type { spawn as spawnType } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
@@ -4475,7 +4476,18 @@ litellm = ${litellmPort}
         expect(seededWith()).toEqual(['CODEX-A']);
       });
 
-      it.runIf(sqliteAvailable())('notices a chmod on opencode.db on the next request, though its rows do not change', async () => {
+      // An ACL entry moves neither the mode nor the stat the rows are keyed
+      // on — only ctime — so a signal carrying the mode missed it. macOS's
+      // `chmod +a` is the one portable-enough way to make one.
+      const accessChanges = [
+        { name: 'a chmod', runs: true, lock: (db: string) => chmodSync(db, 0o000), unlock: (db: string) => chmodSync(db, 0o600) },
+        {
+          name: 'an ACL change', runs: process.platform === 'darwin' && process.getuid?.() !== 0,
+          lock: (db: string) => execFileSync('/bin/chmod', ['+a', 'everyone deny read', db]),
+          unlock: (db: string) => execFileSync('/bin/chmod', ['-a#', '0', db]),
+        },
+      ];
+      for (const change of accessChanges) it.runIf(sqliteAvailable() && change.runs)(`notices ${change.name} on opencode.db on the next request, though its rows do not change`, async () => {
         // opencode.db's signal was its credential rows' hash, re-read when its
         // stat moved: a chmod moved the stat, the rows read the same (or not
         // at all), and the signal stood still, so nothing was re-read.
@@ -4512,12 +4524,12 @@ litellm = ${litellmPort}
           return res.status;
         };
         expect(await send()).toBe(200);
-        chmodSync(db, 0o000);
+        change.lock(db);
         try {
           await send();
           expect(errors.some((line) => line.includes('opencode.db') && line.includes('could not be'))).toBe(true);
         } finally {
-          chmodSync(db, 0o600);
+          change.unlock(db);
         }
       });
 
