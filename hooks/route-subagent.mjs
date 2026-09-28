@@ -81,10 +81,29 @@ await new Promise((resolve) => {
     const child = spawn(process.execPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     const stderr = [];
     child.stderr.on('data', (chunk) => stderr.push(chunk));
-    child.on('exit', (code, signal) => { surfaceExit(code, signal, Buffer.concat(stderr).toString('utf8')); resolve(); });
+    // Surfaced once stderr is complete, not at 'exit': Node reports the exit
+    // when the process is reaped, and the last bytes of its stderr can be read
+    // after that — so under load a CLI that explained itself was reported as
+    // one that died without a word. 'close' waits for the pipe's EOF; the
+    // bound after 'exit' is for a descendant left holding stderr open, which
+    // would otherwise keep the session waiting on this hook.
+    let done = false;
+    const report = (code, signal) => {
+      if (done) return;
+      done = true;
+      surfaceExit(code, signal, Buffer.concat(stderr).toString('utf8'));
+      resolve();
+    };
+    child.on('close', report);
+    child.on('exit', (code, signal) => { setTimeout(() => report(code, signal), 2000).unref(); });
     // A CLI that cannot be started at all (EAGAIN, EMFILE) is as unrouted as
     // one that refused, and used to end here with nothing said.
-    child.on('error', (error) => { surface(`the CLI could not be started: ${error.message}`); resolve(); });
+    child.on('error', (error) => {
+      if (done) return;
+      done = true;
+      surface(`the CLI could not be started: ${error.message}`);
+      resolve();
+    });
   } catch {
     resolve();
   }
