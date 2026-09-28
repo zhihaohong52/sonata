@@ -131,22 +131,44 @@ export function rewriteOauthToApiKey(
 }
 
 /**
- * Re-point each key-authenticated candidate of a gateway the written scope's
- * config already holds at that config's `base_url`.
+ * Re-point every key-authenticated candidate of a gateway at one URL: the one
+ * the picker queried for the scope being written.
  *
- * Candidates are minted before the config scope is chosen, from the project
- * config or a harness. `nativeTomlFor` writes an existing gateway's URL from
- * the config for the scope being written, so without this a global-scope init
- * carried — and warned and validated against — one URL while writing another.
+ * Candidates are minted before the config scope is chosen — a saved model from
+ * the project config's URL, a discovered one from a harness's. Re-pointing
+ * only gateways the written scope's *config* held left a gateway held by the
+ * project config and a harness, but not by the global config, with mixed
+ * candidates at a global-scope init; `nativeTomlFor` then wrote whichever came
+ * last, not the URL the picker had asked what the gateway serves. So every
+ * candidate of a gateway `scopeUrls` names is re-pointed, making all of them
+ * agree with the query.
+ *
  * An OAuth candidate is never touched: its URL is its provider's backend.
+ * Run it BEFORE `rewriteOauthToApiKey`, so a gateway switched from OAuth to a
+ * key keeps the well-known API URL that rewrite gives it.
  */
 export function applyScopeBaseUrls(
   nativeByKey: Map<string, NativeCandidate>,
-  scopeConfigUrls: Readonly<Record<string, string>>,
+  scopeUrls: Readonly<Record<string, string>>,
 ): void {
   for (const [key, candidate] of nativeByKey) {
     if (isOauthGatewayAuth(candidate.auth)) continue;
-    const url = scopeConfigUrls[candidate.gateway];
+    const url = scopeUrls[candidate.gateway];
     if (url !== undefined && url !== candidate.baseUrl) nativeByKey.set(key, { ...candidate, baseUrl: url });
   }
+}
+
+/**
+ * The URLs the picker queries for a scope: that scope's resolved map, with the
+ * providers added this run on top — the same merge the models step makes.
+ */
+export function scopeQueryUrls(
+  env: Pick<InitEnvironment, 'providerBaseUrls' | 'providerBaseUrlsByScope'>,
+  scope: 'project' | 'global',
+  customProviders: ReadonlyArray<{ name: string; url: string }> = [],
+): Record<string, string> {
+  return {
+    ...(env.providerBaseUrlsByScope?.[scope] ?? env.providerBaseUrls),
+    ...Object.fromEntries(customProviders.map((provider) => [provider.name, provider.url])),
+  };
 }
