@@ -201,10 +201,11 @@ export async function cmdDispatch(
 
     const degraded = result.degraded === true;
     attempts.push({ modelKey, state: result.state, degraded });
-    // The verdict, not the text: every finished report carries the provenance
-    // line, so trimming the decorated text never finds it empty.
-    const emptyReport = result.state === 'DONE' && result.reportEmpty === true;
-    if (result.state === 'DONE' && (degraded || emptyReport)) {
+    // An empty report is not a separate case here: the store reads an empty
+    // report.md as no report, the fallback file is read the same way, and a
+    // read-only run that said nothing is degraded — so every empty report
+    // reaches this point already degraded.
+    if (result.state === 'DONE' && degraded) {
       continue;
     }
 
