@@ -3824,6 +3824,44 @@ litellm = ${litellmPort}
       expect(errors.some((line) => line.includes('logged in again'))).toBe(true);
     });
 
+    for (const source of ['codex', undefined] as const) {
+      it(`keeps a resolved gateway's login through a store skipped for staying unreadable, and restarts nothing when it reads again (source ${source ?? 'default'})`, async () => {
+        // Past the torn window an unreadable store reads as absent with
+        // \`skipped\` set. Counted as a logout, that dropped the gateway and
+        // ended its lineage, so the file reading again re-seeded LiteLLM from
+        // the store — a refresh token LiteLLM had already spent — and deleted
+        // the directory it was running in.
+        writeMachineConfig(machine('', source));
+        const codexPath = join(home, '.codex', 'auth.json');
+        const old = (Date.now() - 3_600_000) / 1000;
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'RT-1', account_id: 'acct-a' });
+        const body = readFileSync(codexPath, 'utf8');
+        utimesSync(codexPath, old, old);
+        // A different login elsewhere the default could fall through to.
+        writeOpencodeStore(claimJwt(1_900_000_000, 'acct-b'), 'OPENCODE-B');
+        const { send, envs, dir, tokenFile, settle } = await start();
+        expect(await send()).toBe(200);
+        const first = dir();
+        const rotated = JSON.stringify({ access_token: claimJwt(2_000_000_001, 'acct-a'), refresh_token: 'RT-2-ROTATED', account_id: 'acct-a' });
+        writeFileSync(tokenFile(), rotated);
+        writeFileSync(codexPath, '{"auth_mode":"chat');
+        utimesSync(codexPath, old, old);
+        expect(await send()).toBe(200);
+        await settle();
+        writeFileSync(codexPath, body);
+        utimesSync(codexPath, old, old);
+        expect(await send()).toBe(200);
+        await settle();
+        expect(await send()).toBe(200);
+        await settle();
+        expect(envs).toHaveLength(1);
+        expect(dir()).toBe(first);
+        expect(existsSync(first)).toBe(true);
+        expect(readFileSync(tokenFile(), 'utf8')).toBe(rotated);
+        expect(errors.some((line) => line.includes('logged in again') || line.includes('restarting litellm'))).toBe(false);
+      });
+    }
+
     it.runIf(sqliteAvailable())('refuses through one empty read of opencode.db, and restarts nothing when the row returns', async () => {
       // "Empty twice" is how opencodeDbRead reads a logout, and a request
       // landing there is refused — but one such read may be a gap. Marking
