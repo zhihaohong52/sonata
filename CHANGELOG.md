@@ -121,6 +121,15 @@ the review doc's Backlog note):
 - **A machine `sonata.toml` that will not load no longer switches its cap
   off.** When it has a `[budget]` table, the router and `sonata dispatch`
   refuse, naming the file and the error.
+- **A project's direct request no longer carries another project's key when
+  its own is missing.** When the router re-merged gateways after a config
+  change and could not resolve a key (a sonata-sourced gateway with nothing
+  stored yet), it kept the previous credentials — so a project that had just
+  taken over a gateway name another project dropped was sent that project's
+  key. The direct keys are now cleared on such a failure (the request fails
+  upstream with a 401), the rebuild is retried on the next request so a later
+  `sonata auth add` is picked up without a restart, and the failure is logged
+  once rather than on every request.
 
 ## [0.13.1] - 2026-09-27
 
