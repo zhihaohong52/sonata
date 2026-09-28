@@ -3580,17 +3580,20 @@ litellm = ${litellmPort}
       }));
     };
     const ocDbPath = () => join(home, '.local', 'share', 'opencode', 'opencode.db');
-    const start = async (o: { onExitSupported?: boolean; upstream?: () => Response } = {}) => {
+    const start = async (o: {
+      onExitSupported?: boolean; upstream?: (url: string) => Response | Promise<Response>; now?: () => number;
+    } = {}) => {
       const envs: NodeJS.ProcessEnv[] = [];
       const exits: ((code: number | null, signal: NodeJS.Signals | null) => void)[][] = [];
       const outputs: ((line: string) => void)[][] = [];
       const upstreamCalls: string[] = [];
       vi.stubGlobal('fetch', vi.fn(async (url: string) => {
         upstreamCalls.push(String(url));
-        return o.upstream?.() ?? new Response('{}', { status: 200 });
+        return o.upstream?.(String(url)) ?? new Response('{}', { status: 200 });
       }));
       const handle = await cmdServe({
         cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, respawnDelayMs: 0,
+        ...(o.now === undefined ? {} : { now: o.now }),
         spawnLitellm: (_config, env) => {
           envs.push({ ...env });
           const listeners: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
@@ -4152,6 +4155,113 @@ litellm = ${litellmPort}
         await waitFor(() => envs.length === 3, 'the restart after the re-login');
         await settle();
         expect(await send()).toBe(200);
+      });
+
+      it('clears when a new login is seeded into a new directory, even with no refused token captured', async () => {
+        // LiteLLM's own rewrite can leave the refused auth.json with no token
+        // at all, so nothing is captured; a codex login to another account is
+        // then seeded into a new directory, which is evidence enough.
+        writeMachineConfig(machine('', 'codex'));
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'ACCOUNT-A', account_id: 'acct-a' });
+        const { send, envs, emit, settle, tokenFile } = await start();
+        expect(await send()).toBe(200);
+        writeFileSync(tokenFile(), JSON.stringify({ device_code_requested_at: Date.now() / 1000 }));
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        expect(await send()).toBe(502);
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-b'), refresh_token: 'ACCOUNT-B', account_id: 'acct-b' });
+        await send();
+        await waitFor(() => envs.length === 2, 'the restart for the new account');
+        await settle();
+        expect(envs[1].CHATGPT_TOKEN_DIR).not.toBe(envs[0].CHATGPT_TOKEN_DIR);
+        expect(await send()).toBe(200);
+      });
+
+      it('never captures a sonata-owned re-login as the refused token once the capture window has passed', async () => {
+        // The refused file held no token at mark time, so nothing was
+        // captured. Reading it again at every later check caught the user's
+        // new login as "the refused token" instead. Now nothing is read after
+        // the window: the mark stays (same directory, nothing captured) until
+        // `sonata restart`, which is the remedy it names.
+        let clock = Date.now();
+        writeMachineConfig(machine('', 'sonata'));
+        const dir = credentialDir(home, 'codex');
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'auth.json'), JSON.stringify({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'OLD' }));
+        const first = await start({ now: () => clock });
+        writeFileSync(join(dir, 'auth.json'), JSON.stringify({ device_code_requested_at: clock / 1000 }));
+        first.emit(fixture('chatgpt-refresh-refused.txt'));
+        expect(await first.send()).toBe(502);
+        clock += 5_000;
+        writeFileSync(join(dir, 'auth.json'), JSON.stringify({ access_token: claimJwt(2_000_000_001, 'acct-a'), refresh_token: 'NEW-LOGIN' }));
+        expect(await first.sendFull()).toMatchObject({ status: 502, text: expect.stringContaining('sonata auth login codex') });
+        // A later re-login into the same directory: were NEW-LOGIN the
+        // captured token, this would clear the mark.
+        writeFileSync(join(dir, 'auth.json'), JSON.stringify({ access_token: claimJwt(2_000_000_002, 'acct-a'), refresh_token: 'NEWER' }));
+        writeMachineConfig(machine('[models."terra"]\ngateway = "codex"\nid = "gpt-5.6-terra"', 'sonata'));
+        await first.send();
+        await waitFor(() => first.envs.length === 2, 'the restart for the new model list');
+        await first.settle();
+        expect(first.envs[1].CHATGPT_TOKEN_DIR).toBe(first.envs[0].CHATGPT_TOKEN_DIR);
+        expect(await first.send()).toBe(502);
+        await handles.pop()!.stop();
+        const second = await start({ now: () => clock });
+        expect(await second.send()).toBe(200);
+      });
+
+      it('keeps the mark on the same directory when nothing was captured and the same token reappears later', async () => {
+        // Torn at mark time and whole again only after the capture window:
+        // nothing says whether that token is the refused one, so the mark
+        // stays and `sonata restart` is the remedy.
+        let clock = Date.now();
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
+        const { send, envs, emit, settle, tokenFile, upstreamCalls } = await start({ now: () => clock });
+        expect(await send()).toBe(200);
+        const saved = readFileSync(tokenFile(), 'utf8');
+        writeFileSync(tokenFile(), saved.slice(0, 10));
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        expect(await send()).toBe(502);
+        clock += 5_000;
+        writeFileSync(tokenFile(), saved);
+        const forwarded = upstreamCalls.length;
+        writeMachineConfig(machine('[models."terra"]\ngateway = "codex"\nid = "gpt-5.6-terra"'));
+        await send();
+        await waitFor(() => envs.length === 2, 'the restart for the new model list');
+        await settle();
+        expect(envs[1].CHATGPT_TOKEN_DIR).toBe(envs[0].CHATGPT_TOKEN_DIR);
+        expect(await send()).toBe(502);
+        expect(upstreamCalls.length).toBe(forwarded);
+      });
+
+      it('does not mark a new login\'s LiteLLM for a refusal that arrives late from the one it replaced', async () => {
+        // The router's backstop marked whatever child was current when the
+        // refusal arrived, so a request forwarded before an account switch
+        // took the new login down with it.
+        const refusal = JSON.parse(fixture('chatgpt-refresh-refused-proxy.json')) as { status: number; body: string }[];
+        let release: () => void = () => {};
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        let litellmCalls = 0;
+        writeMachineConfig(machine('', 'codex'));
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'ACCOUNT-A', account_id: 'acct-a' });
+        const { send, envs, settle } = await start({
+          upstream: async (url) => {
+            if (!url.includes(`:${litellmPort}`)) return new Response('{}', { status: 200 });
+            litellmCalls += 1;
+            if (litellmCalls !== 1) return new Response('{}', { status: 200 });
+            await held;
+            return new Response(refusal[0]!.body, { status: refusal[0]!.status });
+          },
+        });
+        const late = send();
+        await waitFor(() => litellmCalls === 1, 'the first request forwarded');
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-b'), refresh_token: 'ACCOUNT-B', account_id: 'acct-b' });
+        expect(await send()).toBe(200);
+        await waitFor(() => envs.length === 2, 'the restart for the new account');
+        await settle();
+        release();
+        await late;
+        expect(await send()).toBe(200);
+        expect(errors.some((line) => line.includes('ChatGPT login was refused by OpenAI'))).toBe(false);
       });
 
       it('keeps the mark through a crash respawn, which reuses the refused token', async () => {
