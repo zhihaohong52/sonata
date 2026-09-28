@@ -54,11 +54,10 @@ async function invoke(
   fake: { exit?: number; stderr?: string; lateStderr?: string; stdout?: string; signal?: string; noFork?: boolean } = {},
 ): Promise<{ code: number | null; stdout: string }> {
   const script = [join(dir, 'hooks', hook), ...args];
-  // `ulimit -u 1` makes the hook's own spawn fail (EAGAIN) — the one way to
-  // exercise its spawn 'error' path, since the binary it spawns is node itself.
-  const child = spawn(fake.noFork ? 'sh' : 'node', fake.noFork
-    ? ['-c', 'ulimit -u 1; exec "$0" "$@"', process.execPath, ...script]
-    : script, {
+  // A missing binary makes the hook's own spawn fail (ENOENT) on every
+  // platform. `ulimit -u 1` did it only on macOS: CI's /bin/sh is dash, which
+  // has no -u, so the spawn there succeeded and the hook rightly said nothing.
+  const child = spawn('node', script, {
     cwd: dir,
     stdio: ['pipe', 'pipe', 'ignore'],
     env: {
@@ -69,6 +68,7 @@ async function invoke(
       FAKE_LATE_STDERR: fake.lateStderr ?? '',
       FAKE_STDOUT: fake.stdout ?? '',
       FAKE_SIGNAL: fake.signal ?? '',
+      ...(fake.noFork ? { SONATA_HOOK_TEST_NODE: join(dir, 'no-such-node') } : {}),
     },
   });
   const out: Buffer[] = [];
