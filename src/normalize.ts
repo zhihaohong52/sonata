@@ -1,7 +1,6 @@
 // eslint-disable-next-line no-control-regex
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
-/** A row that is nothing but a spinner frame — never content worth keeping. */
-export const SPINNER_ONLY = /^[⠁-⣿|/\\-]+$/;
+const SPINNER_ONLY = /^[⠁-⣿|/\\-]+$/;
 
 import type { SonataConfig, TierLists, UnifiedModelConfig } from './config.js';
 import { normalizeModelName } from './catalog.js';

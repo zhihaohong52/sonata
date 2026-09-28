@@ -4,8 +4,8 @@ import { homedir } from 'node:os';
 import { recordHarnessUsage } from '../harness-usage.js';
 import { loadConfig } from '../config.js';
 import { getAdapter } from '../adapters/index.js';
-import { paneSource, tryCapturePane } from '../tmux.js';
-import { recordPane, type PaneSource, type RecorderState } from '../pane-record.js';
+import { tryCapturePane } from '../tmux.js';
+import { captureTranscript } from '../transcript.js';
 import { cleanPane, newLines, stripAnsi } from '../normalize.js';
 import {
   readMeta, readExit, readReport, readCursor, writeCursor,
@@ -340,40 +340,6 @@ function writePaneSnapshot(cwd: string, id: string, lines: string[]): void {
   writeFileSync(paneSnapshotPath(cwd, id), lines.join('\n'));
 }
 
-function recorderStatePath(cwd: string, id: string): string {
-  return join(runDir(cwd, id), 'pane-record.json');
-}
-
-function readRecorderState(cwd: string, id: string): RecorderState | undefined {
-  try {
-    return JSON.parse(readFileSync(recorderStatePath(cwd, id), 'utf8')) as RecorderState;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Appends what the pane printed since the last observation to the event log.
- *
- * A run whose log was started before `recordPane` existed has events and no
- * recorder state. Its scrollback was never tracked, so it is not backfilled —
- * that would record again, once, everything the old visible-screen diff
- * already recorded — and its first observation is diffed against the old
- * snapshot the old way; from then on it is tracked like any other run.
- */
-async function recordEvents(cwd: string, id: string, source: PaneSource, prevPane: string[]): Promise<void> {
-  const state = readRecorderState(cwd, id);
-  const eventsPath = join(runDir(cwd, id), 'events.jsonl');
-  const legacy = state === undefined && existsSync(eventsPath) && statSync(eventsPath).size > 0
-    ? { snapshot: prevPane, diff: newLines }
-    : undefined;
-  const result = await recordPane(source, state, legacy);
-  if (result === null) return;
-  appendEvents(cwd, id, result.events);
-  if (result.events.length > 0) writeCursor(cwd, id, readCursor(cwd, id) + result.events.length);
-  writeFileSync(recorderStatePath(cwd, id), JSON.stringify(result.state));
-}
-
 export async function cmdTail(opts: TailOptions): Promise<TailResult> {
   const now = opts.now ?? (() => Date.now());
   const pollMs = opts.pollMs ?? 500;
@@ -388,36 +354,27 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
   // The exact path tmux echoes when the run starts, so pane lines sonata
   // caused can be told from output the harness produced.
   const scriptPath = join(runDir(opts.cwd, opts.id), 'cmd.sh');
-  const source = paneSource(meta.session);
 
   for (;;) {
+    const cursor = readCursor(opts.cwd, opts.id);
     const prevPane = readPaneSnapshot(opts.cwd, opts.id);
 
-    // Two records from two views of the pane.
+    // Diff against the PREVIOUS PANE, not the accumulated event log. The event
+    // log contains older, already-scrolled content, so suffix-overlap against
+    // it fails and re-emits the whole pane on every poll — which makes every
+    // call return PROGRESS immediately and starves the caller's poll budget.
     //
-    // What this call returns — its new lines, the observer's stream, a PAUSED
-    // prompt's fallback text — is the diff of the VISIBLE screen against the
-    // previous poll's, bounded to one screen whatever the harness does.
-    //
-    // The event log (`sonata log`) is what the harness printed, each line
-    // once: `recordPane` counts the rows that entered tmux's scrollback,
-    // fetches exactly the ones no poll saw, and adds the rows of the visible
-    // screen that are new or redrawn. See src/pane-record.ts for why diffing a
-    // scrollback capture instead re-recorded the whole history on every poll.
-    //
-    // Diff against the PREVIOUS PANE, not the accumulated event log: suffix
-    // overlap against old, already-scrolled content fails and re-emits the
-    // whole pane on every poll, which makes every call return PROGRESS
-    // immediately and starves the caller's poll budget. A failed capture
-    // (null, common when tmux is busy) must not be mistaken for an emptied
-    // pane, for the same reason.
+    // A failed capture (null, common when tmux is busy) must not be mistaken
+    // for an emptied pane: writing an empty snapshot would make the next poll
+    // re-emit everything, producing the same starvation.
     const captured = await tryCapturePane(meta.session);
     const paneNow = captured === null ? prevPane : cleanPane(captured);
     const freshNow = captured === null ? [] : newLines(prevPane, paneNow);
     if (captured !== null) writePaneSnapshot(opts.cwd, opts.id, paneNow);
-    await recordEvents(opts.cwd, opts.id, source, prevPane);
 
     if (freshNow.length > 0) {
+      appendEvents(opts.cwd, opts.id, freshNow);
+      writeCursor(opts.cwd, opts.id, cursor + freshNow.length);
       // A real repeat prompt has output between asks. Forget the old answer as
       // soon as the pane advances so we do not hide that new request forever.
       clearAnsweredPrompt(opts.cwd, opts.id);
@@ -439,11 +396,12 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
         const settledPane = cleanPane(settled);
         const extra = newLines(pane, settledPane);
         if (extra.length > 0) {
+          appendEvents(opts.cwd, opts.id, extra);
+          writeCursor(opts.cwd, opts.id, readCursor(opts.cwd, opts.id) + extra.length);
           clearAnsweredPrompt(opts.cwd, opts.id);
           fresh = [...fresh, ...extra];
         }
         writePaneSnapshot(opts.cwd, opts.id, settledPane);
-        await recordEvents(opts.cwd, opts.id, source, pane);
         pane = settledPane;
       }
       exitCode = readExit(opts.cwd, opts.id);
@@ -529,6 +487,10 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
     });
 
     if (result.state === 'DONE') {
+      // The run is over, so its pane's history is final: capture it whole,
+      // once. `sonata log` prints it in place of the live, one-screen-per-poll
+      // event log. Best effort — a session already gone leaves the event log.
+      await captureTranscript(meta.session, runDir(opts.cwd, opts.id));
       const finished = {
         ...meta,
         endedAt: new Date().toISOString(),
