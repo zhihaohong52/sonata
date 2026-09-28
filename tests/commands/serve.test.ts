@@ -3578,20 +3578,28 @@ litellm = ${litellmPort}
       }));
     };
     const ocDbPath = () => join(home, '.local', 'share', 'opencode', 'opencode.db');
-    const start = async (o: { onExitSupported?: boolean } = {}) => {
+    const start = async (o: { onExitSupported?: boolean; upstream?: () => Response } = {}) => {
       const envs: NodeJS.ProcessEnv[] = [];
       const exits: ((code: number | null, signal: NodeJS.Signals | null) => void)[][] = [];
-      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const outputs: ((line: string) => void)[][] = [];
+      const upstreamCalls: string[] = [];
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+        upstreamCalls.push(String(url));
+        return o.upstream?.() ?? new Response('{}', { status: 200 });
+      }));
       const handle = await cmdServe({
         cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, respawnDelayMs: 0,
         spawnLitellm: (_config, env) => {
           envs.push({ ...env });
           const listeners: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
           exits.push(listeners);
+          const lines: ((line: string) => void)[] = [];
+          outputs.push(lines);
           return {
             pid: envs.length,
             kill: () => { setImmediate(() => listeners.forEach((cb) => cb(null, 'SIGTERM'))); },
             ...(o.onExitSupported === false ? {} : { onExit: (cb: (code: number | null, signal: NodeJS.Signals | null) => void) => { listeners.push(cb); } }),
+            onOutputLine: (cb: (line: string) => void) => { lines.push(cb); },
           };
         },
       });
@@ -3607,7 +3615,13 @@ litellm = ${litellmPort}
       const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
       /** The latest child exiting on its own. */
       const crash = () => exits.at(-1)!.forEach((cb) => cb(1, null));
-      return { send, envs, dir, tokenFile, held, settle, crash };
+      /** The latest child writing `text`, one line at a time, to its stdout or stderr. */
+      const emit = (text: string) => { for (const line of text.split('\n')) outputs.at(-1)!.forEach((cb) => cb(line)); };
+      const sendFull = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      }).then(async (res) => ({ status: res.status, text: await res.text() }));
+      return { send, sendFull, envs, dir, tokenFile, held, settle, crash, emit, upstreamCalls };
     };
     let errors: string[];
     let errorSpy: ReturnType<typeof vi.spyOn>;
@@ -3950,6 +3964,109 @@ litellm = ${litellmPort}
       exits[0].forEach((cb) => cb(null, 'SIGKILL'));
       expect(existsSync(dirs[0])).toBe(false);
       expect(existsSync(dirs[1])).toBe(true);
+    });
+
+    describe('a ChatGPT login LiteLLM has been refused', () => {
+      // LiteLLM 1.98.0 catches a refused refresh inside get_access_token,
+      // logs "re-login required" and falls into a device-code login that
+      // holds each request for up to fifteen minutes. Its own output — read
+      // from the captured fixtures below — is the only early sign.
+      const fixture = (name: string) => readFileSync(join(import.meta.dirname, '..', 'fixtures', 'litellm', name), 'utf8');
+
+      it('answers every ChatGPT request with a named 502 once LiteLLM logs the refusal, logging the remedy once', async () => {
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
+        const { send, sendFull, emit, upstreamCalls } = await start();
+        expect(await send()).toBe(200);
+        const forwardedBefore = upstreamCalls.length;
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        emit(fixture('chatgpt-device-code.txt'));
+        const refused = await sendFull();
+        expect(refused.status).toBe(502);
+        expect(refused.text).toContain('codex login');
+        expect(refused.text).toContain('sonata restart');
+        expect(await send()).toBe(502);
+        expect(upstreamCalls.length).toBe(forwardedBefore);
+        const remedies = errors.filter((line) => line.includes('ChatGPT login was refused by OpenAI'));
+        expect(remedies).toHaveLength(1);
+        expect(remedies[0]).toContain('"codex"');
+      });
+
+      it('reads a real LiteLLM process\'s output: forwards it, masks the device code, and marks the gateways', async () => {
+        // The default spawn, with the managed binary replaced by a script that
+        // writes the captured output and then stays up like LiteLLM would.
+        const stderrFixture = join(import.meta.dirname, '..', 'fixtures', 'litellm', 'chatgpt-refresh-refused.txt');
+        const stdoutFixture = join(import.meta.dirname, '..', 'fixtures', 'litellm', 'chatgpt-device-code.txt');
+        writeFileSync(managedLitellmPath(home),
+          `#!/bin/sh\ncat '${stderrFixture}' >&2\ncat '${stdoutFixture}'\nprintf 'partial line at exit'\nexec sleep 30\n`, { mode: 0o755 });
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
+        const out: string[] = [];
+        const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+          out.push(String(chunk)); return true;
+        }) as typeof process.stdout.write);
+        const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+          out.push(String(chunk)); return true;
+        }) as typeof process.stderr.write);
+        try {
+          vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+          const handle = await cmdServe({ cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {} });
+          handles.push(handle);
+          vi.unstubAllGlobals();
+          await waitFor(() => out.join('').includes('Enter code:'), 'the device-code prompt forwarded');
+          const status = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+          }).then(async (res) => { await res.text(); return res.status; });
+          expect(status).toBe(502);
+        } finally {
+          outSpy.mockRestore();
+          errSpy.mockRestore();
+        }
+        const forwarded = out.join('');
+        expect(forwarded).toContain('ChatGPT refresh token failed, re-login required');
+        expect(forwarded).toContain('2) Enter code: ****\n');
+        expect(forwarded).not.toContain('Enter code: U');
+        expect(errors.filter((line) => line.includes('ChatGPT login was refused by OpenAI'))).toHaveLength(1);
+      });
+
+      it('clears on the next deliberate spawn — a login change restarts LiteLLM and serves again', async () => {
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'ACCOUNT-A' });
+        const { send, envs, emit, settle } = await start();
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        expect(await send()).toBe(502);
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-b'), refresh_token: 'ACCOUNT-B' });
+        await send();
+        await waitFor(() => envs.length === 2, 'the restart for the new account');
+        await settle();
+        expect(await send()).toBe(200);
+      });
+
+      it('keeps the mark through a crash respawn, which reuses the refused token', async () => {
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
+        const { send, envs, emit, crash } = await start();
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        crash();
+        await waitFor(() => envs.length === 2, 'the crash respawn');
+        expect(await send()).toBe(502);
+      });
+
+      it('marks it from a response too, when LiteLLM answers a request with how its device-code login ended', async () => {
+        const captured = JSON.parse(fixture('chatgpt-refresh-refused-errors.json')) as { type: string; message: string }[];
+        const polling = captured.find((entry) => entry.message.includes('Polling failed'))!;
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
+        const { send, upstreamCalls } = await start({
+          upstream: () => new Response(JSON.stringify({ error: { message: polling.message, type: 'auth_error', code: '401' } }), { status: 401 }),
+        });
+        await send();
+        const forwarded = upstreamCalls.length;
+        expect(await send()).toBe(502);
+        expect(upstreamCalls.length).toBe(forwarded);
+        expect(errors.filter((line) => line.includes('ChatGPT login was refused by OpenAI'))).toHaveLength(1);
+      });
     });
 
     it('respawns a crashed LiteLLM into the directory it was using, with LiteLLM\'s token as it left it', async () => {

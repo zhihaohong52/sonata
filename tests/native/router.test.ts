@@ -2,6 +2,8 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, repairNamelessToolCalls, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * What a recorded call keeps: the URL, and the headers the router chose.
@@ -1070,10 +1072,18 @@ describe('routeRequest — logging', () => {
 });
 
 describe('routeRequest — a ChatGPT login LiteLLM cannot refresh', () => {
-  // serve seeds LiteLLM's ChatGPT token only when it starts LiteLLM, so a
-  // refresh LiteLLM can no longer make is mended by `sonata restart` alone —
-  // which the log has to say, since the 500 itself names neither.
-  const route = async (status: number, body: string) => {
+  // LiteLLM 1.98.0 catches a refused ChatGPT refresh inside
+  // `get_access_token`, falls into a device-code login, and surfaces only how
+  // THAT ended. The messages below were captured from the real authenticator
+  // (tests/fixtures/litellm/), wrapped the way LiteLLM's proxy wraps an
+  // exception in its error envelope.
+  const captured = JSON.parse(readFileSync(
+    join(import.meta.dirname, '..', 'fixtures', 'litellm', 'chatgpt-refresh-refused-errors.json'), 'utf8',
+  )) as { type: string; message: string; case: string }[];
+  const statusFor = (type: string) => (type === 'AuthenticationError' ? 401 : 500);
+  const envelope = (message: string, status: number) =>
+    JSON.stringify({ error: { message, type: status === 401 ? 'auth_error' : 'None', param: 'None', code: String(status) } });
+  const route = async (status: number, body: string, refused?: () => void) => {
     const lines: string[] = [];
     const result = await routeRequest({
       method: 'POST', url: '/v1/messages', headers: {},
@@ -1082,18 +1092,38 @@ describe('routeRequest — a ChatGPT login LiteLLM cannot refresh', () => {
       fetch: (async () => new Response(body, { status })) as unknown as typeof fetch,
       litellmBase: 'http://litellm', anthropicBase: 'http://anthropic', litellmKey: 'k',
       log: (line) => lines.push(line),
+      ...(refused === undefined ? {} : { chatgptLoginRefused: refused }),
     });
     return { status: result.status, log: lines.join('\n') };
   };
 
-  it('names `sonata restart` when LiteLLM reports a refused refresh token', async () => {
-    const { status, log } = await route(500, '{"error":{"message":"Refresh token failed: 400 refresh_token_reused"}}');
-    expect(status).toBe(500);
-    expect(log).toContain('sonata restart');
+  it('has a captured case for each way the device-code fallback ends', () => {
+    expect(captured.map((entry) => entry.case)).toEqual(
+      ['polling failed', 'device authorization timed out', 'device code request failed']);
   });
 
+  for (const entry of captured) {
+    it(`tells serve, and passes the ${statusFor(entry.type)} through, when LiteLLM answers "${entry.case}"`, async () => {
+      let told = 0;
+      const status = statusFor(entry.type);
+      const result = await route(status, envelope(entry.message, status), () => { told += 1; });
+      expect(result.status).toBe(status);
+      expect(told).toBe(1);
+    });
+
+    it(`names \`codex login\` and \`sonata restart\` itself when nothing is told, for "${entry.case}"`, async () => {
+      const status = statusFor(entry.type);
+      const { log } = await route(status, envelope(entry.message, status));
+      expect(log).toContain('codex login');
+      expect(log).toContain('sonata restart');
+    });
+  }
+
   it('says nothing for an unrelated error', async () => {
-    expect((await route(500, '{"error":"something else"}')).log).not.toContain('sonata restart');
+    let told = 0;
+    const result = await route(500, '{"error":"something else"}', () => { told += 1; });
+    expect(result.log).not.toContain('sonata restart');
+    expect(told).toBe(0);
   });
 });
 
