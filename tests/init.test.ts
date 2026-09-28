@@ -26,6 +26,8 @@ vi.mock('../src/tui-ink/run.js', () => ({
 }));
 
 vi.mock('../src/native/codex-auth.js', () => ({
+  // doctor names this file when it cannot be read.
+  codexAuthPath: (home: string) => `${home}/.codex/auth.json`,
   readChatGptOAuth: () => tuiMocks.codexCredential ? { expires_at: Date.now() / 1000 + 86400 } : null,
   readOpencodeChatGptOAuth: () => tuiMocks.opencodeCredential ? { expires_at: Date.now() / 1000 + 86400 } : null,
 }));
