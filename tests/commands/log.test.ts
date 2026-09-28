@@ -38,17 +38,7 @@ describe('cmdLog', () => {
     expect(cmdLog({ cwd, id }).text).toContain(`— sonata ${id}: explore on fake via opencode`);
   });
 
-  it('prints a finished run`s transcript in place of the live event log', () => {
-    // The event log is one screen per poll and can miss a burst; the
-    // transcript is tmux's whole history, captured once the run finished.
-    const id = newRun();
-    appendEvents(cwd, id, ['line 1', 'line 9']);
-    writeFileSync(join(runDir(cwd, id), 'transcript.txt'), 'line 1\nline 2\nline 9\n');
-    const res = cmdLog({ cwd, id });
-    expect(res.text).toMatch(/^line 1\nline 2\nline 9\n\n— sonata /);
-  });
-
-  it('prints the event log for a run with no transcript, as before', () => {
+  it('prints the event log exactly as recorded', () => {
     const id = newRun();
     appendEvents(cwd, id, ['live line']);
     expect(cmdLog({ cwd, id }).text).toMatch(/^live line\n\n— sonata /);
