@@ -313,7 +313,11 @@ function awaitingCapture(
   const dir = runDir(cwd, id);
   if (existsSync(join(dir, WORKTREE_CAPTURE_FILE))) return false;
   try {
-    return now() - statSync(join(dir, 'exit')).mtimeMs < CAPTURE_GRACE_MS;
+    // Only a sentinel written in the last ten seconds: one dated in the future
+    // (a skewed clock, a restored run directory) is not "just now", and
+    // waiting on it would hold the run at PROGRESS until that date.
+    const age = now() - statSync(join(dir, 'exit')).mtimeMs;
+    return age >= 0 && age < CAPTURE_GRACE_MS;
   } catch {
     return false;
   }
