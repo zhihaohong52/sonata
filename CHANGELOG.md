@@ -160,8 +160,12 @@ the review doc's Backlog note):
   has resolved keeps its last credential through any read that fails except a
   store positively holding none (no file, or no entry in a file that parses):
   a parse error, EACCES, EMFILE or a locked opencode.db is logged once and
-  retried on the next request. A read that succeeds while a store searched
-  before it could not be read is treated the same way, so a torn codex file
+  retried on the next request. Each store is read once per rebuild, and the
+  read that decides whether it answered is the one its login is parsed from:
+  read twice, a write landing in between read as the store answering with no
+  login, which ended the ChatGPT login and restarted LiteLLM. A read that
+  succeeds while a store searched before it could not be read is treated
+  the same way, so a torn codex file
   cannot switch the default ChatGPT gateway to opencode's account. A gateway
   that has not resolved since it appeared has nothing to keep: while a store
   in its lookup cannot be read it is refused with a 502 saying so and retried
@@ -184,12 +188,15 @@ the review doc's Backlog note):
   never dated more than a few seconds back: FAT stores mtime to 2 s, and a
   file server's clock can lag the host's, so a newer mtime is no evidence
   and such a file is torn on its first read, then judged by its content
-  (refusing every request within the following second, not just one). A first-sight skip is logged as the file's
-  age, never as content watched for that long. A
-  file rewritten with different broken bytes on every read stays torn as
-  long as that goes on (it cannot be told from a write in progress). A
+  (refusing every request within the following second, not just one). A
+  first-sight skip is logged as the file's age, never as content watched
+  for that long. A file rewritten with different broken bytes on every read
+  stays torn as long as that goes on (it cannot be told from a write in
+  progress). A
   file that cannot be read at all (EACCES) is torn for 10 s from its first
-  failure; opencode.db counts only for the first 10 s of a run of failed
+  failure, timed apart from any broken bytes on record — one read error
+  between two reads of the same stuck bytes no longer makes them torn again
+  for a second; opencode.db counts only for the first 10 s of a run of failed
   queries, however far apart. Past that the store is steadily unreadable — corrupt,
   zero bytes, EACCES — and is skipped as absent, logged once naming the file
   and the error. A skipped store reads as absent and the lookup goes on from
