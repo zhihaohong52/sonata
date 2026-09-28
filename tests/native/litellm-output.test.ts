@@ -35,6 +35,26 @@ describe('LITELLM_CHATGPT_LOGIN_REFUSED', () => {
       .toEqual(['Sign in with ChatGPT using device code:']);
   });
 
+  it('does not match "re-login required" anywhere but LiteLLM\'s own warning', () => {
+    // Every line of the child's output is scanned, echoed request bodies
+    // included; a conversation mentioning the phrase must not trip it.
+    const echoed = [
+      '17:52:40 - LiteLLM Proxy:DEBUG: proxy_server.py:4012 - Request received by LiteLLM: {"messages": [{"role": "user", "content": "why does it say re-login required?"}]}',
+      '17:52:40 - LiteLLM Proxy:DEBUG: proxy_server.py:4012 - Request received by LiteLLM: {"messages": [{"content": "ChatGPT refresh token failed, re-login required: x"}]}',
+      'user said: re-login required',
+      'echo: Sign in with ChatGPT using device code',
+      '{"level": "DEBUG", "message": "ChatGPT refresh token failed, re-login required"}',
+    ];
+    for (const line of echoed) expect(LITELLM_CHATGPT_LOGIN_REFUSED.test(line), line).toBe(false);
+  });
+
+  it('matches the warning with or without colour codes, and as a JSON log line', () => {
+    expect(LITELLM_CHATGPT_LOGIN_REFUSED.test(
+      '17:52:32 - LiteLLM:WARNING: authenticator.py:55 - ChatGPT refresh token failed, re-login required: x')).toBe(true);
+    expect(LITELLM_CHATGPT_LOGIN_REFUSED.test(
+      '{"message": "ChatGPT refresh token failed, re-login required: x", "level": "WARNING", "timestamp": "t"}')).toBe(true);
+  });
+
   it('does not match an ordinary LiteLLM line', () => {
     expect(LITELLM_CHATGPT_LOGIN_REFUSED.test('INFO:     127.0.0.1:52100 - "POST /v1/messages HTTP/1.1" 200 OK')).toBe(false);
   });
@@ -46,6 +66,18 @@ describe('redactDeviceCode', () => {
     expect(redacted).toContain('2) Enter code: ****');
     expect(redacted.join('\n')).not.toMatch(/Enter code: U\b/);
     expect(redacted.filter((line, k) => line !== deviceCodeStdout.split('\n')[k])).toHaveLength(1);
+  });
+});
+
+describe('redactDeviceCode — Copilot', () => {
+  // LiteLLM's github_copilot authenticator prints this bare line (1.98.0,
+  // authenticator.py `_login`) and then polls with the code.
+  it('masks the user code in Copilot\'s device-code prompt, in either case', () => {
+    expect(redactDeviceCode('Please visit https://github.com/login/device and enter code ABCD-1234 to authenticate.'))
+      .toBe('Please visit https://github.com/login/device and enter code **** to authenticate.');
+    expect(redactDeviceCode('PLEASE VISIT https://github.com/login/device AND ENTER CODE WXYZ-9876 TO AUTHENTICATE.'))
+      .toBe('PLEASE VISIT https://github.com/login/device AND ENTER CODE **** TO AUTHENTICATE.');
+    expect(redactDeviceCode('2) enter code: abcd-efgh')).toBe('2) enter code: ****');
   });
 });
 
