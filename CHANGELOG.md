@@ -169,11 +169,22 @@ the review doc's Backlog note):
   a reason for startup to fail. The same holds when deciding whether two
   ChatGPT gateways read different accounts: one whose store cannot be read
   yet is refused on its own, rather than guessed to be on opencode's login
-  and taking every other ChatGPT gateway down with it. opencode.db's
-  credential table reading empty where it last held rows is read again at
-  once before anything is decided: empty twice is a logout and the gateway
-  is refused on that same request, where it used to go out once more on the
-  credential just logged out.
+  and taking every other ChatGPT gateway down with it. "Mid-write" is
+  bounded: a file counts as torn only while its mtime is under 10 s old or
+  its mtime or size changed since the last failed read less than 10 s ago,
+  and opencode.db only for the first 10 s of a run of failed queries. Past
+  that the store is steadily unreadable — corrupt, zero bytes, EACCES — and
+  is skipped as absent, logged once naming the file and the error, so a
+  default ChatGPT gateway falls through to opencode's login as it always
+  did; it used to answer 502 forever. A build that read anything as torn is
+  never committed, so the retry the 502 promises really happens, and
+  `sonata doctor` warns, naming the file, when codex's `auth.json` or
+  opencode.db cannot be read. opencode.db's credential table reading empty
+  where it last held rows is read again at once before anything is decided:
+  empty twice refuses the gateway on that same request, where it used to go
+  out once more on the credential just logged out — but keeps its LiteLLM
+  config and ChatGPT seed until a later request reads empty too, so a single
+  gap followed by the row returning restarts and re-seeds nothing.
 - **`codex login` while the router runs now reaches LiteLLM.** Logging in can
   resolve two conflicting ChatGPT gateways to one account and un-drop them,
   but LiteLLM was only regenerated when a config file changed — so its model
@@ -222,21 +233,38 @@ the review doc's Backlog note):
   the store holds a different login from the one LiteLLM was started with —
   another store (a `credential_source` change, or a `codex logout` that
   leaves opencode's login to be read), or another account, where both sides
-  name one (the account comes from the token's
-  `https://api.openai.com/auth` claim, as LiteLLM derives it, else the
-  record's `account_id`) — serve logs which gateway and why and
+  name one (the account is the record's `account_id`, else the token's
+  `https://api.openai.com/auth` claim — the order LiteLLM's
+  `get_account_id()` uses) — serve logs which gateway and why and
   restarts LiteLLM into a fresh directory seeded with the new login. A login
-  that returns after positively going away is seeded the same way. An
-  account merely unknown on one side is not a change. A same-account `codex
+  that returns after positively going away is seeded the same way; "gone" is
+  decided by the store the seeded login came from, not by the gateway's
+  name, so renaming a gateway does not hide a logout. An account merely
+  unknown on one side is not a change. The old directory is removed only
+  once every LiteLLM started in it has been seen to exit, and a crash
+  respawn never races a restart: a restart cancels a pending crash respawn,
+  a crash respawn waits for a restart check in flight, and a restart of a
+  child that already exited neither signals nor waits on it — a crash inside
+  the respawn delay used to leave two LiteLLMs running, one in a deleted
+  directory. A same-account `codex
   login`, and codex or opencode refreshing their own store, restart nothing:
   LiteLLM's own token is still the live one. Copilot's token is likewise
   written only when LiteLLM is started, never on a re-merge.
   **Known limitation:** because a same-account re-login no longer reaches a
   running LiteLLM, a login LiteLLM can no longer refresh — sessions revoked
   server-side, or its refresh token spent by another client sharing it —
-  needs `sonata restart`, which seeds it afresh from the store. The router
-  logs that when LiteLLM reports the refused refresh, and `sonata doctor`
-  says so beside each ChatGPT gateway.
+  needs a re-login and `sonata restart`, which seeds it afresh from the
+  store. LiteLLM does not report that refusal to its caller: it logs "re-login
+  required" and falls into an interactive device-code login that held each
+  request for up to fifteen minutes. serve now pipes LiteLLM's output
+  (forwarding every line to its own, the device code's user code masked) and
+  on that line — or on a response ending "Polling failed", "Timed out waiting
+  for device authorization" or "Failed to request device code" — logs the
+  remedy once, naming the ChatGPT gateways, and answers them with a 502
+  saying `codex login` (or `opencode auth login`) then `sonata restart`
+  instead of forwarding into the hang. The next deliberate LiteLLM start
+  clears it; a crash respawn does not. `sonata doctor` says so beside each
+  ChatGPT gateway.
 
 ## [0.13.1] - 2026-09-27
 
