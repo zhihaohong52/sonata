@@ -3610,6 +3610,182 @@ litellm = ${litellmPort}
     });
   });
 
+  describe('a credential store that cannot be read for a moment', () => {
+    // codex rewrites auth.json by truncating and writing, so a request can
+    // land on half a file. Read as "no credential", that dropped the gateway
+    // from LiteLLM and restarted it, then restarted it again when the write
+    // completed — and an intermittent failure restarted it without bound. A
+    // gateway that has resolved keeps its last credential through a read that
+    // fails for any reason but a store positively saying it holds none.
+    const config = (cxSource: string, extraGateway = '') => `
+[models."luna"]
+gateway = "cx"
+id = "gpt-5.6-luna"
+[models."flash"]
+gateway = "acme"
+id = "flash-1"
+[tiers.code]
+simple = ["luna"]
+complex = ["flash"]
+[native.gateways."cx"]
+auth = "codex-oauth"
+${cxSource}
+[native.gateways."acme"]
+base_url = "https://acme.example/v1"
+${extraGateway}
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`;
+    const codexFile = () => join(home, '.codex', 'auth.json');
+    const goodCodex = (refresh = 'CODEX-A') =>
+      JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: jwt(2_000_000_000), refresh_token: refresh } });
+    const writeCodex = (text: string) => {
+      mkdirSync(join(home, '.codex'), { recursive: true });
+      writeFileSync(codexFile(), text);
+    };
+    const start = async () => {
+      writeSonataKey(home, 'acme', 'acme-key');
+      const tempDir = tempDirFor();
+      let spawns = 0;
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const handle = await cmdServe({
+        cwd, home, tempDir, waitForLitellm: async () => {},
+        spawnLitellm: () => {
+          spawns += 1;
+          const exits: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
+          return {
+            pid: spawns,
+            kill: () => { setImmediate(() => exits.forEach((cb) => cb(null, 'SIGTERM'))); },
+            onExit: (cb) => { exits.push(cb); },
+          };
+        },
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const send = async (model: string, headers: Record<string, string> = {}) => {
+        const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+          method: 'POST', headers: { 'content-type': 'application/json', ...headers },
+          body: JSON.stringify({ model, messages: [] }),
+        });
+        return { status: res.status, text: await res.text() };
+      };
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+      const configJson = () => readFileSync(join(tempDir, 'config.json'), 'utf8');
+      const heldRefresh = () =>
+        (JSON.parse(readFileSync(join(tempDir, 'chatgpt', 'auth.json'), 'utf8')) as { refresh_token: string }).refresh_token;
+      return { send, settle, spawns: () => spawns, configJson, heldRefresh };
+    };
+    let errors: string[];
+    let errorSpy: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      errors = [];
+      errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args.join(' ')); });
+    });
+    afterEach(() => { errorSpy.mockRestore(); });
+
+    it('keeps serving the gateway through one torn read, with no LiteLLM restart', async () => {
+      writeMachineConfig(config('credential_source = "codex"'));
+      writeCodex(goodCodex());
+      const { send, settle, spawns, configJson } = await start();
+      expect((await send('sonata-code-simple')).status).toBe(200);
+      writeCodex(goodCodex().slice(0, 20));
+      expect((await send('sonata-code-simple')).status).toBe(200);
+      await settle();
+      writeCodex(goodCodex());
+      expect((await send('sonata-code-simple')).status).toBe(200);
+      await settle();
+      expect(spawns()).toBe(1);
+      expect(configJson()).toContain('gpt-5.6-luna');
+      // Logged, once, as a read failure — never as a missing login.
+      expect(errors.filter((line) => line.includes('no ChatGPT credential was found'))).toHaveLength(0);
+      expect(errors.filter((line) => line.includes('could not be read'))).toHaveLength(1);
+    });
+
+    it('restarts nothing through six intermittent failures', async () => {
+      writeMachineConfig(config('credential_source = "codex"'));
+      writeCodex(goodCodex());
+      const { send, settle, spawns } = await start();
+      for (let i = 0; i < 6; i += 1) {
+        writeCodex(goodCodex().slice(0, 20));
+        expect((await send('sonata-code-simple')).status).toBe(200);
+        await settle();
+        writeCodex(goodCodex());
+        expect((await send('sonata-code-simple')).status).toBe(200);
+        await settle();
+      }
+      expect(spawns()).toBe(1);
+    });
+
+    it('does not let a torn codex file switch the default to opencode\'s account', async () => {
+      writeMachineConfig(config(''));
+      writeCodex(goodCodex('CODEX-A'));
+      mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+      const ocJwt = `h.${Buffer.from(JSON.stringify({ exp: 2_100_000_000, client_id: 'app_EMoamEEZ73f0CkXaXp7hrann' })).toString('base64url')}.s`;
+      writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({
+        openai: { type: 'oauth', access: ocJwt, refresh: 'OPENCODE-B', expires: 2_100_000_000_000 },
+      }));
+      const { send, settle, spawns, heldRefresh } = await start();
+      expect(heldRefresh()).toBe('CODEX-A');
+      writeCodex(goodCodex('CODEX-A').slice(0, 20));
+      expect((await send('sonata-code-simple')).status).toBe(200);
+      await settle();
+      expect(heldRefresh()).toBe('CODEX-A');
+      expect(spawns()).toBe(1);
+    });
+
+    it('still removes and names the gateway once its store positively holds no login', async () => {
+      writeMachineConfig(config('credential_source = "codex"'));
+      writeCodex(goodCodex());
+      const { send, spawns, configJson } = await start();
+      rmSync(codexFile());
+      const res = await send('sonata-code-simple');
+      expect(res.status).toBe(502);
+      const message = (JSON.parse(res.text) as { error: { message: string } }).error.message;
+      expect(message).toContain('gateway "cx"');
+      expect(message).toContain('codex login');
+      await waitFor(() => spawns() === 2, 'the restart that drops the gateway');
+      expect(configJson()).not.toContain('gpt-5.6-luna');
+      expect((await send('sonata-code-complex')).status).toBe(200);
+    });
+
+    it('names a gateway whose store has never been readable', async () => {
+      writeMachineConfig(`
+[models."flash"]
+gateway = "acme"
+id = "flash-1"
+[native.gateways."acme"]
+base_url = "https://acme.example/v1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+      writeCodex(goodCodex().slice(0, 20));
+      const project = mkdtempSync(join(tmpdir(), 'serve-never-readable-'));
+      writeFileSync(join(project, 'sonata.toml'), config('credential_source = "codex"').replace(/\[native\.ports\][\s\S]*$/, ''));
+      const { send } = await start();
+      const res = await send('sonata-code-simple', projectHeaders(project));
+      expect(res.status).toBe(502);
+      expect((JSON.parse(res.text) as { error: { message: string } }).error.message).toContain('gateway "cx"');
+    });
+
+    it('does not restart LiteLLM for a gateway that fails but serves no model', async () => {
+      writeMachineConfig(config('credential_source = "codex"', `
+[native.gateways."spare"]
+auth = "codex-oauth"
+credential_source = "codex"
+`).replace('[models."luna"]\ngateway = "cx"', '[models."luna"]\ngateway = "acme"').replace(
+        /\[native\.gateways\."cx"\][^[]*/, '',
+      ));
+      writeCodex(goodCodex());
+      const { send, settle, spawns } = await start();
+      rmSync(codexFile());
+      expect((await send('sonata-code-simple')).status).toBe(200);
+      await settle();
+      expect(spawns()).toBe(1);
+    });
+  });
+
   it('loads the v0.13.1 BYOK pair in one config, drops both gateways, and keeps the rest serving', async () => {
     writeMachineConfig(`
 [models."luna"]

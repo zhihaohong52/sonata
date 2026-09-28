@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -10,12 +10,13 @@ import { spentTodayUsd, unreadableMachineBudget, type BudgetStatus } from '../bu
 import { GLOBAL_CONFIG_RELATIVE, loadConfig, nativeRouteFor, oauthCredentialIdentity, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
-import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
+import { resolveKeyDetail, resolveKeys, sonataKeyStorePath } from '../native/credentials.js';
+import { fileStoreRead, jsonStoreRead, opencodeDbRead, type StoreRead } from '../native/credential-reads.js';
 import { codexAuthPath, jwtExpiry, opencodeAuthPath, readChatGptOAuth, readCodexOAuth, readOpencodeChatGptOAuth, type ChatGptAuthRecord } from '../native/codex-auth.js';
 import { opencodeDbPath } from '../native/opencode-store.js';
 import { credentialDir } from '../native/oauth-login.js';
 import { readCopilotToken } from '../native/copilot-auth.js';
-import { envVarForGateway, litellmConfigYamlForTenants } from '../native/litellm.js';
+import { envVarForGateway, litellmConfigForTenants, litellmConfigYamlForTenants } from '../native/litellm.js';
 import { litellmRequired, transportFor } from '../native/providers.js';
 import { litellmStatus, managedLitellmPath } from '../native/litellm-venv.js';
 import type { UiDeps } from '../native/ui.js';
@@ -656,7 +657,34 @@ interface CredentialFailure {
 
 interface ChildEnvResolution {
   env: NodeJS.ProcessEnv;
+  /** Positively missing, or never resolved in this process: left out, and answered with the message. */
   failures: CredentialFailure[];
+  /** A store that could not be read just now: the gateway kept its last credential. Logged, never answered. */
+  transient: CredentialFailure[];
+}
+
+/**
+ * What one serve process remembers between child-env builds.
+ *
+ * `lastGood` holds the env entries each gateway last resolved to, keyed by
+ * its lineage — name, auth and credential source — so an entry is reused
+ * only for the very lookup that produced it: a name another project has
+ * since taken with a different source is a different lineage, and starts
+ * with nothing. Entries for gateways no longer in the merge are forgotten,
+ * so "has resolved in this process" means since it last reappeared.
+ */
+interface CredentialMemory {
+  lastGood: Map<string, Record<string, string>>;
+  /** opencode.db's credential row count at the last read; see `opencodeDbRead`. */
+  opencodeDb: { rows?: number };
+}
+
+function newCredentialMemory(): CredentialMemory {
+  return { lastGood: new Map(), opencodeDb: {} };
+}
+
+function lineageKey(name: string, gateway: { auth?: string; credentialSource?: string }): string {
+  return `${name}|${gateway.auth ?? 'api-key'}|${gateway.credentialSource ?? 'default'}`;
 }
 
 /** When a ChatGPT record expires, in epoch seconds: its own field, else its access token's `exp`. */
@@ -803,49 +831,145 @@ function readChatGptWithIdentity(
  * copied out of the store each gateway reads.
  *
  * The ChatGPT file is written on every path under `syncChatGptTokenFile`'s
- * newer-wins rule. Copilot's `access-token` carries no expiry to compare —
- * it is a bare `gho_` string, and the short-lived `api-key.json` LiteLLM
- * exchanges it for is its own — so it is still written only when `spawning`,
- * i.e. when a child is about to start on this env. The env it returns names
- * the same directories either way.
+ * lineage-and-newer-wins rule. Copilot's `access-token` carries no expiry to
+ * compare — it is a bare `gho_` string, and the short-lived `api-key.json`
+ * LiteLLM exchanges it for is its own — so it is still written only when
+ * `spawning`, i.e. when a child is about to start on this env. The env it
+ * returns names the same directories either way.
  *
  * Each gateway is resolved on its own, and one whose credential is missing is
  * reported in `failures` and left out of the env rather than aborting the
  * rest. The union spans every project, so a single project's missing login
  * used to stop every other project's gateways from resolving at all. Left
- * out means absent, never carried over from an earlier env: a direct key is
+ * out means absent, never carried over from another lineage: a direct key is
  * looked up by gateway NAME, and a stale one under a name another project has
  * since taken would be sent to that project's base_url.
+ *
+ * Missing is decided per store, with `memory`: a gateway that has resolved
+ * before, under the same lineage, keeps that resolution through a read that
+ * failed for any reason but a store positively holding nothing — a torn
+ * write, EACCES, EMFILE, a locked or momentarily empty opencode.db. Such a
+ * read is reported in `transient`, not `failures`, so nothing is dropped and
+ * nothing restarts. A resolution that succeeded while a store in its lookup
+ * chain could not be read is suspect the same way (a torn codex file lets the
+ * default fall through to opencode's account) and keeps the last one too.
+ * Without a memory — every caller but `cmdServe` — nothing is remembered and
+ * every miss is a failure, as before.
  */
 function resolveChildEnv(
   native: NativeConfig,
   home: string,
   tempDir: string,
-  opts: { spawning?: boolean } = {},
+  opts: { spawning?: boolean; memory?: CredentialMemory } = {},
 ): ChildEnvResolution {
   const spawning = opts.spawning ?? true;
+  const memory = opts.memory ?? newCredentialMemory();
   const failures: CredentialFailure[] = [];
+  const transient: CredentialFailure[] = [];
   // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
   const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
+
+  // Each store read at most once per build.
+  const reads = new Map<string, StoreRead>();
+  const read = (id: string, how: () => StoreRead): StoreRead => {
+    const cached = reads.get(id);
+    if (cached !== undefined) return cached;
+    const fresh = how();
+    reads.set(id, fresh);
+    return fresh;
+  };
+  const keysStore = () => read('keys', () => jsonStoreRead(sonataKeyStorePath(home)));
+  const codexStore = () => read('codex', () => jsonStoreRead(codexAuthPath(home)));
+  const opencodeStores = () => [
+    read('opencode.db', () => opencodeDbRead(home, memory.opencodeDb)),
+    read('opencode', () => jsonStoreRead(opencodeAuthPath(home))),
+  ];
+
+  const live = new Set<string>();
+  /**
+   * The entries one lineage resolves to this build: `resolved` when the
+   * lookup found one it can trust, else the last good ones when a store in
+   * `chain` could not be read, else nothing — reported as a failure with
+   * `missing` (a gateway that needs no credential passes none).
+   */
+  const settle = (
+    name: string,
+    lineage: string,
+    resolved: Record<string, string> | undefined,
+    chain: StoreRead[],
+    missing: string | undefined,
+  ): Record<string, string> | undefined => {
+    live.add(lineage);
+    const unreadable = chain.find((store) => store.state === 'unreadable');
+    const last = memory.lastGood.get(lineage);
+    if (unreadable !== undefined && last !== undefined) {
+      transient.push({
+        gateway: name,
+        message: `gateway "${name}": its credential store could not be read (${unreadable.detail}) — ` +
+          'keeping the credential it last resolved to',
+      });
+      return last;
+    }
+    if (resolved !== undefined) {
+      memory.lastGood.set(lineage, resolved);
+      return resolved;
+    }
+    memory.lastGood.delete(lineage);
+    if (missing !== undefined) {
+      failures.push({
+        gateway: name,
+        message: unreadable === undefined ? missing : `${missing} (${unreadable.detail})`,
+      });
+    }
+    return undefined;
+  };
+
+  // The stores a key lookup's answer depends on: the one that answered and
+  // every store searched before it, or all of them when none answered.
+  const keyChain = (answeredBy: string | undefined, order: ('sonata' | 'opencode')[]): StoreRead[] => {
+    const chain: StoreRead[] = [];
+    for (const store of order) {
+      if (store === 'sonata') {
+        chain.push(keysStore());
+        if (answeredBy === 'sonata') return chain;
+      } else {
+        const [db, file] = opencodeStores();
+        chain.push(db);
+        if (answeredBy === 'opencode.db') return chain;
+        chain.push(file);
+        if (answeredBy === 'opencode') return chain;
+      }
+    }
+    return chain;
+  };
+
   const automaticallyResolved = Object.entries(native.gateways)
-    .filter(([, gateway]) => gateway.auth !== 'api-key' || gateway.credentialSource === undefined)
-    .map(([name]) => name);
-  for (const { gateway, key } of resolveKeys(automaticallyResolved, home)) {
-    childEnv[envVarForGateway(gateway)] = key;
+    .filter(([, gateway]) => gateway.auth !== 'api-key' || gateway.credentialSource === undefined);
+  const found = new Map(resolveKeys(automaticallyResolved.map(([name]) => name), home).map((hit) => [hit.gateway, hit]));
+  for (const [name, gateway] of automaticallyResolved) {
+    const hit = found.get(name);
+    // No failure when nothing is found: a default-sourced gateway may need
+    // no key at all, which is how it has always been served.
+    const entries = settle(
+      name, `${lineageKey(name, gateway)}|key`,
+      hit === undefined ? undefined : { [envVarForGateway(name)]: hit.key },
+      keyChain(hit?.source, ['sonata', 'opencode']),
+      undefined,
+    );
+    if (entries !== undefined) Object.assign(childEnv, entries);
   }
   for (const [name, gateway] of Object.entries(native.gateways)) {
     const source = gateway.credentialSource;
     if (gateway.auth !== 'api-key' || (source !== 'sonata' && source !== 'opencode')) continue;
-    const key = resolveKeyFromSource(name, home, source);
-    if (key === undefined) {
-      failures.push({
-        gateway: name,
-        message: `gateway "${name}" takes its credential from ${source} but none was found — ` +
-          `run \`sonata auth add ${name}\` (for sonata) or check opencode's own credential store.`,
-      });
-      continue;
-    }
-    childEnv[envVarForGateway(name)] = key;
+    const hit = resolveKeyDetail(name, home, source);
+    const entries = settle(
+      name, lineageKey(name, gateway),
+      hit === undefined ? undefined : { [envVarForGateway(name)]: hit.key },
+      keyChain(hit?.source, [source]),
+      `gateway "${name}" takes its credential from ${source} but none was found — ` +
+        `run \`sonata auth add ${name}\` (for sonata) or check opencode's own credential store.`,
+    );
+    if (entries !== undefined) Object.assign(childEnv, entries);
   }
 
   // A sonata-owned credential is already in LiteLLM's native format. Point
@@ -854,31 +978,36 @@ function resolveChildEnv(
     .find(([, gateway]) => gateway.auth === 'codex-oauth');
   if (chatgptGateway) {
     const [name, gateway] = chatgptGateway;
+    const lineage = lineageKey(name, gateway);
     if (gateway.credentialSource === 'sonata') {
       const dir = credentialDir(home, name);
-      if (!existsSync(join(dir, 'auth.json'))) {
-        failures.push({
-          gateway: name,
-          message: `gateway "${name}" takes its credential from sonata but none is stored — ` +
-            `run \`sonata auth login ${name}\`.`,
-        });
-      } else {
-        childEnv.CHATGPT_TOKEN_DIR = dir;
-      }
+      const store = fileStoreRead(join(dir, 'auth.json'));
+      const entries = settle(
+        name, lineage, store.state === 'ok' ? { CHATGPT_TOKEN_DIR: dir } : undefined, [store],
+        `gateway "${name}" takes its credential from sonata but none is stored — ` +
+          `run \`sonata auth login ${name}\`.`,
+      );
+      if (entries !== undefined) Object.assign(childEnv, entries);
     } else {
-      const read = readChatGptWithIdentity(home, gateway.credentialSource);
-      if (read === null) {
-        failures.push({
-          gateway: name,
-          message: `gateway "${name}" uses codex-oauth but no ChatGPT credential was found ` +
-            `in ${codexAuthPath(home)} or ${opencodeAuthPath(home)} — ` +
-            `run \`sonata auth login ${name}\`, or \`codex login\`.`,
-        });
-      } else {
-        const tokenDir = join(tempDir, 'chatgpt');
-        syncChatGptTokenFile(tokenDir, read.record, read.identity, chatgptStoreMtimeMs(home, gateway.credentialSource));
-        childEnv.CHATGPT_TOKEN_DIR = tokenDir;
+      const source = gateway.credentialSource;
+      const found = readChatGptWithIdentity(home, source);
+      const chain = source === 'codex' ? [codexStore()]
+        : source === 'opencode' ? opencodeStores()
+          : found?.identity === 'codex store' ? [codexStore()] : [codexStore(), ...opencodeStores()];
+      const tokenDir = join(tempDir, 'chatgpt');
+      const fresh = found === null ? undefined : { CHATGPT_TOKEN_DIR: tokenDir };
+      const entries = settle(
+        name, lineage, fresh, chain,
+        `gateway "${name}" uses codex-oauth but no ChatGPT credential was found ` +
+          `in ${codexAuthPath(home)} or ${opencodeAuthPath(home)} — ` +
+          `run \`sonata auth login ${name}\`, or \`codex login\`.`,
+      );
+      // Synced only when the fresh read is what is being used: a kept last
+      // resolution leaves LiteLLM's own file exactly as it is.
+      if (entries !== undefined && entries === fresh && found !== null) {
+        syncChatGptTokenFile(tokenDir, found.record, found.identity, chatgptStoreMtimeMs(home, source));
       }
+      if (entries !== undefined) Object.assign(childEnv, entries);
     }
   }
 
@@ -888,38 +1017,38 @@ function resolveChildEnv(
     .find(([, gateway]) => gateway.auth === 'copilot-oauth');
   if (copilotGateway) {
     const [name, gateway] = copilotGateway;
+    const lineage = lineageKey(name, gateway);
     if (gateway.credentialSource === 'sonata') {
       const dir = credentialDir(home, name);
-      if (!existsSync(join(dir, 'api-key.json'))) {
-        failures.push({
-          gateway: name,
-          message: `gateway "${name}" takes its credential from sonata but none is stored — ` +
-            `run \`sonata auth login ${name}\`.`,
-        });
-      } else {
-        childEnv.GITHUB_COPILOT_TOKEN_DIR = dir;
-      }
+      const store = fileStoreRead(join(dir, 'api-key.json'));
+      const entries = settle(
+        name, lineage, store.state === 'ok' ? { GITHUB_COPILOT_TOKEN_DIR: dir } : undefined, [store],
+        `gateway "${name}" takes its credential from sonata but none is stored — ` +
+          `run \`sonata auth login ${name}\`.`,
+      );
+      if (entries !== undefined) Object.assign(childEnv, entries);
     } else {
       const token = readCopilotToken(home);
-      if (token === null) {
-        failures.push({
-          gateway: name,
-          message: `gateway "${name}" uses copilot-oauth but no Copilot login was found ` +
-            `in ${opencodeAuthPath(home)} — run \`sonata auth login ${name}\`, ` +
-            'or `opencode auth login` and choose github-copilot.',
-        });
-      } else {
-        const tokenDir = join(tempDir, 'copilot');
-        if (spawning) {
-          mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
-          writeFileSync(join(tokenDir, 'access-token'), token, { mode: 0o600 });
-        }
-        childEnv.GITHUB_COPILOT_TOKEN_DIR = tokenDir;
+      const tokenDir = join(tempDir, 'copilot');
+      const fresh = token === null ? undefined : { GITHUB_COPILOT_TOKEN_DIR: tokenDir };
+      const entries = settle(
+        name, lineage, fresh, opencodeStores(),
+        `gateway "${name}" uses copilot-oauth but no Copilot login was found ` +
+          `in ${opencodeAuthPath(home)} — run \`sonata auth login ${name}\`, ` +
+          'or `opencode auth login` and choose github-copilot.',
+      );
+      if (entries !== undefined && entries === fresh && token !== null && spawning) {
+        mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+        writeFileSync(join(tokenDir, 'access-token'), token, { mode: 0o600 });
       }
+      if (entries !== undefined) Object.assign(childEnv, entries);
     }
   }
 
-  return { env: childEnv, failures };
+  for (const lineage of [...memory.lastGood.keys()]) {
+    if (!live.has(lineage)) memory.lastGood.delete(lineage);
+  }
+  return { env: childEnv, failures, transient };
 }
 
 /** Default bound on how long a model-registry restart waits for the old litellm child to exit (see `litellmExitTimeoutMs`). */
@@ -1363,26 +1492,33 @@ export async function cmdServe(
    * fails upstream with a 401, which already names the problem.
    */
   let credentialFailures = new Map<string, string>();
+  /** Each gateway's last good credential, across child-env builds; see `resolveChildEnv`. */
+  const credentialMemory = newCredentialMemory();
   /**
-   * Which credential store each OAuth gateway resolved to in the last merge,
-   * as a comparable string. Refreshed with `droppedGateways`.
+   * The store each default-sourced ChatGPT gateway was last seen to read.
+   * `resolvedOauthIdentity` answers "opencode" whenever codex's file does not
+   * read as a login — torn mid-write included — and a conflict drop decided
+   * on that would take the gateway away for the length of one write. While
+   * codex's file cannot be read, the last answer stands.
    */
-  let oauthIdentities = '';
+  const lastOauthIdentity = new Map<string, string>();
   const mergeGateways = (log: (line: string) => void): NativeConfig['gateways'] => {
     const dropped = new Map<string, string>();
-    const identities: string[] = [];
     const gateways = mergeTenantGateways(
       registry.loadable().map(({ id, config }) => ({ id, gateways: config.native?.gateways ?? {} })),
       log,
       (name, gateway) => {
+        const lineage = lineageKey(name, gateway);
+        const held = lastOauthIdentity.get(lineage);
+        if (held !== undefined && gateway.auth === 'codex-oauth' && gateway.credentialSource === undefined
+          && jsonStoreRead(codexAuthPath(opts.home)).state === 'unreadable') return held;
         const identity = resolvedOauthIdentity(opts.home, name, gateway);
-        identities.push(`${gateway.auth}:${name}=${identity}`);
+        lastOauthIdentity.set(lineage, identity);
         return identity;
       },
       dropped,
     );
     droppedGateways = dropped;
-    oauthIdentities = [...new Set(identities)].sort().join(',');
     return gateways;
   };
   /** Merged gateways across every loadable tenant — what credential resolution and the child env are built from. */
@@ -1427,22 +1563,6 @@ export async function cmdServe(
    * Both are stat-only.
    */
   const gatewayPlanInputs = (): string => `${registry.fingerprint()}\n${codexStoreSignal(opts.home)}`;
-  /**
-   * What LiteLLM's config.json and child env are generated from: the tenants'
-   * models and gateways, AND the last merge's drops and OAuth identities.
-   * `servableTenants` removes a dropped gateway's models from the model list
-   * and `resolveChildEnv` points the token dir at the resolved store, so either
-   * moving is a change to what LiteLLM must be given — and `codex login` moves
-   * them with every config untouched. So is the set of gateways whose
-   * credential did not resolve: a login appearing must load their models. Compared on the configs alone, a login
-   * that un-dropped two gateways left LiteLLM on an empty model list, with no
-   * ChatGPT token dir, answering "Invalid model name". Reads the merge
-   * `refreshGatewayPlan` has already run for this request rather than merging
-   * again.
-   */
-  const litellmPlanSnapshot = (): string =>
-    `${registry.unionSnapshot()}\n${[...droppedGateways.keys()].sort().join(',')}\n${oauthIdentities}` +
-    `\n${[...credentialFailures.keys()].sort().join(',')}`;
   const unionNeedsLitellm = (): boolean => registry.loadable().some(({ config }) => litellmRequired(config));
 
   const litellmBin = managedLitellmPath(opts.home);
@@ -1518,11 +1638,50 @@ export async function cmdServe(
     // gateway out, exactly as a re-merge does: a registered session in an
     // unrelated project must not stop the router from starting at all.
     const startupNative = mergedNative();
-    const startup = resolveChildEnv(startupNative, opts.home, tempDir);
+    const startup = resolveChildEnv(startupNative, opts.home, tempDir, { memory: credentialMemory });
     const machineGateways = machineConfig()?.native?.gateways ?? {};
     const fatal = startup.failures.find(({ gateway }) => Object.hasOwn(machineGateways, gateway));
     if (fatal !== undefined) throw new Error(`sonata serve: ${fatal.message}`);
     let childEnv = startup.env;
+    /**
+     * What a LiteLLM (re)spawn would be given, as a comparable string: the
+     * config.json it would be written — the servable tenants' model list,
+     * after drops and credential failures — and the env entries those models
+     * read, hashed. A drop, a login appearing, a token dir moving or a key
+     * changing all move it, including with every config untouched: compared
+     * on the configs alone, a login that un-dropped two gateways left LiteLLM
+     * on an empty model list answering "Invalid model name".
+     *
+     * What would be written, not why: it used to carry the failed gateways'
+     * names, so a credential store torn for the length of one write — or a
+     * failing gateway no model uses — restarted LiteLLM for a config and env
+     * identical to the running one, twice per flap. The configs are still
+     * compared too, as they always were. Reads the merge `refreshGatewayPlan`
+     * has already run for this request rather than merging again.
+     */
+    const litellmPlanSnapshot = (): string => {
+      const tenants = servableTenants();
+      const vars = new Set<string>();
+      for (const { config } of tenants) {
+        const gateways = config.native?.gateways ?? {};
+        const names = [
+          ...Object.values(config.unifiedModels).map((model) => model.gateway),
+          ...Object.values(config.native?.models ?? {}).map((model) => model.gateway),
+        ];
+        for (const name of names) {
+          const gateway = name === undefined ? undefined : gateways[name];
+          if (name === undefined || gateway === undefined || transportFor(gateway, name) !== 'litellm') continue;
+          if (gateway.auth === 'codex-oauth') vars.add('CHATGPT_TOKEN_DIR');
+          else if (gateway.auth === 'copilot-oauth') vars.add('GITHUB_COPILOT_TOKEN_DIR');
+          else vars.add(envVarForGateway(name));
+        }
+      }
+      const env = [...vars].sort().map((name) => {
+        const value = childEnv[name];
+        return `${name}=${value === undefined ? '-' : createHash('sha256').update(value).digest('hex').slice(0, 16)}`;
+      });
+      return `${registry.unionSnapshot()}\n${JSON.stringify(litellmConfigForTenants(tenants, ''))}\n${env.join(',')}`;
+    };
     applyCredentialFailures(startup.failures, startupNative);
     writeFileSync(configPath, litellmConfigYamlForTenants(servableTenants(), masterKey), { mode: 0o600 });
     const needsLitellmAtStart = unionNeedsLitellm();
@@ -1593,12 +1752,14 @@ export async function cmdServe(
       // another project dropped would otherwise be sent that project's key.
       // With no key, its request fails upstream with a 401 that names the
       // problem; another project's credential does not.
-      const { env, failures } = resolveChildEnv(cfg, opts.home, tempDir, { spawning: false });
+      const { env, failures, transient } = resolveChildEnv(cfg, opts.home, tempDir, { spawning: false, memory: credentialMemory });
       childEnv = env;
       applyCredentialFailures(failures, cfg);
-      reportCredentialFailures(failures);
+      reportCredentialFailures([...failures, ...transient]);
       refreshGatewayKeys(cfg);
-      if (failures.length > 0) {
+      // A store that could not be read is retried on the next request too,
+      // so its recovery — or a login written meanwhile — is not missed.
+      if (failures.length > 0 || transient.length > 0) {
         failedFingerprint = now;
         return;
       }
@@ -1710,10 +1871,10 @@ export async function cmdServe(
     /** The child env for a (re)spawn, resolved per gateway; failures recorded and reported, never thrown. */
     const rebuildChildEnv = (): void => {
       const cfg = mergedNative();
-      const { env, failures } = resolveChildEnv(cfg, opts.home, tempDir);
+      const { env, failures, transient } = resolveChildEnv(cfg, opts.home, tempDir, { memory: credentialMemory });
       childEnv = env;
       applyCredentialFailures(failures, cfg);
-      reportCredentialFailures(failures);
+      reportCredentialFailures([...failures, ...transient]);
       refreshGatewayKeys(cfg);
     };
 
@@ -1739,8 +1900,10 @@ export async function cmdServe(
         // other one starts. Failing the whole start here left no project's
         // LiteLLM model reachable over one project's missing login.
         rebuildChildEnv();
+        // Re-taken after the rebuild, which is what the child will be given.
+        const planned = litellmPlanSnapshot();
         if (!unionNeedsLitellm()) {
-          activeModelsJson = freshModelsJson;
+          activeModelsJson = planned;
           return;
         }
         if (!litellmHealthy()) {
@@ -1776,7 +1939,7 @@ export async function cmdServe(
             throw error;
           }
           abandonedChildren.delete(spawned);
-          activeModelsJson = freshModelsJson;
+          activeModelsJson = planned;
         })().catch((error) => { console.error(`sonata serve: litellm never came up: ${String(error)}`); });
         await litellmReady;
         return;
@@ -1796,6 +1959,10 @@ export async function cmdServe(
         // its direct ones keep serving from `gatewayKeys` — which is read off
         // `childEnv` and would otherwise still hold the pre-change credential.
         rebuildChildEnv();
+        // Re-taken after the rebuild: if what the child would be given is what
+        // it already has, there is nothing to restart it for.
+        const planned = litellmPlanSnapshot();
+        if (planned === activeModelsJson) return;
         writeFileSync(configPath, litellmConfigYamlForTenants(servableTenants(), masterKey), { mode: 0o600 });
         console.error('sonata serve: model registry changed — restarting litellm to pick it up...');
         const oldChild = child;
@@ -1843,7 +2010,7 @@ export async function cmdServe(
           // replacement that never came up was never tried again: the next
           // request saw no change and served a dead upstream until a manual
           // `sonata restart`. Left uncommitted, the next check retries.
-          activeModelsJson = freshModelsJson;
+          activeModelsJson = planned;
         })().catch((error) => {
           console.error(`sonata serve: restarted litellm never came up: ${String(error)}`);
         });
