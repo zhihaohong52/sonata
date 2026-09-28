@@ -302,7 +302,10 @@ export async function killRecordedOrphan(
         `(${command}) — leaving it alone`,
       );
     } else {
-      stillRunning = !(await terminatePid(litellmPid, deps));
+      // SIGKILL only on positive identification. "ps could not say" was
+      // enough for the SIGTERM this always sent, but not for a signal that
+      // cannot be caught: the pid may have been reused by anything.
+      stillRunning = !(await terminatePid(litellmPid, { ...deps, escalate: command !== undefined }));
     }
   }
   // Only this port's own record is ever read here, so the file cleared is
@@ -335,6 +338,8 @@ async function terminatePid(
     isAlive?: (pid: number) => boolean;
     sleep?: (ms: number) => Promise<void>;
     timeoutMs?: number;
+    /** False sends SIGTERM alone: the pid's identity was not confirmed. */
+    escalate?: boolean;
   },
 ): Promise<boolean> {
   const isAlive = deps.isAlive ?? defaultIsAlive;
@@ -349,6 +354,7 @@ async function terminatePid(
   };
   (deps.kill ?? killPid)(pid);
   if (await gone()) return true;
+  if (deps.escalate === false) return false;
   console.error(`sonata serve: recorded litellm pid ${pid} did not exit after SIGTERM — sending SIGKILL`);
   (deps.forceKill ?? forcePid)(pid);
   return gone();

@@ -3652,6 +3652,18 @@ describe('killRecordedOrphan — escalates and forgets only a dead pid', () => {
     expect(stateOf().litellmPid).toBeUndefined();
   });
 
+  it('sends only SIGTERM when ps cannot say what the pid is', async () => {
+    record({ litellmPid: 222 });
+    const signals: string[] = [];
+    await killRecordedOrphan(orphanHome, 4100, {
+      processCommand: () => undefined,
+      kill: (pid) => signals.push(`TERM ${pid}`), forceKill: (pid) => signals.push(`KILL ${pid}`),
+      isAlive: () => true, sleep: async () => {}, timeoutMs: 50,
+    });
+    expect(signals).toEqual(['TERM 222']);
+    expect(stateOf().litellmPid).toBe(222);
+  });
+
   it('keeps the pid on record when it survives SIGKILL too', async () => {
     record({ routerPid: 11, litellmPid: 222 });
     await killRecordedOrphan(orphanHome, 4100, {
