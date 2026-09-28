@@ -2936,7 +2936,13 @@ litellm = ${litellmPort}
         res = await send();
       }
       expect(res.status).toBe(502);
-      expect(await res.text()).toContain('kill -9 222');
+      const text = await res.text();
+      expect(text).toContain('kill -9 222');
+      expect(text).toContain('sonata restart');
+      // This router is live and holds routerPid in that file: deleting it is
+      // not a remedy here.
+      expect(text).not.toContain('delete');
+      expect(text).not.toContain(serveStatePath(home, 0));
     } finally {
       killSpy.mockRestore();
       errorSpy.mockRestore();
@@ -3907,6 +3913,23 @@ describe('killRecordedOrphan — escalates and forgets only a dead pid', () => {
       timeoutMs: 50,
     });
     expect(signals).toEqual(['TERM 222']);
+    expect(stateOf().litellmPid).toBeUndefined();
+  });
+
+  it('logs a recorded pid that has simply exited as already gone', async () => {
+    record({ litellmPid: 222 });
+    const notes: string[] = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { notes.push(args.map(String).join(' ')); });
+    try {
+      await killRecordedOrphan(orphanHome, 4100, {
+        processCommand: () => undefined,
+        kill: () => {}, forceKill: () => {}, isAlive: () => false, sleep: async () => {}, timeoutMs: 50,
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+    expect(notes.join('\n')).toMatch(/222 .*already gone/);
+    expect(notes.join('\n')).not.toMatch(/could not be verified/);
     expect(stateOf().litellmPid).toBeUndefined();
   });
 
