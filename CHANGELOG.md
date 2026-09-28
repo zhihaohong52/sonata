@@ -10,17 +10,19 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Changed
 
-- **A config with two OAuth gateways of one kind that read different
-  credentials no longer loads.** LiteLLM holds one ChatGPT and one Copilot
-  credential per process, so the second gateway was silently served the
-  first one's account. `sonata.toml` now refuses such a set, naming each
-  gateway and the credential it reads. `codex`, `opencode` and the default
-  are one machine store each; `credential_source = "sonata"` is a login per
-  gateway name, so two sonata-sourced gateways of one kind are two accounts
-  and are refused too. Gateways that read one store still load: that covers
-  the `codex` + `openai` pair `sonata init` wrote before v0.10.0. Across
-  projects the router serves none of a kind whose gateways disagree, and
-  logs why.
+- **A config with two OAuth gateways of one kind that provably read
+  different accounts no longer loads.** LiteLLM holds one ChatGPT and one
+  Copilot credential per process, so the second gateway was silently served
+  the first one's account. `credential_source = "sonata"` is a login per
+  gateway name, so `sonata.toml` now refuses two sonata-sourced gateways of
+  one kind, or one beside a machine-store gateway (`codex`, `opencode`, or
+  the default), naming each gateway and the credential it reads. Machine
+  stores are compared by the router against the store actually read on that
+  machine (the default reads codex's login when there is one, else
+  opencode's; both Copilot sources read opencode's): gateways on one store
+  keep working — that covers the `codex` + `openai` pair `sonata init` wrote
+  before v0.10.0 — and a kind whose gateways resolve to different stores is
+  not served at all, with the reason logged and returned.
 
 ### Fixed
 

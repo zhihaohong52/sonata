@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
-  cmdServe as realCmdServe, listenOn, killRecordedOrphan, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
+  cmdServe as realCmdServe, listenOn, killRecordedOrphan, mergeTenantGateways, resolvedOauthIdentity, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
   serveStatePath, stopServe, cmdRestart, defaultWaitForLitellm, sonataRouterMultiTenant, processCommand,
   budgetStatusesFor,
 } from '../../src/commands/serve.js';
@@ -3496,6 +3496,48 @@ describe('mergeTenantGateways', () => {
     expect(text).toContain('"codex" (a, default)');
     expect(text).toContain('"openai" (b, default)');
     expect(text).toContain('"chatgpt" (c, sonata:chatgpt)');
+  });
+
+  describe('by the credential store serve would actually read', () => {
+    let storeHome: string;
+    beforeEach(() => { storeHome = mkdtempSync(join(tmpdir(), 'sonata-oauth-store-')); });
+    afterEach(() => { rmSync(storeHome, { recursive: true, force: true }); });
+    const withCodexStore = () => {
+      mkdirSync(join(storeHome, '.codex'), { recursive: true });
+      writeFileSync(join(storeHome, '.codex', 'auth.json'), JSON.stringify({ tokens: { access_token: 'x' } }));
+    };
+    const codexPair = (): Parameters<typeof mergeTenantGateways>[0] => [
+      { id: 'a', gateways: { codex: gw({ auth: 'codex-oauth', baseUrl: undefined, credentialSource: 'codex' }) } },
+      { id: 'b', gateways: { openai: gw({ auth: 'codex-oauth', baseUrl: undefined }) } },
+    ];
+
+    it('keeps codex `codex` beside the default when the default reads the codex store', () => {
+      withCodexStore();
+      const lines: string[] = [];
+      const merged = mergeTenantGateways(codexPair(), (l) => lines.push(l), (name, g) => resolvedOauthIdentity(storeHome, name, g));
+      expect(Object.keys(merged).sort()).toEqual(['codex', 'openai']);
+      expect(lines).toEqual([]);
+    });
+
+    it('drops them when the default falls through to the opencode store', () => {
+      const lines: string[] = [];
+      const merged = mergeTenantGateways(codexPair(), (l) => lines.push(l), (name, g) => resolvedOauthIdentity(storeHome, name, g));
+      expect(merged).toEqual({});
+      expect(lines.join('\n')).toMatch(/"codex" \(a, codex store\).*"openai" \(b, opencode store\)/s);
+    });
+
+    it('treats copilot on opencode and on the default as one login', () => {
+      expect(resolvedOauthIdentity(storeHome, 'x', { auth: 'copilot-oauth', credentialSource: 'opencode' }))
+        .toBe(resolvedOauthIdentity(storeHome, 'y', { auth: 'copilot-oauth' }));
+    });
+
+    it('never treats two sonata logins, or one beside a machine store, as one', () => {
+      expect(resolvedOauthIdentity(storeHome, 'a', { auth: 'codex-oauth', credentialSource: 'sonata' }))
+        .not.toBe(resolvedOauthIdentity(storeHome, 'b', { auth: 'codex-oauth', credentialSource: 'sonata' }));
+      withCodexStore();
+      expect(resolvedOauthIdentity(storeHome, 'a', { auth: 'codex-oauth', credentialSource: 'sonata' }))
+        .not.toBe(resolvedOauthIdentity(storeHome, 'b', { auth: 'codex-oauth' }));
+    });
   });
 
   it('keeps one OAuth gateway that two projects name identically', () => {
