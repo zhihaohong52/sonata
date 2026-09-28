@@ -59,11 +59,31 @@ describe('runProbe', () => {
   it('settles when a grandchild still holds stdout', async () => {
     // The timeout (60 s) and the grandchild's `sleep 30` are both far past the
     // bound (15 s), so settling within it proves it settled on the child's
-    // exit — not on the pipe closing, nor on the timeout killing the group.
+    // exit plus the stdio grace (PROBE_STDIO_GRACE_MS) — not on the pipe
+    // closing, nor on the timeout killing the group.
     const start = Date.now();
     const result = await runProbe(join(bin, 'leaves-child'), ['--version'], { timeoutMs: 60_000 });
     expect(Date.now() - start).toBeLessThan(15_000);
     expect(result.stdout.trim()).toBe('hi');
+  });
+
+  // 'exit' is not "the output is in": Node emits it once the process is
+  // reaped, and the pipe's last bytes can be read in a later loop turn.
+  // Measured in the suite: exit at 3.1 ms, the old "one turn" wait over at
+  // 3.8 ms, "works 1.2.3" read at 5.4 ms — so the probe resolved with '' and
+  // `sonata doctor` reported a harness with no version (~1 in 600 probes, the
+  // first spawn of a busy worker). These make the late bytes deterministic: the
+  // command exits at once and its output lands 300 ms later, then EOF.
+  it('keeps output that arrives after the command has exited', async () => {
+    const late = stub('late-output', '(sleep 0.3; echo "late 1.0") &\nexit 0');
+    await expect(runProbe(late, ['--version'], { timeoutMs: VERSION_PROBE_TIMEOUT_MS }))
+      .resolves.toMatchObject({ stdout: 'late 1.0\n' });
+  });
+
+  it('keeps stderr that arrives after a failing command has exited', async () => {
+    const late = stub('late-error', '(sleep 0.3; echo "Error: late boom" >&2) &\nexit 3');
+    await expect(runProbe(late, [], { timeoutMs: VERSION_PROBE_TIMEOUT_MS }))
+      .rejects.toMatchObject({ code: 3, stderr: expect.stringContaining('Error: late boom') });
   });
 
   it('reports a missing binary as ENOENT', async () => {
@@ -102,10 +122,43 @@ describe('runProbe — output cap', () => {
   });
 });
 
+/**
+ * The three Ctrl-C tests run a real parent — Node with the tsx loader — and
+ * wait for its probe to start before signalling it. That start is a latency,
+ * not a behaviour: measured beside a full suite, median 1.1 s and max 7.3 s,
+ * and a heavier run passed the 15 s this used to allow. So the wait is long
+ * (60 s), and a parent that dies before its probe starts fails at once with
+ * its own stderr instead of a bare timeout.
+ */
+const PARENT_START_MS = 60_000;
+const startParent = async (script: string) => {
+  const { spawn } = await import('node:child_process');
+  // Node with the tsx loader, not the tsx CLI: the CLI relays SIGINT to its
+  // child and SIGKILLs it if its event loop has not answered within ~60 ms,
+  // which under load killed the parent before runProbe could forward the
+  // signal — orphaning the probe group, a harness flake rather than a bug.
+  const parent = spawn(process.execPath, ['--import', 'tsx', script], { stdio: ['ignore', 'ignore', 'pipe'], cwd: process.cwd() });
+  let stderr = '';
+  parent.stderr!.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+  let ended: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+    parent.on('exit', (code, signal) => { ended = { code, signal }; resolve(ended); }));
+  /** Polls until `file` has content; fails with the parent's stderr if it exits first. */
+  const waitForFile = async (file: string, what: string) => {
+    const { existsSync, readFileSync } = await import('node:fs');
+    const until = Date.now() + PARENT_START_MS;
+    while (!existsSync(file) || readFileSync(file, 'utf8').trim() === '') {
+      if (ended !== undefined) throw new Error(`the parent exited (${JSON.stringify(ended)}) before ${what}: ${stderr}`);
+      if (Date.now() > until) throw new Error(`${what} did not happen within ${PARENT_START_MS / 1000}s: ${stderr}`);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return readFileSync(file, 'utf8').trim();
+  };
+  return { parent, exited, waitForFile };
+};
+
 describe('runProbe — Ctrl-C reaches the probe', () => {
   it('forwards SIGINT to the probe group, then lets the parent exit as it would have', async () => {
-    const { spawn } = await import('node:child_process');
-    const { existsSync, readFileSync } = await import('node:fs');
     const pidFile = join(bin, 'sleeper.pid');
     const sleeper = stub('sleeper', `echo $$ > ${pidFile}\nsleep 30`);
     const script = join(bin, 'run-probe.mts');
@@ -113,18 +166,8 @@ describe('runProbe — Ctrl-C reaches the probe', () => {
 import { runProbe } from ${JSON.stringify(join(process.cwd(), 'src/version-probe.ts'))};
 await runProbe(${JSON.stringify(sleeper)}, [], { timeoutMs: 30_000 }).catch(() => {});
 `);
-    // Node with the tsx loader, not the tsx CLI: the CLI relays SIGINT to its
-    // child and SIGKILLs it if its event loop has not answered within ~60 ms,
-    // which under load killed the parent before runProbe could forward the
-    // signal — orphaning the probe group, a harness flake rather than a bug.
-    const parent = spawn(process.execPath, ['--import', 'tsx', script], { stdio: 'ignore', cwd: process.cwd() });
-    const until = Date.now() + 15_000;
-    while (!existsSync(pidFile) || readFileSync(pidFile, 'utf8').trim() === '') {
-      if (Date.now() > until) throw new Error('probe never started');
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    const probePid = Number(readFileSync(pidFile, 'utf8').trim());
-    const exited = new Promise<number | null>((resolve) => parent.on('exit', (_code, signal) => resolve(signal === null ? 0 : 1)));
+    const { parent, exited, waitForFile } = await startParent(script);
+    const probePid = Number(await waitForFile(pidFile, 'the probe started'));
     parent.kill('SIGINT');
     await exited;
     const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -132,13 +175,12 @@ await runProbe(${JSON.stringify(sleeper)}, [], { timeoutMs: 30_000 }).catch(() =
     const deadline = Date.now() + 10_000;
     while (alive(probePid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
     expect(alive(probePid)).toBe(false);
-  }, 30_000);
+  }, 120_000);
 });
 
 describe('runProbe — a parent that handles SIGINT itself', () => {
   it('does not re-raise when the parent had its own listener, even a once() one', async () => {
-    const { spawn } = await import('node:child_process');
-    const { existsSync, readFileSync } = await import('node:fs');
+    const { readFileSync } = await import('node:fs');
     const pidFile = join(bin, 'sleeper2.pid');
     const doneFile = join(bin, 'parent.done');
     const sleeper = stub('sleeper2', `echo $$ > ${pidFile}\nsleep 30`);
@@ -150,19 +192,13 @@ process.once('SIGINT', () => { /* the parent's own handling: carry on */ });
 await runProbe(${JSON.stringify(sleeper)}, [], { timeoutMs: 30_000 }).catch(() => {});
 writeFileSync(${JSON.stringify(doneFile)}, 'survived');
 `);
-    const parent = spawn(process.execPath, ['--import', 'tsx', script], { stdio: 'ignore', cwd: process.cwd() });
-    const until = Date.now() + 15_000;
-    while (!existsSync(pidFile) || readFileSync(pidFile, 'utf8').trim() === '') {
-      if (Date.now() > until) throw new Error('probe never started');
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    const exited = new Promise<{ code: number | null; signal: string | null }>((resolve) =>
-      parent.on('exit', (code, signal) => resolve({ code, signal })));
+    const { parent, exited, waitForFile } = await startParent(script);
+    await waitForFile(pidFile, 'the probe started');
     parent.kill('SIGINT');
     const outcome = await exited;
     expect(outcome).toEqual({ code: 0, signal: null });
     expect(readFileSync(doneFile, 'utf8')).toBe('survived');
-  }, 30_000);
+  }, 120_000);
 });
 
 describe('runProbe — concurrent probes', () => {
@@ -171,10 +207,10 @@ describe('runProbe — concurrent probes', () => {
     // counted a sibling probe's own forwarder as "the parent handles SIGINT",
     // so once the fast probe had finished, Ctrl-C killed the slow probe and
     // the parent carried on instead of exiting.
-    const { spawn } = await import('node:child_process');
-    const { existsSync, readFileSync } = await import('node:fs');
+    const { existsSync } = await import('node:fs');
     const pidFile = join(bin, 'sleeper3.pid');
     const doneFile = join(bin, 'parent3.done');
+    const fastDone = join(bin, 'fast3.done');
     const fast = stub('fast3', 'sleep 0.2\necho ok');
     const slow = stub('sleeper3', `echo $$ > ${pidFile}\nsleep 30`);
     const script = join(bin, 'run-probe-concurrent.mts');
@@ -182,24 +218,20 @@ describe('runProbe — concurrent probes', () => {
 import { writeFileSync } from 'node:fs';
 import { runProbe } from ${JSON.stringify(join(process.cwd(), 'src/version-probe.ts'))};
 await Promise.all([
-  runProbe(${JSON.stringify(fast)}, [], { timeoutMs: 30_000 }).catch(() => {}),
+  runProbe(${JSON.stringify(fast)}, [], { timeoutMs: 30_000 }).catch(() => {})
+    .then(() => writeFileSync(${JSON.stringify(fastDone)}, 'finished')),
   runProbe(${JSON.stringify(slow)}, [], { timeoutMs: 30_000 }).catch(() => {}),
 ]);
 writeFileSync(${JSON.stringify(doneFile)}, 'continued after Ctrl-C');
 `);
-    const parent = spawn(process.execPath, ['--import', 'tsx', script], { stdio: 'ignore', cwd: process.cwd() });
-    const until = Date.now() + 15_000;
-    while (!existsSync(pidFile) || readFileSync(pidFile, 'utf8').trim() === '') {
-      if (Date.now() > until) throw new Error('probe never started');
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    // Let the fast probe finish first.
-    await new Promise((r) => setTimeout(r, 1_000));
-    const exited = new Promise<{ code: number | null; signal: string | null }>((resolve) =>
-      parent.on('exit', (code, signal) => resolve({ code, signal })));
+    const { parent, exited, waitForFile } = await startParent(script);
+    await waitForFile(pidFile, 'the slow probe started');
+    // The fast probe must have finished first — waited for, not assumed
+    // from a fixed pause, which a loaded machine can outlast.
+    await waitForFile(fastDone, 'the fast probe finished');
     parent.kill('SIGINT');
     const outcome = await exited;
     expect(outcome).toEqual({ code: null, signal: 'SIGINT' });
     expect(existsSync(doneFile)).toBe(false);
-  }, 30_000);
+  }, 120_000);
 });
