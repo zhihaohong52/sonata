@@ -131,6 +131,17 @@ the review doc's Backlog note):
   every other gateway, in every project, keeps its own. The rebuild is retried
   on the next request so a later `sonata auth add` is picked up without a
   restart, and each failure is logged once rather than on every request.
+- **One project's missing login no longer stops LiteLLM for every project.**
+  A gateway whose credential could not be found (a codex-oauth gateway with
+  no login, a sonata-sourced key not yet added) made every LiteLLM start and
+  restart fail, so no project's new model was loaded, the router logged the
+  failed restart on every request, and a registered session's missing login
+  even stopped `sonata serve` from starting. That gateway's models are now left
+  out of LiteLLM, like a dropped gateway's, and a request for one answers a
+  502 naming the gateway and the command that fixes it; everything else keeps
+  serving. Once the credential appears, the next request restarts LiteLLM with
+  those models. Startup still refuses when the machine config's own gateway
+  has no credential.
 - **`codex login` while the router runs now reaches LiteLLM.** Logging in can
   resolve two conflicting ChatGPT gateways to one account and un-drop them,
   but LiteLLM was only regenerated when a config file changed — so its model
