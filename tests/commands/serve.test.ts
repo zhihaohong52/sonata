@@ -3582,6 +3582,7 @@ litellm = ${litellmPort}
     const ocDbPath = () => join(home, '.local', 'share', 'opencode', 'opencode.db');
     const start = async (o: {
       onExitSupported?: boolean; upstream?: (url: string) => Response | Promise<Response>; now?: () => number;
+      respawnDelayMs?: number;
     } = {}) => {
       const envs: NodeJS.ProcessEnv[] = [];
       const exits: ((code: number | null, signal: NodeJS.Signals | null) => void)[][] = [];
@@ -3592,7 +3593,7 @@ litellm = ${litellmPort}
         return o.upstream?.(String(url)) ?? new Response('{}', { status: 200 });
       }));
       const handle = await cmdServe({
-        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, respawnDelayMs: 0,
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, respawnDelayMs: o.respawnDelayMs ?? 0,
         ...(o.now === undefined ? {} : { now: o.now }),
         spawnLitellm: (_config, env) => {
           envs.push({ ...env });
@@ -4298,6 +4299,59 @@ litellm = ${litellmPort}
         crash();
         await waitFor(() => envs.length === 2, 'the crash respawn');
         expect(await send()).toBe(502);
+      });
+
+      it('keeps a refusal LiteLLM prints after it crashed through the respawn and a same-directory restart', async () => {
+        // The crashed child's bookkeeping was swept on its exit, so in the
+        // window before the respawn a refusal still buffered in its stdout
+        // marked no directory — and "a different directory clears" then
+        // cleared that on the next restart, which reused the refused token.
+        writeMachineConfig(machine('', 'sonata'));
+        const dir = credentialDir(home, 'codex');
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'auth.json'), JSON.stringify({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'OLD' }));
+        const { send, envs, emit, crash, settle, upstreamCalls } = await start({ respawnDelayMs: 100 });
+        expect(await send()).toBe(200);
+        crash();
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        await waitFor(() => envs.length === 2, 'the crash respawn');
+        expect(await send()).toBe(502);
+        const forwarded = upstreamCalls.length;
+        writeMachineConfig(machine('[models."terra"]\ngateway = "codex"\nid = "gpt-5.6-terra"', 'sonata'));
+        await send();
+        await waitFor(() => envs.length === 3, 'the restart for the new model list');
+        await settle();
+        expect(envs[2].CHATGPT_TOKEN_DIR).toBe(envs[0].CHATGPT_TOKEN_DIR);
+        expect(await send()).toBe(502);
+        expect(upstreamCalls.length).toBe(forwarded);
+      });
+
+      it('marks a refusal response the crashed LiteLLM gives in the respawn window, rather than dropping it as replaced', async () => {
+        const refusal = JSON.parse(fixture('chatgpt-refresh-refused-proxy.json')) as { status: number; body: string }[];
+        let release: () => void = () => {};
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        let litellmCalls = 0;
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
+        const { send, envs, crash } = await start({
+          respawnDelayMs: 200,
+          upstream: async (url) => {
+            if (!url.includes(`:${litellmPort}`)) return new Response('{}', { status: 200 });
+            litellmCalls += 1;
+            if (litellmCalls !== 1) return new Response('{}', { status: 200 });
+            await held;
+            return new Response(refusal[0]!.body, { status: refusal[0]!.status });
+          },
+        });
+        const late = send();
+        await waitFor(() => litellmCalls === 1, 'the first request forwarded');
+        crash();
+        release();
+        expect(await late).toBe(502);
+        expect(envs).toHaveLength(1);
+        await waitFor(() => envs.length === 2, 'the crash respawn');
+        expect(await send()).toBe(502);
+        expect(errors.some((line) => line.includes('has since been replaced'))).toBe(false);
       });
 
       it('keeps the mark through a spawn with no ChatGPT gateway at all, and when the gateway returns on the same token', async () => {
