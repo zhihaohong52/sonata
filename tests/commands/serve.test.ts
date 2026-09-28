@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { spawn as spawnType } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -3918,6 +3918,164 @@ auth = "codex-oauth"
       expect((await send()).status).toBe(200);
       expect(errors.some((line) => line.includes('read different credentials'))).toBe(false);
       rmSync(project, { recursive: true, force: true });
+    });
+
+    describe('a store that stays unreadable', () => {
+      // Torn is bounded: a file that has not changed for
+      // UNREADABLE_STORE_WINDOW_MS is steadily unreadable — corrupt, zero
+      // bytes, EACCES — and is skipped as absent, as base did. Read as torn
+      // forever, a default ChatGPT gateway opencode could serve answered 502
+      // for good, promising a retry that never changed anything.
+      const DEFAULT_CHATGPT = () => `
+[models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["luna"]
+complex = ["luna"]
+[native.gateways."codex"]
+auth = "codex-oauth"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`;
+      const codexPath = () => join(home, '.codex', 'auth.json');
+      const writeOpencodeLogin = () => {
+        mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+        writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({
+          openai: { type: 'oauth', access: claimJwt(1_900_000_000), refresh: 'OPENCODE-B', expires: 1_900_000_000_000 },
+        }));
+      };
+      const backdate = (path: string) => {
+        const old = (Date.now() - 60_000) / 1000;
+        utimesSync(path, old, old);
+      };
+      const start = async (now?: () => number) => {
+        const envs: NodeJS.ProcessEnv[] = [];
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+        const handle = await cmdServe({
+          cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, ...(now === undefined ? {} : { now }),
+          spawnLitellm: (_config, env) => { envs.push({ ...env }); return { pid: 1, kill: () => {} }; },
+        });
+        handles.push(handle);
+        vi.unstubAllGlobals();
+        const send = async () => {
+          const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+          });
+          return { status: res.status, text: await res.text() };
+        };
+        const seededWith = () => envs.map((env) =>
+          (JSON.parse(readFileSync(join(env.CHATGPT_TOKEN_DIR!, 'auth.json'), 'utf8')) as { refresh_token: string }).refresh_token);
+        return { send, seededWith };
+      };
+
+      it('serves a default ChatGPT gateway from opencode when codex\'s auth.json has been empty for longer than the window', async () => {
+        writeMachineConfig(DEFAULT_CHATGPT());
+        mkdirSync(join(home, '.codex'), { recursive: true });
+        writeFileSync(codexPath(), '');
+        backdate(codexPath());
+        writeOpencodeLogin();
+        const { send, seededWith } = await start();
+        expect((await send()).status).toBe(200);
+        expect(seededWith()).toEqual(['OPENCODE-B']);
+        expect(errors.filter((line) => line.includes(codexPath()) && line.includes('skipped as if absent'))).toHaveLength(1);
+        await send();
+        expect(errors.filter((line) => line.includes('skipped as if absent'))).toHaveLength(1);
+      });
+
+      it('serves it from opencode when codex\'s auth.json cannot be opened at all (EACCES)', async () => {
+        writeMachineConfig(DEFAULT_CHATGPT());
+        mkdirSync(join(home, '.codex'), { recursive: true });
+        writeFileSync(codexPath(), codexRecord('CODEX-A'), { mode: 0o000 });
+        backdate(codexPath());
+        writeOpencodeLogin();
+        try {
+          const { send, seededWith } = await start();
+          expect((await send()).status).toBe(200);
+          expect(seededWith()).toEqual(['OPENCODE-B']);
+          expect(errors.some((line) => line.includes(codexPath()) && line.includes('EACCES'))).toBe(true);
+        } finally {
+          chmodSync(codexPath(), 0o600);
+        }
+      });
+
+      it('refuses within the window, and serves from opencode once it lapses with nothing on disk changing', async () => {
+        writeMachineConfig(DEFAULT_CHATGPT());
+        mkdirSync(join(home, '.codex'), { recursive: true });
+        writeFileSync(codexPath(), '');
+        writeOpencodeLogin();
+        let offset = 0;
+        const { send, seededWith } = await start(() => Date.now() + offset);
+        const refused = await send();
+        expect(refused.status).toBe(502);
+        expect(refused.text).toContain('retried on the next request');
+        expect((await send()).status).toBe(502);
+        offset = 15_000;
+        expect((await send()).status).toBe(200);
+        expect(seededWith()).toEqual(['OPENCODE-B']);
+      });
+
+      it('refuses within the window and recovers when codex\'s write completes', async () => {
+        writeMachineConfig(DEFAULT_CHATGPT());
+        mkdirSync(join(home, '.codex'), { recursive: true });
+        writeFileSync(codexPath(), codexRecord('CODEX-A').slice(0, 30));
+        writeOpencodeLogin();
+        const { send, seededWith } = await start();
+        expect((await send()).status).toBe(502);
+        writeFileSync(codexPath(), codexRecord('CODEX-A'));
+        expect((await send()).status).toBe(200);
+        expect(seededWith()).toEqual(['CODEX-A']);
+      });
+
+      it.runIf(sqliteAvailable())('skips an opencode.db that keeps failing, once the window lapses, for opencode\'s auth.json', async () => {
+        writeMachineConfig(`
+[models."pdm"]
+gateway = "pd"
+id = "pd-1"
+[native.gateways."pd"]
+base_url = "https://pd.example"
+provider = "anthropic"
+credential_source = "opencode"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+        const dir = join(home, '.local', 'share', 'opencode');
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'opencode.db'), 'this is not a sqlite database, and never will be');
+        writeFileSync(join(dir, 'auth.json'), JSON.stringify({ pd: { type: 'api', key: 'FROM-AUTH-JSON' } }));
+        const forwarded: string[] = [];
+        const upstream = vi.fn(async (_url: string, init: RequestInit) => {
+          const headers = new Headers(init.headers);
+          forwarded.push(headers.get('x-api-key') ?? headers.get('authorization') ?? '(none)');
+          return new Response('{"id":"x","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}',
+            { status: 200, headers: { 'content-type': 'application/json' } });
+        });
+        vi.stubGlobal('fetch', upstream);
+        let offset = 0;
+        const handle = await cmdServe({
+          cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, now: () => Date.now() + offset,
+          spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+        });
+        handles.push(handle);
+        vi.unstubAllGlobals();
+        const send = async () => {
+          const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'pdm', max_tokens: 1, messages: [] }),
+          });
+          await res.text();
+          return res.status;
+        };
+        expect(await send()).toBe(502);
+        offset = 15_000;
+        expect(await send()).toBe(200);
+        expect(forwarded).toHaveLength(1);
+        expect(forwarded[0]).toContain('FROM-AUTH-JSON');
+        expect(errors.some((line) => line.includes('opencode.db') && line.includes('skipped as if absent'))).toBe(true);
+      });
     });
 
     it.runIf(sqliteAvailable())('refuses the first request after the last opencode.db credential row is removed', async () => {

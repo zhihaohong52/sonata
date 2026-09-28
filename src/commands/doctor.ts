@@ -46,7 +46,8 @@ import { opencodeCredentialOrigin, opencodeDbPath, readOpencodeCredentials } fro
  * accepting connections without answering.
  */
 const LITELLM_HEALTH_TIMEOUT_MS = 3000;
-import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
+import { codexAuthPath, codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
+import { jsonStoreRead, opencodeDbRead, UNREADABLE_STORE_WINDOW_MS } from '../native/credential-reads.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { LITELLM_HOST, mergeTenantGateways, resolvedOauthIdentity, serveHealthUrl, healthReportsUi } from './serve.js';
@@ -1163,6 +1164,24 @@ export async function cmdDoctor(
             ok: false,
             detail: `no key — \`sonata auth add ${report.gateway}\``,
           });
+    }
+
+    // A credential store that exists but cannot be read. serve treats one as
+    // mid-write for UNREADABLE_STORE_WINDOW_MS and then skips it as absent —
+    // so a login in it is silently not the one served (a default ChatGPT
+    // gateway falls through to opencode's), while everything above still
+    // reads "fine". Named here, where it can be fixed.
+    const unreadableStores = [
+      { path: codexAuthPath(home), read: jsonStoreRead(codexAuthPath(home)) },
+      { path: opencodeDbPath(home), read: opencodeDbRead(home) },
+    ].filter(({ read }) => read.state === 'unreadable');
+    for (const { path, read } of unreadableStores) {
+      checks.push({
+        name: 'credential store',
+        ok: true,
+        detail: `${path} cannot be read (${read.detail ?? 'unreadable'}) — serve skips it as absent once it has stayed ` +
+          `that way for ${UNREADABLE_STORE_WINDOW_MS / 1000}s, so no login in it is used; fix or remove the file`,
+      });
     }
 
     // opencode v2 keeps its credentials in plaintext inside opencode.db. sonata

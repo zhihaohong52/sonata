@@ -11,7 +11,10 @@ import { GLOBAL_CONFIG_RELATIVE, loadConfig, nativeRouteFor, oauthCredentialIden
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
 import { resolveKeyDetail, resolveKeys, sonataKeyStorePath } from '../native/credentials.js';
-import { fileStoreRead, jsonStoreRead, opencodeDbRead, type StoreRead } from '../native/credential-reads.js';
+import {
+  boundUnreadable, boundUnreadableDb, fileStoreRead, jsonStoreRead, newUnreadableMemory, opencodeDbRead,
+  UNREADABLE_STORE_WINDOW_MS, type StoreRead, type UnreadableMemory,
+} from '../native/credential-reads.js';
 import { chatgptAccountId, codexAuthPath, opencodeAuthPath, readChatGptOAuth, readCodexOAuth, readOpencodeChatGptOAuth, type ChatGptAuthRecord } from '../native/codex-auth.js';
 import { opencodeCredentialOrigin, opencodeCredentialStamp, opencodeDbPath } from '../native/opencode-store.js';
 import { credentialDir } from '../native/oauth-login.js';
@@ -726,10 +729,12 @@ interface CredentialMemory {
   seeds: Map<string, ChatGptSeed | string>;
   /** opencode.db's credential row count at the last read; see `opencodeDbRead`. */
   opencodeDb: { rows?: number };
+  /** How long each store has been unreadable; see `boundUnreadable`. */
+  unreadable: UnreadableMemory;
 }
 
 function newCredentialMemory(): CredentialMemory {
-  return { lastGood: new Map(), seeds: new Map(), opencodeDb: {} };
+  return { lastGood: new Map(), seeds: new Map(), opencodeDb: {}, unreadable: newUnreadableMemory() };
 }
 
 function lineageKey(name: string, gateway: { auth?: string; credentialSource?: string }): string {
@@ -791,9 +796,22 @@ function resolveChildEnv(
   native: NativeConfig,
   home: string,
   tempDir: string,
-  opts: { memory?: CredentialMemory; chatgptTokenDir?: string } = {},
+  opts: {
+    memory?: CredentialMemory;
+    chatgptTokenDir?: string;
+    /** The clock `boundUnreadable` measures against; with a memory only. */
+    now?: () => number;
+    /** Where a store skipped for being steadily unreadable is reported, once. */
+    warn?: (line: string) => void;
+  } = {},
 ): ChildEnvResolution {
+  const bounded = opts.memory !== undefined;
   const memory = opts.memory ?? newCredentialMemory();
+  const clock = opts.now ?? Date.now;
+  const fileRead = (path: string): StoreRead => {
+    const raw = jsonStoreRead(path);
+    return bounded ? boundUnreadable(path, raw, memory.unreadable, clock(), opts.warn) : raw;
+  };
   const chatgptTokenDir = opts.chatgptTokenDir ?? join(tempDir, 'chatgpt');
   const failures: CredentialFailure[] = [];
   const transient: CredentialFailure[] = [];
@@ -810,11 +828,18 @@ function resolveChildEnv(
     reads.set(id, fresh);
     return fresh;
   };
-  const keysStore = () => read('keys', () => jsonStoreRead(sonataKeyStorePath(home)));
-  const codexStore = () => read('codex', () => jsonStoreRead(codexAuthPath(home)));
+  // A store that has stayed unreadable past UNREADABLE_STORE_WINDOW_MS
+  // reads as absent here, and every credential reader already skips it, so
+  // the lookup falls through to the next store exactly as it would for a
+  // store that is not there.
+  const keysStore = () => read('keys', () => fileRead(sonataKeyStorePath(home)));
+  const codexStore = () => read('codex', () => fileRead(codexAuthPath(home)));
   const opencodeStores = () => [
-    read('opencode.db', () => opencodeDbRead(home, memory.opencodeDb)),
-    read('opencode', () => jsonStoreRead(opencodeAuthPath(home))),
+    read('opencode.db', () => {
+      const raw = opencodeDbRead(home, memory.opencodeDb);
+      return bounded ? boundUnreadableDb(opencodeDbPath(home), raw, memory.unreadable, clock(), opts.warn) : raw;
+    }),
+    read('opencode', () => fileRead(opencodeAuthPath(home))),
   ];
   /** opencode's stores an entry's answer depends on: the table alone when it answered, since it wins over auth.json. */
   const opencodeChain = (integration: string): StoreRead[] => {
@@ -856,8 +881,9 @@ function resolveChildEnv(
         gateway: name,
         unreadable: true,
         message: `gateway "${name}": its credential store could not be read (${unreadable.detail}) and it has ` +
-          'not resolved before — not serving it until the store reads cleanly, rather than use whatever a ' +
-          'later store holds; retried on the next request',
+          'not resolved before — not serving it while the store may be mid-write, rather than use whatever a ' +
+          `later store holds; retried on the next request, and skipped as absent once it has stayed unreadable ` +
+          `for ${UNREADABLE_STORE_WINDOW_MS / 1000}s`,
       });
       return undefined;
     }
@@ -1466,6 +1492,9 @@ export async function cmdServe(
   let litellmCredentialFailures = new Set<string>();
   /** Each gateway's last good credential, across child-env builds; see `resolveChildEnv`. */
   const credentialMemory = newCredentialMemory();
+  const clock = opts.now ?? Date.now;
+  /** A credential store skipped for staying unreadable, reported once per stretch by `boundUnreadable`. */
+  const warnSkipped = (line: string): void => { console.error(`sonata serve: ${line}`); };
   /**
    * The store each default-sourced ChatGPT gateway was last seen to read.
    * `resolvedOauthIdentity` answers "opencode" whenever codex's file does not
@@ -1488,7 +1517,8 @@ export async function cmdServe(
       (name, gateway) => {
         const lineage = lineageKey(name, gateway);
         if (gateway.auth === 'codex-oauth' && gateway.credentialSource === undefined
-          && jsonStoreRead(codexAuthPath(opts.home)).state === 'unreadable') {
+          && boundUnreadable(codexAuthPath(opts.home), jsonStoreRead(codexAuthPath(opts.home)),
+            credentialMemory.unreadable, clock(), warnSkipped).state === 'unreadable') {
           const held = lastOauthIdentity.get(lineage);
           if (held === undefined) unknown.add(name);
           return held;
@@ -1507,7 +1537,8 @@ export async function cmdServe(
       delete gateways[name];
       dropped.set(name, `gateway "${name}": ${codexAuthPath(opts.home)} could not be read (a write in progress?) ` +
         'and it has not resolved before, so which ChatGPT login it reads cannot be told — not serving it ' +
-        'until that file reads; retried on the next request');
+        'while that file may be mid-write; retried on the next request, and skipped as absent once it has ' +
+        `stayed unreadable for ${UNREADABLE_STORE_WINDOW_MS / 1000}s`);
     }
     droppedGateways = dropped;
     return gateways;
@@ -1719,6 +1750,8 @@ export async function cmdServe(
       const built = resolveChildEnv(cfg, opts.home, tempDir, {
         memory: credentialMemory,
         chatgptTokenDir: chatgptSeeded?.dir ?? chatgptDirFor(1),
+        now: clock,
+        warn: warnSkipped,
       });
       seeds = built.seeds;
       const held = chatgptSeeded;
@@ -1740,8 +1773,12 @@ export async function cmdServe(
       return built;
     };
 
+    const tornAtStart = credentialMemory.unreadable.torn;
     const startupNative = mergedNative();
     const startup = buildChildEnv(startupNative);
+    /** Whether a store read as mid-write since `before` — a build that must be retried, never committed. */
+    const readTorn = (before: number): boolean => credentialMemory.unreadable.torn !== before;
+    const startupTorn = readTorn(tornAtStart);
     const machineGateways = machineConfig()?.native?.gateways ?? {};
     const fatal = startup.failures.find(({ gateway, unreadable }) =>
       unreadable === undefined && Object.hasOwn(machineGateways, gateway));
@@ -1852,13 +1889,14 @@ export async function cmdServe(
     // regardless, a credential missing at startup was never retried unless a
     // config or a watched store happened to change.
     const startupInputs = gatewayPlanInputs();
-    const startupSettled = startup.failures.length === 0 && startup.transient.length === 0;
+    const startupSettled = startup.failures.length === 0 && startup.transient.length === 0 && !startupTorn;
     let planFingerprint: string | undefined = startupSettled ? startupInputs : undefined;
     /** The fingerprint whose rebuild last failed; a retry of it merges quietly, since its drops were already logged. */
     let failedFingerprint: string | undefined = startupSettled ? undefined : startupInputs;
     const refreshGatewayPlan = (): void => {
       const now = gatewayPlanInputs();
       if (now === planFingerprint) return;
+      const tornBefore = credentialMemory.unreadable.torn;
       const cfg = now === failedFingerprint ? mergedNative(() => { /* logged by the first attempt */ }) : mergedNative();
       // Writes nothing: a token directory belongs to the running child. A
       // store whose login has changed is read here, and the plan snapshot the
@@ -1879,8 +1917,12 @@ export async function cmdServe(
       reportCredentialFailures([...failures, ...transient]);
       refreshGatewayKeys(cfg);
       // A store that could not be read is retried on the next request too,
-      // so its recovery — or a login written meanwhile — is not missed.
-      if (failures.length > 0 || transient.length > 0) {
+      // so its recovery — or a login written meanwhile — is not missed. So is
+      // one read as mid-write anywhere in the merge (a default ChatGPT
+      // gateway's identity included, which is a drop and not a failure):
+      // nothing on disk may change when its window lapses, so a committed
+      // fingerprint would keep the refusal forever.
+      if (failures.length > 0 || transient.length > 0 || readTorn(tornBefore)) {
         failedFingerprint = now;
         return;
       }
