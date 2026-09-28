@@ -1069,6 +1069,34 @@ describe('routeRequest — logging', () => {
   });
 });
 
+describe('routeRequest — a ChatGPT login LiteLLM cannot refresh', () => {
+  // serve seeds LiteLLM's ChatGPT token only when it starts LiteLLM, so a
+  // refresh LiteLLM can no longer make is mended by `sonata restart` alone —
+  // which the log has to say, since the 500 itself names neither.
+  const route = async (status: number, body: string) => {
+    const lines: string[] = [];
+    const result = await routeRequest({
+      method: 'POST', url: '/v1/messages', headers: {},
+      body: Buffer.from(JSON.stringify({ model: 'gpt-5.6-luna', messages: [] })),
+    }, {
+      fetch: (async () => new Response(body, { status })) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', anthropicBase: 'http://anthropic', litellmKey: 'k',
+      log: (line) => lines.push(line),
+    });
+    return { status: result.status, log: lines.join('\n') };
+  };
+
+  it('names `sonata restart` when LiteLLM reports a refused refresh token', async () => {
+    const { status, log } = await route(500, '{"error":{"message":"Refresh token failed: 400 refresh_token_reused"}}');
+    expect(status).toBe(500);
+    expect(log).toContain('sonata restart');
+  });
+
+  it('says nothing for an unrelated error', async () => {
+    expect((await route(500, '{"error":"something else"}')).log).not.toContain('sonata restart');
+  });
+});
+
 describe('routeRequest — 529 rewrite for empty Codex completions', () => {
   const emptyOutputBody = JSON.stringify({
     error: { message: 'Unknown items in responses API response: []' },
