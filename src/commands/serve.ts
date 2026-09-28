@@ -980,6 +980,8 @@ export function mergeTenantGateways(
   /** Which credential a gateway is served from; serve passes `resolvedOauthIdentity`. */
   identity: (name: string, gateway: { auth?: string; credentialSource?: string }) => string =
     (name, gateway) => oauthCredentialIdentity(name, gateway),
+  /** Filled with each dropped gateway's name and why, for the router to answer with. */
+  dropped?: Map<string, string>,
 ): NativeConfig['gateways'] {
   const merged: NativeConfig['gateways'] = {};
   const owner: Record<string, string> = {};
@@ -998,12 +1000,12 @@ export function mergeTenantGateways(
       if (seen.auth === gateway.auth && seen.credentialSource === gateway.credentialSource) continue;
       conflicted.add(name);
       delete merged[name];
-      log(
-        `gateway "${name}" is defined by two projects with different credentials ` +
+      const why = `gateway "${name}" is defined by two projects with different credentials ` +
         `(${owner[name]}: auth=${seen.auth} source=${seen.credentialSource ?? 'default'}; ` +
         `${id}: auth=${gateway.auth} source=${gateway.credentialSource ?? 'default'}) — ` +
-        'serving neither, since one project\'s credential must not reach the other\'s endpoint',
-      );
+        'serving neither, since one project\'s credential must not reach the other\'s endpoint';
+      dropped?.set(name, why);
+      log(why);
     }
   }
   // Two DIFFERENT names can still share one key variable across projects:
@@ -1021,11 +1023,12 @@ export function mergeTenantGateways(
     }
     delete merged[name];
     delete merged[other];
-    log(
-      `gateways "${other}" (${owner[other]}) and "${name}" (${owner[name]}) would share the key ` +
+    const why = `gateways "${other}" (${owner[other]}) and "${name}" (${owner[name]}) would share the key ` +
       `variable ${keyVar} — serving neither, since one project's credential must not reach the ` +
-      'other\'s endpoint; rename one of them',
-    );
+      'other\'s endpoint; rename one of them';
+    dropped?.set(name, why);
+    dropped?.set(other, why);
+    log(why);
   }
   // Likewise one OAuth credential of each kind per LiteLLM child
   // (CHATGPT_TOKEN_DIR / GITHUB_COPILOT_TOKEN_DIR): every gateway of a kind is
@@ -1043,12 +1046,14 @@ export function mergeTenantGateways(
     const idOf = (name: string): string => identity(name, merged[name]!);
     if (new Set(names.map(idOf)).size <= 1) continue;
     const listed = names.map((name) => `"${name}" (${owner[name]}, ${idOf(name)})`).join(', ');
-    for (const name of names) delete merged[name];
-    log(
-      `gateways with auth = "${auth}" read different credentials — ${listed} — serving none of them, ` +
+    const why = `gateways with auth = "${auth}" read different credentials — ${listed} — serving none of them, ` +
       "since LiteLLM holds one credential of that kind and a project would be served another's " +
-      'account; point them at one credential',
-    );
+      'account; point them at one credential';
+    for (const name of names) {
+      delete merged[name];
+      dropped?.set(name, why);
+    }
+    log(why);
   }
   return merged;
 }
@@ -1104,17 +1109,53 @@ export async function cmdServe(
     throw new Error('sonata serve: no [native] table');
   }
 
+  /**
+   * Gateways serve has dropped, and why. Refreshed by every merge; read per
+   * request by the router, which answers a model on one of them with the
+   * reason instead of forwarding it.
+   */
+  let droppedGateways = new Map<string, string>();
+  const mergeGateways = (log: (line: string) => void): NativeConfig['gateways'] => {
+    const dropped = new Map<string, string>();
+    const gateways = mergeTenantGateways(
+      registry.loadable().map(({ id, config }) => ({ id, gateways: config.native?.gateways ?? {} })),
+      log,
+      (name, gateway) => resolvedOauthIdentity(opts.home, name, gateway),
+      dropped,
+    );
+    droppedGateways = dropped;
+    return gateways;
+  };
   /** Merged gateways across every loadable tenant — what credential resolution and the child env are built from. */
   const mergedNative = (): NativeConfig => ({
     models: {},
-    gateways: mergeTenantGateways(
-      registry.loadable().map(({ id, config }) => ({ id, gateways: config.native?.gateways ?? {} })),
-      (line) => console.error(`sonata serve: ${line}`),
-      (name, gateway) => resolvedOauthIdentity(opts.home, name, gateway),
-    ),
+    gateways: mergeGateways((line) => console.error(`sonata serve: ${line}`)),
     ports,
     generate: {},
   });
+  /**
+   * The tenants as LiteLLM should see them: every model on a dropped gateway
+   * removed. Leaving one in lets LiteLLM serve it from whatever credential it
+   * does hold — for an OAuth kind, another project's account, or a blocking
+   * device-code login.
+   */
+  const servableTenants = () => {
+    mergeGateways(() => { /* logged by mergedNative */ });
+    const dropped = droppedGateways;
+    return registry.loadable().map((tenant) => {
+      const native = tenant.config.native;
+      const keep = <T extends { gateway?: string }>(models: Record<string, T>) =>
+        Object.fromEntries(Object.entries(models).filter(([, model]) => model.gateway === undefined || !dropped.has(model.gateway)));
+      return {
+        ...tenant,
+        config: {
+          ...tenant.config,
+          unifiedModels: keep(tenant.config.unifiedModels),
+          ...(native === undefined ? {} : { native: { ...native, models: keep(native.models) } }),
+        },
+      };
+    });
+  };
   const unionNeedsLitellm = (): boolean => registry.loadable().some(({ config }) => litellmRequired(config));
 
   const litellmBin = managedLitellmPath(opts.home);
@@ -1171,7 +1212,7 @@ export async function cmdServe(
   const respawnTimestamps: number[] = [];
   try {
     const configPath = join(tempDir, 'config.json');
-    writeFileSync(configPath, litellmConfigYamlForTenants(registry.loadable(), masterKey), { mode: 0o600 });
+    writeFileSync(configPath, litellmConfigYamlForTenants(servableTenants(), masterKey), { mode: 0o600 });
 
     let childEnv = buildChildEnv(mergedNative(), opts.home, tempDir);
 
@@ -1324,7 +1365,7 @@ export async function cmdServe(
           console.error(`sonata serve: ${litellmUnavailable}`);
           return;
         }
-        writeFileSync(configPath, litellmConfigYamlForTenants(registry.loadable(), masterKey), { mode: 0o600 });
+        writeFileSync(configPath, litellmConfigYamlForTenants(servableTenants(), masterKey), { mode: 0o600 });
         console.error('sonata serve: a project now routes through LiteLLM — starting it');
         litellmReady = (async () => {
           // A daemon that died without stopping its child leaves that child
@@ -1365,7 +1406,7 @@ export async function cmdServe(
       // restart` or another edit. Left unset here, the next request's
       // comparison still differs and tries the restart again.
       try {
-        writeFileSync(configPath, litellmConfigYamlForTenants(registry.loadable(), masterKey), { mode: 0o600 });
+        writeFileSync(configPath, litellmConfigYamlForTenants(servableTenants(), masterKey), { mode: 0o600 });
         childEnv = buildChildEnv(mergedNative(), opts.home, tempDir);
         // A mixed config restarts litellm for its translated gateways while
         // its direct ones keep serving from `gatewayKeys` — which is read off
@@ -1481,6 +1522,7 @@ export async function cmdServe(
       projectHintToken: ensureRouterToken(opts.home),
       resolveTier: (alias, tenant) => tenant.config === undefined ? undefined : resolveTierAlias(tenant.config, alias),
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
+      gatewayUnavailable: (_tenant, gateway) => droppedGateways.get(gateway),
       resolveNative: (key, tenant) => tenant.config === undefined ? undefined : nativeRouteFor(tenant.config, key),
       // Opt-in only: a captured request is a whole conversation.
       capture400Dir: process.env.SONATA_CAPTURE_400_DIR,
