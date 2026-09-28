@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { spawn as spawnType } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -3259,10 +3259,13 @@ litellm = ${litellmPort}
     }
   });
 
-  it('leaves the running LiteLLM\'s ChatGPT token file alone on a re-merge, and rewrites it on a respawn', async () => {
-    // LiteLLM refreshes the token in CHATGPT_TOKEN_DIR itself. A re-merge
-    // while it runs rebuilt the child env, which rewrote that file from
-    // codex's store — putting codex's older token over the refreshed one.
+  describe('the ChatGPT token file LiteLLM reads', () => {
+    // LiteLLM re-reads CHATGPT_TOKEN_DIR/auth.json on every access token it
+    // needs, refreshes it in place, and ChatGPT rotates refresh tokens — an
+    // old one is refused as `refresh_token_reused`. So the file is written
+    // only when the store's record is newer than what LiteLLM holds, on every
+    // path: startup, an in-place re-merge, and a respawn.
+    const jwt = (exp: number) => `h.${Buffer.from(JSON.stringify({ exp })).toString('base64url')}.s`;
     const machine = (extra: string) => `
 [models."luna"]
 gateway = "codex"
@@ -3277,14 +3280,12 @@ auth = "codex-oauth"
 router = 0
 litellm = ${litellmPort}
 `;
-    writeMachineConfig(machine(''));
-    mkdirSync(join(home, '.codex'), { recursive: true });
-    writeFileSync(join(home, '.codex', 'auth.json'), JSON.stringify({ tokens: { access_token: 'from-codex', refresh_token: 'r' } }));
-    const tempDir = tempDirFor();
-    const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
-    let spawns = 0;
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
+    const writeCodexStore = (tokens: Record<string, string>) => {
+      mkdirSync(join(home, '.codex'), { recursive: true });
+      writeFileSync(join(home, '.codex', 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens }));
+    };
+    const start = async (tempDir: string) => {
+      let spawns = 0;
       vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
       const handle = await cmdServe({
         cwd, home, tempDir, waitForLitellm: async () => {},
@@ -3296,24 +3297,86 @@ litellm = ${litellmPort}
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
       });
-      expect(spawns).toBe(1);
+      return { send, spawns: () => spawns };
+    };
+    let errorSpy: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => { errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {}); });
+    afterEach(() => { errorSpy.mockRestore(); });
+
+    it('leaves a token LiteLLM has refreshed alone, on a re-merge and on a respawn', async () => {
+      writeMachineConfig(machine(''));
+      writeCodexStore({ access_token: jwt(1000), refresh_token: 'from-codex' });
+      const tempDir = tempDirFor();
+      const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
+      const { send, spawns } = await start(tempDir);
+      expect(spawns()).toBe(1);
       expect(readFileSync(tokenFile, 'utf8')).toContain('from-codex');
-      // LiteLLM refreshes its own copy.
-      writeFileSync(tokenFile, '{"refreshed":"by-litellm"}');
+      // LiteLLM refreshes its own copy; the store now holds the older token.
+      const refreshed = JSON.stringify({ access_token: jwt(2000), refresh_token: 'refreshed', expires_at: 2000 });
+      writeFileSync(tokenFile, refreshed);
       // A config edit that moves the fingerprint but not the model registry:
       // an in-place re-merge, no respawn.
       writeMachineConfig(`# edited\n${machine('')}`);
       await send();
-      expect(spawns).toBe(1);
-      expect(readFileSync(tokenFile, 'utf8')).toBe('{"refreshed":"by-litellm"}');
-      // A registry change respawns the child, and the respawn writes it.
+      expect(spawns()).toBe(1);
+      expect(readFileSync(tokenFile, 'utf8')).toBe(refreshed);
+      // A registry change respawns the child, and the respawn must not put the
+      // store's older token back either: its refresh token was rotated away.
       writeMachineConfig(machine('context_window = 64000'));
       await send();
-      expect(spawns).toBe(2);
+      expect(spawns()).toBe(2);
+      expect(readFileSync(tokenFile, 'utf8')).toBe(refreshed);
+    });
+
+    it('writes the file when it is missing', async () => {
+      writeMachineConfig(machine(''));
+      writeCodexStore({ access_token: jwt(1000), refresh_token: 'from-codex' });
+      const tempDir = tempDirFor();
+      const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
+      const { send, spawns } = await start(tempDir);
       expect(readFileSync(tokenFile, 'utf8')).toContain('from-codex');
-    } finally {
-      errorSpy.mockRestore();
-    }
+      rmSync(tokenFile);
+      writeMachineConfig(machine('context_window = 64000'));
+      await send();
+      expect(spawns()).toBe(2);
+      expect(readFileSync(tokenFile, 'utf8')).toContain('from-codex');
+    });
+
+    it('carries a newer `codex login` into the running LiteLLM without a respawn', async () => {
+      // `codex login` is the remedy serve's own error names. The in-place
+      // re-merge it triggers used to write nothing, so LiteLLM kept the old,
+      // revoked refresh token until something else respawned it.
+      writeMachineConfig(machine(''));
+      writeCodexStore({ access_token: jwt(1), refresh_token: 'OLD-REVOKED' });
+      const tempDir = tempDirFor();
+      const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
+      const { send, spawns } = await start(tempDir);
+      expect(readFileSync(tokenFile, 'utf8')).toContain('OLD-REVOKED');
+      writeCodexStore({ access_token: jwt(9_999_999_999), refresh_token: 'NEW-FRESH' });
+      await send();
+      expect(spawns()).toBe(1);
+      expect(readFileSync(tokenFile, 'utf8')).toContain('NEW-FRESH');
+    });
+
+    it('falls back to modification times when neither record carries an expiry', async () => {
+      writeMachineConfig(machine(''));
+      writeCodexStore({ access_token: 'opaque-1', refresh_token: 'from-codex' });
+      const tempDir = tempDirFor();
+      const tokenFile = join(tempDir, 'chatgpt', 'auth.json');
+      const { send, spawns } = await start(tempDir);
+      writeFileSync(tokenFile, '{"refreshed":"by-litellm"}');
+      writeMachineConfig(machine('context_window = 64000'));
+      await send();
+      expect(spawns()).toBe(2);
+      expect(readFileSync(tokenFile, 'utf8')).toBe('{"refreshed":"by-litellm"}');
+      // A store written after LiteLLM's copy wins.
+      writeCodexStore({ access_token: 'opaque-2', refresh_token: 'relogged' });
+      const later = new Date(Date.now() + 60_000);
+      utimesSync(join(home, '.codex', 'auth.json'), later, later);
+      await send();
+      expect(spawns()).toBe(2);
+      expect(readFileSync(tokenFile, 'utf8')).toContain('relogged');
+    });
   });
 
   it('loads the v0.13.1 BYOK pair in one config, drops both gateways, and keeps the rest serving', async () => {
