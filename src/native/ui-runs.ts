@@ -10,6 +10,7 @@
  */
 import { existsSync, realpathSync } from 'node:fs';
 import * as fsp from 'node:fs/promises';
+import { StringDecoder } from 'node:string_decoder';
 import { dirname, join } from 'node:path';
 
 import type { RunSummary } from '../commands/runs.js';
@@ -184,7 +185,7 @@ export function projectDirs(deps: UiDeps): string[] {
  *   `exit !== 0 || no report` rule. Re-deriving it here from report.md
  *   presence badged every clean read-only run and trusted a timed-out one.
  * - `report` follows `readReport`: an empty or whitespace-only report.md is
- *   no report. Decided by reading only until the first non-whitespace byte
+ *   no report. Decided by reading only until the first non-whitespace character
  *   (`hasContent`), so a real report costs one small read.
  *
  * A half-written run directory is skipped rather than failing the page.
@@ -224,7 +225,7 @@ export async function uiRunSummaries(cwd: string): Promise<RunSummary[]> {
 
 /**
  * Whether a file exists and holds anything but whitespace — `readReport`'s
- * test, answered by reading only as far as the first non-whitespace byte.
+ * test, answered by reading only as far as the first non-whitespace character.
  */
 async function hasContent(path: string): Promise<boolean> {
   let handle: fsp.FileHandle;
@@ -234,16 +235,17 @@ async function hasContent(path: string): Promise<boolean> {
     return false;
   }
   try {
+    // Decoded as readReport decodes it, and tested with `\S`: the set a regex
+    // `\s` matches is exactly the set `String.prototype.trim` strips — BOM and
+    // no-break spaces included — so a report of only those is empty here as it
+    // is to `sonata runs`. The decoder carries a character split across two
+    // reads into the next one.
+    const decoder = new StringDecoder('utf8');
     const buf = Buffer.alloc(4096);
     for (;;) {
       const { bytesRead } = await handle.read(buf, 0, buf.length, null);
-      if (bytesRead === 0) return false;
-      // Same set `String.prototype.trim` strips, for the ASCII range; a
-      // multi-byte character is content whichever way it is split.
-      for (let i = 0; i < bytesRead; i++) {
-        const b = buf[i];
-        if (b !== 0x20 && b !== 0x09 && b !== 0x0a && b !== 0x0b && b !== 0x0c && b !== 0x0d) return true;
-      }
+      if (bytesRead === 0) return /\S/.test(decoder.end());
+      if (/\S/.test(decoder.write(buf.subarray(0, bytesRead)))) return true;
     }
   } finally {
     await handle.close();

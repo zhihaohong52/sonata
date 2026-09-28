@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdLog } from '../../src/commands/log.js';
-import { createRun, appendEvents } from '../../src/store.js';
+import { createRun, appendEvents, runDir } from '../../src/store.js';
 
 let cwd: string;
 
@@ -36,6 +36,22 @@ describe('cmdLog', () => {
     const id = newRun();
     appendEvents(cwd, id, ['output']);
     expect(cmdLog({ cwd, id }).text).toContain(`— sonata ${id}: explore on fake via opencode`);
+  });
+
+  it('prints a finished run`s transcript in place of the live event log', () => {
+    // The event log is one screen per poll and can miss a burst; the
+    // transcript is tmux's whole history, captured once the run finished.
+    const id = newRun();
+    appendEvents(cwd, id, ['line 1', 'line 9']);
+    writeFileSync(join(runDir(cwd, id), 'transcript.txt'), 'line 1\nline 2\nline 9\n');
+    const res = cmdLog({ cwd, id });
+    expect(res.text).toMatch(/^line 1\nline 2\nline 9\n\n— sonata /);
+  });
+
+  it('prints the event log for a run with no transcript, as before', () => {
+    const id = newRun();
+    appendEvents(cwd, id, ['live line']);
+    expect(cmdLog({ cwd, id }).text).toMatch(/^live line\n\n— sonata /);
   });
 
   it('says so plainly when a run recorded nothing', () => {
