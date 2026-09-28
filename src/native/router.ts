@@ -1316,19 +1316,45 @@ function litellmBody(body: Buffer): Buffer {
 }
 
 /**
- * What a LiteLLM response says when its ChatGPT login has been refused.
+ * What a LiteLLM response's error message says when its ChatGPT login has
+ * been refused.
  *
  * LiteLLM 1.98.0 never surfaces the refused refresh itself: `get_access_token`
  * catches it, logs "re-login required" to its own stderr (which serve reads —
  * see `LITELLM_CHATGPT_LOGIN_REFUSED`), and falls into a device-code login.
- * What reaches the router is how THAT ends — a 401 "Polling failed: …" or
- * "Timed out waiting for device authorization" (fifteen minutes later), or a
- * 500 "Failed to request device code: …" — captured from the real
- * authenticator in tests/fixtures/litellm/. The refresh wording is kept for
- * any path that does report it.
+ * What reaches the router is how THAT ends, rendered by LiteLLM's proxy into
+ * its error envelope's `error.message`. Measured through a real 1.98.0 proxy
+ * (tests/fixtures/litellm/chatgpt-refresh-refused-proxy.json) the answer is a
+ * 400 whose message is
+ * `litellm.BadRequestError: GetLLMProvider Exception - ` followed by the
+ * authenticator's own `litellm.AuthenticationError: Polling failed: …`,
+ * `litellm.AuthenticationError: Timed out waiting for device authorization`,
+ * or a bare `Failed to request device code: …`. The infix is optional, so the
+ * authenticator's error rendered on its own (`litellm.AuthenticationError:
+ * Polling failed: …`, as it is raised) matches too. Anchored at the start of the
+ * message — never a substring anywhere, since an unrelated upstream error
+ * that merely mentions a re-login must not take ChatGPT down — and consulted
+ * only for a candidate on a codex-oauth gateway.
  */
-const CHATGPT_LOGIN_REFUSED =
-  /refresh token failed|re-login required|refresh_token_reused|Polling failed|Timed out waiting for device authorization|Failed to request device code/i;
+const CHATGPT_LOGIN_REFUSED = new RegExp(
+  '^litellm\\.\\w+Error: (?:GetLLMProvider Exception - )?(?:litellm\\.\\w+Error: )?' +
+  '(?:Polling failed: |Timed out waiting for device authorization|Failed to request device code: )',
+);
+
+/** Whether a LiteLLM error body's envelope message is `CHATGPT_LOGIN_REFUSED`. */
+function chatgptLoginRefused(text: string): boolean {
+  try {
+    const message = (JSON.parse(text) as { error?: { message?: unknown } } | null)?.error?.message;
+    return typeof message === 'string' && CHATGPT_LOGIN_REFUSED.test(message);
+  } catch {
+    return false;
+  }
+}
+
+/** Whether `gateway` is a ChatGPT-subscription gateway in this tenant's config. */
+function isCodexOauth(tenant: RouterTenant, gateway: string | undefined): boolean {
+  return gateway !== undefined && tenant.config?.native?.gateways[gateway]?.auth === 'codex-oauth';
+}
 
 /**
  * Forwards an already-litellm-shaped request (auth swapped, system flattened,
@@ -1341,6 +1367,8 @@ async function forwardToLitellm(
   headers: Record<string, string>,
   req: RouterRequest,
   deps: RouterDeps,
+  /** The candidate is on a codex-oauth gateway: only then is a refused ChatGPT login looked for. */
+  chatgpt = false,
 ): Promise<RouterResponse> {
   try {
     await deps.litellmReady?.();
@@ -1352,17 +1380,19 @@ async function forwardToLitellm(
     // usually means the upstream was overloaded and returned an empty completion
     // rather than a real error. Re-emitting it as 529 (overloaded) lets Claude
     // Code treat it as a retriable backpressure signal rather than a hard fault.
-    // A 500 or 401 is also where LiteLLM reports how its fallback to a
-    // device-code login ended after a ChatGPT refresh it could not make,
-    // which only a re-login and a restart (a fresh seed) can mend.
-    if (response.status === 500 || response.status === 401) {
+    // For a ChatGPT candidate, a 400, 401 or 500 is also where LiteLLM
+    // reports how its fallback to a device-code login ended after a refresh it
+    // could not make, which only a re-login and a restart (a fresh seed) can
+    // mend. Measured, it is a 400.
+    if (response.status === 500 || (chatgpt && (response.status === 400 || response.status === 401))) {
       const responseBodyBuf = response.body === null
         ? Buffer.alloc(0)
         : await bufferBody(responseBody(response.body), deps);
       const text = responseBodyBuf.toString();
-      if (CHATGPT_LOGIN_REFUSED.test(text) && deps.chatgptLoginRefused !== undefined) {
+      const refused = chatgpt && chatgptLoginRefused(text);
+      if (refused && deps.chatgptLoginRefused !== undefined) {
         deps.chatgptLoginRefused();
-      } else if (CHATGPT_LOGIN_REFUSED.test(text)) {
+      } else if (refused) {
         deps.log?.(
           `router: LiteLLM's ChatGPT login was refused by OpenAI (${requestedModel(body) ?? '?'}) — run ` +
           '`codex login` (or `opencode auth login`) and then `sonata restart`: serve copies a ChatGPT token ' +
@@ -1631,7 +1661,7 @@ async function routeTierRequest(
         req,
         deps,
       )
-      : await forwardToLitellm(body, headers, { ...req, body }, deps);
+      : await forwardToLitellm(body, headers, { ...req, body }, deps, isCodexOauth(tenant, gateway));
     // Retry by default; only a request that is wrong *everywhere* is terminal.
     //
     // This is a deny-list on purpose, and it used to be an allow-list of
@@ -2083,6 +2113,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
         ),
         req,
         deps,
+        isCodexOauth(tenant, native?.gateway),
       ),
       {
         startedAt,

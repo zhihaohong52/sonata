@@ -759,6 +759,12 @@ interface ChildEnvResolution {
  */
 interface CredentialMemory {
   lastGood: Map<string, Record<string, string>>;
+  /**
+   * The store each `lastGood` entry was read from, under the same key and the
+   * same lifetime: a store skipped for staying unreadable keeps a lineage's
+   * credential only when it is the store that credential came from.
+   */
+  lastGoodSource: Map<string, string>;
   seeds: Map<string, ChatGptSeed | string>;
   /** opencode.db's credential row count at the last read; see `opencodeDbRead`. */
   opencodeDb: { rows?: number };
@@ -767,8 +773,33 @@ interface CredentialMemory {
 }
 
 function newCredentialMemory(): CredentialMemory {
-  return { lastGood: new Map(), seeds: new Map(), opencodeDb: {}, unreadable: newUnreadableMemory() };
+  return { lastGood: new Map(), lastGoodSource: new Map(), seeds: new Map(), opencodeDb: {}, unreadable: newUnreadableMemory() };
 }
+
+/**
+ * The ChatGPT token in a LiteLLM token directory, as a comparable string: a
+ * sha256 of its `auth.json`'s `refresh_token`, else its `access_token` (the
+ * record LiteLLM's authenticator reads and writes). Undefined when there is
+ * no directory, no file, or no token in it. A hash of the token and not the
+ * file, so LiteLLM rewriting other fields — `device_code_requested_at` —
+ * leaves it unchanged.
+ */
+function chatgptTokenHash(dir: string | undefined): string | undefined {
+  if (dir === undefined) return undefined;
+  try {
+    const record: unknown = JSON.parse(readFileSync(join(dir, 'auth.json'), 'utf8'));
+    if (record === null || typeof record !== 'object') return undefined;
+    const { refresh_token: refresh, access_token: access } = record as Record<string, unknown>;
+    const token = typeof refresh === 'string' && refresh !== '' ? refresh
+      : typeof access === 'string' && access !== '' ? access : undefined;
+    return token === undefined ? undefined : createHash('sha256').update(token).digest('hex');
+  } catch {
+    return undefined;
+  }
+}
+
+/** A store's read, tagged with which store it is, as `resolveChildEnv` chains them. */
+type ChainStore = StoreRead & { id: string };
 
 function lineageKey(name: string, gateway: { auth?: string; credentialSource?: string }): string {
   return `${name}|${gateway.auth ?? 'api-key'}|${gateway.credentialSource ?? 'default'}`;
@@ -853,12 +884,12 @@ function resolveChildEnv(
   // LiteLLM still needs PATH for executable lookup; no other parent values are forwarded.
   const childEnv: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
 
-  // Each store read at most once per build.
-  const reads = new Map<string, StoreRead>();
-  const read = (id: string, how: () => StoreRead): StoreRead => {
+  // Each store read at most once per build, tagged with which store it is.
+  const reads = new Map<string, ChainStore>();
+  const read = (id: string, how: () => StoreRead): ChainStore => {
     const cached = reads.get(id);
     if (cached !== undefined) return cached;
-    const fresh = how();
+    const fresh = { ...how(), id };
     reads.set(id, fresh);
     return fresh;
   };
@@ -876,7 +907,7 @@ function resolveChildEnv(
     read('opencode', () => fileRead(opencodeAuthPath(home))),
   ];
   /** opencode's stores an entry's answer depends on: the table alone when it answered, since it wins over auth.json. */
-  const opencodeChain = (integration: string): StoreRead[] => {
+  const opencodeChain = (integration: string): ChainStore[] => {
     const [db, file] = opencodeStores();
     return opencodeCredentialOrigin(home, integration) === 'opencode.db' ? [db] : [db, file];
   };
@@ -888,12 +919,16 @@ function resolveChildEnv(
    * is neither — refused for now when a store could not be read (whatever a
    * later store answered), else reported with `missing` (a gateway that needs
    * no credential passes none).
+   *
+   * `chain` is the stores the lookup consulted, in order, ending at the one
+   * that answered when `resolved` is set; that last store is recorded as the
+   * source of the entries kept.
    */
   const settle = (
     name: string,
     lineage: string,
     resolved: Record<string, string> | undefined,
-    chain: StoreRead[],
+    chain: ChainStore[],
     missing: string | undefined,
   ): Record<string, string> | undefined => {
     live.add(lineage);
@@ -921,14 +956,18 @@ function resolveChildEnv(
       });
       return undefined;
     }
-    const skipped = chain.find((store) => store.skipped !== undefined);
+    // A store skipped for staying unreadable reads as absent, and resolution
+    // goes on from the stores that remain — with one exception: when it is
+    // the store this lineage's last credential came from. That store not
+    // reading is not a logout — it says nothing about the login it holds —
+    // so the lineage keeps what it resolved to and does not end, and the file
+    // reading again restarts and re-seeds nothing. A skipped store the
+    // credential did NOT come from says nothing about that credential either:
+    // keeping it there pinned a key rotated or removed in the store that
+    // actually holds it.
+    const source = memory.lastGoodSource.get(lineage);
+    const skipped = chain.find((store) => store.skipped !== undefined && store.id === source);
     if (skipped !== undefined && last !== undefined) {
-      // A store skipped for staying unreadable is not a logout: it says
-      // nothing about the login it holds. A gateway that has resolved keeps
-      // what it resolved to — neither dropped nor handed whatever a later
-      // store holds — and its lineage does not end, so the file reading again
-      // restarts and re-seeds nothing. Only one that has never resolved falls
-      // through, as it would for a store that is not there.
       transient.push({
         gateway: name,
         message: `gateway "${name}": its credential store has stayed unreadable (${skipped.skipped}) — ` +
@@ -938,6 +977,9 @@ function resolveChildEnv(
     }
     if (resolved !== undefined) {
       memory.lastGood.set(lineage, resolved);
+      const answeredBy = chain.at(-1);
+      if (answeredBy === undefined) memory.lastGoodSource.delete(lineage);
+      else memory.lastGoodSource.set(lineage, answeredBy.id);
       return resolved;
     }
     if (last !== undefined && chain.some((store) => store.emptied === true)) {
@@ -953,6 +995,7 @@ function resolveChildEnv(
       return last;
     }
     memory.lastGood.delete(lineage);
+    memory.lastGoodSource.delete(lineage);
     memory.seeds.delete(lineage);
     if (missing !== undefined) failures.push({ gateway: name, message: missing });
     return undefined;
@@ -960,8 +1003,8 @@ function resolveChildEnv(
 
   // The stores a key lookup's answer depends on: the one that answered and
   // every store searched before it, or all of them when none answered.
-  const keyChain = (answeredBy: string | undefined, order: ('sonata' | 'opencode')[]): StoreRead[] => {
-    const chain: StoreRead[] = [];
+  const keyChain = (answeredBy: string | undefined, order: ('sonata' | 'opencode')[]): ChainStore[] => {
+    const chain: ChainStore[] = [];
     for (const store of order) {
       if (store === 'sonata') {
         chain.push(keysStore());
@@ -1015,7 +1058,7 @@ function resolveChildEnv(
     const lineage = lineageKey(name, gateway);
     if (gateway.credentialSource === 'sonata') {
       const dir = credentialDir(home, name);
-      const store = fileStoreRead(join(dir, 'auth.json'));
+      const store = { ...fileStoreRead(join(dir, 'auth.json')), id: join(dir, 'auth.json') };
       const entries = settle(
         name, lineage, store.state === 'ok' ? { CHATGPT_TOKEN_DIR: dir } : undefined, [store],
         `gateway "${name}" takes its credential from sonata but none is stored — ` +
@@ -1069,7 +1112,7 @@ function resolveChildEnv(
     const lineage = lineageKey(name, gateway);
     if (gateway.credentialSource === 'sonata') {
       const dir = credentialDir(home, name);
-      const store = fileStoreRead(join(dir, 'api-key.json'));
+      const store = { ...fileStoreRead(join(dir, 'api-key.json')), id: join(dir, 'api-key.json') };
       const entries = settle(
         name, lineage, store.state === 'ok' ? { GITHUB_COPILOT_TOKEN_DIR: dir } : undefined, [store],
         `gateway "${name}" takes its credential from sonata but none is stored — ` +
@@ -1097,6 +1140,9 @@ function resolveChildEnv(
 
   for (const lineage of [...memory.lastGood.keys()]) {
     if (!live.has(lineage)) memory.lastGood.delete(lineage);
+  }
+  for (const lineage of [...memory.lastGoodSource.keys()]) {
+    if (!live.has(lineage)) memory.lastGoodSource.delete(lineage);
   }
   for (const lineage of [...memory.seeds.keys()]) {
     if (!live.has(lineage)) memory.seeds.delete(lineage);
@@ -1555,16 +1601,19 @@ export async function cmdServe(
    * from it. Without this, each request hung in LiteLLM's device-code login
    * for up to fifteen minutes.
    *
-   * Keyed on the token that was refused: the directory the child was using
-   * and, for a sonata-owned login whose directory never changes, its
-   * `auth.json` as it stood. A deliberate spawn clears it only when that
-   * token is gone — the gateway seeded into a new directory (a lineage
-   * change), or a sonata-owned re-login rewriting the file. Any other restart
-   * — a model-list edit, another project's gateway — spawns LiteLLM on the
-   * same refused token, and clearing on it served a device-code hang again.
+   * Keyed on the token that was refused (`chatgptTokenHash`: the refresh
+   * token in the child's `auth.json`, else its access token), never on the
+   * file or its directory. A deliberate spawn clears it only when the
+   * directory it starts LiteLLM on holds a readable token that differs — a
+   * lineage seeded into a new directory, or a sonata-owned re-login. Any
+   * other restart — a model-list edit, another project's gateway, a spawn
+   * with no ChatGPT gateway at all — keeps it: LiteLLM would start on the
+   * same refused token, and clearing then served a device-code hang again.
+   * Keyed on the file's stat, it was cleared by LiteLLM's own rewrite of
+   * `auth.json` (`device_code_requested_at`) moments after the refusal.
    * A fresh process (`sonata restart`) starts with none.
    */
-  let chatgptLoginRefused: { message: string; dir: string | undefined; file?: string } | undefined;
+  let chatgptLoginRefused: { message: string; token: string | undefined } | undefined;
   /** The ChatGPT token directory the current child was spawned into; set once the child bookkeeping exists. */
   let currentChatgptTokenDir: () => string | undefined = () => undefined;
   const markChatgptLoginRefused = (): void => {
@@ -1577,12 +1626,10 @@ export async function cmdServe(
       ? sonataOwned.map((name) => `\`sonata auth login ${name}\``).join(' / ')
       : '`codex login` (or `opencode auth login`)';
     const remedy = `LiteLLM's ChatGPT login was refused by OpenAI — run ${relogin} and then \`sonata restart\``;
-    const dir = currentChatgptTokenDir();
     chatgptLoginRefused = {
       message: `gateway ${names}: ${remedy} (LiteLLM had fallen back to an interactive device-code ` +
         'login, which would hold each request for up to fifteen minutes)',
-      dir,
-      ...(sonataOwned.length > 0 && dir !== undefined ? { file: statSignal(join(dir, 'auth.json')) } : {}),
+      token: chatgptTokenHash(currentChatgptTokenDir()),
     };
     console.error(`sonata serve: ${remedy} — affects gateway ${names}`);
   };
@@ -1639,9 +1686,10 @@ export async function cmdServe(
             if (held === undefined) unknown.add(name);
             return held;
           }
-          // Skipped for staying unreadable: a gateway that has resolved keeps
-          // the login it was reading; one that never has falls through.
-          if (codex.skipped !== undefined && held !== undefined) return held;
+          // Skipped for staying unreadable: a gateway that was reading codex's
+          // login keeps it; any other falls through, codex's file reading as
+          // absent — the same rule `resolveChildEnv` settles credentials by.
+          if (codex.skipped !== undefined && held === 'codex store') return held;
         }
         const identity = resolvedOauthIdentity(opts.home, name, gateway);
         lastOauthIdentity.set(lineage, identity);
@@ -1704,18 +1752,22 @@ export async function cmdServe(
    * alone would re-merge on nearly every request; the rows are what decide
    * whether anything a gateway reads has changed. A read that fails keeps the
    * last stamp and is retried on the next change, so a moment's lock is not
-   * a login changing.
+   * a login changing. The database's mode is part of the signal too: a
+   * `chmod` moves no rows, so without it a database made unreadable (or
+   * readable again) was never re-read.
    */
   let opencodeDbStamp: { stat: string; stamp: string } | undefined;
   const opencodeDbSignal = (): string => {
     const path = opencodeDbPath(opts.home);
     const stat = `${statSignal(path)}|${statSignal(`${path}-wal`)}`;
+    let mode = '-';
+    try { mode = String(statSync(path).mode); } catch { /* absent: no mode */ }
     if (opencodeDbStamp?.stat !== stat) {
       const stamp = opencodeCredentialStamp(opts.home);
       if (stamp !== 'unreadable') opencodeDbStamp = { stat, stamp };
-      else return opencodeDbStamp?.stamp ?? stamp;
+      else return `${mode}:${opencodeDbStamp?.stamp ?? stamp}`;
     }
-    return opencodeDbStamp.stamp;
+    return `${mode}:${opencodeDbStamp.stamp}`;
   };
   /**
    * What the gateway merge depends on, as a cheap comparable string: the
@@ -2184,15 +2236,13 @@ export async function cmdServe(
     const spawnLitellmChild = (deliberate = true): SpawnedLitellm => {
       if (deliberate) {
         seedTokenDirs();
-        // Cleared only when this spawn no longer holds the refused token: a
-        // new directory, or a sonata-owned login rewritten in place. A crash
-        // respawn, or a restart for anything else, reuses it and keeps it.
+        // Cleared only when this spawn starts LiteLLM on a token that is
+        // readable and not the refused one. None at all — no ChatGPT gateway
+        // just now, or a file that cannot be read — says nothing, and keeps it.
         const refused = chatgptLoginRefused;
         if (refused !== undefined) {
-          const dir = childEnv.CHATGPT_TOKEN_DIR;
-          const reLoggedIn = refused.file !== undefined && dir !== undefined
-            && statSignal(join(dir, 'auth.json')) !== refused.file;
-          if (dir !== refused.dir || reLoggedIn) chatgptLoginRefused = undefined;
+          const token = chatgptTokenHash(childEnv.CHATGPT_TOKEN_DIR);
+          if (token !== undefined && token !== refused.token) chatgptLoginRefused = undefined;
         }
       }
       const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(

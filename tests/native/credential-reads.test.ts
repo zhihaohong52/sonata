@@ -89,6 +89,38 @@ describe('boundUnreadable', () => {
     expect(boundUnreadable(path, jsonStoreRead(path), memory, t0 + W + 3000).state).toBe('unreadable');
   });
 
+  it('starts a new run after a quiet gap, so a torn read then another later is torn, not skipped', () => {
+    // The run's start was reset only by a clean read: a torn read at startup
+    // and a second torn write fifteen idle seconds later read as one run ten
+    // seconds long, and the second — a real write in progress — was skipped.
+    const path = join(dir, 'auth.json');
+    const memory = newUnreadableMemory();
+    const t0 = Date.now();
+    const touch = (at: number, text: string) => {
+      writeFileSync(path, text);
+      utimesSync(path, at / 1000, at / 1000);
+    };
+    touch(t0, '{"a');
+    expect(boundUnreadable(path, jsonStoreRead(path), memory, t0).state).toBe('unreadable');
+    touch(t0 + 15_000, '{"ab');
+    expect(boundUnreadable(path, jsonStoreRead(path), memory, t0 + 15_000).state).toBe('unreadable');
+    expect(memory.torn).toBe(2);
+  });
+
+  it('warns once for a file that stays broken, however far apart it is read', () => {
+    const path = join(dir, 'auth.json');
+    writeFileSync(path, '{');
+    const old = (Date.now() - 3 * W) / 1000;
+    utimesSync(path, old, old);
+    const memory = newUnreadableMemory();
+    const warnings: string[] = [];
+    const t0 = Date.now();
+    for (let i = 0; i < 3; i++) {
+      expect(boundUnreadable(path, jsonStoreRead(path), memory, t0 + i * 2 * W, (l) => warnings.push(l)).state).toBe('absent');
+    }
+    expect(warnings).toHaveLength(1);
+  });
+
   it('forgets a file that reads cleanly, so its next failure starts fresh', () => {
     const path = join(dir, 'auth.json');
     writeFileSync(path, '{}');
