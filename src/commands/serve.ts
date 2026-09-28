@@ -19,6 +19,7 @@ import { chatgptAccountId, codexAuthPath, opencodeAuthPath, readChatGptOAuth, re
 import { opencodeCredentialOrigin, opencodeCredentialStamp, opencodeDbPath } from '../native/opencode-store.js';
 import { credentialDir } from '../native/oauth-login.js';
 import { readCopilotToken } from '../native/copilot-auth.js';
+import { withReadSnapshot } from '../native/read-snapshot.js';
 import { envVarForGateway, litellmConfigForTenants, litellmConfigYamlForTenants } from '../native/litellm.js';
 import { litellmRequired, transportFor } from '../native/providers.js';
 import { litellmStatus, managedLitellmPath } from '../native/litellm-venv.js';
@@ -866,18 +867,37 @@ function readChatGptWithIdentity(
  * from the later store. Without a memory — every caller but `cmdServe` —
  * nothing is remembered.
  */
+interface ResolveChildEnvOptions {
+  memory?: CredentialMemory;
+  chatgptTokenDir?: string;
+  /** The clock `boundUnreadable` measures against; with a memory only. */
+  now?: () => number;
+  /** Where a store skipped for being steadily unreadable is reported, once. */
+  warn?: (line: string) => void;
+}
+
+/**
+ * Every store is read once for the whole build (`withReadSnapshot`): the read
+ * that classifies a store (`jsonStoreRead`, `opencodeDbRead`) and the reads
+ * that parse it (`readCodexOAuth`, the opencode and sonata key readers) see
+ * the same bytes. Read separately, a write landing between them classified a
+ * store as answering and parsed it as holding nothing — a logout, which
+ * ended the login and restarted LiteLLM for a write still in progress.
+ */
 function resolveChildEnv(
   native: NativeConfig,
   home: string,
   tempDir: string,
-  opts: {
-    memory?: CredentialMemory;
-    chatgptTokenDir?: string;
-    /** The clock `boundUnreadable` measures against; with a memory only. */
-    now?: () => number;
-    /** Where a store skipped for being steadily unreadable is reported, once. */
-    warn?: (line: string) => void;
-  } = {},
+  opts: ResolveChildEnvOptions = {},
+): ChildEnvResolution {
+  return withReadSnapshot(() => resolveChildEnvFromSnapshot(native, home, tempDir, opts));
+}
+
+function resolveChildEnvFromSnapshot(
+  native: NativeConfig,
+  home: string,
+  tempDir: string,
+  opts: ResolveChildEnvOptions,
 ): ChildEnvResolution {
   const bounded = opts.memory !== undefined;
   const memory = opts.memory ?? newCredentialMemory();
@@ -1712,7 +1732,7 @@ export async function cmdServe(
   const mergeGateways = (
     log: (line: string) => void,
     loaded: ReturnType<TenantRegistry['loadable']> = registry.loadable(),
-  ): NativeConfig['gateways'] => {
+  ): NativeConfig['gateways'] => withReadSnapshot(() => {
     const dropped = new Map<string, string>();
     const unknown = new Set<string>();
     const gateways = mergeTenantGateways(
@@ -1752,7 +1772,7 @@ export async function cmdServe(
     droppedGateways = dropped;
     lastMergedGateways = gateways;
     return gateways;
-  };
+  });
   /** Merged gateways across every loadable tenant — what credential resolution and the child env are built from. */
   const mergedNative = (
     log: (line: string) => void = (line) => console.error(`sonata serve: ${line}`),
@@ -2005,8 +2025,11 @@ export async function cmdServe(
     };
 
     const tornAtStart = credentialMemory.unreadable.torn;
-    const startupNative = mergedNative();
-    const startup = buildChildEnv(startupNative);
+    // The merge and the build read the stores once, together (`withReadSnapshot`).
+    const { startupNative, startup } = withReadSnapshot(() => {
+      const native = mergedNative();
+      return { startupNative: native, startup: buildChildEnv(native) };
+    });
     /** Whether a store read as mid-write since `before` — a build that must be retried, never committed. */
     const readTorn = (before: number): boolean => credentialMemory.unreadable.torn !== before;
     const startupTorn = readTorn(tornAtStart);
@@ -2128,7 +2151,10 @@ export async function cmdServe(
       const now = gatewayPlanInputs();
       if (now === planFingerprint) return;
       const tornBefore = credentialMemory.unreadable.torn;
-      const cfg = now === failedFingerprint ? mergedNative(() => { /* logged by the first attempt */ }) : mergedNative();
+      const { cfg, built } = withReadSnapshot(() => {
+        const merged = now === failedFingerprint ? mergedNative(() => { /* logged by the first attempt */ }) : mergedNative();
+        return { cfg: merged, built: buildChildEnv(merged) };
+      });
       // Writes nothing: a token directory belongs to the running child. A
       // store whose login has changed is read here, and the plan snapshot the
       // next model-change check compares then carries the new seed
@@ -2142,7 +2168,7 @@ export async function cmdServe(
       // another project dropped would otherwise be sent that project's key.
       // With no key it is recorded as failed, and its request is answered
       // with a 502 naming the missing credential without being forwarded.
-      const { env, failures, transient } = buildChildEnv(cfg);
+      const { env, failures, transient } = built;
       childEnv = env;
       applyCredentialFailures(failures, cfg);
       reportCredentialFailures([...failures, ...transient]);
@@ -2374,8 +2400,11 @@ export async function cmdServe(
     // every request already awaits before reaching litellm.
     /** The child env for a (re)spawn, resolved per gateway; failures recorded and reported, never thrown. */
     const rebuildChildEnv = (): void => {
-      const cfg = mergedNative();
-      const { env, failures, transient } = buildChildEnv(cfg);
+      const { cfg, built } = withReadSnapshot(() => {
+        const merged = mergedNative();
+        return { cfg: merged, built: buildChildEnv(merged) };
+      });
+      const { env, failures, transient } = built;
       childEnv = env;
       applyCredentialFailures(failures, cfg);
       reportCredentialFailures([...failures, ...transient]);

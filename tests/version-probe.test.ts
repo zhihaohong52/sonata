@@ -2,13 +2,19 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PROBE_MAX_BUFFER, runProbe } from '../src/version-probe.js';
+import { PROBE_MAX_BUFFER, VERSION_PROBE_TIMEOUT_MS, runProbe } from '../src/version-probe.js';
 import { probeVersion } from '../src/detect.js';
 
 // A bound that fires is only half of a bound: the probe also has to SETTLE.
 // execFile's timeout sends SIGTERM to the direct child and then waits for its
 // stdio to close — so a binary that ignores TERM, or leaves a grandchild
 // holding stdout, kept a "bounded" probe hanging past its bound.
+//
+// Wall-clock bounds here are proofs, not latency checks: each one sits far
+// below what the bug would cost (the stubs' `sleep 30`, or a timeout set well
+// above the bound), so it can be generous without losing what it proves. A
+// probe that merely has to answer gets the real default bound, not a tight one
+// that turns a loaded machine into a failure.
 let bin: string;
 const stub = (name: string, body: string) => {
   writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
@@ -37,30 +43,35 @@ const settlesWithin = async <T>(promise: Promise<T>, ms: number): Promise<number
 
 describe('runProbe', () => {
   it('returns stdout from a binary that answers', async () => {
-    expect((await runProbe(join(bin, 'works'), ['--version'], { timeoutMs: 5_000 })).stdout.trim()).toBe('works 1.2.3');
+    // `resolves` rather than awaiting: a rejection is reported with its own
+    // message (killed, code, stderr), not as a TypeError on `.stdout`.
+    await expect(runProbe(join(bin, 'works'), ['--version'], { timeoutMs: VERSION_PROBE_TIMEOUT_MS }))
+      .resolves.toMatchObject({ stdout: 'works 1.2.3\n' });
   });
 
   it('settles a binary that traps TERM and sleeps, and reports it killed', async () => {
     const probe = runProbe(join(bin, 'stubborn'), ['--version'], { timeoutMs: 300 });
     await expect(probe).rejects.toMatchObject({ killed: true });
-    await settlesWithin(runProbe(join(bin, 'stubborn'), ['--version'], { timeoutMs: 300 }), 3_000);
+    // A probe that waited on the grandchild would take its `sleep 30`.
+    await settlesWithin(runProbe(join(bin, 'stubborn'), ['--version'], { timeoutMs: 300 }), 10_000);
   });
 
   it('settles when a grandchild still holds stdout', async () => {
-    // The bound is long, so settling fast proves it settled on the child's
-    // exit — not on the timeout killing the group.
+    // The timeout (60 s) and the grandchild's `sleep 30` are both far past the
+    // bound (15 s), so settling within it proves it settled on the child's
+    // exit — not on the pipe closing, nor on the timeout killing the group.
     const start = Date.now();
-    const result = await runProbe(join(bin, 'leaves-child'), ['--version'], { timeoutMs: 20_000 });
-    expect(Date.now() - start).toBeLessThan(3_000);
+    const result = await runProbe(join(bin, 'leaves-child'), ['--version'], { timeoutMs: 60_000 });
+    expect(Date.now() - start).toBeLessThan(15_000);
     expect(result.stdout.trim()).toBe('hi');
   });
 
   it('reports a missing binary as ENOENT', async () => {
-    await expect(runProbe(join(bin, 'nope'), [], { timeoutMs: 1_000 })).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(runProbe(join(bin, 'nope'), [], { timeoutMs: VERSION_PROBE_TIMEOUT_MS })).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('reports a non-zero exit with its code and stderr', async () => {
-    await expect(runProbe(join(bin, 'fails'), [], { timeoutMs: 1_000 }))
+    await expect(runProbe(join(bin, 'fails'), [], { timeoutMs: VERSION_PROBE_TIMEOUT_MS }))
       .rejects.toMatchObject({ code: 3, stderr: expect.stringContaining('Error: boom') });
   });
 });
@@ -71,7 +82,8 @@ describe('probeVersion settles a stubborn binary', () => {
     const start = Date.now();
     const probe = await probeVersion('stubborn', env, 300);
     expect(probe.state).toBe('broken');
-    expect(Date.now() - start).toBeLessThan(3_000);
+    // Far below the stub's `sleep 30`, which is what not settling would cost.
+    expect(Date.now() - start).toBeLessThan(10_000);
   });
 });
 
@@ -116,7 +128,8 @@ await runProbe(${JSON.stringify(sleeper)}, [], { timeoutMs: 30_000 }).catch(() =
     parent.kill('SIGINT');
     await exited;
     const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-    const deadline = Date.now() + 3_000;
+    // A latency bound: the probe group is signalled, and dies well before its `sleep 30`.
+    const deadline = Date.now() + 10_000;
     while (alive(probePid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
     expect(alive(probePid)).toBe(false);
   }, 30_000);
