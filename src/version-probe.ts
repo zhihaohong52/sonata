@@ -88,10 +88,28 @@ export function runProbe(
       killed = true;
       killGroup();
     }, opts.timeoutMs);
+    // The probe runs in its own process group (detached), so the terminal's
+    // Ctrl-C no longer reaches it. Forward SIGINT/SIGTERM to that group while
+    // it runs; then, if nothing else was listening, re-raise so this process
+    // gets the default handling it would have had without our listener.
+    const forward = (signal: NodeJS.Signals) => {
+      killGroup();
+      unforward();
+      if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+    };
+    const onSigint = () => forward('SIGINT');
+    const onSigterm = () => forward('SIGTERM');
+    const unforward = () => {
+      process.off('SIGINT', onSigint);
+      process.off('SIGTERM', onSigterm);
+    };
+    process.on('SIGINT', onSigint);
+    process.on('SIGTERM', onSigterm);
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      unforward();
       fn();
     };
     child.on('error', (error: ProbeError) => finish(() => { release(); reject(error); }));

@@ -90,3 +90,31 @@ describe('runProbe — output cap', () => {
   });
 });
 
+describe('runProbe — Ctrl-C reaches the probe', () => {
+  it('forwards SIGINT to the probe group, then lets the parent exit as it would have', async () => {
+    const { spawn } = await import('node:child_process');
+    const { existsSync, readFileSync } = await import('node:fs');
+    const pidFile = join(bin, 'sleeper.pid');
+    const sleeper = stub('sleeper', `echo $$ > ${pidFile}\nsleep 30`);
+    const script = join(bin, 'run-probe.mts');
+    writeFileSync(script, `
+import { runProbe } from ${JSON.stringify(join(process.cwd(), 'src/version-probe.ts'))};
+await runProbe(${JSON.stringify(sleeper)}, [], { timeoutMs: 30_000 }).catch(() => {});
+`);
+    const parent = spawn(join(process.cwd(), 'node_modules/.bin/tsx'), [script], { stdio: 'ignore' });
+    const until = Date.now() + 15_000;
+    while (!existsSync(pidFile) || readFileSync(pidFile, 'utf8').trim() === '') {
+      if (Date.now() > until) throw new Error('probe never started');
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const probePid = Number(readFileSync(pidFile, 'utf8').trim());
+    const exited = new Promise<number | null>((resolve) => parent.on('exit', (_code, signal) => resolve(signal === null ? 0 : 1)));
+    // tsx runs the script in a child node; signal the whole tree's leader.
+    parent.kill('SIGINT');
+    await exited;
+    const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const deadline = Date.now() + 3_000;
+    while (alive(probePid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    expect(alive(probePid)).toBe(false);
+  }, 30_000);
+});
