@@ -126,10 +126,22 @@ the review doc's Backlog note):
   change and could not resolve a key (a sonata-sourced gateway with nothing
   stored yet), it kept the previous credentials — so a project that had just
   taken over a gateway name another project dropped was sent that project's
-  key. The direct keys are now cleared on such a failure (the request fails
-  upstream with a 401), the rebuild is retried on the next request so a later
-  `sonata auth add` is picked up without a restart, and the failure is logged
-  once rather than on every request.
+  key. Each gateway's credential is now resolved on its own: the one that
+  failed is left without a key (its request fails upstream with a 401) while
+  every other gateway, in every project, keeps its own. The rebuild is retried
+  on the next request so a later `sonata auth add` is picked up without a
+  restart, and each failure is logged once rather than on every request.
+- **One project's missing login no longer stops LiteLLM for every project.**
+  A gateway whose credential could not be found (a codex-oauth gateway with
+  no login, a sonata-sourced key not yet added) made every LiteLLM start and
+  restart fail, so no project's new model was loaded, the router logged the
+  failed restart on every request, and a registered session's missing login
+  even stopped `sonata serve` from starting. That gateway's models are now left
+  out of LiteLLM, like a dropped gateway's, and a request for one answers a
+  502 naming the gateway and the command that fixes it; everything else keeps
+  serving. Once the credential appears, the next request restarts LiteLLM with
+  those models. Startup still refuses when the machine config's own gateway
+  has no credential.
 - **`codex login` while the router runs now reaches LiteLLM.** Logging in can
   resolve two conflicting ChatGPT gateways to one account and un-drop them,
   but LiteLLM was only regenerated when a config file changed — so its model
@@ -141,7 +153,11 @@ the review doc's Backlog note):
   Its per-request check of which projects it knows re-parsed `sessions.json`
   and re-resolved a config for each session record, costing 53 ms per request
   (Anthropic passthrough included) with 256 projects and 2000 sessions. It
-  now does that once per change to the file: 0.7 ms on the same machine.
+  now parses the file once per change to it and resolves each distinct
+  project directory once per request: 6.4 ms on the same machine. The
+  resolution itself is not cached, so a project that runs `sonata init` after
+  its session registered is picked up without `sessions.json` changing, and
+  a failed read of `sessions.json` is never kept.
 - **Ctrl-C during `sonata init` or `sonata doctor` exits again while harness
   versions are being probed.** The probes run side by side, and each one
   mistook the others' signal forwarding for the command's own handling — so
@@ -158,10 +174,15 @@ the review doc's Backlog note):
 - **A tier whose every model is on a dropped gateway says so even while
   LiteLLM is unavailable.** It used to answer "run `sonata litellm install`",
   which would not have made any of them servable.
-- **A config edit while the router runs no longer overwrites LiteLLM's
-  refreshed ChatGPT or Copilot token.** Re-reading the configs rewrote the
-  token file LiteLLM keeps refreshing, from the login store's possibly older
-  copy. The file is now written only when LiteLLM is started or restarted.
+- **A config edit or a LiteLLM restart no longer overwrites LiteLLM's
+  refreshed ChatGPT token, and a `codex login` while serving reaches it.**
+  Re-reading the configs rewrote the token file LiteLLM keeps refreshing from
+  the login store's possibly older copy, whose refresh token ChatGPT had
+  already rotated away. The file is now written only when it is missing or
+  the store's login is newer (a later expiry), so a fresh `codex login` is
+  picked up by the running LiteLLM without a restart. Copilot's token carries
+  no expiry to compare and is still written only when LiteLLM is started or
+  restarted.
 
 ## [0.13.1] - 2026-09-27
 
