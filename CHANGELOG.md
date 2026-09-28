@@ -184,7 +184,7 @@ the review doc's Backlog note):
   never dated more than a few seconds back: FAT stores mtime to 2 s, and a
   file server's clock can lag the host's, so a newer mtime is no evidence
   and such a file is torn on its first read, then judged by its content
-  (costing one refused request). A first-sight skip is logged as the file's
+  (refusing every request within the following second, not just one). A first-sight skip is logged as the file's
   age, never as content watched for that long. A
   file rewritten with different broken bytes on every read stays torn as
   long as that goes on (it cannot be told from a write in progress). A
