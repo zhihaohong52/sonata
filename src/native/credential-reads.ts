@@ -14,6 +14,7 @@
  * Reads only; nothing here logs a value, and a detail names a path and an
  * error code, never content.
  */
+import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 
 import { opencodeDbPath } from './opencode-store.js';
@@ -138,7 +139,10 @@ function countCredentialRows(path: string): { rows?: number; missingTable?: true
 }
 
 /**
- * How long a store that exists but cannot be read counts as mid-write.
+ * How long a store that exists but cannot be read counts as mid-write, when
+ * there are no bytes to compare: a read error on a file (EACCES, EISDIR), or
+ * a failed query on opencode.db. A file whose bytes were read but did not
+ * parse is judged by whether those bytes move instead (`TORN_REPEAT_MS`).
  *
  * codex rewrites `auth.json` by truncating and writing, so a torn read is a
  * moment, and treating it as "no login" dropped gateways and restarted
@@ -150,13 +154,24 @@ function countCredentialRows(path: string): { rows?: number; missingTable?: true
  */
 export const UNREADABLE_STORE_WINDOW_MS = 10_000;
 
+/**
+ * How long a file may hold the same unparseable bytes and still count as
+ * mid-write. A writer does not hold one partial state for a second.
+ */
+export const TORN_REPEAT_MS = 1_000;
+
+/** When `boundUnreadable` stops treating a file as mid-write, in words, for the messages that promise it. */
+export const UNREADABLE_SKIP_RULE = `once it stops changing (the same unparseable content ${TORN_REPEAT_MS / 1000}s ` +
+  `apart), or once a read error has lasted ${UNREADABLE_STORE_WINDOW_MS / 1000}s`;
+
 /** What `boundUnreadable` remembers between reads; one per process, shared by every caller. */
 export interface UnreadableMemory {
   /**
-   * A file store's stat at its last unreadable read, when that last changed,
-   * when its current run of failed reads began, and when the last of them was.
+   * A file store's last failed read: the hash of the bytes it returned (none
+   * for a read error), when those bytes — or, with none, the run of read
+   * errors — were first seen, and whether it has been reported.
    */
-  files: Map<string, { sig: string; since: number; last: number; changedAt?: number; warned?: true }>;
+  files: Map<string, { hash?: string; since: number; warned?: true }>;
   /** When opencode.db's current run of failed reads began. */
   db: Map<string, { since: number; warned?: true }>;
   /** Unreadable reads answered as mid-write since this memory was made; a caller compares counts. */
@@ -167,33 +182,36 @@ export function newUnreadableMemory(): UnreadableMemory {
   return { files: new Map(), db: new Map(), torn: 0 };
 }
 
-function statSig(path: string): { sig: string; mtimeMs?: number } {
+/** A sha256 of a file's bytes, or undefined when they cannot be read at all. Compared, never logged. */
+function bytesHash(path: string): string | undefined {
   try {
-    const { mtimeMs, size } = statSync(path);
-    return { sig: `${mtimeMs}:${size}`, mtimeMs };
-  } catch (error) {
-    return { sig: `error:${errnoCode(error)}` };
+    return createHash('sha256').update(readFileSync(path)).digest('hex');
+  } catch {
+    return undefined;
   }
 }
 
 /**
- * A file store's read, with "cannot be read" bounded in time.
+ * A file store's read, with "cannot be read" bounded.
  *
- * An unreadable file counts as torn — answered `unreadable`, so the caller
- * keeps its last resolution or refuses for now — only while it is plausibly
- * mid-write, which takes both: its mtime is within `windowMs` of `now` (or
- * its mtime or size changed since the previous unreadable read less than
- * `windowMs` ago), AND its current run of failed reads began less than
- * `windowMs` ago. A write takes a moment; a file that something keeps
- * touching while it never once parses is not mid-write, and without the
- * second bound it read as torn forever. Past either it is steadily
- * unreadable and answered `absent`, with `skipped` naming the path and the
- * error; `warn` is called once per such stretch. A run is continuous only
- * while each failed read follows the previous one within `windowMs`: any
- * read that is not unreadable forgets the file, and so does a gap — a torn
- * read at startup and another after a quiet minute are two writes, not one
- * run that has gone on for a minute. A file that stays broken is still
- * skipped across gaps, since it is torn only while recently written.
+ * A file whose bytes can be read (so what failed was their parse) counts as
+ * torn — answered `unreadable`, so the caller keeps its last resolution or
+ * refuses for now — only while those bytes, hashed here, are
+ * still changing: they differ from the previous failed read's, or were first
+ * seen less than `TORN_REPEAT_MS` ago. The same bytes a second apart are
+ * stuck, not mid-write, however recently the file was touched and however
+ * long ago it was last read; different bytes start again, however long the
+ * file was quiet. A file rewritten with different unparseable bytes on every
+ * read therefore stays torn for as long as that goes on — accepted: nothing
+ * here can tell it from a writer mid-write.
+ *
+ * A file whose bytes cannot be read (EACCES, EISDIR) has nothing to compare, and
+ * is torn only for `windowMs` from the first failure of its run — never
+ * restarted by a gap; nothing rewrites a file into EACCES.
+ *
+ * Past either the store is steadily unreadable and answered `absent`, with
+ * `skipped` naming the path and the error; `warn` is called once per
+ * unchanged failure. Any read that is not unreadable forgets the file.
  */
 export function boundUnreadable(
   path: string,
@@ -207,30 +225,24 @@ export function boundUnreadable(
     memory.files.delete(path);
     return read;
   }
-  const { sig, mtimeMs } = statSig(path);
   const recorded = memory.files.get(path);
-  const previous = recorded !== undefined && now - recorded.last < windowMs ? recorded : undefined;
-  const changedAt = previous !== undefined && previous.sig !== sig ? now : previous?.changedAt;
-  const since = previous?.since ?? now;
-  const record: { sig: string; since: number; last: number; changedAt?: number; warned?: true } =
-    { sig, since, last: now, ...(changedAt === undefined ? {} : { changedAt }) };
-  // Warned once per unchanged file, across gaps: a file that stays broken
-  // and is read once a minute starts a new run each time, and is still one
-  // stretch to report.
-  if (recorded?.warned === true && recorded.sig === sig) record.warned = true;
+  const hash = bytesHash(path);
+  const same = recorded !== undefined && recorded.hash === hash;
+  const record: { hash?: string; since: number; warned?: true } =
+    { ...(hash === undefined ? {} : { hash }), since: same ? recorded.since : now };
+  if (same && recorded.warned === true) record.warned = true;
   memory.files.set(path, record);
-  const recentlyWritten = mtimeMs !== undefined && Math.abs(now - mtimeMs) < windowMs;
-  const recentlyChanged = changedAt !== undefined && now - changedAt < windowMs;
-  const runIsYoung = now - since < windowMs;
-  if ((recentlyWritten || recentlyChanged) && runIsYoung) {
+  if (now - record.since < (hash === undefined ? windowMs : TORN_REPEAT_MS)) {
     memory.torn += 1;
     return read;
   }
   const detail = read.detail ?? `${path}: unreadable`;
   if (record.warned !== true) {
     record.warned = true;
-    warn(`${detail} — it has not read cleanly for ${Math.round(windowMs / 1000)}s, so it is skipped as if absent ` +
-      'until it does');
+    warn(`${detail} — ${hash === undefined
+      ? `it has not read for ${Math.round(windowMs / 1000)}s`
+      : `the same unparseable content for ${Math.round(TORN_REPEAT_MS / 1000)}s, so not a write in progress`
+    }, so it is skipped as if absent until it reads cleanly`);
   }
   return { state: 'absent', skipped: detail };
 }
