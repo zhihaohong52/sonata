@@ -1482,16 +1482,24 @@ export async function cmdServe(
    */
   let droppedGateways = new Map<string, string>();
   /**
-   * LiteLLM-transport gateways whose credential did not resolve in the last
-   * child-env build, and why — the message names the gateway, the missing
-   * credential and the remedy. Treated like a dropped gateway: its models are
-   * left out of LiteLLM's config, so LiteLLM never loads a deployment it cannot
-   * authenticate, and the router answers them with this reason.
+   * Gateways whose credential did not resolve in the last child-env build,
+   * and why — the message names the gateway, the missing credential and the
+   * remedy. Treated like a dropped gateway: the router answers a model on one
+   * with this reason and forwards nothing.
    *
-   * Only LiteLLM's: a direct gateway with no key still goes out keyless and
-   * fails upstream with a 401, which already names the problem.
+   * Direct gateways too. One with no key used to go out with an empty bearer:
+   * the conversation was sent, the upstream answered 401, and the tier path
+   * turned that into a 529 pointing at `sonata dispatch` while the bare path
+   * handed Claude Code a 401 it reads as its own login failing.
    */
   let credentialFailures = new Map<string, string>();
+  /**
+   * The LiteLLM-transport ones among them, whose models are also left out of
+   * LiteLLM's config, so LiteLLM never loads a deployment it cannot
+   * authenticate. A direct gateway's models are not LiteLLM's to serve, and
+   * leaving them in keeps its failure from restarting LiteLLM.
+   */
+  let litellmCredentialFailures = new Set<string>();
   /** Each gateway's last good credential, across child-env builds; see `resolveChildEnv`. */
   const credentialMemory = newCredentialMemory();
   /**
@@ -1539,7 +1547,7 @@ export async function cmdServe(
   const servableTenants = () => {
     mergeGateways(() => { /* logged by mergedNative */ });
     const dropped = droppedGateways;
-    const unresolved = credentialFailures;
+    const unresolved = litellmCredentialFailures;
     return registry.loadable().map((tenant) => {
       const native = tenant.config.native;
       const keep = <T extends { gateway?: string }>(models: Record<string, T>) =>
@@ -1620,17 +1628,22 @@ export async function cmdServe(
     const configPath = join(tempDir, 'config.json');
 
     /**
-     * Records which LiteLLM gateways' credentials failed, for `servableTenants`,
-     * the plan snapshot and the router's answer. Every build of the child env
-     * goes through this, so the set always describes the env LiteLLM has.
+     * Records which gateways' credentials failed, for the router's answer and,
+     * for LiteLLM's, `servableTenants` and the plan snapshot. Every build of
+     * the child env goes through this, so the sets always describe the env
+     * that was just built.
      */
     const applyCredentialFailures = (failures: CredentialFailure[], cfg: NativeConfig): void => {
-      const next = new Map<string, string>();
+      const all = new Map<string, string>();
+      const litellm = new Set<string>();
       for (const { gateway, message } of failures) {
         const gw = cfg.gateways[gateway];
-        if (gw !== undefined && transportFor(gw, gateway) !== 'direct') next.set(gateway, message);
+        if (gw === undefined) continue;
+        all.set(gateway, message);
+        if (transportFor(gw, gateway) !== 'direct') litellm.add(gateway);
       }
-      credentialFailures = next;
+      credentialFailures = all;
+      litellmCredentialFailures = litellm;
     };
 
     // Startup fails outright only for the machine config's own gateways — the
@@ -1750,8 +1763,8 @@ export async function cmdServe(
       // DIRECT gateway's key is therefore absent, not carried over — it is
       // looked up by name, so a project that has just taken over a name
       // another project dropped would otherwise be sent that project's key.
-      // With no key, its request fails upstream with a 401 that names the
-      // problem; another project's credential does not.
+      // With no key it is recorded as failed, and its request is answered
+      // with a 502 naming the missing credential without being forwarded.
       const { env, failures, transient } = resolveChildEnv(cfg, opts.home, tempDir, { spawning: false, memory: credentialMemory });
       childEnv = env;
       applyCredentialFailures(failures, cfg);

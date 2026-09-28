@@ -3017,6 +3017,69 @@ credential_source = "sonata"
     }
   });
 
+  it('never forwards to a direct gateway whose credential did not resolve, on the tier path or the bare one', async () => {
+    // With no key the request went out with an empty bearer: the upstream
+    // answered 401, the tier path turned that into a 529 pointing at `sonata
+    // dispatch`, and the bare path handed Claude Code a 401 it reads as its
+    // own login failing. Either way the conversation had already been sent.
+    writeMachineConfig(`
+[models."mm"]
+gateway = "machdirect"
+id = "x-1"
+[native.gateways."machdirect"]
+base_url = "https://direct.example"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'machdirect', 'sk-machine-key');
+    const project = mkdtempSync(join(tmpdir(), 'serve-direct-no-key-'));
+    writeFileSync(join(project, 'sonata.toml'), `
+[models."pdm"]
+gateway = "pd"
+id = "pd-1"
+[tiers.code]
+simple = ["pdm"]
+complex = ["pdm"]
+[native.gateways."pd"]
+base_url = "https://pd.example"
+provider = "anthropic"
+credential_source = "sonata"
+`);
+    const forwarded: string[] = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+        forwarded.push(String(url));
+        return new Response('{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}', { status: 401 });
+      }));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const send = async (model: string) => {
+        const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...projectHeaders(project) },
+          body: JSON.stringify({ model, messages: [{ role: 'user', content: 'secret prompt' }] }),
+        });
+        return { status: res.status, message: (await res.json() as { error: { message: string } }).error.message };
+      };
+      for (const model of ['sonata-code-simple', 'pdm']) {
+        const { status, message } = await send(model);
+        expect(status).toBe(502);
+        expect(message).toContain('gateway "pd"');
+        expect(message).toContain('sonata auth add pd');
+      }
+      expect(forwarded.filter((url) => url.includes('pd.example'))).toEqual([]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('keeps every other gateway\'s direct key when one unrelated project\'s credential cannot resolve', async () => {
     // The machine serves direct `machdirect` on its own sonata key. Project B,
     // unrelated, arrives with a sonata-sourced codex-oauth gateway and no login
