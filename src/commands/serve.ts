@@ -7,7 +7,7 @@ import { createServer as createHttpServer, type RequestListener, type Server } f
 
 import { loadModelsDev } from '../modelsdev.js';
 import { spentTodayUsd, unreadableMachineBudget, type BudgetStatus } from '../budget.js';
-import { GLOBAL_CONFIG_RELATIVE, loadConfig, nativeRouteFor, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
+import { GLOBAL_CONFIG_RELATIVE, loadConfig, nativeRouteFor, oauthCredentialIdentity, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
 import { resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
@@ -991,31 +991,26 @@ export function mergeTenantGateways(
     );
   }
   // Likewise one OAuth credential of each kind per LiteLLM child
-  // (CHATGPT_TOKEN_DIR / GITHUB_COPILOT_TOKEN_DIR). Two differently named
-  // gateways of one kind that read the SAME credential source (the default
-  // included) are one account and are both kept; only differing sources are
-  // dropped, since one project would be served the other's account.
+  // (CHATGPT_TOKEN_DIR / GITHUB_COPILOT_TOKEN_DIR): every gateway of a kind is
+  // served whichever credential buildChildEnv finds first. Kept when they all
+  // resolve to one credential (`oauthCredentialIdentity`); when any two do
+  // not, EVERY gateway of that kind is dropped — dropping only the odd one out
+  // still leaves one child deciding between accounts it cannot tell apart.
   // parseConfig applies the same rule inside one file.
-  const byOauth = new Map<string, string>();
-  for (const name of Object.keys(merged)) {
-    const gateway = merged[name];
-    const auth = gateway?.auth;
-    if (auth !== 'codex-oauth' && auth !== 'copilot-oauth') continue;
-    const other = byOauth.get(auth);
-    if (other === undefined) {
-      byOauth.set(auth, name);
-      continue;
-    }
-    const mine = gateway.credentialSource ?? 'default';
-    const theirs = merged[other]?.credentialSource ?? 'default';
-    if (mine === theirs) continue;
-    delete merged[name];
-    delete merged[other];
+  const byKind = new Map<string, string[]>();
+  for (const [name, gateway] of Object.entries(merged)) {
+    if (gateway.auth !== 'codex-oauth' && gateway.auth !== 'copilot-oauth') continue;
+    byKind.set(gateway.auth, [...(byKind.get(gateway.auth) ?? []), name]);
+  }
+  for (const [auth, names] of byKind) {
+    const identity = (name: string): string => oauthCredentialIdentity(name, merged[name]!);
+    if (new Set(names.map(identity)).size <= 1) continue;
+    const listed = names.map((name) => `"${name}" (${owner[name]}, ${identity(name)})`).join(', ');
+    for (const name of names) delete merged[name];
     log(
-      `gateways "${other}" (${owner[other]}, credential_source = ${theirs}) and ` +
-      `"${name}" (${owner[name]}, credential_source = ${mine}) both use auth = "${auth}" but read ` +
-      'different credentials — serving neither, since LiteLLM holds one credential of that kind ' +
-      "and one project would be served the other's account; give them the same credential_source",
+      `gateways with auth = "${auth}" read different credentials — ${listed} — serving none of them, ` +
+      "since LiteLLM holds one credential of that kind and a project would be served another's " +
+      'account; point them at one credential',
     );
   }
   return merged;

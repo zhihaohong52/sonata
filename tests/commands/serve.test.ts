@@ -3317,7 +3317,7 @@ describe('mergeTenantGateways', () => {
     expect(merged.codex).toBeUndefined();
     expect(merged['codex-work']).toBeUndefined();
     expect(Object.keys(merged)).toEqual(['keep']);
-    expect(lines.join('\n')).toMatch(/"codex" \(a, credential_source = default\) and "codex-work" \(b, credential_source = sonata\) both use auth = "codex-oauth" but read different credentials/);
+    expect(lines.join('\n')).toMatch(/auth = "codex-oauth".*"codex" \(a, default\).*"codex-work" \(b, sonata:codex-work\)/s);
   });
 
   it('keeps two differently named OAuth gateways of one kind that read the same credential', () => {
@@ -3330,6 +3330,33 @@ describe('mergeTenantGateways', () => {
     ], (l) => lines.push(l));
     expect(Object.keys(merged).sort()).toEqual(['codex', 'openai']);
     expect(lines).toEqual([]);
+  });
+
+  it('drops two sonata-sourced gateways of one kind from two projects: two logins', () => {
+    const lines: string[] = [];
+    const merged = mergeTenantGateways([
+      { id: 'a', gateways: { codex: gw({ auth: 'codex-oauth', baseUrl: undefined, credentialSource: 'sonata' }) } },
+      { id: 'b', gateways: { 'codex-work': gw({ auth: 'codex-oauth', baseUrl: undefined, credentialSource: 'sonata' }) } },
+    ], (l) => lines.push(l));
+    expect(merged).toEqual({});
+    expect(lines.join('\n')).toContain('sonata:codex-work');
+  });
+
+  it('drops ALL gateways of a kind once any two of them read different credentials', () => {
+    // A and B share the default store, C has its own sonata login. Keeping A
+    // and B while dropping C (or any pair-wise rule) still leaves one child
+    // env deciding between two accounts; every one of them goes.
+    const lines: string[] = [];
+    const merged = mergeTenantGateways([
+      { id: 'a', gateways: { codex: gw({ auth: 'codex-oauth', baseUrl: undefined }), keep: gw({}) } },
+      { id: 'b', gateways: { openai: gw({ auth: 'codex-oauth', baseUrl: undefined }) } },
+      { id: 'c', gateways: { chatgpt: gw({ auth: 'codex-oauth', baseUrl: undefined, credentialSource: 'sonata' }) } },
+    ], (l) => lines.push(l));
+    expect(Object.keys(merged)).toEqual(['keep']);
+    const text = lines.join('\n');
+    expect(text).toContain('"codex" (a, default)');
+    expect(text).toContain('"openai" (b, default)');
+    expect(text).toContain('"chatgpt" (c, sonata:chatgpt)');
   });
 
   it('keeps one OAuth gateway that two projects name identically', () => {
