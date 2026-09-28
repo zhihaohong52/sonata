@@ -4561,18 +4561,15 @@ litellm = ${litellmPort}
         return { send, seededWith };
       };
 
-      it('serves a default ChatGPT gateway from opencode once codex\'s auth.json has held the same empty content for a second', async () => {
-        // Torn on its first read, however old its mtime: only its bytes
-        // staying put says it is not mid-write.
+      it('serves a default ChatGPT gateway from opencode at once when codex\'s auth.json has been empty since before serve started', async () => {
+        // Its first sighting counts from its mtime, a minute ago: the same
+        // bytes since then say it is not mid-write.
         writeMachineConfig(DEFAULT_CHATGPT());
         mkdirSync(join(home, '.codex'), { recursive: true });
         writeFileSync(codexPath(), '');
         backdate(codexPath());
         writeOpencodeLogin();
-        let offset = 0;
-        const { send, seededWith } = await start(() => Date.now() + offset);
-        expect((await send()).status).toBe(502);
-        offset = TORN_REPEAT_MS;
+        const { send, seededWith } = await start();
         expect((await send()).status).toBe(200);
         expect(seededWith()).toEqual(['OPENCODE-B']);
         expect(errors.filter((line) => line.includes(codexPath()) && line.includes('skipped as if absent'))).toHaveLength(1);
@@ -4784,9 +4781,8 @@ litellm = ${litellmPort}
           return new Response('{"id":"x","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}',
             { status: 200, headers: { 'content-type': 'application/json' } });
         }));
-        let offset = 0;
         const handle = await cmdServe({
-          cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, now: () => Date.now() + offset,
+          cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
           spawnLitellm: () => ({ pid: 1, kill: () => {} }),
         });
         handles.push(handle);
@@ -4799,9 +4795,7 @@ litellm = ${litellmPort}
           await res.text();
           return res.status;
         };
-        // keys.json is torn on its first read; the same bytes a second later are skipped.
-        expect(await send()).toBe(502);
-        offset = TORN_REPEAT_MS;
+        // keys.json has been broken since before serve started: skipped on its first read.
         expect(await send()).toBe(200);
         expect(forwarded.at(-1)).toContain('KEY-OLD');
         writeFileSync(ocAuth, JSON.stringify({ pd: { type: 'api', key: 'KEY-ROTATED' } }));
@@ -4820,10 +4814,7 @@ litellm = ${litellmPort}
         writeFileSync(codexPath(), '');
         backdate(codexPath());
         writeOpencodeLogin();
-        let offset = 0;
-        const { send, seededWith } = await start(() => Date.now() + offset);
-        expect((await send()).status).toBe(502);
-        offset = TORN_REPEAT_MS;
+        const { send, seededWith } = await start();
         expect((await send()).status).toBe(200);
         expect(seededWith()).toEqual(['OPENCODE-B']);
         writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({}));

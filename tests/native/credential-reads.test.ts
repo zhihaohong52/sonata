@@ -25,13 +25,26 @@ describe('boundUnreadable', () => {
     expect(memory.torn).toBe(1);
   });
 
-  it('is torn on its first read however old its mtime, then skipped once the same bytes are seen 1 s later, warning once', () => {
-    // Nothing on disk says a file is mid-write but its bytes moving: a writer
-    // does not hold the same partial bytes for a second.
+  it('skips on its first read a file last written over a second ago — corrupt since before serve started', () => {
+    // Its first sighting counts from its last write, not from now: a file
+    // broken for a day refused every request in serve's first second.
+    const path = join(dir, 'auth.json');
+    writeFileSync(path, '{"auth_mode": "chatgpt", "tok');
+    const old = (Date.now() - 86_400_000) / 1000;
+    utimesSync(path, old, old);
+    const memory = newUnreadableMemory();
+    const warnings: string[] = [];
+    const read = boundUnreadable(path, jsonStoreRead(path), memory, Date.now(), (line) => warnings.push(line));
+    expect(read).toEqual({ state: 'absent', skipped: expect.stringContaining(path) });
+    expect(memory.torn).toBe(0);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('so not a write in progress');
+  });
+
+  it('is torn on its first read when just written, then skipped once the same bytes are seen 1 s later, warning once', () => {
+    // A writer does not hold the same partial bytes for a second.
     const path = join(dir, 'auth.json');
     writeFileSync(path, '');
-    const old = (Date.now() - W - 5000) / 1000;
-    utimesSync(path, old, old);
     const memory = newUnreadableMemory();
     const warnings: string[] = [];
     const t0 = Date.now();
@@ -57,14 +70,14 @@ describe('boundUnreadable', () => {
   });
 
   it('is torn again when its bytes change between two unreadable reads, even with an old mtime', () => {
+    // mtime counts only on a file's first sighting; after that, only its bytes.
     const path = join(dir, 'auth.json');
     writeFileSync(path, '{');
     const old = (Date.now() - 3 * W) / 1000;
     utimesSync(path, old, old);
     const memory = newUnreadableMemory();
     const t0 = Date.now();
-    expect(boundUnreadable(path, jsonStoreRead(path), memory, t0).state).toBe('unreadable');
-    expect(boundUnreadable(path, jsonStoreRead(path), memory, t0 + TORN_REPEAT_MS).state).toBe('absent');
+    expect(boundUnreadable(path, jsonStoreRead(path), memory, t0).state).toBe('absent');
     writeFileSync(path, '{"a');
     utimesSync(path, old, old);
     expect(boundUnreadable(path, jsonStoreRead(path), memory, t0 + TORN_REPEAT_MS + 1).state).toBe('unreadable');
@@ -79,7 +92,7 @@ describe('boundUnreadable', () => {
     const t0 = Date.now();
     const touch = (at: number, text: string) => {
       writeFileSync(path, text);
-      utimesSync(path, (at - 2000) / 1000, (at - 2000) / 1000);
+      utimesSync(path, (at - 200) / 1000, (at - 200) / 1000);
     };
     const at = [0, 3000, 6000, 9000, 20_000, 31_000, 42_000];
     const states = at.map((offset) => {
@@ -148,7 +161,7 @@ describe('boundUnreadable', () => {
     const t0 = Date.now();
     const states = [0, 1, 2, 3].map((i) =>
       boundUnreadable(path, jsonStoreRead(path), memory, t0 + i * 2 * W, (l) => warnings.push(l)).state);
-    expect(states).toEqual(['unreadable', 'absent', 'absent', 'absent']);
+    expect(states).toEqual(['absent', 'absent', 'absent', 'absent']);
     expect(warnings).toHaveLength(1);
   });
 
