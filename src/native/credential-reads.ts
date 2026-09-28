@@ -191,6 +191,21 @@ export const UNREADABLE_SKIP_RULE = `once it stops changing (the same unparseabl
   `apart, or unmodified for ${FIRST_SIGHT_STALE_MS / 1000}s when first seen), or once a read error has lasted ` +
   `${UNREADABLE_STORE_WINDOW_MS / 1000}s`;
 
+/**
+ * A file store's failed reads: the unparseable bytes last seen and since when
+ * (`hash`/`since`, absent until a read returns bytes), and the current run of
+ * read errors, which return none (`errorSince`). The two are timed apart: an
+ * error says nothing about the bytes on record, and a read that returns bytes
+ * ends the error run.
+ */
+interface FileFailure {
+  hash?: string;
+  since?: number;
+  warned?: true;
+  errorSince?: number;
+  errorWarned?: true;
+}
+
 /** What `boundUnreadable` remembers between reads; one per process, shared by every caller. */
 export interface UnreadableMemory {
   /**
@@ -198,7 +213,7 @@ export interface UnreadableMemory {
    * for a read error), when those bytes — or, with none, the run of read
    * errors — were first seen, and whether it has been reported.
    */
-  files: Map<string, { hash?: string; since: number; warned?: true }>;
+  files: Map<string, FileFailure>;
   /** When opencode.db's current run of failed reads began. */
   db: Map<string, { since: number; warned?: true }>;
   /** Unreadable reads answered as mid-write since this memory was made; a caller compares counts. */
@@ -244,7 +259,11 @@ function mtimeOf(path: string): number | undefined {
  *
  * A file whose bytes cannot be read (EACCES, EISDIR) has nothing to compare, and
  * is torn only for `windowMs` from the first failure of its run — never
- * restarted by a gap; nothing rewrites a file into EACCES.
+ * restarted by a gap; nothing rewrites a file into EACCES. That run is timed
+ * on its own: a read error leaves the unparseable bytes on record, and when
+ * they were first seen, untouched, so one EMFILE between two reads of the
+ * same stuck bytes does not make them torn again. A read that returns bytes
+ * ends the run.
  *
  * Past either the store is steadily unreadable and answered `absent`, with
  * `skipped` naming the path and the error; `warn` is called once per
@@ -264,27 +283,46 @@ export function boundUnreadable(
   }
   const recorded = memory.files.get(path);
   const hash = read.contentHash;
-  const same = recorded !== undefined && recorded.hash === hash;
-  const mtime = recorded === undefined && hash !== undefined ? mtimeOf(path) : undefined;
+  const detail = read.detail ?? `${path}: unreadable`;
+  if (hash === undefined) {
+    // No bytes: timed by its own run of errors alone. Any unparseable bytes
+    // on record keep their hash and `since` — one EMFILE between two reads
+    // of the same stuck bytes must not start their second again.
+    const errorSince = recorded?.errorSince ?? now;
+    const record: FileFailure = { ...recorded, errorSince };
+    memory.files.set(path, record);
+    if (now - errorSince < windowMs) {
+      memory.torn += 1;
+      return read;
+    }
+    if (record.errorWarned !== true) {
+      record.errorWarned = true;
+      warn(`${detail} — it has not read for ${Math.round(windowMs / 1000)}s, so it is skipped as if absent ` +
+        'until it reads cleanly');
+    }
+    return { state: 'absent', skipped: detail };
+  }
+  const kept = recorded?.hash === hash ? recorded?.since : undefined;
+  // First sight: no failed read of this file on record at all.
+  const firstSight = recorded === undefined;
+  const mtime = firstSight ? mtimeOf(path) : undefined;
   const firstSeen = mtime !== undefined && now - mtime >= FIRST_SIGHT_STALE_MS ? mtime : now;
-  const record: { hash?: string; since: number; warned?: true } =
-    { ...(hash === undefined ? {} : { hash }), since: same ? recorded.since : firstSeen };
-  if (same && recorded.warned === true) record.warned = true;
+  // Bytes were read, so any run of read errors has ended.
+  const since = kept ?? firstSeen;
+  const record: FileFailure = { hash, since };
+  if (kept !== undefined && recorded?.warned === true) record.warned = true;
   memory.files.set(path, record);
-  if (now - record.since < (hash === undefined ? windowMs : TORN_REPEAT_MS)) {
+  if (now - since < TORN_REPEAT_MS) {
     memory.torn += 1;
     return read;
   }
-  const detail = read.detail ?? `${path}: unreadable`;
   if (record.warned !== true) {
     record.warned = true;
-    const seconds = Math.max(1, Math.round((now - record.since) / 1000));
-    warn(`${detail} — ${hash === undefined
-      ? `it has not read for ${Math.round(windowMs / 1000)}s`
-      : recorded === undefined
-        // Skipped on its first sighting: nothing has been watched yet, only the file's age.
-        ? `unparseable, and has not been modified for ${seconds}s, so not a write in progress`
-        : `the same unparseable content for ${seconds}s, so not a write in progress`
+    const seconds = Math.max(1, Math.round((now - since) / 1000));
+    warn(`${detail} — ${firstSight
+      // Skipped on its first sighting: nothing has been watched yet, only the file's age.
+      ? `unparseable, and has not been modified for ${seconds}s, so not a write in progress`
+      : `the same unparseable content for ${seconds}s, so not a write in progress`
     }, so it is skipped as if absent until it reads cleanly`);
   }
   return { state: 'absent', skipped: detail };

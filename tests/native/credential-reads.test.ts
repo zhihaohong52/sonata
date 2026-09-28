@@ -201,6 +201,40 @@ describe('boundUnreadable', () => {
     expect(boundUnreadable(dir, jsonStoreRead(dir), gapped, t0 + 15_000).state).toBe('absent');
   });
 
+  it('keeps a stuck file skipped through one transient read error in between', () => {
+    // A read error has no bytes, so it says nothing about the stuck bytes on
+    // record: one EMFILE must not restart the second those bytes are judged by.
+    const path = join(dir, 'auth.json');
+    writeFileSync(path, '{"broken');
+    const old = (Date.now() - 60_000) / 1000;
+    utimesSync(path, old, old);
+    const memory = newUnreadableMemory();
+    const warnings: string[] = [];
+    const t0 = Date.now();
+    expect(boundUnreadable(path, jsonStoreRead(path), memory, t0, (l) => warnings.push(l)).skipped).toBeDefined();
+    const emfile = { state: 'unreadable' as const, detail: `${path}: EMFILE` };
+    // The error itself is torn: its own run has only just begun.
+    expect(boundUnreadable(path, emfile, memory, t0 + 3000, (l) => warnings.push(l)).state).toBe('unreadable');
+    const after = boundUnreadable(path, jsonStoreRead(path), memory, t0 + 3100, (l) => warnings.push(l));
+    expect(after.state).toBe('absent');
+    expect(after.skipped).toBeDefined();
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('bounds a run of read errors on a file with stuck bytes on record by the 10 s cap of the errors alone', () => {
+    const path = join(dir, 'auth.json');
+    writeFileSync(path, '{"broken');
+    const old = (Date.now() - 60_000) / 1000;
+    utimesSync(path, old, old);
+    const memory = newUnreadableMemory();
+    const t0 = Date.now();
+    expect(boundUnreadable(path, jsonStoreRead(path), memory, t0).state).toBe('absent');
+    const emfile = { state: 'unreadable' as const, detail: `${path}: EMFILE` };
+    expect(boundUnreadable(path, emfile, memory, t0 + 1000).state).toBe('unreadable');
+    expect(boundUnreadable(path, emfile, memory, t0 + 1000 + W - 1).state).toBe('unreadable');
+    expect(boundUnreadable(path, emfile, memory, t0 + 1000 + W).state).toBe('absent');
+  });
+
   it('warns once for a file that stays broken, however far apart it is read', () => {
     const path = join(dir, 'auth.json');
     writeFileSync(path, '{');
