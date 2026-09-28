@@ -828,6 +828,74 @@ base_url = "https://gateway.example/v1"
     }
   });
 
+  it('warns, naming the file, when codex\'s auth.json cannot be parsed while opencode serves the login', async () => {
+    // serve skips a steadily unreadable store as absent, so a default ChatGPT
+    // gateway is quietly served opencode's login — and every other check
+    // here reads "fine". Say which file is broken.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-codex-corrupt-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-codex-corrupt-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.codex]
+auth = "codex-oauth"
+`);
+    mkdirSync(join(home, '.codex'), { recursive: true });
+    writeFileSync(join(home, '.codex', 'auth.json'), '');
+    const body = Buffer.from(JSON.stringify({ exp: 1787806005, client_id: 'app_EMoamEEZ73f0CkXaXp7hrann' })).toString('base64url');
+    mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+    writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({
+      openai: { type: 'oauth', access: `header.${body}.sig`, refresh: 'rt-fake' },
+    }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      const warning = checks.find((c) => c.name === 'credential store');
+      expect(warning?.ok).toBe(true);
+      expect(warning?.detail).toContain(join(home, '.codex', 'auth.json'));
+      expect(warning?.detail).toContain('not valid JSON');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it.skipIf(!sqliteAvailable())('warns, naming the file, when opencode.db cannot be queried', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-db-corrupt-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-db-corrupt-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+`);
+    mkdirSync(dirname(opencodeDbPath(home, {})), { recursive: true });
+    writeFileSync(opencodeDbPath(home, {}), 'this is not a sqlite database, and never will be');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      const warning = checks.find((c) => c.name === 'credential store');
+      expect(warning?.ok).toBe(true);
+      expect(warning?.detail).toContain(opencodeDbPath(home, {}));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('says nothing about credential stores that read cleanly or are not there', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-stores-ok-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-stores-ok-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+`);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      expect(checks.find((c) => c.name === 'credential store')).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it.skipIf(!sqliteAvailable())('stays quiet about a 0600 opencode.db', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-db-mode-ok-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-db-mode-ok-home-'));

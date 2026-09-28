@@ -133,6 +133,13 @@ export interface RouterDeps {
    * send the conversation with no key at all.
    */
   gatewayUnavailable?: (tenant: RouterTenant, gateway: string) => string | undefined;
+  /**
+   * Told when a LiteLLM response shows its ChatGPT login was refused
+   * (`CHATGPT_LOGIN_REFUSED`). serve marks its codex-oauth gateways
+   * unavailable until the next deliberate spawn and logs the remedy once;
+   * absent, the router logs the remedy itself.
+   */
+  chatgptLoginRefused?: () => void;
   /** Why LiteLLM cannot serve right now (venv missing, broken), or undefined when it can. A litellm-bound request is answered 502 with this text rather than forwarded. */
   litellmUnavailable?: () => string | undefined;
   /**
@@ -1308,10 +1315,19 @@ function litellmBody(body: Buffer): Buffer {
 }
 
 /**
- * What LiteLLM's chatgpt authenticator says when its refresh token is refused
- * (`RefreshAccessTokenError`, and ChatGPT's own `refresh_token_reused`).
+ * What a LiteLLM response says when its ChatGPT login has been refused.
+ *
+ * LiteLLM 1.98.0 never surfaces the refused refresh itself: `get_access_token`
+ * catches it, logs "re-login required" to its own stderr (which serve reads —
+ * see `LITELLM_CHATGPT_LOGIN_REFUSED`), and falls into a device-code login.
+ * What reaches the router is how THAT ends — a 401 "Polling failed: …" or
+ * "Timed out waiting for device authorization" (fifteen minutes later), or a
+ * 500 "Failed to request device code: …" — captured from the real
+ * authenticator in tests/fixtures/litellm/. The refresh wording is kept for
+ * any path that does report it.
  */
-const CHATGPT_REFRESH_FAILED = /refresh token failed|re-login required|refresh_token_reused/i;
+const CHATGPT_LOGIN_REFUSED =
+  /refresh token failed|re-login required|refresh_token_reused|Polling failed|Timed out waiting for device authorization|Failed to request device code/i;
 
 /**
  * Forwards an already-litellm-shaped request (auth swapped, system flattened,
@@ -1335,19 +1351,21 @@ async function forwardToLitellm(
     // usually means the upstream was overloaded and returned an empty completion
     // rather than a real error. Re-emitting it as 529 (overloaded) lets Claude
     // Code treat it as a retriable backpressure signal rather than a hard fault.
-    // A 500 or 401 is also where LiteLLM reports a ChatGPT refresh it could
-    // not make, which only a restart (a fresh seed from the store) can mend.
+    // A 500 or 401 is also where LiteLLM reports how its fallback to a
+    // device-code login ended after a ChatGPT refresh it could not make,
+    // which only a re-login and a restart (a fresh seed) can mend.
     if (response.status === 500 || response.status === 401) {
       const responseBodyBuf = response.body === null
         ? Buffer.alloc(0)
         : await bufferBody(responseBody(response.body), deps);
       const text = responseBodyBuf.toString();
-      if (CHATGPT_REFRESH_FAILED.test(text)) {
+      if (CHATGPT_LOGIN_REFUSED.test(text) && deps.chatgptLoginRefused !== undefined) {
+        deps.chatgptLoginRefused();
+      } else if (CHATGPT_LOGIN_REFUSED.test(text)) {
         deps.log?.(
-          `router: litellm could not refresh its ChatGPT login (${requestedModel(body) ?? '?'}) — serve copies a ` +
-          'ChatGPT token into LiteLLM only when it starts LiteLLM, so a login LiteLLM can no longer refresh ' +
-          '(sessions revoked, or its refresh token spent by another client) is re-seeded from the store by ' +
-          '`sonata restart`',
+          `router: LiteLLM's ChatGPT login was refused by OpenAI (${requestedModel(body) ?? '?'}) — run ` +
+          '`codex login` (or `opencode auth login`) and then `sonata restart`: serve copies a ChatGPT token ' +
+          'into LiteLLM only when it starts LiteLLM',
         );
       }
       if (response.status === 500 && text.includes('Unknown items in responses API response')) {

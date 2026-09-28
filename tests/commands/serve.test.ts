@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { spawn as spawnType } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -3578,20 +3578,28 @@ litellm = ${litellmPort}
       }));
     };
     const ocDbPath = () => join(home, '.local', 'share', 'opencode', 'opencode.db');
-    const start = async (o: { onExitSupported?: boolean } = {}) => {
+    const start = async (o: { onExitSupported?: boolean; upstream?: () => Response } = {}) => {
       const envs: NodeJS.ProcessEnv[] = [];
       const exits: ((code: number | null, signal: NodeJS.Signals | null) => void)[][] = [];
-      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const outputs: ((line: string) => void)[][] = [];
+      const upstreamCalls: string[] = [];
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+        upstreamCalls.push(String(url));
+        return o.upstream?.() ?? new Response('{}', { status: 200 });
+      }));
       const handle = await cmdServe({
         cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, respawnDelayMs: 0,
         spawnLitellm: (_config, env) => {
           envs.push({ ...env });
           const listeners: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
           exits.push(listeners);
+          const lines: ((line: string) => void)[] = [];
+          outputs.push(lines);
           return {
             pid: envs.length,
             kill: () => { setImmediate(() => listeners.forEach((cb) => cb(null, 'SIGTERM'))); },
             ...(o.onExitSupported === false ? {} : { onExit: (cb: (code: number | null, signal: NodeJS.Signals | null) => void) => { listeners.push(cb); } }),
+            onOutputLine: (cb: (line: string) => void) => { lines.push(cb); },
           };
         },
       });
@@ -3607,7 +3615,13 @@ litellm = ${litellmPort}
       const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
       /** The latest child exiting on its own. */
       const crash = () => exits.at(-1)!.forEach((cb) => cb(1, null));
-      return { send, envs, dir, tokenFile, held, settle, crash };
+      /** The latest child writing `text`, one line at a time, to its stdout or stderr. */
+      const emit = (text: string) => { for (const line of text.split('\n')) outputs.at(-1)!.forEach((cb) => cb(line)); };
+      const sendFull = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      }).then(async (res) => ({ status: res.status, text: await res.text() }));
+      return { send, sendFull, envs, dir, tokenFile, held, settle, crash, emit, upstreamCalls };
     };
     let errors: string[];
     let errorSpy: ReturnType<typeof vi.spyOn>;
@@ -3737,6 +3751,30 @@ litellm = ${litellmPort}
       expect(readFileSync(tokenFile(), 'utf8')).toBe(seeded);
     });
 
+    it('does not restart while one account\'s store alternates between records with and without account_id or an id token', async () => {
+      // LiteLLM reads the record's `account_id` first, then the JWT claim;
+      // `chatgptAccountId` now follows that order. Every shape one login's
+      // record takes must still name one account, or the seed generation
+      // would move and restart LiteLLM on every rewrite.
+      writeMachineConfig(machine());
+      writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED', account_id: 'acct-a' });
+      const { send, envs, tokenFile, settle } = await start();
+      const seeded = readFileSync(tokenFile(), 'utf8');
+      const shapes: Record<string, string>[] = [
+        { access_token: claimJwt(2_000_000_001, 'acct-a'), refresh_token: 'R1' },
+        { access_token: claimJwt(2_000_000_002), refresh_token: 'R2', account_id: 'acct-a' },
+        { access_token: claimJwt(2_000_000_003), id_token: claimJwt(2_000_000_003, 'acct-a'), refresh_token: 'R3' },
+        { access_token: claimJwt(2_000_000_004, 'acct-a'), id_token: claimJwt(2_000_000_004, 'acct-a'), refresh_token: 'R4', account_id: 'acct-a' },
+        { access_token: claimJwt(2_000_000_005), refresh_token: 'R5' },
+      ];
+      for (let round = 0; round < 2; round += 1) {
+        for (const tokens of shapes) { writeCodexStore(tokens); await send(); await settle(); }
+      }
+      expect(envs).toHaveLength(1);
+      expect(readFileSync(tokenFile(), 'utf8')).toBe(seeded);
+      expect(errors.some((line) => line.includes('restarting litellm'))).toBe(false);
+    });
+
     it('restarts when `codex logout` makes the default fall through to opencode\'s other account', async () => {
       writeMachineConfig(machine());
       writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'CODEX-A' });
@@ -3763,6 +3801,272 @@ litellm = ${litellmPort}
       await waitFor(() => envs.at(-1)?.CHATGPT_TOKEN_DIR !== undefined && envs.at(-1)?.CHATGPT_TOKEN_DIR !== first,
         'a spawn into a new directory');
       expect(held().refresh_token).toBe('SECOND');
+    });
+
+    it('detects a logout and re-login by the login\'s identity, not by the gateway\'s name', async () => {
+      // Renaming the gateway keeps the login it reads. Keyed on the name, the
+      // logout under the new name was never seen, and a same-account re-login
+      // left LiteLLM on the spent token.
+      writeMachineConfig(machine('', 'codex'));
+      writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'FIRST' });
+      const { send, envs, dir, held, settle } = await start();
+      const first = dir();
+      writeMachineConfig(machine('', 'codex').replaceAll('"codex"', '"chatgpt"').replace('credential_source = "chatgpt"', 'credential_source = "codex"'));
+      await send(); await settle();
+      expect(held().refresh_token).toBe('FIRST');
+      rmSync(join(home, '.codex', 'auth.json'));
+      expect(await send()).toBe(502);
+      await settle();
+      writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SECOND' });
+      await send();
+      await waitFor(() => envs.at(-1)?.CHATGPT_TOKEN_DIR !== first && held().refresh_token === 'SECOND',
+        'a spawn into a new directory with the returning login');
+      expect(errors.some((line) => line.includes('logged in again'))).toBe(true);
+    });
+
+    it.runIf(sqliteAvailable())('refuses through one empty read of opencode.db, and restarts nothing when the row returns', async () => {
+      // "Empty twice" is how opencodeDbRead reads a logout, and a request
+      // landing there is refused — but one such read may be a gap. Marking
+      // the lineage ended on it re-seeded LiteLLM from the store when the row
+      // came back, putting back a refresh token LiteLLM may already have spent.
+      writeMachineConfig(machine('', 'opencode'));
+      const row = [{
+        id: 'c1', integration: 'openai', timeCreated: 1,
+        value: JSON.stringify({ type: 'oauth', access: claimJwt(1_900_000_000, 'acct-1'), refresh: 'STORE', expires: 1_900_000_000_000 }),
+      }];
+      writeOpencodeCredDb(ocDbPath(), row);
+      const { send, envs, dir, tokenFile, settle } = await start();
+      const first = dir();
+      const rotated = JSON.stringify({ access_token: claimJwt(1_900_864_000, 'acct-1'), refresh_token: 'LITELLM-ROTATED' });
+      writeFileSync(tokenFile(), rotated);
+      rmSync(ocDbPath());
+      writeOpencodeCredDb(ocDbPath(), []);
+      expect(await send()).toBe(502);
+      await settle();
+      rmSync(ocDbPath());
+      writeOpencodeCredDb(ocDbPath(), row);
+      expect(await send()).toBe(200);
+      await settle();
+      expect(await send()).toBe(200);
+      await settle();
+      expect(envs).toHaveLength(1);
+      expect(dir()).toBe(first);
+      expect(readFileSync(tokenFile(), 'utf8')).toBe(rotated);
+    });
+
+    it.runIf(sqliteAvailable())('treats opencode.db still empty on a later read as a logout, and re-seeds when a login returns', async () => {
+      writeMachineConfig(machine('', 'opencode'));
+      const row = (refresh: string) => [{
+        id: 'c1', integration: 'openai', timeCreated: 1,
+        value: JSON.stringify({ type: 'oauth', access: claimJwt(1_900_000_000, 'acct-1'), refresh, expires: 1_900_000_000_000 }),
+      }];
+      writeOpencodeCredDb(ocDbPath(), row('FIRST'));
+      const { send, envs, dir, held, settle } = await start();
+      const first = dir();
+      rmSync(ocDbPath());
+      writeOpencodeCredDb(ocDbPath(), []);
+      expect(await send()).toBe(502);
+      expect(await send()).toBe(502);
+      await settle();
+      rmSync(ocDbPath());
+      writeOpencodeCredDb(ocDbPath(), row('SECOND'));
+      await send();
+      await waitFor(() => envs.at(-1)?.CHATGPT_TOKEN_DIR !== first && held().refresh_token === 'SECOND',
+        'a spawn into a new directory with the returning login');
+      expect(envs.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('ends a crash racing a login change with one live LiteLLM, in the new directory, and no child in a deleted one', async () => {
+      // The child crashes and, inside the respawn delay, a request sees a new
+      // account. The deliberate restart waited on an exit that had already
+      // fired, the crash respawn spawned a second child into the old
+      // directory meanwhile, and the restart then spawned a third — deleting
+      // the directory the second was still running in and orphaning it.
+      writeMachineConfig(machine('', 'codex'));
+      writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'ACCOUNT-A', account_id: 'acct-a' });
+      type Kid = { dir: string; alive: boolean; exits: ((code: number | null, signal: NodeJS.Signals | null) => void)[]; ranInDeletedDir: boolean };
+      const kids: Kid[] = [];
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, respawnDelayMs: 100, litellmExitTimeoutMs: 200,
+        spawnLitellm: (_config, env) => {
+          const kid: Kid = { dir: env.CHATGPT_TOKEN_DIR ?? '', alive: true, exits: [], ranInDeletedDir: false };
+          kids.push(kid);
+          return {
+            pid: 100 + kids.length,
+            kill: () => {
+              if (!kid.alive) return;
+              kid.alive = false;
+              setTimeout(() => kid.exits.forEach((cb) => cb(null, 'SIGTERM')), 5);
+            },
+            onExit: (cb) => { kid.exits.push(cb); },
+          };
+        },
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const watch = setInterval(() => {
+        for (const kid of kids) if (kid.alive && !existsSync(kid.dir)) kid.ranInDeletedDir = true;
+      }, 2);
+      try {
+        const send = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+        }).then(async (res) => { await res.text(); return res.status; });
+        expect(await send()).toBe(200);
+        writeCodexStore({ access_token: claimJwt(1_900_000_000, 'acct-b'), refresh_token: 'ACCOUNT-B', account_id: 'acct-b' });
+        const first = kids[0];
+        first.alive = false;
+        first.exits.forEach((cb) => cb(1, null));
+        await send();
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await send();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      } finally {
+        clearInterval(watch);
+      }
+      const alive = kids.filter((kid) => kid.alive);
+      expect(alive).toHaveLength(1);
+      const held = JSON.parse(readFileSync(join(alive[0].dir, 'auth.json'), 'utf8')) as { refresh_token?: string };
+      expect(held.refresh_token).toBe('ACCOUNT-B');
+      expect(kids.some((kid) => kid.ranInDeletedDir)).toBe(false);
+      expect(errors.some((line) => line.includes('did not exit within'))).toBe(false);
+    });
+
+    it('keeps a retired token directory until the child spawned into it is seen to exit', async () => {
+      // A LiteLLM that outlives its SIGTERM and SIGKILL is still running in
+      // its directory; removing it then leaves that process with no login.
+      writeMachineConfig(machine('', 'codex'));
+      writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'ACCOUNT-A', account_id: 'acct-a' });
+      const exits: ((code: number | null, signal: NodeJS.Signals | null) => void)[][] = [];
+      const dirs: string[] = [];
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, litellmExitTimeoutMs: 20,
+        spawnLitellm: (_config, env) => {
+          const listeners: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
+          exits.push(listeners);
+          dirs.push(env.CHATGPT_TOKEN_DIR ?? '');
+          // Deaf to every signal: exits only when the test says so.
+          return { pid: dirs.length, kill: () => {}, forceKill: () => {}, onExit: (cb) => { listeners.push(cb); } };
+        },
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      writeCodexStore({ access_token: claimJwt(1_900_000_000, 'acct-b'), refresh_token: 'ACCOUNT-B', account_id: 'acct-b' });
+      await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      }).then((res) => res.text());
+      await waitFor(() => dirs.length === 2, 'the restart for the new account');
+      expect(dirs[1]).not.toBe(dirs[0]);
+      expect(existsSync(dirs[0])).toBe(true);
+      exits[0].forEach((cb) => cb(null, 'SIGKILL'));
+      expect(existsSync(dirs[0])).toBe(false);
+      expect(existsSync(dirs[1])).toBe(true);
+    });
+
+    describe('a ChatGPT login LiteLLM has been refused', () => {
+      // LiteLLM 1.98.0 catches a refused refresh inside get_access_token,
+      // logs "re-login required" and falls into a device-code login that
+      // holds each request for up to fifteen minutes. Its own output — read
+      // from the captured fixtures below — is the only early sign.
+      const fixture = (name: string) => readFileSync(join(import.meta.dirname, '..', 'fixtures', 'litellm', name), 'utf8');
+
+      it('answers every ChatGPT request with a named 502 once LiteLLM logs the refusal, logging the remedy once', async () => {
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
+        const { send, sendFull, emit, upstreamCalls } = await start();
+        expect(await send()).toBe(200);
+        const forwardedBefore = upstreamCalls.length;
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        emit(fixture('chatgpt-device-code.txt'));
+        const refused = await sendFull();
+        expect(refused.status).toBe(502);
+        expect(refused.text).toContain('codex login');
+        expect(refused.text).toContain('sonata restart');
+        expect(await send()).toBe(502);
+        expect(upstreamCalls.length).toBe(forwardedBefore);
+        const remedies = errors.filter((line) => line.includes('ChatGPT login was refused by OpenAI'));
+        expect(remedies).toHaveLength(1);
+        expect(remedies[0]).toContain('"codex"');
+      });
+
+      it('reads a real LiteLLM process\'s output: forwards it, masks the device code, and marks the gateways', async () => {
+        // The default spawn, with the managed binary replaced by a script that
+        // writes the captured output and then stays up like LiteLLM would.
+        const stderrFixture = join(import.meta.dirname, '..', 'fixtures', 'litellm', 'chatgpt-refresh-refused.txt');
+        const stdoutFixture = join(import.meta.dirname, '..', 'fixtures', 'litellm', 'chatgpt-device-code.txt');
+        writeFileSync(managedLitellmPath(home),
+          `#!/bin/sh\ncat '${stderrFixture}' >&2\ncat '${stdoutFixture}'\nprintf 'partial line at exit'\nexec sleep 30\n`, { mode: 0o755 });
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
+        const out: string[] = [];
+        const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+          out.push(String(chunk)); return true;
+        }) as typeof process.stdout.write);
+        const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+          out.push(String(chunk)); return true;
+        }) as typeof process.stderr.write);
+        try {
+          vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+          const handle = await cmdServe({ cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {} });
+          handles.push(handle);
+          vi.unstubAllGlobals();
+          await waitFor(() => out.join('').includes('Enter code:'), 'the device-code prompt forwarded');
+          const status = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+          }).then(async (res) => { await res.text(); return res.status; });
+          expect(status).toBe(502);
+        } finally {
+          outSpy.mockRestore();
+          errSpy.mockRestore();
+        }
+        const forwarded = out.join('');
+        expect(forwarded).toContain('ChatGPT refresh token failed, re-login required');
+        expect(forwarded).toContain('2) Enter code: ****\n');
+        expect(forwarded).not.toContain('Enter code: U');
+        expect(errors.filter((line) => line.includes('ChatGPT login was refused by OpenAI'))).toHaveLength(1);
+      });
+
+      it('clears on the next deliberate spawn — a login change restarts LiteLLM and serves again', async () => {
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'ACCOUNT-A' });
+        const { send, envs, emit, settle } = await start();
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        expect(await send()).toBe(502);
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-b'), refresh_token: 'ACCOUNT-B' });
+        await send();
+        await waitFor(() => envs.length === 2, 'the restart for the new account');
+        await settle();
+        expect(await send()).toBe(200);
+      });
+
+      it('keeps the mark through a crash respawn, which reuses the refused token', async () => {
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
+        const { send, envs, emit, crash } = await start();
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        crash();
+        await waitFor(() => envs.length === 2, 'the crash respawn');
+        expect(await send()).toBe(502);
+      });
+
+      it('marks it from a response too, when LiteLLM answers a request with how its device-code login ended', async () => {
+        const captured = JSON.parse(fixture('chatgpt-refresh-refused-errors.json')) as { type: string; message: string }[];
+        const polling = captured.find((entry) => entry.message.includes('Polling failed'))!;
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
+        const { send, upstreamCalls } = await start({
+          upstream: () => new Response(JSON.stringify({ error: { message: polling.message, type: 'auth_error', code: '401' } }), { status: 401 }),
+        });
+        await send();
+        const forwarded = upstreamCalls.length;
+        expect(await send()).toBe(502);
+        expect(upstreamCalls.length).toBe(forwarded);
+        expect(errors.filter((line) => line.includes('ChatGPT login was refused by OpenAI'))).toHaveLength(1);
+      });
     });
 
     it('respawns a crashed LiteLLM into the directory it was using, with LiteLLM\'s token as it left it', async () => {
@@ -3894,6 +4198,164 @@ auth = "codex-oauth"
       expect((await send()).status).toBe(200);
       expect(errors.some((line) => line.includes('read different credentials'))).toBe(false);
       rmSync(project, { recursive: true, force: true });
+    });
+
+    describe('a store that stays unreadable', () => {
+      // Torn is bounded: a file that has not changed for
+      // UNREADABLE_STORE_WINDOW_MS is steadily unreadable — corrupt, zero
+      // bytes, EACCES — and is skipped as absent, as base did. Read as torn
+      // forever, a default ChatGPT gateway opencode could serve answered 502
+      // for good, promising a retry that never changed anything.
+      const DEFAULT_CHATGPT = () => `
+[models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["luna"]
+complex = ["luna"]
+[native.gateways."codex"]
+auth = "codex-oauth"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`;
+      const codexPath = () => join(home, '.codex', 'auth.json');
+      const writeOpencodeLogin = () => {
+        mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+        writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({
+          openai: { type: 'oauth', access: claimJwt(1_900_000_000), refresh: 'OPENCODE-B', expires: 1_900_000_000_000 },
+        }));
+      };
+      const backdate = (path: string) => {
+        const old = (Date.now() - 60_000) / 1000;
+        utimesSync(path, old, old);
+      };
+      const start = async (now?: () => number) => {
+        const envs: NodeJS.ProcessEnv[] = [];
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+        const handle = await cmdServe({
+          cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, ...(now === undefined ? {} : { now }),
+          spawnLitellm: (_config, env) => { envs.push({ ...env }); return { pid: 1, kill: () => {} }; },
+        });
+        handles.push(handle);
+        vi.unstubAllGlobals();
+        const send = async () => {
+          const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+          });
+          return { status: res.status, text: await res.text() };
+        };
+        const seededWith = () => envs.map((env) =>
+          (JSON.parse(readFileSync(join(env.CHATGPT_TOKEN_DIR!, 'auth.json'), 'utf8')) as { refresh_token: string }).refresh_token);
+        return { send, seededWith };
+      };
+
+      it('serves a default ChatGPT gateway from opencode when codex\'s auth.json has been empty for longer than the window', async () => {
+        writeMachineConfig(DEFAULT_CHATGPT());
+        mkdirSync(join(home, '.codex'), { recursive: true });
+        writeFileSync(codexPath(), '');
+        backdate(codexPath());
+        writeOpencodeLogin();
+        const { send, seededWith } = await start();
+        expect((await send()).status).toBe(200);
+        expect(seededWith()).toEqual(['OPENCODE-B']);
+        expect(errors.filter((line) => line.includes(codexPath()) && line.includes('skipped as if absent'))).toHaveLength(1);
+        await send();
+        expect(errors.filter((line) => line.includes('skipped as if absent'))).toHaveLength(1);
+      });
+
+      it('serves it from opencode when codex\'s auth.json cannot be opened at all (EACCES)', async () => {
+        writeMachineConfig(DEFAULT_CHATGPT());
+        mkdirSync(join(home, '.codex'), { recursive: true });
+        writeFileSync(codexPath(), codexRecord('CODEX-A'), { mode: 0o000 });
+        backdate(codexPath());
+        writeOpencodeLogin();
+        try {
+          const { send, seededWith } = await start();
+          expect((await send()).status).toBe(200);
+          expect(seededWith()).toEqual(['OPENCODE-B']);
+          expect(errors.some((line) => line.includes(codexPath()) && line.includes('EACCES'))).toBe(true);
+        } finally {
+          chmodSync(codexPath(), 0o600);
+        }
+      });
+
+      it('refuses within the window, and serves from opencode once it lapses with nothing on disk changing', async () => {
+        writeMachineConfig(DEFAULT_CHATGPT());
+        mkdirSync(join(home, '.codex'), { recursive: true });
+        writeFileSync(codexPath(), '');
+        writeOpencodeLogin();
+        let offset = 0;
+        const { send, seededWith } = await start(() => Date.now() + offset);
+        const refused = await send();
+        expect(refused.status).toBe(502);
+        expect(refused.text).toContain('retried on the next request');
+        expect((await send()).status).toBe(502);
+        offset = 15_000;
+        expect((await send()).status).toBe(200);
+        expect(seededWith()).toEqual(['OPENCODE-B']);
+      });
+
+      it('refuses within the window and recovers when codex\'s write completes', async () => {
+        writeMachineConfig(DEFAULT_CHATGPT());
+        mkdirSync(join(home, '.codex'), { recursive: true });
+        writeFileSync(codexPath(), codexRecord('CODEX-A').slice(0, 30));
+        writeOpencodeLogin();
+        const { send, seededWith } = await start();
+        expect((await send()).status).toBe(502);
+        writeFileSync(codexPath(), codexRecord('CODEX-A'));
+        expect((await send()).status).toBe(200);
+        expect(seededWith()).toEqual(['CODEX-A']);
+      });
+
+      it.runIf(sqliteAvailable())('skips an opencode.db that keeps failing, once the window lapses, for opencode\'s auth.json', async () => {
+        writeMachineConfig(`
+[models."pdm"]
+gateway = "pd"
+id = "pd-1"
+[native.gateways."pd"]
+base_url = "https://pd.example"
+provider = "anthropic"
+credential_source = "opencode"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+        const dir = join(home, '.local', 'share', 'opencode');
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'opencode.db'), 'this is not a sqlite database, and never will be');
+        writeFileSync(join(dir, 'auth.json'), JSON.stringify({ pd: { type: 'api', key: 'FROM-AUTH-JSON' } }));
+        const forwarded: string[] = [];
+        const upstream = vi.fn(async (_url: string, init: RequestInit) => {
+          const headers = new Headers(init.headers);
+          forwarded.push(headers.get('x-api-key') ?? headers.get('authorization') ?? '(none)');
+          return new Response('{"id":"x","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}',
+            { status: 200, headers: { 'content-type': 'application/json' } });
+        });
+        vi.stubGlobal('fetch', upstream);
+        let offset = 0;
+        const handle = await cmdServe({
+          cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, now: () => Date.now() + offset,
+          spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+        });
+        handles.push(handle);
+        vi.unstubAllGlobals();
+        const send = async () => {
+          const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'pdm', max_tokens: 1, messages: [] }),
+          });
+          await res.text();
+          return res.status;
+        };
+        expect(await send()).toBe(502);
+        offset = 15_000;
+        expect(await send()).toBe(200);
+        expect(forwarded).toHaveLength(1);
+        expect(forwarded[0]).toContain('FROM-AUTH-JSON');
+        expect(errors.some((line) => line.includes('opencode.db') && line.includes('skipped as if absent'))).toBe(true);
+      });
     });
 
     it.runIf(sqliteAvailable())('refuses the first request after the last opencode.db credential row is removed', async () => {

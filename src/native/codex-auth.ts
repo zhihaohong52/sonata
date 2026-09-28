@@ -79,24 +79,23 @@ export function jwtExpiry(token: string): number | undefined {
  * The ChatGPT account a record belongs to, or undefined when nothing in it
  * says.
  *
- * Derived the way LiteLLM's chatgpt authenticator derives it
- * (`_extract_account_id`): the `https://api.openai.com/auth` claim's
- * `chatgpt_account_id`, read from the id token when there is one and the
- * access token otherwise. The record's own `account_id` is the fallback, for
- * a token that does not carry the claim. Both stores and LiteLLM's own
- * refresh keep one account's claim across every token they mint, so this is
- * stable where a refresh token or an expiry is not — and an absent field is
- * "unknown", never a different account: opencode v2's credential row has no
- * `accountId` at all.
+ * Derived in exactly the order LiteLLM's chatgpt authenticator derives the
+ * account it sends (`Authenticator.get_account_id()`, 1.98.0): the record's
+ * own `account_id` first, and only when that is absent the
+ * `https://api.openai.com/auth` claim's `chatgpt_account_id`, read from the id
+ * token when there is one and the access token otherwise. Both stores and
+ * LiteLLM's own refresh keep one account across every token they mint, so
+ * this is stable where a refresh token or an expiry is not — and an absent
+ * field is "unknown", never a different account: opencode v2's credential row
+ * has no `accountId` at all.
  */
 export function chatgptAccountId(record: Partial<ChatGptAuthRecord>): string | undefined {
+  const field = str(record.account_id);
+  if (field !== undefined) return field;
   const token = str(record.id_token) ?? str(record.access_token);
   const auth = token === undefined ? undefined : jwtClaims(token)?.['https://api.openai.com/auth'];
-  if (auth !== null && typeof auth === 'object' && !Array.isArray(auth)) {
-    const claim = str((auth as Record<string, unknown>).chatgpt_account_id);
-    if (claim !== undefined) return claim;
-  }
-  return str(record.account_id);
+  if (auth === null || typeof auth !== 'object' || Array.isArray(auth)) return undefined;
+  return str((auth as Record<string, unknown>).chatgpt_account_id);
 }
 
 function str(value: unknown): string | undefined {

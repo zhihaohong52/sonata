@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { codexAuthPath, codexAuthReport, jwtExpiry, readCodexOAuth, readOpencodeChatGptOAuth, readChatGptOAuth } from '../../src/native/codex-auth.js';
+import { chatgptAccountId, codexAuthPath, codexAuthReport, jwtExpiry, readCodexOAuth, readOpencodeChatGptOAuth, readChatGptOAuth } from '../../src/native/codex-auth.js';
 import { opencodeDbPath } from '../../src/native/opencode-store.js';
 import { sqliteAvailable, writeOpencodeCredDb } from '../opencode-db-fixture.js';
 
@@ -276,5 +276,45 @@ describe('readOpencodeChatGptOAuth — the v2 credential table', () => {
     ]);
 
     expect(readChatGptOAuth(home)?.refresh_token).toBe('rt-oc');
+  });
+});
+
+describe('chatgptAccountId', () => {
+  // LiteLLM's `Authenticator.get_account_id()` reads the record's
+  // `account_id` first and derives it from the JWT only when that is absent
+  // (litellm/llms/chatgpt/authenticator.py, 1.98.0). Deriving it the other way
+  // round names a different account than the one LiteLLM sends whenever the
+  // two disagree.
+  const claimJwt = (account?: string) => `h.${Buffer.from(JSON.stringify({
+    exp: 2_000_000_000,
+    ...(account === undefined ? {} : { 'https://api.openai.com/auth': { chatgpt_account_id: account } }),
+  })).toString('base64url')}.s`;
+
+  it('prefers the record\'s account_id over the token claim, as LiteLLM does', () => {
+    expect(chatgptAccountId({ account_id: 'acct-field', id_token: claimJwt('acct-claim'), access_token: claimJwt('acct-claim') }))
+      .toBe('acct-field');
+  });
+
+  it('falls back to the id token\'s claim, then the access token\'s', () => {
+    expect(chatgptAccountId({ id_token: claimJwt('acct-id'), access_token: claimJwt('acct-access') })).toBe('acct-id');
+    expect(chatgptAccountId({ access_token: claimJwt('acct-access') })).toBe('acct-access');
+  });
+
+  it('is unknown when neither says, and blank fields are absent', () => {
+    expect(chatgptAccountId({ access_token: claimJwt() })).toBeUndefined();
+    expect(chatgptAccountId({ account_id: '  ', access_token: claimJwt('acct-a') })).toBe('acct-a');
+  });
+
+  it('names one account across every shape one login\'s records take', () => {
+    // A store alternating between records with and without `account_id`, or
+    // with and without an id token, must not read as two accounts.
+    const shapes = [
+      { account_id: 'acct-a', id_token: claimJwt('acct-a'), access_token: claimJwt('acct-a') },
+      { id_token: claimJwt('acct-a'), access_token: claimJwt('acct-a') },
+      { account_id: 'acct-a', access_token: claimJwt() },
+      { access_token: claimJwt('acct-a') },
+      { account_id: 'acct-a', access_token: claimJwt('acct-a') },
+    ];
+    expect(new Set(shapes.map((shape) => chatgptAccountId(shape)))).toEqual(new Set(['acct-a']));
   });
 });
