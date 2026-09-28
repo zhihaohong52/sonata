@@ -136,6 +136,27 @@ base_url = "https://gateway.example/v1"
     expect(reads).toBe(2);
   });
 
+  it('picks up a registered session\'s project that gains a sonata.toml, with sessions.json unchanged', async () => {
+    // `sonata init` in a project whose session is already registered writes
+    // ./sonata.toml and nothing else. A cwd -> config cache keyed by the
+    // sessions.json version kept answering "machine config" until the file
+    // changed, so the project never entered the LiteLLM union.
+    const fresh = mkdtempSync(join(tmpdir(), 'tenants-late-init-'));
+    await recordSession(home, { session: 's-late', cwd: fresh, started: new Date().toISOString() });
+    const reg = new TenantRegistry(home);
+    const path = join(fresh, 'sonata.toml');
+    const beforeFingerprint = reg.fingerprint();
+    const beforeSnapshot = reg.unionSnapshot();
+    expect(reg.loadable().map((t) => t.configPath)).not.toContain(path);
+    writeFileSync(path, NATIVE('late-model'));
+    const canonical = realpathSync(path);
+    expect(reg.loadable().map((t) => t.configPath)).toContain(canonical);
+    expect(reg.fingerprint()).not.toBe(beforeFingerprint);
+    expect(reg.fingerprint()).toContain(canonical);
+    expect(reg.unionSnapshot()).not.toBe(beforeSnapshot);
+    expect(reg.unionSnapshot()).toContain('late-model');
+  });
+
   it('unionSnapshot changes when any tenant\'s registry changes, and not otherwise', () => {
     const reg = new TenantRegistry(home);
     reg.noteProject(a);
