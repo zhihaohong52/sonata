@@ -170,14 +170,17 @@ the review doc's Backlog note):
   ChatGPT gateways read different accounts: one whose store cannot be read
   yet is refused on its own, rather than guessed to be on opencode's login
   and taking every other ChatGPT gateway down with it. "Mid-write" is
-  bounded: a file counts as torn only while its mtime is under 10 s old (or
-  its mtime or size changed since the last failed read less than 10 s ago)
-  and its current run of failed reads — failed reads each less than 10 s
-  after the one before — began less than 10 s ago, so a file kept freshly
-  written that never parses is not torn forever, and a torn read at startup
-  followed by another write after a quiet spell is two runs, not one;
-  opencode.db counts only for the first 10 s of a run of failed queries,
-  however far apart. Past that the store is steadily unreadable — corrupt,
+  judged by content: a file whose bytes do not parse counts as torn only
+  while those bytes are changing — they differ from the previous failed
+  read's, or were first seen under a second ago. The same bytes a second
+  apart are stuck and skipped, however freshly the file was touched and
+  however long ago it was last read; new bytes are torn again, however long
+  it was quiet. So a corrupt file found at startup costs one refused request,
+  and a file rewritten with different broken bytes on every read stays torn
+  as long as that goes on (it cannot be told from a write in progress). A
+  file that cannot be read at all (EACCES) is torn for 10 s from its first
+  failure; opencode.db counts only for the first 10 s of a run of failed
+  queries, however far apart. Past that the store is steadily unreadable — corrupt,
   zero bytes, EACCES — and is skipped as absent, logged once naming the file
   and the error. A skipped store reads as absent and the lookup goes on from
   the stores that remain, with one exception: a gateway whose last credential
