@@ -30,6 +30,18 @@ export interface StoreRead {
   state: StoreReadState;
   /** For `unreadable`: which store, and why, with no content. */
   detail?: string;
+  /**
+   * For `absent`: set when the store exists but has stayed unreadable past
+   * `UNREADABLE_STORE_WINDOW_MS` (`boundUnreadable`), so it is skipped as if
+   * it were not there. Carries the same path-and-error detail.
+   */
+  skipped?: string;
+  /**
+   * For opencode.db, `ok`: the table read empty twice where the previous read
+   * found rows. A logout — or a gap: callers refuse on it but do not yet treat
+   * the login as gone for good.
+   */
+  emptied?: true;
 }
 
 function errnoCode(error: unknown): string {
@@ -78,7 +90,8 @@ export function fileStoreRead(path: string): StoreRead {
  * second time, on a fresh connection, before anything is concluded: a login
  * vanishing between two reads is what a torn read looks like, but deferring
  * the verdict to the next request — as this once did — served that request
- * on the credential just logged out. Empty twice is a logout and is `ok`;
+ * on the credential just logged out. Empty twice is a logout and is `ok`
+ * (flagged `emptied`, since one such read may still be a gap);
  * rows on the second read make the first one `unreadable`. `memory.rows`
  * carries the previous count; pass the same object each call.
  */
@@ -103,7 +116,7 @@ export function opencodeDbRead(
     if (again.rows === undefined && !again.missingTable) return { state: 'unreadable', detail: again.detail };
     const rows = again.rows ?? 0;
     memory.rows = rows;
-    return rows === 0 ? { state: 'ok' } : { state: 'unreadable', detail: `${path}: the credential table read empty` };
+    return rows === 0 ? { state: 'ok', emptied: true } : { state: 'unreadable', detail: `${path}: the credential table read empty` };
   }
   memory.rows = first.rows;
   return { state: 'ok' };
@@ -122,4 +135,118 @@ function countCredentialRows(path: string): { rows?: number; missingTable?: true
   } finally {
     try { db.close(); } catch { /* already closed */ }
   }
+}
+
+/**
+ * How long a store that exists but cannot be read counts as mid-write.
+ *
+ * codex rewrites `auth.json` by truncating and writing, so a torn read is a
+ * moment, and treating it as "no login" dropped gateways and restarted
+ * LiteLLM. But a file that is corrupt, zero bytes or EACCES for good is not a
+ * moment: read as torn forever, it refused a default-sourced ChatGPT gateway
+ * that opencode could serve, with a 502 promising a retry that never
+ * changed anything. Past this window a store is skipped as absent, which is
+ * what every credential reader already does with it.
+ */
+export const UNREADABLE_STORE_WINDOW_MS = 10_000;
+
+/** What `boundUnreadable` remembers between reads; one per process, shared by every caller. */
+export interface UnreadableMemory {
+  /** A file store's stat at its last unreadable read, and when that last changed. */
+  files: Map<string, { sig: string; changedAt?: number; warned?: true }>;
+  /** When opencode.db's current run of failed reads began. */
+  db: Map<string, { since: number; warned?: true }>;
+  /** Unreadable reads answered as mid-write since this memory was made; a caller compares counts. */
+  torn: number;
+}
+
+export function newUnreadableMemory(): UnreadableMemory {
+  return { files: new Map(), db: new Map(), torn: 0 };
+}
+
+function statSig(path: string): { sig: string; mtimeMs?: number } {
+  try {
+    const { mtimeMs, size } = statSync(path);
+    return { sig: `${mtimeMs}:${size}`, mtimeMs };
+  } catch (error) {
+    return { sig: `error:${errnoCode(error)}` };
+  }
+}
+
+/**
+ * A file store's read, with "cannot be read" bounded in time.
+ *
+ * An unreadable file counts as torn — answered `unreadable`, so the caller
+ * keeps its last resolution or refuses for now — only while it is plausibly
+ * mid-write: its mtime is within `windowMs` of `now`, or its mtime or size
+ * changed since the previous unreadable read less than `windowMs` ago. Past
+ * that it is steadily unreadable and answered `absent`, with `skipped` naming
+ * the path and the error; `warn` is called once per such stretch. Any read
+ * that is not unreadable forgets the file, so the next failure starts fresh.
+ */
+export function boundUnreadable(
+  path: string,
+  read: StoreRead,
+  memory: UnreadableMemory,
+  now: number,
+  warn: (line: string) => void = () => {},
+  windowMs: number = UNREADABLE_STORE_WINDOW_MS,
+): StoreRead {
+  if (read.state !== 'unreadable') {
+    memory.files.delete(path);
+    return read;
+  }
+  const { sig, mtimeMs } = statSig(path);
+  const previous = memory.files.get(path);
+  const changedAt = previous !== undefined && previous.sig !== sig ? now : previous?.changedAt;
+  const record: { sig: string; changedAt?: number; warned?: true } = { sig, ...(changedAt === undefined ? {} : { changedAt }) };
+  if (previous?.warned === true && previous.sig === sig) record.warned = true;
+  memory.files.set(path, record);
+  const recentlyWritten = mtimeMs !== undefined && Math.abs(now - mtimeMs) < windowMs;
+  const recentlyChanged = changedAt !== undefined && now - changedAt < windowMs;
+  if (recentlyWritten || recentlyChanged) {
+    memory.torn += 1;
+    return read;
+  }
+  const detail = read.detail ?? `${path}: unreadable`;
+  if (record.warned !== true) {
+    record.warned = true;
+    warn(`${detail} — it has not read cleanly for ${Math.round(windowMs / 1000)}s, so it is skipped as if absent ` +
+      'until it does');
+  }
+  return { state: 'absent', skipped: detail };
+}
+
+/**
+ * opencode.db's read, with "cannot be read" bounded in time: a database that
+ * has failed every read for `windowMs` — locked for good, corrupt — is
+ * skipped as absent (logged once) rather than refusing its gateways forever.
+ * The database is written constantly, so its mtime says nothing about a torn
+ * read; the length of the run of failures does.
+ */
+export function boundUnreadableDb(
+  path: string,
+  read: StoreRead,
+  memory: UnreadableMemory,
+  now: number,
+  warn: (line: string) => void = () => {},
+  windowMs: number = UNREADABLE_STORE_WINDOW_MS,
+): StoreRead {
+  if (read.state !== 'unreadable') {
+    memory.db.delete(path);
+    return read;
+  }
+  const run = memory.db.get(path) ?? { since: now };
+  memory.db.set(path, run);
+  if (now - run.since < windowMs) {
+    memory.torn += 1;
+    return read;
+  }
+  const detail = read.detail ?? `${path}: unreadable`;
+  if (run.warned !== true) {
+    run.warned = true;
+    warn(`${detail} — it has not read cleanly for ${Math.round(windowMs / 1000)}s, so it is skipped as if absent ` +
+      'until it does');
+  }
+  return { state: 'absent', skipped: detail };
 }
