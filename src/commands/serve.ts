@@ -24,6 +24,7 @@ import { litellmRequired, transportFor } from '../native/providers.js';
 import { litellmStatus, managedLitellmPath } from '../native/litellm-venv.js';
 import type { UiDeps } from '../native/ui.js';
 import { createRouterServer, type RouterTenant } from '../native/router.js';
+import { LITELLM_CHATGPT_LOGIN_REFUSED, pipeLitellmOutput } from '../native/litellm-output.js';
 import { canonicalConfigPath, TenantRegistry } from '../native/tenants.js';
 import { ensureRouterToken } from '../native/router-token.js';
 import { resolvePrice } from '../pricing.js';
@@ -56,6 +57,12 @@ export interface SpawnedLitellm {
   forceKill?(): void;
   /** Fires when the process exits on its own — omitted by stubs that never crash. */
   onExit?(cb: (code: number | null, signal: NodeJS.Signals | null) => void): void;
+  /**
+   * Hands every line the child writes, to stdout or stderr, to `cb` — after
+   * it has been forwarded to serve's own output. Omitted by stubs with no
+   * output; see `pipeLitellmOutput`.
+   */
+  onOutputLine?(cb: (line: string) => void): void;
 }
 
 export interface ServeDeps {
@@ -632,6 +639,11 @@ export async function occupiedPortMessage(
  * simply vanishes from the catalogue and the next request answers "no healthy
  * deployments for this model" — with the actual cause (for one real case, a 403
  * from GitHub's Copilot token exchange) written only to a stream nobody read.
+ *
+ * So every line still reaches serve's own stdout and stderr — piped rather
+ * than inherited, and forwarded line by line (`pipeLitellmOutput`), because
+ * the same output is also the only early sign that LiteLLM's ChatGPT login
+ * was refused and it has fallen into a fifteen-minute device-code login.
  */
 function defaultSpawnLitellm(
   configPath: string, env: NodeJS.ProcessEnv, port: number, bin: string,
@@ -642,13 +654,18 @@ function defaultSpawnLitellm(
   // which `import litellm` fails outright.
   const child = spawn(bin, ['--config', configPath, '--host', LITELLM_HOST, '--port', String(port)], {
     env,
-    stdio: ['ignore', 'inherit', 'inherit'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  const listeners: ((line: string) => void)[] = [];
+  const toListeners = (line: string): void => { for (const cb of listeners) cb(line); };
+  if (child.stdout !== null) pipeLitellmOutput(child.stdout, process.stdout, toListeners);
+  if (child.stderr !== null) pipeLitellmOutput(child.stderr, process.stderr, toListeners);
   return {
     pid: child.pid ?? 0,
     kill: () => child.kill(),
     forceKill: () => child.kill('SIGKILL'),
     onExit: (cb) => child.on('exit', cb),
+    onOutputLine: (cb) => { listeners.push(cb); },
   };
 }
 
@@ -1504,6 +1521,31 @@ export async function cmdServe(
    * reason instead of forwarding it.
    */
   let droppedGateways = new Map<string, string>();
+  /** The gateways the last merge kept — what a LiteLLM child is serving. */
+  let lastMergedGateways: NativeConfig['gateways'] = {};
+  /**
+   * Set when LiteLLM's ChatGPT login has been refused — its own output said
+   * so (`LITELLM_CHATGPT_LOGIN_REFUSED`), or a response did (the router's
+   * backstop) — to the 502 every codex-oauth gateway is answered with until
+   * the next deliberate spawn. LiteLLM has one ChatGPT token directory, so
+   * every such gateway is served from it. Without this, each request hung in
+   * LiteLLM's device-code login for up to fifteen minutes.
+   */
+  let chatgptLoginRefused: string | undefined;
+  const markChatgptLoginRefused = (): void => {
+    if (chatgptLoginRefused !== undefined) return;
+    const affected = Object.entries(lastMergedGateways).filter(([, gateway]) => gateway.auth === 'codex-oauth');
+    if (affected.length === 0) return;
+    const names = affected.map(([name]) => `"${name}"`).join(', ');
+    const sonataOwned = affected.filter(([, gateway]) => gateway.credentialSource === 'sonata').map(([name]) => name);
+    const relogin = sonataOwned.length > 0
+      ? sonataOwned.map((name) => `\`sonata auth login ${name}\``).join(' / ')
+      : '`codex login` (or `opencode auth login`)';
+    const remedy = `LiteLLM's ChatGPT login was refused by OpenAI — run ${relogin} and then \`sonata restart\``;
+    chatgptLoginRefused = `gateway ${names}: ${remedy} (LiteLLM had fallen back to an interactive device-code ` +
+      'login, which would hold each request for up to fifteen minutes)';
+    console.error(`sonata serve: ${remedy} — affects gateway ${names}`);
+  };
   /**
    * Gateways whose credential did not resolve in the last child-env build,
    * and why — the message names the gateway, the missing credential and the
@@ -1574,6 +1616,7 @@ export async function cmdServe(
         `stayed unreadable for ${UNREADABLE_STORE_WINDOW_MS / 1000}s`);
     }
     droppedGateways = dropped;
+    lastMergedGateways = gateways;
     return gateways;
   };
   /** Merged gateways across every loadable tenant — what credential resolution and the child env are built from. */
@@ -2093,10 +2136,21 @@ export async function cmdServe(
     };
 
     const spawnLitellmChild = (deliberate = true): SpawnedLitellm => {
-      if (deliberate) seedTokenDirs();
+      if (deliberate) {
+        seedTokenDirs();
+        // A deliberate spawn is what the remedy asks for — a restart, a
+        // lineage change, `sonata restart` — so the refusal is LiteLLM's to
+        // make again. A crash respawn reuses the refused token and keeps it.
+        chatgptLoginRefused = undefined;
+      }
       const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(
         configPath, childEnv, ports.litellm, litellmBin,
       );
+      spawned.onOutputLine?.((line) => {
+        // Only the child serving now: an old one's last words during a
+        // restart say nothing about its replacement.
+        if (child === spawned && LITELLM_CHATGPT_LOGIN_REFUSED.test(line)) markChatgptLoginRefused();
+      });
       recordLitellmPid(opts.home, ports.router, spawned.pid);
       childTokenDir.set(spawned, childEnv.CHATGPT_TOKEN_DIR);
       spawned.onExit?.((code, signal) => {
@@ -2381,7 +2435,10 @@ export async function cmdServe(
       projectHintToken: ensureRouterToken(opts.home),
       resolveTier: (alias, tenant) => tenant.config === undefined ? undefined : resolveTierAlias(tenant.config, alias),
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
-      gatewayUnavailable: (_tenant, gateway) => droppedGateways.get(gateway) ?? credentialFailures.get(gateway),
+      gatewayUnavailable: (tenant, gateway) => droppedGateways.get(gateway) ?? credentialFailures.get(gateway) ??
+        (chatgptLoginRefused !== undefined && tenant.config?.native?.gateways[gateway]?.auth === 'codex-oauth'
+          ? chatgptLoginRefused : undefined),
+      chatgptLoginRefused: () => markChatgptLoginRefused(),
       resolveNative: (key, tenant) => tenant.config === undefined ? undefined : nativeRouteFor(tenant.config, key),
       // Opt-in only: a captured request is a whole conversation.
       capture400Dir: process.env.SONATA_CAPTURE_400_DIR,
