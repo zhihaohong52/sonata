@@ -92,10 +92,19 @@ export function runProbe(
     // Ctrl-C no longer reaches it. Forward SIGINT/SIGTERM to that group while
     // it runs; then, if nothing else was listening, re-raise so this process
     // gets the default handling it would have had without our listener.
-    const forward = (signal: NodeJS.Signals) => {
+    //
+    // "Nothing else was listening" is judged as the probe STARTED, not when the
+    // signal lands: a parent's `process.once('SIGINT')` runs (and removes
+    // itself) before this listener does, so counting then would read a parent
+    // that handled the signal as one that did not, and re-raise into its exit.
+    const parentHandles = {
+      SIGINT: process.listenerCount('SIGINT') > 0,
+      SIGTERM: process.listenerCount('SIGTERM') > 0,
+    };
+    const forward = (signal: 'SIGINT' | 'SIGTERM') => {
       killGroup();
       unforward();
-      if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+      if (!parentHandles[signal]) process.kill(process.pid, signal);
     };
     const onSigint = () => forward('SIGINT');
     const onSigterm = () => forward('SIGTERM');
