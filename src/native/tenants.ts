@@ -28,7 +28,7 @@ import { GLOBAL_CONFIG_RELATIVE, configPath as resolveConfigPath, parseConfig, t
 import { assertEffortsPinned, loadAaCatalog } from '../catalog.js';
 import { loadModelsDev } from '../modelsdev.js';
 import { configUpstreamFor } from '../pricing.js';
-import { loadSessions } from '../sessions.js';
+import { loadSessions, sessionsPath, type SessionRecord } from '../sessions.js';
 import type { RouterTenant } from './router.js';
 
 /**
@@ -81,11 +81,55 @@ function nativeSnapshot(cfg: SonataConfig): unknown {
 export class TenantRegistry {
   private readonly noted = new Set<string>();
   private readonly logged = new Map<string, string>();
+  /**
+   * sessions.json as last parsed, keyed by the file's own stat, plus each cwd
+   * it names resolved to a canonical config path for that version.
+   *
+   * `fingerprint()` runs on every request, and it used to re-read and
+   * re-parse this file and run `configPath` + realpath once per session
+   * RECORD — not per distinct cwd — every time: measured 53 ms per request
+   * at 256 projects and 2000 sessions, synchronous, Anthropic passthrough
+   * included. A cwd's resolution is only re-run when the file changes; the
+   * resolved configs are still stat'ed every time, since that is the signal.
+   */
+  private sessionsCache?: { stamp: string; records: Record<string, SessionRecord>; cwds: string[]; resolved: Map<string, string | null> };
 
   constructor(
     private readonly home: string,
-    private readonly deps: { log?: (line: string) => void } = {},
+    private readonly deps: {
+      log?: (line: string) => void;
+      /** Test seam: how sessions.json's bytes are read, so a test can count re-reads. */
+      readSessionsFile?: (path: string) => string;
+    } = {},
   ) {}
+
+  /** The current sessions.json version, parsed once per version. */
+  private sessions(): NonNullable<TenantRegistry['sessionsCache']> {
+    const path = sessionsPath(this.home);
+    let stamp: string;
+    try {
+      const { ino, mtimeMs, size } = statSync(path);
+      stamp = `${ino}:${mtimeMs}:${size}`;
+    } catch {
+      stamp = 'absent';
+    }
+    if (this.sessionsCache?.stamp !== stamp) {
+      const records = loadSessions(this.home, this.deps.readSessionsFile);
+      const cwds = [...new Set(Object.values(records).map((record) => record.cwd).filter((cwd): cwd is string => typeof cwd === 'string'))];
+      this.sessionsCache = { stamp, records, cwds, resolved: new Map() };
+    }
+    return this.sessionsCache;
+  }
+
+  /** `cwd`'s canonical config path, from this sessions.json version's cache when it has one. */
+  private configFor(cwd: string, cache?: Map<string, string | null>): string | null {
+    const hit = cache?.get(cwd);
+    if (hit !== undefined) return hit;
+    const found = resolveConfigPath(cwd, this.home);
+    const path = found === null ? null : canonicalConfigPath(found);
+    cache?.set(cwd, path);
+    return path;
+  }
 
   private machinePath(): string | null {
     const path = join(this.home, GLOBAL_CONFIG_RELATIVE);
@@ -127,7 +171,7 @@ export class TenantRegistry {
   }
 
   resolve(hint: { project?: string; session?: string }): RouterTenant {
-    const cwd = hint.project ?? (hint.session === undefined ? undefined : loadSessions(this.home)[hint.session]?.cwd);
+    const cwd = hint.project ?? (hint.session === undefined ? undefined : this.sessions().records[hint.session]?.cwd);
     let path: string | null;
     if (cwd !== undefined) {
       const found = resolveConfigPath(cwd, this.home);
@@ -182,13 +226,18 @@ export class TenantRegistry {
     const paths = new Set<string>();
     const machine = this.machinePath();
     if (machine !== null) paths.add(machine);
-    for (const record of Object.values(loadSessions(this.home))) {
-      const path = resolveConfigPath(record.cwd, this.home);
-      if (path !== null) paths.add(canonicalConfigPath(path));
+    // Session cwds are distinct per sessions.json version and resolved once
+    // for it. A noted project is resolved fresh unless a session already
+    // resolved the same cwd this version: noting is per request, and a
+    // noted-only cwd is not something the file's version says anything about.
+    const { cwds, resolved } = this.sessions();
+    for (const cwd of cwds) {
+      const path = this.configFor(cwd, resolved);
+      if (path !== null) paths.add(path);
     }
     for (const cwd of this.noted) {
-      const path = resolveConfigPath(cwd, this.home);
-      if (path !== null) paths.add(canonicalConfigPath(path));
+      const path = resolved.get(cwd) ?? this.configFor(cwd);
+      if (path !== null) paths.add(path);
     }
     return [...paths].sort();
   }
