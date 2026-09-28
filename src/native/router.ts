@@ -1706,18 +1706,25 @@ async function routeTierRequest(
         deps,
       )
       : await forwardToLitellm(body, headers, { ...req, body }, deps, isCodexOauth(tenant, gateway));
-    // A refused ChatGPT login is the gateway's, not the request's: handled
-    // like an unservable 400 (the candidate and its gateway cool, the next
-    // candidate is tried), and counted as not served, so a tier left with
-    // nothing else answers the same named 502 later requests get.
+    // A refused ChatGPT login is the gateway's, not the request's: the next
+    // candidate is tried, and it is counted as not served, so a tier left
+    // with nothing else answers the same named 502 later requests get.
+    //
+    // Cooled only when nothing else will keep the gateway away. serve's mark
+    // (`gatewayUnavailable` answering once `chatgptLoginRefused` has run)
+    // already skips it, and clears the moment LiteLLM starts on a new login;
+    // a cooldown on top outlived that by up to a minute, answering the new
+    // login 529. A refusal from a LiteLLM already replaced says nothing about
+    // the one serving now, and cools nothing either. With no serve to mark
+    // it — or one that did not — the candidate and its gateway cool, as for
+    // an unservable 400.
     if ('loginRefused' in response && response.loginRefused === true) {
       if (response.status === 400) {
         capture400(deps, { alias, candidate: variant, status: response.status, outbound: body, response: response.body as Buffer });
       }
       attempts.push({ key: route.key, status: response.status });
-      // A refusal from a LiteLLM already replaced says nothing about the one
-      // serving now: cooling it would take a working login away for a minute.
-      const cooling = !('replaced' in response && response.replaced === true);
+      const cooling = !('replaced' in response && response.replaced === true) &&
+        deps.gatewayUnavailable?.(tenant, route.native!.gateway) === undefined;
       if (cooling) {
         cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
         if (gateway !== undefined) providerCooldowns.set(providerCooldownKey(tenant, gateway), now() + TIER_COOLDOWN_MS);

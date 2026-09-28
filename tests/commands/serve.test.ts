@@ -4264,6 +4264,32 @@ litellm = ${litellmPort}
         expect(errors.some((line) => line.includes('ChatGPT login was refused by OpenAI'))).toBe(false);
       });
 
+      it('serves a new login at once after a refusal the tier request itself detected — no cooldown outlives the mark', async () => {
+        // The detecting request cooled the candidate and its gateway for a
+        // minute on top of serve's mark. The mark cleared with the new login;
+        // the cooldown did not, and every request answered 529 meanwhile.
+        const refusal = JSON.parse(fixture('chatgpt-refresh-refused-proxy.json')) as { status: number; body: string }[];
+        let litellmCalls = 0;
+        writeMachineConfig(machine('', 'codex'));
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'ACCOUNT-A', account_id: 'acct-a' });
+        const { send, envs, settle } = await start({
+          upstream: (url) => {
+            if (!url.includes(`:${litellmPort}`)) return new Response('{}', { status: 200 });
+            litellmCalls += 1;
+            return litellmCalls === 2
+              ? new Response(refusal[0]!.body, { status: refusal[0]!.status })
+              : new Response('{}', { status: 200 });
+          },
+        });
+        expect(await send()).toBe(200);
+        expect(await send()).toBe(502);
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-b'), refresh_token: 'ACCOUNT-B', account_id: 'acct-b' });
+        await send();
+        await waitFor(() => envs.length === 2, 'the restart for the new account');
+        await settle();
+        expect(await send()).toBe(200);
+      });
+
       it('keeps the mark through a crash respawn, which reuses the refused token', async () => {
         writeMachineConfig(machine());
         writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
