@@ -191,6 +191,27 @@ describe('cmdInit (non-interactive)', () => {
   const write = (l: string) => { lines.push(l); };
   const detect = makeDetect();
 
+  it('--yes proceeds past a validation warning and writes the config', async () => {
+    // The scripted path refuses on the first problem it is handed, so a
+    // warning reaching it as a refusal would make `--yes` impossible on any
+    // machine with two gateways on one endpoint.
+    const shared = 'https://opencode.ai/zen/go/v1';
+    await cmdInit({
+      installLitellm: NO_INSTALL,
+      cwd, home, packageRoot: process.cwd(), yes: true,
+      detect: makeDetect({
+        authed: ['opencode-go'],
+        extraRefs: 'opencode/deepseek-v4-flash\nopencode-go/kimi-k3\n',
+        providerBaseUrls: { opencode: shared, 'opencode-go': shared },
+      }),
+      providers: ['opencode/opencode', 'opencode/opencode-go'],
+      models: ['opencode-deepseek-v4-flash', 'opencode-go-kimi-k3'],
+      roles: ['code'], scope: 'project', write,
+    });
+    expect(existsSync(join(cwd, 'sonata.toml'))).toBe(true);
+    expect(lines.join('\n')).toMatch(/share base_url/);
+  });
+
   it('--yes installs the sonata loop skill and names the routing choice', async () => {
     await cmdInit({
       installLitellm: NO_INSTALL,
