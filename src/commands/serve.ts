@@ -1612,8 +1612,20 @@ export async function cmdServe(
    * Keyed on the file's stat, it was cleared by LiteLLM's own rewrite of
    * `auth.json` (`device_code_requested_at`) moments after the refusal.
    * A fresh process (`sonata restart`) starts with none.
+   *
+   * The token is read from `dir`, the directory the refused child was
+   * serving. A read at mark time can land mid-write and find none; it is
+   * then read again at every check (`refusedToken`) — the first readable
+   * token there is the refused one. With none captured yet, nothing clears it.
    */
-  let chatgptLoginRefused: { message: string; token: string | undefined } | undefined;
+  let chatgptLoginRefused: { message: string; dir: string | undefined; token: string | undefined } | undefined;
+  /** The refused token, captured from the refused directory the first time it reads. */
+  const refusedToken = (): string | undefined => {
+    const refused = chatgptLoginRefused;
+    if (refused === undefined) return undefined;
+    if (refused.token === undefined) refused.token = chatgptTokenHash(refused.dir);
+    return refused.token;
+  };
   /** The ChatGPT token directory the current child was spawned into; set once the child bookkeeping exists. */
   let currentChatgptTokenDir: () => string | undefined = () => undefined;
   const markChatgptLoginRefused = (): void => {
@@ -1626,10 +1638,12 @@ export async function cmdServe(
       ? sonataOwned.map((name) => `\`sonata auth login ${name}\``).join(' / ')
       : '`codex login` (or `opencode auth login`)';
     const remedy = `LiteLLM's ChatGPT login was refused by OpenAI — run ${relogin} and then \`sonata restart\``;
+    const dir = currentChatgptTokenDir();
     chatgptLoginRefused = {
       message: `gateway ${names}: ${remedy} (LiteLLM had fallen back to an interactive device-code ` +
         'login, which would hold each request for up to fifteen minutes)',
-      token: chatgptTokenHash(currentChatgptTokenDir()),
+      dir,
+      token: chatgptTokenHash(dir),
     };
     console.error(`sonata serve: ${remedy} — affects gateway ${names}`);
   };
@@ -2235,14 +2249,17 @@ export async function cmdServe(
 
     const spawnLitellmChild = (deliberate = true): SpawnedLitellm => {
       if (deliberate) {
+        // Captured before seeding, which may rewrite the refused directory.
+        refusedToken();
         seedTokenDirs();
         // Cleared only when this spawn starts LiteLLM on a token that is
         // readable and not the refused one. None at all — no ChatGPT gateway
-        // just now, or a file that cannot be read — says nothing, and keeps it.
-        const refused = chatgptLoginRefused;
+        // just now, or a file that cannot be read — says nothing, and keeps it;
+        // so does a refused token never captured (`refusedToken`).
+        const refused = chatgptLoginRefused?.token;
         if (refused !== undefined) {
           const token = chatgptTokenHash(childEnv.CHATGPT_TOKEN_DIR);
-          if (token !== undefined && token !== refused.token) chatgptLoginRefused = undefined;
+          if (token !== undefined && token !== refused) chatgptLoginRefused = undefined;
         }
       }
       const spawned = (opts.spawnLitellm ?? defaultSpawnLitellm)(
@@ -2539,7 +2556,7 @@ export async function cmdServe(
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
       gatewayUnavailable: (tenant, gateway) => droppedGateways.get(gateway) ?? credentialFailures.get(gateway) ??
         (chatgptLoginRefused !== undefined && tenant.config?.native?.gateways[gateway]?.auth === 'codex-oauth'
-          ? chatgptLoginRefused.message : undefined),
+          ? (refusedToken(), chatgptLoginRefused.message) : undefined),
       chatgptLoginRefused: () => markChatgptLoginRefused(),
       resolveNative: (key, tenant) => tenant.config === undefined ? undefined : nativeRouteFor(tenant.config, key),
       // Opt-in only: a captured request is a whole conversation.
