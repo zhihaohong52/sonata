@@ -4,11 +4,12 @@ import { homedir } from 'node:os';
 import { recordHarnessUsage } from '../harness-usage.js';
 import { loadConfig } from '../config.js';
 import { getAdapter } from '../adapters/index.js';
-import { tryCapturePane, tryCapturePaneHistory } from '../tmux.js';
+import { paneSource, tryCapturePane } from '../tmux.js';
+import { recordPane, type PaneSource, type RecorderState } from '../pane-record.js';
 import { cleanPane, newLines, stripAnsi } from '../normalize.js';
 import {
   readMeta, readExit, readReport, readCursor, writeCursor,
-  appendEvents, readEvents, writeMeta, runDir, readAnsweredPrompt, clearAnsweredPrompt,
+  appendEvents, writeMeta, runDir, readAnsweredPrompt, clearAnsweredPrompt,
 } from '../store.js';
 import { cmdVerify } from './verify.js';
 import { WORKTREE_CAPTURE_FILE, worktreeUnchangedSince } from '../worktree.js';
@@ -339,20 +340,38 @@ function writePaneSnapshot(cwd: string, id: string, lines: string[]): void {
   writeFileSync(paneSnapshotPath(cwd, id), lines.join('\n'));
 }
 
-/** The last scrollback-inclusive capture, which new output is diffed from. */
-function historySnapshotPath(cwd: string, id: string): string {
-  return join(runDir(cwd, id), 'pane-history.snapshot');
+function recorderStatePath(cwd: string, id: string): string {
+  return join(runDir(cwd, id), 'pane-record.json');
 }
 
-function readHistorySnapshot(cwd: string, id: string): string[] {
-  const p = historySnapshotPath(cwd, id);
-  if (!existsSync(p)) return [];
-  const raw = readFileSync(p, 'utf8');
-  return raw.length === 0 ? [] : raw.split('\n');
+function readRecorderState(cwd: string, id: string): RecorderState | undefined {
+  try {
+    return JSON.parse(readFileSync(recorderStatePath(cwd, id), 'utf8')) as RecorderState;
+  } catch {
+    return undefined;
+  }
 }
 
-function writeHistorySnapshot(cwd: string, id: string, lines: string[]): void {
-  writeFileSync(historySnapshotPath(cwd, id), lines.join('\n'));
+/**
+ * Appends what the pane printed since the last observation to the event log.
+ *
+ * A run whose log was started before `recordPane` existed has events and no
+ * recorder state. Its scrollback was never tracked, so it is not backfilled —
+ * that would record again, once, everything the old visible-screen diff
+ * already recorded — and its first observation is diffed against the old
+ * snapshot the old way; from then on it is tracked like any other run.
+ */
+async function recordEvents(cwd: string, id: string, source: PaneSource, prevPane: string[]): Promise<void> {
+  const state = readRecorderState(cwd, id);
+  const eventsPath = join(runDir(cwd, id), 'events.jsonl');
+  const legacy = state === undefined && existsSync(eventsPath) && statSync(eventsPath).size > 0
+    ? { snapshot: prevPane, diff: newLines }
+    : undefined;
+  const result = await recordPane(source, state, legacy);
+  if (result === null) return;
+  appendEvents(cwd, id, result.events);
+  if (result.events.length > 0) writeCursor(cwd, id, readCursor(cwd, id) + result.events.length);
+  writeFileSync(recorderStatePath(cwd, id), JSON.stringify(result.state));
 }
 
 export async function cmdTail(opts: TailOptions): Promise<TailResult> {
@@ -369,39 +388,36 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
   // The exact path tmux echoes when the run starts, so pane lines sonata
   // caused can be told from output the harness produced.
   const scriptPath = join(runDir(opts.cwd, opts.id), 'cmd.sh');
+  const source = paneSource(meta.session);
 
   for (;;) {
-    const cursor = readCursor(opts.cwd, opts.id);
     const prevPane = readPaneSnapshot(opts.cwd, opts.id);
-    const prevHistory = readHistorySnapshot(opts.cwd, opts.id);
 
-    // Two captures, for two jobs. The visible screen is what prompt detection
-    // and the report's pane tail describe. The event log — what `sonata log`
-    // prints and what counts as new output — is diffed from a capture that
-    // includes scrollback: from the visible screen alone, anything more than
-    // one screen of output between polls was never recorded, and a run nobody
-    // tailed kept only its last screen.
+    // Two records from two views of the pane.
     //
-    // Diff against the PREVIOUS capture, not the accumulated event log. The
-    // event log contains older, already-scrolled content, so suffix-overlap
-    // against it fails and re-emits everything on every poll — which makes
-    // every call return PROGRESS immediately and starves the caller's poll
-    // budget.
+    // What this call returns — its new lines, the observer's stream, a PAUSED
+    // prompt's fallback text — is the diff of the VISIBLE screen against the
+    // previous poll's, bounded to one screen whatever the harness does.
     //
-    // A failed capture (null, common when tmux is busy) must not be mistaken
-    // for an emptied pane: writing an empty snapshot would make the next poll
-    // re-emit everything, producing the same starvation.
+    // The event log (`sonata log`) is what the harness printed, each line
+    // once: `recordPane` counts the rows that entered tmux's scrollback,
+    // fetches exactly the ones no poll saw, and adds the rows of the visible
+    // screen that are new or redrawn. See src/pane-record.ts for why diffing a
+    // scrollback capture instead re-recorded the whole history on every poll.
+    //
+    // Diff against the PREVIOUS PANE, not the accumulated event log: suffix
+    // overlap against old, already-scrolled content fails and re-emits the
+    // whole pane on every poll, which makes every call return PROGRESS
+    // immediately and starves the caller's poll budget. A failed capture
+    // (null, common when tmux is busy) must not be mistaken for an emptied
+    // pane, for the same reason.
     const captured = await tryCapturePane(meta.session);
     const paneNow = captured === null ? prevPane : cleanPane(captured);
+    const freshNow = captured === null ? [] : newLines(prevPane, paneNow);
     if (captured !== null) writePaneSnapshot(opts.cwd, opts.id, paneNow);
-    const history = await tryCapturePaneHistory(meta.session);
-    const historyNow = history === null ? prevHistory : cleanPane(history);
-    const freshNow = history === null ? [] : newLines(prevHistory, historyNow);
-    if (history !== null) writeHistorySnapshot(opts.cwd, opts.id, historyNow);
+    await recordEvents(opts.cwd, opts.id, source, prevPane);
 
     if (freshNow.length > 0) {
-      appendEvents(opts.cwd, opts.id, freshNow);
-      writeCursor(opts.cwd, opts.id, cursor + freshNow.length);
       // A real repeat prompt has output between asks. Forget the old answer as
       // soon as the pane advances so we do not hide that new request forever.
       clearAnsweredPrompt(opts.cwd, opts.id);
@@ -421,20 +437,14 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       const settled = await tryCapturePane(meta.session);
       if (settled !== null) {
         const settledPane = cleanPane(settled);
-        writePaneSnapshot(opts.cwd, opts.id, settledPane);
-        pane = settledPane;
-      }
-      const settledHistory = await tryCapturePaneHistory(meta.session);
-      if (settledHistory !== null) {
-        const settledLines = cleanPane(settledHistory);
-        const extra = newLines(historyNow, settledLines);
+        const extra = newLines(pane, settledPane);
         if (extra.length > 0) {
-          appendEvents(opts.cwd, opts.id, extra);
-          writeCursor(opts.cwd, opts.id, readCursor(opts.cwd, opts.id) + extra.length);
           clearAnsweredPrompt(opts.cwd, opts.id);
           fresh = [...fresh, ...extra];
         }
-        writeHistorySnapshot(opts.cwd, opts.id, settledLines);
+        writePaneSnapshot(opts.cwd, opts.id, settledPane);
+        await recordEvents(opts.cwd, opts.id, source, pane);
+        pane = settledPane;
       }
       exitCode = readExit(opts.cwd, opts.id);
     }
