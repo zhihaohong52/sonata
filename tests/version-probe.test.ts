@@ -59,11 +59,31 @@ describe('runProbe', () => {
   it('settles when a grandchild still holds stdout', async () => {
     // The timeout (60 s) and the grandchild's `sleep 30` are both far past the
     // bound (15 s), so settling within it proves it settled on the child's
-    // exit — not on the pipe closing, nor on the timeout killing the group.
+    // exit plus the stdio grace (PROBE_STDIO_GRACE_MS) — not on the pipe
+    // closing, nor on the timeout killing the group.
     const start = Date.now();
     const result = await runProbe(join(bin, 'leaves-child'), ['--version'], { timeoutMs: 60_000 });
     expect(Date.now() - start).toBeLessThan(15_000);
     expect(result.stdout.trim()).toBe('hi');
+  });
+
+  // 'exit' is not "the output is in": Node emits it once the process is
+  // reaped, and the pipe's last bytes can be read in a later loop turn.
+  // Measured in the suite: exit at 3.1 ms, the old "one turn" wait over at
+  // 3.8 ms, "works 1.2.3" read at 5.4 ms — so the probe resolved with '' and
+  // `sonata doctor` reported a harness with no version (~1 in 600 probes, the
+  // first spawn of a busy worker). These make the late bytes deterministic: the
+  // command exits at once and its output lands 300 ms later, then EOF.
+  it('keeps output that arrives after the command has exited', async () => {
+    const late = stub('late-output', '(sleep 0.3; echo "late 1.0") &\nexit 0');
+    await expect(runProbe(late, ['--version'], { timeoutMs: VERSION_PROBE_TIMEOUT_MS }))
+      .resolves.toMatchObject({ stdout: 'late 1.0\n' });
+  });
+
+  it('keeps stderr that arrives after a failing command has exited', async () => {
+    const late = stub('late-error', '(sleep 0.3; echo "Error: late boom" >&2) &\nexit 3');
+    await expect(runProbe(late, [], { timeoutMs: VERSION_PROBE_TIMEOUT_MS }))
+      .rejects.toMatchObject({ code: 3, stderr: expect.stringContaining('Error: late boom') });
   });
 
   it('reports a missing binary as ENOENT', async () => {
