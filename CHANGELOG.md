@@ -130,6 +130,13 @@ the review doc's Backlog note):
   upstream with a 401), the rebuild is retried on the next request so a later
   `sonata auth add` is picked up without a restart, and the failure is logged
   once rather than on every request.
+- **`codex login` while the router runs now reaches LiteLLM.** Logging in can
+  resolve two conflicting ChatGPT gateways to one account and un-drop them,
+  but LiteLLM was only regenerated when a config file changed — so its model
+  list stayed empty and every request answered "Invalid model name" until
+  `sonata restart`. A change in which gateways are dropped, or in which
+  credential store an OAuth gateway reads, now rewrites LiteLLM's config and
+  respawns it.
 
 ## [0.13.1] - 2026-09-27
 

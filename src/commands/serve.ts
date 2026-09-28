@@ -1159,15 +1159,26 @@ export async function cmdServe(
    * reason instead of forwarding it.
    */
   let droppedGateways = new Map<string, string>();
+  /**
+   * Which credential store each OAuth gateway resolved to in the last merge,
+   * as a comparable string. Refreshed with `droppedGateways`.
+   */
+  let oauthIdentities = '';
   const mergeGateways = (log: (line: string) => void): NativeConfig['gateways'] => {
     const dropped = new Map<string, string>();
+    const identities: string[] = [];
     const gateways = mergeTenantGateways(
       registry.loadable().map(({ id, config }) => ({ id, gateways: config.native?.gateways ?? {} })),
       log,
-      (name, gateway) => resolvedOauthIdentity(opts.home, name, gateway),
+      (name, gateway) => {
+        const identity = resolvedOauthIdentity(opts.home, name, gateway);
+        identities.push(`${gateway.auth}:${name}=${identity}`);
+        return identity;
+      },
       dropped,
     );
     droppedGateways = dropped;
+    oauthIdentities = [...new Set(identities)].sort().join(',');
     return gateways;
   };
   /** Merged gateways across every loadable tenant — what credential resolution and the child env are built from. */
@@ -1210,6 +1221,20 @@ export async function cmdServe(
    * Both are stat-only.
    */
   const gatewayPlanInputs = (): string => `${registry.fingerprint()}\n${codexStoreSignal(opts.home)}`;
+  /**
+   * What LiteLLM's config.json and child env are generated from: the tenants'
+   * models and gateways, AND the last merge's drops and OAuth identities.
+   * `servableTenants` removes a dropped gateway's models from the model list
+   * and `buildChildEnv` points the token dir at the resolved store, so either
+   * moving is a change to what LiteLLM must be given — and `codex login` moves
+   * them with every config untouched. Compared on the configs alone, a login
+   * that un-dropped two gateways left LiteLLM on an empty model list, with no
+   * ChatGPT token dir, answering "Invalid model name". Reads the merge
+   * `refreshGatewayPlan` has already run for this request rather than merging
+   * again.
+   */
+  const litellmPlanSnapshot = (): string =>
+    `${registry.unionSnapshot()}\n${[...droppedGateways.keys()].sort().join(',')}\n${oauthIdentities}`;
   const unionNeedsLitellm = (): boolean => registry.loadable().some(({ config }) => litellmRequired(config));
 
   const litellmBin = managedLitellmPath(opts.home);
@@ -1388,7 +1413,7 @@ export async function cmdServe(
     // builds the model list from `native.models` first, unconditionally, so
     // a transitional config editing a legacy entry's id/gateway needs the
     // same restart a unified edit gets.
-    let activeModelsJson = registry.unionSnapshot();
+    let activeModelsJson = litellmPlanSnapshot();
     // The child a deliberate kill-for-config-change is about to terminate, so
     // the crash-exit handler below (which fires for ANY exit, deliberate or
     // not) does not also schedule its own duplicate respawn on top of the one
@@ -1461,7 +1486,7 @@ export async function cmdServe(
     // every request already awaits before reaching litellm.
     const runRestartForModelChange = async (): Promise<void> => {
       if (stopping) return;
-      const freshModelsJson = registry.unionSnapshot();
+      const freshModelsJson = litellmPlanSnapshot();
       if (freshModelsJson === activeModelsJson) return;
       if (registry.loadable().length === 0) {
         activeModelsJson = freshModelsJson;

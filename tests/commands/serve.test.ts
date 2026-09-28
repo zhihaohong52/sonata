@@ -3127,6 +3127,70 @@ litellm = ${litellmPort}
     }
   });
 
+  it('regenerates LiteLLM\'s model list and respawns it when `codex login` un-drops the gateways', async () => {
+    // Started logged OUT: the two gateways read different stores, so both are
+    // dropped and LiteLLM's config.json is written with neither's models, and
+    // its child env has no ChatGPT token dir. A login un-drops them — but the
+    // configs are untouched, so a restart keyed on the configs alone never
+    // fired, and requests reached a LiteLLM that answered "Invalid model name".
+    writeMachineConfig(`
+[models."luna"]
+gateway = "codex"
+id = "gpt-5.6-luna"
+[models."byok"]
+gateway = "openai"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["luna", "byok"]
+complex = ["luna", "byok"]
+[native.gateways."codex"]
+auth = "codex-oauth"
+credential_source = "codex"
+[native.gateways."openai"]
+auth = "codex-oauth"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    const tempDir = tempDirFor();
+    const configJson = () => readFileSync(join(tempDir, 'config.json'), 'utf8');
+    const spawnEnvs: NodeJS.ProcessEnv[] = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // Answers like LiteLLM: a model its config does not list is a 400.
+      vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(String(init.body)) as { model: string }).model;
+        return configJson().includes(`"${model}"`)
+          ? new Response('{}', { status: 200 })
+          : new Response('{"error":{"message":"Invalid model name"}}', { status: 400 });
+      }));
+      const handle = await cmdServe({
+        cwd, home, tempDir, waitForLitellm: async () => {},
+        spawnLitellm: (_config, env) => { spawnEnvs.push(env); return { pid: 1, kill: () => {} }; },
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const send = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      expect((await send()).status).toBe(502);
+      expect(configJson()).not.toContain('gpt-5.6-luna');
+      expect(spawnEnvs).toHaveLength(1);
+      expect(spawnEnvs[0].CHATGPT_TOKEN_DIR).toBeUndefined();
+
+      mkdirSync(join(home, '.codex'), { recursive: true });
+      writeFileSync(join(home, '.codex', 'auth.json'), JSON.stringify({ tokens: { access_token: 'x', refresh_token: 'r' } }));
+      const res = await send();
+      expect(configJson()).toContain('gpt-5.6-luna');
+      expect(spawnEnvs).toHaveLength(2);
+      expect(spawnEnvs[1].CHATGPT_TOKEN_DIR).toBeDefined();
+      expect(res.status).toBe(200);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('loads the v0.13.1 BYOK pair in one config, drops both gateways, and keeps the rest serving', async () => {
     writeMachineConfig(`
 [models."luna"]
