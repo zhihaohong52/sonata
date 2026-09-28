@@ -6,6 +6,7 @@ import { loadConfig } from '../config.js';
 import { getAdapter } from '../adapters/index.js';
 import { tryCapturePane } from '../tmux.js';
 import { cleanPane, newLines, stripAnsi } from '../normalize.js';
+import { resolveCarriageReturns, stripLogEscapes } from '../run-log.js';
 import {
   readMeta, readExit, readReport, readCursor, writeCursor,
   appendEvents, writeMeta, runDir, readAnsweredPrompt, clearAnsweredPrompt,
@@ -150,7 +151,10 @@ function terminalOutput(input: DecideInput): string {
  * — they are a report's paragraph breaks — so not the pane cleaner.
  */
 function cleanLog(raw: string): string {
-  return stripAnsi(raw).split('\n').map((l) => l.replace(/\s+$/, '')).join('\n').trim();
+  // Same escape and carriage-return reading as `sonata log` (run-log.ts), but
+  // blank lines are kept: here the log is a report, and its paragraphs matter.
+  return stripLogEscapes(raw).replace(/\r\n/g, '\n').split('\n')
+    .map((l) => resolveCarriageReturns(l).replace(/\s+$/, '')).join('\n').trim();
 }
 
 /** Pure state machine. Order matters: completion beats a stale prompt match. */

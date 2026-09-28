@@ -140,12 +140,19 @@ export async function runDetail(
 
   for (const cwd of candidates) {
     const dir = runDir(cwd, id);
-    let meta: { interactive?: boolean };
+    let metaText: string;
     try {
-      meta = JSON.parse(await fsp.readFile(join(dir, 'meta.json'), 'utf8')) as { interactive?: boolean };
+      metaText = await fsp.readFile(join(dir, 'meta.json'), 'utf8');
     } catch {
-      continue;
+      continue; // no run here
     }
+    // A meta.json caught mid-write, or not an object, still names a run: read
+    // it as knowing nothing (the event log), never as no run or a 500.
+    let meta: { interactive?: boolean } = {};
+    try {
+      const parsed: unknown = JSON.parse(metaText);
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) meta = parsed as { interactive?: boolean };
+    } catch { /* keep {} */ }
     // The same file `sonata log` prints (`runLogFile`): a non-interactive
     // run's own harness.log, complete, else the event log.
     const file = runLogFile(dir, meta);
@@ -158,7 +165,7 @@ export async function runDetail(
     const windowText = window === null
       ? ''
       : file.source === 'harness' && window.truncated
-        ? window.text.slice(window.text.indexOf('\n') + 1)
+        ? dropCutFragment(window.text)
         : window.text;
     const tail = {
       text: file.source === 'harness' ? cleanRunLog(windowText) : windowText.split('\n').filter(Boolean).join('\n'),
@@ -202,4 +209,17 @@ function sameDir(a: string, b: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The partial first line of a window cut into a harness log. When no whole
+ * line follows it (one line longer than the window), only a leading escape
+ * remnant — the tail of a CSI sequence whose ESC was cut off — is removed.
+ */
+function dropCutFragment(text: string): string {
+  const newline = text.indexOf('\n');
+  // Only when a whole line follows: a window holding one long line and its
+  // trailing newline would otherwise drop everything it has.
+  if (newline >= 0 && /\S/.test(text.slice(newline + 1))) return text.slice(newline + 1);
+  return text.replace(/^\[?[0-9;?]*[ -/]*[@-~]/, '');
 }

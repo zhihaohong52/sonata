@@ -84,12 +84,13 @@ on one branch; the rest are recorded here as the backlog.
 >   verified by a live run.
 > - *Dispatch, `sonata log` misses lines that scroll off:* fixed for
 >   non-interactive runs by printing the harness's own `harness.log`, which
->   every non-interactive adapter tees its complete output into; the web UI's
+>   opencode `run`, pi, reasonix `run` and codex `exec` tee their complete
+>   output into (claude `-p` does not, and keeps the event log); the web UI's
 >   run detail follows the same rule. An interactive TUI's log is still the
->   visible-screen diff, one screen per poll, and still misses a burst. Two
+>   visible-screen diff, one screen per poll, and still misses a burst. Three
 >   earlier designs that rebuilt the record from tmux were reverted: diffing a
 >   scrollback capture re-recorded the whole history on every redraw, and
->   counting rows / capturing history at the end broke on tmux trimming
+>   counting rows live and capturing history at the end broke on tmux trimming
 >   history in blocks, on resizes, and on alternate-screen TUIs writing none.
 > - *Router, conversation collisions:* once a conversation has been served by
 >   more than one candidate, thinking blocks are stripped on every later

@@ -15,8 +15,8 @@
  * always had, lossy for bursts. So does a run whose harness.log is absent or
  * holds nothing but escapes and whitespace.
  *
- * This replaced two attempts to reconstruct a complete record from tmux —
- * live from scrollback, then from a capture once the run finished — both of
+ * This replaced three attempts to reconstruct a complete record from tmux —
+ * live by diffing scrollback, live by counting it, then from a capture once the run finished — both of
  * which broke on how tmux actually behaves (history trimmed in blocks at the
  * limit, rows reflowed or pulled back by a resize, an alternate-screen TUI
  * writing no history at all). The harness's own log has none of those
@@ -27,6 +27,33 @@ import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 import { stripAnsi } from './normalize.js';
+
+// eslint-disable-next-line no-control-regex
+const OSC = /\u001b\][\s\S]*?(?:\u0007|\u001b\\)/g;
+// eslint-disable-next-line no-control-regex
+const SHORT_ESCAPE = /\u001b(?:[()*+][0-9A-Za-z]|[=>78DEHMNOZc])/g;
+
+/**
+ * Every escape a harness log can carry, not only the CSI sequences the pane
+ * capture ever shows: tmux interprets OSC (hyperlinks, titles) and charset
+ * selects before they reach a capture, but a raw log keeps them.
+ */
+export function stripLogEscapes(text: string): string {
+  return stripAnsi(text.replace(OSC, '')).replace(SHORT_ESCAPE, '');
+}
+
+/**
+ * A line as a terminal leaves it after bare carriage returns: the last
+ * segment that has something in it. A CR moves the cursor without erasing, so
+ * a trailing empty segment (`keep me\r`) leaves the earlier text on screen.
+ */
+export function resolveCarriageReturns(line: string): string {
+  const segments = line.split('\r');
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (/\S/.test(segments[i]!)) return segments[i]!;
+  }
+  return '';
+}
 
 export const HARNESS_LOG_FILE = 'harness.log';
 export const EVENTS_FILE = 'events.jsonl';
@@ -57,11 +84,11 @@ function hasContent(path: string): boolean {
     for (;;) {
       const bytes = readSync(fd, buf, 0, buf.length, null);
       const text = carry + (bytes === 0 ? decoder.end() : decoder.write(buf.subarray(0, bytes)));
-      if (bytes === 0) return /\S/.test(stripAnsi(text));
+      if (bytes === 0) return /\S/.test(stripLogEscapes(text));
       // Test all but the tail, which may be the start of an escape sequence
       // the next read completes.
       const settled = text.slice(0, Math.max(0, text.length - ESCAPE_CARRY));
-      if (/\S/.test(stripAnsi(settled))) return true;
+      if (/\S/.test(stripLogEscapes(settled))) return true;
       carry = text.slice(settled.length);
     }
   } finally {
@@ -78,16 +105,16 @@ export function runLogFile(runDir: string, meta: { interactive?: boolean }): Run
 
 /**
  * A harness log as the pane would have shown it: escapes stripped, CRLF read
- * as a line break, a bare CR as the terminal reads it — the text after the
- * last one, which is what a redrawn progress line leaves on screen — trailing
+ * as a line break, a bare CR as the terminal reads it — the last segment with
+ * anything in it, which is what a redrawn progress line leaves on screen — trailing
  * space trimmed, blank lines dropped as the event log drops them. Every line
  * of content is kept.
  */
 export function cleanRunLog(raw: string): string {
-  return stripAnsi(raw)
+  return stripLogEscapes(raw)
     .replace(/\r\n/g, '\n')
     .split('\n')
-    .map((line) => line.slice(line.lastIndexOf('\r') + 1).replace(/\s+$/, ''))
+    .map((line) => resolveCarriageReturns(line).replace(/\s+$/, ''))
     .filter((line) => line.length > 0)
     .join('\n');
 }

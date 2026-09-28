@@ -72,4 +72,11 @@ describe('cmdLog', () => {
     expect(res.ok).toBe(false);
     expect(res.text).toContain('no run "nosuch"');
   });
+
+  it('falls back to the event log when the harness log cleans down to nothing', () => {
+    const id = newRun();
+    appendEvents(cwd, id, ['from the screen']);
+    writeFileSync(join(runDir(cwd, id), 'harness.log'), '\r\r\n');
+    expect(cmdLog({ cwd, id }).text).toMatch(/^from the screen\n\n— sonata /);
+  });
 });

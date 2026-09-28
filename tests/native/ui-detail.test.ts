@@ -120,6 +120,32 @@ describe('runDetail', () => {
     }
   });
 
+  it('still shows a run whose meta.json is caught mid-write or is not an object', async () => {
+    // A torn or odd meta.json names a run all the same: it reads as knowing
+    // nothing (the event log), never as "no run" or a 500.
+    for (const [id, text] of [['cccccc000001', '{"id":'], ['cccccc000002', 'null']] as const) {
+      const dir = join(proj, '.sonata', 'runs', id);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'meta.json'), text);
+      writeFileSync(join(dir, 'events.jsonl'), 'screen line\n');
+      expect((await runDetail(deps(), id, proj))!.transcript).toBe('screen line');
+    }
+  });
+
+  it('drops only an escape remnant when the window holds one line longer than itself', async () => {
+    const id = 'cccccc000003';
+    const dir = join(proj, '.sonata', 'runs', id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'meta.json'), JSON.stringify({ id, session: `sonata-${id}`, cwd: proj, interactive: false }));
+    // One line, far longer than the window, coloured so the cut lands inside
+    // a CSI sequence's tail.
+    writeFileSync(join(dir, 'harness.log'), `${'\u001b[31mxyz'.repeat(MAX_TRANSCRIPT_BYTES)}\n`);
+    const text = (await runDetail(deps(), id, proj))!.transcript;
+    expect(text.length).toBeGreaterThan(0);
+    expect(text).not.toMatch(/^\[?[0-9;]*m/);
+    expect(text).not.toContain('\u001b');
+  });
+
   it('serves the tail of a long harness log from a line boundary', async () => {
     const id = 'bbbbbb000003';
     const dir = join(proj, '.sonata', 'runs', id);

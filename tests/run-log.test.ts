@@ -47,3 +47,22 @@ describe('cleanRunLog', () => {
     expect(cleanRunLog('a\n\n\nb\n')).toBe('a\nb');
   });
 });
+
+describe('cleanRunLog — terminal edge cases', () => {
+  it('keeps text a trailing carriage return does not erase', () => {
+    // A CR moves the cursor without erasing: `keep me\r` leaves "keep me".
+    expect(cleanRunLog('keep me\r\r\nnext\n')).toBe('keep me\nnext');
+    expect(cleanRunLog('only\r')).toBe('only');
+    expect(cleanRunLog('50%\r100%\n')).toBe('100%');
+  });
+
+  it('strips OSC and charset escapes, not only CSI', () => {
+    const osc = '\u001b]8;;https://example.com\u001b\\link\u001b]8;;\u001b\\';
+    expect(cleanRunLog(`${osc}\n\u001b(Bplain\u001b]0;title\u0007\n`)).toBe('link\nplain');
+  });
+
+  it('does not count a log of only OSC escapes as content', () => {
+    writeFileSync(join(dir, 'harness.log'), '\u001b]0;title\u0007\n\u001b(B\n');
+    expect(runLogFile(dir, { interactive: false }).source).toBe('events');
+  });
+});
