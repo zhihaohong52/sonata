@@ -2175,6 +2175,22 @@ describe('repairNamelessToolCalls', () => {
     expect(repairNamelessToolCalls(garbage)).toBe(garbage);
   });
 
+  it('passes a body that parses to a non-object through untouched rather than throwing', () => {
+    // `null` is valid JSON; reading `.messages` off it threw, rejecting the
+    // request inside the router instead of letting the upstream answer it.
+    for (const text of ['null', '42', '"text"', '[]']) {
+      const body = Buffer.from(text);
+      expect(repairNamelessToolCalls(body)).toBe(body);
+    }
+  });
+
+  it('keeps the repair of a nameless call that carries no id', () => {
+    // No id means no result to match, but the call itself still has to go:
+    // returning the original body discarded the repair.
+    const out = repair({ messages: [{ role: 'assistant', content: [{ type: 'tool_use', name: '', input: {} }] }] });
+    expect(out.messages[0].content).toEqual([{ type: 'text', text: expect.stringContaining('removed a tool call with no name') }]);
+  });
+
   it('is applied before a tier request is forwarded', async () => {
     clearCooldowns();
     const sent: string[] = [];

@@ -757,16 +757,23 @@ function resultText(content: unknown): string {
  * the byte-identical contract holds for every healthy request.
  */
 export function repairNamelessToolCalls(body: Buffer): Buffer {
-  let payload: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    payload = JSON.parse(body.toString()) as Record<string, unknown>;
+    parsed = JSON.parse(body.toString());
   } catch {
     return body;
   }
+  // `null`, a number or an array is valid JSON with no `messages` to read —
+  // pass it through for the upstream to answer rather than throwing here.
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return body;
+  const payload = parsed as Record<string, unknown>;
   const messages = payload.messages;
   if (!Array.isArray(messages)) return body;
 
   const removed = new Set<string>();
+  // Tracked apart from `removed`: a nameless call with no string id has no
+  // result to match, but it is still repaired, and must still be sent.
+  let repairedAny = false;
   const assistantsRepaired = messages.map((message) => {
     const record = typeof message === 'object' && message !== null ? message as Record<string, unknown> : undefined;
     if (record?.role !== 'assistant' || !Array.isArray(record.content)) return message;
@@ -775,12 +782,13 @@ export function repairNamelessToolCalls(body: Buffer): Buffer {
       const b = typeof block === 'object' && block !== null ? block as Record<string, unknown> : undefined;
       if (b?.type !== 'tool_use' || hasToolName(b)) return block;
       touched = true;
+      repairedAny = true;
       if (typeof b.id === 'string') removed.add(b.id);
       return { type: 'text', text: '[sonata: removed a tool call with no name — it could not have run]' };
     });
     return touched ? { ...record, content } : message;
   });
-  if (removed.size === 0) return body;
+  if (!repairedAny) return body;
 
   const repaired = assistantsRepaired.map((message) => {
     const record = typeof message === 'object' && message !== null ? message as Record<string, unknown> : undefined;
