@@ -46,22 +46,51 @@ describe('codex usage', () => {
       ...events,
     ]);
   }
-  const tokenCount = (input: number, cached: number, output: number) => ({
-    type: 'event_msg', timestamp: DURING,
+  const tokenCount = (input: number, cached: number, output: number, timestamp = DURING) => ({
+    type: 'event_msg', timestamp,
     payload: { type: 'token_count', info: { total_token_usage: { input_tokens: input, cached_input_tokens: cached, cache_write_input_tokens: 0, output_tokens: output, reasoning_output_tokens: 3, total_tokens: input + output } } },
   });
 
-  it('takes the LAST cumulative total and moves cached input out of input', () => {
+  it('turns each cumulative total into a step, moving cached input out of input', () => {
+    // codex's token_count carries a running total. One record per event, as
+    // the step from the previous total at that event's own time, is what lets
+    // a run crossing a [price].windows edge be priced step by step — a single
+    // cumulative record priced it all at one instant. The steps sum to the
+    // last total, so nothing is counted twice.
     rollout('rollout-a.jsonl', cwd, [
       { type: 'turn_context', payload: { model: 'gpt-x' } },
-      tokenCount(100, 40, 5),
-      tokenCount(300, 200, 20),
+      tokenCount(100, 40, 5, '2026-09-25T04:01:00.000Z'),
+      tokenCount(100, 40, 5, '2026-09-25T04:02:00.000Z'),
+      tokenCount(300, 200, 20, '2026-09-25T04:06:00.000Z'),
     ]);
     const result = codexUsage(query());
     expect(result).toEqual({
       kind: 'observed',
       session: 'thread-rollout-a.jsonl',
-      records: [{ ts: DURING, model: 'gpt-x', tokens: { input: 100, output: 20, cacheRead: 200, cacheCreation: 0 } }],
+      records: [
+        { ts: '2026-09-25T04:01:00.000Z', model: 'gpt-x', tokens: { input: 60, output: 5, cacheRead: 40, cacheCreation: 0 } },
+        // The repeated total at 04:02 is no step at all, and is skipped.
+        { ts: '2026-09-25T04:06:00.000Z', model: 'gpt-x', tokens: { input: 40, output: 15, cacheRead: 160, cacheCreation: 0 } },
+      ],
+    });
+    const sum = result.kind === 'observed' ? result.records.reduce((acc, r) => ({
+      input: acc.input + r.tokens.input, output: acc.output + r.tokens.output, cacheRead: acc.cacheRead + r.tokens.cacheRead,
+    }), { input: 0, output: 0, cacheRead: 0 }) : undefined;
+    expect(sum).toEqual({ input: 100, output: 20, cacheRead: 200 });
+  });
+
+  it('falls back to the one cumulative record when a total ever goes backwards', () => {
+    // A running total that shrinks is not a series sonata can difference
+    // without inventing negative usage; the last total is still the total.
+    rollout('rollout-a.jsonl', cwd, [
+      { type: 'turn_context', payload: { model: 'gpt-x' } },
+      tokenCount(500, 0, 50, '2026-09-25T04:01:00.000Z'),
+      tokenCount(300, 200, 20, '2026-09-25T04:06:00.000Z'),
+    ]);
+    expect(codexUsage(query())).toEqual({
+      kind: 'observed',
+      session: 'thread-rollout-a.jsonl',
+      records: [{ ts: '2026-09-25T04:06:00.000Z', model: 'gpt-x', tokens: { input: 100, output: 20, cacheRead: 200, cacheCreation: 0 } }],
     });
   });
 
