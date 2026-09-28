@@ -519,46 +519,32 @@ litellm = ${litellmPort}
     expect(signalled).toContain(222);
   });
 
-  it('kills the recorded litellm pid when its command cannot be determined', async () => {
-    // Unknown (ps failed) is not evidence of a mismatch — refusing on it would
-    // strand a real orphan litellm holding the port on any machine where ps is
-    // unavailable. "Cannot tell" proceeds as today.
+  it('starts, signals nothing and forgets the record when ps cannot say what the pid is', async () => {
+    // No procps, hidepid, a ps timeout: the recorded pid may since have been
+    // reused by anything long-lived. Signalling it risks a stranger; blocking
+    // on it would wedge every start (Anthropic and direct routing included)
+    // on a process sonata cannot even name. Neither is acceptable.
     mkdirSync(dirname(serveStatePath(home, 0)), { recursive: true });
     writeFileSync(serveStatePath(home, 0), JSON.stringify({ litellmPid: 222 }));
-
-    const signalled: number[] = [];
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(orphanKill(signalled, 'SIGTERM'));
+    const signals: string[] = [];
+    const notes: string[] = [];
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(orphanKill([], 'never', signals));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { notes.push(args.map(String).join(' ')); });
     try {
       const handle = await cmdServe({
-        cwd, home, tempDir: tempDirFor(),
+        cwd, home, tempDir: tempDirFor(), litellmExitTimeoutMs: 100,
         waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 4242, kill() {} }),
         processCommand: () => undefined,
       });
       handles.push(handle);
     } finally {
       killSpy.mockRestore();
-    }
-
-    expect(signalled).toContain(222);
-  });
-
-  it('sends only SIGTERM to a recorded pid whose command cannot be determined', async () => {
-    mkdirSync(dirname(serveStatePath(home, 0)), { recursive: true });
-    writeFileSync(serveStatePath(home, 0), JSON.stringify({ litellmPid: 222 }));
-    const signals: string[] = [];
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(orphanKill([], 'never', signals));
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      await expect(cmdServe({
-        cwd, home, tempDir: tempDirFor(), litellmExitTimeoutMs: 100,
-        waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 4242, kill() {} }),
-        processCommand: () => undefined,
-      })).rejects.toThrow(/pid 222, command line unknown/);
-    } finally {
-      killSpy.mockRestore();
       errorSpy.mockRestore();
     }
-    expect(signals).toEqual(['SIGTERM']);
+    expect(signals).toEqual([]);
+    expect(notes.join('\n')).toMatch(/222 could not be verified/);
+    // The new child is on record; the unverified pid is not.
+    expect(JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8')).litellmPid).toBe(4242);
   });
 
   it('refuses to start over a recorded LiteLLM that survives SIGKILL, and keeps its record', async () => {
@@ -573,7 +559,9 @@ litellm = ${litellmPort}
         cwd, home, tempDir: tempDirFor(), litellmExitTimeoutMs: 100,
         waitForLitellm: async () => {}, spawnLitellm: () => { spawned += 1; return { pid: 4242, kill() {} }; },
         processCommand: () => '/opt/venv/bin/python /opt/venv/bin/litellm --config x',
-      })).rejects.toThrow(/pid 222, running `\/opt\/venv\/bin\/python \/opt\/venv\/bin\/litellm --config x`.*kill -9 222/s);
+      })).rejects.toThrow(new RegExp(
+        'pid 222, running `/opt/venv/bin/python /opt/venv/bin/litellm --config x`.*kill -9 222.*' +
+        `delete ${serveStatePath(home, 0).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 's'));
     } finally {
       killSpy.mockRestore();
       errorSpy.mockRestore();
@@ -3803,16 +3791,18 @@ describe('killRecordedOrphan — escalates and forgets only a dead pid', () => {
     expect(stateOf().litellmPid).toBeUndefined();
   });
 
-  it('sends only SIGTERM when ps cannot say what the pid is', async () => {
-    record({ litellmPid: 222 });
+  it('sends nothing and forgets the record when ps cannot say what the pid is', async () => {
+    record({ routerPid: 11, litellmPid: 222 });
     const signals: string[] = [];
-    await killRecordedOrphan(orphanHome, 4100, {
+    const result = await killRecordedOrphan(orphanHome, 4100, {
       processCommand: () => undefined,
       kill: (pid) => signals.push(`TERM ${pid}`), forceKill: (pid) => signals.push(`KILL ${pid}`),
       isAlive: () => true, sleep: async () => {}, timeoutMs: 50,
     });
-    expect(signals).toEqual(['TERM 222']);
-    expect(stateOf().litellmPid).toBe(222);
+    expect(signals).toEqual([]);
+    expect(result.survivor).toBeUndefined();
+    expect(stateOf()).toMatchObject({ routerPid: 11 });
+    expect(stateOf().litellmPid).toBeUndefined();
   });
 
   it('keeps the pid on record when it survives SIGKILL too', async () => {

@@ -284,29 +284,35 @@ export async function killRecordedOrphan(
     sleep?: (ms: number) => Promise<void>;
     timeoutMs?: number;
   } = {},
-): Promise<{ survivor?: { pid: number; command: string | undefined } }> {
+): Promise<{ survivor?: { pid: number; command: string } }> {
   const found = readServeStateFrom(home, routerPort);
   const litellmPid = found?.state.litellmPid;
   let stillRunning = false;
   let command: string | undefined;
   if (litellmPid !== undefined) {
-    // Refuse only on POSITIVE evidence of a mismatch — the same rule as the
-    // routerPid port-holder check in `stopServe`. A command line that is
-    // known and names no litellm means the OS has since reused this pid for
-    // something else, and signalling it would kill an unrelated process at
-    // every serve start. Unknown (`undefined`) is not evidence: it proceeds
-    // exactly as before.
+    // Signalled only on POSITIVE identification. The OS reuses pid numbers,
+    // so a record that outlived its child may now name anything:
+    //  - ps names it litellm: SIGTERM, a bounded wait, SIGKILL. A VERIFIED
+    //    litellm that survives even that is reported, and blocks the spawn.
+    //  - ps names something else: the pid was reused; leave it alone.
+    //  - ps cannot answer (no procps, hidepid, a timeout): nothing is known,
+    //    so nothing is signalled and nothing is blocked — an unverifiable
+    //    pid wedging every start, Anthropic and direct routing included, is
+    //    worse than the orphan it might be.
+    // In the last two cases the record is forgotten.
     command = (deps.processCommand ?? processCommand)(litellmPid);
-    if (command !== undefined && !/litellm/i.test(command)) {
+    if (command === undefined) {
+      console.error(
+        `sonata serve: recorded litellm pid ${litellmPid} could not be verified (ps gave no command ` +
+        'line) — left alone and forgotten',
+      );
+    } else if (!/litellm/i.test(command)) {
       console.error(
         `sonata serve: recorded litellm pid ${litellmPid} is no longer LiteLLM ` +
         `(${command}) — leaving it alone`,
       );
     } else {
-      // SIGKILL only on positive identification. "ps could not say" was
-      // enough for the SIGTERM this always sent, but not for a signal that
-      // cannot be caught: the pid may have been reused by anything.
-      stillRunning = !(await terminatePid(litellmPid, { ...deps, escalate: command !== undefined }));
+      stillRunning = !(await terminatePid(litellmPid, deps));
     }
   }
   // Only this port's own record is ever read here, so the file cleared is
@@ -324,21 +330,23 @@ export async function killRecordedOrphan(
       ...(stillRunning ? { litellmPid } : {}),
     });
   }
-  return stillRunning && litellmPid !== undefined ? { survivor: { pid: litellmPid, command } } : {};
+  return stillRunning && litellmPid !== undefined && command !== undefined
+    ? { survivor: { pid: litellmPid, command } }
+    : {};
 }
 
 /**
  * Why a recorded LiteLLM that outlived every signal blocks a new spawn: it
  * very likely still holds the port, and recording the new child's pid would
- * forget the old one for good. Names the pid, what it runs, and the command
- * that clears it by hand.
+ * forget the old one for good. Only a pid ps has VERIFIED as litellm gets
+ * here. Names the pid and its command line, and both remedies: `kill -9`, or
+ * deleting the serve-state record if the pid is not what it seems.
  */
-export function orphanSurvivorMessage(survivor: { pid: number; command: string | undefined }): string {
-  return `sonata serve: a LiteLLM from an earlier daemon (pid ${survivor.pid}, ` +
-    `${survivor.command === undefined ? 'command line unknown' : `running \`${survivor.command}\``}) ` +
-    'is still alive after being signalled and probably holds the LiteLLM port — not starting another. ' +
-    `Check it with \`ps -p ${survivor.pid} -o command=\`, stop it with \`kill -9 ${survivor.pid}\`, ` +
-    'then retry (`sonata restart`).';
+export function orphanSurvivorMessage(survivor: { pid: number; command: string }, statePath: string): string {
+  return `sonata serve: a LiteLLM from an earlier daemon (pid ${survivor.pid}, running \`${survivor.command}\`) ` +
+    'is still alive after SIGTERM and SIGKILL and probably holds the LiteLLM port — not starting another. ' +
+    `Stop it with \`kill -9 ${survivor.pid}\`, or, if that pid is not what it seems, delete ${statePath} ` +
+    'to forget it; then retry (`sonata restart`).';
 }
 
 /**
@@ -354,8 +362,6 @@ async function terminatePid(
     isAlive?: (pid: number) => boolean;
     sleep?: (ms: number) => Promise<void>;
     timeoutMs?: number;
-    /** False sends SIGTERM alone: the pid's identity was not confirmed. */
-    escalate?: boolean;
   },
 ): Promise<boolean> {
   const isAlive = deps.isAlive ?? defaultIsAlive;
@@ -370,7 +376,6 @@ async function terminatePid(
   };
   (deps.kill ?? killPid)(pid);
   if (await gone()) return true;
-  if (deps.escalate === false) return false;
   console.error(`sonata serve: recorded litellm pid ${pid} did not exit after SIGTERM — sending SIGKILL`);
   (deps.forceKill ?? forcePid)(pid);
   return gone();
@@ -1111,7 +1116,7 @@ export async function cmdServe(
     });
     if (survivor !== undefined) {
       orphanPid = survivor.pid;
-      orphanBlocking = orphanSurvivorMessage(survivor);
+      orphanBlocking = orphanSurvivorMessage(survivor, serveStatePath(opts.home, ports.router));
       throw new Error(orphanBlocking);
     }
     orphanBlocking = undefined;
