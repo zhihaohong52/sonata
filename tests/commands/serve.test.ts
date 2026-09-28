@@ -3824,6 +3824,44 @@ litellm = ${litellmPort}
       expect(errors.some((line) => line.includes('logged in again'))).toBe(true);
     });
 
+    for (const source of ['codex', undefined] as const) {
+      it(`keeps a resolved gateway's login through a store skipped for staying unreadable, and restarts nothing when it reads again (source ${source ?? 'default'})`, async () => {
+        // Past the torn window an unreadable store reads as absent with
+        // \`skipped\` set. Counted as a logout, that dropped the gateway and
+        // ended its lineage, so the file reading again re-seeded LiteLLM from
+        // the store — a refresh token LiteLLM had already spent — and deleted
+        // the directory it was running in.
+        writeMachineConfig(machine('', source));
+        const codexPath = join(home, '.codex', 'auth.json');
+        const old = (Date.now() - 3_600_000) / 1000;
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'RT-1', account_id: 'acct-a' });
+        const body = readFileSync(codexPath, 'utf8');
+        utimesSync(codexPath, old, old);
+        // A different login elsewhere the default could fall through to.
+        writeOpencodeStore(claimJwt(1_900_000_000, 'acct-b'), 'OPENCODE-B');
+        const { send, envs, dir, tokenFile, settle } = await start();
+        expect(await send()).toBe(200);
+        const first = dir();
+        const rotated = JSON.stringify({ access_token: claimJwt(2_000_000_001, 'acct-a'), refresh_token: 'RT-2-ROTATED', account_id: 'acct-a' });
+        writeFileSync(tokenFile(), rotated);
+        writeFileSync(codexPath, '{"auth_mode":"chat');
+        utimesSync(codexPath, old, old);
+        expect(await send()).toBe(200);
+        await settle();
+        writeFileSync(codexPath, body);
+        utimesSync(codexPath, old, old);
+        expect(await send()).toBe(200);
+        await settle();
+        expect(await send()).toBe(200);
+        await settle();
+        expect(envs).toHaveLength(1);
+        expect(dir()).toBe(first);
+        expect(existsSync(first)).toBe(true);
+        expect(readFileSync(tokenFile(), 'utf8')).toBe(rotated);
+        expect(errors.some((line) => line.includes('logged in again') || line.includes('restarting litellm'))).toBe(false);
+      });
+    }
+
     it.runIf(sqliteAvailable())('refuses through one empty read of opencode.db, and restarts nothing when the row returns', async () => {
       // "Empty twice" is how opencodeDbRead reads a logout, and a request
       // landing there is refused — but one such read may be a gap. Marking
@@ -4039,6 +4077,52 @@ litellm = ${litellmPort}
         writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-b'), refresh_token: 'ACCOUNT-B' });
         await send();
         await waitFor(() => envs.length === 2, 'the restart for the new account');
+        await settle();
+        expect(await send()).toBe(200);
+      });
+
+      it('keeps the mark through a restart for anything else, which spawns LiteLLM on the same refused token', async () => {
+        // An unrelated model-list edit is a deliberate spawn, but it reuses
+        // the refused directory. Clearing the mark on every deliberate spawn
+        // served the next request into a fifteen-minute device-code login.
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
+        const { send, sendFull, envs, emit, settle, upstreamCalls } = await start();
+        expect(await send()).toBe(200);
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        expect(await send()).toBe(502);
+        const forwarded = upstreamCalls.length;
+        writeMachineConfig(machine('[models."terra"]\ngateway = "codex"\nid = "gpt-5.6-terra"'));
+        await send();
+        await waitFor(() => envs.length === 2, 'the restart for the new model list');
+        await settle();
+        expect(envs[1].CHATGPT_TOKEN_DIR).toBe(envs[0].CHATGPT_TOKEN_DIR);
+        const refused = await sendFull();
+        expect(refused.status).toBe(502);
+        expect(refused.text).toContain('ChatGPT login was refused by OpenAI');
+        expect(upstreamCalls.length).toBe(forwarded);
+      });
+
+      it('clears for a sonata-owned login once `sonata auth login` rewrites it and LiteLLM is restarted', async () => {
+        writeMachineConfig(machine('', 'sonata'));
+        const dir = credentialDir(home, 'codex');
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'auth.json'), JSON.stringify({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'OLD' }));
+        const { send, envs, emit, settle } = await start();
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        expect(await send()).toBe(502);
+        // An unrelated restart first: the refused file is still there.
+        writeMachineConfig(machine('[models."terra"]\ngateway = "codex"\nid = "gpt-5.6-terra"', 'sonata'));
+        await send();
+        await waitFor(() => envs.length === 2, 'the restart for the new model list');
+        await settle();
+        expect(await send()).toBe(502);
+        // The re-login rewrites auth.json; the next restart holds a new token.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        writeFileSync(join(dir, 'auth.json'), JSON.stringify({ access_token: claimJwt(2_000_000_001, 'acct-a'), refresh_token: 'NEW-LOGIN' }));
+        writeMachineConfig(machine('', 'sonata'));
+        await send();
+        await waitFor(() => envs.length === 3, 'the restart after the re-login');
         await settle();
         expect(await send()).toBe(200);
       });
@@ -4279,6 +4363,29 @@ litellm = ${litellmPort}
         } finally {
           chmodSync(codexPath(), 0o600);
         }
+      });
+
+      it('notices a chmod on the next request, though chmod moves no mtime', async () => {
+        // The plan fingerprint was ino:mtime:size, which chmod leaves alone,
+        // so a store made unreadable (or readable again) was never re-read.
+        // Sourced from codex alone: a default source's identity check reads
+        // codex's file on every merge anyway, which would hide the gap.
+        writeMachineConfig(DEFAULT_CHATGPT().replace('auth = "codex-oauth"', 'auth = "codex-oauth"\ncredential_source = "codex"'));
+        mkdirSync(join(home, '.codex'), { recursive: true });
+        writeFileSync(codexPath(), codexRecord('CODEX-A'));
+        backdate(codexPath());
+        const { send, seededWith } = await start();
+        expect((await send()).status).toBe(200);
+        chmodSync(codexPath(), 0o000);
+        try {
+          expect((await send()).status).toBe(200);
+          expect(errors.some((line) => line.includes(codexPath()) && line.includes('EACCES'))).toBe(true);
+        } finally {
+          chmodSync(codexPath(), 0o600);
+        }
+        expect((await send()).status).toBe(200);
+        // Kept through it: the gateway had resolved, so nothing re-seeded.
+        expect(seededWith()).toEqual(['CODEX-A']);
       });
 
       it('refuses within the window, and serves from opencode once it lapses with nothing on disk changing', async () => {

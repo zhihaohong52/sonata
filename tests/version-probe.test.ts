@@ -101,7 +101,11 @@ describe('runProbe — Ctrl-C reaches the probe', () => {
 import { runProbe } from ${JSON.stringify(join(process.cwd(), 'src/version-probe.ts'))};
 await runProbe(${JSON.stringify(sleeper)}, [], { timeoutMs: 30_000 }).catch(() => {});
 `);
-    const parent = spawn(join(process.cwd(), 'node_modules/.bin/tsx'), [script], { stdio: 'ignore' });
+    // Node with the tsx loader, not the tsx CLI: the CLI relays SIGINT to its
+    // child and SIGKILLs it if its event loop has not answered within ~60 ms,
+    // which under load killed the parent before runProbe could forward the
+    // signal — orphaning the probe group, a harness flake rather than a bug.
+    const parent = spawn(process.execPath, ['--import', 'tsx', script], { stdio: 'ignore', cwd: process.cwd() });
     const until = Date.now() + 15_000;
     while (!existsSync(pidFile) || readFileSync(pidFile, 'utf8').trim() === '') {
       if (Date.now() > until) throw new Error('probe never started');
@@ -109,7 +113,6 @@ await runProbe(${JSON.stringify(sleeper)}, [], { timeoutMs: 30_000 }).catch(() =
     }
     const probePid = Number(readFileSync(pidFile, 'utf8').trim());
     const exited = new Promise<number | null>((resolve) => parent.on('exit', (_code, signal) => resolve(signal === null ? 0 : 1)));
-    // tsx runs the script in a child node; signal the whole tree's leader.
     parent.kill('SIGINT');
     await exited;
     const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };

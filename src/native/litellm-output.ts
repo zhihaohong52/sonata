@@ -18,17 +18,37 @@
 import { StringDecoder } from 'node:string_decoder';
 import type { Readable, Writable } from 'node:stream';
 
-/** A line of LiteLLM's output saying its ChatGPT login has been refused and it is falling back to a device code. */
-export const LITELLM_CHATGPT_LOGIN_REFUSED = /re-login required|Sign in with ChatGPT using device code/;
+/**
+ * A line of LiteLLM's output saying its ChatGPT login has been refused and it
+ * is falling back to a device code — anchored on the exact lines LiteLLM
+ * writes, never a substring anywhere: every line of the child's output is
+ * scanned, including request bodies echoed in a debug log, and a conversation
+ * that merely mentions "re-login required" must not take ChatGPT down.
+ *
+ * - the warning, after LiteLLM's plain log prefix
+ *   (`\x1b[92m<HH:MM:SS> - LiteLLM:WARNING\x1b[0m: authenticator.py:55 - `),
+ *   colour codes optional; or as the `message` of LiteLLM's JSON log line;
+ * - the device-code prompt, which is a bare `print` and so begins its line.
+ */
+export const LITELLM_CHATGPT_LOGIN_REFUSED = new RegExp([
+  '^(?:\\x1b\\[[\\d;]*m)?\\d{2}:\\d{2}:\\d{2} - LiteLLM[\\w ]*:[A-Z]+(?:\\x1b\\[[\\d;]*m)?: \\S+:\\d+ - ' +
+    'ChatGPT refresh token failed, re-login required',
+  '^\\{"message": "ChatGPT refresh token failed, re-login required',
+  '^Sign in with ChatGPT using device code',
+].join('|'));
 
 /**
  * The line with a device-code login's user code masked. Nobody should act on
  * that code — the login it starts would be LiteLLM's, into a token directory
  * serve throws away, and a device code is a phishing target besides — so the
- * one a user reads in serve's log is never live.
+ * one a user reads in serve's log is never live. ChatGPT's prompt
+ * (`2) Enter code: XXXX-XXXX`) and Copilot's (`Please visit … and enter code
+ * XXXX-XXXX to authenticate.`), either case.
  */
 export function redactDeviceCode(line: string): string {
-  return line.replace(/(Enter code:\s*)\S.*$/, '$1****');
+  return line
+    .replace(/(Enter code:\s*)\S.*$/i, '$1****')
+    .replace(/(enter code\s+)\S+(\s+to authenticate)/i, '$1****$2');
 }
 
 /**
@@ -61,16 +81,42 @@ export function lineSplitter(onLine: (line: string) => void): { push(chunk: Buff
   };
 }
 
+/** Sinks that have a listener for their asynchronous 'error' event, and those that have emitted one. */
+const guardedSinks = new WeakSet<Writable>();
+const brokenSinks = new WeakSet<Writable>();
+
+/**
+ * A write to a closed pipe fails asynchronously: `write` returns, and the
+ * sink emits 'error' (EPIPE) later. With no listener that is an uncaught
+ * exception — `sonata serve | head` killed serve and orphaned its LiteLLM —
+ * and a try/catch around `write` cannot see it. One listener per sink, never
+ * more however many children are piped to it, marks the sink broken.
+ */
+function guardSink(sink: Writable): void {
+  if (guardedSinks.has(sink)) return;
+  guardedSinks.add(sink);
+  sink.on('error', () => { brokenSinks.add(sink); });
+}
+
+/** A sink that has errored, or been closed, is written to no more. */
+function sinkBroken(sink: Writable): boolean {
+  return brokenSinks.has(sink) || sink.destroyed || sink.writableEnded;
+}
+
 /**
  * Forwards `stream` to `sink` one line at a time — each line as it was, but
  * for a device code's user code — and hands every line to `onLine`. A final
  * line with no newline is still forwarded when the stream ends. A sink that
  * cannot be written to (a closed log) never stops the child's output being
- * read, since a full pipe would stall LiteLLM itself.
+ * read, since a full pipe would stall LiteLLM itself; one that fails
+ * asynchronously (EPIPE) is marked broken and skipped from then on.
  */
 export function pipeLitellmOutput(stream: Readable, sink: Writable, onLine: (line: string) => void): void {
+  guardSink(sink);
   const lines = lineSplitter((line) => {
-    try { sink.write(`${redactDeviceCode(line)}\n`); } catch { /* the log is gone; keep reading */ }
+    if (!sinkBroken(sink)) {
+      try { sink.write(`${redactDeviceCode(line)}\n`); } catch { /* the log is gone; keep reading */ }
+    }
     try { onLine(line); } catch { /* a listener never breaks forwarding */ }
   });
   stream.on('data', (chunk: Buffer | string) => lines.push(chunk));
