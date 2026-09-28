@@ -4103,6 +4103,31 @@ litellm = ${litellmPort}
         expect(upstreamCalls.length).toBe(forwarded);
       });
 
+      it('keeps the mark when the refused token could not be read at mark time — LiteLLM was mid-write', async () => {
+        // LiteLLM truncates auth.json and rewrites it as it records the
+        // device-code request. A mark taken then held no token, and the first
+        // readable one — the same refused token — cleared it on the next
+        // unrelated restart.
+        writeMachineConfig(machine());
+        writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
+        const { send, envs, emit, settle, upstreamCalls } = await start();
+        expect(await send()).toBe(200);
+        const file = join(envs[0].CHATGPT_TOKEN_DIR!, 'auth.json');
+        const saved = readFileSync(file, 'utf8');
+        writeFileSync(file, saved.slice(0, 10));
+        emit(fixture('chatgpt-refresh-refused.txt'));
+        writeFileSync(file, JSON.stringify({ ...JSON.parse(saved), device_code_requested_at: Date.now() / 1000 }));
+        expect(await send()).toBe(502);
+        const forwarded = upstreamCalls.length;
+        writeMachineConfig(machine('[models."terra"]\ngateway = "codex"\nid = "gpt-5.6-terra"'));
+        await send();
+        await waitFor(() => envs.length === 2, 'the restart for the new model list');
+        await settle();
+        expect(await send()).toBe(502);
+        expect(await send()).toBe(502);
+        expect(upstreamCalls.length).toBe(forwarded);
+      });
+
       it('clears for a sonata-owned login once `sonata auth login` rewrites it and LiteLLM is restarted', async () => {
         writeMachineConfig(machine('', 'sonata'));
         const dir = credentialDir(home, 'codex');
