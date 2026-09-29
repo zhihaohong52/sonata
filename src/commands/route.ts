@@ -20,7 +20,7 @@ import { homedir } from 'node:os';
 
 import { spawn } from 'node:child_process';
 
-import { readSettings, writeSettings, installHook, uninstallHook, hookInstalled } from '../settings.js';
+import { readSettings, updateSettings, installHook, uninstallHook, hookInstalled } from '../settings.js';
 import type { Settings } from '../settings.js';
 import { loadConfig, GLOBAL_CONFIG_RELATIVE, NoConfigError, parseConfig, type SonataConfig } from '../config.js';
 import { assertEffortsPinned, loadAaCatalog } from '../catalog.js';
@@ -49,10 +49,12 @@ export function routeSettingsFile(
  * The SessionStart command that keeps the router up for a routed session,
  * pointing at this installation's `ensure-serve.mjs` with the routing port.
  *
- * The `--global` marker matters: a daemon this hook starts for global-scope
- * routing is shared by every project, so it must resolve the machine config
- * regardless of which project's session happens to trigger it — `--global`
- * tells `ensure-serve.mjs` to start it from `home`, not its own inherited cwd.
+ * The `--global` marker changes nothing at run time: `ensure-serve.mjs` does
+ * not read it. There is one router per machine and it resolves each request's
+ * own config, so the hook starts the daemon the same way for either scope —
+ * beside the machine config file when one exists, else from the session's cwd.
+ * The marker stays because installed hooks are matched by their exact command
+ * string, and changing it would orphan every hook already written.
  */
 export function ensureServeCommand(packageRoot: string, port: number, scope: 'project' | 'global' = 'project'): string {
   const base = `node ${JSON.stringify(join(packageRoot, 'hooks', 'ensure-serve.mjs'))} ${port}`;
@@ -684,15 +686,17 @@ export async function cmdRoute(
   );
 
   if (action === 'on') {
-    const plan = planRouteOn(settings, activeConfig, opts.packageRoot, scope, {
+    const routing = {
       routerPort: routerPorts(opts.home).router,
       projectCwd: scope === 'project' ? opts.cwd : undefined,
       // Created here as well as by `serve`, so `route on` before a first
       // `serve` still writes settings the router will later honour.
       projectHintToken: scope === 'project' ? ensureRouterToken(opts.home) : undefined,
-    });
-    if (plan.changed) writeSettings(file, plan.settings);
-    return status(plan.settings);
+    };
+    // Planned from a read taken under the settings lock, not from `settings`
+    // above, which another writer may have changed since.
+    const after = await updateSettings(file, (current) => planRouteOn(current, activeConfig, opts.packageRoot, scope, routing));
+    return status(after);
   }
 
   if (action === 'off') {
@@ -705,13 +709,17 @@ export async function cmdRoute(
   }
 
   if (action === 'auto' || action === 'manual') {
-    const hasLiveSessions = action === 'auto'
-      && readSessions(routeSessionsFile(opts.cwd, scope, opts.home)).length > 0;
-    const plan = action === 'auto'
-      ? planRouteAuto(settings, opts.packageRoot, scope, hasLiveSessions)
-      : planRouteManual(settings, opts.packageRoot, scope);
-    if (plan.changed) writeSettings(file, plan.settings);
-    return status(plan.settings);
+    // Under the session lock, the one session start registers and writes the
+    // env under: read without it, a session registering between this read and
+    // the write below had its routing env stripped as "no live sessions".
+    const sessions = routeSessionsFile(opts.cwd, scope, opts.home);
+    const after = await withSessionLock(sessions, async () => {
+      const hasLiveSessions = action === 'auto' && readSessions(sessions).length > 0;
+      return await updateSettings(file, (current) => action === 'auto'
+        ? planRouteAuto(current, opts.packageRoot, scope, hasLiveSessions)
+        : planRouteManual(current, opts.packageRoot, scope));
+    });
+    return status(after);
   }
 
   return status(settings);
@@ -800,14 +808,14 @@ export async function cmdRouteSettle(
   await wait(ROUTE_SETTLE_MS);
 
   const registry = routeSessionsFile(opts.cwd, scope, opts.home);
-  await withSessionLock(registry, () => {
+  await withSessionLock(registry, async () => {
     const registered = readSessions(registry);
     // The newest registration, not merely membership. Registration order is
     // the file's order — `cmdRouteSession('start')` appends — so the last
     // entry is the most recent session to have written the env, and only its
     // own settle may take that env away again.
     if (registered[registered.length - 1] !== sessionId) return;
-    routeOffKeepingRegistries(opts, scope);
+    await routeOffKeepingRegistries(opts, scope);
   });
 }
 
@@ -931,9 +939,23 @@ export async function cmdRouteSession(
   // session's append and its write and answer that question against a list
   // that was about to change.
   await withSessionLock(registry, async () => {
+    // Moved to the END even when already registered: a session firing
+    // SessionStart again under its own id (resume, compaction) writes the env
+    // again, and `cmdRouteSettle` lets only the newest registration clear it.
+    // Left at its old position, its own settle returned early and the env
+    // stayed for as long as any session lived.
     const current = readSessions(registry);
-    writeSessions(registry, current.includes(sessionId) ? current : [...current, sessionId]);
-    await cmdRoute('on', opts);
+    writeSessions(registry, [...current.filter((id) => id !== sessionId), sessionId]);
+    try {
+      await cmdRoute('on', opts);
+    } catch (error) {
+      // Registration and the routing write are one step. Restoring the list
+      // as it was read — under the same lock — un-registers a new id and keeps
+      // a re-entering one live in its old place, since its SessionEnd must
+      // still find it.
+      writeSessions(registry, current);
+      throw error;
+    }
   });
 
   // Records which project this session belongs to, so `sonata usage --by
@@ -999,7 +1021,10 @@ function spawnSettle(
  * registry with it. The subagent path needs only the settings half.
  */
 /**
- * **LOCK ORDER: session registry, then subagent registry. Never the reverse.**
+ * **LOCK ORDER: session registry, then subagent registry, then the settings
+ * file's own lock (`updateSettings`). Never the reverse.** The settings lock
+ * is innermost everywhere: it is taken for one read-modify-write and nothing
+ * is acquired while it is held.
  *
  * They are different files, so nesting is mechanically fine; the *order* is
  * what makes it deadlock-free, and `withSessionLock` (`src/filelock.ts`) is a
@@ -1049,24 +1074,22 @@ async function routeOffUnlocked(
   // why `route off` did not recover a pinned project: the ids survived their
   // own documented fix, and the next SubagentStart took the count 6 -> 7.
   const subagents = routeSubagentsFile(opts.cwd, scope, opts.home);
-  return await withSessionLock(subagents, () => {
-    const plan = planRouteOff(readSettings(settingsFile), opts.packageRoot);
-    if (plan.changed) writeSettings(settingsFile, plan.settings);
+  return await withSessionLock(subagents, async () => {
+    const after = await updateSettings(settingsFile, (current) => planRouteOff(current, opts.packageRoot));
     writeSessions(subagents, []);
-    return plan.settings;
+    return after;
   });
 }
 
-function routeOffKeepingRegistries(
+async function routeOffKeepingRegistries(
   opts: { cwd: string; home: string; packageRoot: string },
   // Required, never defaulted: a helper that resolves scope itself is exactly
   // how the writer and the cleaner of `route-subagents.json` came to disagree.
   // Callers pass the scope their entry point already resolved.
   scope: 'project' | 'global',
-): void {
+): Promise<void> {
   const file = routeSettingsFile(opts.cwd, scope, opts.home);
-  const plan = planRouteOff(readSettings(file), opts.packageRoot);
-  if (plan.changed) writeSettings(file, plan.settings);
+  await updateSettings(file, (current) => planRouteOff(current, opts.packageRoot));
 }
 
 export interface SubagentPhaseResult {
@@ -1138,12 +1161,20 @@ export async function cmdRouteSubagent(
       // Not `cmdRoute('off')`: that also clears the *session* registry, which
       // is a different lifetime entirely. A finishing subagent erasing session
       // liveness would make the next SessionEnd believe it was the last one.
-      routeOffKeepingRegistries(opts, scope);
+      await routeOffKeepingRegistries(opts, scope);
       return { subagents: 0, routing: 'off' };
     }
     const next = current.includes(agentId) ? current : [...current, agentId];
     writeSessions(registry, next);
-    await cmdRoute('on', opts);
+    try {
+      await cmdRoute('on', opts);
+    } catch (error) {
+      // An id left registered after the write threw would hold routing on for
+      // a subagent that was never routed, until a stop hook that may never
+      // fire. Restore the list as read, under the same lock.
+      writeSessions(registry, current);
+      throw error;
+    }
     return { subagents: next.length, routing: 'on' };
   });
 }

@@ -257,6 +257,25 @@ function num(v: unknown, fallback: number): number {
   return typeof v === 'number' ? v : fallback;
 }
 
+/**
+ * A `[run]` timing: absent means the default, anything else must be a
+ * positive, finite number of seconds. Refused rather than defaulted, the same
+ * way `[budget] daily_usd` is — `run_timeout_seconds = 0` killed every run the
+ * moment it started, and a quoted `"1800"` silently fell back to the default,
+ * so the value in force was not the one the user wrote.
+ */
+function runSeconds(table: Record<string, unknown> | undefined, key: string, fallback: number): number {
+  const v = table?.[key];
+  if (v === undefined) return fallback;
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
+    throw new Error(
+      `sonata.toml: [run] ${key} must be a positive number of seconds, got ${String(typeof v === 'string' ? JSON.stringify(v) : v)}. ` +
+      `Remove the key to use the default (${fallback}).`,
+    );
+  }
+  return v;
+}
+
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 function parseRates(raw: Record<string, unknown>, where: string): Rates {
@@ -294,6 +313,15 @@ function parsePrice(raw: unknown, where: string): PriceConfig | undefined {
       }
       for (const [name, value] of [['from', from], ['to', to]] as const) {
         if (!HHMM.test(value)) throw new Error(`${where}: price.windows[${i}].${name} must be UTC HH:MM`);
+      }
+      // `inWindow` reads an equal pair as the empty interval, so the window
+      // would never apply and the flat rate would be charged without a word.
+      if (from === to) {
+        throw new Error(
+          `sonata.toml: ${where}: price.windows[${i}] has from = to = "${from}", which is an empty window. ` +
+          'A window must end at a different time than it starts; for a rate that applies all day, omit the window ' +
+          'and set the rate on the price table itself.',
+        );
       }
       return { from, to, ...parseRates(w, `${where}: price.windows[${i}]`) };
     });
@@ -721,6 +749,25 @@ export function parseConfig(text: string): SonataConfig {
       keyVarOwners.set(keyVar, name);
     }
 
+    // LiteLLM reads a ChatGPT credential from one directory
+    // (CHATGPT_TOKEN_DIR) and a Copilot one from another
+    // (GITHUB_COPILOT_TOKEN_DIR), process-wide — so a second gateway of the
+    // same OAuth kind cannot have an account of its own. Serve would quietly
+    // give it the first one's.
+    const oauthOwners = new Map<string, string>();
+    for (const [name, gateway] of Object.entries(gateways)) {
+      if (gateway.auth !== 'codex-oauth' && gateway.auth !== 'copilot-oauth') continue;
+      const owner = oauthOwners.get(gateway.auth);
+      if (owner !== undefined) {
+        throw new Error(
+          `sonata.toml: gateways "${owner}" and "${name}" both use auth = "${gateway.auth}", ` +
+          'but LiteLLM holds one credential of that kind per process, so both would be served ' +
+          `"${owner}"'s account — keep one of them`,
+        );
+      }
+      oauthOwners.set(gateway.auth, name);
+    }
+
     const nativeModels: Record<string, NativeModelConfig> = {};
     for (const [name, def] of Object.entries((rawNative.models ?? {}) as Record<string, unknown>)) {
       const d = def as Record<string, unknown>;
@@ -830,12 +877,25 @@ export function parseConfig(text: string): SonataConfig {
     generate: { roles },
     native,
     run: {
-      tailWindowSeconds: num(raw.run?.tail_window_seconds, 20),
-      stallTimeoutSeconds: num(raw.run?.stall_timeout_seconds, 120),
-      runTimeoutSeconds: num(raw.run?.run_timeout_seconds, 1800),
-      dispatchWindowSeconds: num(raw.run?.dispatch_window_seconds, 1500),
+      tailWindowSeconds: runSeconds(raw.run, 'tail_window_seconds', 20),
+      stallTimeoutSeconds: runSeconds(raw.run, 'stall_timeout_seconds', 120),
+      runTimeoutSeconds: runSeconds(raw.run, 'run_timeout_seconds', 1800),
+      dispatchWindowSeconds: runSeconds(raw.run, 'dispatch_window_seconds', 1500),
     },
   };
+}
+
+/**
+ * Whether a model name has the shape of an alias `sonata sync` generates —
+ * `sonata-<role>` or `sonata-<role>-<tier>` for a known role and tier.
+ *
+ * A name of this shape that `resolveTierAlias` cannot resolve is a stale
+ * agent or a config missing that tier, and deserves an answer naming
+ * `sonata sync`; any other `sonata-` name may be a model key that merely
+ * begins that way.
+ */
+export function isTierAliasShape(name: string): boolean {
+  return new RegExp(`^sonata-(${KNOWN_ROLES.join('|')})(-(${TIER_NAMES.join('|')}))?$`).test(name);
 }
 
 /**
@@ -872,24 +932,36 @@ export function resolveTierAlias(
   const routes = keys.map((candidate): TierRoute => {
     const { key, effort } = splitCandidate(candidate);
     const model = config.unifiedModels[key];
-    const gw = model?.gateway !== undefined ? config.native?.gateways?.[model.gateway] : undefined;
     return {
       key,
       ...(effort === undefined ? {} : { effort }),
-      native: model?.gateway !== undefined && model.id !== undefined
-        ? {
-          gateway: model.gateway,
-          id: model.id,
-          transport: gw !== undefined ? transportFor(gw, model.gateway) : undefined,
-          baseUrl: gw?.baseUrl,
-        }
-        : undefined,
+      native: nativeRouteFor(config, key),
       harness: model?.harness !== undefined && model.harnessId !== undefined
         ? { harness: model.harness, id: model.harnessId }
         : undefined,
     };
   });
   return { role, tier, routes };
+}
+
+/**
+ * The native route for one model key: its gateway, upstream id, transport and
+ * base URL, or undefined when the key has no native half.
+ *
+ * The one definition both a tier candidate and a bare `--model <key>` request
+ * use, so the two cannot disagree about whether a key is reached directly or
+ * through LiteLLM.
+ */
+export function nativeRouteFor(config: SonataConfig, key: string): TierRoute['native'] {
+  const model = config.unifiedModels[key];
+  if (model?.gateway === undefined || model.id === undefined) return undefined;
+  const gw = config.native?.gateways?.[model.gateway];
+  return {
+    gateway: model.gateway,
+    id: model.id,
+    transport: gw !== undefined ? transportFor(gw, model.gateway) : undefined,
+    baseUrl: gw?.baseUrl,
+  };
 }
 
 /** The harness route for one model key, for the dispatch CLI. */

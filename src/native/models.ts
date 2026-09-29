@@ -57,7 +57,15 @@ function modelsUrl(baseUrl: string): string {
 /** Google's Generative Language API needs `x-goog-api-key` and a different list shape — see the module docstring. */
 function isGoogleGenerativeLanguage(baseUrl: string): boolean {
   try {
-    return new URL(baseUrl).hostname === 'generativelanguage.googleapis.com';
+    const url = new URL(baseUrl);
+    // The host alone is not enough. Google's OpenAI-compatibility shim
+    // (`…/v1beta/openai`) lives on the same host and speaks the OpenAI shape
+    // — matched by hostname, it got the Google header and its `{ data }` list
+    // was parsed as `{ models }`, so listing failed. And a key is never sent
+    // in `x-goog-api-key` over plain http.
+    return url.protocol === 'https:'
+      && url.hostname === 'generativelanguage.googleapis.com'
+      && !url.pathname.split('/').includes('openai');
   } catch {
     return false;
   }
@@ -148,12 +156,19 @@ export async function fetchModels(
       return { outcome: 'unreadable' };
     }
 
-    const payload = await response.json() as unknown;
+    // The endpoint answered; a body that will not parse is unreadable, not
+    // unreachable — the outer catch is for failures to get an answer at all.
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      return { outcome: 'unreadable' };
+    }
     const models = google ? parseGoogleModels(payload) : parseOpenAiModels(payload);
     if (models === undefined) return { outcome: 'unreadable' };
     return { outcome: 'ok', models };
   } catch {
-    // Refused, timed out, DNS failure, or a body that would not parse.
+    // Refused, timed out, DNS failure, or a redirect it would not follow.
     return { outcome: 'unreachable' };
   }
 }

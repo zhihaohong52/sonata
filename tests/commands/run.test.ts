@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdRun, ensureNativeServe, MAX_REPO_CONTEXT_CHARS, repoContext, exposesSonataTools } from '../../src/commands/run.js';
-import { readMeta, runDir } from '../../src/store.js';
+import { listRuns, readMeta, runDir } from '../../src/store.js';
 import { killSession, hasSession, capturePane } from '../../src/tmux.js';
 import { readPermissionMode } from '../../src/mode.js';
 import { startServeDaemon } from '../../src/commands/serve.js';
@@ -108,6 +108,24 @@ describe('cmdRun', () => {
     expect(await hasSession(res.session)).toBe(true);
   });
 
+  it('records what the pane showed before launch, so tail can tell the shell from the harness', async () => {
+    const taskFile = join(cwd, 'task.txt');
+    writeFileSync(taskFile, 'Refactor the parser.');
+
+    const res = await cmdRun({
+      cwd, role: 'code', model: 'fake', taskFile,
+      rolesDir: join(cwd, 'roles'), sessionId: sessionInMode('acceptEdits'),
+    });
+    created.push(res.session);
+
+    const meta = readMeta(cwd, res.id);
+    // The shell's prompt, taken before the launch line was typed — so it
+    // carries no trace of cmd.sh.
+    expect(Array.isArray(meta.preLaunchPane)).toBe(true);
+    expect(meta.preLaunchPane!.length).toBeGreaterThan(0);
+    expect(meta.preLaunchPane!.some((l) => l.includes('cmd.sh'))).toBe(false);
+  });
+
   it('sends a pinned effort level to the harness and records it on the run', async () => {
     const taskFile = join(cwd, 'task.txt');
     writeFileSync(taskFile, 'Refactor the parser.');
@@ -188,6 +206,29 @@ base_url = "http://gateway.example/v1"
       cwd, role: 'code', model: 'fake', taskFile,
       rolesDir: join(cwd, 'roles'), sessionId: undefined,
     })).rejects.toThrow(/cannot ask for approval/i);
+  });
+
+  it('leaves no run behind when the launch is refused', async () => {
+    // createRun happens before the plan, and a refused plan used to leave a
+    // meta.json with no exit sentinel — listed as RUNNING by `sonata runs`
+    // forever, one more for every refused candidate a dispatch tried.
+    const taskFile = join(cwd, 'task.txt');
+    writeFileSync(taskFile, 'x');
+    await expect(cmdRun({
+      cwd, role: 'code', model: 'fake', taskFile,
+      rolesDir: join(cwd, 'roles'), sessionId: undefined,
+    })).rejects.toThrow(/cannot ask for approval/i);
+    expect(listRuns(cwd)).toEqual([]);
+  });
+
+  it('leaves no run behind when the role cannot be loaded', async () => {
+    const taskFile = join(cwd, 'task.txt');
+    writeFileSync(taskFile, 'x');
+    await expect(cmdRun({
+      cwd, role: 'code', model: 'fake', taskFile,
+      rolesDir: join(cwd, 'no-such-roles'), sessionId: sessionInMode('acceptEdits'),
+    })).rejects.toThrow();
+    expect(listRuns(cwd)).toEqual([]);
   });
 });
 

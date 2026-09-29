@@ -4,14 +4,14 @@ import { homedir } from 'node:os';
 import { recordHarnessUsage } from '../harness-usage.js';
 import { loadConfig } from '../config.js';
 import { getAdapter } from '../adapters/index.js';
-import { tryCapturePane } from '../tmux.js';
-import { cleanPane, newLines } from '../normalize.js';
+import { tryCapturePane, tryCapturePaneHistory } from '../tmux.js';
+import { cleanPane, newLines, stripAnsi } from '../normalize.js';
 import {
   readMeta, readExit, readReport, readCursor, writeCursor,
   appendEvents, readEvents, writeMeta, runDir, readAnsweredPrompt, clearAnsweredPrompt,
 } from '../store.js';
 import { cmdVerify } from './verify.js';
-import { worktreeUnchangedSince } from '../worktree.js';
+import { WORKTREE_CAPTURE_FILE, worktreeUnchangedSince } from '../worktree.js';
 import type { TailState } from '../types.js';
 import type { Effort } from '../effort.js';
 
@@ -51,6 +51,13 @@ export interface DecideInput {
    */
   canWriteReport?: boolean;
   /**
+   * The run's `harness.log` — everything the harness printed, which the
+   * opencode/pi/reasonix/codex scripts tee there. A run whose terminal output
+   * IS its report takes its body from here, since the pane holds only the
+   * last screen and `paneTail` only its last 20 lines of that.
+   */
+  terminalLog?: string;
+  /**
    * True when the harness writes nothing to the terminal until it exits
    * (headless `claude -p` sends stdout to last-message.txt). Silence is then
    * the expected shape of a healthy run, so the stall verdict is suppressed
@@ -63,6 +70,8 @@ export interface DecideInput {
    * started it — an exact string sonata wrote, not a guessed prompt pattern.
    */
   launchMarker?: string;
+  /** `RunMeta.preLaunchPane`: lines the shell showed before sonata typed anything. */
+  preLaunchPane?: string[];
   /**
    * True when the working tree is exactly where it was at launch, false when it
    * moved, `undefined` when the comparison could not be made (not a git
@@ -87,10 +96,21 @@ export interface DecideInput {
  * there. tmux echoes the launch command, and the shell prints a prompt around
  * it, so a pane that "has content" is not evidence a model ever spoke.
  */
-export function harnessOutput(paneTail: string[], launchMarker?: string): string[] {
+export function harnessOutput(
+  paneTail: string[],
+  launchMarker?: string,
+  preLaunchPane?: string[],
+): string[] {
+  // The pane is a live shell, so when the wrapper exits the shell prints its
+  // prompt again. That line is not the harness: counted as output, it made a
+  // read-only harness that exited 0 having said nothing read as a run that
+  // answered, with its prompt for a report. Any line the pane already showed
+  // before launch is the shell's, whether the prompt spans one line or three.
+  const shell = new Set((preLaunchPane ?? []).map((l) => l.trim()).filter((l) => l.length > 0));
   return paneTail.filter((line) => {
     const t = line.trim();
     if (t.length === 0) return false;
+    if (shell.has(t)) return false;
     if (launchMarker !== undefined && t.includes(launchMarker)) return false;
     // The watchdog foregrounds the harness job with `fg`, which echoes the
     // job's command line — `bash '<runDir>/harness.sh'`. That is sonata's own
@@ -110,8 +130,29 @@ export interface TailResult {
   report?: string;
   exitCode?: number;
   degraded?: boolean;
+  /**
+   * True when a finished run's report body — the part that is not sonata's own
+   * annotation — has no content. Decided here, before `cmdTail` appends the
+   * provenance line, because after that the text is never empty and a caller
+   * trimming it (`sonata dispatch`'s empty-report retry) could never fire.
+   */
+  reportEmpty?: boolean;
   /** Mirrors `DecideInput.worktreeUnchanged`; set only on a finished run. */
   worktreeUnchanged?: boolean;
+}
+
+/**
+ * A read-only run's report: its whole harness log when there is one, else the
+ * pane tail. The log is the complete account; the pane was only ever the last
+ * 20 lines of the last screen, so a review longer than that lost its opening.
+ */
+function terminalOutput(input: DecideInput): string {
+  // Blank lines are kept — they are the report's paragraph breaks — so this
+  // strips escapes and trailing space rather than using the pane cleaner.
+  const log = input.terminalLog === undefined
+    ? ''
+    : stripAnsi(input.terminalLog).split('\n').map((l) => l.replace(/\s+$/, '')).join('\n').trim();
+  return log.length > 0 ? log : input.paneTail.join('\n');
 }
 
 /** Pure state machine. Order matters: completion beats a stale prompt match. */
@@ -128,7 +169,7 @@ export function decide(input: DecideInput): TailResult {
     // echo standing in for a report. That is the silent success this whole
     // design exists to prevent: nothing else downstream can tell the
     // difference between "answered" and "never ran".
-    const spoke = harnessOutput(input.paneTail, input.launchMarker).length > 0;
+    const spoke = harnessOutput(input.paneTail, input.launchMarker, input.preLaunchPane).length > 0;
     const reportImpossible = input.canWriteReport === false
       && input.report === null
       && input.exitCode === 0
@@ -189,10 +230,14 @@ export function decide(input: DecideInput): TailResult {
       ? `[effort ${input.effort} not honoured: sonata has no effort control for ${input.harness ?? 'this harness'}]\n\n`
       : '';
 
+    // A timed-out run keeps whatever report it got as far as — the model's own
+    // or the harness's fallback file. It is still degraded; the text is the
+    // evidence of how far it got, and for claude (all stdout in the fallback
+    // file, an empty pane) the pane tail is nothing at all.
     const report = input.timedOut
-      ? `[timed out: sonata killed the run after the configured run_timeout_seconds]\n\n${input.paneTail.join('\n')}`
+      ? `[timed out: sonata killed the run after the configured run_timeout_seconds]\n\n${input.report ?? input.paneTail.join('\n')}`
       : reportImpossible
-        ? `${effortNote}[read-only run: the harness cannot write a report file, so this is its terminal output]\n\n${input.paneTail.join('\n')}`
+        ? `${effortNote}[read-only run: the harness cannot write a report file, so this is its terminal output]\n\n${terminalOutput(input)}`
         // Before the generic degraded branches: this one has a report-shaped
         // file to speak of, and its text (the harness's own last message) is
         // exactly the evidence the reader needs, so it is kept rather than
@@ -204,11 +249,17 @@ export function decide(input: DecideInput): TailResult {
           : degraded
             ? `[degraded: harness exited ${input.exitCode} without writing a report]\n\n${input.paneTail.join('\n')}`
             : `${effortNote}${noChange}${input.report!}`;
+    // Only the two trusted branches can be empty: every degraded branch
+    // already carries a verdict, and `dispatch` retries those anyway.
+    const reportEmpty = !degraded && (reportImpossible
+      ? harnessOutput(input.paneTail, input.launchMarker, input.preLaunchPane).length === 0
+      : (input.report ?? '').trim().length === 0);
     return {
       state: 'DONE',
       lines: input.newLines,
       exitCode: input.exitCode,
       degraded,
+      reportEmpty,
       report,
       worktreeUnchanged: input.worktreeUnchanged,
     };
@@ -252,6 +303,22 @@ function lastChangeMs(cwd: string, id: string, now: () => number): number {
   }
 }
 
+/** How long after the exit sentinel tail waits for the wrapper's capture. */
+export const CAPTURE_GRACE_MS = 10_000;
+
+function awaitingCapture(
+  cwd: string, id: string, launchFingerprint: string | undefined, now: () => number,
+): boolean {
+  if (launchFingerprint === undefined) return false;
+  const dir = runDir(cwd, id);
+  if (existsSync(join(dir, WORKTREE_CAPTURE_FILE))) return false;
+  try {
+    return now() - statSync(join(dir, 'exit')).mtimeMs < CAPTURE_GRACE_MS;
+  } catch {
+    return false;
+  }
+}
+
 function paneSnapshotPath(cwd: string, id: string): string {
   return join(runDir(cwd, id), 'pane.snapshot');
 }
@@ -265,6 +332,22 @@ function readPaneSnapshot(cwd: string, id: string): string[] {
 
 function writePaneSnapshot(cwd: string, id: string, lines: string[]): void {
   writeFileSync(paneSnapshotPath(cwd, id), lines.join('\n'));
+}
+
+/** The last scrollback-inclusive capture, which new output is diffed from. */
+function historySnapshotPath(cwd: string, id: string): string {
+  return join(runDir(cwd, id), 'pane-history.snapshot');
+}
+
+function readHistorySnapshot(cwd: string, id: string): string[] {
+  const p = historySnapshotPath(cwd, id);
+  if (!existsSync(p)) return [];
+  const raw = readFileSync(p, 'utf8');
+  return raw.length === 0 ? [] : raw.split('\n');
+}
+
+function writeHistorySnapshot(cwd: string, id: string, lines: string[]): void {
+  writeFileSync(historySnapshotPath(cwd, id), lines.join('\n'));
 }
 
 export async function cmdTail(opts: TailOptions): Promise<TailResult> {
@@ -285,19 +368,31 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
   for (;;) {
     const cursor = readCursor(opts.cwd, opts.id);
     const prevPane = readPaneSnapshot(opts.cwd, opts.id);
+    const prevHistory = readHistorySnapshot(opts.cwd, opts.id);
 
-    // Diff against the PREVIOUS PANE, not the accumulated event log. The event
-    // log contains older, already-scrolled content, so suffix-overlap against
-    // it fails and re-emits the whole pane on every poll — which makes every
-    // call return PROGRESS immediately and starves the caller's poll budget.
+    // Two captures, for two jobs. The visible screen is what prompt detection
+    // and the report's pane tail describe. The event log — what `sonata log`
+    // prints and what counts as new output — is diffed from a capture that
+    // includes scrollback: from the visible screen alone, anything more than
+    // one screen of output between polls was never recorded, and a run nobody
+    // tailed kept only its last screen.
+    //
+    // Diff against the PREVIOUS capture, not the accumulated event log. The
+    // event log contains older, already-scrolled content, so suffix-overlap
+    // against it fails and re-emits everything on every poll — which makes
+    // every call return PROGRESS immediately and starves the caller's poll
+    // budget.
     //
     // A failed capture (null, common when tmux is busy) must not be mistaken
     // for an emptied pane: writing an empty snapshot would make the next poll
     // re-emit everything, producing the same starvation.
     const captured = await tryCapturePane(meta.session);
     const paneNow = captured === null ? prevPane : cleanPane(captured);
-    const freshNow = captured === null ? [] : newLines(prevPane, paneNow);
     if (captured !== null) writePaneSnapshot(opts.cwd, opts.id, paneNow);
+    const history = await tryCapturePaneHistory(meta.session);
+    const historyNow = history === null ? prevHistory : cleanPane(history);
+    const freshNow = history === null ? [] : newLines(prevHistory, historyNow);
+    if (history !== null) writeHistorySnapshot(opts.cwd, opts.id, historyNow);
 
     if (freshNow.length > 0) {
       appendEvents(opts.cwd, opts.id, freshNow);
@@ -321,20 +416,37 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       const settled = await tryCapturePane(meta.session);
       if (settled !== null) {
         const settledPane = cleanPane(settled);
-        const extra = newLines(pane, settledPane);
+        writePaneSnapshot(opts.cwd, opts.id, settledPane);
+        pane = settledPane;
+      }
+      const settledHistory = await tryCapturePaneHistory(meta.session);
+      if (settledHistory !== null) {
+        const settledLines = cleanPane(settledHistory);
+        const extra = newLines(historyNow, settledLines);
         if (extra.length > 0) {
           appendEvents(opts.cwd, opts.id, extra);
           writeCursor(opts.cwd, opts.id, readCursor(opts.cwd, opts.id) + extra.length);
           clearAnsweredPrompt(opts.cwd, opts.id);
           fresh = [...fresh, ...extra];
         }
-        writePaneSnapshot(opts.cwd, opts.id, settledPane);
-        pane = settledPane;
+        writeHistorySnapshot(opts.cwd, opts.id, settledLines);
       }
       exitCode = readExit(opts.cwd, opts.id);
     }
 
-    const output = harnessOutput(fresh, scriptPath);
+    // The exit sentinel outruns the wrapper's worktree capture: every adapter's
+    // harness.sh writes it before the wrapper samples the tree. Until the
+    // capture lands the run is not finished as far as tail is concerned —
+    // deciding now would compare against a live tree that may already have
+    // moved. Bounded, so a capture that never comes (the repository became
+    // unusable) falls back to the live sample rather than hanging the run.
+    // Reported as PROGRESS outright rather than by hiding the exit code from
+    // decide(), which would let a quiet pane read as STALLED.
+    const captureWait = exitCode !== null
+      && awaitingCapture(opts.cwd, opts.id, meta.worktreeAtLaunch, now);
+    if (captureWait) exitCode = null;
+
+    const output = harnessOutput(fresh, scriptPath, meta.preLaunchPane);
     if (output.length > 0) {
       try {
         opts.onLines?.(output);
@@ -375,7 +487,12 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       ? undefined
       : worktreeUnchangedSince(meta.worktreeAtLaunch, opts.cwd, runDir(opts.cwd, opts.id));
 
-    const result = decide({
+    // Read only once the run has finished: the log is what a read-only run's
+    // report is built from, and nothing before then needs it.
+    const logPath = join(runDir(opts.cwd, opts.id), 'harness.log');
+    const terminalLog = exitCode !== null && existsSync(logPath) ? readFileSync(logPath, 'utf8') : undefined;
+
+    const result: TailResult = captureWait ? { state: 'PROGRESS', lines: fresh } : decide({
       newLines: fresh,
       exitCode,
       report: ownReport ?? fallback,
@@ -386,8 +503,10 @@ export async function cmdTail(opts: TailOptions): Promise<TailResult> {
       paneTail: pane.slice(-20),
       timedOut: existsSync(join(runDir(opts.cwd, opts.id), 'timeout')),
       canWriteReport: meta.canWriteReport,
+      terminalLog,
       silentUntilExit: meta.silentUntilExit,
       launchMarker: scriptPath,
+      preLaunchPane: meta.preLaunchPane,
       worktreeUnchanged,
       effort: meta.effort,
       effortHonoured: meta.effortHonoured,

@@ -2,7 +2,7 @@
 // Stands in for the Python interpreter that owns litellm. `loginGateway`
 // spawns it with `-c <script>`; we ignore the script and read our behaviour
 // from FAKE_MODE, so the test controls the outcome without a network.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const mode = process.env.FAKE_MODE ?? 'success';
@@ -21,5 +21,11 @@ else if (mode === 'exit-zero-no-credential') { process.exit(0); }
 else {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, file), JSON.stringify({ access_token: 'fake' }));
+  // LiteLLM's Copilot authenticator keeps the long-lived GitHub token beside
+  // the exchanged key, written with the process umask — commonly 0644.
+  if (process.env.GITHUB_COPILOT_TOKEN_DIR) {
+    writeFileSync(join(dir, 'access-token'), 'ghu_fake');
+    chmodSync(join(dir, 'access-token'), 0o644);
+  }
   process.exit(0);
 }

@@ -47,12 +47,25 @@ async function readAgentId() {
  * exits 0 for the one expected failure (no config in this directory), so a
  * global hook stays silent where it has nothing to do.
  */
-function surface(code, stderr) {
-  const text = stderr.trim();
-  if (code === 0 || text === '') return;
+function surface(detail) {
   process.stdout.write(JSON.stringify({
-    systemMessage: `sonata route subagent-${phase} failed, so this subagent is not routed:\n${text.slice(0, 2000)}`,
+    systemMessage: `sonata route subagent-${phase} failed, so this subagent is not routed:\n${detail.slice(0, 2000)}`,
   }) + '\n');
+}
+
+/**
+ * Every non-zero ending is shown, not only one that explained itself: a CLI
+ * that died without a word (an uncaught crash with its output lost, a kill by
+ * signal) left routing just as broken, and the exit code or signal is then the
+ * only evidence there is.
+ */
+function surfaceExit(code, signal, stderr) {
+  if (code === 0) return;
+  const text = stderr.trim();
+  if (text !== '') return surface(text);
+  surface(signal !== null && signal !== undefined
+    ? `the CLI was killed by ${signal}, with no output`
+    : `the CLI ended with exit code ${code}, with no output`);
 }
 
 const agentId = await readAgentId();
@@ -65,12 +78,22 @@ await new Promise((resolve) => {
     // stdout ignored: on SessionStart, plain stdout becomes context for
     // Claude, and the CLI's "routing off; 1 session(s) routed" is not an
     // instruction. stderr is kept for the one case worth showing.
-    const child = spawn(process.execPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    // SONATA_HOOK_TEST_NODE exists for the test suite alone: a missing binary
+    // is the one portable way to make this spawn fail, and the spawn failure is
+    // a path the hook must surface. (`ulimit -u 1` does it on macOS, but not
+    // under dash, Ubuntu's /bin/sh, which has no -u.)
+    const node = process.env.SONATA_HOOK_TEST_NODE || process.execPath;
+    const child = spawn(node, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     const stderr = [];
     child.stderr.on('data', (chunk) => stderr.push(chunk));
-    child.on('exit', (code) => { surface(code, Buffer.concat(stderr).toString('utf8')); resolve(); });
-    child.on('error', resolve);
-  } catch {
+    child.on('exit', (code, signal) => { surfaceExit(code, signal, Buffer.concat(stderr).toString('utf8')); resolve(); });
+    // A CLI that cannot be started at all (EAGAIN, EMFILE) is as unrouted as
+    // one that refused, and used to end here with nothing said.
+    child.on('error', (error) => { surface(`the CLI could not be started: ${error.message}`); resolve(); });
+  } catch (error) {
+    // spawn throws, rather than emitting 'error', for failures Node does not
+    // class as run-time ones — still a CLI that never ran.
+    surface(`the CLI could not be started: ${error instanceof Error ? error.message : String(error)}`);
     resolve();
   }
 });

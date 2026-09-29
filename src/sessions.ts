@@ -11,7 +11,7 @@
  * the same window as the ledger so the two cannot drift into a state where rows
  * exist with no map to join.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { withSessionLock } from './filelock.js';
 
@@ -25,24 +25,49 @@ export function sessionsPath(home: string): string {
   return join(home, '.config', 'sonata', 'sessions.json');
 }
 
-export function loadSessions(home: string): Record<string, SessionRecord> {
+/**
+ * The session → project map, or `{}` when there is none.
+ *
+ * Read on the router's request path without the writers' lock, so it must
+ * not mistake a moment of contention for "no sessions": that sends a
+ * session-resolved request to the machine config — other gateways, other
+ * credentials, another budget — with nothing to say it happened. Writers
+ * replace the file by rename, so sonata's own writes are never seen torn;
+ * the single retry covers anything that still is (a writer from before that
+ * change, or a read racing the file's creation).
+ */
+export function loadSessions(
+  home: string,
+  read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+): Record<string, SessionRecord> {
   const path = sessionsPath(home);
   if (!existsSync(path)) return {};
-  try {
-    const doc: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) return {};
-    return doc as Record<string, SessionRecord>;
-  } catch {
-    return {};
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const doc: unknown = JSON.parse(read(path));
+      if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) return {};
+      return doc as Record<string, SessionRecord>;
+    } catch {
+      // Fall through to the one retry.
+    }
   }
+  return {};
+}
+
+/** Writes via a sibling temp file and a rename, so no reader sees half a file. */
+function writeSessions(home: string, all: Record<string, SessionRecord>): void {
+  const path = sessionsPath(home);
+  mkdirSync(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(all, null, 2)}\n`);
+  renameSync(temp, path);
 }
 
 export async function recordSession(home: string, record: SessionRecord): Promise<void> {
   await withSessionLock(sessionsPath(home), () => {
     const all = loadSessions(home);
     all[record.session] = record;
-    mkdirSync(dirname(sessionsPath(home)), { recursive: true });
-    writeFileSync(sessionsPath(home), `${JSON.stringify(all, null, 2)}\n`);
+    writeSessions(home, all);
   });
 }
 
@@ -60,7 +85,7 @@ export async function pruneSessions(home: string, retentionDays: number, now: Da
       delete all[id];
       removed += 1;
     }
-    if (removed > 0) writeFileSync(sessionsPath(home), `${JSON.stringify(all, null, 2)}\n`);
+    if (removed > 0) writeSessions(home, all);
     return removed;
   });
 }

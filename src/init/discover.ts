@@ -142,7 +142,23 @@ export async function discover(
     }
   }
 
+  // A gateway the config already holds keeps the config's base_url, ahead of
+  // any harness's: that is the URL `nativeTomlFor` writes back for it, so the
+  // wizard must query and mint candidates from the same one. With the harness
+  // first, a saved model carried the config's URL and a discovered one the
+  // harness's, and the written base_url depended on which came last —
+  // silently replacing a hand-edited one on re-init. Key-authenticated
+  // gateways only: an OAuth gateway's recorded URL is its backend's, which a
+  // harness's metered URL must still be able to supply for a switch to a key.
   const providerBaseUrls: Record<string, string> = {};
+  for (const config of Object.values(configsByScope)) {
+    for (const [gateway, gatewayConfig] of Object.entries(config?.native?.gateways ?? {})) {
+      if (!providerBaseUrls[gateway] && !isOauthGatewayAuth(gatewayConfig.auth)
+        && gatewayConfig.baseUrl !== undefined) {
+        providerBaseUrls[gateway] = gatewayConfig.baseUrl;
+      }
+    }
+  }
   for (const h of harnesses) {
     for (const [k, v] of Object.entries(h.providerBaseUrls ?? {})) {
       if (!providerBaseUrls[k]) providerBaseUrls[k] = v;

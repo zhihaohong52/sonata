@@ -224,6 +224,25 @@ describe('claude usage', () => {
     expect(claudeUsage(query({ sessionId: 's-1' }))).toEqual({ kind: 'router', session: 's-1' });
   });
 
+  // Routing is decided at launch. Deciding it again at finish, from whatever
+  // the config says by then, counted a run twice (launched routed, config
+  // later unrouted: router rows AND the transcript) or not at all (the
+  // reverse: neither).
+  it('answers from the routing recorded at launch, not from the config at finish', () => {
+    writeFileSync(join(cwd, 'sonata.toml'), [
+      '[native.gateways."g"]', 'base_url = "https://g.example/v1"', '',
+      '[models."k"]', 'gateway = "g"', 'id = "k"', 'context_window = 128000', '',
+    ].join('\n'));
+    jsonl(join(home, '.claude', 'projects', '-flat-', 's-1.jsonl'), [
+      { type: 'assistant', timestamp: DURING, message: { id: 'msg_1', usage: { input_tokens: 3, output_tokens: 4 } } },
+    ]);
+    // Launched unrouted, config routed now: the transcript is the only record.
+    expect(claudeUsage(query({ sessionId: 's-1', routed: false })).kind).toBe('observed');
+    // Launched routed, config gone now: the router already counted it.
+    rmSync(join(cwd, 'sonata.toml'));
+    expect(claudeUsage(query({ sessionId: 's-1', routed: true }))).toEqual({ kind: 'router', session: 's-1' });
+  });
+
   it('reads an unrouted transcript by session id, keeping the last copy of each message', () => {
     jsonl(join(home, '.claude', 'projects', '-flat-', 's-1.jsonl'), [
       { type: 'user', timestamp: DURING },

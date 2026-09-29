@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdTail, decide, harnessOutput } from '../../src/commands/tail.js';
 import { tailWaitSeconds } from '../../src/cli.js';
-import { capturePane, killSession, newSession, sendKeys } from '../../src/tmux.js';
+import { capturePane, killSession, newSession, sendKeys, tryCapturePaneHistory } from '../../src/tmux.js';
 import { readAnsweredPrompt, readCursor, readEvents, runDir, writeAnsweredPrompt } from '../../src/store.js';
 import { cleanPane } from '../../src/normalize.js';
 import { codexAdapter } from '../../src/adapters/codex.js';
@@ -222,6 +222,29 @@ describe('tail decide — runs that cannot write a report', () => {
   });
 });
 
+describe('tail decide — an empty report', () => {
+  // `sonata dispatch` retries the next candidate on an empty report, but it can
+  // only see the decorated text, which always carries the provenance line — so
+  // the verdict has to come from here, before anything is appended.
+  it('flags a trusted report with no content as empty', () => {
+    const r = decide({ ...base, exitCode: 0, report: '  \n' });
+    expect(r.reportEmpty).toBe(true);
+  });
+
+  it('does not flag a report with content', () => {
+    const r = decide({ ...base, exitCode: 0, report: 'I fixed the bug.', worktreeUnchanged: true });
+    expect(r.reportEmpty).toBe(false);
+  });
+
+  it('does not count an annotation as content', () => {
+    const r = decide({
+      ...base, exitCode: 0, report: '', worktreeUnchanged: true,
+      effort: 'high', effortHonoured: false, harness: 'reasonix',
+    });
+    expect(r.reportEmpty).toBe(true);
+  });
+});
+
 describe('harnessOutput', () => {
   const LAUNCH = '/repo/.sonata/runs/abc123/cmd.sh';
 
@@ -305,12 +328,24 @@ describe('tail decide', () => {
     expect(r.report).toMatch(/^\[timed out: sonata killed the run after the configured run_timeout_seconds\]\n\n/);
   });
 
-  it('still degrades a timed-out run that has a report file', () => {
-    const r = decide({ ...base, exitCode: 0, report: 'a complete report', timedOut: true });
+  it('still degrades a timed-out run that has a report file, and keeps its text', () => {
+    // The report is what the run got as far as — degraded, since the work was
+    // cut short, but it is the evidence the reader needs, not the pane tail.
+    const r = decide({ ...base, exitCode: 0, report: 'a partial report', timedOut: true });
     expect(r.state).toBe('DONE');
     expect(r.degraded).toBe(true);
-    expect(r.report).toMatch(/^\[timed out: sonata killed the run after the configured run_timeout_seconds\]/);
-    expect(r.report).toContain('last');
+    expect(r.report).toBe('[timed out: sonata killed the run after the configured run_timeout_seconds]\n\na partial report');
+  });
+
+  it('keeps a fallback report`s text when the run timed out', () => {
+    // claude sends all of its stdout to last-message.txt and leaves the pane
+    // empty, so without this nothing but the bracket line survived.
+    const r = decide({
+      ...base, exitCode: 143, report: 'claude got this far', reportFromFallback: true, timedOut: true,
+    });
+    expect(r.degraded).toBe(true);
+    expect(r.report).toMatch(/^\[timed out:/);
+    expect(r.report).toContain('claude got this far');
   });
 });
 
@@ -336,8 +371,13 @@ describe('cmdTail answered prompts', () => {
   afterEach(async () => { await killSession(session); });
 
   async function snapshotPrompt(): Promise<string> {
+    // Stands in for an earlier poll, which leaves both captures behind: the
+    // visible one prompts are read from, and the scrollback one new output is
+    // diffed from.
     const pane = cleanPane(await capturePane(session));
     writeFileSync(join(runDir(cwd, id), 'pane.snapshot'), pane.join('\n'));
+    const history = cleanPane((await tryCapturePaneHistory(session)) ?? '');
+    writeFileSync(join(runDir(cwd, id), 'pane-history.snapshot'), history.join('\n'));
     return codexAdapter.describePrompt(pane)!;
   }
 
@@ -429,6 +469,75 @@ describe('cmdTail answered prompts', () => {
  * to the user as harness output — and counted as evidence the harness had
  * spoken, which is what the degraded check depends on.
  */
+/**
+ * The pane is a live shell: once the wrapper exits, the shell prints its
+ * prompt again, and that prompt is not the harness speaking. The shape below
+ * is a real capture (zsh, 2026-09-27) of a harness that printed nothing and
+ * exited 0 — which read as a read-only run that had answered, with the prompt
+ * as its report.
+ */
+describe('tail decide — a read-only run whose terminal output is the report', () => {
+  const long = Array.from({ length: 60 }, (_, i) => `finding ${i + 1}`);
+  const readOnly = {
+    ...base, exitCode: 0, canWriteReport: false, paneTail: long.slice(-20),
+  };
+
+  it('uses the whole harness log rather than the last 20 pane lines', () => {
+    const r = decide({ ...readOnly, terminalLog: long.join('\n') });
+    expect(r.degraded).toBe(false);
+    expect(r.report).toContain('finding 1\n');
+    expect(r.report).toContain('finding 60');
+  });
+
+  it('keeps the log`s paragraph breaks and drops its escapes', () => {
+    const r = decide({ ...readOnly, terminalLog: '\u001b[1mSummary\u001b[0m\n\nAll clear.\n' });
+    expect(r.report).toContain('Summary\n\nAll clear.');
+  });
+
+  it('falls back to the pane when the log is empty or absent', () => {
+    expect(decide({ ...readOnly, terminalLog: ' \n' }).report).not.toContain('finding 40\n');
+    expect(decide(readOnly).report).toContain('finding 60');
+  });
+});
+
+describe('harnessOutput — the shell prompt around the run', () => {
+  const marker = '/r/.sonata/runs/abc123/cmd.sh';
+  const prompt = 'james@Zhis-MacBook-Air r1 %';
+  const pane = [`${prompt} bash '${marker}'`, prompt];
+
+  it('drops a line the pane already showed before launch', () => {
+    expect(harnessOutput(pane, marker, [prompt])).toEqual([]);
+  });
+
+  it('drops every line of a multi-line prompt', () => {
+    const two = ['╭─ ~/proj  main', '╰─ ❯'];
+    expect(harnessOutput([...two, `╰─ ❯ bash '${marker}'`, 'answer', ...two], marker, two))
+      .toEqual(['answer']);
+  });
+
+  it('does not degrade a run without the snapshot differently than before', () => {
+    expect(harnessOutput(pane, marker)).toEqual([prompt]);
+  });
+
+  it('flags a silent read-only run that exited 0 as having said nothing', () => {
+    const r = decide({
+      ...base, exitCode: 0, canWriteReport: false, paneTail: pane,
+      launchMarker: marker, preLaunchPane: [prompt],
+    });
+    expect(r.degraded).toBe(true);
+    expect(r.report).toMatch(/nothing ran/);
+  });
+
+  it('still accepts a read-only run that spoke between the prompts', () => {
+    const r = decide({
+      ...base, exitCode: 0, canWriteReport: false,
+      paneTail: [pane[0], 'No defects found.', prompt],
+      launchMarker: marker, preLaunchPane: [prompt],
+    });
+    expect(r.degraded).toBe(false);
+  });
+});
+
 describe('harnessOutput — the watchdog fg echo', () => {
   it('drops the job line fg prints', () => {
     expect(harnessOutput([
@@ -538,6 +647,132 @@ describe('tail decide — a fallback report from a failed harness', () => {
   });
 });
 
+describe('cmdTail reads a read-only run`s report from its harness log', () => {
+  // The wiring: the decide test above covers the choice, this covers that
+  // cmdTail actually reads harness.log into it.
+  let cwd: string;
+  const session = 'sonata-test-tail-readonly';
+  const id = 'aaa111';
+
+  beforeEach(async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-ro-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '[run]\nstall_timeout_seconds = 120\n');
+    mkdirSync(runDir(cwd, id), { recursive: true });
+    writeFileSync(join(runDir(cwd, id), 'meta.json'), JSON.stringify({
+      id, role: 'review', model: 'm', harness: 'pi', mode: 'plan',
+      interactive: false, session, cwd, startedAt: '2026-09-27T00:00:00.000Z',
+      canWriteReport: false,
+    }));
+    const log = Array.from({ length: 60 }, (_, i) => `finding ${i + 1}`).join('\n');
+    writeFileSync(join(runDir(cwd, id), 'harness.log'), `${log}\n`);
+    writeFileSync(join(runDir(cwd, id), 'exit'), '0\n');
+    await newSession({ session, cwd });
+    await sendKeys(session, "printf 'finding 60\\n'");
+    await sendKeys(session, 'Enter');
+  });
+
+  afterEach(async () => { await killSession(session); });
+
+  it('returns every line the harness printed', async () => {
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 200 });
+    expect(r.state).toBe('DONE');
+    expect(r.report).toContain('finding 1\n');
+    expect(r.report).toContain('finding 59');
+  });
+});
+
+describe('cmdTail waits for the worktree capture the exit sentinel outruns', () => {
+  // harness.sh writes the exit sentinel before the wrapper's capture runs, so
+  // a finished run can be seen before its closing sample exists. Deciding then
+  // compared against a live sample of a tree that may already have moved.
+  let cwd: string;
+  const session = 'sonata-test-tail-capture';
+  const id = 'ccc111';
+
+  beforeEach(async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-capture-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '[run]\nstall_timeout_seconds = 120\n');
+    mkdirSync(runDir(cwd, id), { recursive: true });
+    writeFileSync(join(runDir(cwd, id), 'meta.json'), JSON.stringify({
+      id, role: 'code', model: 'm', harness: 'opencode', mode: 'acceptEdits',
+      interactive: false, session, cwd, startedAt: '2026-09-27T00:00:00.000Z',
+      worktreeAtLaunch: 'launch-fingerprint',
+    }));
+    writeFileSync(join(runDir(cwd, id), 'report.md'), 'I fixed the bug.');
+    writeFileSync(join(runDir(cwd, id), 'exit'), '0\n');
+    await newSession({ session, cwd });
+  });
+
+  afterEach(async () => { await killSession(session); });
+
+  it('keeps reporting PROGRESS while the capture has not landed', async () => {
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+    expect(r.state).toBe('PROGRESS');
+  });
+
+  it('finishes once the capture appears', async () => {
+    writeFileSync(join(runDir(cwd, id), 'worktree-capture'), 'x');
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+    expect(r.state).toBe('DONE');
+  });
+
+  it('gives up waiting ten seconds after the exit sentinel', async () => {
+    const old = new Date(Date.now() - 11_000);
+    utimesSync(join(runDir(cwd, id), 'exit'), old, old);
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+    expect(r.state).toBe('DONE');
+  });
+});
+
+describe('cmdTail records output that scrolled past the visible pane', () => {
+  // `sonata log` prints events.jsonl, which was diffed from a visible-only
+  // capture: anything more than one screen (50 rows) between polls was never
+  // recorded, and a run nobody tailed kept only its last screen.
+  let cwd: string;
+  const session = 'sonata-test-tail-scroll';
+  const id = 'ddd111';
+
+  beforeEach(async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-scroll-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '[run]\nstall_timeout_seconds = 120\n');
+    mkdirSync(runDir(cwd, id), { recursive: true });
+    writeFileSync(join(runDir(cwd, id), 'meta.json'), JSON.stringify({
+      id, role: 'code', model: 'm', harness: 'opencode', mode: 'acceptEdits',
+      interactive: false, session, cwd, startedAt: '2026-09-27T00:00:00.000Z',
+    }));
+    await newSession({ session, cwd });
+    await sendKeys(session, "seq -f 'row-%g' 1 150");
+    await sendKeys(session, 'Enter');
+    const deadline = Date.now() + 5_000;
+    while (!(await capturePane(session)).includes('row-150') && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  });
+
+  afterEach(async () => { await killSession(session); });
+
+  it('keeps every line in the event log, not just the last screen', async () => {
+    await cmdTail({ cwd, id, waitSeconds: 0 });
+    const events = readEvents(cwd, id);
+    expect(events).toContain('row-1');
+    expect(events).toContain('row-150');
+  });
+
+  it('does not record a line twice across polls', async () => {
+    await cmdTail({ cwd, id, waitSeconds: 0 });
+    await sendKeys(session, "echo 'after'");
+    await sendKeys(session, 'Enter');
+    const deadline = Date.now() + 5_000;
+    while (!(await capturePane(session)).split('\n').some((l) => l.trim() === 'after') && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    await cmdTail({ cwd, id, waitSeconds: 0 });
+    const events = readEvents(cwd, id);
+    expect(events.filter((l) => l === 'row-1')).toHaveLength(1);
+    expect(events.filter((l) => l === 'after')).toHaveLength(1);
+  });
+});
+
 describe('cmdTail degrades a fallback report from a failed run', () => {
   // The `decide` tests above cover the predicate; this covers the WIRING —
   // that cmdTail threads reportFromFallback from the adapter's fallback file
@@ -545,7 +780,7 @@ describe('cmdTail degrades a fallback report from a failed run', () => {
   // the suite green.
   let cwd: string;
   const session = 'sonata-test-tail-fallback';
-  const id = 'fb123';
+  const id = 'fb1234';
 
   beforeEach(async () => {
     cwd = mkdtempSync(join(tmpdir(), 'sonata-tail-fallback-'));
@@ -568,6 +803,16 @@ describe('cmdTail degrades a fallback report from a failed run', () => {
     expect(r.state).toBe('DONE');
     expect(r.degraded).toBe(true);
     expect(r.report).toMatch(/^\[degraded:/);
+    expect(r.report).toContain('API Error: 404 model not found');
+  });
+
+  it('reads the fallback file when report.md exists but is empty', async () => {
+    // An empty report.md used to shadow last-message.txt and be trusted as a
+    // finished, un-degraded report of nothing.
+    writeFileSync(join(runDir(cwd, id), 'report.md'), '');
+    const r = await cmdTail({ cwd, id, waitSeconds: 0, settleMs: 0 });
+
+    expect(r.degraded).toBe(true);
     expect(r.report).toContain('API Error: 404 model not found');
   });
 

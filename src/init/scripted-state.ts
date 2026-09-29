@@ -24,7 +24,7 @@ import {
   preTickedNative, deriveInitState, configPathFor, parseCredentialSourceFlags,
   type NativeCandidate, type InitOptions,
 } from './helpers.js';
-import { validate } from './validate.js';
+import { refusals, validate } from './validate.js';
 import { addByokCandidates } from './candidates.js';
 import type { InitState } from '../tui-ink/types.js';
 import type { InitEnvironment } from './discover.js';
@@ -126,7 +126,8 @@ export function scriptedState(
     routing: opts.routing ?? 'project',
     guidance: opts.guidance ?? 'project',
   };
-  const problems = validate(env, state, { nativeByKey });
+  // Warnings are printed by `cmdInit`, which validates the chosen state again.
+  const problems = refusals(validate(env, state, { nativeByKey }));
   if (problems.length > 0) throw new Error(problems[0].message);
 
   // BYOK missing-key check needs home — keep it here (after validation so unknown providers are caught first)

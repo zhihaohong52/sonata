@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 
 import { loadConfig, type SonataConfig } from '../config.js';
 import { SONATA_PROJECT_HEADER } from '../native/tenants.js';
-import { SONATA_TOKEN_HEADER } from '../native/router-token.js';
+import { SONATA_TOKEN_HEADER, ensureRouterToken } from '../native/router-token.js';
 import { routerPorts } from './ports.js';
 import { isSonataRouter, preMultiTenantMessage, sonataRouterMultiTenant, startServeDaemon } from './serve.js';
 
@@ -71,7 +71,10 @@ export function planCode(opts: CodeOptions): CodePlan {
   if (!config.native) throw new Error('sonata code: no [native] table');
 
   return {
-    env: nativeSessionEnv(config, routerPorts(opts.home).router, opts.cwd),
+    // With the router token: the router honours the project hint only from a
+    // caller holding it, and without it every request fell through to the
+    // machine config. The same ensure `sonata route on` uses, so the two agree.
+    env: nativeSessionEnv(config, routerPorts(opts.home).router, opts.cwd, ensureRouterToken(opts.home)),
     argv: ['claude', ...opts.passthrough],
     banner: 'Native Claude session started. Remote Control unavailable in sonata code.',
   };

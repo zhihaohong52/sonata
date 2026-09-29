@@ -105,6 +105,19 @@ export async function tryCapturePane(session: string): Promise<string | null> {
   }
 }
 
+/**
+ * The pane including up to `lines` of scrollback above the visible screen, or
+ * null on a failed capture. The visible capture is one screen, so output that
+ * scrolls past between two captures is otherwise never seen at all.
+ */
+export async function tryCapturePaneHistory(session: string, lines = 2000): Promise<string | null> {
+  try {
+    return await tmux(['capture-pane', '-p', '-S', `-${lines}`, '-t', session]);
+  } catch {
+    return null;
+  }
+}
+
 export async function listSessions(): Promise<string[]> {
   try {
     const out = await tmux(['list-sessions', '-F', '#{session_name}']);
