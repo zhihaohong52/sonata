@@ -311,10 +311,28 @@ function yamlString(text: string): string {
  * A key as a plain YAML scalar when it can be one, else double-quoted. For
  * `model:`, which carries the key the router resolves: an ordinary key stays
  * byte-identical to every file already written, and only a key a plain scalar
- * cannot hold (`: `, ` #`, a leading indicator, a quote) is quoted.
+ * cannot hold (`: `, ` #`, a leading indicator, a quote) or that YAML would
+ * read as a boolean, null, number or date is quoted.
  */
 function yamlScalar(text: string): string {
-  return /^[A-Za-z0-9][A-Za-z0-9._/@+-]*$/.test(text) ? text : yamlString(text);
+  const plain = /^[A-Za-z0-9][A-Za-z0-9._/@+-]*$/.test(text) && !yamlImplicitlyTyped(text);
+  return plain ? text : yamlString(text);
+}
+
+/**
+ * Whether a plain scalar would resolve to something other than a string —
+ * under YAML 1.2's core schema or YAML 1.1's wider one, since which a reader
+ * applies is not ours to choose. `model: true` is a boolean, `model: 1e3` a
+ * number and `model: 2026-09-29` a timestamp, each read back as a value the
+ * router cannot resolve. Only shapes the plain-scalar alphabet above admits
+ * need listing (`~`, `.inf` and `.nan` already fail it). Erring towards
+ * quoting is harmless: a quoted key reads back identically.
+ */
+function yamlImplicitlyTyped(text: string): boolean {
+  return /^(?:null|true|false|yes|no|on|off|y|n)$/i.test(text)
+    || /^[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9]+)?$/.test(text)
+    || /^0(?:x[0-9a-fA-F_]+|o[0-7_]+|b[01_]+)$/.test(text)
+    || /^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:[Tt].*)?$/.test(text);
 }
 
 /**

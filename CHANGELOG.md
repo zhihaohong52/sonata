@@ -38,6 +38,11 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   machine a refusal such as "router predates multi-tenant routing" was shown
   as "the CLI ended with exit code 1, with no output". The hooks now wait for
   stderr to close, bounded at 2 s after exit.
+- **A legacy native agent's model key is quoted when YAML would type it.** A
+  key such as `true`, `null`, `1e3`, `yes` or `2026-09-29` was written as a
+  plain `model:` scalar, which a YAML reader resolves to a boolean, null,
+  number or date rather than the key. Such keys are now double-quoted;
+  ordinary keys are written exactly as before.
 
 From the full audit of 0.13.1 (`docs/reviews/2026-09-27-full-audit.md`):
 
