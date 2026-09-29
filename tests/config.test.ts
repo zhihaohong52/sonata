@@ -155,6 +155,43 @@ dispatch_window_seconds = 600
   });
 });
 
+describe('[run] timings', () => {
+  const base = `
+[models.m]
+harness = "opencode"
+id = "p/m"
+
+[generate.roles]
+code = ["m"]
+`;
+  const keys = ['tail_window_seconds', 'stall_timeout_seconds', 'run_timeout_seconds', 'dispatch_window_seconds'];
+
+  // A timing that is not a positive, finite number of seconds is refused
+  // rather than read or defaulted. run_timeout_seconds = 0 killed every run the
+  // moment it started; a string silently fell back to the default, so a value
+  // the user believed they set was not the one in force.
+  for (const key of keys) {
+    for (const [what, value] of [
+      ['zero', '0'], ['negative', '-5'], ['a string', '"1800"'], ['infinite', 'inf'], ['NaN', 'nan'],
+    ] as const) {
+      it(`refuses ${key} = ${what}`, () => {
+        expect(() => parseConfig(`${base}\n[run]\n${key} = ${value}\n`))
+          .toThrow(new RegExp(`^sonata\\.toml: \\[run\\] ${key} must be a positive number of seconds`));
+      });
+    }
+
+    it(`accepts a positive ${key}, fractional included`, () => {
+      expect(() => parseConfig(`${base}\n[run]\n${key} = 2.5\n`)).not.toThrow();
+    });
+  }
+
+  it('still defaults every key that is absent', () => {
+    expect(parseConfig(base).run).toEqual({
+      tailWindowSeconds: 20, stallTimeoutSeconds: 120, runTimeoutSeconds: 1800, dispatchWindowSeconds: 1500,
+    });
+  });
+});
+
 describe('parseConfig — provider-qualified ids', () => {
   const cfg = (harness: string, id: string) => `
 [models."m"]
@@ -1117,6 +1154,25 @@ from = "16:30"
 base_url = "https://example.invalid/v1"
 `)).toThrow(/from.*to/i);
   });
+
+  // `inWindow` reads from == to as the empty interval, so such a window never
+  // applies and the flat rate is charged instead — silently, since nothing
+  // else says the window was ignored.
+  it('refuses a window whose from equals its to', () => {
+    expect(() => parseConfig(`
+[models."flash"]
+gateway = "acme"
+id = "x"
+
+[[models."flash".price.windows]]
+from = "09:00"
+to = "09:00"
+input = 1
+
+[native.gateways."acme"]
+base_url = "https://example.invalid/v1"
+`)).toThrow(/^sonata\.toml: .*empty window.*omit the window/);
+  });
 });
 
 describe('avoid_gateways', () => {
@@ -1302,6 +1358,40 @@ describe('loadConfig — effort pinning', () => {
       },
     }));
     expect(() => loadConfig(cwd, home)).toThrow(/tiers\.code\.simple "luna"/);
+  });
+});
+
+describe('one OAuth gateway per kind', () => {
+  // LiteLLM reads a ChatGPT credential from CHATGPT_TOKEN_DIR and a Copilot
+  // one from GITHUB_COPILOT_TOKEN_DIR — one directory each, process-wide — so
+  // a second gateway of the same kind could only ever be served the first
+  // one's account.
+  it('refuses two codex-oauth gateways, naming both', () => {
+    expect(() => parseConfig(`
+[native.gateways."codex"]
+auth = "codex-oauth"
+[native.gateways."codex-work"]
+auth = "codex-oauth"
+`)).toThrow(/gateways "codex" and "codex-work" both use auth = "codex-oauth"/);
+  });
+
+  it('refuses two copilot-oauth gateways', () => {
+    expect(() => parseConfig(`
+[native.gateways."copilot"]
+auth = "copilot-oauth"
+[native.gateways."copilot-2"]
+auth = "copilot-oauth"
+`)).toThrow(/both use auth = "copilot-oauth"/);
+  });
+
+  it('accepts one of each kind', () => {
+    const cfg = parseConfig(`
+[native.gateways."codex"]
+auth = "codex-oauth"
+[native.gateways."copilot"]
+auth = "copilot-oauth"
+`);
+    expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['codex', 'copilot']);
   });
 });
 

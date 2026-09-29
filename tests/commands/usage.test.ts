@@ -3,8 +3,8 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { aggregate, parseDuration, parseUsageFlags, projectResolver } from '../../src/commands/usage.js';
-import type { LedgerRow } from '../../src/ledger.js';
+import { aggregate, cmdUsage, parseDuration, parseUsageFlags, projectResolver } from '../../src/commands/usage.js';
+import { appendRow, type LedgerRow } from '../../src/ledger.js';
 
 function row(over: Partial<LedgerRow> = {}): LedgerRow {
   return {
@@ -251,6 +251,43 @@ code = ["m"]
   it('keeps the recorded path for a directory that no longer exists', () => {
     const gone = join(main, 'never-existed');
     expect(projectResolver(home)(gone)).toBe(gone);
+  });
+
+  // `--project` is documented as "any directory inside it", but configPath
+  // checks only the directory itself, so a subdirectory labelled as itself
+  // and matched no row — an empty report with no error.
+  describe('cmdUsage --project names the project by any directory inside it', () => {
+    const requests = (report: { buckets: { requests: number }[] }) =>
+      report.buckets.reduce((sum, bucket) => sum + bucket.requests, 0);
+    const recent = () => new Date(Date.now() - 60_000).toISOString();
+
+    beforeEach(() => {
+      appendRow(home, row({ ts: recent(), project: main, price: { source: 'models-dev', totalUsd: 1 } }));
+      appendRow(home, row({ ts: recent(), project: '/elsewhere', price: { source: 'models-dev', totalUsd: 2 } }));
+    });
+
+    it('selects the project from a nested subdirectory of the main checkout', async () => {
+      const deep = join(main, 'src', 'deep');
+      mkdirSync(deep, { recursive: true });
+      const report = await cmdUsage({ home, since: '1d', by: 'project', project: deep, json: true });
+      expect(requests(report)).toBe(1);
+      expect(report.buckets[0]?.label).toBe(main);
+    });
+
+    it('selects the project from a subdirectory of a linked worktree', async () => {
+      const sub = join(worktree, 'sub');
+      mkdirSync(sub, { recursive: true });
+      const report = await cmdUsage({ home, since: '1d', by: 'project', project: sub, json: true });
+      expect(requests(report)).toBe(1);
+    });
+
+    it('keeps today\'s behaviour for a directory with no project above it', async () => {
+      const lone = realpathSync(mkdtempSync(join(tmpdir(), 'usage-lone-')));
+      appendRow(home, row({ ts: recent(), project: lone, price: { source: 'models-dev', totalUsd: 4 } }));
+      const report = await cmdUsage({ home, since: '1d', by: 'project', project: lone, json: true });
+      expect(requests(report)).toBe(1);
+      expect(report.buckets[0]?.label).toBe(lone);
+    });
   });
 });
 

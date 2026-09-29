@@ -135,6 +135,34 @@ describe('appendRow / readRows', () => {
     expect(back.map((r) => r.alias)).toEqual(['ai', 'none']);
   });
 
+  // No sonata writer produces a negative (every harness reader and rate is
+  // clamped), so one can only come from a corrupted or hand-edited file — and
+  // a negative totalUsd lowers `spentTodayUsd`, loosening `[budget]`.
+  it('skips a persisted row with negative or non-finite tokens or cost', () => {
+    appendRow(home, row({ alias: 'good', price: { source: 'model', totalUsd: 5 } }));
+    const path = ledgerPathFor(home, new Date('2026-08-27T04:12:07.881Z'));
+    const bad = [
+      { alias: 'neg-cost', price: { source: 'model', totalUsd: -100 } },
+      { alias: 'neg-input', tokens: { input: -1000, output: 2, cacheRead: 0, cacheCreation: 0 } },
+      { alias: 'neg-output', tokens: { input: 1, output: -5, cacheRead: 0, cacheCreation: 0 } },
+      { alias: 'neg-cache', tokens: { input: 1, output: 2, cacheRead: -3, cacheCreation: 0 } },
+      { alias: 'str-cache', tokens: { input: 1, output: 2, cacheRead: 0, cacheCreation: '7' } },
+      { alias: 'null-cache', tokens: { input: 1, output: 2, cacheRead: null, cacheCreation: 0 } },
+    ];
+    writeFileSync(path, `${readFileSync(path, 'utf8')}${bad.map((over) => JSON.stringify(persistedRow(over))).join('\n')}\n`);
+    const back = readRows(home, 0, Date.parse('2026-08-27T06:00:00Z'));
+    expect(back.map((r) => r.alias)).toEqual(['good']);
+  });
+
+  it('reads an absent cache field as 0, so a row written before the field existed still loads', () => {
+    appendRow(home, row());
+    const path = ledgerPathFor(home, new Date('2026-08-27T04:12:07.881Z'));
+    writeFileSync(path, `${readFileSync(path, 'utf8')}${JSON.stringify(persistedRow({ alias: 'old', tokens: { input: 4, output: 2 } }))}\n`);
+    const back = readRows(home, 0, Date.parse('2026-08-27T06:00:00Z'));
+    expect(back.map((r) => r.alias)).toEqual(['sonata-code-simple', 'old']);
+    expect(back[1].tokens).toEqual({ input: 4, output: 2, cacheRead: 0, cacheCreation: 0 });
+  });
+
   it('readers survive a ledger containing an incomplete persisted row', () => {
     appendRow(home, row());
     appendRow(home, row({ alias: 'incomplete', tokens: undefined as never, attempts: undefined as never }));

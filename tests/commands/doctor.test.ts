@@ -10,6 +10,7 @@ import { opencodeDbPath } from '../../src/native/opencode-store.js';
 import { sqliteAvailable, writeOpencodeCredDb } from '../opencode-db-fixture.js';
 import { credentialDir } from '../../src/native/oauth-login.js';
 import { cmdRoute } from '../../src/commands/route.js';
+import { nativeAgentMarkdown } from '../../src/commands/sync.js';
 
 vi.mock('../../src/native/litellm.js', () => ({
   findLitellm: () => '/usr/local/bin/litellm',
@@ -356,7 +357,8 @@ code = ["deepseek-v4-flash"]
 
   it('checks LiteLLM, a down serve, missing key sources, and native stale agents', async () => {
     const { cwd, home } = setup();
-    writeFileSync(join(cwd, '.claude', 'agents', 'native-code-old.md'), '---\nname: native-code-old\n---\nold');
+    // A real legacy native agent: the name alone no longer claims a file.
+    writeFileSync(join(cwd, '.claude', 'agents', 'native-code-old.md'), nativeAgentMarkdown({ role: 'code', model: 'old' }));
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('down'); };
     try {
@@ -978,6 +980,43 @@ pricing_provider = ["deepseek", "tencent", "nope"]
         .replace('["deepseek", "tencent", "nope"]', '["deepseek"]'));
     const clean = await doctorResult(cwd, home, at);
     expect(clean.checks.some((check) => check.name === 'pricing providers')).toBe(false);
+    expect(ok).toBe(clean.ok);
+  });
+
+  it('warns when two gateways share a base_url, and only then', async () => {
+    // Measured on a real machine: a provider NAMED `opencode` on the Go URL
+    // put `opencode` and `opencode-go` on one endpoint, duplicating every
+    // model and agent under two names with nothing saying so.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-shared-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-shared-home-'));
+    const toml = (second: string) => `
+[models."a"]
+gateway = "opencode"
+id = "kimi-k3"
+
+[models."b"]
+gateway = "opencode-go"
+id = "kimi-k3"
+
+[native.gateways."opencode"]
+base_url = "https://opencode.ai/zen/go/v1"
+
+[native.gateways."opencode-go"]
+base_url = "${second}"
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), toml('https://opencode.ai/zen/go/v1/'));
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    const at = new Date('2026-09-14T00:00:00.000Z');
+    const { ok, checks } = await doctorResult(cwd, home, at);
+    const c = checks.find((check) => check.name === 'shared base_url');
+    expect(c?.ok).toBe(true);
+    expect(c?.detail).toContain('opencode, opencode-go');
+    expect(c?.detail).toMatch(/one account under two names/);
+
+    writeFileSync(join(cwd, 'sonata.toml'), toml('https://opencode.ai/zen/v1'));
+    const clean = await doctorResult(cwd, home, at);
+    expect(clean.checks.some((check) => check.name === 'shared base_url')).toBe(false);
+    // Advisory: the verdict is whatever it is without the warning.
     expect(ok).toBe(clean.ok);
   });
 

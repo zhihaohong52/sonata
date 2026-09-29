@@ -11,7 +11,7 @@ import { join } from 'node:path';
 
 import { readRowsAsync } from '../ledger.js';
 import { recentRoutes, type RouteLine } from '../commands/status.js';
-import { runDir } from '../store.js';
+import { isRunId, runDir } from '../store.js';
 import { reportPathFor } from '../report-contract.js';
 import { parseFilters } from './ui-usage.js';
 import { projectDiscovery } from './ui-runs.js';
@@ -127,9 +127,9 @@ export async function runDetail(
   transcript: string; truncated: boolean;
   report: string | null; reportTruncated: boolean;
 } | undefined> {
-  // Run ids are six lowercase hex characters from newRunId(). Validate before
-  // constructing any path so a caller cannot use traversal or an absolute id.
-  if (!/^[0-9a-f]{6}$/.test(id)) return undefined;
+  // Run ids are lowercase hex from newRunId(). Validate before constructing
+  // any path so a caller cannot use traversal or an absolute id.
+  if (!isRunId(id)) return undefined;
 
   // The cwd is a query parameter, so it is caller-controlled. It is only ever
   // honoured when it names a project discovery already found -- otherwise the

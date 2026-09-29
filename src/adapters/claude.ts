@@ -43,7 +43,15 @@ function buildScript(input: PlanInput): LaunchPlan {
   // prompt text ended up split on commas/whitespace into garbage
   // "allowedTools" rules, and `-p` then had no prompt argument left at all.
   // The `=` form binds exactly one value and does not swallow what follows.
-  if (readOnly) flags.push('--allowedTools=Read,Grep,Glob,Bash');
+  //
+  // Bash is deliberately absent, and `--tools` is what makes that hold.
+  // `--allowedTools` only pre-approves: an unlisted tool still exists, and in
+  // plan mode a shell command outside the built-in read-only set goes to the
+  // auto-mode classifier rather than being refused — so an unscoped `Bash`
+  // allow was no read-only guarantee, and neither is leaving Bash unlisted.
+  // `--tools` restricts which tools exist at all, matching pi's allowlist.
+  // Not yet verified by a live run.
+  if (readOnly) flags.push('--tools=Read,Grep,Glob', '--allowedTools=Read,Grep,Glob');
   // The session id sonata chose, so the run's transcript — and the router's
   // ledger rows, which record Claude Code's session id — name this run.
   if (input.sessionId !== undefined) flags.push(`--session-id ${shellQuote(input.sessionId)}`);
@@ -93,7 +101,7 @@ function buildScript(input: PlanInput): LaunchPlan {
   // silentUntilExit: stdout goes to last-message.txt (see the no-tee comment
   // above), so the pane stays unchanged for the whole run and pane-silence
   // stall detection would mark every long run STALLED.
-  return { script, interactive: false, canWriteReport: !readOnly, silentUntilExit: true, effortHonoured };
+  return { script, interactive: false, canWriteReport: !readOnly, silentUntilExit: true, effortHonoured, routed: routerUrl !== '' };
 }
 
 /**
@@ -108,11 +116,15 @@ function buildScript(input: PlanInput): LaunchPlan {
  * written more than once under one `message.id`, so the last copy wins.
  */
 export function claudeUsage(query: UsageQuery): UsageResult {
-  let routed = false;
-  try {
-    routed = loadConfig(query.cwd, query.home).native !== undefined;
-  } catch {
-    // No loadable config: the plan could not have routed it either.
+  // Launch decided routing; re-deciding from today's config could count a run
+  // twice or not at all. Only a run predating `routed` falls back to that.
+  let routed = query.routed ?? false;
+  if (query.routed === undefined) {
+    try {
+      routed = loadConfig(query.cwd, query.home).native !== undefined;
+    } catch {
+      // No loadable config: the plan could not have routed it either.
+    }
   }
   if (routed) return { kind: 'router', session: query.sessionId };
   if (query.sessionId === undefined) {

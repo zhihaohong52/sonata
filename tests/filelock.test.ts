@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { withSessionLock } from '../src/filelock.js';
+import { observeLock, reclaimStaleLock, withSessionLock } from '../src/filelock.js';
 
 let dir: string;
 let file: string;
@@ -74,5 +74,44 @@ describe('withSessionLock', () => {
     // The original holder's finally must leave the new owner's live lock alone.
     expect(existsSync(lock)).toBe(true);
     expect(readFileSync(join(lock, 'owner'), 'utf8')).toBe('other-token');
+  });
+
+  it('reclaims a lock whose holder died, and leaves no tomb behind', async () => {
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'owner'), 'dead');
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(lock, old, old);
+
+    expect(await withSessionLock(file, () => 'ran')).toBe('ran');
+    expect(existsSync(lock)).toBe(false);
+    expect(readdirSync(dir).filter((name) => name.includes('tomb'))).toEqual([]);
+  });
+});
+
+describe('reclaimStaleLock — two reclaimers', () => {
+  // Both waiters saw the same dead lock. The first removed it and took a fresh
+  // one; the second, acting on what it saw earlier, used to rm whatever was at
+  // the path — the first one's live lock — and both then ran at once.
+  it('does not take a lock that was replaced after it was observed', () => {
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'owner'), 'dead');
+    const seen = observeLock(lock);
+
+    // Reclaimer one wins: removes the dead lock and holds a fresh one.
+    expect(reclaimStaleLock(lock, observeLock(lock)!)).toBe(true);
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'owner'), 'fresh');
+
+    // Reclaimer two acts on its stale observation.
+    expect(reclaimStaleLock(lock, seen!)).toBe(false);
+    expect(readFileSync(join(lock, 'owner'), 'utf8')).toBe('fresh');
+    expect(readdirSync(dir).filter((name) => name.includes('tomb'))).toEqual([]);
+  });
+
+  it('reports false when the lock is already gone', () => {
+    mkdirSync(lock);
+    const seen = observeLock(lock);
+    rmSync(lock, { recursive: true });
+    expect(reclaimStaleLock(lock, seen!)).toBe(false);
   });
 });

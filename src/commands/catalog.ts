@@ -40,6 +40,8 @@ export interface CatalogUpdateSuccess {
   models: number;
   path: string;
   fetchedAt: string;
+  /** Written, but something about the result the user should know. Absent when there is nothing to say. */
+  warnings?: string[];
 }
 
 export interface CatalogUpdateFailure {
@@ -173,6 +175,10 @@ async function updateAaCatalog(
 
   const entries: unknown[] = [];
   let indexVersion: string | undefined;
+  // Whether the last page fetched still said more followed. The cap bounds a
+  // malformed pagination rather than looping forever, but ending there with
+  // `has_more` still true used to write a truncated catalog as a complete one.
+  let truncated = false;
   for (let page = 1; page <= AA_MAX_PAGES; page += 1) {
     // `redirect: 'error'` and the timeout: see validateAaKey.
     const response = await fetchFn(`${AA_MODELS_URL}?page=${page}`, {
@@ -212,7 +218,8 @@ async function updateAaCatalog(
     }
 
     const pagination = isRecord(body) && isRecord(body.pagination) ? body.pagination : undefined;
-    if (pagination?.has_more !== true) break;
+    truncated = pagination?.has_more === true;
+    if (!truncated) break;
   }
 
   const models: AaCatalog['models'] = {};
@@ -276,7 +283,13 @@ async function updateAaCatalog(
   const path = aaCatalogPath(home);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(catalog, null, 2)}\n`, { mode: 0o600 });
-  return { models: Object.keys(models).length, path, fetchedAt };
+  // Still written: a partial ranking beats none, and replacing a usable cache
+  // with nothing would be worse. But said, since models past the cap rank as
+  // unscored and nothing else would explain why.
+  const warnings = truncated
+    ? [`catalog truncated at ${AA_MAX_PAGES} pages — Artificial Analysis reported more; models past the cap are unscored`]
+    : [];
+  return { models: Object.keys(models).length, path, fetchedAt, ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
 export async function updateModelsDev(

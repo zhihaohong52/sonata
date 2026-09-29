@@ -56,6 +56,12 @@ describe('cmdVerify', () => {
     expect(res.detail).toContain('nope');
   });
 
+  it('answers a path-shaped id as no run, without touching the filesystem', () => {
+    const res = cmdVerify({ cwd: runDirWith(meta), id: '../../etc' });
+    expect(res.ok).toBe(false);
+    expect(res.detail).toMatch(/not a sonata run id/);
+  });
+
   it('fails when the model does not match, naming both', () => {
     const res = cmdVerify({ cwd: runDirWith(meta), id: 'abc123', model: 'something-else' });
     expect(res.ok).toBe(false);

@@ -174,8 +174,20 @@ export function nativeTomlFor(
     lines.push('[budget]', `daily_usd = ${existingBudget.dailyUsd}`, '');
   }
 
-  for (const [gateway, { baseUrl, auth, wireFormat }] of gateways) {
+  for (const [gateway, { baseUrl: candidateUrl, auth, wireFormat }] of gateways) {
     lines.push(`[native.gateways.${tomlKey(gateway)}]`);
+    // A gateway already in the config keeps its own base_url. The candidates
+    // disagree about it: a saved model carries the config's URL, a model a
+    // harness discovered carries the harness's, and filling the map per
+    // candidate made whichever came last win — so a hand-edited URL was
+    // replaced on re-init. Only while the gateway stays key-authenticated: an
+    // OAuth gateway switched to a key must take the well-known API URL, never
+    // the OAuth backend it was on.
+    const existingGateway = existing?.native?.gateways?.[gateway];
+    const baseUrl = existingGateway !== undefined
+      && !isOauthGatewayAuth(existingGateway.auth) && !isOauthGatewayAuth(auth)
+      ? existingGateway.baseUrl
+      : candidateUrl;
     // An OAuth gateway takes no base_url: the credential reaches only its own
     // provider's backend, and LiteLLM already knows that URL.
     if (isOauthGatewayAuth(auth)) lines.push(`auth = ${tomlKey(auth)}`);

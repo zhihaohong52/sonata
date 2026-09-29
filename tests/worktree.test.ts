@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -264,6 +264,43 @@ describe('the fingerprint captured at exit', () => {
 
     runWrapper(dir);
 
+    expect(worktreeFingerprintAtExit(runDir)).toBe(worktreeFingerprint(dir));
+  });
+
+  it('never exposes a half-written capture beside the exit sentinel', async () => {
+    // Every adapter's harness.sh writes the exit sentinel itself, so the run
+    // reads as finished before the wrapper's capture has run. The redirect
+    // used to create worktree-capture the moment the capture started, and a
+    // tail arriving mid-capture hashed a fragment — reading an unchanged tree
+    // as changed and dropping the [no worktree change] note. A slow `git` on
+    // PATH holds the capture open long enough to look.
+    initRepo(dir);
+    const shim = join(dir, '.shim');
+    mkdirSync(shim);
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+    writeFileSync(join(shim, 'git'), `#!/bin/bash\nsleep 0.3\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+    const exitPath = join(runDir, 'exit');
+    const capturePath = join(runDir, 'worktree-capture');
+    stageWrapper(dir, `echo 0 > '${exitPath}'`);
+
+    const child = spawn('bash', [join(runDir, 'cmd.sh')], {
+      cwd: dir, stdio: 'ignore', env: { ...process.env, PATH: `${shim}:${process.env.PATH}` },
+    });
+    let closed = false;
+    const done = new Promise((r) => child.on('close', () => { closed = true; r(undefined); }));
+    // Every size the file is seen at while the wrapper runs. Written in place,
+    // it is seen empty (and growing) while git works; moved into place, it is
+    // only ever seen whole.
+    const seen = new Set<number>();
+    while (!closed) {
+      if (existsSync(capturePath)) seen.add(statSync(capturePath).size);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    await done;
+
+    expect(existsSync(exitPath)).toBe(true);
+    const whole = statSync(capturePath).size;
+    expect([...seen].filter((size) => size !== whole)).toEqual([]);
     expect(worktreeFingerprintAtExit(runDir)).toBe(worktreeFingerprint(dir));
   });
 

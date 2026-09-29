@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, rmSync, statSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -109,6 +109,22 @@ describe('loginGateway', () => {
     expect(result.ok).toBe(true);
     const path = join(credentialDir(home, 'codex'), 'auth.json');
     expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it('fixes up every credential file, and a pre-existing looser directory, for copilot', async () => {
+    // Only api-key.json was chmodded, so the long-lived GitHub token LiteLLM
+    // writes beside it kept the umask; and `mkdirSync`'s mode applies only to
+    // a directory it creates, so a re-login into a 0755 one left it 0755.
+    const dir = credentialDir(home, 'copilot');
+    mkdirSync(dir, { recursive: true, mode: 0o755 });
+    chmodSync(dir, 0o755);
+    const result = await loginGateway({
+      home, gateway: 'copilot', auth: 'copilot-oauth', progress, interpreter: FAKE,
+    });
+    expect(result.ok).toBe(true);
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    expect(statSync(join(dir, 'api-key.json')).mode & 0o777).toBe(0o600);
+    expect(statSync(join(dir, 'access-token')).mode & 0o777).toBe(0o600);
   });
 
   it('resolves immediately without spawning when the signal is already aborted', async () => {

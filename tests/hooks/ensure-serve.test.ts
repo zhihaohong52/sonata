@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { createServer } from 'node:http';
 import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, delimiter } from 'node:path';
+import { dirname, join, delimiter } from 'node:path';
 
 const run = promisify(execFile);
 
@@ -15,13 +15,14 @@ async function invoke(
   args: string[],
   cwd = process.cwd(),
   env: NodeJS.ProcessEnv = process.env,
-): Promise<{ code: number | null; signal: string | null; stderr: string }> {
+  timeout = 15000,
+): Promise<{ code: number | null; signal: string | null; stderr: string; stdout: string }> {
   try {
-    await run('node', [SCRIPT, ...args], { cwd, timeout: 15000, env });
-    return { code: 0, signal: null, stderr: '' };
+    const { stdout } = await run('node', [SCRIPT, ...args], { cwd, timeout, env });
+    return { code: 0, signal: null, stderr: '', stdout };
   } catch (err) {
     const e = err as { code: number | null; signal: string | null; stdout: string; stderr: string };
-    return { code: e.code, signal: e.signal, stderr: e.stderr ?? '' };
+    return { code: e.code, signal: e.signal, stderr: e.stderr ?? '', stdout: e.stdout ?? '' };
   }
 }
 
@@ -184,4 +185,80 @@ require('node:fs').writeFileSync(${JSON.stringify(sentinel)}, 'yes');
       server.close();
     }
   });
+  it('spawns from the session\'s own cwd when ~/.config/sonata holds no machine config', async () => {
+    // The directory alone is no evidence: sonata creates it for logs, keys and
+    // the router token on machines whose only config is a project's. Starting
+    // the daemon there gave it a cwd with no config, which `serve` refuses.
+    const home = mkdtempSync(join(tmpdir(), 'ensure-serve-home-'));
+    mkdirSync(join(home, '.config', 'sonata', 'logs'), { recursive: true });
+    const project = mkdtempSync(join(tmpdir(), 'ensure-serve-project-'));
+    const binDir = mkdtempSync(join(tmpdir(), 'ensure-serve-bin-'));
+    writeFileSync(join(binDir, 'sonata'),
+      '#!/usr/bin/env node\n' +
+      'require("node:fs").writeFileSync(process.env.SONATA_CWD_SENTINEL, process.cwd());\n' +
+      'process.exit(0);\n',
+      { mode: 0o755 });
+    let probes = 0;
+    const server = createServer((_req, res) => {
+      probes += 1;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(probes === 1 ? '{}' : JSON.stringify({ status: 'ok', sonata: true, multiTenant: true }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    const sentinel = join(home, 'daemon-cwd.txt');
+    try {
+      const { code } = await invoke([String(port)], project, {
+        ...process.env, HOME: home, SONATA_CWD_SENTINEL: sentinel, PATH: `${binDir}${delimiter}${process.env.PATH}`,
+      });
+      expect(code).toBe(0);
+      const deadline = Date.now() + 3000;
+      while (!existsSync(sentinel) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+      expect(realpathSync(readFileSync(sentinel, 'utf8'))).toBe(realpathSync(project));
+    } finally {
+      server.close();
+    }
+  });
+  it('says so, as a systemMessage, when the router never comes up — and still exits 0', async () => {
+    // The poll used to end with nothing: a session whose router never started
+    // got no word of why, only connection errors later. A hook must not break
+    // the session, so it reports rather than failing.
+    const home = mkdtempSync(join(tmpdir(), 'ensure-serve-home-'));
+    const binDir = mkdtempSync(join(tmpdir(), 'ensure-serve-bin-'));
+    writeFileSync(join(binDir, 'sonata'), '#!/usr/bin/env node\nprocess.exit(1);\n', { mode: 0o755 });
+    const server = createServer((_req, res) => { res.writeHead(200); res.end('{}'); });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    try {
+      const { code, stdout } = await invoke([String(port)], process.cwd(), {
+        ...process.env, HOME: home, PATH: `${binDir}${delimiter}${process.env.PATH}`,
+      }, 40000); // the hook's own wait is 10s of polling; leave room for a loaded runner
+      expect(code).toBe(0);
+      const message = JSON.parse(stdout.trim()).systemMessage as string;
+      expect(message).toContain(`did not come up on port ${port}`);
+      expect(message).toContain(join(home, '.config', 'sonata', 'logs'));
+      expect(message).toContain('sonata serve --daemon');
+    } finally {
+      server.close();
+    }
+  }, 45000);
+
+  it('reports a sonata binary that cannot be spawned instead of crashing', async () => {
+    const server = createServer((_req, res) => { res.writeHead(200); res.end('{}'); });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    const emptyBin = mkdtempSync(join(tmpdir(), 'ensure-serve-empty-'));
+    try {
+      const { code, stdout } = await invoke([String(port)], process.cwd(), {
+        ...process.env, PATH: `${emptyBin}${delimiter}${dirname(process.execPath)}`,
+      });
+      expect(code).toBe(0);
+      expect(JSON.parse(stdout.trim()).systemMessage).toContain('could not start `sonata serve --daemon`');
+    } finally {
+      server.close();
+    }
+  }, 20000);
 });

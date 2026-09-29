@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { cmdServe, priceRow, serveHealthUrl } from '../../src/commands/serve.js';
+import { cmdServe as realCmdServe, priceRow, serveHealthUrl } from '../../src/commands/serve.js';
+
+// A no-op price refresh: the real one fetches models.dev over the network.
+const cmdServe: typeof realCmdServe = (opts) => realCmdServe({ refreshPrices: async () => {}, ...opts });
 import { managedLitellmPath, venvDir, LITELLM_VERSION } from '../../src/native/litellm-venv.js';
 import { parseConfig } from '../../src/config.js';
 import type { LedgerRow } from '../../src/ledger.js';
@@ -183,6 +186,28 @@ litellm = ${litellmPort}
     const remaining = JSON.parse(readFileSync(sessionsFile, 'utf8'));
     expect(remaining).not.toHaveProperty('old');
     expect(remaining).toHaveProperty('fresh');
+  });
+
+  it('keeps pruning on a daily timer, not only at startup', async () => {
+    // A daemon runs for weeks; pruning only as it started let day-files and
+    // session records outlive the retention window for as long as it stayed up.
+    writeConfig();
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline'); }));
+    try {
+      await start();
+      const usageDir = join(home, '.config', 'sonata', 'usage');
+      mkdirSync(usageDir, { recursive: true });
+      const oldFile = join(usageDir, '2020-01-01.jsonl');
+      writeFileSync(oldFile, `${JSON.stringify(row())}\n`);
+
+      vi.advanceTimersByTime(24 * 60 * 60 * 1000);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(existsSync(oldFile)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 
   it('serves even when pruning throws', async () => {

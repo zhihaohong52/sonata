@@ -100,10 +100,12 @@ describe('fetchModels', () => {
       .toEqual({ outcome: 'unreachable' });
   });
 
-  it('reports a 200 whose body is not JSON as unreachable', async () => {
+  it('reports a 200 whose body is not JSON as unreadable, not unreachable', async () => {
+    // The endpoint answered, so "unreachable" misdescribes it: the body would
+    // not parse, which is exactly what `unreadable` means.
     const notJson = (async () => new Response('<html>hi</html>', { status: 200 })) as unknown as typeof fetch;
     expect(await fetchModels('https://api.example.com/v1', 'sk-test', { fetch: notJson }))
-      .toEqual({ outcome: 'unreachable' });
+      .toEqual({ outcome: 'unreadable' });
   });
 
   it('reports a payload with no data array as unreadable', async () => {
@@ -134,6 +136,35 @@ describe('fetchModels (Google Generative Language)', () => {
     await fetchModels(GOOGLE_BASE, 'AIza-test', { fetch: spy });
     expect(seenAuth).toBeNull();
     expect(seenGoogKey).toBe('AIza-test');
+  });
+
+  it('treats the OpenAI-compatibility shim as OpenAI-shaped, not native', async () => {
+    // The shim lives on the same host, so a hostname match sent it the Google
+    // header and parsed its `{ data }` answer as `{ models }` — unreadable.
+    let seenAuth: string | null | undefined;
+    let seenGoogKey: string | null | undefined;
+    const spy = (async (_url: string, init: RequestInit) => {
+      const headers = new Headers(init.headers);
+      seenAuth = headers.get('authorization');
+      seenGoogKey = headers.get('x-goog-api-key');
+      return new Response(JSON.stringify({ data: [{ id: 'gemini-3-pro' }] }));
+    }) as unknown as typeof fetch;
+    for (const base of [`${GOOGLE_BASE}/openai`, `${GOOGLE_BASE}/openai/`]) {
+      expect(await fetchModels(base, 'AIza-test', { fetch: spy }))
+        .toEqual({ outcome: 'ok', models: [{ id: 'gemini-3-pro' }] });
+      expect(seenGoogKey).toBeNull();
+      expect(seenAuth).toBe('Bearer AIza-test');
+    }
+  });
+
+  it('never sends x-goog-api-key over plain http', async () => {
+    let seenGoogKey: string | null | undefined;
+    const spy = (async (_url: string, init: RequestInit) => {
+      seenGoogKey = new Headers(init.headers).get('x-goog-api-key');
+      return new Response(JSON.stringify({ models: [] }));
+    }) as unknown as typeof fetch;
+    await fetchModels('http://generativelanguage.googleapis.com/v1beta', 'AIza-test', { fetch: spy });
+    expect(seenGoogKey).toBeNull();
   });
 
   it('parses the native { models: [{ name }] } shape, stripping the models/ prefix', async () => {

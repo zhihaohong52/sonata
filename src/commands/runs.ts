@@ -31,9 +31,14 @@ export function summarizeRuns(cwd: string): RunSummary[] {
       out.push({
         id,
         state: exit === null ? 'RUNNING' : 'DONE',
-        // A run that exited without a report is never silently trusted — the
-        // same rule `sonata dispatch` applies.
-        degraded: exit !== null && (exit !== 0 || report === null),
+        // The verdict tail recorded when the run finished (`decide()`), which
+        // weighs what this list cannot: a read-only run's terminal output, a
+        // fallback report, a timeout. Re-deriving it from report.md alone badged
+        // every read-only run and trusted a timed-out one. A run tail never
+        // finalised keeps the old conservative rule.
+        degraded: exit === null
+          ? false
+          : meta.degraded ?? (exit !== 0 || report === null),
         role: meta.role,
         model: meta.model,
         started: (meta as { startedAt?: string }).startedAt,

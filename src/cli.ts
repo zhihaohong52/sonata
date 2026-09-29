@@ -544,6 +544,7 @@ export async function main(argv: string[]): Promise<number> {
         console.log(`catalog updated: ${result.aa.models} models`);
         console.log(`  path: ${result.aa.path}`);
         console.log(`  fetched: ${result.aa.fetchedAt}`);
+        for (const warning of result.aa.warnings ?? []) console.error(`  ! ${warning}`);
         console.log(AA_ATTRIBUTION);
       }
       if ('error' in result.modelsDev) {
@@ -743,7 +744,7 @@ export async function main(argv: string[]): Promise<number> {
     }
     for (const r of runs) {
       const flags = `${r.state}${r.degraded ? ' degraded' : ''}${r.report ? ' report' : ''}`;
-      console.log(`${r.id.padEnd(8)} ${flags.padEnd(24)} ${(r.role ?? '—').padEnd(8)} ${r.model ?? '—'} ${r.started ?? ''}`);
+      console.log(`${r.id.padEnd(14)} ${flags.padEnd(24)} ${(r.role ?? '—').padEnd(8)} ${r.model ?? '—'} ${r.started ?? ''}`);
     }
     return 0;
   }
