@@ -25,6 +25,13 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **A read-only `claude` dispatch runs on a machine with an enterprise
+  `managed-mcp.json`.** Claude Code exits at startup when
+  `--strict-mcp-config` meets a deployed managed MCP file, so every
+  review/explore/plan run on the claude harness died there. Where the file is
+  present, sonata refuses MCP tools with a `--disallowedTools=mcp__*` rule
+  instead; everywhere else it still loads no MCP server at all.
+
 - **A conversation whose recent responses broke is no longer forgotten.**
   The router remembers which models have served a conversation so it can
   remove their thinking blocks before another model takes over; a response
