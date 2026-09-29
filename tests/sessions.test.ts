@@ -36,10 +36,10 @@ describe('sessions map', () => {
   it('readSessions says whether the empty map is an answer or a failed read', () => {
     // Absent is a real answer: there are no sessions. A file that exists and
     // cannot be read says nothing, and a caller caching it must not keep it.
-    expect(readSessions(home)).toEqual({ sessions: {}, ok: true });
+    expect(readSessions(home)).toEqual({ sessions: {}, ok: true, invalid: [] });
     mkdirSync(dirname(sessionsPath(home)), { recursive: true });
     writeFileSync(sessionsPath(home), '{"s1":{"session":"s1","cwd":"/repo/a","started":"x"}}');
-    expect(readSessions(home, () => { throw new Error('EMFILE'); })).toEqual({ sessions: {}, ok: false });
+    expect(readSessions(home, () => { throw new Error('EMFILE'); })).toEqual({ sessions: {}, ok: false, invalid: [] });
     expect(readSessions(home).ok).toBe(true);
     expect(readSessions(home).sessions.s1.cwd).toBe('/repo/a');
   });

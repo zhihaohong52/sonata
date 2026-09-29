@@ -99,6 +99,8 @@ export class TenantRegistry {
    * entered the LiteLLM union. The dedup is where the saving was.
    */
   private sessionsCache?: { stamp: string; records: Record<string, SessionRecord>; cwds: string[] };
+  /** The invalid sessions.json records last logged, so each set is logged once. */
+  private loggedInvalid = '';
 
   constructor(
     private readonly home: string,
@@ -120,7 +122,12 @@ export class TenantRegistry {
       stamp = 'absent';
     }
     if (this.sessionsCache?.stamp === stamp) return this.sessionsCache;
-    const { sessions: records, ok } = readSessions(this.home, this.deps.readSessionsFile);
+    const { sessions: records, ok, invalid } = readSessions(this.home, this.deps.readSessionsFile);
+    const invalidKey = invalid.join('\0');
+    if (invalid.length > 0 && invalidKey !== this.loggedInvalid) {
+      this.deps.log?.(`tenants: ${sessionsPath(this.home)} has an invalid record (no string cwd), ignored: ${invalid.join(', ')}`);
+    }
+    if (ok) this.loggedInvalid = invalidKey;
     // A failed read (EMFILE, say) returns `{}` under a stamp that is perfectly
     // valid. Cached, that pinned every session to the machine config until
     // sessions.json next changed; answered even once, it sent this request
@@ -128,7 +135,7 @@ export class TenantRegistry {
     // instead, and is left under its own stamp so the next call reads again.
     // `{}` only when there has never been a good read.
     if (!ok) return this.sessionsCache ?? { stamp, records: {}, cwds: [] };
-    const cwds = [...new Set(Object.values(records).map((record) => record.cwd).filter((cwd): cwd is string => typeof cwd === 'string'))];
+    const cwds = [...new Set(Object.values(records).map((record) => record.cwd))];
     this.sessionsCache = { stamp, records, cwds };
     return this.sessionsCache;
   }

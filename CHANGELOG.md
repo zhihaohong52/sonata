@@ -25,6 +25,12 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **One bad record in `sessions.json` no longer fails every routed request.**
+  A `null` entry, or one whose `cwd` is not a string (a hand edit — sonata's
+  own writer never produces one), threw while the router listed session
+  projects, which it does per request. Such a record is now dropped and named
+  once in serve's log; the rest of the file is used as before.
+
 - **A log that stops draining no longer grows `sonata serve`'s memory without
   bound.** LiteLLM's output is forwarded line by line and never paused, so a
   blocked terminal or pipe queued every later line in memory. Lines are now

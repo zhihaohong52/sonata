@@ -181,6 +181,31 @@ base_url = "https://gateway.example/v1"
     expect(reg.resolve({ session: 's-b' }).configPath).toBe(realpathSync(join(b, 'sonata.toml')));
   });
 
+  it('drops an invalid sessions.json record, keeps the valid ones, and logs it once', async () => {
+    // A null entry made `record.cwd` throw while the cwd list was built, and
+    // that runs on every request: one bad record took all routing down.
+    await recordSession(home, { session: 's-a', cwd: a, started: new Date().toISOString() });
+    const path = join(home, '.config', 'sonata', 'sessions.json');
+    const doc = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    doc['s-null'] = null;
+    doc['s-num'] = { session: 's-num', cwd: 42, started: new Date().toISOString() };
+    doc['s-none'] = { session: 's-none', started: new Date().toISOString() };
+    writeFileSync(path, JSON.stringify(doc));
+    const logs: string[] = [];
+    const reg = new TenantRegistry(home, { log: (line) => logs.push(line) });
+    expect(reg.fingerprint()).toContain(realpathSync(join(a, 'sonata.toml')));
+    expect(reg.resolve({ session: 's-a' }).configPath).toBe(realpathSync(join(a, 'sonata.toml')));
+    const machine = realpathSync(join(home, '.config', 'sonata', 'sonata.toml'));
+    expect(reg.resolve({ session: 's-num' }).configPath).toBe(machine);
+    expect(reg.resolve({ session: 's-null' }).configPath).toBe(machine);
+    reg.fingerprint();
+    const dropped = logs.filter((line) => line.includes('invalid record'));
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]).toContain('s-null');
+    expect(dropped[0]).toContain('s-num');
+    expect(dropped[0]).toContain('s-none');
+  });
+
   it('picks up a registered session\'s project that gains a sonata.toml, with sessions.json unchanged', async () => {
     // `sonata init` in a project whose session is already registered writes
     // ./sonata.toml and nothing else. A cwd -> config cache keyed by the
