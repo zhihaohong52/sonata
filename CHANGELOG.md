@@ -25,6 +25,11 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **A read-only `claude` dispatch can no longer reach MCP tools.** `--tools`
+  limits Claude Code's built-in tools only; probed live, a review or explore
+  run still had every configured MCP server's tools, write-capable ones
+  included. Read-only runs now pass `--strict-mcp-config`, so no MCP server
+  loads at all.
 - **A model's malformed tool call no longer kills the agent on its next turn.**
   A model can emit a tool call with an empty name (mimo-v2.6-pro did, through
   OpenRouter). Claude Code keeps it in the conversation and sends it back on
