@@ -98,7 +98,9 @@ export class TenantRegistry {
    * version kept answering "the machine config" and the project never
    * entered the LiteLLM union. The dedup is where the saving was.
    */
-  private sessionsCache?: { stamp: string; records: Record<string, SessionRecord>; cwds: string[] };
+  private sessionsCache?: { stamp: string; records: Record<string, SessionRecord>; cwds: string[]; unread?: true };
+  /** The invalid sessions.json records last logged, so each set is logged once. */
+  private loggedInvalid = '';
 
   constructor(
     private readonly home: string,
@@ -120,15 +122,22 @@ export class TenantRegistry {
       stamp = 'absent';
     }
     if (this.sessionsCache?.stamp === stamp) return this.sessionsCache;
-    const { sessions: records, ok } = readSessions(this.home, this.deps.readSessionsFile);
+    const { sessions: records, ok, invalid } = readSessions(this.home, this.deps.readSessionsFile);
+    const invalidKey = invalid.join('\0');
+    if (invalid.length > 0 && invalidKey !== this.loggedInvalid) {
+      this.deps.log?.(`tenants: ${sessionsPath(this.home)} has an invalid record (no string cwd), ignored: ${invalid.join(', ')}`);
+    }
+    if (ok) this.loggedInvalid = invalidKey;
     // A failed read (EMFILE, say) returns `{}` under a stamp that is perfectly
     // valid. Cached, that pinned every session to the machine config until
     // sessions.json next changed; answered even once, it sent this request
     // there with the machine's credentials. The last good read answers
     // instead, and is left under its own stamp so the next call reads again.
-    // `{}` only when there has never been a good read.
-    if (!ok) return this.sessionsCache ?? { stamp, records: {}, cwds: [] };
-    const cwds = [...new Set(Object.values(records).map((record) => record.cwd).filter((cwd): cwd is string => typeof cwd === 'string'))];
+    // `{}` only when there has never been a good read — marked `unread`, so
+    // `resolve` refuses a session's request rather than serve it as the
+    // machine tenant.
+    if (!ok) return this.sessionsCache ?? { stamp, records: {}, cwds: [], unread: true };
+    const cwds = [...new Set(Object.values(records).map((record) => record.cwd))];
     this.sessionsCache = { stamp, records, cwds };
     return this.sessionsCache;
   }
@@ -179,7 +188,20 @@ export class TenantRegistry {
   }
 
   resolve(hint: { project?: string; session?: string }): RouterTenant {
-    const cwd = hint.project ?? (hint.session === undefined ? undefined : this.sessions().records[hint.session]?.cwd);
+    let cwd = hint.project;
+    if (cwd === undefined && hint.session !== undefined) {
+      const sessions = this.sessions();
+      // No good read has ever been made, and this one failed: which project
+      // the session belongs to is unknown, and "no record" would serve it
+      // with the machine config's credentials and budget.
+      if (sessions.unread === true) {
+        throw new TenantError(
+          `${sessionsPath(this.home)} could not be read, so session ${hint.session} cannot be attributed to its ` +
+          'project — not serving it as the machine config; retry the request.',
+        );
+      }
+      cwd = sessions.records[hint.session]?.cwd;
+    }
     let path: string | null;
     if (cwd !== undefined) {
       const found = resolveConfigPath(cwd, this.home);
