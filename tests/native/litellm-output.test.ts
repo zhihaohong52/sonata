@@ -157,6 +157,46 @@ describe('pipeLitellmOutput', () => {
     }
   });
 
+  it('drops lines rather than queueing them while the sink is blocked, keeps scanning, and says how many', async () => {
+    // A sink that stops draining (a stalled terminal, a paused pipe) returns
+    // false from write(); every later line used to be queued in memory without
+    // bound. LiteLLM must still never be stalled, so lines are dropped, counted
+    // and reported once the sink drains.
+    const written: string[] = [];
+    const pending: (() => void)[] = [];
+    const sink = new Writable({
+      highWaterMark: 16,
+      write(chunk: Buffer, _encoding, callback) {
+        written.push(chunk.toString('utf8'));
+        pending.push(callback);
+      },
+    });
+    const source = new PassThrough();
+    const seen: string[] = [];
+    pipeLitellmOutput(source, sink, (line) => seen.push(line));
+    for (let k = 0; k < 500; k += 1) source.write(`line ${k} of LiteLLM output\n`);
+    source.write(refusedStderr);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(sink.writableLength).toBeLessThan(200);
+    expect(written.length + sink.writableLength).toBeLessThan(10 + 200);
+    expect(seen).toContain('line 499 of LiteLLM output');
+    expect(seen.some((line) => LITELLM_CHATGPT_LOGIN_REFUSED.test(line))).toBe(true);
+    // Release the sink: once it drains, one line says how much went missing.
+    while (pending.length > 0) {
+      pending.shift()!();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const notice = written.find((line) => line.startsWith('sonata serve: dropped '));
+    expect(notice).toMatch(/^sonata serve: dropped \d+ lines of LiteLLM output while the log was blocked\n$/);
+    const dropped = Number(/dropped (\d+)/.exec(notice!)![1]);
+    const forwardedLines = written.filter((line) => !line.startsWith('sonata serve: dropped ')).length;
+    expect(dropped + forwardedLines).toBe(500 + refusedStderr.split('\n').filter((l, k, all) => k < all.length - 1 || l !== '').length);
+    // And the sink is written to again afterwards.
+    source.write('after the drain\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(written.at(-1)).toBe('after the drain\n');
+  });
+
   it('still forwards a partial final line when the stream ends', async () => {
     const { out, seen } = await run('first\nno newline at exit');
     expect(out).toBe('first\nno newline at exit\n');

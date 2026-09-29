@@ -104,18 +104,57 @@ function sinkBroken(sink: Writable): boolean {
 }
 
 /**
+ * How much forwarded output a sink may hold unwritten before lines are
+ * dropped. Past it — or once `write` has returned false and the sink has not
+ * yet drained — every further line would be queued in serve's memory without
+ * bound, since the child's output is never paused (a full pipe would stall
+ * LiteLLM itself).
+ */
+export const SINK_BACKLOG_CAP_BYTES = 1024 * 1024;
+
+/** Lines dropped per sink while it was blocked, not yet reported. */
+const droppedLines = new WeakMap<Writable, number>();
+
+function sinkBlocked(sink: Writable): boolean {
+  return sink.writableNeedDrain || sink.writableLength > SINK_BACKLOG_CAP_BYTES;
+}
+
+/** Writes the one-line account of what a blocked sink missed, once it can take it. */
+function reportDropped(sink: Writable): void {
+  const dropped = droppedLines.get(sink) ?? 0;
+  if (dropped === 0 || sinkBroken(sink) || sinkBlocked(sink)) return;
+  droppedLines.delete(sink);
+  try {
+    sink.write(`sonata serve: dropped ${dropped} lines of LiteLLM output while the log was blocked\n`);
+  } catch { /* the log is gone */ }
+}
+
+/** Counts a line dropped for a blocked sink, and arranges the report for when it drains. */
+function dropLine(sink: Writable): void {
+  const dropped = droppedLines.get(sink) ?? 0;
+  droppedLines.set(sink, dropped + 1);
+  if (dropped === 0) sink.once('drain', () => reportDropped(sink));
+}
+
+/**
  * Forwards `stream` to `sink` one line at a time — each line as it was, but
  * for a device code's user code — and hands every line to `onLine`. A final
  * line with no newline is still forwarded when the stream ends. A sink that
  * cannot be written to (a closed log) never stops the child's output being
  * read, since a full pipe would stall LiteLLM itself; one that fails
- * asynchronously (EPIPE) is marked broken and skipped from then on.
+ * asynchronously (EPIPE) is marked broken and skipped from then on. One that
+ * stops draining has lines dropped rather than queued, counted, and reported
+ * in a single line once it drains — every line is still handed to `onLine`.
  */
 export function pipeLitellmOutput(stream: Readable, sink: Writable, onLine: (line: string) => void): void {
   guardSink(sink);
   const lines = lineSplitter((line) => {
     if (!sinkBroken(sink)) {
-      try { sink.write(`${redactDeviceCode(line)}\n`); } catch { /* the log is gone; keep reading */ }
+      if (sinkBlocked(sink)) dropLine(sink);
+      else {
+        reportDropped(sink);
+        try { sink.write(`${redactDeviceCode(line)}\n`); } catch { /* the log is gone; keep reading */ }
+      }
     }
     try { onLine(line); } catch { /* a listener never breaks forwarding */ }
   });

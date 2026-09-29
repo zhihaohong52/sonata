@@ -25,6 +25,13 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **A log that stops draining no longer grows `sonata serve`'s memory without
+  bound.** LiteLLM's output is forwarded line by line and never paused, so a
+  blocked terminal or pipe queued every later line in memory. Lines are now
+  dropped while the log is blocked (past 1 MiB, or until it drains), and one
+  line says how many once it drains; every line is still scanned for a refused
+  ChatGPT login.
+
 - **A torn `keys.json` no longer takes down a gateway that needs no key.**
   The router looks every default-sourced and OAuth gateway up in sonata's key
   store; finding nothing while that file was mid-write was recorded as a
