@@ -3068,6 +3068,83 @@ describe('respond — a client that disconnects mid-stream', () => {
   }, 10_000);
 });
 
+describe('a client that is gone before the response starts', () => {
+  const within = <T>(p: Promise<T>, ms: number): Promise<T | 'timeout'> =>
+    Promise.race([p, new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), ms))]);
+
+  it('respond cancels the upstream and returns when the client left before it ran', async () => {
+    // `closed` started true but nothing cancelled the body, so a loop waiting
+    // on an upstream that had not yet sent its first chunk waited forever,
+    // holding the upstream connection for a client nobody was writing to.
+    const { EventEmitter } = await import('node:events');
+    let cancelled = false;
+    const upstream = new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => { /* stalls */ }), cancel() { cancelled = true; } });
+    const res = Object.assign(new EventEmitter(), {
+      destroyed: true, writableEnded: false, headersSent: false,
+      writeHead: () => undefined, write: () => true, end: () => undefined,
+    });
+    const outcome = await within(
+      respond(res as never, { status: 200, headers: { 'content-type': 'text/event-stream' }, body: responseBodyForTest(upstream) }),
+      1_000,
+    );
+    expect(outcome).not.toBe('timeout');
+    expect(cancelled).toBe(true);
+  });
+
+  it('aborts the upstream fetch when the client disconnects during it, and cools nothing', async () => {
+    clearCooldowns();
+    const calls: string[] = [];
+    let aborted = 0;
+    const rows: unknown[] = [];
+    const fetchStub = ((_url: string, init?: { signal?: AbortSignal; body?: unknown }) => {
+      calls.push(String(JSON.parse(String(init?.body ?? '{}')).model));
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal === undefined) return; // never settles: the old behaviour
+        const fail = (): void => { aborted += 1; reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); };
+        if (signal.aborted) fail(); else signal.addEventListener('abort', fail, { once: true });
+      });
+    }) as unknown as typeof fetch;
+    const server = createRouterServer({
+      fetch: fetchStub, litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ({ role: 'code', tier: 'simple', routes: [
+        { key: 'first', native: { gateway: 'g', id: 'f1' } },
+        { key: 'second', native: { gateway: 'g', id: 'f2' } },
+      ] }),
+      recordUsage: (row: unknown) => { rows.push(row); },
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const { request } = await import('node:http');
+      await new Promise<void>((resolve) => {
+        const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/v1/messages', headers: { 'content-type': 'application/json' } });
+        req.on('error', () => resolve());
+        req.end(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: 'x' }] }));
+        setTimeout(() => { req.destroy(); resolve(); }, 150);
+      });
+      const until = Date.now() + 2_000;
+      while (aborted === 0 && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 100));
+      expect(aborted).toBe(1);
+      // The client is gone: the next candidate is not asked, and no ledger
+      // row or cooldown records a request nobody is waiting for.
+      expect(calls).toHaveLength(1);
+      expect(rows).toEqual([]);
+      // `first` was not cooled: a fresh request tries it first again.
+      calls.length = 0;
+      const again = request({ host: '127.0.0.1', port, method: 'POST', path: '/v1/messages', headers: { 'content-type': 'application/json' } });
+      again.on('error', () => undefined);
+      again.end(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: 'y' }] }));
+      await new Promise((r) => setTimeout(r, 100));
+      again.destroy();
+      expect(calls[0]).toContain('first');
+    } finally {
+      server.close();
+    }
+  }, 10_000);
+});
+
 describe('stickiness memory stays bounded when responses break', () => {
   beforeEach(() => clearCooldowns());
   it('evicts like stickySet when incomplete responses record new conversations', async () => {
