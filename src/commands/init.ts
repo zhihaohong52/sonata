@@ -163,7 +163,12 @@ async function runInit(
   // which hides everything printed before it — so the question appeared alone on
   // a cleared screen, asking the user to approve a summary they could no longer
   // read. The prompt has to carry its own copy of what it is asking about.
-  const writeQuestion = [...initPlan.summary, 'Write these changes?'].join('\n');
+  //
+  // Warnings travel with it for the same reason: printed above, a `warn`
+  // (two gateways on one endpoint) was hidden by the alternate screen, and
+  // the user approved without ever seeing it.
+  const warnings = validation.map(renderProblem);
+  const writeQuestion = [...initPlan.summary, ...(warnings.length > 0 ? ['', ...warnings, ''] : []), 'Write these changes?'].join('\n');
   const ask = opts.host?.confirm ?? confirm;
   if (interactive && !(await ask(writeQuestion, true))) {
     out('  Nothing written.');

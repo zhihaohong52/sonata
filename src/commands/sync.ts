@@ -308,6 +308,16 @@ function yamlString(text: string): string {
 }
 
 /**
+ * A key as a plain YAML scalar when it can be one, else double-quoted. For
+ * `model:`, which carries the key the router resolves: an ordinary key stays
+ * byte-identical to every file already written, and only a key a plain scalar
+ * cannot hold (`: `, ` #`, a leading indicator, a quote) is quoted.
+ */
+function yamlScalar(text: string): string {
+  return /^[A-Za-z0-9][A-Za-z0-9._/@+-]*$/.test(text) ? text : yamlString(text);
+}
+
+/**
  * The agent file for one legacy per-model harness route.
  *
  * Generated only for a config with no `[tiers]`: a tiered config skips this
@@ -465,7 +475,7 @@ export function nativeAgentMarkdown(spec: { role: string; model: string }): stri
   return `---
 name: ${yamlString(`native-${spec.role}-${spec.model}`)}
 description: ${yamlString(`Runs ${blurb} natively on ${spec.model} inside Claude Code's own loop. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on).`)}
-model: ${spec.model}
+model: ${yamlScalar(spec.model)}
 ${tools}---
 
 This agent only works in a routed session (sonata code, or sonata route on).

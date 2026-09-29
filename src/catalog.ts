@@ -751,7 +751,11 @@ export function candidateFacts(
   const { key, effort } = splitCandidate(candidate);
   const entry = scoreFor(candidate, aa, providers, upstreamFor);
   if (entry === undefined) return { key, effort };
-  return { key, effort, capability: metric(entry), costPerTask: entry.costPerTask };
+  // A published cost of 0 (or less) is missing data, like an absent one:
+  // passed through, the board drew $0.0000 and ranked it the cheapest row.
+  return isTaskCost(entry.costPerTask)
+    ? { key, effort, capability: metric(entry), costPerTask: entry.costPerTask }
+    : { key, effort, capability: metric(entry) };
 }
 
 /**
@@ -768,6 +772,11 @@ export function candidateLabel(
   const head = effort === undefined ? key : `${key} @${effort}`;
   const entry = scoreFor(candidate, aa, providers, upstreamFor);
   if (entry === undefined) return head;
+  // A published 0 is not "no cost-per-task" — AA published one, and it is
+  // not usable — so the two are worded apart.
+  if (typeof entry.costPerTask === 'number' && !isTaskCost(entry.costPerTask)) {
+    return `${head}  (AA's cost-per-task of ${entry.costPerTask} is not a usable cost — add by hand to sonata.toml)`;
+  }
   if (!isTaskCost(entry.costPerTask)) return `${head}  (AA publishes no cost-per-task — add by hand to sonata.toml)`;
   return `${head.padEnd(32)} ${reasoningOf(entry).toFixed(1).padStart(4)}  $${entry.costPerTask.toFixed(3)}/task`;
 }

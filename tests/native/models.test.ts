@@ -157,14 +157,20 @@ describe('fetchModels (Google Generative Language)', () => {
     }
   });
 
-  it('never sends x-goog-api-key over plain http', async () => {
+  it('treats plain http as the OpenAI convention — the key still goes, as a Bearer', async () => {
+    // Pinned so no comment can claim otherwise again: https decides the
+    // dialect, not whether the configured URL receives the key.
     let seenGoogKey: string | null | undefined;
+    let seenAuth: string | null | undefined;
     const spy = (async (_url: string, init: RequestInit) => {
-      seenGoogKey = new Headers(init.headers).get('x-goog-api-key');
+      const headers = new Headers(init.headers);
+      seenGoogKey = headers.get('x-goog-api-key');
+      seenAuth = headers.get('authorization');
       return new Response(JSON.stringify({ models: [] }));
     }) as unknown as typeof fetch;
     await fetchModels('http://generativelanguage.googleapis.com/v1beta', 'AIza-test', { fetch: spy });
     expect(seenGoogKey).toBeNull();
+    expect(seenAuth).toBe('Bearer AIza-test');
   });
 
   it('parses the native { models: [{ name }] } shape, stripping the models/ prefix', async () => {

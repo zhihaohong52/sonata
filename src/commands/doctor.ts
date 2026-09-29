@@ -1,5 +1,6 @@
 import { extendedContextAdvice } from '../extended-context.js';
 import { splitCandidate } from '../effort.js';
+import { VERSION_PROBE_TIMEOUT_MS } from '../version-probe.js';
 import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { promisify } from 'node:util';
@@ -15,6 +16,7 @@ import { outdatedAgents, plannedAgents } from './sync.js';
 import { staleAgents, disabledOpencodeAgents, enableOpencodeAgent, firstErrorLine,
 } from '../detect.js';
 import { getAdapter } from '../adapters/index.js';
+import type { HarnessProblem } from '../adapters/types.js';
 import { tmuxVersion } from '../tmux.js';
 import {
   modeHookPresent,
@@ -47,7 +49,7 @@ const LITELLM_HEALTH_TIMEOUT_MS = 3000;
 import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
-import { serveHealthUrl, healthReportsUi } from './serve.js';
+import { LITELLM_HOST, serveHealthUrl, healthReportsUi } from './serve.js';
 import { routerPorts } from './ports.js';
 import { nativeSessionEnv } from './code.js';
 import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile, diagnoseRouteAuto, isLocalhostUrl } from './route.js';
@@ -336,6 +338,18 @@ async function defaultClaudeVersion(): Promise<string | undefined> {
   }
 }
 
+/** A harness's version line, from the real binary — `cmdDoctor`'s default `harnessVersion`. */
+/**
+ * A harness's version, bounded like every other `--version` probe: doctor
+ * awaits each in turn, so one hung binary hung the whole command. A timeout
+ * throws, which doctor already reports as a failed version check.
+ */
+export async function defaultHarnessVersion(command: string[]): Promise<string> {
+  const env = { ...process.env, PATH: `${process.env.HOME}/.opencode/bin:${process.env.PATH}` };
+  const { stdout } = await run(command[0], command.slice(1), { env, timeout: VERSION_PROBE_TIMEOUT_MS });
+  return stdout;
+}
+
 export async function cmdDoctor(
   opts: {
     cwd: string; home?: string; packageRoot?: string; now?: () => Date;
@@ -351,6 +365,16 @@ export async function cmdDoctor(
      * nothing.
      */
     claudeVersion?: () => Promise<string | undefined>;
+    /**
+     * Test seams: a configured harness's version line, and its health
+     * problems. The defaults run the real binary (`opencode --version`,
+     * `codex login status`, …) against the real home — which in a test reads
+     * the maintainer's own installs, and under a loaded suite took `opencode
+     * --version` past the 30s test timeout. A test that is not about the
+     * harness checks answers both without spawning anything.
+     */
+    harnessVersion?: (command: string[]) => Promise<string>;
+    harnessHealth?: (name: string, env: { home: string; cwd: string }) => Promise<HarnessProblem[]>;
   },
 ): Promise<{ ok: boolean; checks: Check[] }> {
   const home = opts.home ?? homedir();
@@ -750,7 +774,11 @@ export async function cmdDoctor(
   // twice. Advisory, since two keys on one endpoint is a legitimate setup.
   const shared = sharedBaseUrls(gatewayEntries);
   if (shared.length > 0) {
-    checks.push({ name: 'shared base_url', ok: true, detail: shared.map(sharedBaseUrlWarning).join('; ') });
+    checks.push({
+      name: 'shared base_url',
+      ok: true,
+      detail: shared.map((group) => sharedBaseUrlWarning(group, resolved ?? undefined)).join('; '),
+    });
   }
 
   // `sonata init` run in $HOME used to write here, and nothing reads it. It
@@ -907,7 +935,7 @@ export async function cmdDoctor(
               // the one failure mode it must not have, so a non-answer inside
               // the window is reported as down, which for every caller's
               // purposes it is.
-              alive = (await fetch(`http://localhost:${litellmPort}/health/liveliness`, {
+              alive = (await fetch(`http://${LITELLM_HOST}:${litellmPort}/health/liveliness`, {
                 signal: AbortSignal.timeout(LITELLM_HEALTH_TIMEOUT_MS),
               })).ok;
             } catch { alive = false; }
@@ -1257,9 +1285,7 @@ export async function cmdDoctor(
   for (const name of harnesses) {
     const adapter = getAdapter(name);
     try {
-      const env = { ...process.env, PATH: `${process.env.HOME}/.opencode/bin:${process.env.PATH}` };
-      const { stdout } = await run(adapter.versionCommand[0], adapter.versionCommand.slice(1), { env });
-      const version = stdout.trim();
+      const version = (await (opts.harnessVersion ?? defaultHarnessVersion)(adapter.versionCommand)).trim();
       // A known-bad build fails even when it sits inside the tested range:
       // `supportedVersions` says which versions were exercised, which is a
       // different question from whether this one is broken.
@@ -1275,8 +1301,12 @@ export async function cmdDoctor(
 
       // Version alone does not mean usable: a harness can be installed, current
       // and still unable to reach a model.
-      if (adapter.health) {
-        for (const p of await adapter.health({ home: homedir(), cwd: opts.cwd })) {
+      const harnessHealth = opts.harnessHealth;
+      const health = harnessHealth !== undefined
+        ? (env: { home: string; cwd: string }) => harnessHealth(name, env)
+        : adapter.health?.bind(adapter);
+      if (health) {
+        for (const p of await health({ home: homedir(), cwd: opts.cwd })) {
           checks.push({
             name: `${name} health`,
             ok: p.severity !== 'error',

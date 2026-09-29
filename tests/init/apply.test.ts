@@ -148,3 +148,40 @@ describe('apply — the CLAUDE.md guidance block', () => {
     expect(loadConfig(cwd, home).tiers?.code.simple).toEqual(['acme-fast']);
   });
 });
+
+describe('apply — settings go through the settings lock', () => {
+  it('waits for a writer holding the settings lock before installing the hook', async () => {
+    const { mkdtempSync, readFileSync, existsSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join, resolve } = await import('node:path');
+    const { withSessionLock } = await import('../../src/filelock.js');
+    const { apply: applyPlan } = await import('../../src/init/apply.js');
+    const home = mkdtempSync(join(tmpdir(), 'sonata-apply-lock-home-'));
+    const cwd = mkdtempSync(join(tmpdir(), 'sonata-apply-lock-cwd-'));
+    const path = join(cwd, '.claude', 'settings.json');
+    let release!: () => void;
+    const held = withSessionLock(path, () => new Promise<void>((r) => { release = r; }));
+    await new Promise((r) => setTimeout(r, 20));
+    const applying = applyPlan({
+      configScope: 'project',
+      configPath: join(cwd, 'sonata.toml'),
+      configToml: '[models."acme-fast"]\ngateway = "acme"\nid = "fast"\n\n[native.gateways."acme"]\nbase_url = "https://acme.example/v1"\n\n[tiers.code]\nsimple = ["acme-fast"]\ncomplex = ["acme-fast"]\n',
+      keysToStore: [],
+      hook: { scope: 'project', allowListScope: 'project' },
+      skillPath: join(cwd, '.claude', 'skills', 'sonata-loop', 'SKILL.md'),
+      guidance: { scope: 'skip' },
+      routing: 'skip',
+      syncCwd: cwd,
+      agentsDir: join(cwd, '.claude', 'agents'),
+      chosenNative: [], roles: ['code'], nativeKeys: ['acme-fast'],
+      installLitellm: false,
+      notices: [], summary: [],
+    } as never, { cwd, home, packageRoot: resolve('.') }, { out: () => {}, prune: false });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(existsSync(path)).toBe(false);
+    release();
+    await held;
+    await applying;
+    expect(readFileSync(path, 'utf8')).toContain('capture-mode.mjs');
+  });
+});

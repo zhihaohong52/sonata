@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { createServer as createHttpServer, type RequestListener, type Server } from 'node:http';
 
 import { loadModelsDev } from '../modelsdev.js';
 import { spentTodayUsd, unreadableMachineBudget, type BudgetStatus } from '../budget.js';
@@ -70,6 +71,11 @@ export interface ServeDeps {
   tempDir?: string;
   /** Test seam for the "who holds the router port?" probe. */
   probeHealth?: typeof fetch;
+  /**
+   * Test seam: binds one of the router's loopback servers. Injected to make a
+   * family unavailable, which cannot be arranged on a machine that has both.
+   */
+  listenOn?: (server: Server, port: number, host: string) => Promise<void>;
   /** Test seam: delay before respawning a litellm child that exited on its own. */
   respawnDelayMs?: number;
   /** Test seam: max respawns tolerated within `respawnWindowMs` before giving up. */
@@ -267,13 +273,21 @@ export function processCommand(pid: number): string | undefined {
   }
 }
 
-function killRecordedOrphan(
+export async function killRecordedOrphan(
   home: string,
   routerPort: number,
-  commandOf: (pid: number) => string | undefined = processCommand,
-): void {
+  deps: {
+    processCommand?: (pid: number) => string | undefined;
+    kill?: (pid: number) => void;
+    forceKill?: (pid: number) => void;
+    isAlive?: (pid: number) => boolean;
+    sleep?: (ms: number) => Promise<void>;
+    timeoutMs?: number;
+  } = {},
+): Promise<void> {
   const found = readServeStateFrom(home, routerPort);
   const litellmPid = found?.state.litellmPid;
+  let stillRunning = false;
   if (litellmPid !== undefined) {
     // Refuse only on POSITIVE evidence of a mismatch — the same rule as the
     // routerPid port-holder check in `stopServe`. A command line that is
@@ -281,14 +295,14 @@ function killRecordedOrphan(
     // something else, and signalling it would kill an unrelated process at
     // every serve start. Unknown (`undefined`) is not evidence: it proceeds
     // exactly as before.
-    const command = commandOf(litellmPid);
+    const command = (deps.processCommand ?? processCommand)(litellmPid);
     if (command !== undefined && !/litellm/i.test(command)) {
       console.error(
         `sonata serve: recorded litellm pid ${litellmPid} is no longer LiteLLM ` +
         `(${command}) — leaving it alone`,
       );
     } else {
-      killPid(litellmPid);
+      stillRunning = !(await terminatePid(litellmPid, deps));
     }
   }
   // Only this port's own record is ever read here, so the file cleared is
@@ -298,9 +312,46 @@ function killRecordedOrphan(
   if (found !== undefined) {
     // Keep the router's ownership record: lazy startup can run after the
     // router has recorded its pid, and a losing serve can run before it binds
-    // while another router is still using this file.
-    writeServeState(home, routerPort, { routerPid: found.state.routerPid });
+    // while another router is still using this file. The litellm pid is kept
+    // too while it is still running — forgetting a live process is how it
+    // becomes an orphan nothing will ever stop.
+    writeServeState(home, routerPort, {
+      routerPid: found.state.routerPid,
+      ...(stillRunning ? { litellmPid } : {}),
+    });
   }
+}
+
+/**
+ * The pid form of `terminateLitellm`: SIGTERM, a bounded wait for the exit,
+ * then SIGKILL (once), then a second bounded wait. True once the process is
+ * gone; false if it outlived both signals.
+ */
+async function terminatePid(
+  pid: number,
+  deps: {
+    kill?: (pid: number) => void;
+    forceKill?: (pid: number) => void;
+    isAlive?: (pid: number) => boolean;
+    sleep?: (ms: number) => Promise<void>;
+    timeoutMs?: number;
+  },
+): Promise<boolean> {
+  const isAlive = deps.isAlive ?? defaultIsAlive;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const timeoutMs = deps.timeoutMs ?? LITELLM_EXIT_TIMEOUT_MS;
+  const gone = async (): Promise<boolean> => {
+    for (let waited = 0; waited < timeoutMs; waited += 50) {
+      if (!isAlive(pid)) return true;
+      await sleep(50);
+    }
+    return !isAlive(pid);
+  };
+  (deps.kill ?? killPid)(pid);
+  if (await gone()) return true;
+  console.error(`sonata serve: recorded litellm pid ${pid} did not exit after SIGTERM — sending SIGKILL`);
+  (deps.forceKill ?? forcePid)(pid);
+  return gone();
 }
 
 function recordLitellmPid(home: string, routerPort: number, pid: number): void {
@@ -365,10 +416,10 @@ export async function defaultWaitForLitellm(
       // Each probe is bounded: a listener that accepts and never answers
       // would otherwise hold this loop past its deadline, and every
       // LiteLLM-bound request awaits it. 2 s, as `isSonataRouter` uses.
-      const res = await doFetch(`http://localhost:${port}/health/liveliness`, { signal: AbortSignal.timeout(2000) });
+      const res = await doFetch(`http://${LITELLM_HOST}:${port}/health/liveliness`, { signal: AbortSignal.timeout(2000) });
       if (res.ok) {
         if (masterKey === undefined) return;
-        const mine = await doFetch(`http://localhost:${port}/v1/models`, {
+        const mine = await doFetch(`http://${LITELLM_HOST}:${port}/v1/models`, {
           headers: { authorization: `Bearer ${masterKey}` },
           signal: AbortSignal.timeout(2000),
         });
@@ -540,7 +591,7 @@ function defaultSpawnLitellm(
   // says a script exists, not that an importable LiteLLM does — measured on the
   // development machine, the PATH hit's shebang names an interpreter under
   // which `import litellm` fails outright.
-  const child = spawn(bin, ['--config', configPath, '--port', String(port)], {
+  const child = spawn(bin, ['--config', configPath, '--host', LITELLM_HOST, '--port', String(port)], {
     env,
     stdio: ['ignore', 'inherit', 'inherit'],
   });
@@ -692,7 +743,8 @@ async function raceTimeout(promise: Promise<void>, timeoutMs: number, sleepFn: (
   return timedOut;
 }
 
-function listen(server: ReturnType<typeof createRouterServer>, port: number): Promise<void> {
+/** Binds `server` to one address, resolving once it listens and rejecting with the bind error. */
+export function listenOn(server: Server, port: number, host: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const onError = (error: Error) => {
       server.off('listening', onListening);
@@ -704,8 +756,95 @@ function listen(server: ReturnType<typeof createRouterServer>, port: number): Pr
     };
     server.once('error', onError);
     server.once('listening', onListening);
-    server.listen(port, 'localhost');
+    server.listen(port, host);
   });
+}
+
+/**
+ * The one address the managed LiteLLM child binds, and the one the router
+ * reaches it at.
+ *
+ * LiteLLM's own default is `0.0.0.0` — every IPv4 interface, overridable by
+ * a stray `HOST` in the environment — while the router reached it as
+ * `localhost`, which tries `::1` first. So the child was exposed beyond
+ * loopback, and a foreign listener holding `::1` on that port would have
+ * answered in its place. Binding and connecting to one literal address
+ * removes both.
+ */
+export const LITELLM_HOST = '127.0.0.1';
+
+/**
+ * The addresses the router binds: both loopback families, never a wildcard.
+ *
+ * Every client reaches the router as `localhost` — Claude Code's
+ * `ANTHROPIC_BASE_URL`, the SessionStart hook, doctor — and `localhost`
+ * resolves to both `::1` and `127.0.0.1`. Node connects with happy-eyeballs:
+ * an attempt not *seen* to complete within 250ms is abandoned for the next
+ * family. Bound to `localhost` the router held `::1` alone, so a client that
+ * stalled at the wrong moment dropped a connection that had in fact
+ * succeeded, fell through to `127.0.0.1` where nothing listened, and failed
+ * `fetch failed` / ETIMEDOUT. Holding both families leaves no address to
+ * fall through to.
+ */
+export const ROUTER_LOOPBACK_HOSTS = ['127.0.0.1', '::1'] as const;
+
+/**
+ * A machine without one family — IPv6 disabled, or no IPv4 loopback — answers
+ * the bind with one of these. The router serves on the family it has; any
+ * other error, `EADDRINUSE` included, still fails the start.
+ */
+const FAMILY_UNAVAILABLE = new Set(['EADDRNOTAVAIL', 'EAFNOSUPPORT']);
+
+/** Attempts at an ephemeral port before giving up on finding one free on both families. */
+const EPHEMERAL_ATTEMPTS = 5;
+
+/**
+ * Binds `first`, plus one more server sharing its request handler, to every
+ * loopback family the machine has, on one port. Resolves with the servers
+ * that listen and the port they share.
+ *
+ * A configured port is held on both families or not at all: a router coming
+ * up on `127.0.0.1` beside an older one that holds `::1` would split
+ * `localhost` between two daemons, so `EADDRINUSE` on either is the same
+ * refusal it always was. Port 0 lets the kernel choose for the first family
+ * only; that number being taken on the second is a collision to route around,
+ * so it is retried with a fresh choice.
+ */
+async function listenLoopback(
+  first: Server,
+  port: number,
+  bind: (server: Server, port: number, host: string) => Promise<void>,
+): Promise<{ servers: Server[]; port: number }> {
+  const handler = first.listeners('request')[0] as RequestListener;
+  for (let attempt = 1; ; attempt += 1) {
+    const servers: Server[] = [];
+    let bound = port;
+    let unavailable: Error | undefined;
+    try {
+      for (const host of ROUTER_LOOPBACK_HOSTS) {
+        const server = servers.length > 0 ? createHttpServer(handler) : first;
+        try {
+          await bind(server, bound, host);
+        } catch (error) {
+          if (FAMILY_UNAVAILABLE.has((error as NodeJS.ErrnoException).code ?? '')) {
+            unavailable = error as Error;
+            continue;
+          }
+          throw error;
+        }
+        servers.push(server);
+        const address = server.address();
+        if (typeof address === 'object' && address !== null) bound = address.port;
+      }
+    } catch (error) {
+      await Promise.all(servers.map((server) => close(server).catch(() => {})));
+      const inUse = (error as NodeJS.ErrnoException).code === 'EADDRINUSE';
+      if (port === 0 && inUse && servers.length > 0 && attempt < EPHEMERAL_ATTEMPTS) continue;
+      throw error;
+    }
+    if (servers.length === 0) throw unavailable ?? new Error('sonata serve: no loopback address to bind');
+    return { servers, port: bound };
+  }
 }
 
 /**
@@ -719,7 +858,7 @@ function listen(server: ReturnType<typeof createRouterServer>, port: number): Pr
  * anything genuinely in-flight gets a short grace window before every
  * remaining connection is forced closed, so this can never hang forever.
  */
-function close(server: ReturnType<typeof createRouterServer>): Promise<void> {
+function close(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
     server.close((error) => {
@@ -852,24 +991,31 @@ export function mergeTenantGateways(
     );
   }
   // Likewise one OAuth credential of each kind per LiteLLM child
-  // (CHATGPT_TOKEN_DIR / GITHUB_COPILOT_TOKEN_DIR): two differently named
-  // gateways of one kind would both be served whichever account
-  // buildChildEnv found first. parseConfig refuses the pair inside one file.
+  // (CHATGPT_TOKEN_DIR / GITHUB_COPILOT_TOKEN_DIR). Two differently named
+  // gateways of one kind that read the SAME credential source (the default
+  // included) are one account and are both kept; only differing sources are
+  // dropped, since one project would be served the other's account.
+  // parseConfig applies the same rule inside one file.
   const byOauth = new Map<string, string>();
   for (const name of Object.keys(merged)) {
-    const auth = merged[name]?.auth;
+    const gateway = merged[name];
+    const auth = gateway?.auth;
     if (auth !== 'codex-oauth' && auth !== 'copilot-oauth') continue;
     const other = byOauth.get(auth);
     if (other === undefined) {
       byOauth.set(auth, name);
       continue;
     }
+    const mine = gateway.credentialSource ?? 'default';
+    const theirs = merged[other]?.credentialSource ?? 'default';
+    if (mine === theirs) continue;
     delete merged[name];
     delete merged[other];
     log(
-      `gateways "${other}" (${owner[other]}) and "${name}" (${owner[name]}) both use auth = "${auth}" — ` +
-      'serving neither, since LiteLLM holds one credential of that kind and one project would be ' +
-      'served the other\'s account; keep one of them',
+      `gateways "${other}" (${owner[other]}, credential_source = ${theirs}) and ` +
+      `"${name}" (${owner[name]}, credential_source = ${mine}) both use auth = "${auth}" but read ` +
+      'different credentials — serving neither, since LiteLLM holds one credential of that kind ' +
+      "and one project would be served the other's account; give them the same credential_source",
     );
   }
   return merged;
@@ -938,6 +1084,9 @@ export async function cmdServe(
   // a run that died in between left its config behind.
   let child: SpawnedLitellm | undefined;
   let router: ReturnType<typeof createRouterServer> | undefined;
+  /** Every loopback server the router listens on — one per family the machine has. */
+  let listening: Server[] = [];
+  let boundPort = 0;
   let uiDeps: UiDeps;
   let stopping = false;
   const now = opts.now ?? Date.now;
@@ -1240,7 +1389,7 @@ export async function cmdServe(
     uiDeps = { home: opts.home, port: ports.router, tenants: () => registry.summary() };
     router = createRouterServer({
       fetch,
-      litellmBase: `http://localhost:${ports.litellm}`,
+      litellmBase: `http://${LITELLM_HOST}:${ports.litellm}`,
       litellmKey: masterKey,
       health: true,
       healthReady: () => !needsLitellmAtStart || litellmReadyResolved,
@@ -1317,7 +1466,7 @@ export async function cmdServe(
       }),
     });
     try {
-      await listen(router, ports.router);
+      ({ servers: listening, port: boundPort } = await listenLoopback(router, ports.router, opts.listenOn ?? listenOn));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
         throw new Error(await occupiedPortMessage(ports.router, opts.probeHealth));
@@ -1333,7 +1482,10 @@ export async function cmdServe(
         if (!litellmHealthy()) {
           throw new Error(`sonata serve: this config routes through LiteLLM, which is ${litellmStatus(opts.home, true).state} — run \`sonata litellm install\``);
         }
-        killRecordedOrphan(opts.home, ports.router, opts.processCommand);
+        await killRecordedOrphan(opts.home, ports.router, {
+          processCommand: opts.processCommand,
+          timeoutMs: opts.litellmExitTimeoutMs,
+        });
         child = spawnLitellmChild();
         await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
       })();
@@ -1342,8 +1494,7 @@ export async function cmdServe(
     }
     // `listen` has resolved, so this is the port actually bound — the same as
     // the configured one unless that was 0.
-    const bound = router.address();
-    uiDeps.port = typeof bound === 'object' && bound !== null ? bound.port : ports.router;
+    uiDeps.port = boundPort;
     console.log(`sonata UI: http://localhost:${uiDeps.port}/`);
   } catch (error) {
     // A post-bind startup failure must not strand an unusable router for an
@@ -1364,9 +1515,9 @@ export async function cmdServe(
     if (child !== undefined) await terminateLitellm(child, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep);
     // Clear the record while this process still owns the bound port. A
     // replacement cannot have written a new record until after close begins.
-    if (router?.listening === true) clearFailedRouterRecord(opts.home, ports.router);
-    if (router !== undefined) {
-      try { await close(router); } catch { /* preserve the startup error */ }
+    if (listening.length > 0) clearFailedRouterRecord(opts.home, ports.router);
+    for (const server of listening) {
+      try { await close(server); } catch { /* preserve the startup error */ }
     }
     rmSync(tempDir, { force: true, recursive: true });
     throw error;
@@ -1375,10 +1526,8 @@ export async function cmdServe(
   // Router is assigned by the time the try block completes; the catch rethrows.
   // `child` is read fresh in `stop()` below (not frozen here) because a respawn
   // can replace it after this point.
-  const startedRouter = router as ReturnType<typeof createRouterServer>;
-
-  const address = startedRouter.address();
-  const routerPort = typeof address === 'object' && address !== null ? address.port : ports.router;
+  const startedServers = listening;
+  const routerPort = boundPort;
 
   // Started only once the router is actually listening, so a daemon that
   // failed to bind never reaches out to the network. Detached and unref'd: it
@@ -1414,7 +1563,7 @@ export async function cmdServe(
       if (child !== undefined) await terminateLitellm(child, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep);
       try { unlinkSync(serveStatePath(opts.home, ports.router)); } catch { /* already gone */ }
       try {
-        await close(startedRouter);
+        await Promise.all(startedServers.map((server) => close(server)));
       } finally {
         rmSync(tempDir, { force: true, recursive: true });
       }

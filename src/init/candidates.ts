@@ -82,9 +82,11 @@ export function addLiveCandidates(
   env: InitEnvironment,
   nativeByKey: Map<string, NativeCandidate>,
   liveModels: Record<string, string[]>,
+  /** The written scope's URLs, when known — what the models were fetched from. */
+  baseUrls: Readonly<Record<string, string>> = env.providerBaseUrls,
 ): void {
   for (const [gateway, ids] of Object.entries(liveModels)) {
-    const baseUrl = env.providerBaseUrls[gateway];
+    const baseUrl = baseUrls[gateway];
     if (baseUrl === undefined) continue;
     const auth = env.gatewayAuth.get(gateway) ?? 'api-key';
     // Only a key-authenticated gateway is ever refreshed, so this is a
@@ -125,5 +127,26 @@ export function rewriteOauthToApiKey(
       const baseUrl = WELL_KNOWN_PROVIDER_URLS[gateway];
       nativeByKey.set(key, { ...candidate, baseUrl, auth: 'api-key' });
     }
+  }
+}
+
+/**
+ * Re-point each key-authenticated candidate of a gateway the written scope's
+ * config already holds at that config's `base_url`.
+ *
+ * Candidates are minted before the config scope is chosen, from the project
+ * config or a harness. `nativeTomlFor` writes an existing gateway's URL from
+ * the config for the scope being written, so without this a global-scope init
+ * carried — and warned and validated against — one URL while writing another.
+ * An OAuth candidate is never touched: its URL is its provider's backend.
+ */
+export function applyScopeBaseUrls(
+  nativeByKey: Map<string, NativeCandidate>,
+  scopeConfigUrls: Readonly<Record<string, string>>,
+): void {
+  for (const [key, candidate] of nativeByKey) {
+    if (isOauthGatewayAuth(candidate.auth)) continue;
+    const url = scopeConfigUrls[candidate.gateway];
+    if (url !== undefined && url !== candidate.baseUrl) nativeByKey.set(key, { ...candidate, baseUrl: url });
   }
 }

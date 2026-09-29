@@ -191,6 +191,27 @@ describe('cmdInit (non-interactive)', () => {
   const write = (l: string) => { lines.push(l); };
   const detect = makeDetect();
 
+  it('--yes proceeds past a validation warning and writes the config', async () => {
+    // The scripted path refuses on the first problem it is handed, so a
+    // warning reaching it as a refusal would make `--yes` impossible on any
+    // machine with two gateways on one endpoint.
+    const shared = 'https://opencode.ai/zen/go/v1';
+    await cmdInit({
+      installLitellm: NO_INSTALL,
+      cwd, home, packageRoot: process.cwd(), yes: true,
+      detect: makeDetect({
+        authed: ['opencode-go'],
+        extraRefs: 'opencode/deepseek-v4-flash\nopencode-go/kimi-k3\n',
+        providerBaseUrls: { opencode: shared, 'opencode-go': shared },
+      }),
+      providers: ['opencode/opencode', 'opencode/opencode-go'],
+      models: ['opencode-deepseek-v4-flash', 'opencode-go-kimi-k3'],
+      roles: ['code'], scope: 'project', write,
+    });
+    expect(existsSync(join(cwd, 'sonata.toml'))).toBe(true);
+    expect(lines.join('\n')).toMatch(/share base_url/);
+  });
+
   it('--yes installs the sonata loop skill and names the routing choice', async () => {
     await cmdInit({
       installLitellm: NO_INSTALL,
@@ -249,6 +270,44 @@ describe('cmdInit (non-interactive)', () => {
       expect(lines.join('\n')).toContain('Nothing written.');
     });
 
+    it('puts a validation warning into the confirm question, and a warning still writes', async () => {
+      // Two gateways on one endpoint is a `warn`: printed before `confirm`,
+      // which draws in the alternate screen, so the user approved without
+      // ever seeing it. The question has to carry it. And a warning must not
+      // refuse — this drives the real init path through to the write.
+      const shared = 'https://opencode.ai/zen/go/v1';
+      const sharedDetect = makeDetect({
+        authed: ['opencode-go'],
+        extraRefs: 'opencode/deepseek-v4-flash\nopencode-go/kimi-k3\n',
+        providerBaseUrls: { opencode: shared, 'opencode-go': `${shared}/` },
+      });
+      const asked: string[] = [];
+      await cmdInit({
+        installLitellm: NO_INSTALL,
+        cwd, home, packageRoot: process.cwd(), detect: sharedDetect, write,
+        host: {
+          runTui: async (data) => ({
+            cancelled: false,
+            state: {
+              configScope: 'project',
+              providerKeys: ['opencode/opencode', 'opencode/opencode-go'],
+              nativeKeys: ['opencode-deepseek-v4-flash', 'opencode-go-kimi-k3'],
+              roles: ['code'],
+              hookScope: 'project', routing: 'skip', guidance: 'skip',
+              tiers: data.initialState?.tiers,
+            },
+          }),
+          confirm: async (question) => { asked.push(question); return true; },
+        },
+      });
+
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toMatch(/share base_url/);
+      expect(asked[0]).toContain('opencode, opencode-go');
+      expect(asked[0].indexOf('share base_url')).toBeLessThan(asked[0].indexOf('Write these changes?'));
+      expect(existsSync(join(cwd, 'sonata.toml'))).toBe(true);
+    });
+
     it('is interactive because a host is present, without a TTY', async () => {
       // `isInteractive()` inspects this process's stdin, which inside the
       // shell has already been claimed by Ink — so the host's presence is
@@ -280,7 +339,14 @@ describe('cmdInit (non-interactive)', () => {
       roles: ['code'], scope: 'skip', routing: 'skip', write,
     });
 
-    const check = (await cmdDoctor({ cwd, home, packageRoot: process.cwd() })).checks
+    // Nothing here is about the client, the harness binaries or a live
+    // router: unseamed, doctor spawned `claude`/`opencode` and probed the
+    // machine ports 4100/4000, which on a maintainer's machine answer.
+    vi.stubGlobal('fetch', async () => { throw new Error('no network in this test'); });
+    const check = (await cmdDoctor({
+      cwd, home, packageRoot: process.cwd(),
+      claudeVersion: async () => undefined, harnessVersion: async () => '0.0.0', harnessHealth: async () => [],
+    }).finally(() => vi.unstubAllGlobals())).checks
       .find((candidate) => candidate.name === 'tier routing');
     expect(check?.ok).toBe(false);
     expect(check?.detail).toBe('tier agents need a routed session — run `sonata route auto`');
@@ -2002,6 +2068,20 @@ context_window = 128000
       installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', detect, write: () => {} });
 
     expect(tuiMocks.data!.gatewayBaseUrls?.acme).toBe('https://stale.example/v1');
+  });
+
+  it('hands the wizard each scope\'s base URLs, so a global init queries the global one', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'init-url-scope-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'init-url-scope-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '[native.gateways."acme"]\nbase_url = "https://project.example/v1"\n');
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), '[native.gateways."acme"]\nbase_url = "https://global.example/v1"\n');
+    tuiMocks.interactive = true;
+    tuiMocks.result = { cancelled: true, state: { configScope: 'global' } };
+    const detect = async () => ({ tmux: { installed: true, version: '3.7b', problems: [] }, harnesses: [] });
+    await cmdInit({ installLitellm: NO_INSTALL, cwd, home, packageRoot: '/pkg', detect, write: () => {} });
+    expect(tuiMocks.data!.gatewayBaseUrlsByScope?.global?.acme).toBe('https://global.example/v1');
+    expect(tuiMocks.data!.gatewayBaseUrlsByScope?.project?.acme).toBe('https://project.example/v1');
   });
 
   it('keys the declared gateway names by scope, so each scope reads its own config', async () => {

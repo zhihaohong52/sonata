@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -288,6 +288,57 @@ code = ["m"]
       expect(requests(report)).toBe(1);
       expect(report.buckets[0]?.label).toBe(lone);
     });
+  });
+});
+
+describe('cmdUsage --project — subdirectory rows, $HOME and deleted directories', () => {
+  // Rows are labelled by their exact recorded cwd, while `--project` walked up
+  // to the enclosing project: a row recorded at <repo>/sub was then selectable
+  // by no argument at all. A stray ~/sonata.toml made every unconfigured
+  // directory under $HOME resolve to $HOME itself.
+  let home: string;
+  let repo: string;
+  let sub: string;
+  let other: string;
+  const recent = () => new Date(Date.now() - 60_000).toISOString();
+  const pick = async (project: string) => {
+    const report = await cmdUsage({ home, since: '1d', by: 'project', project, json: true });
+    return report.buckets.reduce((sum, bucket) => sum + bucket.requests, 0);
+  };
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), 'usage-scope-home-')));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), MINIMAL);
+    repo = join(home, 'repo');
+    sub = join(repo, 'sub');
+    other = join(home, 'other');
+    mkdirSync(sub, { recursive: true });
+    mkdirSync(other);
+    writeFileSync(join(repo, 'sonata.toml'), MINIMAL);
+    for (const project of [repo, sub, other]) appendRow(home, row({ ts: recent(), project }));
+  });
+  const MINIMAL = 'schema_version = 1\n';
+
+  it('selects a row recorded in a subdirectory, by the subdirectory or by the project', async () => {
+    expect(await pick(repo)).toBe(2);
+    expect(await pick(sub)).toBe(2);
+    expect(await pick(other)).toBe(1);
+  });
+
+  it('never resolves to $HOME itself, even with a stray ~/sonata.toml', async () => {
+    writeFileSync(join(home, 'sonata.toml'), MINIMAL);
+    expect(await pick(other)).toBe(1);
+    expect(await pick(repo)).toBe(2);
+    expect(await pick(sub)).toBe(2);
+  });
+
+  it('keeps a deleted directory as recorded rather than walking to its parent', async () => {
+    const gone = join(repo, 'gone');
+    mkdirSync(gone);
+    appendRow(home, row({ ts: recent(), project: gone }));
+    rmSync(gone, { recursive: true });
+    expect(await pick(gone)).toBe(1);
   });
 });
 

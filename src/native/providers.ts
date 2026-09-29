@@ -181,8 +181,17 @@ export function sharedBaseUrls(
     .map(([url, names]) => ({ url, gateways: [...names].sort() }));
 }
 
-/** One sentence naming the gateways, the endpoint, and the likely cause. */
-export function sharedBaseUrlWarning(group: SharedBaseUrl): string {
+/**
+ * One sentence naming the gateways, the endpoint, the likely cause, and — given
+ * the config path — the fix. Re-init keeps an existing gateway's base_url, so
+ * a stale one is no longer replaced by running init again: the fix is an edit
+ * to that file, and saying which file is the difference between a warning and
+ * a hunt.
+ */
+export function sharedBaseUrlWarning(group: SharedBaseUrl, configPath?: string): string {
+  const fix = configPath === undefined
+    ? 'remove one, or point each at its own endpoint'
+    : `remove one, or edit base_url in ${configPath} so each has its own endpoint`;
   return `gateways ${group.gateways.join(', ')} share base_url ${group.url} — probably one account under two names, `
-    + 'so every model on it is a duplicate candidate and agent; remove one, or point each at its own endpoint';
+    + `so every model on it is a duplicate candidate and agent; ${fix}`;
 }

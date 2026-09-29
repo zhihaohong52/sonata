@@ -9,13 +9,12 @@ import { aaCatalogPath, loadAaCatalog } from '../../src/catalog.js';
 import { parseConfig } from '../../src/config.js';
 import { rankableCandidates } from '../../src/commands/agents.js';
 import type { TuiResult } from '../../src/tui-ink/types.js';
+import { tick } from './ink-wait.js';
 
 const ENTER = '\r';
 const DOWN = '\x1B[B';
 const SPACE = ' ';
 
-/** Lets Ink flush a render before the next keystroke is read. */
-const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
 
 function renderWizard(data: WizardData) {
   let result: TuiResult | undefined;
@@ -76,7 +75,7 @@ describe('the wizard on a first run', () => {
     await w.press(ENTER);
     await w.press(ENTER, ENTER, 'test-key', ENTER, DOWN, ENTER);
     expect(w.lastFrame()).toContain('excluded acme-deep');
-    expect(w.lastFrame()).toContain('AA publishes no cost-per-task');
+    expect(w.lastFrame()).toContain('AA publishes no usable cost-per-task');
     expect(w.lastFrame()).toContain('opencode/acme/fast');
   });
 

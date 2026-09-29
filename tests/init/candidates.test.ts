@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  addByokCandidates, addLiveCandidates, rewriteOauthToApiKey,
+  addByokCandidates, addLiveCandidates, applyScopeBaseUrls, rewriteOauthToApiKey,
 } from '../../src/init/candidates.js';
 import type { NativeCandidate } from '../../src/commands/init.js';
 
@@ -117,5 +117,26 @@ describe('rewriteOauthToApiKey', () => {
     const nativeByKey = new Map([[candidate.key, candidate]]);
     expect(() => rewriteOauthToApiKey(nativeByKey, { 'made-up': 'sk-test' }))
       .toThrow('sonata init: no API base URL is known for made-up; cannot use an API key.');
+  });
+});
+
+describe('applyScopeBaseUrls', () => {
+  it("re-points a key-authenticated gateway's candidates at the written scope's URL", () => {
+    // Candidates are minted before the scope is chosen, so a global-scope init
+    // otherwise carried the project config's URL (or a harness's) for a
+    // gateway whose written URL is the global config's.
+    const nativeByKey = new Map([
+      ['acme-a', apiKey('acme-a', 'acme', 'a', 'https://project.example/v1')],
+      ['acme-b', apiKey('acme-b', 'acme', 'b', 'https://harness.example/v1')],
+      ['other-c', apiKey('other-c', 'other', 'c', 'https://other.example/v1')],
+      ['codex-d', oauth('codex-d', 'codex', 'd', 'https://chatgpt.com/backend-api/codex')],
+    ]);
+    applyScopeBaseUrls(nativeByKey, { acme: 'https://global.example/v1', codex: 'https://api.openai.com/v1' });
+    expect(nativeByKey.get('acme-a')!.baseUrl).toBe('https://global.example/v1');
+    expect(nativeByKey.get('acme-b')!.baseUrl).toBe('https://global.example/v1');
+    // A gateway that scope does not hold keeps its candidate URL.
+    expect(nativeByKey.get('other-c')!.baseUrl).toBe('https://other.example/v1');
+    // An OAuth candidate's URL is its backend's and is never re-pointed.
+    expect(nativeByKey.get('codex-d')!.baseUrl).toBe('https://chatgpt.com/backend-api/codex');
   });
 });

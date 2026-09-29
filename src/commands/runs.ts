@@ -5,11 +5,7 @@
  * enumerate every run it had ever launched and exposed that only to `gc`,
  * while `sonata log <id>` required an id the user had no way to find.
  */
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-
-import { listRuns, readMeta, readExit, readReport, runDir } from '../store.js';
-import { reportPathFor } from '../report-contract.js';
+import { listRuns, readMeta, readExit, readReport } from '../store.js';
 
 export interface RunSummary {
   id: string;
@@ -42,7 +38,9 @@ export function summarizeRuns(cwd: string): RunSummary[] {
         role: meta.role,
         model: meta.model,
         started: (meta as { startedAt?: string }).startedAt,
-        report: existsSync(reportPathFor(runDir(cwd, id))),
+        // The store's rule, not file presence: an empty or whitespace-only
+        // report.md is no report.
+        report: report !== null,
       });
     } catch {
       // A half-written or hand-edited run directory is skipped, not fatal.

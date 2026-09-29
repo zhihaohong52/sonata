@@ -3,9 +3,8 @@ import React from 'react';
 import { render } from 'ink-testing-library';
 import { RankedSelect } from '../../src/tui-ink/components/ranked-select.js';
 import { boardWindow, dominatedRows, packedLines } from '../../src/tui-ink/components/ranked-select-state.js';
+import { tick } from './ink-wait.js';
 
-/** Lets Ink flush a render before the next keystroke is read. */
-const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
 
 const ITEMS = ['alpha', 'bravo', 'charlie', 'delta'].map((value) => ({ value, label: value }));
 
@@ -144,6 +143,16 @@ describe('dominatedRows', () => {
 
   it('is empty for a single row', () => {
     expect(dominatedRows([row(30, 0.10)]).size).toBe(0);
+  });
+
+  it('never lets a zero or negative cost dominate a real one', () => {
+    // A published $0 is missing data, not a free model. Read as cheapest, it
+    // marked a real costed row dominated — telling the user a better, cheaper
+    // model existed when nothing was known about it.
+    expect(dominatedRows([row(40, 0), row(30, 0.2)]).size).toBe(0);
+    expect(dominatedRows([row(40, -1), row(30, 0.2)]).size).toBe(0);
+    // And it is not itself compared, so a real row does not dominate it either.
+    expect(dominatedRows([row(10, 0), row(30, 0.2)]).size).toBe(0);
   });
 });
 
