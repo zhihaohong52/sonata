@@ -49,9 +49,18 @@ function buildScript(input: PlanInput): LaunchPlan {
   // plan mode a shell command outside the built-in read-only set goes to the
   // auto-mode classifier rather than being refused — so an unscoped `Bash`
   // allow was no read-only guarantee, and neither is leaving Bash unlisted.
-  // `--tools` restricts which tools exist at all, matching pi's allowlist.
-  // Not yet verified by a live run.
-  if (readOnly) flags.push('--tools=Read,Grep,Glob', '--allowedTools=Read,Grep,Glob');
+  // `--tools` restricts which *built-in* tools exist, matching pi's allowlist.
+  //
+  // It says nothing about MCP tools, and `--strict-mcp-config` is what closes
+  // that. Probed on Claude Code 2.1.284 (`-p` with these exact flags, reading
+  // the init event's tool list): `--tools=Read,Grep,Glob` removed every other
+  // built-in, yet the run still had every user, project, plugin and claude.ai
+  // MCP tool — a project `.mcp.json` server's `write_file`, Slack's
+  // send_message and the rest. `--strict-mcp-config` with no `--mcp-config`
+  // loads no server at all and left exactly Read, Grep and Glob. Chosen over
+  // `--disallowedTools=mcp__*`, which also hid them in that probe but still
+  // starts every server and relies on glob matching staying supported.
+  if (readOnly) flags.push('--tools=Read,Grep,Glob', '--allowedTools=Read,Grep,Glob', '--strict-mcp-config');
   // The session id sonata chose, so the run's transcript — and the router's
   // ledger rows, which record Claude Code's session id — name this run.
   if (input.sessionId !== undefined) flags.push(`--session-id ${shellQuote(input.sessionId)}`);
