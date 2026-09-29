@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { claudeAdapter } from '../../src/adapters/claude.js';
+import { MANAGED_MCP_FILES, claudeAdapter, planClaude } from '../../src/adapters/claude.js';
 import { getAdapter } from '../../src/adapters/index.js';
 import { KNOWN_HARNESSES, isAnthropicRoutedName } from '../../src/config.js';
 import { splitCandidate } from '../../src/effort.js';
@@ -99,8 +99,54 @@ describe('claudeAdapter.plan', () => {
     expect(flags).not.toContain('Bash');
   });
 
+  it('loads no MCP server for a read-only role', () => {
+    // --tools restricts the built-in set only: probed on Claude Code 2.1.284, a
+    // `-p --permission-mode plan --tools=Read,Grep,Glob` run still listed every
+    // user, project, plugin and claude.ai MCP tool (a project .mcp.json
+    // `write_file` among them). --strict-mcp-config with no --mcp-config left
+    // exactly Read, Grep and Glob, and started no server at all.
+    const plan = planClaude(
+      { ...base, role: 'explore', mode: 'acceptEdits' },
+      { managedMcpFile: join(tmpdir(), 'sonata-no-such-dir', 'managed-mcp.json') },
+    );
+    const flags = plan.script.split('\n').find((l) => l.startsWith('claude '))!.split(' "$(cat')[0];
+    expect(flags).toContain('--strict-mcp-config');
+    expect(flags).not.toContain('--mcp-config');
+  });
+
+  it('names the documented managed-mcp.json locations', () => {
+    expect(MANAGED_MCP_FILES.darwin).toBe('/Library/Application Support/ClaudeCode/managed-mcp.json');
+    expect(MANAGED_MCP_FILES.linux).toBe('/etc/claude-code/managed-mcp.json');
+  });
+
+  it('hides MCP tools by deny rule when an enterprise managed-mcp.json is deployed', () => {
+    // Claude Code exits at startup when --strict-mcp-config meets a deployed
+    // managed-mcp.json ("asks to replace the managed set" — code.claude.com
+    // /docs/en/managed-mcp), so a read-only run there needs the other
+    // suppression: a deny rule over every mcp__ tool.
+    const dir = mkdtempSync(join(tmpdir(), 'sonata-managed-mcp-'));
+    const managed = join(dir, 'managed-mcp.json');
+    writeFileSync(managed, '{"mcpServers":{}}');
+    const plan = planClaude({ ...base, role: 'explore', mode: 'acceptEdits' }, { managedMcpFile: managed });
+    const flags = plan.script.split('\n').find((l) => l.startsWith('claude '))!.split(' "$(cat')[0];
+    expect(flags).not.toContain('--strict-mcp-config');
+    // Quoted, or bash would glob `mcp__*` against the working directory.
+    expect(flags).toContain(`'--disallowedTools=mcp__*'`);
+    expect(flags).toContain('--tools=Read,Grep,Glob');
+  });
+
+  it('keeps --strict-mcp-config when no managed-mcp.json is deployed', () => {
+    const plan = planClaude(
+      { ...base, role: 'explore', mode: 'acceptEdits' },
+      { managedMcpFile: join(tmpdir(), 'sonata-no-such-dir', 'managed-mcp.json') },
+    );
+    expect(plan.script).toContain('--strict-mcp-config');
+    expect(plan.script).not.toContain('--disallowedTools');
+  });
+
   it('leaves a write role`s flags unchanged', () => {
     const plan = claudeAdapter.plan({ ...base, mode: 'acceptEdits' });
+    expect(plan.script).not.toContain('--strict-mcp-config');
     expect(plan.script).not.toContain('--tools=');
     expect(plan.script).not.toContain('--allowedTools');
     expect(plan.script).toContain('--permission-mode acceptEdits');

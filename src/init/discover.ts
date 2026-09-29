@@ -195,8 +195,8 @@ export async function discover(
     global: baseUrlsFor('global'),
   };
   // The scope-free view, for the callers that mint candidates before a scope
-  // is chosen. Project first, as before; `applyScopeBaseUrls` re-points an
-  // existing gateway's candidates once the scope is known.
+  // is chosen. Project first, as before; `applyScopeBaseUrls` re-points every
+  // key-authenticated candidate at the chosen scope's URL once it is known.
   const providerBaseUrls = providerBaseUrlsByScope.project;
   // A harness logged in with a subscription holds an OAuth credential, not an
   // API key. Writing such a provider with a metered base URL produces a gateway

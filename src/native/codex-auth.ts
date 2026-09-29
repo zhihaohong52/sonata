@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { readOpencodeCredentials } from './opencode-store.js';
+import { readOnce } from './read-snapshot.js';
 
 /** The flat record LiteLLM's chatgpt Authenticator reads. */
 export interface ChatGptAuthRecord {
@@ -55,19 +56,47 @@ export function opencodeAuthPath(home: string): string {
  */
 export const CHATGPT_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 
-/** The `exp` claim of a JWT, without verifying the signature. */
-export function jwtExpiry(token: string): number | undefined {
+/** A JWT's payload claims, without verifying the signature; undefined when it does not decode. */
+function jwtClaims(token: string): Record<string, unknown> | undefined {
   const payload = token.split('.')[1];
   if (payload === undefined) return undefined;
   try {
     const padded = payload.padEnd(payload.length + ((4 - (payload.length % 4)) % 4), '=');
     const claims: unknown = JSON.parse(Buffer.from(padded, 'base64url').toString('utf8'));
-    if (claims === null || typeof claims !== 'object') return undefined;
-    const exp = (claims as Record<string, unknown>).exp;
-    return typeof exp === 'number' ? exp : undefined;
+    if (claims === null || typeof claims !== 'object' || Array.isArray(claims)) return undefined;
+    return claims as Record<string, unknown>;
   } catch {
     return undefined;
   }
+}
+
+/** The `exp` claim of a JWT, without verifying the signature. */
+export function jwtExpiry(token: string): number | undefined {
+  const exp = jwtClaims(token)?.exp;
+  return typeof exp === 'number' ? exp : undefined;
+}
+
+/**
+ * The ChatGPT account a record belongs to, or undefined when nothing in it
+ * says.
+ *
+ * Derived in exactly the order LiteLLM's chatgpt authenticator derives the
+ * account it sends (`Authenticator.get_account_id()`, 1.98.0): the record's
+ * own `account_id` first, and only when that is absent the
+ * `https://api.openai.com/auth` claim's `chatgpt_account_id`, read from the id
+ * token when there is one and the access token otherwise. Both stores and
+ * LiteLLM's own refresh keep one account across every token they mint, so
+ * this is stable where a refresh token or an expiry is not — and an absent
+ * field is "unknown", never a different account: opencode v2's credential row
+ * has no `accountId` at all.
+ */
+export function chatgptAccountId(record: Partial<ChatGptAuthRecord>): string | undefined {
+  const field = str(record.account_id);
+  if (field !== undefined) return field;
+  const token = str(record.id_token) ?? str(record.access_token);
+  const auth = token === undefined ? undefined : jwtClaims(token)?.['https://api.openai.com/auth'];
+  if (auth === null || typeof auth !== 'object' || Array.isArray(auth)) return undefined;
+  return str((auth as Record<string, unknown>).chatgpt_account_id);
 }
 
 function str(value: unknown): string | undefined {
@@ -82,7 +111,7 @@ function str(value: unknown): string | undefined {
 export function readCodexOAuth(home: string): ChatGptAuthRecord | null {
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(codexAuthPath(home), 'utf8'));
+    raw = JSON.parse(readOnce(codexAuthPath(home)).toString('utf8'));
   } catch {
     return null;
   }

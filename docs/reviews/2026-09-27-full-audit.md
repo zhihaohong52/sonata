@@ -80,8 +80,22 @@ on one branch; the rest are recorded here as the backlog.
 >   on first sight, logs every terminal 400, and can capture the outbound
 >   body (`SONATA_CAPTURE_400_DIR`) to identify it.
 > - *Dispatch, claude read-only Bash:* `--allowedTools` only pre-approves, so
->   the fix restricts the tool set with `--tools=Read,Grep,Glob`; not yet
->   verified by a live run.
+>   the fix restricts the tool set with `--tools=Read,Grep,Glob`. Verified
+>   live on Claude Code 2.1.284 (2026-09-29): that removes every other
+>   built-in but **not** MCP tools — user, project, plugin and claude.ai
+>   servers all still loaded — so read-only runs now also pass
+>   `--strict-mcp-config` (no `--mcp-config`), which left exactly Read, Grep
+>   and Glob.
+> - *Dispatch, `sonata log` misses lines that scroll off:* fixed for
+>   non-interactive runs by printing the harness's own `harness.log`, which
+>   opencode `run`, pi, reasonix `run` and codex `exec` tee their complete
+>   output into (claude `-p` does not, and keeps the event log); the web UI's
+>   run detail follows the same rule. An interactive TUI's log is still the
+>   visible-screen diff, one screen per poll, and still misses a burst. Three
+>   earlier designs that rebuilt the record from tmux were reverted: diffing a
+>   scrollback capture re-recorded the whole history on every redraw, and
+>   counting rows live and capturing history at the end broke on tmux trimming
+>   history in blocks, on resizes, and on alternate-screen TUIs writing none.
 > - *Router, conversation collisions:* once a conversation has been served by
 >   more than one candidate, thinking blocks are stripped on every later
 >   turn, including the current candidate's own — the accepted cost of never

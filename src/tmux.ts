@@ -2,8 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { shellQuote } from './shell.js';
-import { VERSION_PROBE_TIMEOUT_MS } from './version-probe.js';
-import type { PaneSource } from './pane-record.js';
+import { VERSION_PROBE_TIMEOUT_MS, runProbe } from './version-probe.js';
 
 const run = promisify(execFile);
 
@@ -49,7 +48,7 @@ export async function retryWhenServerExits<T>(
  * the only caller, and an unbounded probe is never what anyone wants.
  */
 export async function tmuxVersion(timeoutMs: number = VERSION_PROBE_TIMEOUT_MS): Promise<string> {
-  const { stdout } = await run('tmux', ['-V'], { encoding: 'utf8', timeout: timeoutMs });
+  const { stdout } = await runProbe('tmux', ['-V'], { timeoutMs });
   return stdout.trim().replace(/^tmux\s+/, '');
 }
 
@@ -110,47 +109,6 @@ export async function tryCapturePane(session: string): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-/**
- * The pane as `recordPane` reads it (`src/pane-record.ts`): its history count
- * and mode, its visible rows, and exact slices of its scrollback. Each read
- * answers null on a failed call, never an empty pane.
- */
-export function paneSource(session: string): PaneSource {
-  const lines = (out: string): string[] => {
-    const rows = out.split('\n');
-    if (rows.length > 0 && rows[rows.length - 1] === '') rows.pop();
-    return rows;
-  };
-  return {
-    async info() {
-      try {
-        const out = await tmux(['display-message', '-p', '-t', session,
-          '#{history_size} #{history_limit} #{alternate_on} #{pane_height}']);
-        const [size, limit, alt, height] = out.trim().split(' ').map((n) => Number.parseInt(n, 10));
-        if (![size, limit, alt, height].every((n) => Number.isFinite(n))) return null;
-        return { historySize: size!, historyLimit: limit!, alternate: alt === 1, height: height! };
-      } catch {
-        return null;
-      }
-    },
-    async screen() {
-      try {
-        return lines(await tmux(['capture-pane', '-p', '-t', session]));
-      } catch {
-        return null;
-      }
-    },
-    async history(count) {
-      if (count <= 0) return [];
-      try {
-        return lines(await tmux(['capture-pane', '-p', '-S', `-${count}`, '-E', '-1', '-t', session]));
-      } catch {
-        return null;
-      }
-    },
-  };
 }
 
 export async function listSessions(): Promise<string[]> {

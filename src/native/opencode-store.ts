@@ -13,10 +13,12 @@
  * writes, migrates, or prunes. Malformed rows are skipped, never thrown.
  * Nothing here logs a value — the stores hold live secrets in plaintext.
  */
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
-import { openReadOnlySync } from '../sqlite.js';
+import { openReadOnlySync, sqliteAvailable } from '../sqlite.js';
+import { queryOnce, readOnce } from './read-snapshot.js';
 
 export interface OpencodeCredential {
   /**
@@ -120,34 +122,51 @@ function parseTableValue(raw: unknown): ParsedCredential | undefined {
   return undefined;
 }
 
+/**
+ * The `credential` table's rows, from one read-only connection, or why there
+ * are none: `missingTable` (a v1 database, a steady answer) or `detail` (it
+ * could not be opened or queried just now). Answered once per read snapshot
+ * (`withReadSnapshot`), so `opencodeDbRead`'s classification and
+ * `readOpencodeCredentials`' parse describe the same rows within a build.
+ * Never throws.
+ */
+export function queryCredentialRows(dbPath: string): { rows?: Record<string, unknown>[]; missingTable?: true; detail?: string } {
+  return queryOnce(`opencode.db:${dbPath}`, () => {
+    const db = openReadOnlySync(dbPath);
+    if (db === undefined) return { detail: `${dbPath}: could not be opened` };
+    try {
+      return { rows: db.all('SELECT * FROM credential') };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/no such table/i.test(message)) return { missingTable: true as const };
+      return { detail: `${dbPath}: ${message}` };
+    } finally {
+      try { db.close(); } catch { /* already closed */ }
+    }
+  });
+}
+
 function readCredentialTable(dbPath: string): Map<string, ParsedCredential> {
   const rows = new Map<string, { timeCreated: number; credential: ParsedCredential }>();
-  const db = openReadOnlySync(dbPath);
-  if (db === undefined) return new Map();
-  try {
-    for (const row of db.all('SELECT integration_id, value, time_created FROM credential')) {
-      const integration = str(row.integration_id);
-      if (integration === undefined) continue;
-      let value: unknown;
-      try {
-        value = JSON.parse(String(row.value));
-      } catch {
-        continue; // one malformed row must not cost the rest
-      }
-      const credential = parseTableValue(value);
-      if (credential === undefined) continue;
-      // At most one row per integration is normal; several mean a re-login,
-      // and the newest is the live one. Ties keep the first row read.
-      const timeCreated = num(row.time_created) ?? 0;
-      const existing = rows.get(integration);
-      if (existing !== undefined && existing.timeCreated >= timeCreated) continue;
-      rows.set(integration, { timeCreated, credential });
+  // No `credential` table (a v1 db), a locked file, or a statement that
+  // cannot run — all the same answer as "no rows", never a throw.
+  for (const row of queryCredentialRows(dbPath).rows ?? []) {
+    const integration = str(row.integration_id);
+    if (integration === undefined) continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(String(row.value));
+    } catch {
+      continue; // one malformed row must not cost the rest
     }
-  } catch {
-    // No `credential` table (a v1 db), a locked file, or a statement that
-    // cannot run — all the same answer as "no rows", never a throw.
-  } finally {
-    db.close();
+    const credential = parseTableValue(value);
+    if (credential === undefined) continue;
+    // At most one row per integration is normal; several mean a re-login,
+    // and the newest is the live one. Ties keep the first row read.
+    const timeCreated = num(row.time_created) ?? 0;
+    const existing = rows.get(integration);
+    if (existing !== undefined && existing.timeCreated >= timeCreated) continue;
+    rows.set(integration, { timeCreated, credential });
   }
   return new Map([...rows].map(([integration, row]) => [integration, row.credential]));
 }
@@ -165,7 +184,7 @@ export function readOpencodeCredentials(
   const out: Record<string, OpencodeCredential> = {};
 
   try {
-    const raw: unknown = JSON.parse(readFileSync(join(opencodeDataDir(home), 'auth.json'), 'utf8'));
+    const raw: unknown = JSON.parse(readOnce(join(opencodeDataDir(home), 'auth.json')).toString('utf8'));
     if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
       for (const [integration, value] of Object.entries(raw)) {
         const parsed = parseAuthJsonEntry(value);
@@ -190,4 +209,30 @@ export function opencodeCredentialOrigin(
   env: NodeJS.ProcessEnv = process.env,
 ): 'auth.json' | 'opencode.db' | undefined {
   return readOpencodeCredentials(home, env)[integrationId]?.origin;
+}
+
+/**
+ * A comparable token for the `credential` table's contents: a hash of every
+ * row, `absent` when there is no database (or none this Node can read), and
+ * `unreadable` when one exists and could not be queried just now.
+ *
+ * For `sonata serve`, which re-merges when this moves: opencode.db is written
+ * constantly for reasons unrelated to credentials, so its modification time
+ * says nothing about whether a login changed. A hash, never the rows
+ * themselves, leaves this module — they are live secrets.
+ */
+export function opencodeCredentialStamp(home: string, env: NodeJS.ProcessEnv = process.env): string {
+  const path = opencodeDbPath(home, env);
+  if (!existsSync(path) || !sqliteAvailable()) return 'absent';
+  const db = openReadOnlySync(path);
+  if (db === undefined) return 'unreadable';
+  try {
+    const rows = db.all('SELECT * FROM credential ORDER BY id');
+    return createHash('sha256').update(JSON.stringify(rows)).digest('hex');
+  } catch (error) {
+    // A v1 database holds no credential table, which is a steady answer.
+    return /no such table/i.test(error instanceof Error ? error.message : String(error)) ? 'absent' : 'unreadable';
+  } finally {
+    try { db.close(); } catch { /* already closed */ }
+  }
 }

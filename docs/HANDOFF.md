@@ -882,6 +882,34 @@ is worth more than a clean document.
   chasing a dead subagent, read the `fell past` line before concluding the
   router never saw the request.
 
+- **`sonata log` reads the harness's own log; do not rebuild it from tmux
+  again.** A non-interactive run (opencode `run`, pi, reasonix `run`, codex
+  `exec`) prints `<runDir>/harness.log`, which the harness tees its complete
+  output into; an interactive TUI, or a run with no or an empty harness.log,
+  prints `events.jsonl`, the visible-screen diff, one screen per poll — lossy
+  for a burst, exactly as on main (`src/run-log.ts`, shared with the web UI).
+  Three designs for "the log misses what scrolls off" were built and reverted
+  on `fix/audit-backlog` before this one:
+  1. **Diff a scrollback capture every poll.** A capture that almost never
+     shifts has nothing to align on when any row is redrawn, so a status-line
+     or composer redraw re-recorded the whole ~2000-line history per poll.
+  2. **Count rows into history by `#{history_size}` every poll.** Real tmux
+     trims a tenth of the history at once at the limit (read as a clear, so
+     ~9000 rows were recorded again), a taller client pulls rows back out of
+     history and a wider one reflows them, and under continuous output most
+     polls could not read the pane consistently.
+  3. **Capture tmux's whole history once, at DONE.** An alternate-screen TUI
+     (codex in default mode) writes no history, so its transcript was
+     near-empty and still preferred over the event log; a watchdog-killed TUI
+     left the pane on the alternate screen; two captures raced on one
+     temporary file and failed a clean run; a run past 10000 rows got a
+     head-trimmed transcript preferred silently.
+  4. **Print the harness's own log** — the answer, because tmux is not
+     involved: the harness writes it, so it cannot be trimmed, reflowed, raced
+     or missed by a poll, and it exists for exactly the runs (non-interactive)
+     whose bursts scroll off. An interactive TUI has no line-oriented output
+     to log; for it the screen diff is the record, lossy for bursts.
+
 ### Git, PRs and review
 
 - **CodeRabbit no longer auto-reviews this repository, and `pr-status.mjs`

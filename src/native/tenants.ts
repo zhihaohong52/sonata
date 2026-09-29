@@ -21,14 +21,14 @@ export class TenantError extends Error {
   }
 }
 
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { GLOBAL_CONFIG_RELATIVE, configPath as resolveConfigPath, parseConfig, type SonataConfig } from '../config.js';
 import { assertEffortsPinned, loadAaCatalog } from '../catalog.js';
 import { loadModelsDev } from '../modelsdev.js';
 import { configUpstreamFor } from '../pricing.js';
-import { loadSessions } from '../sessions.js';
+import { readSessions, sessionsPath, type SessionRecord } from '../sessions.js';
 import type { RouterTenant } from './router.js';
 
 /**
@@ -81,11 +81,72 @@ function nativeSnapshot(cfg: SonataConfig): unknown {
 export class TenantRegistry {
   private readonly noted = new Set<string>();
   private readonly logged = new Map<string, string>();
+  /**
+   * sessions.json as last parsed, keyed by the file's own stat, with the
+   * distinct cwds it names.
+   *
+   * `fingerprint()` runs on every request, and it used to re-read and
+   * re-parse this file and run `configPath` + realpath once per session
+   * RECORD — not per distinct cwd — every time: measured 53 ms per request
+   * at 256 projects and 2000 sessions, synchronous, Anthropic passthrough
+   * included. Parsing is now once per version of the file, and resolution
+   * once per distinct cwd.
+   *
+   * What a cwd resolves to is deliberately NOT cached with it. `sonata init`
+   * in a project whose session is already registered writes ./sonata.toml
+   * and leaves sessions.json alone, so a resolution keyed by the file's
+   * version kept answering "the machine config" and the project never
+   * entered the LiteLLM union. The dedup is where the saving was.
+   */
+  private sessionsCache?: { stamp: string; records: Record<string, SessionRecord>; cwds: string[]; unread?: true };
+  /** The invalid sessions.json records last logged, so each set is logged once. */
+  private loggedInvalid = '';
 
   constructor(
     private readonly home: string,
-    private readonly deps: { log?: (line: string) => void } = {},
+    private readonly deps: {
+      log?: (line: string) => void;
+      /** Test seam: how sessions.json's bytes are read, so a test can count re-reads. */
+      readSessionsFile?: (path: string) => string;
+    } = {},
   ) {}
+
+  /** The current sessions.json version, parsed once per version. */
+  private sessions(): NonNullable<TenantRegistry['sessionsCache']> {
+    const path = sessionsPath(this.home);
+    let stamp: string;
+    try {
+      const { ino, mtimeMs, size } = statSync(path);
+      stamp = `${ino}:${mtimeMs}:${size}`;
+    } catch {
+      stamp = 'absent';
+    }
+    if (this.sessionsCache?.stamp === stamp) return this.sessionsCache;
+    const { sessions: records, ok, invalid } = readSessions(this.home, this.deps.readSessionsFile);
+    const invalidKey = invalid.join('\0');
+    if (invalid.length > 0 && invalidKey !== this.loggedInvalid) {
+      this.deps.log?.(`tenants: ${sessionsPath(this.home)} has an invalid record (no string cwd), ignored: ${invalid.join(', ')}`);
+    }
+    if (ok) this.loggedInvalid = invalidKey;
+    // A failed read (EMFILE, say) returns `{}` under a stamp that is perfectly
+    // valid. Cached, that pinned every session to the machine config until
+    // sessions.json next changed; answered even once, it sent this request
+    // there with the machine's credentials. The last good read answers
+    // instead, and is left under its own stamp so the next call reads again.
+    // `{}` only when there has never been a good read — marked `unread`, so
+    // `resolve` refuses a session's request rather than serve it as the
+    // machine tenant.
+    if (!ok) return this.sessionsCache ?? { stamp, records: {}, cwds: [], unread: true };
+    const cwds = [...new Set(Object.values(records).map((record) => record.cwd))];
+    this.sessionsCache = { stamp, records, cwds };
+    return this.sessionsCache;
+  }
+
+  /** `cwd`'s canonical config path, resolved now. */
+  private configFor(cwd: string): string | null {
+    const found = resolveConfigPath(cwd, this.home);
+    return found === null ? null : canonicalConfigPath(found);
+  }
 
   private machinePath(): string | null {
     const path = join(this.home, GLOBAL_CONFIG_RELATIVE);
@@ -127,7 +188,20 @@ export class TenantRegistry {
   }
 
   resolve(hint: { project?: string; session?: string }): RouterTenant {
-    const cwd = hint.project ?? (hint.session === undefined ? undefined : loadSessions(this.home)[hint.session]?.cwd);
+    let cwd = hint.project;
+    if (cwd === undefined && hint.session !== undefined) {
+      const sessions = this.sessions();
+      // No good read has ever been made, and this one failed: which project
+      // the session belongs to is unknown, and "no record" would serve it
+      // with the machine config's credentials and budget.
+      if (sessions.unread === true) {
+        throw new TenantError(
+          `${sessionsPath(this.home)} could not be read, so session ${hint.session} cannot be attributed to its ` +
+          'project — not serving it as the machine config; retry the request.',
+        );
+      }
+      cwd = sessions.records[hint.session]?.cwd;
+    }
     let path: string | null;
     if (cwd !== undefined) {
       const found = resolveConfigPath(cwd, this.home);
@@ -161,20 +235,40 @@ export class TenantRegistry {
     return { id: tenantId(path), project: cwd, configPath: path, config };
   }
 
-  known(): KnownTenant[] {
+  /**
+   * A cheap token that changes whenever the set of known tenants, or any of
+   * their config files, does: each known path with its mtime and size, no
+   * parsing. Serve compares it per request to know when the gateway merge
+   * (and so which gateways are dropped, and their keys) is out of date.
+   */
+  fingerprint(): string {
+    return this.knownPaths().map((path) => {
+      try {
+        const { mtimeMs, size } = statSync(path);
+        return `${path}:${mtimeMs}:${size}`;
+      } catch {
+        return `${path}:missing`;
+      }
+    }).join('\n');
+  }
+
+  private knownPaths(): string[] {
     const paths = new Set<string>();
     const machine = this.machinePath();
     if (machine !== null) paths.add(machine);
-    for (const record of Object.values(loadSessions(this.home))) {
-      const path = resolveConfigPath(record.cwd, this.home);
-      if (path !== null) paths.add(canonicalConfigPath(path));
+    // Every distinct cwd — session and noted alike, one resolution each — is
+    // resolved fresh on every call: a project gains its sonata.toml without
+    // either set changing.
+    for (const cwd of new Set([...this.sessions().cwds, ...this.noted])) {
+      const path = this.configFor(cwd);
+      if (path !== null) paths.add(path);
     }
-    for (const cwd of this.noted) {
-      const path = resolveConfigPath(cwd, this.home);
-      if (path !== null) paths.add(canonicalConfigPath(path));
-    }
+    return [...paths].sort();
+  }
+
+  known(): KnownTenant[] {
     const out: KnownTenant[] = [];
-    for (const path of [...paths].sort()) {
+    for (const path of this.knownPaths()) {
       const id = tenantId(path);
       try {
         out.push({ id, configPath: path, config: this.load(path) });
@@ -198,8 +292,9 @@ export class TenantRegistry {
       .sort((x, y) => x.id.localeCompare(y.id));
   }
 
-  unionSnapshot(): string {
-    return JSON.stringify(this.loadable().map(({ id, config }) => ({ id, snapshot: nativeSnapshot(config) })));
+  /** `loaded` lets a caller that already has `loadable()` skip parsing every config again. */
+  unionSnapshot(loaded: { id: string; config: SonataConfig }[] = this.loadable()): string {
+    return JSON.stringify(loaded.map(({ id, config }) => ({ id, snapshot: nativeSnapshot(config) })));
   }
 
   summary(): { id: string; configPath: string | null }[] {

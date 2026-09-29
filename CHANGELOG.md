@@ -10,18 +10,66 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Changed
 
-- **A config with two OAuth gateways of one kind that read different
-  credential sources no longer loads.** LiteLLM holds one ChatGPT and one
-  Copilot credential per process, so the second gateway was silently served
-  the first one's account. `sonata.toml` now refuses such a pair — e.g.
-  `codex` with `credential_source = "codex"` beside `codex-work` with
-  `credential_source = "sonata"` — naming both; give them the same
-  `credential_source`, or keep one. Gateways that read the *same* source
-  (the default included) still load: that covers the `codex` + `openai` pair
-  `sonata init` wrote before v0.10.0.
+- **Two OAuth gateways of one kind reading different credential stores are
+  not served,
+  and doctor says so.** LiteLLM holds one ChatGPT and one Copilot credential
+  per process, so a second gateway of a kind was silently served the first
+  one's account. The router now drops every gateway of such a kind — their
+  models answer a typed 502 naming the gateways and projects, the rest of the
+  config keeps working — and `sonata doctor` warns, naming both. Which
+  account a gateway reads is decided on the machine: `credential_source =
+  "sonata"` is a login per gateway name; the default reads codex's login when
+  there is one, else opencode's; both Copilot sources read opencode's. No
+  config fails to load over this: the `codex` + `openai` pair `sonata init`
+  wrote before v0.10.0, and v0.13.1's BYOK OAuth pair, both still load.
 
 ### Fixed
 
+- **A session's request is no longer served as the machine config when
+  `sessions.json` cannot be read.** If the router had never read that file
+  successfully and the latest read failed, a request carrying a session id
+  was resolved as "no record" and served with the machine config's
+  credentials and budget. It is now refused with a 400 saying the file could
+  not be read and to retry; requests naming no session, or naming their
+  project, are unchanged.
+
+- **One bad record in `sessions.json` no longer fails every routed request.**
+  A `null` entry, or one whose `cwd` is not a string (a hand edit — sonata's
+  own writer never produces one), threw while the router listed session
+  projects, which it does per request. Such a record is now dropped and named
+  once in serve's log; the rest of the file is used as before.
+
+- **A log that stops draining no longer grows `sonata serve`'s memory without
+  bound.** LiteLLM's output is forwarded line by line and never paused, so a
+  blocked terminal or pipe queued every later line in memory. Lines are now
+  dropped while the log is blocked (past 1 MiB, or until it drains), and one
+  line says how many once it drains; every line is still scanned for a refused
+  ChatGPT login.
+
+- **A torn `keys.json` no longer takes down a gateway that needs no key.**
+  The router looks every default-sourced and OAuth gateway up in sonata's key
+  store; finding nothing while that file was mid-write was recorded as a
+  refusal, so a keyless gateway — or a ChatGPT gateway whose own login had
+  resolved — answered 502 and had its models pulled from LiteLLM for the
+  length of one write. That read is now transient and retried.
+
+- **A read-only `claude` dispatch runs on a machine with an enterprise
+  `managed-mcp.json`.** Claude Code exits at startup when
+  `--strict-mcp-config` meets a deployed managed MCP file, so every
+  review/explore/plan run on the claude harness died there. Where the file is
+  present, sonata refuses MCP tools with a `--disallowedTools=mcp__*` rule
+  instead; everywhere else it still loads no MCP server at all.
+
+- **A conversation whose recent responses broke is no longer forgotten.**
+  The router remembers which models have served a conversation so it can
+  remove their thinking blocks before another model takes over; a response
+  that broke mid-stream did not count as activity, so a long-running agent
+  could lose that memory and be killed by the next model's 400.
+- **A read-only `claude` dispatch can no longer reach MCP tools.** `--tools`
+  limits Claude Code's built-in tools only; probed live, a review or explore
+  run still had every configured MCP server's tools, write-capable ones
+  included. Read-only runs now pass `--strict-mcp-config`, so no MCP server
+  loads at all.
 - **A model's malformed tool call no longer kills the agent on its next turn.**
   A model can emit a tool call with an empty name (mimo-v2.6-pro did, through
   OpenRouter). Claude Code keeps it in the conversation and sends it back on
@@ -29,6 +77,23 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   so the agent died immediately and no fallback could help. The router now
   replaces that call, and its "No such tool available" result, with a short
   note before forwarding. Requests without one are passed through unchanged.
+- **The `route auto` hooks no longer drop the reason routing was refused.**
+  The session and subagent hooks read the CLI's stderr at the moment its exit
+  was reported, which can precede the last of that output, so on a loaded
+  machine a refusal such as "router predates multi-tenant routing" was shown
+  as "the CLI ended with exit code 1, with no output". The hooks now wait for
+  stderr to close, bounded at 2 s after exit.
+- **A legacy native agent's model key is quoted when YAML would type it.** A
+  key such as `true`, `null`, `1e3`, `yes` or `2026-09-29` was written as a
+  plain `model:` scalar, which a YAML reader resolves to a boolean, null,
+  number or date rather than the key. Such keys are now double-quoted;
+  ordinary keys are written exactly as before.
+- **A client that disconnects before the response starts no longer holds an
+  upstream connection.** The router now aborts the pending upstream request
+  when its client leaves, stops trying further tier candidates, and neither
+  cools the abandoned candidate nor writes a ledger row for it. A client
+  already gone when the response is handed over has its upstream cancelled
+  at once, instead of the router waiting on a first chunk nobody would read.
 
 From the full audit of 0.13.1 (`docs/reviews/2026-09-27-full-audit.md`):
 
@@ -56,8 +121,8 @@ the review doc's Backlog note):
 - **Router.** A message-less 400 falls through instead of killing the agent,
   every terminal 400 is logged, and `SONATA_CAPTURE_400_DIR` captures the
   request; a bare key on a direct gateway goes to that gateway; two OAuth
-  gateways of one kind that read different credential sources are refused
-  (see below); rows are priced under the config they
+  gateways of one kind that read different credential stores are refused
+  (see above); rows are priced under the config they
   were routed under; conversation collisions strip foreign thinking; a
   conversation is pinned only when its response completes; error-body reads
   are bounded; a failed stream is torn down, not appended to; `sessions.json`
@@ -69,7 +134,10 @@ the review doc's Backlog note):
   tail waits for the worktree capture; a refused launch leaves no run behind;
   a timed-out run keeps its report; `sonata runs` shows tail's verdict; run
   ids are 12 hex, never reused, never a path; read-only claude roles get no
-  shell; `sonata log` keeps output that scrolls past; `[run]` timings must be
+  shell; `sonata log` (and the web UI's run detail) prints a non-interactive
+  run's own `harness.log` (opencode, pi, reasonix and codex runs tee their
+  complete output there) — claude and interactive runs still get the
+  one-screen-per-poll log; `[run]` timings must be
   positive seconds; truncated reports fit their limit.
 - **Config, init and catalog.** Re-init keeps an existing gateway's
   `base_url`; a user's `native-*` agent is no longer claimed; collapsed
@@ -116,6 +184,222 @@ the review doc's Backlog note):
 - **A machine `sonata.toml` that will not load no longer switches its cap
   off.** When it has a `[budget]` table, the router and `sonata dispatch`
   refuse, naming the file and the error.
+- **A project's direct request no longer carries another project's key when
+  its own is missing.** When the router re-merged gateways after a config
+  change and could not resolve a key (a sonata-sourced gateway with nothing
+  stored yet), it kept the previous credentials — so a project that had just
+  taken over a gateway name another project dropped was sent that project's
+  key. Each gateway's credential is now resolved on its own, and every other
+  gateway, in every project, keeps its own. A gateway with an explicit
+  `credential_source` whose credential failed is not sent anywhere: a request
+  for it, by tier or by bare key, is answered with a 502 naming the gateway
+  and `sonata auth add <gateway>`, and nothing is forwarded — before, it went
+  out with an empty key, and the upstream's 401 reached Claude Code as a 529
+  pointing at `sonata dispatch` or as a 401 it reads as its own login failing.
+  An api-key gateway with no `credential_source` is not held to this: a
+  default-sourced gateway may need no key at all, so one with no key found in
+  any store is still forwarded with none, as it always has been. The rebuild is retried on the next request
+  so a later `sonata auth add` is picked up without a restart, and each
+  failure is logged once rather than on every request.
+- **One project's missing login no longer stops LiteLLM for every project.**
+  A gateway whose credential could not be found (a codex-oauth gateway with
+  no login, a sonata-sourced key not yet added) made every LiteLLM start and
+  restart fail, so no project's new model was loaded, the router logged the
+  failed restart on every request, and a registered session's missing login
+  even stopped `sonata serve` from starting. That gateway's models are now left
+  out of LiteLLM, like a dropped gateway's, and a request for one answers a
+  502 naming the gateway and the command that fixes it; everything else keeps
+  serving. Once the credential appears, the next request restarts LiteLLM with
+  those models — including a credential that was already missing when the
+  router started, which used to be retried only if some config changed. When
+  every gateway needing LiteLLM is left out (no credential, or dropped), no
+  LiteLLM is started at all until one can be served. Startup still refuses
+  when the machine config's own gateway has no credential.
+- **A credential store caught mid-write no longer takes a gateway away.**
+  codex rewrites its `auth.json` by truncating and writing, so a request could
+  land on half a file; that read as "logged out", dropped the gateway from
+  LiteLLM and restarted it, then restarted it again when the write finished,
+  and a store that kept failing restarted LiteLLM without bound. A gateway that
+  has resolved keeps its last credential through any read that fails except a
+  store positively holding none (no file, or no entry in a file that parses):
+  a parse error, EACCES, EMFILE or a locked opencode.db is logged once and
+  retried on the next request. Each store is read once while a rebuild
+  resolves credentials, and the
+  read that decides whether it answered is the one its login is parsed from:
+  read twice, a write landing in between read as the store answering with no
+  login, which ended the ChatGPT login and restarted LiteLLM. A read that
+  succeeds while a store searched before it could not be read is treated
+  the same way, so a torn codex file
+  cannot switch the default ChatGPT gateway to opencode's account. A gateway
+  that has not resolved since it appeared has nothing to keep: while a store
+  in its lookup cannot be read it is refused with a 502 saying so and retried
+  on the next request — never served from a later store's account, and never
+  a reason for startup to fail. The same holds when deciding whether two
+  ChatGPT gateways read different accounts: one whose store cannot be read
+  yet is refused on its own, rather than guessed to be on opencode's login
+  and taking every other ChatGPT gateway down with it. "Mid-write" is
+  judged by content: a file whose bytes do not parse counts as torn only
+  while those bytes are changing — they differ from the previous failed
+  read's, or were first seen under a second ago. The same bytes a second
+  apart are stuck and skipped, however freshly the file was touched and
+  however long ago it was last read; new bytes are torn again, however long
+  it was quiet. The bytes compared are the ones the read parsed, never a
+  second read of the file, which could find a valid file renamed into place
+  in between. Bytes seen for the first time count from the file's mtime
+  when that is at least 5 s in the past, so a file corrupt since before
+  serve started — last written over 5 s ago — is skipped on its first read
+  and costs no refused request. The margin assumes a write in progress is
+  never dated more than a few seconds back: FAT stores mtime to 2 s, and a
+  file server's clock can lag the host's, so a newer mtime is no evidence
+  and such a file is torn on its first read, then judged by its content
+  (refusing every request within the following second, not just one). A
+  first-sight skip is logged as the file's age, never as content watched
+  for that long. A file rewritten with different broken bytes on every read
+  stays torn as long as that goes on (it cannot be told from a write in
+  progress). A
+  file that cannot be read at all (EACCES) is torn for 10 s from its first
+  failure, timed apart from any broken bytes on record — one read error
+  between two reads of the same stuck bytes no longer makes them torn again
+  for a second; opencode.db counts only for the first 10 s of a run of failed
+  queries, however far apart. Past that the store is steadily unreadable — corrupt,
+  zero bytes, EACCES — and is skipped as absent, logged once naming the file
+  and the error. A skipped store reads as absent and the lookup goes on from
+  the stores that remain, with one exception: a gateway whose last credential
+  (or seeded ChatGPT login) came from that very store keeps it, since the
+  store not reading is not a logout, and the file reading again restarts and
+  re-seeds nothing (it used to drop the gateway, end its ChatGPT lineage, and
+  on recovery re-seed LiteLLM with a refresh token it had already spent). A
+  credential that came from another store is not kept through it: a key
+  rotated or removed in opencode while sonata's `keys.json` is skipped is
+  picked up, and an opencode logout ends a default ChatGPT gateway reading
+  opencode while codex's `auth.json` is skipped. A gateway that has never
+  resolved falls through, so a default ChatGPT gateway reaches opencode's
+  login as it always did; it used to answer 502 forever.
+  A build that read anything as torn is never committed, so the retry the
+  502 promises really happens; a `chmod` on a store — and, for opencode.db,
+  a `chown` or ACL change too — is noticed on the next request (the router's
+  change check now includes each file's mode, and opencode.db's ctime, which
+  opencode's own writes also move: that costs a re-merge, never a restart
+  unless a credential changed); and
+  `sonata doctor` warns, naming the file, when codex's `auth.json` or
+  opencode.db cannot be read. opencode.db's credential table reading empty
+  where it last held rows is read again at once before anything is decided:
+  empty twice refuses the gateway on that same request, where it used to go
+  out once more on the credential just logged out — but keeps its LiteLLM
+  config and ChatGPT seed until a later request reads empty too, so a single
+  gap followed by the row returning restarts and re-seeds nothing.
+- **`codex login` while the router runs now reaches LiteLLM.** Logging in can
+  resolve two conflicting ChatGPT gateways to one account and un-drop them,
+  but LiteLLM was only regenerated when a config file changed — so its model
+  list stayed empty and every request answered "Invalid model name" until
+  `sonata restart`. LiteLLM is now respawned whenever what it would be given
+  changes — its model list after drops and missing credentials, the key those
+  models read, or the ChatGPT login LiteLLM was seeded with (see below) — and
+  not for a change that alters none of them.
+- **The router no longer re-reads every session record on every request.**
+  Its per-request check of which projects it knows re-parsed `sessions.json`
+  and re-resolved a config for each session record, costing 53 ms per request
+  (Anthropic passthrough included) with 256 projects and 2000 sessions. It
+  now parses the file once per change to it and resolves each distinct
+  project directory once per request: 6.4 ms on the same machine. The
+  resolution itself is not cached, so a project that runs `sonata init` after
+  its session registered is picked up without `sessions.json` changing. A
+  failed read of `sessions.json` is never kept, and the request that hit it is
+  answered from the last good read rather than sent to the machine config.
+- **`sonata doctor` reports gateways the router drops because of another
+  project's config.** It checked this file's OAuth gateways against each
+  other only, while the router drops by every project it serves plus the
+  machine config — so a project on a sonata ChatGPT login beside a machine
+  config on codex's store got 502s on every tier and a clean doctor. Doctor
+  now merges the same set the router does and reports every drop affecting
+  this config (OAuth accounts, one gateway name with two credentials, two
+  names sharing a key variable), naming the other file.
+- **A tier whose every model is on a dropped gateway says so even while
+  LiteLLM is unavailable.** It used to answer "run `sonata litellm install`",
+  which would not have made any of them servable.
+- **Nothing overwrites LiteLLM's refreshed ChatGPT token any more; a
+  different login restarts LiteLLM with it instead.** LiteLLM refreshes its
+  copy of the token in place and ChatGPT rotates refresh tokens, so sonata
+  writing the store's copy over it handed LiteLLM a refresh token already
+  spent (`refresh_token_reused`) — and every rule tried for deciding which
+  copy was newer had a hole: an opencode v2 login carries no account id and
+  always looked like a different account, and a re-merge landing while
+  LiteLLM was mid-write overwrote the half-written file. Sonata now writes a
+  ChatGPT token only into a new, empty directory it creates for a LiteLLM
+  start, and never into one a running LiteLLM uses; a crash respawn, and a
+  restart for any other reason, reuse the directory as LiteLLM left it. When
+  the store holds a different login from the one LiteLLM was started with —
+  another store (a `credential_source` change, or a `codex logout` that
+  leaves opencode's login to be read), or another account, where both sides
+  name one (the account is the record's `account_id`, else the token's
+  `https://api.openai.com/auth` claim — the order LiteLLM's
+  `get_account_id()` uses) — serve logs which gateway and why and
+  restarts LiteLLM into a fresh directory seeded with the new login. A login
+  that returns after positively going away is seeded the same way; "gone" is
+  decided by the store the seeded login came from, not by the gateway's
+  name, so renaming a gateway does not hide a logout. An account merely
+  unknown on one side is not a change. The old directory is removed only
+  once every LiteLLM started in it has been seen to exit, and a crash
+  respawn never races a restart: a restart cancels a pending crash respawn,
+  a crash respawn waits for a restart check in flight, and a restart of a
+  child that already exited neither signals nor waits on it — a crash inside
+  the respawn delay used to leave two LiteLLMs running, one in a deleted
+  directory. A same-account `codex
+  login`, and codex or opencode refreshing their own store, restart nothing:
+  LiteLLM's own token is still the live one. Copilot's token is likewise
+  written only when LiteLLM is started, never on a re-merge.
+  **Known limitation:** because a same-account re-login no longer reaches a
+  running LiteLLM, a login LiteLLM can no longer refresh — sessions revoked
+  server-side, or its refresh token spent by another client sharing it —
+  needs a re-login and `sonata restart`, which seeds it afresh from the
+  store. LiteLLM does not report that refusal to its caller: it logs "re-login
+  required" and falls into an interactive device-code login that held each
+  request for up to fifteen minutes. serve now pipes LiteLLM's output
+  (forwarding every line to its own, with ChatGPT's and Copilot's device
+  codes masked, and surviving its own stdout or stderr closing, as in
+  `sonata serve | head`) and on that warning or the device-code prompt —
+  matched as LiteLLM writes them, after its log prefix, never on the phrase
+  anywhere in a line — or on a codex-oauth candidate's response whose error
+  message is how LiteLLM's proxy renders the device-code login ending (a
+  400, 401 or 500 alike; measured as a 400:
+  `litellm.BadRequestError: GetLLMProvider Exception - ` then
+  "Polling failed", "Timed out waiting for device authorization" or "Failed
+  to request device code", matched from the start of the message, never
+  anywhere in it, and never for another gateway's error) —
+  logs the remedy once, naming the ChatGPT gateways, and answers them with a
+  502 saying `codex login` (or `opencode auth login`) then `sonata restart`
+  instead of forwarding into the hang. The request whose response showed the
+  refusal is answered the same way: in a tier the next candidate serves it,
+  and with none left — or for a bare model key — it gets the same named 502,
+  Anthropic-shaped, and no ledger row. It used to get LiteLLM's raw 400,
+  which a tier took as final, so the next candidate was never tried. That
+  request cools nothing once serve's mark covers the gateway: the mark clears
+  the moment LiteLLM starts on a new login, and a 60 s cooldown on top
+  answered that new login 529; with no mark (no serve), the candidate and
+  gateway cool. A refusal is attributed to the LiteLLM its request was
+  forwarded to, so one arriving after a new login replaced that LiteLLM marks
+  and cools nothing. The mark is keyed on the refused token itself, not on
+  its file — read from the directory the refused LiteLLM served at mark
+  time, and, when that read lands mid-write or finds no token, retried for
+  one second only, never later (a later read took a sonata-owned re-login,
+  written into that same directory, for the refused token). It clears when
+  LiteLLM is started on a different token directory — a login change,
+  seeded fresh — whether or not a token was captured; on the same directory
+  holding a readable token that differs from the captured one — a
+  sonata-owned login rewritten by `sonata auth login`; or by a fresh process
+  from `sonata restart`. The same directory with no token captured keeps it
+  (`sonata restart` is the remedy), as do a crash respawn, a restart for
+  anything else, a restart with no ChatGPT gateway at all, and LiteLLM's own
+  rewrite of `auth.json` (`device_code_requested_at`). A refusal the
+  crashed LiteLLM gives between its exit and its respawn — stdout it had
+  buffered, or a response to a request forwarded to it — is attributed to
+  the directory it was serving: it stays the current LiteLLM until the
+  respawn replaces it. Its directory used to be forgotten on its exit, so
+  such a refusal marked no directory, which the next restart on that same
+  directory — the refused token — then cleared, or was dropped as coming
+  from a replaced LiteLLM. A mark that knows no directory at all is never
+  cleared by a spawn; `sonata restart` is the remedy. `sonata
+  doctor` says so beside each ChatGPT gateway.
 
 ## [0.13.1] - 2026-09-27
 

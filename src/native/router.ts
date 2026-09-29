@@ -124,6 +124,30 @@ export interface RouterDeps {
    * unresolvable credential.
    */
   gatewayKeys?: (tenant: RouterTenant) => Record<string, string>;
+  /**
+   * Why serve is not serving a gateway, or undefined when it is: it was
+   * dropped (two tenants' credentials conflict on it, or one child cannot
+   * hold both accounts), or its credential did not resolve. A request for a
+   * model on one is never forwarded: LiteLLM would serve it from whatever
+   * credential it does hold — another account — and a direct gateway would
+   * send the conversation with no key at all.
+   */
+  gatewayUnavailable?: (tenant: RouterTenant, gateway: string) => string | undefined;
+  /**
+   * Told when a LiteLLM response shows its ChatGPT login was refused
+   * (`CHATGPT_LOGIN_REFUSED`), with what `chatgptTokenDir` answered when
+   * that request was forwarded. serve marks its codex-oauth gateways
+   * unavailable until LiteLLM is started on a different token and logs the
+   * remedy once — unless the child that answered has since been replaced;
+   * absent, the router logs the remedy itself.
+   */
+  chatgptLoginRefused?: (served: string | undefined) => void;
+  /**
+   * The ChatGPT token directory of the LiteLLM a request is forwarded to,
+   * read as it is forwarded, so a refusal answered after a restart is
+   * attributed to the child that gave it and not to its replacement.
+   */
+  chatgptTokenDir?: () => string | undefined;
   /** Why LiteLLM cannot serve right now (venv missing, broken), or undefined when it can. A litellm-bound request is answered 502 with this text rather than forwarded. */
   litellmUnavailable?: () => string | undefined;
   /**
@@ -159,6 +183,33 @@ export interface RouterRequest {
   url: string;
   headers: Record<string, string>;
   body: Buffer;
+  /**
+   * Aborted when the client disconnects before the response starts. Passed
+   * to every upstream fetch, so a request nobody is waiting for stops holding
+   * an upstream connection; and a fetch it aborts is the client's doing, so
+   * it is neither a candidate failure nor a ledger row (`clientGone`).
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * The answer to a request whose client left before the response started.
+ * Never written anywhere — respond sees the destroyed response and returns —
+ * and never recorded: the request was abandoned, not served or refused.
+ */
+interface ClientGoneResponse extends RouterResponse { clientGone: true }
+
+function clientGone(): ClientGoneResponse {
+  return { status: 499, headers: {}, body: Buffer.alloc(0), clientGone: true };
+}
+
+/** Whether the client disconnected while this request was being routed. */
+function clientLeft(req: RouterRequest): boolean {
+  return req.signal?.aborted === true;
+}
+
+function isClientGone(response: RouterResponse): response is ClientGoneResponse {
+  return (response as Partial<ClientGoneResponse>).clientGone === true;
 }
 
 export interface RouterResponse {
@@ -857,8 +908,18 @@ function stickySet(conversation: string, key: string, at: number): void {
   // carrying this key.
   const served = stickyCandidates.get(conversation)?.served ?? new Set<string>();
   served.add(key);
+  stickyPut(conversation, { key, at, prefer: true, served });
+}
+
+/**
+ * The one way an entry is written: delete-then-set, so it moves to the end of
+ * the eviction order, then the cap. Both writers go through here so a
+ * conversation that is still being spoken to — whether its last response
+ * completed or broke — can never be aged out or evicted ahead of an idle one.
+ */
+function stickyPut(conversation: string, entry: { key: string; at: number; prefer: boolean; served: Set<string> }): void {
   stickyCandidates.delete(conversation);
-  stickyCandidates.set(conversation, { key, at, prefer: true, served });
+  stickyCandidates.set(conversation, entry);
   stickyEvict();
 }
 
@@ -892,12 +953,16 @@ function stickyIncomplete(conversation: string, key: string, at: number): void {
   if (hit === undefined) {
     // Bounded exactly as `stickySet` is: a stream of broken responses from
     // distinct conversations must not grow this map without limit.
-    stickyCandidates.set(conversation, { key, at, prefer: false, served: new Set([key]) });
-    stickyEvict();
+    stickyPut(conversation, { key, at, prefer: false, served: new Set([key]) });
     return;
   }
   hit.served.add(key);
   stickyDemote(conversation, key);
+  // A broken response is still activity: refresh the age and the eviction
+  // order, or a conversation whose recent turns all broke ages out and takes
+  // the memory of whose thinking blocks it carries with it. The pin itself
+  // (`key`, `prefer`) is left as it stands.
+  stickyPut(conversation, { ...hit, at });
 }
 
 /**
@@ -1299,6 +1364,76 @@ function litellmBody(body: Buffer): Buffer {
 }
 
 /**
+ * What a LiteLLM response's error message says when its ChatGPT login has
+ * been refused.
+ *
+ * LiteLLM 1.98.0 never surfaces the refused refresh itself: `get_access_token`
+ * catches it, logs "re-login required" to its own stderr (which serve reads —
+ * see `LITELLM_CHATGPT_LOGIN_REFUSED`), and falls into a device-code login.
+ * What reaches the router is how THAT ends, rendered by LiteLLM's proxy into
+ * its error envelope's `error.message`. Measured through a real 1.98.0 proxy
+ * (tests/fixtures/litellm/chatgpt-refresh-refused-proxy.json) the answer is a
+ * 400 whose message is
+ * `litellm.BadRequestError: GetLLMProvider Exception - ` followed by the
+ * authenticator's own `litellm.AuthenticationError: Polling failed: …`,
+ * `litellm.AuthenticationError: Timed out waiting for device authorization`,
+ * or a bare `Failed to request device code: …`. The infix is optional, so the
+ * authenticator's error rendered on its own (`litellm.AuthenticationError:
+ * Polling failed: …`, as it is raised) matches too. Anchored at the start of the
+ * message — never a substring anywhere, since an unrelated upstream error
+ * that merely mentions a re-login must not take ChatGPT down — and consulted
+ * only for a candidate on a codex-oauth gateway.
+ */
+const CHATGPT_LOGIN_REFUSED = new RegExp(
+  '^litellm\\.\\w+Error: (?:GetLLMProvider Exception - )?(?:litellm\\.\\w+Error: )?' +
+  '(?:Polling failed: |Timed out waiting for device authorization|Failed to request device code: )',
+);
+
+/** Whether a LiteLLM error body's envelope message is `CHATGPT_LOGIN_REFUSED`. */
+function chatgptLoginRefused(text: string): boolean {
+  try {
+    const message = (JSON.parse(text) as { error?: { message?: unknown } } | null)?.error?.message;
+    return typeof message === 'string' && CHATGPT_LOGIN_REFUSED.test(message);
+  } catch {
+    return false;
+  }
+}
+
+/** Whether `gateway` is a ChatGPT-subscription gateway in this tenant's config. */
+function isCodexOauth(tenant: RouterTenant, gateway: string | undefined): boolean {
+  return gateway !== undefined && tenant.config?.native?.gateways[gateway]?.auth === 'codex-oauth';
+}
+
+/**
+ * What `forwardToLitellm` answers. `loginRefused` marks a response that showed
+ * LiteLLM's ChatGPT login was refused: it is not the request's fault and no
+ * other request will do better through that gateway, so no caller hands it
+ * back as it arrived — the tier loop moves on, the bare path answers the
+ * named 502 (`loginRefusedMessage`).
+ */
+interface LitellmResponse extends RouterResponse {
+  loginRefused?: true;
+  /**
+   * The refusal came from a LiteLLM that has since been replaced
+   * (`chatgptTokenDir` answers differently now than when it was forwarded):
+   * it says nothing about the child serving now, so nothing is cooled for it.
+   */
+  replaced?: true;
+}
+
+/**
+ * Why a candidate on `gateway` is not served after its ChatGPT login was
+ * refused: serve's own `gatewayUnavailable` message, which is what every
+ * later request on the gateway is answered with, so the request that noticed
+ * reads the same. With no serve to mark it, the router's own remedy.
+ */
+function loginRefusedMessage(deps: RouterDeps, tenant: RouterTenant, gateway: string): string {
+  return deps.gatewayUnavailable?.(tenant, gateway) ??
+    `gateway "${gateway}": LiteLLM's ChatGPT login was refused by OpenAI — run ` +
+    '`codex login` (or `opencode auth login`) and then `sonata restart`';
+}
+
+/**
  * Forwards an already-litellm-shaped request (auth swapped, system flattened,
  * model rewritten if this is a tier candidate) and applies the 500->529
  * empty-completion rewrite. Shared by the plain litellm path and the tier
@@ -1309,23 +1444,47 @@ async function forwardToLitellm(
   headers: Record<string, string>,
   req: RouterRequest,
   deps: RouterDeps,
-): Promise<RouterResponse> {
+  /** The candidate is on a codex-oauth gateway: only then is a refused ChatGPT login looked for. */
+  chatgpt = false,
+): Promise<LitellmResponse> {
   try {
     await deps.litellmReady?.();
+    const served = chatgpt ? deps.chatgptTokenDir?.() : undefined;
     const response = await deps.fetch(
       targetUrl(deps.litellmBase, req.url),
-      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined },
+      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal },
     );
     // LiteLLM returns 500 when ChatGPT's Codex endpoint yields output:[]. That
     // usually means the upstream was overloaded and returned an empty completion
     // rather than a real error. Re-emitting it as 529 (overloaded) lets Claude
     // Code treat it as a retriable backpressure signal rather than a hard fault.
-    if (response.status === 500) {
+    // For a ChatGPT candidate, a 400, 401 or 500 is also where LiteLLM
+    // reports how its fallback to a device-code login ended after a refresh it
+    // could not make, which only a re-login and a restart (a fresh seed) can
+    // mend. Measured, it is a 400.
+    if (response.status === 500 || (chatgpt && (response.status === 400 || response.status === 401))) {
       const responseBodyBuf = response.body === null
         ? Buffer.alloc(0)
         : await bufferBody(responseBody(response.body), deps);
       const text = responseBodyBuf.toString();
-      if (text.includes('Unknown items in responses API response')) {
+      const refused = chatgpt && chatgptLoginRefused(text);
+      if (refused && deps.chatgptLoginRefused !== undefined) {
+        deps.chatgptLoginRefused(served);
+      } else if (refused) {
+        deps.log?.(
+          `router: LiteLLM's ChatGPT login was refused by OpenAI (${requestedModel(body) ?? '?'}) — run ` +
+          '`codex login` (or `opencode auth login`) and then `sonata restart`: serve copies a ChatGPT token ' +
+          'into LiteLLM only when it starts LiteLLM',
+        );
+      }
+      if (refused) {
+        const replaced = deps.chatgptTokenDir !== undefined && deps.chatgptTokenDir() !== served;
+        return {
+          status: response.status, headers: responseHeaders(response.headers), body: responseBodyBuf, loginRefused: true,
+          ...(replaced ? { replaced: true as const } : {}),
+        };
+      }
+      if (response.status === 500 && text.includes('Unknown items in responses API response')) {
         const msg = 'upstream returned empty completion (overloaded) — retry';
         deps.log?.(`router: 500 from litellm rewritten to 529 (${requestedModel(body) ?? '?'}): empty output`);
         return {
@@ -1346,6 +1505,7 @@ async function forwardToLitellm(
       body: response.body === null ? Buffer.alloc(0) : responseBody(response.body),
     };
   } catch (error) {
+    if (clientLeft(req)) return clientGone();
     const message = error instanceof Error ? error.message : String(error);
     return {
       status: 502,
@@ -1432,7 +1592,7 @@ async function forwardDirect(
   try {
     const response = await deps.fetch(
       targetUrl(base, req.url),
-      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined },
+      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal },
     );
     return {
       status: response.status,
@@ -1440,6 +1600,7 @@ async function forwardDirect(
       body: response.body === null ? Buffer.alloc(0) : responseBody(response.body),
     };
   } catch (error) {
+    if (clientLeft(req)) return clientGone();
     const message = error instanceof Error ? error.message : String(error);
     return {
       status: 502,
@@ -1492,6 +1653,9 @@ async function routeTierRequest(
   // against them reads as a tier that has no candidates rather than one whose
   // candidates are waiting out an account problem.
   const skippedCoolingProviders = new Set<string>();
+  // Why candidates on a gateway serve has dropped were skipped. Never tried,
+  // so never cooled — the conflict is config, not a failing model.
+  const skippedDropped: string[] = [];
   // The most recent message-less 400, and how many attempts had been made
   // when it arrived. If it is the LAST thing the loop saw, it is returned
   // rather than a 529: a request every candidate refuses may really be
@@ -1520,8 +1684,20 @@ async function routeTierRequest(
     : [...ranked.filter((route) => route.key === sticky), ...ranked.filter((route) => route.key !== sticky)];
 
   for (const route of candidates) {
+    // The client left: asking the next candidate would serve nobody, and
+    // counting the abandoned attempt would cool a model that did nothing wrong.
+    if (clientLeft(req)) return clientGone();
     const cool = litellmModelName(tenant, route.key);
     const direct = route.native?.transport === 'direct';
+    // Dropped before the LiteLLM check: a candidate on a dropped gateway is
+    // unservable whether or not LiteLLM is up, and counted the other way round
+    // a tier made only of dropped candidates answered "run `sonata litellm
+    // install`" — a fix that would not have made one of them servable.
+    const dropped = route.native === undefined ? undefined : deps.gatewayUnavailable?.(tenant, route.native.gateway);
+    if (dropped !== undefined) {
+      skippedDropped.push(dropped);
+      continue;
+    }
     if (!direct && unavailable !== undefined) {
       // This is router state, not a candidate failure: leave its cooldown intact.
       skippedUnavailableLitellm = true;
@@ -1575,7 +1751,38 @@ async function routeTierRequest(
         req,
         deps,
       )
-      : await forwardToLitellm(body, headers, { ...req, body }, deps);
+      : await forwardToLitellm(body, headers, { ...req, body }, deps, isCodexOauth(tenant, gateway));
+    if (clientLeft(req)) {
+      if (!Buffer.isBuffer(response.body)) cancelBody(response.body);
+      return clientGone();
+    }
+    // A refused ChatGPT login is the gateway's, not the request's: the next
+    // candidate is tried, and it is counted as not served, so a tier left
+    // with nothing else answers the same named 502 later requests get.
+    //
+    // Cooled only when nothing else will keep the gateway away. serve's mark
+    // (`gatewayUnavailable` answering once `chatgptLoginRefused` has run)
+    // already skips it, and clears the moment LiteLLM starts on a new login;
+    // a cooldown on top outlived that by up to a minute, answering the new
+    // login 529. A refusal from a LiteLLM already replaced says nothing about
+    // the one serving now, and cools nothing either. With no serve to mark
+    // it — or one that did not — the candidate and its gateway cool, as for
+    // an unservable 400.
+    if ('loginRefused' in response && response.loginRefused === true) {
+      if (response.status === 400) {
+        capture400(deps, { alias, candidate: variant, status: response.status, outbound: body, response: response.body as Buffer });
+      }
+      attempts.push({ key: route.key, status: response.status });
+      const cooling = !('replaced' in response && response.replaced === true) &&
+        deps.gatewayUnavailable?.(tenant, route.native!.gateway) === undefined;
+      if (cooling) {
+        cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+        if (gateway !== undefined) providerCooldowns.set(providerCooldownKey(tenant, gateway), now() + TIER_COOLDOWN_MS);
+      }
+      skippedDropped.push(loginRefusedMessage(deps, tenant, route.native!.gateway));
+      deps.log?.(`router: ${route.key} refused (ChatGPT login), ${cooling ? `cooling gateway ${gateway ?? '?'} and ` : ''}trying next`);
+      continue;
+    }
     // Retry by default; only a request that is wrong *everywhere* is terminal.
     //
     // This is a deny-list on purpose, and it used to be an allow-list of
@@ -1791,6 +1998,17 @@ async function routeTierRequest(
   // `sonata litellm install`" would misdiagnose that failure, and returning
   // before `withUsageRecording` would drop the ledger row for a request the
   // router really did send upstream.
+  // "Not served" only when it is the WHOLE story: every candidate was on a
+  // dropped gateway. A tier whose other candidates were merely cooling, or
+  // failed, is the ordinary exhaustion below, with the drops named in it.
+  if (skippedDropped.length > 0 && skippedDropped.length === candidates.length) {
+    deps.log?.(`router: every native route for ${label} is on a gateway that serve is not serving (dropped, or no credential)`);
+    return {
+      status: 502,
+      headers: { 'content-type': 'application/json' },
+      body: anthropicErrorBody('router_error', `${label}: not served — ${[...new Set(skippedDropped)].join('; ')}`),
+    };
+  }
   if (skippedUnavailableLitellm && attempts.length === 0) {
     return {
       status: 502,
@@ -1818,10 +2036,12 @@ async function routeTierRequest(
     }, deps);
   }
   deps.log?.(`router: all native routes for ${label} failed`);
-  const cooling = skippedCoolingProviders.size > 0
+  const cooling = (skippedCoolingProviders.size > 0
     ? ` (skipped ${[...skippedCoolingProviders].sort().join(', ')}: cooling down after an ` +
       'account-level refusal — an expired key, a rejected credential or an exhausted budget)'
-    : '';
+    : '') + (skippedDropped.length > 0
+    ? ` (not served: ${[...new Set(skippedDropped)].join('; ')})`
+    : '');
   return withUsageRecording({
     status: 529,
     headers: { 'content-type': 'application/json' },
@@ -1960,15 +2180,26 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   // (no child is started) and loses the direct path's pass-through contract
   // on a mixed one.
   const native = !anthropic && alias !== undefined ? deps.resolveNative?.(alias, tenant) : undefined;
+  const droppedGateway = native === undefined ? undefined : deps.gatewayUnavailable?.(tenant, native.gateway);
+  if (droppedGateway !== undefined) {
+    deps.log?.(`router: refused model=${requested ?? '?'} — its gateway is not served`);
+    return {
+      status: 502,
+      headers: { 'content-type': 'application/json' },
+      body: anthropicErrorBody('router_error', `${alias}: not served — ${droppedGateway}`),
+    };
+  }
   if (native?.transport === 'direct' && alias !== undefined) {
     deps.log?.(`${req.method} ${req.url} model=${requested ?? '?'} -> direct`);
+    const response = await forwardDirect(
+      withEffort(withModel(req.body, native.id), bareEffort),
+      { baseUrl: native.baseUrl ?? '', key: deps.gatewayKeys?.(tenant)[native.gateway] ?? '' },
+      req,
+      deps,
+    );
+    if (isClientGone(response)) return response;
     return withUsageRecording(
-      await forwardDirect(
-        withEffort(withModel(req.body, native.id), bareEffort),
-        { baseUrl: native.baseUrl ?? '', key: deps.gatewayKeys?.(tenant)[native.gateway] ?? '' },
-        req,
-        deps,
-      ),
+      response,
       {
         startedAt,
         session,
@@ -1996,16 +2227,28 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     // key isn't a `sonata-*` alias), so this is the only place such a
     // request's config-change check can fire.
     deps.checkModelChange?.();
-    return withUsageRecording(
-      await forwardToLitellm(
-        body,
-        withSessionHeader(
-          litellmHeaders(headers, deps.litellmKey),
-          alias === undefined ? undefined : conversationKey(req.body, tenant.id, alias),
-        ),
-        req,
-        deps,
+    const response = await forwardToLitellm(
+      body,
+      withSessionHeader(
+        litellmHeaders(headers, deps.litellmKey),
+        alias === undefined ? undefined : conversationKey(req.body, tenant.id, alias),
       ),
+      req,
+      deps,
+      isCodexOauth(tenant, native?.gateway),
+    );
+    if (isClientGone(response)) return response;
+    // Answered as every later request on the gateway is — the named 502 —
+    // and, like those, never a ledger row: nothing was served.
+    if (response.loginRefused === true && native !== undefined) {
+      return {
+        status: 502,
+        headers: { 'content-type': 'application/json' },
+        body: anthropicErrorBody('router_error', `${alias}: not served — ${loginRefusedMessage(deps, tenant, native.gateway)}`),
+      };
+    }
+    return withUsageRecording(
+      response,
       {
         startedAt,
         session,
@@ -2032,7 +2275,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   try {
     const response = await deps.fetch(
       targetUrl(deps.anthropicBase ?? 'https://api.anthropic.com', req.url),
-      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined },
+      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal },
     );
     return withUsageRecording({
       status: response.status,
@@ -2041,6 +2284,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     }, { startedAt, session, project: tenant.project, tenant: tenant.id,
       tenantConfig: tenant.config, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   } catch (error) {
+    if (clientLeft(req)) return clientGone();
     const message = error instanceof Error ? error.message : String(error);
     return withUsageRecording({
       status: 502,
@@ -2088,6 +2332,12 @@ export async function respond(res: ServerResponse, routed: RouterResponse): Prom
     cancelBody(body);
   };
   res.once('close', onClose);
+  // Gone before this ran: 'close' has already fired, so cancel here. Without
+  // it the loop waits on an upstream that has not sent its first chunk, for
+  // a client nobody will write to. Iterating on (rather than returning)
+  // lets the wrappers' finally blocks record the incomplete row, exactly as
+  // a disconnect mid-stream does.
+  if (closed) cancelBody(body);
   try {
     for await (const chunk of body) {
       if (closed || res.destroyed) break;
@@ -2137,12 +2387,27 @@ export function createRouterServer(deps: RouterDeps): Server {
           return;
         }
       }
-      await respond(res, await routeRequest({
-        method: req.method ?? 'GET',
-        url: req.url ?? '/',
-        headers: incomingHeaders(req),
-        body: await readBody(req),
-      }, deps));
+      const body = await readBody(req);
+      // Aborts the upstream fetch if the client leaves while it is pending.
+      // Only until routing returns: from then on `respond` owns the
+      // disconnect, and cancels the body it is streaming.
+      const abort = new AbortController();
+      const onClose = (): void => { if (!res.writableEnded) abort.abort(); };
+      res.once('close', onClose);
+      if (res.destroyed) abort.abort();
+      let routed: RouterResponse;
+      try {
+        routed = await routeRequest({
+          method: req.method ?? 'GET',
+          url: req.url ?? '/',
+          headers: incomingHeaders(req),
+          body,
+          signal: abort.signal,
+        }, deps);
+      } finally {
+        res.off('close', onClose);
+      }
+      await respond(res, routed);
     } catch (error) {
       // Once the headers are out, the response is an event stream the client
       // is parsing frame by frame: a JSON body appended to it is garbage

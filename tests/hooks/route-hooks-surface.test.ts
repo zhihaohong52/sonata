@@ -23,6 +23,12 @@ const fs = require('node:fs');
 fs.writeFileSync(process.env.FAKE_ARGV_FILE, JSON.stringify(process.argv.slice(2)));
 if (process.env.FAKE_STDERR) process.stderr.write(process.env.FAKE_STDERR);
 if (process.env.FAKE_STDOUT) process.stdout.write(process.env.FAKE_STDOUT);
+if (process.env.FAKE_LATE_STDERR) {
+  // A grandchild that shares this CLI's stderr and writes to it after the CLI
+  // has exited: output that lands after 'exit', deterministically.
+  require('node:child_process').spawn('sh', ['-c', 'sleep 0.3; printf "%s" "$0" >&2', process.env.FAKE_LATE_STDERR],
+    { stdio: ['ignore', 'ignore', 'inherit'] }).unref();
+}
 if (process.env.FAKE_SIGNAL) process.kill(process.pid, process.env.FAKE_SIGNAL);
 process.exit(Number(process.env.FAKE_EXIT ?? 0));
 `;
@@ -45,7 +51,7 @@ async function invoke(
   hook: string,
   args: string[],
   payload: string,
-  fake: { exit?: number; stderr?: string; stdout?: string; signal?: string; noFork?: boolean } = {},
+  fake: { exit?: number; stderr?: string; lateStderr?: string; stdout?: string; signal?: string; noFork?: boolean } = {},
 ): Promise<{ code: number | null; stdout: string }> {
   const script = [join(dir, 'hooks', hook), ...args];
   // A missing binary makes the hook's own spawn fail (ENOENT) on every
@@ -59,6 +65,7 @@ async function invoke(
       FAKE_ARGV_FILE: argvFile,
       FAKE_EXIT: String(fake.exit ?? 0),
       FAKE_STDERR: fake.stderr ?? '',
+      FAKE_LATE_STDERR: fake.lateStderr ?? '',
       FAKE_STDOUT: fake.stdout ?? '',
       FAKE_SIGNAL: fake.signal ?? '',
       ...(fake.noFork ? { SONATA_HOOK_TEST_NODE: join(dir, 'no-such-node') } : {}),
@@ -69,7 +76,9 @@ async function invoke(
   child.stdin.end(payload);
   return new Promise((res) => {
     const timer = setTimeout(() => { child.kill('SIGKILL'); res({ code: -1, stdout: '' }); }, 20000);
-    child.on('exit', (code) => { clearTimeout(timer); res({ code, stdout: Buffer.concat(out).toString() }); });
+    // 'close', not 'exit': the hook's stdout can still be in flight when its
+    // exit is reported, and this reads it.
+    child.on('close', (code) => { clearTimeout(timer); res({ code, stdout: Buffer.concat(out).toString() }); });
   });
 }
 
@@ -98,6 +107,16 @@ describe('route-session hook — surfacing the CLI', () => {
     expect(doc.systemMessage).toContain('sonata route session-start failed');
     expect(doc.systemMessage).toContain('will not route');
     expect(doc.systemMessage).toContain('predates multi-tenant routing');
+  });
+
+  it('surfaces a refusal whose stderr arrives after the CLI has exited', async () => {
+    // Node reports a child's exit when it is reaped, and the last bytes on its
+    // stderr pipe can be read after that. The hook surfaced at 'exit', so under
+    // load it reported "exit code 1, with no output" for a CLI that had
+    // explained itself. A grandchild writing late makes that ordering certain.
+    const { code, stdout } = await invoke('route-session.mjs', ['start'], JSON.stringify({ session_id: 's1' }), { exit: 1, lateStderr: 'sonata: predates multi-tenant routing' });
+    expect(code).toBe(0);
+    expect((JSON.parse(stdout) as { systemMessage: string }).systemMessage).toContain('predates multi-tenant routing');
   });
 
   it('surfaces a failure that says nothing, naming its exit code', async () => {
@@ -146,6 +165,12 @@ describe('route-subagent hook — surfacing the CLI', () => {
     const doc = JSON.parse(stdout) as { systemMessage: string };
     expect(doc.systemMessage).toContain('sonata route subagent-stop failed');
     expect(doc.systemMessage).toContain('sonata: boom');
+  });
+
+  it('surfaces a refusal whose stderr arrives after the CLI has exited', async () => {
+    const { code, stdout } = await invoke('route-subagent.mjs', ['start'], JSON.stringify({ agent_id: 'a1' }), { exit: 1, lateStderr: 'sonata: late boom' });
+    expect(code).toBe(0);
+    expect((JSON.parse(stdout) as { systemMessage: string }).systemMessage).toContain('sonata: late boom');
   });
 
   it('surfaces a silent failure and a spawn failure too', async () => {

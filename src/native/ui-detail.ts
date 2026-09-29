@@ -13,6 +13,7 @@ import { readRowsAsync } from '../ledger.js';
 import { recentRoutes, type RouteLine } from '../commands/status.js';
 import { isRunId, runDir } from '../store.js';
 import { reportPathFor } from '../report-contract.js';
+import { cleanRunLog, runLogFile } from '../run-log.js';
 import { parseFilters } from './ui-usage.js';
 import { projectDiscovery } from './ui-runs.js';
 import type { UiDeps } from './ui.js';
@@ -139,17 +140,35 @@ export async function runDetail(
 
   for (const cwd of candidates) {
     const dir = runDir(cwd, id);
+    let metaText: string;
     try {
-      await fsp.access(join(dir, 'meta.json'));
+      metaText = await fsp.readFile(join(dir, 'meta.json'), 'utf8');
     } catch {
-      continue;
+      continue; // no run here
     }
+    // A meta.json caught mid-write, or not an object, still names a run: read
+    // it as knowing nothing (the event log), never as no run or a 500.
+    let meta: { interactive?: boolean } = {};
+    try {
+      const parsed: unknown = JSON.parse(metaText);
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) meta = parsed as { interactive?: boolean };
+    } catch { /* keep {} */ }
+    // The same file `sonata log` prints (`runLogFile`): a non-interactive
+    // run's own harness.log, complete, else the event log.
+    const file = runLogFile(dir, meta);
     // Tail-first: the end of a run is what says how it finished. Only the tail
     // is read — the rest of the file is never loaded to be thrown away.
-    const window = await readWindow(join(dir, 'events.jsonl'), MAX_TRANSCRIPT_BYTES, 'tail');
-    // `readEvents` drops blank lines; the same shaping applied to the window.
+    const window = await readWindow(file.path, MAX_TRANSCRIPT_BYTES, 'tail');
+    // Shaped as the CLI shapes it: `readEvents` drops blank lines, and a
+    // harness log is cleaned by `cleanRunLog`. A window cut into a harness log
+    // starts mid-line — possibly mid-escape — so that first fragment goes.
+    const windowText = window === null
+      ? ''
+      : file.source === 'harness' && window.truncated
+        ? dropCutFragment(window.text)
+        : window.text;
     const tail = {
-      text: window === null ? '' : window.text.split('\n').filter(Boolean).join('\n'),
+      text: file.source === 'harness' ? cleanRunLog(windowText) : windowText.split('\n').filter(Boolean).join('\n'),
       truncated: window?.truncated ?? false,
     };
     const head = await readWindow(reportPathFor(dir), MAX_REPORT_BYTES, 'head');
@@ -190,4 +209,17 @@ function sameDir(a: string, b: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The partial first line of a window cut into a harness log. When no whole
+ * line follows it (one line longer than the window), only a leading escape
+ * remnant — the tail of a CSI sequence whose ESC was cut off — is removed.
+ */
+function dropCutFragment(text: string): string {
+  const newline = text.indexOf('\n');
+  // Only when a whole line follows: a window holding one long line and its
+  // trailing newline would otherwise drop everything it has.
+  if (newline >= 0 && /\S/.test(text.slice(newline + 1))) return text.slice(newline + 1);
+  return text.replace(/^\[?[0-9;?]*[ -/]*[@-~]/, '');
 }

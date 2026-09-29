@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { beforeEach, describe, it, expect } from 'vitest';
@@ -115,6 +115,136 @@ base_url = "https://gateway.example/v1"
     expect(reg.loadable().map((t) => t.configPath)).not.toContain(realpathSync(join(b, 'sonata.toml')));
     reg.known(); reg.known();
     expect(lines.filter((l) => l.includes(join(b, 'sonata.toml')))).toHaveLength(1);
+  });
+
+  it('reads sessions.json once per version of the file, not once per fingerprint', async () => {
+    let reads = 0;
+    const reg = new TenantRegistry(home, {
+      readSessionsFile: (path) => { reads += 1; return readFileSync(path, 'utf8'); },
+    });
+    await recordSession(home, { session: 's-a', cwd: a, started: new Date().toISOString() });
+    await recordSession(home, { session: 's-a2', cwd: a, started: new Date().toISOString() });
+    const first = reg.fingerprint();
+    expect(first).toContain(realpathSync(join(a, 'sonata.toml')));
+    reg.fingerprint();
+    reg.fingerprint();
+    reg.resolve({ session: 's-a' });
+    expect(reads).toBe(1);
+    // A changed file is re-read, and what it names is resolved afresh.
+    await recordSession(home, { session: 's-b', cwd: b, started: new Date().toISOString() });
+    expect(reg.fingerprint()).toContain(realpathSync(join(b, 'sonata.toml')));
+    expect(reads).toBe(2);
+  });
+
+  it('does not cache a sessions.json read that failed, so a transient error does not stick', async () => {
+    // Two throws exhaust loadSessions' one retry. Caching the `{}` it then
+    // returned under the file's (valid) stamp sent every later request for
+    // that session to the machine config until sessions.json next changed.
+    await recordSession(home, { session: 's-a', cwd: a, started: new Date().toISOString() });
+    let failures = 2;
+    const reg = new TenantRegistry(home, {
+      readSessionsFile: (path) => {
+        if (failures-- > 0) throw Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' });
+        return readFileSync(path, 'utf8');
+      },
+    });
+    // With no good read to fall back on, the session's request is refused
+    // rather than served as the machine tenant (its credentials, its budget).
+    expect(() => reg.resolve({ session: 's-a' })).toThrow(TenantError);
+    for (let i = 0; i < 3; i++) {
+      expect(reg.resolve({ session: 's-a' }).configPath).toBe(realpathSync(join(a, 'sonata.toml')));
+    }
+  });
+
+  it('answers a failed sessions.json read with the last good one, not with no sessions', async () => {
+    // Not caching the failure was only half of it: the request that hit the
+    // failed read was still answered from `{}`, so that one request went to
+    // the machine config with another project's credentials.
+    await recordSession(home, { session: 's-a', cwd: a, started: new Date().toISOString() });
+    let failures = 0;
+    const reg = new TenantRegistry(home, {
+      readSessionsFile: (path) => {
+        if (failures > 0) {
+          failures -= 1;
+          throw Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' });
+        }
+        return readFileSync(path, 'utf8');
+      },
+    });
+    const projectA = realpathSync(join(a, 'sonata.toml'));
+    expect(reg.resolve({ session: 's-a' }).configPath).toBe(projectA);
+    // The file changes, and the read of its new version fails twice (the
+    // read and its one retry).
+    await recordSession(home, { session: 's-b', cwd: b, started: new Date().toISOString() });
+    failures = 2;
+    expect(reg.resolve({ session: 's-a' }).configPath).toBe(projectA);
+    // The next read succeeds, and the new version is seen.
+    expect(reg.resolve({ session: 's-b' }).configPath).toBe(realpathSync(join(b, 'sonata.toml')));
+  });
+
+  it('refuses a session\'s request when sessions.json has never been read, and says to retry', async () => {
+    await recordSession(home, { session: 's-a', cwd: a, started: new Date().toISOString() });
+    const reg = new TenantRegistry(home, {
+      readSessionsFile: () => { throw Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' }); },
+    });
+    expect(() => reg.resolve({ session: 's-a' })).toThrow(TenantError);
+    expect(() => reg.resolve({ session: 's-a' })).toThrow(/sessions\.json could not be read.*retry/i);
+    // A request naming no session, or naming its project, is unaffected.
+    const machine = realpathSync(join(home, '.config', 'sonata', 'sonata.toml'));
+    expect(reg.resolve({}).configPath).toBe(machine);
+    expect(reg.resolve({ project: a, session: 's-a' }).configPath).toBe(realpathSync(join(a, 'sonata.toml')));
+  });
+
+  it('still sends a session with no record to the machine config when sessions.json read fine', async () => {
+    await recordSession(home, { session: 's-a', cwd: a, started: new Date().toISOString() });
+    const machine = realpathSync(join(home, '.config', 'sonata', 'sonata.toml'));
+    expect(new TenantRegistry(home).resolve({ session: 's-unknown' }).configPath).toBe(machine);
+  });
+
+  it('drops an invalid sessions.json record, keeps the valid ones, and logs it once', async () => {
+    // A null entry made `record.cwd` throw while the cwd list was built, and
+    // that runs on every request: one bad record took all routing down.
+    await recordSession(home, { session: 's-a', cwd: a, started: new Date().toISOString() });
+    const path = join(home, '.config', 'sonata', 'sessions.json');
+    const doc = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    doc['s-null'] = null;
+    doc['s-num'] = { session: 's-num', cwd: 42, started: new Date().toISOString() };
+    doc['s-none'] = { session: 's-none', started: new Date().toISOString() };
+    writeFileSync(path, JSON.stringify(doc));
+    const logs: string[] = [];
+    const reg = new TenantRegistry(home, { log: (line) => logs.push(line) });
+    expect(reg.fingerprint()).toContain(realpathSync(join(a, 'sonata.toml')));
+    expect(reg.resolve({ session: 's-a' }).configPath).toBe(realpathSync(join(a, 'sonata.toml')));
+    const machine = realpathSync(join(home, '.config', 'sonata', 'sonata.toml'));
+    expect(reg.resolve({ session: 's-num' }).configPath).toBe(machine);
+    expect(reg.resolve({ session: 's-null' }).configPath).toBe(machine);
+    reg.fingerprint();
+    const dropped = logs.filter((line) => line.includes('invalid record'));
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]).toContain('s-null');
+    expect(dropped[0]).toContain('s-num');
+    expect(dropped[0]).toContain('s-none');
+  });
+
+  it('picks up a registered session\'s project that gains a sonata.toml, with sessions.json unchanged', async () => {
+    // `sonata init` in a project whose session is already registered writes
+    // ./sonata.toml and nothing else. A cwd -> config cache keyed by the
+    // sessions.json version kept answering "machine config" until the file
+    // changed, so the project never entered the LiteLLM union.
+    const fresh = mkdtempSync(join(tmpdir(), 'tenants-late-init-'));
+    await recordSession(home, { session: 's-late', cwd: fresh, started: new Date().toISOString() });
+    const reg = new TenantRegistry(home);
+    const path = join(fresh, 'sonata.toml');
+    const beforeFingerprint = reg.fingerprint();
+    const beforeSnapshot = reg.unionSnapshot();
+    expect(reg.loadable().map((t) => t.configPath)).not.toContain(path);
+    writeFileSync(path, NATIVE('late-model'));
+    const canonical = realpathSync(path);
+    expect(reg.loadable().map((t) => t.configPath)).toContain(canonical);
+    expect(reg.fingerprint()).not.toBe(beforeFingerprint);
+    expect(reg.fingerprint()).toContain(canonical);
+    expect(reg.unionSnapshot()).not.toBe(beforeSnapshot);
+    expect(reg.unionSnapshot()).toContain('late-model');
   });
 
   it('unionSnapshot changes when any tenant\'s registry changes, and not otherwise', () => {

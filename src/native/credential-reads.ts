@@ -1,0 +1,366 @@
+/**
+ * Whether a credential store answered this read, as distinct from what it
+ * answered.
+ *
+ * Every credential reader in sonata folds "the file is not there", "the file
+ * holds no login" and "the file could not be read just now" into one null,
+ * which is right for a command run once and wrong for a daemon reading on every
+ * re-merge: codex rewrites `auth.json` by truncating and writing, so a request
+ * can land on half a file, and reading that as "logged out" dropped the gateway
+ * and restarted LiteLLM twice per write. `sonata serve` asks this module which
+ * of the stores a gateway consulted gave a real answer, so that only a store
+ * positively holding nothing takes a gateway away.
+ *
+ * Reads only; nothing here logs a value, and a detail names a path and an
+ * error code, never content.
+ */
+import { createHash } from 'node:crypto';
+import { statSync } from 'node:fs';
+
+import { opencodeDbPath, queryCredentialRows } from './opencode-store.js';
+import { readOnce } from './read-snapshot.js';
+import { openReadOnlySync, sqliteAvailable } from '../sqlite.js';
+
+/**
+ * `ok` — read and parsed. `absent` — positively nothing there (ENOENT, or a
+ * store sonata steadily cannot read at all). `unreadable` — anything else: a
+ * parse error (a write in progress), EACCES, EMFILE, a locked database.
+ */
+export type StoreReadState = 'ok' | 'absent' | 'unreadable';
+
+export interface StoreRead {
+  state: StoreReadState;
+  /** For `unreadable`: which store, and why, with no content. */
+  detail?: string;
+  /**
+   * For `absent`: set when the store exists but `boundUnreadable` (or
+   * `boundUnreadableDb`) judges it steadily unreadable rather than mid-write,
+   * so it is skipped as if it were not there. Carries the same
+   * path-and-error detail.
+   */
+  skipped?: string;
+  /**
+   * For `unreadable` when bytes were read but did not parse: a sha256 of
+   * exactly those bytes, which `boundUnreadable` compares across reads.
+   * Absent for a read error, which returned no bytes. Compared, never logged.
+   */
+  contentHash?: string;
+  /**
+   * For opencode.db, `ok`: the table read empty twice where the previous read
+   * found rows. A logout — or a gap: callers refuse on it but do not yet treat
+   * the login as gone for good.
+   */
+  emptied?: true;
+}
+
+function errnoCode(error: unknown): string {
+  return (error as NodeJS.ErrnoException)?.code ?? (error instanceof Error ? error.message : String(error));
+}
+
+const ABSENT_CODES = new Set(['ENOENT', 'ENOTDIR']);
+
+/** A JSON credential file: codex's or opencode's `auth.json`, sonata's `keys.json`. */
+export function jsonStoreRead(path: string): StoreRead {
+  let bytes: Buffer;
+  try {
+    bytes = readOnce(path);
+  } catch (error) {
+    const code = errnoCode(error);
+    return ABSENT_CODES.has(code) ? { state: 'absent' } : { state: 'unreadable', detail: `${path}: ${code}` };
+  }
+  try {
+    JSON.parse(bytes.toString('utf8'));
+  } catch {
+    return {
+      state: 'unreadable',
+      detail: `${path}: not valid JSON (a write in progress?)`,
+      contentHash: createHash('sha256').update(bytes).digest('hex'),
+    };
+  }
+  return { state: 'ok' };
+}
+
+/** A file whose presence is the credential: sonata's own OAuth logins. */
+export function fileStoreRead(path: string): StoreRead {
+  try {
+    statSync(path);
+    return { state: 'ok' };
+  } catch (error) {
+    const code = errnoCode(error);
+    return ABSENT_CODES.has(code) ? { state: 'absent' } : { state: 'unreadable', detail: `${path}: ${code}` };
+  }
+}
+
+/**
+ * opencode.db's `credential` table.
+ *
+ * A database that is not there, or one `node:sqlite` cannot load on this Node,
+ * answers the same "no rows" every time, and one with no `credential` table is
+ * a v1 database that holds none — all steady answers. One that exists and
+ * cannot be opened or queried (locked, mid-checkpoint) is unreadable.
+ *
+ * An EMPTY table when the previous read in this process found rows is read a
+ * second time, on a fresh connection, before anything is concluded: a login
+ * vanishing between two reads is what a torn read looks like, but deferring
+ * the verdict to the next request — as this once did — served that request
+ * on the credential just logged out. Empty twice is a logout and is `ok`
+ * (flagged `emptied`, since one such read may still be a gap);
+ * rows on the second read make the first one `unreadable`. `memory.rows`
+ * carries the previous count; pass the same object each call.
+ */
+export function opencodeDbRead(
+  home: string,
+  memory: { rows?: number } = {},
+  env: NodeJS.ProcessEnv = process.env,
+): StoreRead {
+  const path = opencodeDbPath(home, env);
+  const present = fileStoreRead(path);
+  if (present.state !== 'ok') return present;
+  if (!sqliteAvailable()) return { state: 'absent' };
+  // The first read is the one `readOpencodeCredentials` parses within this
+  // build (`withReadSnapshot`), so the two cannot describe different rows.
+  const query = queryCredentialRows(path);
+  const first = { ...query, rows: query.rows?.length };
+  if (first.rows === undefined) {
+    if (!first.missingTable) return { state: 'unreadable', detail: first.detail };
+    memory.rows = 0;
+    return { state: 'ok' };
+  }
+  const previous = memory.rows;
+  if (first.rows === 0 && previous !== undefined && previous > 0) {
+    const again = countCredentialRows(path);
+    if (again.rows === undefined && !again.missingTable) return { state: 'unreadable', detail: again.detail };
+    const rows = again.rows ?? 0;
+    memory.rows = rows;
+    return rows === 0 ? { state: 'ok', emptied: true } : { state: 'unreadable', detail: `${path}: the credential table read empty` };
+  }
+  memory.rows = first.rows;
+  return { state: 'ok' };
+}
+
+/** One count of opencode.db's credential rows, on its own fresh read-only connection — never a snapshot's. */
+function countCredentialRows(path: string): { rows?: number; missingTable?: true; detail?: string } {
+  const db = openReadOnlySync(path);
+  if (db === undefined) return { detail: `${path}: could not be opened` };
+  try {
+    return { rows: Number(db.all('SELECT COUNT(*) AS n FROM credential')[0]?.n ?? 0) };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/no such table/i.test(message)) return { missingTable: true };
+    return { detail: `${path}: ${message}` };
+  } finally {
+    try { db.close(); } catch { /* already closed */ }
+  }
+}
+
+/**
+ * How long a store that exists but cannot be read counts as mid-write, when
+ * there are no bytes to compare: a read error on a file (EACCES, EISDIR), or
+ * a failed query on opencode.db. A file whose bytes were read but did not
+ * parse is judged by whether those bytes move instead (`TORN_REPEAT_MS`).
+ *
+ * codex rewrites `auth.json` by truncating and writing, so a torn read is a
+ * moment, and treating it as "no login" dropped gateways and restarted
+ * LiteLLM. But a file that is corrupt, zero bytes or EACCES for good is not a
+ * moment: read as torn forever, it refused a default-sourced ChatGPT gateway
+ * that opencode could serve, with a 502 promising a retry that never
+ * changed anything. Past this window a store is skipped as absent, which is
+ * what every credential reader already does with it.
+ */
+export const UNREADABLE_STORE_WINDOW_MS = 10_000;
+
+/**
+ * How long a file may hold the same unparseable bytes and still count as
+ * mid-write. A writer does not hold one partial state for a second.
+ */
+export const TORN_REPEAT_MS = 1_000;
+
+/**
+ * How far in the past a file's mtime must be before an unparseable file seen
+ * for the first time is skipped on that first read, counted from the mtime
+ * rather than from now. FAT stores mtime to 2 s, and a file on a network
+ * mount carries the server's clock, which can lag the host's: a write in
+ * progress can carry an mtime a second or two behind now. 5 s covers that
+ * granularity with room for a reasonable skew; a file newer than this is
+ * treated as torn on first sight and then judged by its content.
+ */
+export const FIRST_SIGHT_STALE_MS = 5_000;
+
+/** When `boundUnreadable` stops treating a file as mid-write, in words, for the messages that promise it. */
+export const UNREADABLE_SKIP_RULE = `once it stops changing (the same unparseable content ${TORN_REPEAT_MS / 1000}s ` +
+  `apart, or unmodified for ${FIRST_SIGHT_STALE_MS / 1000}s when first seen), or once a read error has lasted ` +
+  `${UNREADABLE_STORE_WINDOW_MS / 1000}s`;
+
+/**
+ * A file store's failed reads: the unparseable bytes last seen and since when
+ * (`hash`/`since`, absent until a read returns bytes), and the current run of
+ * read errors, which return none (`errorSince`). The two are timed apart: an
+ * error says nothing about the bytes on record, and a read that returns bytes
+ * ends the error run.
+ */
+interface FileFailure {
+  hash?: string;
+  since?: number;
+  warned?: true;
+  errorSince?: number;
+  errorWarned?: true;
+}
+
+/** What `boundUnreadable` remembers between reads; one per process, shared by every caller. */
+export interface UnreadableMemory {
+  /**
+   * A file store's last failed read: the hash of the bytes it returned (none
+   * for a read error), when those bytes — or, with none, the run of read
+   * errors — were first seen, and whether it has been reported.
+   */
+  files: Map<string, FileFailure>;
+  /** When opencode.db's current run of failed reads began. */
+  db: Map<string, { since: number; warned?: true }>;
+  /** Unreadable reads answered as mid-write since this memory was made; a caller compares counts. */
+  torn: number;
+}
+
+export function newUnreadableMemory(): UnreadableMemory {
+  return { files: new Map(), db: new Map(), torn: 0 };
+}
+
+/** A file's mtime, or undefined when it cannot be stat'ed. */
+function mtimeOf(path: string): number | undefined {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A file store's read, with "cannot be read" bounded.
+ *
+ * A file whose bytes can be read (so what failed was their parse) counts as
+ * torn — answered `unreadable`, so the caller keeps its last resolution or
+ * refuses for now — only while those bytes are still changing. They are
+ * the bytes the caller parsed (`contentHash`), never a second read, which
+ * could find a file renamed into place since and compare valid bytes. Torn
+ * while they differ from the previous failed read's, or were first
+ * seen less than `TORN_REPEAT_MS` ago. The same bytes a second apart are
+ * stuck, not mid-write, however recently the file was touched and however
+ * long ago it was last read; different bytes start again, however long the
+ * file was quiet. A file rewritten with different unparseable bytes on every
+ * read therefore stays torn for as long as that goes on — accepted: nothing
+ * here can tell it from a writer mid-write.
+ *
+ * Bytes seen for the first time — no failed read on record — count from the
+ * file's mtime when that is at least `FIRST_SIGHT_STALE_MS` in the past: they
+ * have been there since the last write. A file corrupt since before serve
+ * started is skipped on its first read, rather than refusing every request
+ * for a second. A newer mtime says nothing a coarse or lagging clock could
+ * not also produce, so those bytes count from now. After that first sighting
+ * only the bytes count, as above.
+ *
+ * A file whose bytes cannot be read (EACCES, EISDIR) has nothing to compare, and
+ * is torn only for `windowMs` from the first failure of its run — never
+ * restarted by a gap; nothing rewrites a file into EACCES. That run is timed
+ * on its own: a read error leaves the unparseable bytes on record, and when
+ * they were first seen, untouched, so one EMFILE between two reads of the
+ * same stuck bytes does not make them torn again. A read that returns bytes
+ * ends the run.
+ *
+ * Past either the store is steadily unreadable and answered `absent`, with
+ * `skipped` naming the path and the error; `warn` is called once per
+ * unchanged failure. Any read that is not unreadable forgets the file.
+ */
+export function boundUnreadable(
+  path: string,
+  read: StoreRead,
+  memory: UnreadableMemory,
+  now: number,
+  warn: (line: string) => void = () => {},
+  windowMs: number = UNREADABLE_STORE_WINDOW_MS,
+): StoreRead {
+  if (read.state !== 'unreadable') {
+    memory.files.delete(path);
+    return read;
+  }
+  const recorded = memory.files.get(path);
+  const hash = read.contentHash;
+  const detail = read.detail ?? `${path}: unreadable`;
+  if (hash === undefined) {
+    // No bytes: timed by its own run of errors alone. Any unparseable bytes
+    // on record keep their hash and `since` — one EMFILE between two reads
+    // of the same stuck bytes must not start their second again.
+    const errorSince = recorded?.errorSince ?? now;
+    const record: FileFailure = { ...recorded, errorSince };
+    memory.files.set(path, record);
+    if (now - errorSince < windowMs) {
+      memory.torn += 1;
+      return read;
+    }
+    if (record.errorWarned !== true) {
+      record.errorWarned = true;
+      warn(`${detail} — it has not read for ${Math.round(windowMs / 1000)}s, so it is skipped as if absent ` +
+        'until it reads cleanly');
+    }
+    return { state: 'absent', skipped: detail };
+  }
+  const kept = recorded?.hash === hash ? recorded?.since : undefined;
+  // First sight: no failed read of this file on record at all.
+  const firstSight = recorded === undefined;
+  const mtime = firstSight ? mtimeOf(path) : undefined;
+  const firstSeen = mtime !== undefined && now - mtime >= FIRST_SIGHT_STALE_MS ? mtime : now;
+  // Bytes were read, so any run of read errors has ended.
+  const since = kept ?? firstSeen;
+  const record: FileFailure = { hash, since };
+  if (kept !== undefined && recorded?.warned === true) record.warned = true;
+  memory.files.set(path, record);
+  if (now - since < TORN_REPEAT_MS) {
+    memory.torn += 1;
+    return read;
+  }
+  if (record.warned !== true) {
+    record.warned = true;
+    const seconds = Math.max(1, Math.round((now - since) / 1000));
+    warn(`${detail} — ${firstSight
+      // Skipped on its first sighting: nothing has been watched yet, only the file's age.
+      ? `unparseable, and has not been modified for ${seconds}s, so not a write in progress`
+      : `the same unparseable content for ${seconds}s, so not a write in progress`
+    }, so it is skipped as if absent until it reads cleanly`);
+  }
+  return { state: 'absent', skipped: detail };
+}
+
+/**
+ * opencode.db's read, with "cannot be read" bounded in time: a database that
+ * has failed every read for `windowMs` — locked for good, corrupt — is
+ * skipped as absent (logged once) rather than refusing its gateways forever.
+ * The database is written constantly, so its mtime says nothing about a torn
+ * read; the length of the run of failures does. Unlike a file's, the run is
+ * not ended by a gap between failed reads: the run's length is the only
+ * evidence here, and a database locked for good but read once a minute
+ * would otherwise start a new run on every read and never be skipped.
+ */
+export function boundUnreadableDb(
+  path: string,
+  read: StoreRead,
+  memory: UnreadableMemory,
+  now: number,
+  warn: (line: string) => void = () => {},
+  windowMs: number = UNREADABLE_STORE_WINDOW_MS,
+): StoreRead {
+  if (read.state !== 'unreadable') {
+    memory.db.delete(path);
+    return read;
+  }
+  const run = memory.db.get(path) ?? { since: now };
+  memory.db.set(path, run);
+  if (now - run.since < windowMs) {
+    memory.torn += 1;
+    return read;
+  }
+  const detail = read.detail ?? `${path}: unreadable`;
+  if (run.warned !== true) {
+    run.warned = true;
+    warn(`${detail} — it has not read cleanly for ${Math.round(windowMs / 1000)}s, so it is skipped as if absent ` +
+      'until it does');
+  }
+  return { state: 'absent', skipped: detail };
+}

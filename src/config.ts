@@ -749,34 +749,12 @@ export function parseConfig(text: string): SonataConfig {
       keyVarOwners.set(keyVar, name);
     }
 
-    // LiteLLM reads a ChatGPT credential from one directory
-    // (CHATGPT_TOKEN_DIR) and a Copilot one from another
-    // (GITHUB_COPILOT_TOKEN_DIR), process-wide — so every gateway of one OAuth
-    // kind is served ONE account. That is harmless when they all name the same
-    // credential source (the default included): one account, nothing can
-    // leak. `sonata init` before v0.10.0 wrote the ChatGPT subscription twice,
-    // as `codex` and `openai`, and those configs must keep loading. Only
-    // sources that differ are refused, since one of them would silently be
-    // served the other's account.
-    const oauthOwners = new Map<string, { name: string; source: string }>();
-    for (const [name, gateway] of Object.entries(gateways)) {
-      if (gateway.auth !== 'codex-oauth' && gateway.auth !== 'copilot-oauth') continue;
-      const source = gateway.credentialSource ?? 'default';
-      const owner = oauthOwners.get(gateway.auth);
-      if (owner === undefined) {
-        oauthOwners.set(gateway.auth, { name, source });
-        continue;
-      }
-      if (owner.source !== source) {
-        const quote = (s: string) => (s === 'default' ? 'default' : `"${s}"`);
-        throw new Error(
-          `sonata.toml: gateways "${owner.name}" (credential_source = ${quote(owner.source)}) and ` +
-          `"${name}" (credential_source = ${quote(source)}) both use auth = "${gateway.auth}", ` +
-          'but LiteLLM holds one credential of that kind per process, so one would be served the ' +
-          "other's account — give them the same credential_source, or keep one of them",
-        );
-      }
-    }
+    // OAuth identities are deliberately NOT checked here. LiteLLM holds one
+    // credential per OAuth kind, so two gateways of one kind on different
+    // accounts cannot both be served — but refusing the file made the whole
+    // tenant unusable, every other model included, and v0.13.1's own BYOK
+    // OAuth login writes such a pair. Serve drops the conflicting gateways
+    // (answering their models with a typed 502) and `sonata doctor` warns.
 
     const nativeModels: Record<string, NativeModelConfig> = {};
     for (const [name, def] of Object.entries((rawNative.models ?? {}) as Record<string, unknown>)) {
@@ -952,6 +930,24 @@ export function resolveTierAlias(
     };
   });
   return { role, tier, routes };
+}
+
+/**
+ * Which credential an OAuth gateway DECLARES, as a comparable string — what
+ * can be known from the config alone.
+ *
+ * `sonata` stores its login per gateway NAME (`credentialDir(home, name)`),
+ * so it is `sonata:<name>` and two such gateways are two logins. Every other
+ * source is returned as written (`codex`, `opencode`, `default`): each is a
+ * machine store, and whether two of them are one account depends on which
+ * store actually holds a login — `resolvedOauthIdentity` in serve decides that.
+ */
+export function oauthCredentialIdentity(
+  name: string,
+  gateway: { credentialSource?: string },
+): string {
+  const source = gateway.credentialSource ?? 'default';
+  return source === 'sonata' ? `sonata:${name}` : source;
 }
 
 /**

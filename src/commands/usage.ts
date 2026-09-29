@@ -217,17 +217,22 @@ export function projectResolver(home: string): ProjectResolver {
  * rather than become its parent.
  */
 function enclosingProject(dir: string, home: string): string {
-  if (!existsSync(dir)) return dir;
+  return findEnclosingProject(dir, home) ?? dir;
+}
+
+/** `enclosingProject`, but `undefined` where no project encloses `dir`. */
+function findEnclosingProject(dir: string, home: string): string | undefined {
+  if (!existsSync(dir)) return undefined;
   const machine = join(home, GLOBAL_CONFIG_RELATIVE);
   for (let at = dir; ; at = dirname(at)) {
-    if (at === home) return dir;
+    if (at === home) return undefined;
     try {
       const path = configPath(at, home);
       if (path !== null && path !== machine) return at;
     } catch {
       // An unreadable ancestor is not a project; keep walking.
     }
-    if (dirname(at) === at) return dir;
+    if (dirname(at) === at) return undefined;
   }
 }
 
@@ -404,11 +409,28 @@ export async function cmdUsage(opts: {
     // argument at all — the walk turns the subdirectory into its project —
     // so a row whose recorded path lies inside the selected project counts
     // too.
+    //
+    // But a nested `sonata.toml` is a different project: a row whose own
+    // recorded path lies in one belongs to it, not to the parent it happens
+    // to sit inside. So a row is excluded when the project enclosing its path
+    // resolves to anything other than the selected one.
     const wanted = resolve(enclosingProject(resolve0(opts.project), opts.home));
+    const owners = new Map<string, string | undefined>();
+    const ownerOf = (cwd: string): string | undefined => {
+      if (!owners.has(cwd)) {
+        const found = findEnclosingProject(cwd, opts.home);
+        owners.set(cwd, found === undefined ? undefined : resolve(found));
+      }
+      return owners.get(cwd);
+    };
     rows = rows.filter((row) => {
       if (labelOf(row, 'project', sessions, resolve) === wanted) return true;
-      const cwd = row.project ?? (row.session === undefined ? undefined : sessions[row.session]?.cwd);
-      return cwd !== undefined && isWithin(resolve0(cwd), wanted);
+      const recorded = row.project ?? (row.session === undefined ? undefined : sessions[row.session]?.cwd);
+      if (recorded === undefined) return false;
+      const cwd = resolve0(recorded);
+      if (!isWithin(cwd, wanted)) return false;
+      const owner = ownerOf(cwd);
+      return owner === undefined || owner === wanted;
     });
   }
 
