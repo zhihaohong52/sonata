@@ -2887,6 +2887,56 @@ describe('respond — backpressure', () => {
     await done;
     expect(events.at(-1)).toBe('end');
   });
+
+  // CodeRabbit (PR #72): a 'close' that fired between two writes is not seen
+  // again, so a later false write waiting on 'drain'/'close' would hang.
+  const within = <T>(p: Promise<T>, ms: number): Promise<T | 'timeout'> =>
+    Promise.race([p, new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), ms))]);
+  const fakeRes = async (events: string[]) => {
+    const { EventEmitter } = await import('node:events');
+    return Object.assign(new EventEmitter(), {
+      destroyed: false, writableEnded: false,
+      writeHead: () => undefined,
+      write: (chunk: Uint8Array) => { events.push(`write ${Buffer.from(chunk).toString()}`); return false; },
+      end: () => { events.push('end'); },
+    });
+  };
+
+  it('settles when the client leaves between two backpressured writes', async () => {
+    const events: string[] = [];
+    const res = await fakeRes(events);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    async function* body(): AsyncIterable<Uint8Array> {
+      yield Buffer.from('a');
+      await gate;
+      yield Buffer.from('b');
+    }
+    const done = respond(res as never, { status: 200, headers: {}, body: body() });
+    await new Promise((r) => setTimeout(r, 10));
+    res.emit('drain'); // 'a' drains; the loop now waits on the upstream for 'b'
+    await new Promise((r) => setTimeout(r, 10));
+    res.destroyed = true;
+    res.emit('close'); // gone while nothing is waiting on 'close'
+    release(); // the upstream then produces 'b'
+    expect(await within(done, 1_000)).not.toBe('timeout');
+    expect(events).toEqual(['write a']);
+  });
+
+  it('settles when the client leaves while a write waits on drain', async () => {
+    const events: string[] = [];
+    const res = await fakeRes(events);
+    async function* body(): AsyncIterable<Uint8Array> {
+      yield Buffer.from('a');
+      yield Buffer.from('b');
+    }
+    const done = respond(res as never, { status: 200, headers: {}, body: body() });
+    await new Promise((r) => setTimeout(r, 10));
+    res.destroyed = true;
+    res.emit('close');
+    expect(await within(done, 1_000)).not.toBe('timeout');
+    expect(events).toEqual(['write a']);
+  });
 });
 
 describe('message-less 400s', () => {
