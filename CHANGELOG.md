@@ -43,6 +43,12 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   plain `model:` scalar, which a YAML reader resolves to a boolean, null,
   number or date rather than the key. Such keys are now double-quoted;
   ordinary keys are written exactly as before.
+- **A client that disconnects before the response starts no longer holds an
+  upstream connection.** The router now aborts the pending upstream request
+  when its client leaves, stops trying further tier candidates, and neither
+  cools the abandoned candidate nor writes a ledger row for it. A client
+  already gone when the response is handed over has its upstream cancelled
+  at once, instead of the router waiting on a first chunk nobody would read.
 
 From the full audit of 0.13.1 (`docs/reviews/2026-09-27-full-audit.md`):
 
