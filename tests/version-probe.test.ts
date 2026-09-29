@@ -90,8 +90,12 @@ describe('runProbe', () => {
   // keep running through the stdio grace and relabel it a timeout because a
   // grandchild still holds the pipe.
   it('does not report a timeout for a command that exited inside its bound', async () => {
-    const answered = stub('answers-late', 'sleep 0.8\necho "v9"\n(sleep 5 &)\nexit 0');
-    await expect(runProbe(answered, ['--version'], { timeoutMs: 1_200 }))
+    // It answers and exits at once, leaving a grandchild on the pipe, so the
+    // probe sits in its stdio grace; the bound falls inside that grace. The
+    // gap is seconds wide on both sides, so load cannot move the command's
+    // exit past the bound (a 0.8 s sleep against a 1.2 s bound could).
+    const answered = stub('answers-then-lingers', 'echo "v9"\n(sleep 10 &)\nexit 0');
+    await expect(runProbe(answered, ['--version'], { timeoutMs: 2_000, graceMs: 6_000 }))
       .resolves.toMatchObject({ stdout: 'v9\n' });
   });
 
