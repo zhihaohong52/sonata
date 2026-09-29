@@ -2127,6 +2127,48 @@ describe('conversation stickiness', () => {
     await serveFully(turn(2), deps);
     expect(seen.slice(2)).toEqual(['default/flash']);
   });
+
+  // CodeRabbit (PR #72): a broken response on a conversation already
+  // remembered neither refreshed its age nor its place in the eviction order,
+  // so a conversation that was still being spoken to could age out — and the
+  // memory of whose thinking blocks its transcript carries went with it.
+  it('counts a broken response as activity, keeping the memory of who served', async () => {
+    const bodies: any[] = [];
+    const state = { phase: 1, clock: 1_000 };
+    const broken = () => new Response(new ReadableStream<Uint8Array>({
+      start(c) { c.enqueue(new TextEncoder().encode('event: ping\ndata: {}\n\n')); c.error(new Error('reset')); },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const payload = JSON.parse(init.body as string) as { model: string };
+        bodies.push(payload);
+        const flash = payload.model === 'default/flash';
+        if (state.phase === 1) return new Response(COMPLETE_BODY, { status: flash ? 503 : 200 });
+        if (state.phase === 2) return flash ? new Response(COMPLETE_BODY, { status: 503 }) : broken();
+        return new Response(COMPLETE_BODY, { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+      now: () => state.clock,
+    };
+
+    // Luna serves turn 1 in full.
+    await serveFully(turn(1), deps);
+    // Near the end of the TTL, luna serves turn 2 but the stream breaks.
+    state.phase = 2;
+    state.clock += STICKY_TTL_MS - 1_000;
+    try { await serveFully(turn(2), deps); } catch { /* broken */ }
+    expect(bodies.at(-1)!.model).toBe('default/luna');
+    // Past the TTL counted from turn 1, well inside it from turn 2: flash now
+    // takes over and must not be handed luna's thinking blocks.
+    state.phase = 3;
+    state.clock += 2_000;
+    await serveFully(turn(3), deps);
+    const served = bodies.at(-1)!;
+    expect(served.model).toBe('default/flash');
+    const types = served.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content.map((b: any) => b.type) : []);
+    expect(types).not.toContain('thinking');
+  });
 });
 
 // ── Effort-level candidates ──

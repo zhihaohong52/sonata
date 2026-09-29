@@ -908,8 +908,18 @@ function stickySet(conversation: string, key: string, at: number): void {
   // carrying this key.
   const served = stickyCandidates.get(conversation)?.served ?? new Set<string>();
   served.add(key);
+  stickyPut(conversation, { key, at, prefer: true, served });
+}
+
+/**
+ * The one way an entry is written: delete-then-set, so it moves to the end of
+ * the eviction order, then the cap. Both writers go through here so a
+ * conversation that is still being spoken to — whether its last response
+ * completed or broke — can never be aged out or evicted ahead of an idle one.
+ */
+function stickyPut(conversation: string, entry: { key: string; at: number; prefer: boolean; served: Set<string> }): void {
   stickyCandidates.delete(conversation);
-  stickyCandidates.set(conversation, { key, at, prefer: true, served });
+  stickyCandidates.set(conversation, entry);
   stickyEvict();
 }
 
@@ -943,12 +953,16 @@ function stickyIncomplete(conversation: string, key: string, at: number): void {
   if (hit === undefined) {
     // Bounded exactly as `stickySet` is: a stream of broken responses from
     // distinct conversations must not grow this map without limit.
-    stickyCandidates.set(conversation, { key, at, prefer: false, served: new Set([key]) });
-    stickyEvict();
+    stickyPut(conversation, { key, at, prefer: false, served: new Set([key]) });
     return;
   }
   hit.served.add(key);
   stickyDemote(conversation, key);
+  // A broken response is still activity: refresh the age and the eviction
+  // order, or a conversation whose recent turns all broke ages out and takes
+  // the memory of whose thinking blocks it carries with it. The pin itself
+  // (`key`, `prefer`) is left as it stands.
+  stickyPut(conversation, { ...hit, at });
 }
 
 /**
