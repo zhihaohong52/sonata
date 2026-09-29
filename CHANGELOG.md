@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-29
+
 ### Changed
 
 - **Two OAuth gateways of one kind reading different credential stores are
