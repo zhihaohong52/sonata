@@ -98,6 +98,28 @@ describe('legacy agents — model keys in YAML frontmatter', () => {
     expect(nativeAgentMarkdown({ role: 'code', model: 'deepseek-v4-flash' }))
       .toContain('\nmodel: deepseek-v4-flash\n');
   });
+
+  it('quotes a model key YAML would read as a boolean, null, number or date', () => {
+    // Every one of these fits the plain-scalar alphabet, so it used to be
+    // written bare — and a YAML reader resolves `model: true` to a boolean,
+    // `model: 1e3` to a number (YAML 1.2 core), `model: yes` to a boolean and
+    // `model: 2026-09-29` to a timestamp (YAML 1.1). No YAML parser is a
+    // dependency here, so the assertion is the quoted JSON form, which every
+    // YAML version reads back as exactly this string.
+    const implicit = [
+      'true', 'False', 'NULL', 'null', 'yes', 'No', 'on', 'OFF', 'y', 'N',
+      '123', '0', '1e3', '1E-3', '12.5', '0x1F', '0o17', '0b101', '2026-09-29',
+    ];
+    for (const k of implicit) {
+      const line = nativeAgentMarkdown({ role: 'code', model: k }).split('\n').find((l) => l.startsWith('model: '))!;
+      expect(line, k).toBe(`model: ${JSON.stringify(k)}`);
+      expect(value(nativeAgentMarkdown({ role: 'code', model: k }), 'model')).toBe(k);
+    }
+    // Keys that merely start like one stay plain, so existing files are unchanged.
+    for (const k of ['gpt-5', 'o3', 'yes-model', 'truer', '1b-instruct', 'no-think']) {
+      expect(nativeAgentMarkdown({ role: 'code', model: k })).toContain(`\nmodel: ${k}\n`);
+    }
+  });
 });
 
 describe('agentMarkdown — tool grant', () => {
