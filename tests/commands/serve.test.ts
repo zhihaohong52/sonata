@@ -5828,6 +5828,25 @@ describe('mergeTenantGateways', () => {
         .toBe(resolvedOauthIdentity(storeHome, 'y', { auth: 'copilot-oauth' }));
     });
 
+    it('drops two differently named sonata-sourced gateways of each kind, in one project, as serve resolves them', () => {
+      // LiteLLM is given one token dir per kind, so serving both would put the
+      // second gateway's requests on the first gateway's login. Serve binds
+      // `resolvedOauthIdentity`; both codex-oauth and copilot-oauth must go,
+      // each named in the drop map the router answers its typed 502 from.
+      const lines: string[] = [];
+      const dropped = new Map<string, string>();
+      const merged = mergeTenantGateways([{ id: 'a', gateways: {
+        'chatgpt-home': gw({ auth: 'codex-oauth', baseUrl: undefined, credentialSource: 'sonata' }),
+        'chatgpt-work': gw({ auth: 'codex-oauth', baseUrl: undefined, credentialSource: 'sonata' }),
+        'copilot-home': gw({ auth: 'copilot-oauth', baseUrl: undefined, credentialSource: 'sonata' }),
+        'copilot-work': gw({ auth: 'copilot-oauth', baseUrl: undefined, credentialSource: 'sonata' }),
+        keep: gw({}),
+      } }], (l) => lines.push(l), (name, g) => resolvedOauthIdentity(storeHome, name, g), dropped);
+      expect(Object.keys(merged)).toEqual(['keep']);
+      expect([...dropped.keys()].sort()).toEqual(['chatgpt-home', 'chatgpt-work', 'copilot-home', 'copilot-work']);
+      expect(dropped.get('copilot-work')).toContain('sonata:copilot-home');
+    });
+
     it('never treats two sonata logins, or one beside a machine store, as one', () => {
       expect(resolvedOauthIdentity(storeHome, 'a', { auth: 'codex-oauth', credentialSource: 'sonata' }))
         .not.toBe(resolvedOauthIdentity(storeHome, 'b', { auth: 'codex-oauth', credentialSource: 'sonata' }));
