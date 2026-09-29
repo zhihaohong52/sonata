@@ -25,6 +25,11 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **A conversation whose recent responses broke is no longer forgotten.**
+  The router remembers which models have served a conversation so it can
+  remove their thinking blocks before another model takes over; a response
+  that broke mid-stream did not count as activity, so a long-running agent
+  could lose that memory and be killed by the next model's 400.
 - **A read-only `claude` dispatch can no longer reach MCP tools.** `--tools`
   limits Claude Code's built-in tools only; probed live, a review or explore
   run still had every configured MCP server's tools, write-capable ones
