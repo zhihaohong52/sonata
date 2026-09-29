@@ -1,6 +1,6 @@
 import { extendedContextAdvice } from '../extended-context.js';
 import { splitCandidate } from '../effort.js';
-import { VERSION_PROBE_TIMEOUT_MS } from '../version-probe.js';
+import { VERSION_PROBE_TIMEOUT_MS, runProbe } from '../version-probe.js';
 import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { promisify } from 'node:util';
@@ -46,10 +46,12 @@ import { opencodeCredentialOrigin, opencodeDbPath, readOpencodeCredentials } fro
  * accepting connections without answering.
  */
 const LITELLM_HEALTH_TIMEOUT_MS = 3000;
-import { codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
+import { codexAuthPath, codexAuthReport, readChatGptOAuth } from '../native/codex-auth.js';
+import { jsonStoreRead, opencodeDbRead, UNREADABLE_SKIP_RULE } from '../native/credential-reads.js';
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
-import { LITELLM_HOST, serveHealthUrl, healthReportsUi } from './serve.js';
+import { LITELLM_HOST, mergeTenantGateways, resolvedOauthIdentity, serveHealthUrl, healthReportsUi } from './serve.js';
+import { TenantRegistry, canonicalConfigPath } from '../native/tenants.js';
 import { routerPorts } from './ports.js';
 import { nativeSessionEnv } from './code.js';
 import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile, diagnoseRouteAuto, isLocalhostUrl } from './route.js';
@@ -328,17 +330,20 @@ export function routingFailureDetail(input: {
 }
 
 
-/** The running Claude Code version, or `undefined` when there is no `claude`. */
-async function defaultClaudeVersion(): Promise<string | undefined> {
+/**
+ * The running Claude Code version, or `undefined` when there is no `claude`
+ * (or it did not answer within the bound — unbounded, one hung `claude` hung
+ * the whole of `sonata doctor`).
+ */
+export async function defaultClaudeVersion(): Promise<string | undefined> {
   try {
-    const { stdout } = await run('claude', ['--version'], { env: { ...process.env } });
+    const { stdout } = await runProbe('claude', ['--version'], { env: { ...process.env }, timeoutMs: VERSION_PROBE_TIMEOUT_MS });
     return stdout.trim();
   } catch {
     return undefined;
   }
 }
 
-/** A harness's version line, from the real binary — `cmdDoctor`'s default `harnessVersion`. */
 /**
  * A harness's version, bounded like every other `--version` probe: doctor
  * awaits each in turn, so one hung binary hung the whole command. A timeout
@@ -346,7 +351,7 @@ async function defaultClaudeVersion(): Promise<string | undefined> {
  */
 export async function defaultHarnessVersion(command: string[]): Promise<string> {
   const env = { ...process.env, PATH: `${process.env.HOME}/.opencode/bin:${process.env.PATH}` };
-  const { stdout } = await run(command[0], command.slice(1), { env, timeout: VERSION_PROBE_TIMEOUT_MS });
+  const { stdout } = await runProbe(command[0], command.slice(1), { env, timeoutMs: VERSION_PROBE_TIMEOUT_MS });
   return stdout;
 }
 
@@ -1070,6 +1075,39 @@ export async function cmdDoctor(
       });
     }
 
+    // Gateways that load fine but cannot be served: two OAuth gateways of one
+    // kind on different accounts (LiteLLM holds one credential per kind), one
+    // name defined with different credentials, two names sharing a key
+    // variable. Serve drops by the union of every tenant's gateways, not this
+    // file's alone — and the machine config is always a tenant of the same
+    // router — so the conflict is computed over the same tenants, by the same
+    // function, serve merges with. A project on a sonata login beside a
+    // machine config on codex's store is fine in each file and dropped in
+    // both. Say so here, where it can be fixed, rather than only as a 502 on
+    // the first request.
+    const thisConfig = resolved === null ? undefined : canonicalConfigPath(resolved);
+    const registry = new TenantRegistry(home);
+    registry.noteProject(opts.cwd);
+    const tenants = registry.loadable().map(({ configPath, config: tenant }) => ({
+      id: configPath, gateways: tenant.native?.gateways ?? {},
+    }));
+    if (!tenants.some(({ id }) => id === thisConfig)) {
+      tenants.push({ id: thisConfig ?? 'this config', gateways: config.native.gateways });
+    }
+    const dropped = new Map<string, string>();
+    mergeTenantGateways(tenants, () => { /* reported below */ },
+      (name, gateway) => resolvedOauthIdentity(home, name, gateway), dropped);
+    const droppedHere = Object.keys(config.native.gateways).filter((name) => dropped.has(name)).sort();
+    if (droppedHere.length > 0) {
+      const reasons = [...new Set(droppedHere.map((name) => dropped.get(name)!))];
+      checks.push({
+        name: 'gateway conflicts',
+        ok: false,
+        detail: `${reasons.join('\n')}\n  ! serve drops ${droppedHere.map((name) => `"${name}"`).join(', ')} — ` +
+          'their models answer 502 until this is resolved',
+      });
+    }
+
     const oauthGateways = gatewayNames.filter(
       (name) => isOauthGatewayAuth(config.native!.gateways[name].auth) && !sourcedGateways.has(name));
 
@@ -1107,7 +1145,12 @@ export async function cmdDoctor(
           ?? `ChatGPT subscription from ${
                report.source === 'opencode' ? opencodeSourceLabel(home, 'openai') : report.source ?? 'codex'
              }` +
-             (report.expired ? ' (expired, refreshes on use)' : ''),
+             (report.expired ? ' (expired, refreshes on use)' : '') +
+             // serve seeds LiteLLM's token directory only when it starts
+             // LiteLLM, and restarts it by itself only for another store or
+             // another account, so this is the one re-login it does not follow.
+             ' — serve copies it into LiteLLM when it starts LiteLLM; after re-logging in to the same ' +
+             'account, run `sonata restart`',
       });
     }
 
@@ -1121,6 +1164,24 @@ export async function cmdDoctor(
             ok: false,
             detail: `no key — \`sonata auth add ${report.gateway}\``,
           });
+    }
+
+    // A credential store that exists but cannot be read. serve treats one as
+    // mid-write only while it may be (`boundUnreadable`) and then skips it as absent —
+    // so a login in it is silently not the one served (a default ChatGPT
+    // gateway falls through to opencode's), while everything above still
+    // reads "fine". Named here, where it can be fixed.
+    const unreadableStores = [
+      { path: codexAuthPath(home), read: jsonStoreRead(codexAuthPath(home)) },
+      { path: opencodeDbPath(home), read: opencodeDbRead(home) },
+    ].filter(({ read }) => read.state === 'unreadable');
+    for (const { path, read } of unreadableStores) {
+      checks.push({
+        name: 'credential store',
+        ok: true,
+        detail: `${path} cannot be read (${read.detail ?? 'unreadable'}) — serve skips it as absent ` +
+          `${UNREADABLE_SKIP_RULE}, so no login in it is used; fix or remove the file`,
+      });
     }
 
     // opencode v2 keeps its credentials in plaintext inside opencode.db. sonata

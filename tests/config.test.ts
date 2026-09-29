@@ -1395,37 +1395,66 @@ complex = ["openai-gpt-5.6-luna"]
     expect(routes.map((r) => r.native?.gateway)).toEqual(['codex', 'openai']);
   });
 
-  it('loads two copilot-oauth gateways that name the same credential source', () => {
+  it('loads two copilot-oauth gateways that read one machine store', () => {
     const cfg = parseConfig(`
 [native.gateways."copilot"]
 auth = "copilot-oauth"
-credential_source = "sonata"
+credential_source = "opencode"
 [native.gateways."copilot-2"]
 auth = "copilot-oauth"
-credential_source = "sonata"
+credential_source = "opencode"
 `);
     expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['copilot', 'copilot-2']);
   });
 
-  it('refuses two codex-oauth gateways whose credential sources differ, naming both', () => {
-    expect(() => parseConfig(`
+  it('loads a copilot pair on opencode and the default: both read the one opencode login', () => {
+    const cfg = parseConfig(`
+[native.gateways."copilot"]
+auth = "copilot-oauth"
+credential_source = "opencode"
+[native.gateways."copilot-2"]
+auth = "copilot-oauth"
+`);
+    expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['copilot', 'copilot-2']);
+  });
+
+  it('loads codex-oauth gateways on different machine stores: only serve can tell which store is read', () => {
+    // `codex` beside the default (which reads codex's store when it exists) may
+    // well be one account; parseConfig refuses only what is PROVABLY two.
+    const cfg = parseConfig(`
 [native.gateways."codex"]
 auth = "codex-oauth"
 credential_source = "codex"
-[native.gateways."codex-work"]
+[native.gateways."openai"]
 auth = "codex-oauth"
-credential_source = "sonata"
-`)).toThrow(/gateways "codex" \(credential_source = "codex"\) and "codex-work" \(credential_source = "sonata"\) both use auth = "codex-oauth"/);
+[native.gateways."oc"]
+auth = "codex-oauth"
+credential_source = "opencode"
+`);
+    expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['codex', 'oc', 'openai']);
   });
 
-  it('counts an absent credential_source as its own source', () => {
-    expect(() => parseConfig(`
+  it('loads any OAuth identities: a config never fails to load over them', () => {
+    // v0.13.1's BYOK OAuth login writes exactly this pair. Two accounts cannot
+    // share one LiteLLM child, but that is serve's to handle (it drops both,
+    // answering their models with a typed 502) and doctor's to warn about —
+    // refusing the file made the whole tenant, every other model included,
+    // unusable.
+    for (const pair of [
+      ['credential_source = "codex"', 'credential_source = "sonata"'],
+      ['credential_source = "sonata"', 'credential_source = "sonata"'],
+      ['', 'credential_source = "sonata"'],
+    ]) {
+      const cfg = parseConfig(`
 [native.gateways."codex"]
 auth = "codex-oauth"
-[native.gateways."codex-work"]
+${pair[0]}
+[native.gateways."openai"]
 auth = "codex-oauth"
-credential_source = "sonata"
-`)).toThrow(/credential_source = default/);
+${pair[1]}
+`);
+      expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['codex', 'openai']);
+    }
   });
 });
 

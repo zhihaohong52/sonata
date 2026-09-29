@@ -40,18 +40,48 @@ export function loadSessions(
   home: string,
   read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
 ): Record<string, SessionRecord> {
+  return readSessions(home, read).sessions;
+}
+
+/**
+ * `loadSessions`, plus whether the file was actually read. `ok` is false only
+ * when the file exists and both attempts failed: the `{}` returned then says
+ * nothing about which sessions exist, so a caller that caches the result must
+ * not keep it. An absent file, or one that parses to a non-object, is a real
+ * answer and is `ok`. `invalid` names records dropped for having no string
+ * `cwd`.
+ */
+export function readSessions(
+  home: string,
+  read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+): { sessions: Record<string, SessionRecord>; ok: boolean; invalid: string[] } {
   const path = sessionsPath(home);
-  if (!existsSync(path)) return {};
+  if (!existsSync(path)) return { sessions: {}, ok: true, invalid: [] };
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const doc: unknown = JSON.parse(read(path));
-      if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) return {};
-      return doc as Record<string, SessionRecord>;
+      if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) return { sessions: {}, ok: true, invalid: [] };
+      // Each record is checked on its own. sonata's one writer
+      // (`recordSession`) always writes a string cwd, but the file is plain
+      // JSON in the user's home: one hand-edited or foreign record — `null`,
+      // or a non-string cwd — made every reader that touched `record.cwd`
+      // throw, and the router reads this per request. It is dropped and
+      // named; the rest of the file is still a good read.
+      const sessions: Record<string, SessionRecord> = {};
+      const invalid: string[] = [];
+      for (const [id, record] of Object.entries(doc)) {
+        if (record !== null && typeof record === 'object' && typeof (record as { cwd?: unknown }).cwd === 'string') {
+          sessions[id] = record as SessionRecord;
+        } else {
+          invalid.push(id);
+        }
+      }
+      return { sessions, ok: true, invalid };
     } catch {
       // Fall through to the one retry.
     }
   }
-  return {};
+  return { sessions: {}, ok: false, invalid: [] };
 }
 
 /** Writes via a sibling temp file and a rename, so no reader sees half a file. */

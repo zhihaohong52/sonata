@@ -1,0 +1,17 @@
+[
+  {
+    "type": "AuthenticationError",
+    "message": "litellm.AuthenticationError: Polling failed: stop polling here",
+    "case": "polling failed"
+  },
+  {
+    "type": "AuthenticationError",
+    "message": "litellm.AuthenticationError: Timed out waiting for device authorization",
+    "case": "device authorization timed out"
+  },
+  {
+    "type": "GetDeviceCodeError",
+    "message": "Failed to request device code: Server error '503 Service Unavailable' for url 'https://auth.openai.com/api/accounts/deviceauth/usercode'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503",
+    "case": "device code request failed"
+  }
+]

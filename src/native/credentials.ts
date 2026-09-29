@@ -1,7 +1,8 @@
-import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { readOpencodeCredentials } from './opencode-store.js';
+import { readOnce } from './read-snapshot.js';
 
 export interface KeySource {
   gateway: string;
@@ -29,7 +30,7 @@ interface KeyStoreSource {
 
 function readJson(path: string): Record<string, unknown> {
   try {
-    const value: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    const value: unknown = JSON.parse(readOnce(path).toString('utf8'));
     return value !== null && typeof value === 'object' && !Array.isArray(value)
       ? value as Record<string, unknown>
       : {};

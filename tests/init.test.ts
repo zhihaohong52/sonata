@@ -26,6 +26,8 @@ vi.mock('../src/tui-ink/run.js', () => ({
 }));
 
 vi.mock('../src/native/codex-auth.js', () => ({
+  // doctor names this file when it cannot be read.
+  codexAuthPath: (home: string) => `${home}/.codex/auth.json`,
   readChatGptOAuth: () => tuiMocks.codexCredential ? { expires_at: Date.now() / 1000 + 86400 } : null,
   readOpencodeChatGptOAuth: () => tuiMocks.opencodeCredential ? { expires_at: Date.now() / 1000 + 86400 } : null,
 }));
@@ -190,6 +192,32 @@ describe('cmdInit (non-interactive)', () => {
 
   const write = (l: string) => { lines.push(l); };
   const detect = makeDetect();
+
+  it('writes one base_url per gateway at global scope when the project config and a harness disagree', async () => {
+    // The project config holds acme at P, a harness offers acme at H, and the
+    // global config does not hold acme. Candidates were minted from the
+    // project map (P for the saved model, H for the discovered one) and only a
+    // gateway the GLOBAL config held was re-pointed — so the written global
+    // config got whichever candidate came last, while the picker had queried H.
+    writeFileSync(join(cwd, 'sonata.toml'), [
+      '[native.gateways."acme"]', 'base_url = "https://project.example/v1"',
+      '[models."acme-saved"]', 'gateway = "acme"', 'id = "saved"', 'context_window = 128000',
+      '[tiers.code]', 'simple = ["acme-saved"]', 'complex = ["acme-saved"]',
+    ].join('\n'));
+    const harness = makeDetect({
+      authed: ['acme'],
+      extraRefs: 'acme/deepseek-v4-flash\n',
+      providerBaseUrls: { acme: 'https://harness.example/v1' },
+    });
+    await cmdInit({
+      installLitellm: NO_INSTALL, cwd, home, packageRoot: process.cwd(), yes: true, detect: harness,
+      providers: ['opencode/acme'], models: ['acme-saved', 'acme-deepseek-v4-flash'],
+      roles: ['code'], scope: 'skip', configScope: 'global', routing: 'skip', guidance: 'skip', write,
+    });
+    const written = readFileSync(join(home, '.config', 'sonata', 'sonata.toml'), 'utf8');
+    expect(written).toContain('base_url = "https://harness.example/v1"');
+    expect(written).not.toContain('project.example');
+  });
 
   it('--yes proceeds past a validation warning and writes the config', async () => {
     // The scripted path refuses on the first problem it is handed, so a

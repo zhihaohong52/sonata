@@ -52,7 +52,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata wait      resume a RUNNING or approved run and block for its next state
   sonata approve   answer a pending approval (requires --yes or --no)
   sonata gc        kill finished tmux sessions
-  sonata log       print a run's whole transcript (tail returns only new lines)
+  sonata log       print what a run printed (tail returns only new lines)
   sonata verify    confirm a dispatch actually happened
   sonata serve     start the native routing proxy (router + litellm)
   sonata restart   kill any router holding the port and start a fresh daemon

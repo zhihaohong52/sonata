@@ -1,0 +1,17 @@
+[
+  {
+    "case": "polling failed",
+    "status": 400,
+    "body": "{\"error\":{\"message\":\"litellm.BadRequestError: GetLLMProvider Exception - litellm.AuthenticationError: Polling failed: stop polling here\\n\\noriginal model: chatgpt/gpt-5.6-luna. Received Model Group=luna\\nAvailable Model Group Fallbacks=None\",\"type\":null,\"param\":null,\"code\":\"400\"}}"
+  },
+  {
+    "case": "device authorization timed out",
+    "status": 400,
+    "body": "{\"error\":{\"message\":\"litellm.BadRequestError: GetLLMProvider Exception - litellm.AuthenticationError: Timed out waiting for device authorization\\n\\noriginal model: chatgpt/gpt-5.6-luna. Received Model Group=luna\\nAvailable Model Group Fallbacks=None\",\"type\":null,\"param\":null,\"code\":\"400\"}}"
+  },
+  {
+    "case": "device code request failed",
+    "status": 400,
+    "body": "{\"error\":{\"message\":\"litellm.BadRequestError: GetLLMProvider Exception - Failed to request device code: Server error '503 Service Unavailable' for url 'https://auth.openai.com/api/accounts/deviceauth/usercode'\\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503\\n\\noriginal model: chatgpt/gpt-5.6-luna. Received Model Group=luna\\nAvailable Model Group Fallbacks=None\",\"type\":null,\"param\":null,\"code\":\"400\"}}"
+  }
+]

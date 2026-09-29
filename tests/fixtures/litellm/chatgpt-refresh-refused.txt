@@ -1,0 +1,2 @@
+[92m17:52:32 - LiteLLM:WARNING[0m: authenticator.py:55 - ChatGPT refresh token failed, re-login required: Refresh token failed: Client error '400 Bad Request' for url 'https://auth.openai.com/oauth/token'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400

@@ -1,5 +1,5 @@
 import { listSessions, killSession, currentSession } from '../tmux.js';
-import { listRuns, readExit } from '../store.js';
+import { isRunId, listRuns, readExit } from '../store.js';
 
 /**
  * Kills tmux sessions whose run has finished. Live runs are never touched, and
@@ -12,6 +12,8 @@ export async function cmdGc(opts: { cwd: string }): Promise<string[]> {
   const killed: string[] = [];
 
   for (const id of listRuns(opts.cwd)) {
+    // A stray directory under .sonata/runs is not a run; `runDir` refuses it.
+    if (!isRunId(id)) continue;
     const session = `sonata-${id}`;
     if (!sessions.includes(session)) continue;
     if (session === self) continue;

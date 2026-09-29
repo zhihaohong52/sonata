@@ -10,7 +10,7 @@ import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from
 import { join } from 'node:path';
 import { checkVersion } from './commands/doctor.js';
 import { TIER_AGENT_MARKER } from './agent-markers.js';
-import { VERSION_PROBE_TIMEOUT_MS } from './version-probe.js';
+import { VERSION_PROBE_TIMEOUT_MS, runProbe } from './version-probe.js';
 
 // Re-exported: the default for every probe, so a new caller cannot forget it.
 export { VERSION_PROBE_TIMEOUT_MS };
@@ -313,7 +313,7 @@ export async function probeVersion(
   timeoutMs: number = VERSION_PROBE_TIMEOUT_MS,
 ): Promise<VersionProbe> {
   try {
-    const { stdout } = await run(cmd, ['--version'], { env, timeout: timeoutMs });
+    const { stdout } = await runProbe(cmd, ['--version'], { env, timeoutMs });
     return { state: 'ok', version: stdout.trim() };
   } catch (error) {
     const e = error as NodeJS.ErrnoException & { stderr?: string; killed?: boolean };
@@ -372,7 +372,11 @@ async function tryRun(cmd: string, args: string[], env?: NodeJS.ProcessEnv): Pro
   }
 }
 
-/** Like `tryRun`, but bounded — a hung provider must not stall `init`. */
+/**
+ * Like `tryRun`, but bounded — a hung provider must not stall `init`. Through
+ * `runProbe`, so a binary that ignores TERM or leaves a child on stdout still
+ * settles at the bound.
+ */
 async function tryRunLimited(
   cmd: string,
   args: string[],
@@ -380,7 +384,7 @@ async function tryRunLimited(
   ms: number,
 ): Promise<string | null> {
   try {
-    const { stdout } = await run(cmd, args, { env, timeout: ms });
+    const { stdout } = await runProbe(cmd, args, { env, timeoutMs: ms });
     return stdout.trim();
   } catch {
     return null;

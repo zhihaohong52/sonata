@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdLog } from '../../src/commands/log.js';
-import { createRun, appendEvents } from '../../src/store.js';
+import { createRun, appendEvents, runDir } from '../../src/store.js';
 
 let cwd: string;
 
@@ -38,6 +38,26 @@ describe('cmdLog', () => {
     expect(cmdLog({ cwd, id }).text).toContain(`— sonata ${id}: explore on fake via opencode`);
   });
 
+  it('prints the event log exactly as recorded', () => {
+    const id = newRun();
+    appendEvents(cwd, id, ['live line']);
+    expect(cmdLog({ cwd, id }).text).toMatch(/^live line\n\n— sonata /);
+  });
+
+  it('prints a non-interactive run`s own harness log, cleaned, in place of the event log', () => {
+    const id = newRun();
+    appendEvents(cwd, id, ['line 9']);
+    writeFileSync(join(runDir(cwd, id), 'harness.log'), 'line 1\n\u001b[32mline 2\u001b[0m\nline 9\n');
+    expect(cmdLog({ cwd, id }).text).toMatch(/^line 1\nline 2\nline 9\n\n— sonata /);
+  });
+
+  it('prints the event log when harness.log is empty', () => {
+    const id = newRun();
+    appendEvents(cwd, id, ['live line']);
+    writeFileSync(join(runDir(cwd, id), 'harness.log'), '  \n');
+    expect(cmdLog({ cwd, id }).text).toMatch(/^live line\n\n— sonata /);
+  });
+
   it('says so plainly when a run recorded nothing', () => {
     const id = newRun();
     const res = cmdLog({ cwd, id });
@@ -51,5 +71,12 @@ describe('cmdLog', () => {
     const res = cmdLog({ cwd, id: 'nosuch' });
     expect(res.ok).toBe(false);
     expect(res.text).toContain('no run "nosuch"');
+  });
+
+  it('falls back to the event log when the harness log cleans down to nothing', () => {
+    const id = newRun();
+    appendEvents(cwd, id, ['from the screen']);
+    writeFileSync(join(runDir(cwd, id), 'harness.log'), '\r\r\n');
+    expect(cmdLog({ cwd, id }).text).toMatch(/^from the screen\n\n— sonata /);
   });
 });

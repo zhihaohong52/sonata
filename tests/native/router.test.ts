@@ -1,7 +1,10 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT, repairNamelessToolCalls } from '../../src/native/router.js';
+import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, repairNamelessToolCalls, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import type { RouterTenant } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * What a recorded call keeps: the URL, and the headers the router chose.
@@ -1069,6 +1072,213 @@ describe('routeRequest — logging', () => {
   });
 });
 
+describe('routeRequest — a ChatGPT login LiteLLM cannot refresh', () => {
+  // LiteLLM 1.98.0 catches a refused ChatGPT refresh inside
+  // `get_access_token`, falls into a device-code login, and surfaces only how
+  // THAT ended. The bodies below were captured from a real 1.98.0 proxy
+  // serving `chatgpt/<id>` in `responses` mode, its authenticator's HTTP
+  // client stubbed to refuse the refresh and end the device-code login each
+  // way (tests/fixtures/litellm/chatgpt-refresh-refused-proxy.json): every one
+  // is a 400. The authenticator's messages as raised, before the proxy wraps
+  // them, are in chatgpt-refresh-refused-errors.json.
+  const proxied = JSON.parse(readFileSync(
+    join(import.meta.dirname, '..', 'fixtures', 'litellm', 'chatgpt-refresh-refused-proxy.json'), 'utf8',
+  )) as { case: string; status: number; body: string }[];
+  const raised = JSON.parse(readFileSync(
+    join(import.meta.dirname, '..', 'fixtures', 'litellm', 'chatgpt-refresh-refused-errors.json'), 'utf8',
+  )) as { type: string; message: string; case: string }[];
+  const envelope = (message: string, status: number) =>
+    JSON.stringify({ error: { message, type: null, param: null, code: String(status) } });
+  const tenant = {
+    id: 't', config: { native: { gateways: { codex: { auth: 'codex-oauth' }, or: { auth: 'api-key' } } } },
+  } as unknown as RouterTenant;
+  const route = async (status: number, body: string, refused?: () => void, gateway = 'codex') => {
+    const lines: string[] = [];
+    const result = await routeRequest({
+      method: 'POST', url: '/v1/messages', headers: {},
+      body: Buffer.from(JSON.stringify({ model: 'luna', messages: [] })),
+    }, {
+      fetch: (async () => new Response(body, { status })) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', anthropicBase: 'http://anthropic', litellmKey: 'k',
+      resolveTenant: () => tenant,
+      resolveNative: () => ({ gateway, id: 'gpt-5.6-luna', transport: 'litellm' as const }),
+      log: (line) => lines.push(line),
+      ...(refused === undefined ? {} : { chatgptLoginRefused: refused }),
+    });
+    return { status: result.status, log: lines.join('\n') };
+  };
+
+  it('has a captured case for each way the device-code fallback ends', () => {
+    expect(proxied.map((entry) => entry.case)).toEqual(
+      ['polling failed', 'device authorization timed out', 'device code request failed']);
+  });
+
+  for (const entry of proxied) {
+    it(`tells serve, and answers the named 502, when LiteLLM's proxy answers "${entry.case}"`, async () => {
+      let told = 0;
+      const result = await route(entry.status, entry.body, () => { told += 1; });
+      expect(result.status).toBe(502);
+      expect(told).toBe(1);
+    });
+
+    it(`names \`codex login\` and \`sonata restart\` itself when nothing is told, for "${entry.case}"`, async () => {
+      const { log } = await route(entry.status, entry.body);
+      expect(log).toContain('codex login');
+      expect(log).toContain('sonata restart');
+    });
+
+    it(`says nothing for "${entry.case}" from a gateway that is not codex-oauth`, async () => {
+      let told = 0;
+      const { log } = await route(entry.status, entry.body, () => { told += 1; }, 'or');
+      expect(told).toBe(0);
+      expect(log).not.toContain('sonata restart');
+    });
+  }
+
+  for (const entry of raised.filter((e) => e.message.startsWith('litellm.'))) {
+    it(`tells serve for the authenticator's own "${entry.case}" rendered without the provider-lookup prefix`, async () => {
+      let told = 0;
+      await route(401, envelope(entry.message, 401), () => { told += 1; });
+      expect(told).toBe(1);
+    });
+  }
+
+  // The request that notices is answered as every later one is, rather than
+  // with LiteLLM's raw 400 — which the tier loop read as the request's fault
+  // and returned, never trying the next candidate.
+  describe('the request that notices', () => {
+    beforeEach(() => clearCooldowns());
+    const refusedBody = proxied[0]!.body;
+    const serveMark = () => {
+      let marked = false;
+      return {
+        chatgptLoginRefused: () => { marked = true; },
+        gatewayUnavailable: (_t: unknown, g: string) =>
+          (marked && g === 'codex' ? 'gateway "codex": LiteLLM\'s ChatGPT login was refused by OpenAI — run `codex login`' : undefined),
+      };
+    };
+    const tierDeps = (routes: { key: string; native: { gateway: string; id: string } }[], seen: string[], records: unknown[]) => ({
+      fetch: (async (_u: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return model.includes('luna')
+          ? new Response(refusedBody, { status: 400 })
+          : new Response(COMPLETE_BODY, { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTenant: () => tenant,
+      resolveTier: () => ({ role: 'code', tier: 'simple', routes }),
+      recordUsage: (row: unknown) => { records.push(row); },
+      ...serveMark(),
+    });
+    const tierReq = () => ({
+      method: 'POST', url: '/v1/messages', headers: {},
+      body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: 'hi' }] })),
+    });
+
+    it('falls through to the next tier candidate, which serves it', async () => {
+      const seen: string[] = [];
+      const deps = tierDeps([
+        { key: 'luna', native: { gateway: 'codex', id: 'gpt-5.6-luna' } },
+        { key: 'byok', native: { gateway: 'or', id: 'm' } },
+      ], seen, []);
+      const res = await serveFully(tierReq(), deps);
+      expect(res.status).toBe(200);
+      expect(seen).toEqual(['t/luna', 't/byok']);
+    });
+
+    it('answers the named 502, Anthropic-shaped, when it was the last candidate — no ledger row', async () => {
+      const records: unknown[] = [];
+      const deps = tierDeps([{ key: 'luna', native: { gateway: 'codex', id: 'gpt-5.6-luna' } }], [], records);
+      const first = await serveFully(tierReq(), deps);
+      const later = await serveFully(tierReq(), deps);
+      expect(first.status).toBe(502);
+      const body = JSON.parse((first.body as Buffer).toString()) as { type: string; error: { type: string; message: string } };
+      expect(body.type).toBe('error');
+      expect(body.error.type).toBe('router_error');
+      expect(body.error.message).toContain('codex login');
+      expect((first.body as Buffer).toString()).toBe((later.body as Buffer).toString());
+      expect(records).toEqual([]);
+    });
+
+    it('cools nothing when serve marks the gateway, so a cleared mark serves the next request at once', async () => {
+      const seen: string[] = [];
+      let marked = false;
+      let refuse = true;
+      const deps = {
+        ...tierDeps([{ key: 'luna', native: { gateway: 'codex', id: 'gpt-5.6-luna' } }], seen, []),
+        fetch: (async (_u: string, init: RequestInit) => {
+          seen.push((JSON.parse(init.body as string) as { model: string }).model);
+          return refuse
+            ? new Response(refusedBody, { status: 400 })
+            : new Response(COMPLETE_BODY, { status: 200, headers: { 'content-type': 'application/json' } });
+        }) as unknown as typeof fetch,
+        chatgptLoginRefused: () => { marked = true; },
+        gatewayUnavailable: (_t: unknown, g: string) => (marked && g === 'codex' ? 'gateway "codex": refused' : undefined),
+      };
+      expect((await serveFully(tierReq(), deps)).status).toBe(502);
+      marked = false;
+      refuse = false;
+      expect((await serveFully(tierReq(), deps)).status).toBe(200);
+      expect(seen).toEqual(['t/luna', 't/luna']);
+    });
+
+    it('still cools the candidate when nothing marks the gateway', async () => {
+      const seen: string[] = [];
+      const deps = {
+        ...tierDeps([{ key: 'luna', native: { gateway: 'codex', id: 'gpt-5.6-luna' } }], seen, []),
+        chatgptLoginRefused: () => {},
+        gatewayUnavailable: () => undefined,
+      };
+      await serveFully(tierReq(), deps);
+      expect((await serveFully(tierReq(), deps)).status).toBe(529);
+      expect(seen).toEqual(['t/luna']);
+    });
+
+    it('answers a bare key with the named 502, Anthropic-shaped, the same as the next request', async () => {
+      const records: unknown[] = [];
+      const mark = serveMark();
+      const deps = {
+        fetch: (async () => new Response(refusedBody, { status: 400 })) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTenant: () => tenant,
+        resolveNative: () => ({ gateway: 'codex', id: 'gpt-5.6-luna', transport: 'litellm' as const }),
+        recordUsage: (row: unknown) => { records.push(row); },
+        ...mark,
+      };
+      const req = () => ({ method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from(JSON.stringify({ model: 'luna', messages: [] })) });
+      const first = await serveFully(req(), deps);
+      const later = await serveFully(req(), deps);
+      expect(first.status).toBe(502);
+      const body = JSON.parse((first.body as Buffer).toString()) as { type: string; error: { type: string; message: string } };
+      expect(body.type).toBe('error');
+      expect(body.error.message).toContain('luna: not served');
+      expect((first.body as Buffer).toString()).toBe((later.body as Buffer).toString());
+      expect(records).toEqual([]);
+    });
+  });
+
+  it('says nothing for an unrelated error', async () => {
+    let told = 0;
+    const result = await route(500, '{"error":"something else"}', () => { told += 1; });
+    expect(result.log).not.toContain('sonata restart');
+    expect(told).toBe(0);
+  });
+
+  it('says nothing for an upstream error that merely mentions a re-login, on any gateway', async () => {
+    // Unanchored, "re-login required" anywhere in any 401 — an api-key
+    // gateway's own session message included — took every ChatGPT gateway down.
+    const body = envelope('litellm.AuthenticationError: OpenAIException - Session expired, re-login required', 401);
+    const mention = envelope('litellm.BadRequestError: OpenAIException - the user wrote "Polling failed: x"', 400);
+    let told = 0;
+    for (const gateway of ['or', 'codex']) {
+      await route(401, body, () => { told += 1; }, gateway);
+      await route(400, mention, () => { told += 1; }, gateway);
+    }
+    expect(told).toBe(0);
+  });
+});
+
 describe('routeRequest — 529 rewrite for empty Codex completions', () => {
   const emptyOutputBody = JSON.stringify({
     error: { message: 'Unknown items in responses API response: []' },
@@ -1917,6 +2127,48 @@ describe('conversation stickiness', () => {
     await serveFully(turn(2), deps);
     expect(seen.slice(2)).toEqual(['default/flash']);
   });
+
+  // CodeRabbit (PR #72): a broken response on a conversation already
+  // remembered neither refreshed its age nor its place in the eviction order,
+  // so a conversation that was still being spoken to could age out — and the
+  // memory of whose thinking blocks its transcript carries went with it.
+  it('counts a broken response as activity, keeping the memory of who served', async () => {
+    const bodies: any[] = [];
+    const state = { phase: 1, clock: 1_000 };
+    const broken = () => new Response(new ReadableStream<Uint8Array>({
+      start(c) { c.enqueue(new TextEncoder().encode('event: ping\ndata: {}\n\n')); c.error(new Error('reset')); },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const payload = JSON.parse(init.body as string) as { model: string };
+        bodies.push(payload);
+        const flash = payload.model === 'default/flash';
+        if (state.phase === 1) return new Response(COMPLETE_BODY, { status: flash ? 503 : 200 });
+        if (state.phase === 2) return flash ? new Response(COMPLETE_BODY, { status: 503 }) : broken();
+        return new Response(COMPLETE_BODY, { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+      now: () => state.clock,
+    };
+
+    // Luna serves turn 1 in full.
+    await serveFully(turn(1), deps);
+    // Near the end of the TTL, luna serves turn 2 but the stream breaks.
+    state.phase = 2;
+    state.clock += STICKY_TTL_MS - 1_000;
+    try { await serveFully(turn(2), deps); } catch { /* broken */ }
+    expect(bodies.at(-1)!.model).toBe('default/luna');
+    // Past the TTL counted from turn 1, well inside it from turn 2: flash now
+    // takes over and must not be handed luna's thinking blocks.
+    state.phase = 3;
+    state.clock += 2_000;
+    await serveFully(turn(3), deps);
+    const served = bodies.at(-1)!;
+    expect(served.model).toBe('default/flash');
+    const types = served.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content.map((b: any) => b.type) : []);
+    expect(types).not.toContain('thinking');
+  });
 });
 
 // ── Effort-level candidates ──
@@ -2635,6 +2887,56 @@ describe('respond — backpressure', () => {
     await done;
     expect(events.at(-1)).toBe('end');
   });
+
+  // CodeRabbit (PR #72): a 'close' that fired between two writes is not seen
+  // again, so a later false write waiting on 'drain'/'close' would hang.
+  const within = <T>(p: Promise<T>, ms: number): Promise<T | 'timeout'> =>
+    Promise.race([p, new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), ms))]);
+  const fakeRes = async (events: string[]) => {
+    const { EventEmitter } = await import('node:events');
+    return Object.assign(new EventEmitter(), {
+      destroyed: false, writableEnded: false,
+      writeHead: () => undefined,
+      write: (chunk: Uint8Array) => { events.push(`write ${Buffer.from(chunk).toString()}`); return false; },
+      end: () => { events.push('end'); },
+    });
+  };
+
+  it('settles when the client leaves between two backpressured writes', async () => {
+    const events: string[] = [];
+    const res = await fakeRes(events);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    async function* body(): AsyncIterable<Uint8Array> {
+      yield Buffer.from('a');
+      await gate;
+      yield Buffer.from('b');
+    }
+    const done = respond(res as never, { status: 200, headers: {}, body: body() });
+    await new Promise((r) => setTimeout(r, 10));
+    res.emit('drain'); // 'a' drains; the loop now waits on the upstream for 'b'
+    await new Promise((r) => setTimeout(r, 10));
+    res.destroyed = true;
+    res.emit('close'); // gone while nothing is waiting on 'close'
+    release(); // the upstream then produces 'b'
+    expect(await within(done, 1_000)).not.toBe('timeout');
+    expect(events).toEqual(['write a']);
+  });
+
+  it('settles when the client leaves while a write waits on drain', async () => {
+    const events: string[] = [];
+    const res = await fakeRes(events);
+    async function* body(): AsyncIterable<Uint8Array> {
+      yield Buffer.from('a');
+      yield Buffer.from('b');
+    }
+    const done = respond(res as never, { status: 200, headers: {}, body: body() });
+    await new Promise((r) => setTimeout(r, 10));
+    res.destroyed = true;
+    res.emit('close');
+    expect(await within(done, 1_000)).not.toBe('timeout');
+    expect(events).toEqual(['write a']);
+  });
 });
 
 describe('message-less 400s', () => {
@@ -2858,6 +3160,83 @@ describe('respond — a client that disconnects mid-stream', () => {
   }, 10_000);
 });
 
+describe('a client that is gone before the response starts', () => {
+  const within = <T>(p: Promise<T>, ms: number): Promise<T | 'timeout'> =>
+    Promise.race([p, new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), ms))]);
+
+  it('respond cancels the upstream and returns when the client left before it ran', async () => {
+    // `closed` started true but nothing cancelled the body, so a loop waiting
+    // on an upstream that had not yet sent its first chunk waited forever,
+    // holding the upstream connection for a client nobody was writing to.
+    const { EventEmitter } = await import('node:events');
+    let cancelled = false;
+    const upstream = new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => { /* stalls */ }), cancel() { cancelled = true; } });
+    const res = Object.assign(new EventEmitter(), {
+      destroyed: true, writableEnded: false, headersSent: false,
+      writeHead: () => undefined, write: () => true, end: () => undefined,
+    });
+    const outcome = await within(
+      respond(res as never, { status: 200, headers: { 'content-type': 'text/event-stream' }, body: responseBodyForTest(upstream) }),
+      1_000,
+    );
+    expect(outcome).not.toBe('timeout');
+    expect(cancelled).toBe(true);
+  });
+
+  it('aborts the upstream fetch when the client disconnects during it, and cools nothing', async () => {
+    clearCooldowns();
+    const calls: string[] = [];
+    let aborted = 0;
+    const rows: unknown[] = [];
+    const fetchStub = ((_url: string, init?: { signal?: AbortSignal; body?: unknown }) => {
+      calls.push(String(JSON.parse(String(init?.body ?? '{}')).model));
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal === undefined) return; // never settles: the old behaviour
+        const fail = (): void => { aborted += 1; reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); };
+        if (signal.aborted) fail(); else signal.addEventListener('abort', fail, { once: true });
+      });
+    }) as unknown as typeof fetch;
+    const server = createRouterServer({
+      fetch: fetchStub, litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ({ role: 'code', tier: 'simple', routes: [
+        { key: 'first', native: { gateway: 'g', id: 'f1' } },
+        { key: 'second', native: { gateway: 'g', id: 'f2' } },
+      ] }),
+      recordUsage: (row: unknown) => { rows.push(row); },
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const { request } = await import('node:http');
+      await new Promise<void>((resolve) => {
+        const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/v1/messages', headers: { 'content-type': 'application/json' } });
+        req.on('error', () => resolve());
+        req.end(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: 'x' }] }));
+        setTimeout(() => { req.destroy(); resolve(); }, 150);
+      });
+      const until = Date.now() + 2_000;
+      while (aborted === 0 && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 100));
+      expect(aborted).toBe(1);
+      // The client is gone: the next candidate is not asked, and no ledger
+      // row or cooldown records a request nobody is waiting for.
+      expect(calls).toHaveLength(1);
+      expect(rows).toEqual([]);
+      // `first` was not cooled: a fresh request tries it first again.
+      calls.length = 0;
+      const again = request({ host: '127.0.0.1', port, method: 'POST', path: '/v1/messages', headers: { 'content-type': 'application/json' } });
+      again.on('error', () => undefined);
+      again.end(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: 'y' }] }));
+      await new Promise((r) => setTimeout(r, 100));
+      again.destroy();
+      expect(calls[0]).toContain('first');
+    } finally {
+      server.close();
+    }
+  }, 10_000);
+});
+
 describe('stickiness memory stays bounded when responses break', () => {
   beforeEach(() => clearCooldowns());
   it('evicts like stickySet when incomplete responses record new conversations', async () => {
@@ -2876,5 +3255,117 @@ describe('stickiness memory stays bounded when responses break', () => {
       try { for await (const _ of res.body as AsyncIterable<Uint8Array>) { /* read */ } } catch { /* broken */ }
     }
     expect(stickyConversationCount()).toBeLessThanOrEqual(STICKY_MAX_CONVERSATIONS);
+  });
+});
+
+describe('a gateway serve has dropped', () => {
+  beforeEach(() => clearCooldowns());
+  const blocked = (_tenant: unknown, gateway: string) => gateway === 'codex'
+    ? 'gateways with auth = "codex-oauth" read different credentials — "codex" (a, codex store), "work" (b, sonata:work)'
+    : undefined;
+
+  it('skips its tier candidates and serves the next', async () => {
+    const seen: string[] = [];
+    const res = await routeRequest(
+      { method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [] })) },
+      {
+        fetch: (async (_u: string, init: RequestInit) => { seen.push((JSON.parse(init.body as string) as { model: string }).model); return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTier: () => ({ role: 'code', tier: 'simple', routes: [
+          { key: 'luna', native: { gateway: 'codex', id: 'l' } },
+          { key: 'flash', native: { gateway: 'acme', id: 'f' } },
+        ] }),
+        gatewayUnavailable: blocked,
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(seen).toEqual(['default/flash']);
+  });
+
+  it('answers a typed 502 naming the conflict when every candidate is on it, forwarding nothing', async () => {
+    const seen: string[] = [];
+    const res = await routeRequest(
+      { method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [] })) },
+      {
+        fetch: (async (u: string) => { seen.push(u); return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTier: () => ({ role: 'code', tier: 'simple', routes: [{ key: 'luna', native: { gateway: 'codex', id: 'l' } }] }),
+        gatewayUnavailable: blocked,
+      },
+    );
+    expect(res.status).toBe(502);
+    const body = JSON.parse((res.body as Buffer).toString()) as { error: { type: string; message: string } };
+    expect(body.error.type).toBe('router_error');
+    expect(body.error.message).toContain('"codex" (a, codex store)');
+    expect(seen).toEqual([]);
+  });
+
+  it('names the drop, not LiteLLM, when every candidate is dropped while LiteLLM is also unavailable', async () => {
+    // The LiteLLM skip ran first, so dropped candidates were never counted as
+    // dropped and the 502 sent the user to `sonata litellm install` — which
+    // would not have made a single one of them servable.
+    const seen: string[] = [];
+    const res = await routeRequest(
+      { method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [] })) },
+      {
+        fetch: (async (u: string) => { seen.push(u); return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTier: () => ({ role: 'code', tier: 'simple', routes: [{ key: 'luna', native: { gateway: 'codex', id: 'l' } }] }),
+        gatewayUnavailable: blocked,
+        litellmUnavailable: () => 'a project routes through LiteLLM, which is missing — run `sonata litellm install`',
+      },
+    );
+    expect(res.status).toBe(502);
+    const message = (JSON.parse((res.body as Buffer).toString()) as { error: { message: string } }).error.message;
+    expect(message).toContain('"codex" (a, codex store)');
+    expect(message).not.toContain('sonata litellm install');
+    expect(seen).toEqual([]);
+  });
+
+  it('answers a bare key on it with the same 502', async () => {
+    const seen: string[] = [];
+    const res = await routeRequest(
+      { method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from(JSON.stringify({ model: 'luna', messages: [] })) },
+      {
+        fetch: (async (u: string) => { seen.push(u); return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveNative: () => ({ gateway: 'codex', id: 'l', transport: 'litellm' as const }),
+        gatewayUnavailable: blocked,
+      },
+    );
+    expect(res.status).toBe(502);
+    expect(seen).toEqual([]);
+  });
+});
+
+describe('a dropped gateway beside candidates that are only cooling', () => {
+  beforeEach(() => clearCooldowns());
+  it('answers the normal 529, naming the dropped gateway beside the cooling ones', async () => {
+    // The reviewer's sequence: one candidate on a dropped gateway, one that
+    // fails. The first request tries flash (503) → 529. The second finds flash
+    // cooling — nothing was attempted, but not everything was dropped, so the
+    // 502 "not served" would misdescribe a transient failure as config.
+    let fetches = 0;
+    const deps = {
+      fetch: (async () => { fetches += 1; return new Response('{"error":"boom"}', { status: 503 }); }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ({ role: 'code', tier: 'simple', routes: [
+        { key: 'luna', native: { gateway: 'codex', id: 'l' } },
+        { key: 'flash', native: { gateway: 'acme', id: 'f' } },
+      ] }),
+      gatewayUnavailable: (_t: unknown, g: string) => (g === 'codex' ? 'gateway codex dropped (conflict)' : undefined),
+    };
+    const req = () => ({
+      method: 'POST', url: '/v1/messages', headers: {},
+      body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: 'hi' }] })),
+    });
+    const first = await routeRequest(req(), deps);
+    expect(first.status).toBe(529);
+    const second = await routeRequest(req(), deps);
+    expect(second.status).toBe(529);
+    const text = (second.body as Buffer).toString();
+    expect(text).toContain('gateway codex dropped (conflict)');
+    expect(text).toContain('sonata dispatch');
+    expect(fetches).toBe(1);
   });
 });

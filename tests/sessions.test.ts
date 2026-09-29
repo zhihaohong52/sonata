@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { sessionsPath, recordSession, loadSessions, pruneSessions } from '../src/sessions.js';
+import { sessionsPath, recordSession, loadSessions, readSessions, pruneSessions } from '../src/sessions.js';
 
 let home: string;
 beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'sonata-sessions-')); });
@@ -31,6 +31,17 @@ describe('sessions map', () => {
     mkdirSync(dirname(sessionsPath(home)), { recursive: true });
     writeFileSync(sessionsPath(home), '{not json');
     expect(loadSessions(home)).toEqual({});
+  });
+
+  it('readSessions says whether the empty map is an answer or a failed read', () => {
+    // Absent is a real answer: there are no sessions. A file that exists and
+    // cannot be read says nothing, and a caller caching it must not keep it.
+    expect(readSessions(home)).toEqual({ sessions: {}, ok: true, invalid: [] });
+    mkdirSync(dirname(sessionsPath(home)), { recursive: true });
+    writeFileSync(sessionsPath(home), '{"s1":{"session":"s1","cwd":"/repo/a","started":"x"}}');
+    expect(readSessions(home, () => { throw new Error('EMFILE'); })).toEqual({ sessions: {}, ok: false, invalid: [] });
+    expect(readSessions(home).ok).toBe(true);
+    expect(readSessions(home).sessions.s1.cwd).toBe('/repo/a');
   });
 
   it('prunes entries older than the retention window', async () => {
