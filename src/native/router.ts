@@ -183,6 +183,33 @@ export interface RouterRequest {
   url: string;
   headers: Record<string, string>;
   body: Buffer;
+  /**
+   * Aborted when the client disconnects before the response starts. Passed
+   * to every upstream fetch, so a request nobody is waiting for stops holding
+   * an upstream connection; and a fetch it aborts is the client's doing, so
+   * it is neither a candidate failure nor a ledger row (`clientGone`).
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * The answer to a request whose client left before the response started.
+ * Never written anywhere — respond sees the destroyed response and returns —
+ * and never recorded: the request was abandoned, not served or refused.
+ */
+interface ClientGoneResponse extends RouterResponse { clientGone: true }
+
+function clientGone(): ClientGoneResponse {
+  return { status: 499, headers: {}, body: Buffer.alloc(0), clientGone: true };
+}
+
+/** Whether the client disconnected while this request was being routed. */
+function clientLeft(req: RouterRequest): boolean {
+  return req.signal?.aborted === true;
+}
+
+function isClientGone(response: RouterResponse): response is ClientGoneResponse {
+  return (response as Partial<ClientGoneResponse>).clientGone === true;
 }
 
 export interface RouterResponse {
@@ -1411,7 +1438,7 @@ async function forwardToLitellm(
     const served = chatgpt ? deps.chatgptTokenDir?.() : undefined;
     const response = await deps.fetch(
       targetUrl(deps.litellmBase, req.url),
-      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined },
+      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal },
     );
     // LiteLLM returns 500 when ChatGPT's Codex endpoint yields output:[]. That
     // usually means the upstream was overloaded and returned an empty completion
@@ -1464,6 +1491,7 @@ async function forwardToLitellm(
       body: response.body === null ? Buffer.alloc(0) : responseBody(response.body),
     };
   } catch (error) {
+    if (clientLeft(req)) return clientGone();
     const message = error instanceof Error ? error.message : String(error);
     return {
       status: 502,
@@ -1550,7 +1578,7 @@ async function forwardDirect(
   try {
     const response = await deps.fetch(
       targetUrl(base, req.url),
-      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined },
+      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal },
     );
     return {
       status: response.status,
@@ -1558,6 +1586,7 @@ async function forwardDirect(
       body: response.body === null ? Buffer.alloc(0) : responseBody(response.body),
     };
   } catch (error) {
+    if (clientLeft(req)) return clientGone();
     const message = error instanceof Error ? error.message : String(error);
     return {
       status: 502,
@@ -1641,6 +1670,9 @@ async function routeTierRequest(
     : [...ranked.filter((route) => route.key === sticky), ...ranked.filter((route) => route.key !== sticky)];
 
   for (const route of candidates) {
+    // The client left: asking the next candidate would serve nobody, and
+    // counting the abandoned attempt would cool a model that did nothing wrong.
+    if (clientLeft(req)) return clientGone();
     const cool = litellmModelName(tenant, route.key);
     const direct = route.native?.transport === 'direct';
     // Dropped before the LiteLLM check: a candidate on a dropped gateway is
@@ -1706,6 +1738,10 @@ async function routeTierRequest(
         deps,
       )
       : await forwardToLitellm(body, headers, { ...req, body }, deps, isCodexOauth(tenant, gateway));
+    if (clientLeft(req)) {
+      if (!Buffer.isBuffer(response.body)) cancelBody(response.body);
+      return clientGone();
+    }
     // A refused ChatGPT login is the gateway's, not the request's: the next
     // candidate is tried, and it is counted as not served, so a tier left
     // with nothing else answers the same named 502 later requests get.
@@ -2141,13 +2177,15 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   }
   if (native?.transport === 'direct' && alias !== undefined) {
     deps.log?.(`${req.method} ${req.url} model=${requested ?? '?'} -> direct`);
+    const response = await forwardDirect(
+      withEffort(withModel(req.body, native.id), bareEffort),
+      { baseUrl: native.baseUrl ?? '', key: deps.gatewayKeys?.(tenant)[native.gateway] ?? '' },
+      req,
+      deps,
+    );
+    if (isClientGone(response)) return response;
     return withUsageRecording(
-      await forwardDirect(
-        withEffort(withModel(req.body, native.id), bareEffort),
-        { baseUrl: native.baseUrl ?? '', key: deps.gatewayKeys?.(tenant)[native.gateway] ?? '' },
-        req,
-        deps,
-      ),
+      response,
       {
         startedAt,
         session,
@@ -2185,6 +2223,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       deps,
       isCodexOauth(tenant, native?.gateway),
     );
+    if (isClientGone(response)) return response;
     // Answered as every later request on the gateway is — the named 502 —
     // and, like those, never a ledger row: nothing was served.
     if (response.loginRefused === true && native !== undefined) {
@@ -2222,7 +2261,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   try {
     const response = await deps.fetch(
       targetUrl(deps.anthropicBase ?? 'https://api.anthropic.com', req.url),
-      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined },
+      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal },
     );
     return withUsageRecording({
       status: response.status,
@@ -2231,6 +2270,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     }, { startedAt, session, project: tenant.project, tenant: tenant.id,
       tenantConfig: tenant.config, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   } catch (error) {
+    if (clientLeft(req)) return clientGone();
     const message = error instanceof Error ? error.message : String(error);
     return withUsageRecording({
       status: 502,
@@ -2278,6 +2318,12 @@ export async function respond(res: ServerResponse, routed: RouterResponse): Prom
     cancelBody(body);
   };
   res.once('close', onClose);
+  // Gone before this ran: 'close' has already fired, so cancel here. Without
+  // it the loop waits on an upstream that has not sent its first chunk, for
+  // a client nobody will write to. Iterating on (rather than returning)
+  // lets the wrappers' finally blocks record the incomplete row, exactly as
+  // a disconnect mid-stream does.
+  if (closed) cancelBody(body);
   try {
     for await (const chunk of body) {
       if (closed || res.destroyed) break;
@@ -2327,12 +2373,27 @@ export function createRouterServer(deps: RouterDeps): Server {
           return;
         }
       }
-      await respond(res, await routeRequest({
-        method: req.method ?? 'GET',
-        url: req.url ?? '/',
-        headers: incomingHeaders(req),
-        body: await readBody(req),
-      }, deps));
+      const body = await readBody(req);
+      // Aborts the upstream fetch if the client leaves while it is pending.
+      // Only until routing returns: from then on `respond` owns the
+      // disconnect, and cancels the body it is streaming.
+      const abort = new AbortController();
+      const onClose = (): void => { if (!res.writableEnded) abort.abort(); };
+      res.once('close', onClose);
+      if (res.destroyed) abort.abort();
+      let routed: RouterResponse;
+      try {
+        routed = await routeRequest({
+          method: req.method ?? 'GET',
+          url: req.url ?? '/',
+          headers: incomingHeaders(req),
+          body,
+          signal: abort.signal,
+        }, deps);
+      } finally {
+        res.off('close', onClose);
+      }
+      await respond(res, routed);
     } catch (error) {
       // Once the headers are out, the response is an event stream the client
       // is parsing frame by frame: a JSON body appended to it is garbage
