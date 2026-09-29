@@ -25,6 +25,13 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **A torn `keys.json` no longer takes down a gateway that needs no key.**
+  The router looks every default-sourced and OAuth gateway up in sonata's key
+  store; finding nothing while that file was mid-write was recorded as a
+  refusal, so a keyless gateway — or a ChatGPT gateway whose own login had
+  resolved — answered 502 and had its models pulled from LiteLLM for the
+  length of one write. That read is now transient and retried.
+
 - **A read-only `claude` dispatch runs on a machine with an enterprise
   `managed-mcp.json`.** Claude Code exits at startup when
   `--strict-mcp-config` meets a deployed managed MCP file, so every

@@ -4468,6 +4468,87 @@ litellm = ${litellmPort}
     // "expected 200 to be 502").
     const stoppedClock = () => { const at = Date.now(); return () => at; };
 
+    it('serves a default-sourced keyless gateway while sonata\'s keys.json is torn', async () => {
+      // A default-sourced api-key gateway with no key is forwarded keyless by
+      // design. The automatic key lookup finding nothing past a mid-write
+      // keys.json recorded a non-tentative failure: the gateway answered 502
+      // and its models were pulled from LiteLLM for the length of a write.
+      writeMachineConfig(`
+[models."mflash"]
+gateway = "acme"
+id = "m-flash-1"
+[tiers.code]
+simple = ["mflash"]
+complex = ["mflash"]
+[native.gateways."acme"]
+base_url = "https://acme.example/v1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+      const keys = join(home, '.config', 'sonata', 'keys.json');
+      mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+      writeFileSync(keys, '{"other": "k');
+      const tempDir = tempDirFor();
+      let spawns = 0;
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const handle = await cmdServe({
+        cwd, home, tempDir, waitForLitellm: async () => {}, now: stoppedClock(),
+        spawnLitellm: () => { spawns += 1; return { pid: spawns, kill: () => {} }; },
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      expect(readFileSync(join(tempDir, 'config.json'), 'utf8')).toContain('m-flash-1');
+      const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      expect(res.status).toBe(200);
+      writeFileSync(keys, '{"other": "k"}');
+      const again = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      expect(again.status).toBe(200);
+      expect(spawns).toBe(1);
+    });
+
+    it('serves a ChatGPT gateway whose own login resolved while sonata\'s keys.json is torn', async () => {
+      // An OAuth gateway's credential comes from its own chain; the key
+      // lookup it is also put through must not refuse it for a store it
+      // does not need.
+      writeMachineConfig(`
+[models."luna"]
+gateway = "cx"
+id = "gpt-5.6-luna"
+[tiers.code]
+simple = ["luna"]
+complex = ["luna"]
+[native.gateways."cx"]
+auth = "codex-oauth"
+credential_source = "codex"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+      mkdirSync(join(home, '.codex'), { recursive: true });
+      writeFileSync(join(home, '.codex', 'auth.json'), codexRecord('CODEX-A'));
+      mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+      writeFileSync(join(home, '.config', 'sonata', 'keys.json'), '{"other": "k');
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, now: stoppedClock(),
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      expect(res.status).toBe(200);
+    });
+
     it('refuses a default ChatGPT gateway whose codex file is torn, rather than serve opencode\'s account', async () => {
       writeMachineConfig(`
 [models."luna"]

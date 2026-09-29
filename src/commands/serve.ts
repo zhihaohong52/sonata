@@ -972,6 +972,19 @@ function resolveChildEnvFromSnapshot(
       });
       return last;
     }
+    if (unreadable !== undefined && resolved === undefined && missing === undefined) {
+      // A lookup that requires no credential (the automatic key lookup: a
+      // default-sourced api-key gateway is forwarded keyless, an OAuth one
+      // resolves through its own chain) found nothing. An unreadable store
+      // is then transient, not a refusal: refusing pulled the gateway's
+      // models out of LiteLLM for the length of one write to keys.json.
+      transient.push({
+        gateway: name,
+        message: `gateway "${name}": its key store could not be read (${unreadable.detail}) — it needs no key, ` +
+          'so it is served without one; read again on the next request',
+      });
+      return undefined;
+    }
     if (unreadable !== undefined) {
       // Nothing to keep: an answer found past a store that could not be read
       // may be another store's account, and none at all may be a torn read.
