@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { HarnessAdapter, LaunchPlan, PlanInput, UsageQuery, UsageRecord, UsageResult } from './types.js';
 import { asRecord, count, epochMs, filesIn, readJsonl } from './usage-files.js';
@@ -12,7 +13,24 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function buildScript(input: PlanInput): LaunchPlan {
+/**
+ * Where Claude Code looks for an enterprise `managed-mcp.json`, per
+ * code.claude.com/docs/en/managed-mcp. Windows is unsupported by sonata.
+ */
+export const MANAGED_MCP_FILES: Partial<Record<NodeJS.Platform, string>> = {
+  darwin: '/Library/Application Support/ClaudeCode/managed-mcp.json',
+  linux: '/etc/claude-code/managed-mcp.json',
+};
+
+export interface ClaudePlanEnv {
+  /** The managed-mcp.json path to check; injectable so tests never read the system path. */
+  managedMcpFile?: string;
+}
+
+export function planClaude(
+  input: PlanInput,
+  env: ClaudePlanEnv = { managedMcpFile: MANAGED_MCP_FILES[process.platform] },
+): LaunchPlan {
   const readOnly = isReadOnlyRole(input.role);
   const permissionMode = readOnly ? 'plan' : input.mode;
   // The level travels in the model name, not in a flag of its own. The claude
@@ -60,7 +78,21 @@ function buildScript(input: PlanInput): LaunchPlan {
   // loads no server at all and left exactly Read, Grep and Glob. Chosen over
   // `--disallowedTools=mcp__*`, which also hid them in that probe but still
   // starts every server and relies on glob matching staying supported.
-  if (readOnly) flags.push('--tools=Read,Grep,Glob', '--allowedTools=Read,Grep,Glob', '--strict-mcp-config');
+  //
+  // Except where an enterprise `managed-mcp.json` is deployed: Claude Code
+  // reads `--strict-mcp-config` there as asking to replace the managed set and
+  // exits at startup (code.claude.com/docs/en/managed-mcp), so every read-only
+  // dispatch would die before running. There the fallback is the deny rule —
+  // the managed servers still start, but their tools are refused. Quoted,
+  // because an unquoted `mcp__*` is a bash glob against the working directory.
+  if (readOnly) {
+    const managed = env.managedMcpFile !== undefined && existsSync(env.managedMcpFile);
+    flags.push(
+      '--tools=Read,Grep,Glob',
+      '--allowedTools=Read,Grep,Glob',
+      managed ? shellQuote('--disallowedTools=mcp__*') : '--strict-mcp-config',
+    );
+  }
   // The session id sonata chose, so the run's transcript — and the router's
   // ledger rows, which record Claude Code's session id — name this run.
   if (input.sessionId !== undefined) flags.push(`--session-id ${shellQuote(input.sessionId)}`);
@@ -169,7 +201,7 @@ export const claudeAdapter: HarnessAdapter = {
   versionCommand: ['claude', '--version'],
   supportedVersions: '>=2.1.0 <3.0.0',
   pathPrepend: [],
-  plan: buildScript,
+  plan: (input) => planClaude(input),
   canPromptForApproval: false,
   promptPatterns: PROMPT_PATTERNS,
   describePrompt(): string | null {

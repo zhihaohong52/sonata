@@ -25,6 +25,41 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **A session's request is no longer served as the machine config when
+  `sessions.json` cannot be read.** If the router had never read that file
+  successfully and the latest read failed, a request carrying a session id
+  was resolved as "no record" and served with the machine config's
+  credentials and budget. It is now refused with a 400 saying the file could
+  not be read and to retry; requests naming no session, or naming their
+  project, are unchanged.
+
+- **One bad record in `sessions.json` no longer fails every routed request.**
+  A `null` entry, or one whose `cwd` is not a string (a hand edit — sonata's
+  own writer never produces one), threw while the router listed session
+  projects, which it does per request. Such a record is now dropped and named
+  once in serve's log; the rest of the file is used as before.
+
+- **A log that stops draining no longer grows `sonata serve`'s memory without
+  bound.** LiteLLM's output is forwarded line by line and never paused, so a
+  blocked terminal or pipe queued every later line in memory. Lines are now
+  dropped while the log is blocked (past 1 MiB, or until it drains), and one
+  line says how many once it drains; every line is still scanned for a refused
+  ChatGPT login.
+
+- **A torn `keys.json` no longer takes down a gateway that needs no key.**
+  The router looks every default-sourced and OAuth gateway up in sonata's key
+  store; finding nothing while that file was mid-write was recorded as a
+  refusal, so a keyless gateway — or a ChatGPT gateway whose own login had
+  resolved — answered 502 and had its models pulled from LiteLLM for the
+  length of one write. That read is now transient and retried.
+
+- **A read-only `claude` dispatch runs on a machine with an enterprise
+  `managed-mcp.json`.** Claude Code exits at startup when
+  `--strict-mcp-config` meets a deployed managed MCP file, so every
+  review/explore/plan run on the claude harness died there. Where the file is
+  present, sonata refuses MCP tools with a `--disallowedTools=mcp__*` rule
+  instead; everywhere else it still loads no MCP server at all.
+
 - **A conversation whose recent responses broke is no longer forgotten.**
   The router remembers which models have served a conversation so it can
   remove their thinking blocks before another model takes over; a response

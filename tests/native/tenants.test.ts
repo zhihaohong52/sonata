@@ -148,8 +148,9 @@ base_url = "https://gateway.example/v1"
         return readFileSync(path, 'utf8');
       },
     });
-    const machine = realpathSync(join(home, '.config', 'sonata', 'sonata.toml'));
-    expect(reg.resolve({ session: 's-a' }).configPath).toBe(machine);
+    // With no good read to fall back on, the session's request is refused
+    // rather than served as the machine tenant (its credentials, its budget).
+    expect(() => reg.resolve({ session: 's-a' })).toThrow(TenantError);
     for (let i = 0; i < 3; i++) {
       expect(reg.resolve({ session: 's-a' }).configPath).toBe(realpathSync(join(a, 'sonata.toml')));
     }
@@ -179,6 +180,50 @@ base_url = "https://gateway.example/v1"
     expect(reg.resolve({ session: 's-a' }).configPath).toBe(projectA);
     // The next read succeeds, and the new version is seen.
     expect(reg.resolve({ session: 's-b' }).configPath).toBe(realpathSync(join(b, 'sonata.toml')));
+  });
+
+  it('refuses a session\'s request when sessions.json has never been read, and says to retry', async () => {
+    await recordSession(home, { session: 's-a', cwd: a, started: new Date().toISOString() });
+    const reg = new TenantRegistry(home, {
+      readSessionsFile: () => { throw Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' }); },
+    });
+    expect(() => reg.resolve({ session: 's-a' })).toThrow(TenantError);
+    expect(() => reg.resolve({ session: 's-a' })).toThrow(/sessions\.json could not be read.*retry/i);
+    // A request naming no session, or naming its project, is unaffected.
+    const machine = realpathSync(join(home, '.config', 'sonata', 'sonata.toml'));
+    expect(reg.resolve({}).configPath).toBe(machine);
+    expect(reg.resolve({ project: a, session: 's-a' }).configPath).toBe(realpathSync(join(a, 'sonata.toml')));
+  });
+
+  it('still sends a session with no record to the machine config when sessions.json read fine', async () => {
+    await recordSession(home, { session: 's-a', cwd: a, started: new Date().toISOString() });
+    const machine = realpathSync(join(home, '.config', 'sonata', 'sonata.toml'));
+    expect(new TenantRegistry(home).resolve({ session: 's-unknown' }).configPath).toBe(machine);
+  });
+
+  it('drops an invalid sessions.json record, keeps the valid ones, and logs it once', async () => {
+    // A null entry made `record.cwd` throw while the cwd list was built, and
+    // that runs on every request: one bad record took all routing down.
+    await recordSession(home, { session: 's-a', cwd: a, started: new Date().toISOString() });
+    const path = join(home, '.config', 'sonata', 'sessions.json');
+    const doc = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    doc['s-null'] = null;
+    doc['s-num'] = { session: 's-num', cwd: 42, started: new Date().toISOString() };
+    doc['s-none'] = { session: 's-none', started: new Date().toISOString() };
+    writeFileSync(path, JSON.stringify(doc));
+    const logs: string[] = [];
+    const reg = new TenantRegistry(home, { log: (line) => logs.push(line) });
+    expect(reg.fingerprint()).toContain(realpathSync(join(a, 'sonata.toml')));
+    expect(reg.resolve({ session: 's-a' }).configPath).toBe(realpathSync(join(a, 'sonata.toml')));
+    const machine = realpathSync(join(home, '.config', 'sonata', 'sonata.toml'));
+    expect(reg.resolve({ session: 's-num' }).configPath).toBe(machine);
+    expect(reg.resolve({ session: 's-null' }).configPath).toBe(machine);
+    reg.fingerprint();
+    const dropped = logs.filter((line) => line.includes('invalid record'));
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]).toContain('s-null');
+    expect(dropped[0]).toContain('s-num');
+    expect(dropped[0]).toContain('s-none');
   });
 
   it('picks up a registered session\'s project that gains a sonata.toml, with sessions.json unchanged', async () => {

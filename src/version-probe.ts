@@ -70,7 +70,7 @@ export interface ProbeError extends Error {
 export function runProbe(
   cmd: string,
   args: readonly string[],
-  opts: { timeoutMs: number; env?: NodeJS.ProcessEnv; maxBuffer?: number },
+  opts: { timeoutMs: number; env?: NodeJS.ProcessEnv; maxBuffer?: number; graceMs?: number },
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     let child;
@@ -201,7 +201,7 @@ export function runProbe(
       // waiting after the grace period. The final setImmediate gives the poll
       // phase one more pass first — a timer fires before poll in a loop turn,
       // so bytes already sitting in the pipe would otherwise be dropped.
-      grace = setTimeout(() => setImmediate(complete), PROBE_STDIO_GRACE_MS);
+      grace = setTimeout(() => setImmediate(complete), opts.graceMs ?? PROBE_STDIO_GRACE_MS);
     });
   });
 }
