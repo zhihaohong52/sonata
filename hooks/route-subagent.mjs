@@ -78,14 +78,22 @@ await new Promise((resolve) => {
     // stdout ignored: on SessionStart, plain stdout becomes context for
     // Claude, and the CLI's "routing off; 1 session(s) routed" is not an
     // instruction. stderr is kept for the one case worth showing.
-    const child = spawn(process.execPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    // SONATA_HOOK_TEST_NODE exists for the test suite alone: a missing binary
+    // is the one portable way to make this spawn fail, and the spawn failure is
+    // a path the hook must surface. (`ulimit -u 1` does it on macOS, but not
+    // under dash, Ubuntu's /bin/sh, which has no -u.)
+    const node = process.env.SONATA_HOOK_TEST_NODE || process.execPath;
+    const child = spawn(node, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     const stderr = [];
     child.stderr.on('data', (chunk) => stderr.push(chunk));
     child.on('exit', (code, signal) => { surfaceExit(code, signal, Buffer.concat(stderr).toString('utf8')); resolve(); });
     // A CLI that cannot be started at all (EAGAIN, EMFILE) is as unrouted as
     // one that refused, and used to end here with nothing said.
     child.on('error', (error) => { surface(`the CLI could not be started: ${error.message}`); resolve(); });
-  } catch {
+  } catch (error) {
+    // spawn throws, rather than emitting 'error', for failures Node does not
+    // class as run-time ones — still a CLI that never ran.
+    surface(`the CLI could not be started: ${error instanceof Error ? error.message : String(error)}`);
     resolve();
   }
 });
