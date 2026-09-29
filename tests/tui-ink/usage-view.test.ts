@@ -10,6 +10,7 @@ import {
 import { UsageScreen } from '../../src/tui-ink/screens/usage.js';
 import { appendRow, type LedgerRow } from '../../src/ledger.js';
 import { ThemeProvider } from '../../src/tui-ink/theme-context.js';
+import { until } from './ink-wait.js';
 
 describe('usage screen axes', () => {
   it('cycles the window through the presets, and off a custom one onto the first', () => {
@@ -84,7 +85,6 @@ describe('bucketsThatFit', () => {
   });
 });
 
-const tick = (ms = 50): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 function row(over: Partial<LedgerRow> = {}): LedgerRow {
   return {
@@ -105,7 +105,7 @@ describe('UsageScreen', () => {
     appendRow(home, row({ key: 'terra', role: 'review', price: { source: 'none' } }));
     const app = render(React.createElement(ThemeProvider, null,
       React.createElement(UsageScreen, { cwd: home, home })));
-    await tick(200);
+    await until(() => (app.lastFrame() ?? '').includes('$0.5000'), 'the report');
     let frame = app.lastFrame() ?? '';
     expect(frame).toContain('every project');
     expect(frame).toContain('flash');
@@ -115,7 +115,7 @@ describe('UsageScreen', () => {
     expect(frame).toContain('dispatch runs counted when they finish');
 
     app.stdin.write('d');
-    await tick(200);
+    await until(() => (app.lastFrame() ?? '').includes('by role'), 'the role breakdown');
     frame = app.lastFrame() ?? '';
     expect(frame).toContain('by role');
     expect(frame).toContain('review');
@@ -127,9 +127,9 @@ describe('UsageScreen', () => {
     appendRow(home, row());
     const app = render(React.createElement(ThemeProvider, null,
       React.createElement(UsageScreen, { cwd: home, home })));
-    await tick(200);
+    await until(() => (app.lastFrame() ?? '').includes('every project'), 'the report');
     app.stdin.write('g');
-    await tick(200);
+    await until(() => (app.lastFrame() ?? '').includes('Nothing routed from this project'), 'the project scope');
     const frame = app.lastFrame() ?? '';
     expect(frame).toContain('this project');
     expect(frame).toContain('Nothing routed from this project');

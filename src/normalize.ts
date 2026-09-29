@@ -1,6 +1,7 @@
 // eslint-disable-next-line no-control-regex
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
-const SPINNER_ONLY = /^[⠁-⣿|/\\-]+$/;
+/** A row that is nothing but a spinner frame — never content worth keeping. */
+export const SPINNER_ONLY = /^[⠁-⣿|/\\-]+$/;
 
 import type { SonataConfig, TierLists, UnifiedModelConfig } from './config.js';
 import { normalizeModelName } from './catalog.js';
@@ -19,22 +20,13 @@ export function cleanPane(raw: string): string[] {
 export function newLines(prev: string[], next: string[]): string[] {
   if (prev.length === 0) return next;
 
-  // Align `prev` inside `next`, allowing for `offset` lines scrolled off the
-  // top — least scroll first, which is the longest overlap. The last line of
-  // `prev` is exempt from the match: it is the one line a terminal routinely
-  // rewrites in place (a prompt since typed after, a redrawn progress line),
-  // and requiring it re-emitted the entire capture whenever it changed.
-  const last = prev.length - 1;
-  for (let offset = 0; offset <= last; offset++) {
-    let aligned = true;
-    for (let i = 0; offset + i < last; i++) {
-      if (i >= next.length || prev[offset + i] !== next[i]) { aligned = false; break; }
+  const maxK = Math.min(prev.length, next.length);
+  for (let k = maxK; k > 0; k--) {
+    const prevTail = prev.slice(prev.length - k);
+    const nextHead = next.slice(0, k);
+    if (prevTail.every((line, i) => line === nextHead[i])) {
+      return next.slice(k);
     }
-    if (!aligned) continue;
-    // `start` is where prev's last line sits in next; it is new only if it
-    // changed.
-    const start = last - offset;
-    return next[start] === prev[last] ? next.slice(start + 1) : next.slice(start);
   }
   return next;
 }

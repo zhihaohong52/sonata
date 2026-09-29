@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
-  cmdServe as realCmdServe, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
+  cmdServe as realCmdServe, listenOn, killRecordedOrphan, mergeTenantGateways, serveHealthUrl, type ServeHandle, isSonataRouter, healthReportsUi, sonataRouterHasUi, occupiedPortMessage, startServeDaemon,
   serveStatePath, stopServe, cmdRestart, defaultWaitForLitellm, sonataRouterMultiTenant, processCommand,
   budgetStatusesFor,
 } from '../../src/commands/serve.js';
@@ -17,6 +17,7 @@ import { clearCooldowns } from '../../src/native/router.js';
 import { ensureRouterToken } from '../../src/native/router-token.js';
 import { tenantId } from '../../src/native/tenants.js';
 import { appendRow } from '../../src/ledger.js';
+import { freePort } from '../free-port.js';
 
 // Every cmdServe starts the models.dev price refresh, and a fresh test home has
 // no cache, so each one fetched models.dev over the real network — unawaited
@@ -27,6 +28,8 @@ const cmdServe: typeof realCmdServe = (opts) => realCmdServe({ refreshPrices: as
 let cwd: string;
 let home: string;
 let handles: ServeHandle[];
+/** This test's LiteLLM port: free, and never the machine's real 4000. */
+let litellmPort: number;
 
 /** Every cmdServe call in this file writes here, never into the real tmpdir. */
 const tempDirFor = () => join(cwd, 'litellm');
@@ -63,7 +66,7 @@ function installFakeVenv(at: string): void {
   writeFileSync(join(venvDir(at), '.sonata-pin'), LITELLM_VERSION);
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   // Cooldowns are module-level state (see router.ts), so a candidate key
   // reused across tests in this file (e.g. "first"/"second") would otherwise
   // carry a cooldown set by an earlier test's failed forward — silently
@@ -72,6 +75,7 @@ beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), 'sonata-serve-cwd-'));
   home = mkdtempSync(join(tmpdir(), 'sonata-serve-home-'));
   handles = [];
+  litellmPort = await freePort();
   installFakeVenv(home);
   writeMachineConfig(`
 [native.models."deepseek-v4-flash"]
@@ -84,7 +88,7 @@ base_url = "https://gateway.example/v1"
 
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 `);
 });
 
@@ -107,7 +111,7 @@ function jwt(exp: number): string {
   return `header.${body}.signature`;
 }
 
-const CODEX_CONFIG = `
+const CODEX_CONFIG = () => `
 [native.models."gpt-5.6-luna"]
 gateway = "codex"
 id = "gpt-5.6-luna"
@@ -118,7 +122,7 @@ auth = "codex-oauth"
 
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 `;
 
 // Runs cmdServe far enough to capture the env it built for litellm, then stops.
@@ -135,7 +139,7 @@ async function serveWith(
   // builds FOR that child, which presupposes a model reaching the gateway.
   mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
   writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'),
-    '[native]\n[native.ports]\nrouter = 0\nlitellm = 4101\n'
+    `[native]\n[native.ports]\nrouter = 0\nlitellm = ${await freePort()}\n`
     + `[native.models."m"]\ngateway = "codex"\nid = "m-1"\ncontext_window = 1\n${gatewayToml}`);
   if (o.withCodexAuth) {
     mkdirSync(join(home, '.codex'), { recursive: true });
@@ -192,7 +196,7 @@ credential_source = "opencode"
 
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 `);
     writeSonataKey(home, 'acme', 'sonata-key');
     mkdirSync(join(home, '.local/share/opencode'), { recursive: true });
@@ -224,7 +228,7 @@ credential_source = "opencode"
 
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 `);
     writeSonataKey(home, 'acme', 'sonata-key');
 
@@ -330,39 +334,31 @@ litellm = 4000
 
   it('closes the router when eager LiteLLM startup fails after binding', async () => {
     const net = await import('node:net');
-    const probe = net.createServer();
-    await new Promise<void>((resolve) => probe.listen(0, 'localhost', () => resolve()));
-    const address = probe.address();
-    if (address === null || typeof address === 'string') throw new Error('probe did not bind');
-    const routerPort = address.port;
-    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+    const routerPort = await freePort();
 
     await expect(cmdServe({
-      cwd, home, tempDir: tempDirFor(), ports: { router: routerPort, litellm: 4000 },
+      cwd, home, tempDir: tempDirFor(), ports: { router: routerPort, litellm: litellmPort },
       spawnLitellm: () => ({ pid: 4242, kill: () => {} }),
       waitForLitellm: async () => { throw new Error('LiteLLM never came up'); },
     })).rejects.toThrow('LiteLLM never came up');
 
     expect(existsSync(serveStatePath(home, routerPort))).toBe(false);
-    const rebound = net.createServer();
-    await new Promise<void>((resolve, reject) => {
-      rebound.once('error', reject);
-      rebound.listen(routerPort, 'localhost', () => resolve());
-    });
-    await new Promise<void>((resolve, reject) => rebound.close((error) => error ? reject(error) : resolve()));
+    // Released on both families, not just the one `localhost` names.
+    for (const host of ['127.0.0.1', '::1']) {
+      const rebound = net.createServer();
+      await new Promise<void>((resolve, reject) => {
+        rebound.once('error', reject);
+        rebound.listen(routerPort, host, () => resolve());
+      });
+      await new Promise<void>((resolve, reject) => rebound.close((error) => error ? reject(error) : resolve()));
+    }
   });
 
   it('preserves a replacement router record when eager startup later fails', async () => {
-    const net = await import('node:net');
-    const probe = net.createServer();
-    await new Promise<void>((resolve) => probe.listen(0, 'localhost', () => resolve()));
-    const address = probe.address();
-    if (address === null || typeof address === 'string') throw new Error('probe did not bind');
-    const routerPort = address.port;
-    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+    const routerPort = await freePort();
 
     await expect(cmdServe({
-      cwd, home, tempDir: tempDirFor(), ports: { router: routerPort, litellm: 4000 },
+      cwd, home, tempDir: tempDirFor(), ports: { router: routerPort, litellm: litellmPort },
       spawnLitellm: () => ({ pid: 4242, kill: () => {} }),
       waitForLitellm: async () => {
         // A replacement cannot bind while this router owns the port, so this
@@ -403,16 +399,10 @@ litellm = 4000
   });
 
   it('does not touch the winner state when a second serve loses the router port race', async () => {
-    const net = await import('node:net');
-    const probe = net.createServer();
-    await new Promise<void>((resolve) => probe.listen(0, 'localhost', () => resolve()));
-    const address = probe.address();
-    if (address === null || typeof address === 'string') throw new Error('probe did not bind');
-    const routerPort = address.port;
-    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+    const routerPort = await freePort();
 
     const winner = await cmdServe({
-      cwd, home, tempDir: join(cwd, 'winner'), ports: { router: routerPort, litellm: 4000 },
+      cwd, home, tempDir: join(cwd, 'winner'), ports: { router: routerPort, litellm: litellmPort },
       waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 4242, kill: () => {} }),
     });
     handles.push(winner);
@@ -420,7 +410,7 @@ litellm = 4000
     const before = JSON.parse(readFileSync(path, 'utf8'));
 
     await expect(cmdServe({
-      cwd, home, tempDir: join(cwd, 'loser'), ports: { router: routerPort, litellm: 4000 },
+      cwd, home, tempDir: join(cwd, 'loser'), ports: { router: routerPort, litellm: litellmPort },
       waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 4343, kill: () => {} }),
     })).rejects.toThrow(/already served by another sonata router/);
 
@@ -596,8 +586,8 @@ describe('defaultWaitForLitellm', () => {
     await defaultWaitForLitellm(4010, 'sk-sonata-ours', { doFetch, sleep: async () => {} });
 
     expect(seen).toEqual([
-      'http://localhost:4010/health/liveliness',
-      'http://localhost:4010/v1/models',
+      'http://127.0.0.1:4010/health/liveliness',
+      'http://127.0.0.1:4010/v1/models',
     ]);
   });
 
@@ -653,7 +643,7 @@ describe('defaultWaitForLitellm', () => {
  * count *stays* put keep their fixed sleep, since a poll would return
  * immediately and prove nothing.
  */
-async function waitFor(cond: () => boolean, what: string, timeoutMs = 2000): Promise<void> {
+async function waitFor(cond: () => boolean, what: string, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!cond()) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
@@ -781,9 +771,9 @@ describe('cmdServe — litellm respawn', () => {
     // respawned child answering gets a connection-refused failure instead of
     // waiting the brief moment for the recovery already in flight — which
     // would cool the candidate down for a crash it had nothing to do with.
-    // Uses its own unlikely-to-collide litellm port rather than the shared
-    // beforeEach fixture's 4000, since nothing must actually be listening
-    // there for the post-release request to still fail on its own merits.
+    // Nothing must actually be listening on the litellm port for the
+    // post-release request to still fail on its own merits — which the
+    // beforeEach's free port guarantees.
     writeMachineConfig( `
 [native.models."deepseek-v4-flash"]
 gateway = "acme"
@@ -795,7 +785,7 @@ base_url = "https://gateway.example/v1"
 
 [native.ports]
 router = 0
-litellm = 39217
+litellm = ${litellmPort}
 `);
 
     let waitCalls = 0;
@@ -859,7 +849,7 @@ base_url = "https://gateway.example/v1"
 
 [native.ports]
 router = 0
-litellm = 43120
+litellm = ${litellmPort}
 `;
     writeMachineConfig( config('first'));
 
@@ -889,7 +879,7 @@ litellm = 43120
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     expect(changed.status).toBe(529);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(() => spawnCount === 2, 'the restarted litellm child');
     expect(spawnCount).toBe(2);
     expect(configs[1]).toContain('second-upstream');
 
@@ -923,7 +913,7 @@ base_url = "${baseUrl}"
 
 [native.ports]
 router = 0
-litellm = 43115
+litellm = ${litellmPort}
 `;
     writeMachineConfig( config('https://gateway-one.example/v1'));
 
@@ -952,7 +942,7 @@ litellm = 43115
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     expect(response.status).toBe(529);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(() => spawnCount === 2, 'the restarted litellm child');
     expect(spawnCount).toBe(2);
   });
 
@@ -982,7 +972,7 @@ base_url = "https://gateway.example/v1"
 
 [native.ports]
 router = 0
-litellm = 43114
+litellm = ${litellmPort}
 `;
     writeMachineConfig( config('legacy-upstream-v1'));
 
@@ -1042,7 +1032,7 @@ base_url = "https://other-gateway.example/v1"
 ` : ''}
 [native.ports]
 router = 0
-litellm = 43122
+litellm = ${litellmPort}
 `;
     writeSonataKey(home, 'acme', 'acme-key');
     writeSonataKey(home, 'other', 'other-key');
@@ -1097,7 +1087,7 @@ base_url = "https://gateway.example/v1"
 
 [native.ports]
 router = 0
-litellm = 43121
+litellm = ${litellmPort}
 `;
     writeMachineConfig( config('first'));
 
@@ -1158,7 +1148,7 @@ base_url = "https://gateway.example/v1"
 
 [native.ports]
 router = 0
-litellm = 43119
+litellm = ${litellmPort}
 `);
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
@@ -1197,7 +1187,7 @@ base_url = "https://gateway.example/v1"
 
 [native.ports]
 router = 0
-litellm = 43118
+litellm = ${litellmPort}
 `;
     writeMachineConfig( config('direct-model'));
 
@@ -1252,7 +1242,7 @@ base_url = "https://gateway.example/v1"
 
 [native.ports]
 router = 0
-litellm = 43117
+litellm = ${litellmPort}
 `;
     writeMachineConfig( config('first'));
 
@@ -1307,7 +1297,7 @@ base_url = "https://gateway.example/v1"
 
 [native.ports]
 router = 0
-litellm = 43119
+litellm = ${litellmPort}
 `);
     const exits: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
     const events: string[] = [];
@@ -1350,7 +1340,7 @@ base_url = "https://gateway.example/v1"
 
 [native.ports]
 router = 0
-litellm = 43118
+litellm = ${litellmPort}
 `;
     writeSonataKey(home, 'acme', 'acme-key');
     writeMachineConfig(config('first'));
@@ -1413,7 +1403,7 @@ base_url = "https://gateway.example/v1"
 
 [native.ports]
 router = 0
-litellm = 43116
+litellm = ${litellmPort}
 `);
 
     let spawnCount = 0;
@@ -1459,7 +1449,7 @@ credential_source = "sonata"
 
 [native.ports]
 router = 0
-litellm = 43116
+litellm = ${litellmPort}
 `;
     writeMachineConfig( configWithNewGateway);
 
@@ -1500,7 +1490,7 @@ litellm = 43116
 
 describe('cmdServe — codex-oauth gateways', () => {
   it('writes the flattened ChatGPT credential and points LiteLLM at it', async () => {
-    writeMachineConfig( CODEX_CONFIG);
+    writeMachineConfig( CODEX_CONFIG());
     const exp = Math.floor(Date.now() / 1000) + 3600;
     writeCodexAuth(home, {
       access_token: jwt(exp), refresh_token: 'rt.1.abc',
@@ -1531,7 +1521,7 @@ describe('cmdServe — codex-oauth gateways', () => {
   });
 
   it('does not invent a SONATA_KEY for a gateway that carries no key', async () => {
-    writeMachineConfig( CODEX_CONFIG);
+    writeMachineConfig( CODEX_CONFIG());
     writeCodexAuth(home, { access_token: jwt(Math.floor(Date.now() / 1000) + 3600) });
 
     let captured: NodeJS.ProcessEnv = {};
@@ -1546,7 +1536,7 @@ describe('cmdServe — codex-oauth gateways', () => {
   });
 
   it('refuses to start when codex is not logged in, naming the file and the fix', async () => {
-    writeMachineConfig( CODEX_CONFIG);
+    writeMachineConfig( CODEX_CONFIG());
 
     await expect(cmdServe({
       cwd, home, tempDir: tempDirFor(),
@@ -1555,7 +1545,7 @@ describe('cmdServe — codex-oauth gateways', () => {
   });
 
   it('removes the credential file when serve stops', async () => {
-    writeMachineConfig( CODEX_CONFIG);
+    writeMachineConfig( CODEX_CONFIG());
     writeCodexAuth(home, { access_token: jwt(Math.floor(Date.now() / 1000) + 3600) });
 
     let captured: NodeJS.ProcessEnv = {};
@@ -1572,7 +1562,7 @@ describe('cmdServe — codex-oauth gateways', () => {
   });
 });
 
-const COPILOT_CONFIG = `
+const COPILOT_CONFIG = () => `
 [native.models."gpt4o-copilot"]
 gateway = "copilot"
 id = "gpt-4o"
@@ -1583,7 +1573,7 @@ auth = "copilot-oauth"
 
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 `;
 
 function writeOpencodeAuth(at: string, entries: Record<string, unknown>): void {
@@ -1633,7 +1623,7 @@ credential_source = "sonata"
 
 describe('cmdServe — copilot-oauth gateways', () => {
   it('writes the GitHub token where LiteLLM expects it and points at the dir', async () => {
-    writeMachineConfig( COPILOT_CONFIG);
+    writeMachineConfig( COPILOT_CONFIG());
     writeOpencodeAuth(home, { 'github-copilot': { type: 'oauth', access: 'gho_tok', refresh: 'r' } });
 
     let captured: NodeJS.ProcessEnv = {};
@@ -1654,7 +1644,7 @@ describe('cmdServe — copilot-oauth gateways', () => {
   });
 
   it('refuses to start without a Copilot login, naming the fix', async () => {
-    writeMachineConfig( COPILOT_CONFIG);
+    writeMachineConfig( COPILOT_CONFIG());
     await expect(cmdServe({
       cwd, home, tempDir: tempDirFor(),
       waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
@@ -1662,7 +1652,7 @@ describe('cmdServe — copilot-oauth gateways', () => {
   });
 
   it('sources a ChatGPT credential from opencode when codex has none', async () => {
-    writeMachineConfig( CODEX_CONFIG);
+    writeMachineConfig( CODEX_CONFIG());
     const exp = Math.floor(Date.now() / 1000) + 3600;
     const body = Buffer.from(JSON.stringify({
       exp, client_id: 'app_EMoamEEZ73f0CkXaXp7hrann',
@@ -2001,7 +1991,7 @@ id = "model"
 context_window = 128000
 [native.ports]
 router = 4100
-litellm = 4000
+litellm = ${litellmPort}
 `);
   });
 
@@ -2506,7 +2496,7 @@ context_window = 128000
 
 describe('cmdServe — litellm is conditional', () => {
   /** Every routable model sits on an Anthropic-native gateway, so nothing needs translating. */
-  const ANTHROPIC_ONLY = `
+  const ANTHROPIC_ONLY = () => `
 [models."or-flash"]
 gateway = "openrouter"
 id = "deepseek/deepseek-v4-flash"
@@ -2522,13 +2512,13 @@ provider = "anthropic"
 
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 `;
 
   it('starts no litellm child when no gateway needs one', async () => {
     // Asserted on the spawn seam, not by absence of an error: "it did not
     // crash" is no evidence that nothing was spawned.
-    writeMachineConfig( ANTHROPIC_ONLY);
+    writeMachineConfig( ANTHROPIC_ONLY());
     let spawned = 0;
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
@@ -2544,7 +2534,7 @@ litellm = 4000
     // The point of the whole exercise: such a user runs sonata on Node and
     // tmux, with no Python anywhere.
     rmSync(venvDir(home), { force: true, recursive: true });
-    writeMachineConfig( ANTHROPIC_ONLY);
+    writeMachineConfig( ANTHROPIC_ONLY());
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
       waitForLitellm: async () => {},
@@ -2594,7 +2584,7 @@ litellm = 4000
     // credential: `forwardDirect` strips the caller's (it is Claude Code's
     // own Anthropic credential, and forwarding it would be a leak) and has
     // nothing to put in its place.
-    writeMachineConfig( ANTHROPIC_ONLY);
+    writeMachineConfig( ANTHROPIC_ONLY());
     writeSonataKey(home, 'openrouter', 'OPENROUTER-KEY');
     let seen: { url: string; auth?: string } | undefined;
     // Captured before the stub, so the request that drives the router is a
@@ -2651,7 +2641,7 @@ base_url = "https://gateway.example/v1"
 
 [native.ports]
 router = 0
-litellm = 43991
+litellm = ${litellmPort}
 `;
     writeMachineConfig( mixed('first'));
     writeSonataKey(home, 'openrouter', 'OLD-KEY');
@@ -2705,7 +2695,7 @@ provider = "anthropic"
 
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 `);
     const handle = await cmdServe({
       cwd, home, tempDir: tempDirFor(),
@@ -2721,12 +2711,12 @@ litellm = 4000
       waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
     });
     handles.push(handle);
-    expect(handle.litellmPort).toBe(4000);
+    expect(handle.litellmPort).toBe(litellmPort);
   });
 });
 
 describe('cmdServe — tenants', () => {
-  const TENANT = (id: string, litellmPort = 4000) => `
+  const TENANT = (id: string, port = litellmPort) => `
 [models."flash"]
 gateway = "acme"
 id = "${id}"
@@ -2737,7 +2727,7 @@ complex = ["flash"]
 base_url = "https://gateway.example/v1"
 [native.ports]
 router = 0
-litellm = ${litellmPort}
+litellm = ${port}
 `;
 
   it('serves a project by its header with that project\'s own config, and namespaces the litellm model', async () => {
@@ -2770,7 +2760,7 @@ litellm = ${litellmPort}
     // spellings of one project cannot become two tenants.
     const projectId = tenantId(realpathSync(join(project, 'sonata.toml')));
     expect(forwarded).toEqual([`${projectId}/flash`]);
-    await new Promise((r) => setTimeout(r, 0));
+    await waitFor(() => configs.at(-1)?.includes(`${projectId}/flash`) === true, "the project's litellm config");
     expect(configs.at(-1)).toContain(`${projectId}/flash`);
     expect(configs.at(-1)).toContain('a-model');
   });
@@ -2788,7 +2778,7 @@ base_url = "https://anth.example"
 provider = "anthropic"
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 `);
     writeSonataKey(home, 'anth', 'k');
     const project = mkdtempSync(join(tmpdir(), 'serve-tenant-lazy-'));
@@ -2808,7 +2798,7 @@ litellm = 4000
       headers: { 'content-type': 'application/json', ...projectHeaders(project) },
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
-    await new Promise((r) => setTimeout(r, 0));
+    await waitFor(() => spawns === 1, 'the lazy litellm child');
     expect(spawns).toBe(1);
     const state = JSON.parse(readFileSync(serveStatePath(home, 0), 'utf8'));
     expect(state.routerPid).toBe(process.pid);
@@ -2832,7 +2822,7 @@ base_url = "https://anth.example"
 provider = "anthropic"
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 `);
     writeSonataKey(home, 'anth', 'k');
     const project = mkdtempSync(join(tmpdir(), 'serve-tenant-race-'));
@@ -2887,7 +2877,7 @@ litellm = 4000
     // The live child now crashes on its own. The marker must not have leaked,
     // so this is seen as a crash and respawned.
     for (const cb of exitCbs.slice()) cb(1, null);
-    await new Promise((r) => setTimeout(r, 20));
+    await waitFor(() => spawns === 2, 'the respawned litellm child');
     expect(spawns).toBe(2);
   });
 
@@ -2902,7 +2892,7 @@ base_url = "https://anth.example"
 provider = "anthropic"
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 `);
     writeSonataKey(home, 'anth', 'k');
     const project = mkdtempSync(join(tmpdir(), 'serve-tenant-noinstall-'));
@@ -2930,7 +2920,7 @@ base_url = "https://anth.example"
 provider = "anthropic"
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 `);
     writeSonataKey(home, 'anth', 'k');
     const project = mkdtempSync(join(tmpdir(), 'serve-tenant-install-recovery-'));
@@ -2967,7 +2957,7 @@ base_url = "https://anth.example"
 provider = "anthropic"
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 `);
     writeSonataKey(home, 'anth', 'k');
     const project = mkdtempSync(join(tmpdir(), 'serve-tenant-wait-recovery-'));
@@ -3007,7 +2997,7 @@ base_url = "https://anth.example"
 provider = "anthropic"
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 `);
     writeSonataKey(home, 'anth', 'k');
     const project = mkdtempSync(join(tmpdir(), 'serve-tenant-exit-recovery-'));
@@ -3044,7 +3034,7 @@ litellm = 4000
       body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
     });
     await request();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(() => spawns === 1, 'the first lazy spawn');
     expect(spawns).toBe(1);
     const served = await request();
     expect(served.status).toBe(200);
@@ -3074,11 +3064,12 @@ litellm = 4000
   it('ignores a project [native.ports]: the router binds the machine ports', async () => {
     writeMachineConfig(TENANT('machine-model'));
     const project = mkdtempSync(join(tmpdir(), 'serve-tenant-ports-'));
-    writeFileSync(join(project, 'sonata.toml'), TENANT('a-model', 4999).replace('router = 0', 'router = 4999'));
+    const projectPort = await freePort();
+    writeFileSync(join(project, 'sonata.toml'), TENANT('a-model', projectPort).replace('router = 0', `router = ${projectPort}`));
     const handle = await cmdServe({ cwd: project, home, tempDir: tempDirFor(), waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill: () => {} }) });
     handles.push(handle);
-    expect(handle.routerPort).not.toBe(4999);
-    expect(handle.litellmPort).toBe(4000);
+    expect(handle.routerPort).not.toBe(projectPort);
+    expect(handle.litellmPort).toBe(litellmPort);
   });
 });
 
@@ -3109,7 +3100,7 @@ complex = ["flash"]
 base_url = "https://gateway.example/v1"
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 `);
     const forwarded: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
@@ -3120,7 +3111,7 @@ litellm = 4000
       cwd: project, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
       // `routerPorts` reads the machine config, which this test deliberately
       // does not have, so the port comes from the seam rather than 4100.
-      ports: { router: 0, litellm: 4000 },
+      ports: { router: 0, litellm: litellmPort },
       spawnLitellm: () => ({ pid: 1, kill: () => {} }),
     });
     handles.push(handle);
@@ -3136,7 +3127,7 @@ litellm = 4000
 
   it('still refuses when no tenant has a [native] table at all', async () => {
     rmSync(machineConfigPath(), { force: true });
-    await expect(cmdServe({ cwd, home, tempDir: tempDirFor(), ports: { router: 0, litellm: 4000 } }))
+    await expect(cmdServe({ cwd, home, tempDir: tempDirFor(), ports: { router: 0, litellm: litellmPort } }))
       .rejects.toThrow(/no \[native\] table/);
   });
 });
@@ -3148,7 +3139,7 @@ describe('cmdServe — a machine config that will not load', () => {
   // machine-wide [budget] vanishes while every request keeps spending. A
   // broken file that never had a [budget] table had no cap to lose and must
   // not start refusing everything.
-  const PROJECT = `
+  const PROJECT = () => `
 [models."flash"]
 gateway = "acme"
 id = "a-model"
@@ -3159,19 +3150,19 @@ complex = ["flash"]
 base_url = "https://gateway.example/v1"
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 `;
 
   async function serveWithBrokenMachine(withBudget: boolean) {
     writeMachineConfig(withBudget ? '[budget]\ndaily_usd = 5\n[native.gateways\n' : '[native.gateways\n');
     const project = mkdtempSync(join(tmpdir(), 'serve-broken-machine-'));
-    writeFileSync(join(project, 'sonata.toml'), PROJECT);
+    writeFileSync(join(project, 'sonata.toml'), PROJECT());
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
     const handle = await cmdServe({
       cwd: project, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
       // `routerPorts` reads the machine config, which is deliberately broken
       // here, so the port comes from the seam rather than 4100.
-      ports: { router: 0, litellm: 4000 },
+      ports: { router: 0, litellm: litellmPort },
       spawnLitellm: () => ({ pid: 1, kill: () => {} }),
     });
     handles.push(handle);
@@ -3220,7 +3211,7 @@ complex = ["flash"]
 base_url = "https://gateway.example/v1"
 [native.ports]
 router = 0
-litellm = 4000
+litellm = ${litellmPort}
 [budget]
 daily_usd = 0.5
 `);
@@ -3326,7 +3317,19 @@ describe('mergeTenantGateways', () => {
     expect(merged.codex).toBeUndefined();
     expect(merged['codex-work']).toBeUndefined();
     expect(Object.keys(merged)).toEqual(['keep']);
-    expect(lines.join('\n')).toMatch(/"codex" \(a\) and "codex-work" \(b\) both use auth = "codex-oauth"/);
+    expect(lines.join('\n')).toMatch(/"codex" \(a, credential_source = default\) and "codex-work" \(b, credential_source = sonata\) both use auth = "codex-oauth" but read different credentials/);
+  });
+
+  it('keeps two differently named OAuth gateways of one kind that read the same credential', () => {
+    // Same source (the default included) means one account: nothing can reach
+    // the wrong endpoint, so dropping them would only break both projects.
+    const lines: string[] = [];
+    const merged = mergeTenantGateways([
+      { id: 'a', gateways: { codex: gw({ auth: 'codex-oauth', baseUrl: undefined }) } },
+      { id: 'b', gateways: { openai: gw({ auth: 'codex-oauth', baseUrl: undefined }) } },
+    ], (l) => lines.push(l));
+    expect(Object.keys(merged).sort()).toEqual(['codex', 'openai']);
+    expect(lines).toEqual([]);
   });
 
   it('keeps one OAuth gateway that two projects name identically', () => {
@@ -3409,4 +3412,239 @@ describe('defaultWaitForLitellm — a listener that never answers', () => {
     expect(signals.length).toBeGreaterThan(0);
     expect(signals.every((signal) => signal !== undefined)).toBe(true);
   }, 15_000);
+});
+
+describe('cmdServe — the router listens on both loopback families', () => {
+  // `localhost` resolves to ::1 and 127.0.0.1 here, in that order. The router
+  // bound `localhost` — ::1 only — while every client (Claude Code's
+  // ANTHROPIC_BASE_URL, the hooks, doctor) connects to `localhost` with
+  // Node's happy-eyeballs: when the ::1 attempt has not been *seen* to
+  // complete within 250ms, it is abandoned for 127.0.0.1, where nothing
+  // listened, and the request fails `fetch failed` / ETIMEDOUT.
+  const health = (url: string) => fetch(url, { headers: { connection: 'close' } }).then((res) => res.status);
+
+  it('accepts a client that stalls while connecting over localhost', async () => {
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+    const net = await import('node:net');
+    // The same connect undici makes for `fetch('http://localhost:…')`:
+    // happy-eyeballs across both families, 250ms per attempt. Blocking the
+    // thread for 300ms as the first attempt starts — a loaded worker, or a busy
+    // client — lets that timer expire before the completed connect is seen,
+    // so the attempt is abandoned for the next family.
+    const outcome = await new Promise<string>((resolve) => {
+      const stall = new Int32Array(new SharedArrayBuffer(4));
+      const socket = net.connect({ host: 'localhost', port: handle.routerPort, autoSelectFamily: true });
+      // Blocking from a setImmediate puts the stall in the loop's check phase,
+      // so the next turn runs its timers — the expired attempt timer — before
+      // it polls for the connect that has meanwhile completed.
+      socket.once('connectionAttempt', () => { setImmediate(() => { Atomics.wait(stall, 0, 0, 300); }); });
+      socket.once('connect', () => { socket.destroy(); resolve('connected'); });
+      socket.once('error', (error: NodeJS.ErrnoException) => resolve(`${error.code ?? error.message}`));
+    });
+    expect(outcome).toBe('connected');
+  });
+
+  it('answers on both http://127.0.0.1 and http://[::1]', async () => {
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+    expect(await health(`http://127.0.0.1:${handle.routerPort}/__sonata_health`)).toBe(200);
+    expect(await health(`http://[::1]:${handle.routerPort}/__sonata_health`)).toBe(200);
+  });
+
+  it('releases both families on stop', async () => {
+    const port = await freePort();
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(), ports: { router: port, litellm: litellmPort },
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    await handle.stop();
+    const net = await import('node:net');
+    for (const host of ['127.0.0.1', '::1']) {
+      const again = net.createServer();
+      await new Promise<void>((resolve, reject) => { again.once('error', reject); again.listen(port, host, () => resolve()); });
+      await new Promise<void>((resolve) => again.close(() => resolve()));
+    }
+  });
+
+  for (const missing of ['::1', '127.0.0.1'] as const) {
+    for (const code of ['EADDRNOTAVAIL', 'EAFNOSUPPORT']) {
+      it(`serves on the other family when ${missing} cannot be bound (${code})`, async () => {
+        const handle = await cmdServe({
+          cwd, home, tempDir: tempDirFor(),
+          waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+          listenOn: (server, port, host) => host === missing
+            ? Promise.reject(Object.assign(new Error(`listen ${code} ${host}`), { code }))
+            : listenOn(server, port, host),
+        });
+        handles.push(handle);
+        const present = missing === '::1' ? `127.0.0.1` : `[::1]`;
+        expect(await health(`http://${present}:${handle.routerPort}/__sonata_health`)).toBe(200);
+      });
+    }
+  }
+
+  it('fails when neither family can be bound', async () => {
+    await expect(cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+      listenOn: (_server, _port, host) => Promise.reject(Object.assign(new Error(`listen EADDRNOTAVAIL ${host}`), { code: 'EADDRNOTAVAIL' })),
+    })).rejects.toThrow(/EADDRNOTAVAIL/);
+  });
+
+  it('still refuses, naming the holder, when either family of a fixed port is taken', async () => {
+    // A router predating this binds ::1 alone; its successor must not come up
+    // beside it on 127.0.0.1 and split `localhost` between two daemons.
+    const net = await import('node:net');
+    for (const held of ['::1', '127.0.0.1']) {
+      const port = await freePort();
+      const holder = net.createServer();
+      await new Promise<void>((resolve) => holder.listen(port, held, () => resolve()));
+      try {
+        await expect(cmdServe({
+          cwd, home, tempDir: tempDirFor(), ports: { router: port, litellm: litellmPort },
+          waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+          probeHealth: (async () => { throw new Error('not a router'); }) as unknown as typeof fetch,
+        })).rejects.toThrow(/non-sonata/);
+        // Nothing half-bound is left behind on the other family.
+        const other = held === '::1' ? '127.0.0.1' : '::1';
+        const again = net.createServer();
+        await new Promise<void>((resolve, reject) => { again.once('error', reject); again.listen(port, other, () => resolve()); });
+        await new Promise<void>((resolve) => again.close(() => resolve()));
+      } finally {
+        await new Promise<void>((resolve) => holder.close(() => resolve()));
+      }
+    }
+  });
+
+  it('retries an ephemeral port whose other family is already taken', async () => {
+    // Port 0 lets the kernel pick for the first family only; the same number
+    // can be held on the second. That is a collision to route around, not a
+    // configured port to refuse.
+    let collisions = 1;
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+      listenOn: (server, port, host) => {
+        if (host === '::1' && collisions > 0) {
+          collisions -= 1;
+          return Promise.reject(Object.assign(new Error(`listen EADDRINUSE ${host}:${port}`), { code: 'EADDRINUSE' }));
+        }
+        return listenOn(server, port, host);
+      },
+    });
+    handles.push(handle);
+    expect(collisions).toBe(0);
+    expect(await health(`http://127.0.0.1:${handle.routerPort}/__sonata_health`)).toBe(200);
+    expect(await health(`http://[::1]:${handle.routerPort}/__sonata_health`)).toBe(200);
+  });
+});
+
+describe('cmdServe — the managed LiteLLM is bound and reached on one family', () => {
+  // LiteLLM's own default host is 0.0.0.0 — every IPv4 interface, and
+  // overridable by a stray HOST in the environment — while the router reached
+  // it as `localhost`, which tries ::1 first. The router must reach exactly
+  // the address the child binds, or a foreign ::1 listener on that port
+  // answers in its place.
+  it('starts the child on 127.0.0.1 alone', async () => {
+    const argsFile = join(cwd, 'litellm-args');
+    writeFileSync(managedLitellmPath(home), `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\n`, { mode: 0o755 });
+    const handle = await cmdServe({ cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {} });
+    handles.push(handle);
+    await waitFor(() => existsSync(argsFile) && readFileSync(argsFile, 'utf8').includes('--port'), 'the child to record its arguments');
+    const args = readFileSync(argsFile, 'utf8').trim().split('\n');
+    expect(args[args.indexOf('--host') + 1]).toBe('127.0.0.1');
+    expect(args[args.indexOf('--port') + 1]).toBe(String(litellmPort));
+  });
+
+  it('forwards to the child at 127.0.0.1', async () => {
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', async (url: string) => { seen.push(String(url)); return new Response('{}', { status: 200 }); });
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+    await realFetch(`http://127.0.0.1:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [] }),
+    });
+    expect(seen.some((url) => url.startsWith(`http://127.0.0.1:${litellmPort}/`))).toBe(true);
+    expect(seen.some((url) => url.includes('localhost'))).toBe(false);
+  });
+});
+
+describe('killRecordedOrphan — escalates and forgets only a dead pid', () => {
+  let orphanHome: string;
+  beforeEach(() => { orphanHome = mkdtempSync(join(tmpdir(), 'sonata-orphan-')); });
+  afterEach(() => { rmSync(orphanHome, { recursive: true, force: true }); });
+  const record = (state: Record<string, unknown>) => {
+    mkdirSync(dirname(serveStatePath(orphanHome, 4100)), { recursive: true });
+    writeFileSync(serveStatePath(orphanHome, 4100), JSON.stringify(state));
+  };
+  const stateOf = () => JSON.parse(readFileSync(serveStatePath(orphanHome, 4100), 'utf8')) as { routerPid?: number; litellmPid?: number };
+
+  it('sends SIGKILL when SIGTERM is ignored, then drops the pid once it is gone', async () => {
+    record({ routerPid: 11, litellmPid: 222 });
+    const signals: string[] = [];
+    let alive = true;
+    await killRecordedOrphan(orphanHome, 4100, {
+      processCommand: () => '/opt/venv/bin/python /opt/venv/bin/litellm --config x',
+      kill: (pid) => signals.push(`TERM ${pid}`),
+      forceKill: (pid) => { signals.push(`KILL ${pid}`); alive = false; },
+      isAlive: () => alive,
+      sleep: async () => {},
+      timeoutMs: 50,
+    });
+    expect(signals).toEqual(['TERM 222', 'KILL 222']);
+    expect(stateOf()).toMatchObject({ routerPid: 11 });
+    expect(stateOf().litellmPid).toBeUndefined();
+  });
+
+  it('does not escalate a process that exits on SIGTERM', async () => {
+    record({ litellmPid: 222 });
+    const signals: string[] = [];
+    let alive = true;
+    await killRecordedOrphan(orphanHome, 4100, {
+      processCommand: () => 'litellm --config x',
+      kill: (pid) => { signals.push(`TERM ${pid}`); alive = false; },
+      forceKill: (pid) => signals.push(`KILL ${pid}`),
+      isAlive: () => alive,
+      sleep: async () => {},
+      timeoutMs: 50,
+    });
+    expect(signals).toEqual(['TERM 222']);
+    expect(stateOf().litellmPid).toBeUndefined();
+  });
+
+  it('keeps the pid on record when it survives SIGKILL too', async () => {
+    record({ routerPid: 11, litellmPid: 222 });
+    await killRecordedOrphan(orphanHome, 4100, {
+      processCommand: () => 'litellm --config x',
+      kill: () => {}, forceKill: () => {}, isAlive: () => true,
+      sleep: async () => {}, timeoutMs: 50,
+    });
+    expect(stateOf()).toMatchObject({ routerPid: 11, litellmPid: 222 });
+  });
+
+  it('never signals a pid whose command line is no longer LiteLLM', async () => {
+    record({ litellmPid: 222 });
+    const signals: string[] = [];
+    await killRecordedOrphan(orphanHome, 4100, {
+      processCommand: () => '/usr/bin/vim notes.txt',
+      kill: (pid) => signals.push(`TERM ${pid}`), forceKill: (pid) => signals.push(`KILL ${pid}`),
+      isAlive: () => true, sleep: async () => {}, timeoutMs: 50,
+    });
+    expect(signals).toEqual([]);
+    // Not ours: forgetting it is right, since it will never be our child again.
+    expect(stateOf().litellmPid).toBeUndefined();
+  });
 });

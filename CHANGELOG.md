@@ -8,6 +8,18 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Changed
+
+- **A config with two OAuth gateways of one kind that read different
+  credential sources no longer loads.** LiteLLM holds one ChatGPT and one
+  Copilot credential per process, so the second gateway was silently served
+  the first one's account. `sonata.toml` now refuses such a pair — e.g.
+  `codex` with `credential_source = "codex"` beside `codex-work` with
+  `credential_source = "sonata"` — naming both; give them the same
+  `credential_source`, or keep one. Gateways that read the *same* source
+  (the default included) still load: that covers the `codex` + `openai` pair
+  `sonata init` wrote before v0.10.0.
+
 ### Fixed
 
 - **A model's malformed tool call no longer kills the agent on its next turn.**
@@ -19,6 +31,59 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   note before forwarding. Requests without one are passed through unchanged.
 
 From the full audit of 0.13.1 (`docs/reviews/2026-09-27-full-audit.md`):
+
+- **The managed LiteLLM listened on every network interface.** It was
+  started with LiteLLM's default host, `0.0.0.0`, so the child holding the
+  gateway keys and the master key was reachable off-machine. It now binds
+  `127.0.0.1` and is reached there. Restart the router (`sonata restart`) to
+  pick this up.
+- **The router listens on both loopback families.** It bound `localhost`,
+  which is `::1` alone on macOS, while clients connecting to `localhost`
+  fall back to `127.0.0.1` after 250 ms — so a briefly stalled client got
+  `fetch failed`. It now serves `127.0.0.1` and `::1` on one port.
+
+The audit's backlog, re-verified by Claude Opus agents and fixed (details in
+the review doc's Backlog note):
+
+- **Routing and serve.** The router starts on a project-only machine;
+  `sonata code` sends its project hint with the router token; ensure-serve
+  and the route hooks say why when they fail; a re-entering session becomes
+  the newest registration; every settings write and `route auto` run under
+  locks; stale-lock reclaim cannot remove a live lock; a failed registration
+  rolls back; `stop()` escalates to SIGKILL; a model-change restart commits
+  only once LiteLLM is ready; one venv install at a time; retention prunes
+  daily; the daemon's log fd is closed.
+- **Router.** A message-less 400 falls through instead of killing the agent,
+  every terminal 400 is logged, and `SONATA_CAPTURE_400_DIR` captures the
+  request; a bare key on a direct gateway goes to that gateway; two OAuth
+  gateways of one kind that read different credential sources are refused
+  (see below); rows are priced under the config they
+  were routed under; conversation collisions strip foreign thinking; a
+  conversation is pinned only when its response completes; error-body reads
+  are bounded; a failed stream is torn down, not appended to; `sessions.json`
+  is replaced atomically; LiteLLM readiness probes are bounded; the project
+  cache is LRU, the token compare constant-time, the token file 0600, and a
+  stale tier alias gets the typed 400.
+- **Dispatch lane.** An empty `report.md` is no report; the shell's prompt is
+  not harness output; a read-only run's report is its whole terminal output;
+  tail waits for the worktree capture; a refused launch leaves no run behind;
+  a timed-out run keeps its report; `sonata runs` shows tail's verdict; run
+  ids are 12 hex, never reused, never a path; read-only claude roles get no
+  shell; `sonata log` keeps output that scrolls past; `[run]` timings must be
+  positive seconds; truncated reports fit their limit.
+- **Config, init and catalog.** Re-init keeps an existing gateway's
+  `base_url`; a user's `native-*` agent is no longer claimed; collapsed
+  agents no longer read "pick , and"; legacy frontmatter quotes model keys;
+  every OAuth credential file is 0600; a $0 cost per task is uncosted, not
+  free; doctor and init warn when two gateways share a `base_url`; a
+  configured gateway beats a harness prefix it begins with; BYOK reports an
+  unparseable 200 as unreadable and recognises Google-native by scheme and
+  path; a truncated AA catalog warns; every version probe is bounded.
+- **Money.** Claude runs record whether they were routed at launch; a
+  dispatch run is priced per record at its own time; the ledger refuses
+  negative counts and costs; `usage --project` accepts any directory inside
+  the project; a price window with equal ends is refused; serve tests no
+  longer fetch models.dev.
 
 - **A crashed dispatch run is no longer reported as a clean success.** A
   harness that failed still leaves its fallback report file (claude writes

@@ -290,6 +290,45 @@ output = 20.0
       expect(price).toEqual({ source: 'model', totalUsd: 21 });
     });
 
+    it('does not stamp a mixed sum with one record`s models.dev snapshot', () => {
+      // "mixed" has a rate of its own inside the window only; outside it the
+      // gateway's pricing_provider prices it from models.dev. The sum is part
+      // hand-set, part scraped, so the scraped record's observedAt does not
+      // describe it — and the source named is the one that contributed most.
+      writeFileSync(join(cwd, 'sonata.toml'), `
+[models."mixed"]
+gateway = "g"
+harness = "opencode"
+id = "p/mixed-1"
+
+[[models."mixed".price.windows]]
+from = "04:05"
+to = "05:00"
+input = 10.0
+output = 20.0
+
+[native.gateways."g"]
+base_url = "http://gateway.example/v1"
+pricing_provider = ["acme"]
+`);
+      const modelsDev = { fetchedAt: START, providers: { acme: { 'p/mixed-1': { input: 0.5, output: 1 } } } };
+      const price = priceHarnessRun(
+        loadConfig(cwd, home), { model: 'mixed', harness: 'opencode', harnessModelId: 'p/mixed-1' },
+        both, [before, inside], new Date(END), modelsDev,
+      );
+      expect(price).toEqual({ source: 'model', totalUsd: 20.5 });
+    });
+
+    it('keeps observedAt when every record was priced from the same snapshot', () => {
+      writeFileSync(join(cwd, 'sonata.toml'), WINDOWED);
+      const modelsDev = { fetchedAt: START, providers: { openrouter: { kimi: { input: 0.5, output: 1 } } } };
+      const price = priceHarnessRun(
+        loadConfig(cwd, home), { model: 'kimi', harness: 'opencode', harnessModelId: 'openrouter/kimi' },
+        both, [before, inside], new Date(END), modelsDev,
+      );
+      expect(price).toEqual({ source: 'models-dev', totalUsd: 1.5, observedAt: START });
+    });
+
     it('leaves the whole run unpriced when any record has no rate, never pricing the rest as the total', () => {
       writeFileSync(join(cwd, 'sonata.toml'), WINDOWED);
       const price = priceHarnessRun(

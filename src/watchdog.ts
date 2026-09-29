@@ -17,9 +17,10 @@ export interface WatchdogInput {
    * capture nothing (a read-only role, which is not expected to leave a mark).
    *
    * The capture has to happen here rather than in `sonata tail` because the
-   * exit sentinel this wrapper writes is what makes the run readable as
-   * finished, and tail may not look for hours. Between those two moments the
-   * tree belongs to whoever is using the repository.
+   * exit sentinel (written by the harness script itself, or by this wrapper
+   * as a fallback) makes the run readable as finished, and tail may not look
+   * for hours. Between those two moments the tree belongs to whoever is
+   * using the repository.
    */
   worktreeCwd?: string;
 }
@@ -115,9 +116,15 @@ export function wrapWithTimeout(input: WatchdogInput): string {
     'kill $WATCHDOG_PID 2>/dev/null',
     'wait $WATCHDOG_PID 2>/dev/null',
     '',
-    // Fingerprint the tree BEFORE the exit sentinel, because the sentinel is
-    // what makes the run readable as finished. `sonata tail` compares against
-    // this to say whether the run left a mark; sampling the tree when tail
+    // Fingerprint the tree as the harness exits. This runs AFTER the exit
+    // sentinel, not before it: every adapter's harness.sh writes the sentinel
+    // itself, so by the time this line runs the run already reads as finished.
+    // That is why the capture is renamed into place rather than redirected
+    // there (a reader sees it absent or whole), and why `sonata tail` waits for
+    // it — up to CAPTURE_GRACE_MS after the sentinel — before comparing,
+    // falling back to a live sample only if it never lands.
+    //
+    // `sonata tail` compares against this to say whether the run left a mark; sampling the tree when tail
     // happens to look measures whatever the repository holds by then, which
     // after a `sonata run` the user walked away from is their own subsequent
     // editing. The script is `WORKTREE_CAPTURE_SH` verbatim — the same one the

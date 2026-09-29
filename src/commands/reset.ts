@@ -31,7 +31,7 @@ import { isSonataAgentText } from '../detect.js';
 import { agentsDirFor, configPathFor } from '../init/helpers.js';
 import { removeGuidance } from '../init/guidance.js';
 import {
-  readSettings, revokeSonataTools, settingsPath, uninstallHook, writeSettings, type Settings,
+  readSettings, revokeSonataTools, settingsPath, uninstallHook, updateSettings, type Settings,
 } from '../settings.js';
 import { planRouteManual, planRouteOff, routeSessionsFile, routeSettingsFile, routeSubagentsFile } from './route.js';
 
@@ -42,7 +42,15 @@ export type ResetAction =
   | { kind: 'delete-dir'; label: string; path: string }
   | { kind: 'delete-agents'; label: string; dir: string; files: string[] }
   | { kind: 'write-file'; label: string; path: string; content: string }
-  | { kind: 'write-settings'; label: string; path: string; settings: Settings };
+  | {
+    kind: 'write-settings'; label: string; path: string; settings: Settings;
+    /**
+     * Re-derives the change from the file as it is at apply time, under the
+     * settings lock: `settings` is only what the plan saw, and writing it back
+     * would discard anything a route hook wrote in between.
+     */
+    strip: (current: Settings) => { settings: Settings; changed: boolean };
+  };
 
 export interface ResetPlan {
   scope: ResetScope;
@@ -226,6 +234,7 @@ export function planReset(opts: ResetOptions): ResetPlan {
     if (stripped.changed) {
       actions.push({
         kind: 'write-settings', label: 'routing, hooks and the tool allow-list', path, settings: stripped.settings,
+        strip: (latest) => planSettingsReset(latest, packageRoot, scope),
       });
     }
   }
@@ -311,7 +320,7 @@ export interface ResetOutcome {
 }
 
 /** Carry out a plan. */
-export function applyReset(plan: ResetPlan): ResetOutcome {
+export async function applyReset(plan: ResetPlan): Promise<ResetOutcome> {
   const touched: string[] = [];
   const failures: string[] = [];
   for (const action of plan.actions) {
@@ -340,7 +349,7 @@ export function applyReset(plan: ResetPlan): ResetOutcome {
         break;
       case 'write-settings':
         try {
-          writeSettings(action.path, action.settings);
+          await updateSettings(action.path, action.strip);
           touched.push(action.path);
         } catch (err) {
           failures.push(`${action.path}: ${(err as Error).message}`);
@@ -368,7 +377,7 @@ export async function cmdReset(opts: ResetOptions & { yes?: boolean }, io: Reset
     return 1;
   }
 
-  const { touched, failures } = applyReset(plan);
+  const { touched, failures } = await applyReset(plan);
   io.out(`  ✓ removed ${touched.length} path${touched.length === 1 ? '' : 's'}`);
   if (failures.length > 0) {
     // A partial reset that exits 0 is the failure this command exists to

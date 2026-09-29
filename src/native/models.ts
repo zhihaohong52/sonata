@@ -61,8 +61,13 @@ function isGoogleGenerativeLanguage(baseUrl: string): boolean {
     // The host alone is not enough. Google's OpenAI-compatibility shim
     // (`…/v1beta/openai`) lives on the same host and speaks the OpenAI shape
     // — matched by hostname, it got the Google header and its `{ data }` list
-    // was parsed as `{ models }`, so listing failed. And a key is never sent
-    // in `x-goog-api-key` over plain http.
+    // was parsed as `{ models }`, so listing failed.
+    //
+    // The https check picks the dialect, not whether a key is sent: the key
+    // always goes to whatever base_url the user configured, over its scheme.
+    // An `http://` URL on this host is treated as the OpenAI convention, so
+    // the key still travels — as a Bearer token, in cleartext. Only the
+    // Google-native `x-goog-api-key` header is confined to https.
     return url.protocol === 'https:'
       && url.hostname === 'generativelanguage.googleapis.com'
       && !url.pathname.split('/').includes('openai');

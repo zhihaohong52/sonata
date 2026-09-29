@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -23,7 +23,27 @@ vi.mock('../../src/native/litellm.js', () => ({
  * about 3s of the file's runtime spent resolving a value no test here asserts
  * on. The one test that *is* about a known-bad client injects its own version.
  */
-const NO_CLIENT = { claudeVersion: async () => undefined };
+const NO_CLIENT = {
+  claudeVersion: async () => undefined,
+  // Nor the configured harnesses' own binaries: `opencode --version` against
+  // the real home ran past the 30s test timeout under a loaded suite, and none
+  // of these tests is about the version line or `codex login status`.
+  harnessVersion: async () => '0.0.0',
+  harnessHealth: async () => [],
+};
+
+/**
+ * `cmdDoctor` probes the router and LiteLLM health endpoints on the machine
+ * ports — 4100 and 4000 when the test home names none, which on a
+ * maintainer's machine are a live router and a live LiteLLM. A test about
+ * those probes installs its own `fetch`; every other one sees nothing running.
+ */
+beforeEach(() => {
+  vi.stubGlobal('fetch', async () => { throw new Error('no network in doctor tests'); });
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('checkVersion', () => {
   it('accepts a version inside the supported range', () => {
@@ -326,6 +346,18 @@ code = ["deepseek-v4-flash"]
       expect(checks.find((c) => c.name === 'serve health')?.detail).toContain('sonata restart');
       expect(checks.find((c) => c.name === 'serve health')?.detail).not.toContain('not running');
     } finally { globalThis.fetch = originalFetch; }
+  });
+
+  it('probes the managed LiteLLM at 127.0.0.1, the one address it binds', async () => {
+    const { cwd, home } = setup();
+    const seen: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({ status: 'ok', sonata: true, multiTenant: true, tenants: [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.find((c) => c.name === 'litellm health')?.ok).toBe(true);
+    expect(seen).toContain('http://127.0.0.1:4000/health/liveliness');
   });
 
   it('warns on whitespace around a project ports table header', async () => {
@@ -1012,6 +1044,7 @@ base_url = "${second}"
     expect(c?.ok).toBe(true);
     expect(c?.detail).toContain('opencode, opencode-go');
     expect(c?.detail).toMatch(/one account under two names/);
+    expect(c?.detail).toContain(`edit base_url in ${join(cwd, 'sonata.toml')}`);
 
     writeFileSync(join(cwd, 'sonata.toml'), toml('https://opencode.ai/zen/v1'));
     const clean = await doctorResult(cwd, home, at);

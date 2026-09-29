@@ -89,6 +89,15 @@ describe('legacy agents — model keys in YAML frontmatter', () => {
     expect(value(md, 'name')).toBe(`native-code-${key}`);
     expect(value(md, 'description')).toContain(`natively on ${key} inside`);
   });
+
+  it('quotes the native agent\'s model line when the key needs it, and only then', () => {
+    // `model:` carries the key the router resolves, so an unquotable key
+    // must still round-trip; an ordinary key stays a plain scalar so every
+    // existing file is byte-identical.
+    expect(value(nativeAgentMarkdown({ role: 'code', model: key }), 'model')).toBe(key);
+    expect(nativeAgentMarkdown({ role: 'code', model: 'deepseek-v4-flash' }))
+      .toContain('\nmodel: deepseek-v4-flash\n');
+  });
 });
 
 describe('agentMarkdown — tool grant', () => {
