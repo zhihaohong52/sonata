@@ -67,9 +67,20 @@ export function observeLock(lock: string): LockObservation | undefined {
  * The put-back must never replace a lock that appeared meanwhile. `rename`
  * onto a NON-empty directory fails, and `acquireLock` only ever installs a
  * lock that already holds its owner, so a lock taken by the current code is
- * safe by construction; the existence check covers the one lock that can
- * still be empty — one mkdir'd by an older sonata that has not yet written
- * its owner. A lock that cannot be put back is left in its tomb.
+ * safe by construction; the existence check narrows the one case left — a
+ * lock mkdir'd by an older sonata, which is an EMPTY directory until it
+ * writes its owner. A lock that cannot be put back is left in its tomb.
+ *
+ * Narrowed, not closed: an older sonata's mkdir landing between the
+ * existence check and the rename is replaced by it, and its owner write then
+ * lands in the lock put back. This is the same cross-version window
+ * `acquireLock` accepts — two versions racing one lock within microseconds,
+ * during an upgrade — and Node exposes no rename that refuses an existing
+ * target. Dropping the put-back instead would be worse, and not only across
+ * versions: two current waiters that both saw one dead lock race, the first
+ * reclaims it and takes a fresh lock, the second then moves that live lock to
+ * its tomb, and with no put-back its holder keeps running while the next
+ * waiter takes the empty path — two holders at once.
  */
 export function reclaimStaleLock(
   lock: string,
