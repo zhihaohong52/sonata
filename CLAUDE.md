@@ -606,7 +606,11 @@ naming the paths or the parse error (the request is not the router's fault); a
 tenant needing LiteLLM while the venv is unhealthy is a **502** naming `sonata
 litellm install` (and litellm candidates are skipped *without* cooling while it
 is unavailable, so a repair is picked up by the next request); a cap reached is
-a **429** naming the file that set it. A ledger row records a request the
+a **429** naming the file that set it. A request carrying a session id while
+`sessions.json` has never been read successfully (the latest read failed, and
+there is no earlier good read to answer from) is also a **400**, saying to
+retry: "no record" would otherwise serve it as the machine tenant, with that
+config's credentials and budget. A ledger row records a request the
 router forwarded, so a refusal has no place in it.
 
 **LiteLLM is conditional and managed.** `litellmRequired` (`src/native/providers.ts`) asks whether any

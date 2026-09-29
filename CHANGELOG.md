@@ -25,6 +25,14 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **A session's request is no longer served as the machine config when
+  `sessions.json` cannot be read.** If the router had never read that file
+  successfully and the latest read failed, a request carrying a session id
+  was resolved as "no record" and served with the machine config's
+  credentials and budget. It is now refused with a 400 saying the file could
+  not be read and to retry; requests naming no session, or naming their
+  project, are unchanged.
+
 - **One bad record in `sessions.json` no longer fails every routed request.**
   A `null` entry, or one whose `cwd` is not a string (a hand edit — sonata's
   own writer never produces one), threw while the router listed session
