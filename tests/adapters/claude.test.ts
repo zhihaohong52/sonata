@@ -99,8 +99,21 @@ describe('claudeAdapter.plan', () => {
     expect(flags).not.toContain('Bash');
   });
 
+  it('loads no MCP server for a read-only role', () => {
+    // --tools restricts the built-in set only: probed on Claude Code 2.1.284, a
+    // `-p --permission-mode plan --tools=Read,Grep,Glob` run still listed every
+    // user, project, plugin and claude.ai MCP tool (a project .mcp.json
+    // `write_file` among them). --strict-mcp-config with no --mcp-config left
+    // exactly Read, Grep and Glob, and started no server at all.
+    const plan = claudeAdapter.plan({ ...base, role: 'explore', mode: 'acceptEdits' });
+    const flags = plan.script.split('\n').find((l) => l.startsWith('claude '))!.split(' "$(cat')[0];
+    expect(flags).toContain('--strict-mcp-config');
+    expect(flags).not.toContain('--mcp-config');
+  });
+
   it('leaves a write role`s flags unchanged', () => {
     const plan = claudeAdapter.plan({ ...base, mode: 'acceptEdits' });
+    expect(plan.script).not.toContain('--strict-mcp-config');
     expect(plan.script).not.toContain('--tools=');
     expect(plan.script).not.toContain('--allowedTools');
     expect(plan.script).toContain('--permission-mode acceptEdits');
