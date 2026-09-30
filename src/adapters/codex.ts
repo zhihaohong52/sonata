@@ -470,6 +470,7 @@ export const codexAdapter: HarnessAdapter = {
   versionCommand: ['codex', '--version'],
   supportedVersions: '>=0.140.0 <1.0.0',
   pathPrepend: [],
+  update: { npmPackage: '@openai/codex', command: ['codex', 'update'] },
   plan: buildScript,
   canPromptForApproval: true,
   promptPatterns: PROMPT_PATTERNS,

@@ -154,6 +154,18 @@ export interface HarnessAdapter {
    */
   health?(env: { home: string; cwd: string }): Promise<HarnessProblem[]>;
   /**
+   * How `sonata init` checks this harness is current and brings it up to date.
+   *
+   * A harness's model catalogue can be version-gated: codex's `model/list` is
+   * answered for the client version asking, so codex 0.156.1 was never offered
+   * `gpt-6.1-sol` while 0.159.2 was. `npmPackage` is where the latest release
+   * is looked up — every harness here publishes to npm, and the registry is
+   * the one source that is current (codex's own `version.json` lagged by five
+   * releases). `command` is the harness's own updater, which knows how it was
+   * installed. Absent means sonata never offers to update it.
+   */
+  update?: { npmPackage: string; command: string[] };
+  /**
    * The tokens a finished run spent, read from the harness's own store.
    *
    * Required, like `effortHonoured`: a new adapter must answer rather than

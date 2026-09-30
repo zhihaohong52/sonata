@@ -422,6 +422,7 @@ export const reasonixAdapter: HarnessAdapter = {
   versionCommand: ['reasonix', '--version'],
   supportedVersions: '>=1.26.0 <2.0.0',
   pathPrepend: [],
+  update: { npmPackage: 'reasonix', command: ['reasonix', 'upgrade'] },
   plan: buildScript,
   canPromptForApproval: true,
   promptPatterns: PROMPT_PATTERNS,

@@ -8,6 +8,18 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- **`sonata init` checks whether each harness is up to date before listing
+  its models**, and offers a Yes/No update for each one that is behind,
+  running the harness's own updater (`codex update`, `opencode upgrade`,
+  `pi update --self`, `reasonix upgrade`). A harness's model list can depend
+  on its version: codex 0.156.1 was never offered `gpt-6.1-sol`, while
+  0.159.2 lists it. The latest release is looked up on the npm registry. A
+  lookup that fails is skipped, a failed update continues on the old version,
+  and an unattended (`--yes` or non-TTY) run never updates; it prints the
+  command to run instead.
+
 ## [0.14.0] - 2026-09-29
 
 ### Changed
