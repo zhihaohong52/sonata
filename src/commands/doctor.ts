@@ -835,7 +835,14 @@ export async function cmdDoctor(
     }
     // A file sonata does not own is one `sync` refuses to overwrite, so it
     // needs its own advice: re-running sync would leave it in place.
-    const files = autoAgentRoles(config).map((role) => join(agentsDir, `${role}-auto.md`));
+    //
+    // Claude Code reads agents from both the project and the user directory,
+    // and a global-scope `sonata init` writes them to the latter — so a file
+    // in either place counts, the project one first as Claude Code prefers it.
+    const agentDirs = [agentsDir, join(home, '.claude', 'agents')];
+    const files = autoAgentRoles(config).map((role) =>
+      agentDirs.map((dir) => join(dir, `${role}-auto.md`)).find((path) => existsSync(path))
+        ?? join(agentsDir, `${role}-auto.md`));
     const missing = files.filter((path) => !existsSync(path)).map((path) => basename(path));
     const foreign = files.filter((path) => existsSync(path) && !isSonataAgent(path));
     if (missing.length > 0) {

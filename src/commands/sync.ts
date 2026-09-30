@@ -567,8 +567,9 @@ Focus on ${blurb}.${delegating}
 /**
  * A `<role>-auto` agent: same role prompt, but the router chooses the tier
  * once per conversation (`src/native/auto-route.ts`). Its fan-out rule is the
- * `normal` one — the tier is not known when the prompt is written, and
- * `normal` may reach only `simple`, which is safe whichever tier is chosen.
+ * `simple` leaf one: the tier is not known when the prompt is written, and the
+ * `normal` rule would let a conversation routed to `simple` delegate sideways
+ * to another `-simple` agent, breaking the downward-only rule.
  */
 export function autoAgentMarkdown(spec: {
   role: string;
@@ -580,7 +581,7 @@ export function autoAgentMarkdown(spec: {
   const alias = `sonata-${spec.role}-auto`;
   const model = spec.extendedContext === true ? `${alias}${EXTENDED_CONTEXT_SUFFIX}` : alias;
   const tools = toolsForRole(spec.role);
-  const delegating = delegatingForRole(spec.role, spec.planTiers, 'normal', spec.availableTiers);
+  const delegating = delegatingForRole(spec.role, spec.planTiers, 'simple', spec.availableTiers);
   const description = `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop; sonata chooses the tier (${spec.availableTiers.join(', ')}) for each task. The default choice — use an explicit -${spec.availableTiers.join(' / -')} agent only when you know the tier better. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`;
   return `---
 name: ${spec.role}-auto
