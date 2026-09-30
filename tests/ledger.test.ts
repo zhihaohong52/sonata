@@ -67,6 +67,13 @@ describe('appendRow / readRows', () => {
     expect(back[0].alias).toBe('sonata-code-simple');
   });
 
+  it('keeps a row carrying route and autoRoute through readRows', () => {
+    appendRow(home, row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'accepted', choice: 'simple', confidence: 0.8, probabilities: { simple: 0.9, normal: 0.1 }, ms: 300 } }));
+    const back = readRows(home, 0, Date.parse('2026-08-27T05:00:00Z'));
+    expect(back[0].route).toBe('auto');
+    expect(back[0].autoRoute).toMatchObject({ classifier: 'jev', choice: 'simple', ms: 300 });
+  });
+
   it('N appends produce N whole parseable lines and end with a newline', () => {
     appendRow(home, row());
     appendRow(home, row({ alias: 'sonata-review-simple' }));
