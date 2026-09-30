@@ -53,7 +53,7 @@ export const GUIDANCE_END = '<!-- sonata:end -->';
  * failure is completely silent, which is what makes stating it worth the
  * lines.
  */
-export function guidanceBlock(): string {
+export function guidanceBlock(opts: { autoRoute?: boolean } = {}): string {
   return [
     GUIDANCE_BEGIN,
     '## Subagent lane',
@@ -69,6 +69,12 @@ export function guidanceBlock(): string {
     'what to change but not exactly how. `-complex` needs a design decision, or',
     '"done" is still ambiguous.',
     '',
+    ...(opts.autoRoute === true ? [
+      '**Auto-routing is on:** prefer the `<role>-auto` agents (`code-auto`,',
+      '`review-auto`, …). Sonata chooses the tier for each task; use an explicit',
+      'tier agent only when you know the tier better than a classifier would.',
+      '',
+    ] : []),
     '**Your config decides which of those exist** — `sonata agents` lists them, and',
     'a config written before the `normal` tier has only `-simple` and `-complex`.',
     'Where there is no `-normal`, prefer `-simple` for work you could write without',

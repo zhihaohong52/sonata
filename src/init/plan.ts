@@ -48,7 +48,7 @@ export interface InitPlan {
    * file sonata does not own, so declining must be a real no-op rather than a
    * smaller edit.
    */
-  guidance: { scope: 'project' | 'global' | 'skip'; path?: string };
+  guidance: { scope: 'project' | 'global' | 'skip'; path?: string; autoRoute?: boolean };
   routing: 'project' | 'global' | 'skip';
   syncCwd: string;
   agentsDir: string;
@@ -339,6 +339,7 @@ export function plan(
       path: guidanceScope === 'global'
         ? join(opts.home, '.claude', 'CLAUDE.md')
         : join(opts.cwd, 'CLAUDE.md'),
+      autoRoute: configForScope?.autoRoute !== undefined,
     };
 
   const summary: string[] = [
