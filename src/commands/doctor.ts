@@ -10,6 +10,7 @@ import {
   GLOBAL_CONFIG_RELATIVE,
   expectedAgentNames,
   isOauthGatewayAuth,
+  autoAgentRoles,
 } from '../config.js';
 import type { NativeGatewayAuth } from '../config.js';
 import { outdatedAgents, plannedAgents } from './sync.js';
@@ -36,7 +37,7 @@ import { loadModelsDev } from '../modelsdev.js';
 import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
-import { keyReport, resolveKeyDetail } from '../native/credentials.js';
+import { keyReport, resolveKeyDetail, resolveKeyFromSource } from '../native/credentials.js';
 import { opencodeCredentialOrigin, opencodeDbPath, readOpencodeCredentials } from '../native/opencode-store.js';
 
 /**
@@ -822,6 +823,23 @@ export async function cmdDoctor(
           `define — run \`sonata sync\` to remove them: ${stale.slice(0, 3).join(', ')}` +
           (stale.length > 3 ? ', …' : ''),
        });
+
+  if (config.autoRoute !== undefined) {
+    // A missing key is advisory: auto-routing falls back to the default tier.
+    if (resolveKeyFromSource('typesafe', home, 'sonata') === undefined) {
+      checks.push({
+        name: 'auto route',
+        ok: true,
+        detail: 'on, but no TypeSafe key — every -auto request takes the fallback tier. Run `sonata auth add typesafe`',
+      });
+    }
+    const missing = autoAgentRoles(config)
+      .map((role) => `${role}-auto`)
+      .filter((name) => !existsSync(join(agentsDir, `${name}.md`)));
+    checks.push(missing.length === 0
+      ? { name: 'auto route', ok: true, detail: `on (jev, min_confidence ${config.autoRoute.minConfidence})` }
+      : { name: 'auto route', ok: false, detail: `agent file(s) missing: ${missing.join(', ')} — run \`sonata sync\`` });
+  }
 
   // A *stale* agent names a model the config dropped; an **outdated** one keeps
   // its name and its old instructions. `staleAgents` compares filenames and so
