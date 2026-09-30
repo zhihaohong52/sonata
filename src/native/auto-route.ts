@@ -54,9 +54,15 @@ export interface TierClassifier { name: 'jev'; classify(input: { role: string; t
 export function parseJevAnswer(json: unknown): ClassifierAnswer {
   const root = json as { model?: unknown; answers?: { tier?: unknown }; usage?: { input_tokens?: unknown; output_tokens?: unknown } };
   const tier = root?.answers?.tier as { choice?: unknown; confidence?: unknown; probabilities?: unknown } | undefined;
-  if (tier === undefined || typeof tier.choice !== 'string' || typeof tier.confidence !== 'number' || tier.probabilities === null || typeof tier.probabilities !== 'object') throw new Error('malformed classifier response');
+  const probabilities = tier?.probabilities;
+  const validProbabilities = probabilities !== null && typeof probabilities === 'object' && !Array.isArray(probabilities)
+    && Object.values(probabilities as Record<string, unknown>).every((value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1);
+  if (tier === undefined || typeof tier.choice !== 'string' || typeof tier.confidence !== 'number'
+    || !Number.isFinite(tier.confidence) || tier.confidence < 0 || tier.confidence > 1 || !validProbabilities) {
+    throw new Error('malformed classifier response');
+  }
   const usage = root.usage;
-  return { choice: tier.choice, confidence: tier.confidence, probabilities: tier.probabilities as Record<string, number>, ...(typeof root.model === 'string' ? { classifierModel: root.model } : {}), ...(typeof usage?.input_tokens === 'number' && typeof usage?.output_tokens === 'number' ? { tokens: { input: usage.input_tokens, output: usage.output_tokens } } : {}) };
+  return { choice: tier.choice, confidence: tier.confidence, probabilities: probabilities as Record<string, number>, ...(typeof root.model === 'string' ? { classifierModel: root.model } : {}), ...(typeof usage?.input_tokens === 'number' && typeof usage?.output_tokens === 'number' ? { tokens: { input: usage.input_tokens, output: usage.output_tokens } } : {}) };
 }
 
 export function jevClassifier(opts: { fetch: typeof fetch; key: () => string | undefined; attemptMs?: number; retries?: number }): TierClassifier {
@@ -85,9 +91,10 @@ export async function decideTier(opts: { classifier: TierClassifier | undefined;
 export class DecisionStore {
   private readonly done = new Map<string, { decision: AutoDecision; at: number }>();
   private readonly pending = new Map<string, Promise<AutoDecision>>();
+  private generation = 0;
   constructor(private readonly ttlMs: number, private readonly max: number) {}
   get(key: string, at: number): AutoDecision | undefined { const hit = this.done.get(key); if (hit === undefined) return undefined; if (at - hit.at > this.ttlMs) { this.done.delete(key); return undefined; } this.done.delete(key); this.done.set(key, { decision: hit.decision, at }); return hit.decision; }
-  async getOrCreate(key: string, at: number, make: () => Promise<AutoDecision>): Promise<{ decision: AutoDecision; fresh: boolean }> { const hit = this.get(key, at); if (hit !== undefined) return { decision: hit, fresh: false }; const inFlight = this.pending.get(key); if (inFlight !== undefined) return { decision: await inFlight, fresh: false }; const created = make(); this.pending.set(key, created); try { const decision = await created; this.done.set(key, { decision, at }); while (this.done.size > this.max) { const oldest = this.done.keys().next(); if (oldest.done) break; this.done.delete(oldest.value); } return { decision, fresh: true }; } finally { this.pending.delete(key); } }
-  clear(): void { this.done.clear(); this.pending.clear(); }
+  async getOrCreate(key: string, at: number, make: () => Promise<AutoDecision>): Promise<{ decision: AutoDecision; fresh: boolean }> { const hit = this.get(key, at); if (hit !== undefined) return { decision: hit, fresh: false }; const inFlight = this.pending.get(key); if (inFlight !== undefined) return { decision: await inFlight, fresh: false }; const generation = this.generation; const created = make(); this.pending.set(key, created); try { const decision = await created; if (generation === this.generation) { this.done.set(key, { decision, at }); while (this.done.size > this.max) { const oldest = this.done.keys().next(); if (oldest.done) break; this.done.delete(oldest.value); } } return { decision, fresh: true }; } finally { this.pending.delete(key); } }
+  clear(): void { this.generation += 1; this.done.clear(); this.pending.clear(); }
   size(): number { return this.done.size; }
 }

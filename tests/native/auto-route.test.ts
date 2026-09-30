@@ -87,6 +87,15 @@ describe('parseJevAnswer', () => {
     expect(() => parseJevAnswer({ answers: {} })).toThrow();
     expect(() => parseJevAnswer({ answers: { tier: { choice: 1, confidence: 'x' } } })).toThrow();
   });
+
+  it('rejects malformed probabilities and confidence values', () => {
+    const base = { answers: { tier: { choice: 'simple', confidence: 0.5, probabilities: { simple: 0.5 } } } };
+    expect(() => parseJevAnswer({ ...base, answers: { tier: { ...base.answers.tier, probabilities: [] } } })).toThrow();
+    expect(() => parseJevAnswer({ ...base, answers: { tier: { ...base.answers.tier, probabilities: { simple: 'x' } } } })).toThrow();
+    for (const confidence of [Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+      expect(() => parseJevAnswer({ ...base, answers: { tier: { ...base.answers.tier, confidence } } })).toThrow();
+    }
+  });
 });
 
 describe('decideTier', () => {
@@ -203,6 +212,17 @@ describe('DecisionStore', () => {
   it('does not keep a rejected creation', async () => {
     const store = new DecisionStore(60_000, 10);
     await expect(store.getOrCreate('k', 0, async () => { throw new Error('boom'); })).rejects.toThrow();
+    expect(store.get('k', 1)).toBeUndefined();
+  });
+
+  it('does not resurrect a creation that was pending when cleared', async () => {
+    const store = new DecisionStore(60_000, 10);
+    let resolve!: (decision: { tier: 'simple'; record: { classifier: 'jev'; outcome: 'accepted'; ms: number } }) => void;
+    const pending = new Promise<{ tier: 'simple'; record: { classifier: 'jev'; outcome: 'accepted'; ms: number } }>((r) => { resolve = r; });
+    const creation = store.getOrCreate('k', 0, () => pending);
+    store.clear();
+    resolve({ tier: 'simple', record: { classifier: 'jev', outcome: 'accepted', ms: 1 } });
+    await creation;
     expect(store.get('k', 1)).toBeUndefined();
   });
 });
