@@ -17,7 +17,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../extended-context.js';
-import { configPath, loadConfig, parseConfig, TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
+import { autoAgentRoles, configPath, loadConfig, parseConfig, TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
 import { assertEffortsPinned, candidateFacts, candidateLabel, expandCandidates, hasTaskCost, loadAaCatalog, reasoningOf, type AaCatalog, type CandidateFacts } from '../catalog.js';
 import { replaceTiersBlock } from '../init/toml.js';
 import { loadModelsDev, type ModelsDevCache } from '../modelsdev.js';
@@ -48,6 +48,8 @@ export interface AgentRow {
   models: AgentModelRow[];
   /** Whether the generated alias carries `[1m]`. */
   extendedContext: boolean;
+  /** An auto-routed agent: sonata chooses the tier, so it has no ranking of its own. */
+  auto?: boolean;
 }
 
 function modelRow(config: SonataConfig, candidate: string): AgentModelRow {
@@ -102,6 +104,9 @@ export function agentRows(config: SonataConfig): AgentRow[] {
       });
     }
   }
+  for (const role of autoAgentRoles(config)) {
+    rows.push({ agent: `${role}-auto`, role, auto: true, models: [], extendedContext: false });
+  }
   return rows;
 }
 
@@ -120,6 +125,10 @@ export function renderAgents(rows: AgentRow[]): string[] {
   const lines: string[] = [];
   for (const row of rows) {
     lines.push(`${row.agent}${row.extendedContext ? `  ${EXTENDED_CONTEXT_SUFFIX}` : ''}`);
+    if (row.auto === true) {
+      lines.push('    (auto-routed: sonata chooses the tier per conversation — see the tier agents below/above for the models)');
+      continue;
+    }
     if (row.models.length === 0) {
       // An empty tier is not cosmetic: the alias resolves to nothing and every
       // dispatch to it exhausts immediately with the 529 fallback message.

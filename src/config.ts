@@ -1144,8 +1144,18 @@ export function tierAgentNames(tiers: NonNullable<SonataConfig['tiers']>): strin
   return names;
 }
 
+/** Roles that get a `<role>-auto` agent: auto-routing on, and a real choice of tiers. */
+export function autoAgentRoles(config: SonataConfig): string[] {
+  if (config.autoRoute === undefined || config.tiers === undefined) return [];
+  return Object.entries(config.tiers)
+    .filter(([, lists]) => !tiersCollapse(lists))
+    .map(([role]) => role);
+}
+
 export function expectedAgentNames(config: SonataConfig): string[] {
-  if (config.tiers !== undefined) return tierAgentNames(config.tiers);
+  if (config.tiers !== undefined) {
+    return [...tierAgentNames(config.tiers), ...autoAgentRoles(config).map((role) => `${role}-auto`)];
+  }
   const harness = generatedAgents(config);
   const native = generatedNativeAgents(config);
   const harnessNames = harness.map((a) => `${a.role}-${a.model}`);
