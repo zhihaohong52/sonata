@@ -111,6 +111,11 @@ export function nativeTomlFor(
    * a key it does not emit is deleted.
    */
   gatewayOrder: readonly string[] = [],
+  /**
+   * `[auto_route]`, carried forward by the same rule as `[budget]`: init is
+   * the sole writer of the whole file, so a table it does not emit is deleted.
+   */
+  existingAutoRoute?: SonataConfig['autoRoute'],
 ): string {
   const allModels = new Map<string, NativeCandidate>();
   for (const cands of Object.values(roleModels)) {
@@ -172,6 +177,10 @@ export function nativeTomlFor(
   // at 0, so a zero here would turn "no cap" into a cap of $0.
   if (existingBudget !== undefined) {
     lines.push('[budget]', `daily_usd = ${existingBudget.dailyUsd}`, '');
+  }
+  if (existingAutoRoute !== undefined) {
+    lines.push('[auto_route]', `classifier = ${tomlKey(existingAutoRoute.classifier)}`,
+      `min_confidence = ${existingAutoRoute.minConfidence}`, '');
   }
 
   for (const [gateway, { baseUrl: candidateUrl, auth, wireFormat }] of gateways) {

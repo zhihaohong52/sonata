@@ -189,6 +189,14 @@ export interface NativeConfig {
   generate: Record<string, string[]>;
 }
 
+export const AUTO_ROUTE_DEFAULT_MIN_CONFIDENCE = 0.5;
+
+export interface AutoRouteConfig {
+  classifier: 'jev';
+  /** Below this classifier confidence the fallback tier is used. */
+  minConfidence: number;
+}
+
 export interface SonataConfig {
   /**
    * The schema version the file carried **before** migration — 0 for a file
@@ -234,6 +242,11 @@ export interface SonataConfig {
    * only once it finishes — live in `src/budget.ts`.
    */
   budget?: { dailyUsd: number };
+  /**
+   * Opt-in automatic tier choice for `<role>-auto` agents. Absent means off,
+   * which is every existing config. See `src/native/auto-route.ts`.
+   */
+  autoRoute?: AutoRouteConfig;
   generate: { roles: Record<string, string[]> };
   native?: NativeConfig;
   run: {
@@ -552,6 +565,26 @@ export function parseConfig(text: string): SonataConfig {
     budget = { dailyUsd: daily };
   }
 
+  let autoRoute: AutoRouteConfig | undefined;
+  if (raw.auto_route !== undefined) {
+    const section = raw.auto_route as Record<string, unknown>;
+    // Refused rather than ignored, like [budget]: a switch silently dropped
+    // for a typo reads exactly like one that is working.
+    for (const key of Object.keys(section)) {
+      if (key !== 'classifier' && key !== 'min_confidence') {
+        throw new Error(`sonata.toml: [auto_route] has unknown key "${key}" (known: classifier, min_confidence)`);
+      }
+    }
+    if (section.classifier !== 'jev') {
+      throw new Error(`sonata.toml: [auto_route] classifier must be "jev", got ${JSON.stringify(section.classifier)}`);
+    }
+    const min = section.min_confidence ?? AUTO_ROUTE_DEFAULT_MIN_CONFIDENCE;
+    if (typeof min !== 'number' || !Number.isFinite(min) || min < 0 || min > 1) {
+      throw new Error(`sonata.toml: [auto_route] min_confidence must be a number from 0 to 1, got ${JSON.stringify(min)}`);
+    }
+    autoRoute = { classifier: 'jev', minConfidence: min };
+  }
+
   const gen = (raw.generate ?? {}) as Record<string, unknown>;
 
   // TOML cannot express both `roles = [...]` and `[generate.roles]`, so the
@@ -862,6 +895,7 @@ export function parseConfig(text: string): SonataConfig {
     avoidGateways,
     gatewayOrder,
     budget,
+    autoRoute,
     generate: { roles },
     native,
     run: {
