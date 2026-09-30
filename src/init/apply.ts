@@ -142,7 +142,7 @@ export async function apply(
     const path = plan.guidance.path;
     try {
       const existing = existsSync(path) ? readFileSync(path, 'utf8') : undefined;
-      const merged = mergeGuidance(existing, guidanceBlock());
+      const merged = mergeGuidance(existing, guidanceBlock({ autoRoute: plan.guidance.autoRoute === true }));
       if (merged !== existing) {
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, merged);

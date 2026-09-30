@@ -203,6 +203,21 @@ describe('guidanceBlock', () => {
   });
 });
 
+describe('guidanceBlock with auto-routing', () => {
+  it('is unchanged when auto-routing is off', () => {
+    expect(guidanceBlock({ autoRoute: false })).toBe(guidanceBlock());
+    expect(guidanceBlock()).not.toMatch(/-auto/);
+  });
+
+  it('makes -auto the default when auto-routing is on', () => {
+    const block = guidanceBlock({ autoRoute: true });
+    expect(block).toMatch(/`code-auto`/);
+    expect(block).toMatch(/default/i);
+    expect(block.startsWith(GUIDANCE_BEGIN)).toBe(true);
+    expect(block.trimEnd().endsWith(GUIDANCE_END)).toBe(true);
+  });
+});
+
 describe('removeGuidance', () => {
   const block = guidanceBlock();
 

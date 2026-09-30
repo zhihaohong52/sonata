@@ -340,7 +340,7 @@ describe('plan — whether it installs litellm', () => {
 describe('plan — the CLAUDE.md guidance block', () => {
   it('defaults to the project CLAUDE.md', () => {
     const p = plan(env(), state, noCredentials, opts);
-    expect(p.guidance).toEqual({ scope: 'project', path: '/repo/CLAUDE.md' });
+    expect(p.guidance).toEqual({ scope: 'project', path: '/repo/CLAUDE.md', autoRoute: false });
   });
 
   it('writes into the user CLAUDE.md at global scope', () => {
