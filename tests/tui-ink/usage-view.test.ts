@@ -122,6 +122,20 @@ describe('UsageScreen', () => {
     app.unmount();
   });
 
+  it('shows auto-route decisions beside the total without pricing classifier tokens', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'usage-screen-'));
+    appendRow(home, row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'accepted', ms: 12, tokens: { input: 3, output: 2 } } }));
+    const app = render(React.createElement(ThemeProvider, null,
+      React.createElement(UsageScreen, { cwd: home, home })));
+    try {
+      await until(() => (app.lastFrame() ?? '').includes('$0.5000'), 'the report');
+      expect(app.lastFrame()).toContain('auto-route');
+      expect(app.lastFrame()).toContain('1 accepted');
+      expect(app.lastFrame()).toContain('classifier');
+      expect(app.lastFrame()).toContain('not priced');
+    } finally { app.unmount(); }
+  });
+
   it('scopes to this project on g, and says so when nothing is there', async () => {
     const home = mkdtempSync(join(tmpdir(), 'usage-screen-'));
     appendRow(home, row());

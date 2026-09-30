@@ -1,4 +1,4 @@
-import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../extended-context.js';
+import { EXTENDED_CONTEXT_SUFFIX, roleQualifiesForExtendedContext, tierQualifiesForExtendedContext } from '../extended-context.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { autoAgentRoles, generatedAgents, generatedNativeAgents, expectedAgentNames, isReadOnlyRole, loadConfig, TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
@@ -709,10 +709,7 @@ export function plannedAgents(config: SonataConfig): PlannedAgent[] {
       name: `${role}-auto`,
       content: autoAgentMarkdown({
         role,
-        extendedContext: available.every((tier) => {
-          const keys = lists[tier];
-          return keys !== undefined && tierQualifiesForExtendedContext(config, keys);
-        }),
+        extendedContext: roleQualifiesForExtendedContext(config, lists),
         availableTiers: available,
         planTiers,
       }),

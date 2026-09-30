@@ -161,6 +161,45 @@ describe('appendRow / readRows', () => {
     expect(back.map((r) => r.alias)).toEqual(['good']);
   });
 
+  it('drops malformed route and auto-route fields while keeping a valid row', () => {
+    appendRow(home, row({ alias: 'valid', route: 'auto', autoRoute: {
+      classifier: 'jev', choice: 'simple', confidence: 0.8, probabilities: { simple: 0.8, normal: 0.2 },
+      outcome: 'accepted', ms: 12, tokens: { input: 3, output: 2 },
+    } }));
+    const path = ledgerPathFor(home, new Date('2026-08-27T04:12:07.881Z'));
+    const malformed = [
+      { alias: 'null-auto', autoRoute: null },
+      { alias: 'non-object', autoRoute: 'jev' },
+      { alias: 'array-record', autoRoute: [] },
+      { alias: 'wrong-classifier', autoRoute: { classifier: 'other', outcome: 'failed', ms: 1 } },
+      { alias: 'unknown-outcome', autoRoute: { classifier: 'jev', outcome: 'mystery', ms: 1 } },
+      { alias: 'unknown-route', route: 'sideways' },
+      { alias: 'bad-ms', autoRoute: { classifier: 'jev', outcome: 'failed', ms: -1 } },
+      { alias: 'null-ms', autoRoute: { classifier: 'jev', outcome: 'failed', ms: null } },
+      { alias: 'bad-token', autoRoute: { classifier: 'jev', outcome: 'failed', ms: 1, tokens: { input: Infinity, output: 1 } } },
+    ];
+    writeFileSync(path, `${readFileSync(path, 'utf8')}${malformed.map((over) => JSON.stringify(persistedRow(over))).join('\n')}\n`);
+    const back = readRows(home, 0, Date.parse('2026-08-27T06:00:00Z'));
+    expect(back.map((r) => r.alias)).toEqual(['valid']);
+    expect(() => aggregate(back, 'route', {})).not.toThrow();
+  });
+
+  it('drops malformed confidence and probability values in auto-route records', () => {
+    appendRow(home, row({ alias: 'valid' }));
+    const path = ledgerPathFor(home, new Date('2026-08-27T04:12:07.881Z'));
+    const malformed = [
+      { alias: 'bad-confidence', autoRoute: { classifier: 'jev', outcome: 'accepted', ms: 1, confidence: -1 } },
+      { alias: 'null-confidence', autoRoute: { classifier: 'jev', outcome: 'accepted', ms: 1, confidence: null } },
+      { alias: 'null-probabilities', autoRoute: { classifier: 'jev', outcome: 'accepted', ms: 1, probabilities: null } },
+      { alias: 'array-probabilities', autoRoute: { classifier: 'jev', outcome: 'accepted', ms: 1, probabilities: [] } },
+      { alias: 'null-tokens', autoRoute: { classifier: 'jev', outcome: 'accepted', ms: 1, tokens: null } },
+      { alias: 'bad-probabilities', autoRoute: { classifier: 'jev', outcome: 'accepted', ms: 1, probabilities: { simple: NaN } } },
+      { alias: 'bad-tokens', autoRoute: { classifier: 'jev', outcome: 'accepted', ms: 1, tokens: { input: 1, output: -1 } } },
+    ];
+    writeFileSync(path, `${readFileSync(path, 'utf8')}${malformed.map((over) => JSON.stringify(persistedRow(over))).join('\n')}\n`);
+    expect(readRows(home, 0, Date.parse('2026-08-27T06:00:00Z')).map((r) => r.alias)).toEqual(['valid']);
+  });
+
   it('reads an absent cache field as 0, so a row written before the field existed still loads', () => {
     appendRow(home, row());
     const path = ledgerPathFor(home, new Date('2026-08-27T04:12:07.881Z'));

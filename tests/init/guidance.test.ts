@@ -211,8 +211,9 @@ describe('guidanceBlock with auto-routing', () => {
 
   it('makes -auto the default when auto-routing is on', () => {
     const block = guidanceBlock({ autoRoute: true });
-    expect(block).toMatch(/`code-auto`/);
-    expect(block).toMatch(/default/i);
+    expect(block).toContain('`-auto` agents are the default');
+    expect(block).toContain('explicit tier agents are the manual override');
+    expect(block).not.toContain('`-normal` is the default');
     expect(block.startsWith(GUIDANCE_BEGIN)).toBe(true);
     expect(block.trimEnd().endsWith(GUIDANCE_END)).toBe(true);
   });

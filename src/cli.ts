@@ -63,7 +63,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata catalog   show or refresh the Artificial Analysis model catalog
   sonata litellm   install or report sonata's own pinned LiteLLM (install|status)
   sonata usage     native-path token and cost usage from the ledger (live screen in a terminal)
-                   [--since 7d] [--by model|role|tier|effort|gateway|session|project]
+                   [--since 7d] [--by model|role|tier|route|effort|gateway|lane|session|project]
                    [--project <dir>] [--session <id>] [--json]
   sonata status    router health and this project's last hour of routes (--global: every project)
   sonata runs      list every run, with state and whether it wrote a report

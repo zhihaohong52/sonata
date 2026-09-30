@@ -14,7 +14,7 @@ import {
 } from '../config.js';
 import type { NativeGatewayAuth } from '../config.js';
 import { outdatedAgents, plannedAgents } from './sync.js';
-import { staleAgents, disabledOpencodeAgents, enableOpencodeAgent, firstErrorLine,
+import { isSonataAgent, staleAgents, disabledOpencodeAgents, enableOpencodeAgent, firstErrorLine,
 } from '../detect.js';
 import { getAdapter } from '../adapters/index.js';
 import type { HarnessProblem } from '../adapters/types.js';
@@ -27,7 +27,7 @@ import {
 } from '../settings.js';
 import type { Settings } from '../settings.js';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { findLitellm } from '../native/litellm.js';
 import { litellmRequired, sharedBaseUrls, sharedBaseUrlWarning } from '../native/providers.js';
 import { litellmStatus, type InstallerDeps } from '../native/litellm-venv.js';
@@ -833,12 +833,24 @@ export async function cmdDoctor(
         detail: 'on, but no TypeSafe key — every -auto request takes the fallback tier. Run `sonata auth add typesafe`',
       });
     }
-    const missing = autoAgentRoles(config)
-      .map((role) => `${role}-auto`)
-      .filter((name) => !existsSync(join(agentsDir, `${name}.md`)));
-    checks.push(missing.length === 0
-      ? { name: 'auto route', ok: true, detail: `on (jev, min_confidence ${config.autoRoute.minConfidence})` }
-      : { name: 'auto route', ok: false, detail: `agent file(s) missing: ${missing.join(', ')} — run \`sonata sync\`` });
+    // A file sonata does not own is one `sync` refuses to overwrite, so it
+    // needs its own advice: re-running sync would leave it in place.
+    const files = autoAgentRoles(config).map((role) => join(agentsDir, `${role}-auto.md`));
+    const missing = files.filter((path) => !existsSync(path)).map((path) => basename(path));
+    const foreign = files.filter((path) => existsSync(path) && !isSonataAgent(path));
+    if (missing.length > 0) {
+      checks.push({ name: 'auto route', ok: false, detail: `agent file(s) missing: ${missing.join(', ')} — run \`sonata sync\`` });
+    }
+    if (foreign.length > 0) {
+      checks.push({
+        name: 'auto route',
+        ok: false,
+        detail: `${foreign.join(', ')} is not sonata-owned, so \`sonata sync\` will not overwrite it — rename or remove it, then run \`sonata sync\``,
+      });
+    }
+    if (missing.length === 0 && foreign.length === 0) {
+      checks.push({ name: 'auto route', ok: true, detail: `on (jev, min_confidence ${config.autoRoute.minConfidence})` });
+    }
   }
 
   // A *stale* agent names a model the config dropped; an **outdated** one keeps

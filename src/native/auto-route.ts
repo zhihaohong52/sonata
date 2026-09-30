@@ -113,27 +113,38 @@ export interface TierClassifier {
   classify(input: { role: string; task: string; tiers: readonly Tier[] }, signal: AbortSignal): Promise<ClassifierAnswer>;
 }
 
+/** A response was received, but it cannot answer the Choice question. */
+export class MalformedAnswerError extends Error {
+  constructor() { super('malformed classifier response'); this.name = 'MalformedAnswerError'; }
+}
+
 /** The `tier` answer out of a System One response. Throws on anything else. */
 export function parseJevAnswer(json: unknown): ClassifierAnswer {
-  const root = json as { model?: unknown; answers?: { tier?: unknown }; usage?: { input_tokens?: unknown; output_tokens?: unknown } };
-  const tier = root?.answers?.tier as { choice?: unknown; confidence?: unknown; probabilities?: unknown } | undefined;
+  const root = json as { model?: unknown; answers?: { tier?: unknown }; usage?: { input_tokens?: unknown; output_tokens?: unknown } } | null;
+  const tier = root?.answers?.tier as { type?: unknown; choice?: unknown; confidence?: unknown; probabilities?: unknown } | undefined;
   // Reject malformed numeric output before it can influence tier selection.
-  if (tier === undefined || typeof tier.choice !== 'string'
+  if (tier === undefined || tier === null || typeof tier !== 'object' || Array.isArray(tier)
+    || tier.type !== 'choice' || typeof tier.choice !== 'string'
     || typeof tier.confidence !== 'number' || !Number.isFinite(tier.confidence)
     || tier.confidence < 0 || tier.confidence > 1
     || tier.probabilities === null || typeof tier.probabilities !== 'object'
     || Array.isArray(tier.probabilities)
     || Object.values(tier.probabilities).some((value) => typeof value !== 'number'
       || !Number.isFinite(value) || value < 0 || value > 1)) {
-    throw new Error('malformed classifier response');
+    throw new MalformedAnswerError();
   }
-  const usage = root.usage;
+  const probabilities = tier.probabilities as Record<string, number>;
+  if (Math.abs(Object.values(probabilities).reduce((sum, value) => sum + value, 0) - 1) > 0.01 + Number.EPSILON) {
+    throw new MalformedAnswerError();
+  }
+  const usage = root?.usage;
   return {
     choice: tier.choice,
     confidence: tier.confidence,
     probabilities: tier.probabilities as Record<string, number>,
-    ...(typeof root.model === 'string' ? { classifierModel: root.model } : {}),
-    ...(typeof usage?.input_tokens === 'number' && typeof usage?.output_tokens === 'number'
+    ...(typeof root?.model === 'string' ? { classifierModel: root.model } : {}),
+    ...(typeof usage?.input_tokens === 'number' && Number.isFinite(usage.input_tokens) && usage.input_tokens >= 0
+      && typeof usage?.output_tokens === 'number' && Number.isFinite(usage.output_tokens) && usage.output_tokens >= 0
       ? { tokens: { input: usage.input_tokens, output: usage.output_tokens } } : {}),
   };
 }
@@ -160,8 +171,14 @@ export function jevClassifier(opts: {
             signal: AbortSignal.any([signal, AbortSignal.timeout(attemptMs)]),
           });
           if (!res.ok) { last = new Error(`HTTP ${res.status}`); continue; }
-          return parseJevAnswer(await res.json());
+          let json: unknown;
+          try { json = await res.json(); } catch (error) {
+            if (error instanceof SyntaxError) throw new MalformedAnswerError();
+            throw error;
+          }
+          return parseJevAnswer(json);
         } catch (error) {
+          if (error instanceof MalformedAnswerError) throw error;
           last = error;
         }
       }
@@ -204,6 +221,9 @@ export async function decideTier(opts: {
       }),
     ]);
   } catch (error) {
+    if (error instanceof MalformedAnswerError) {
+      return { tier: fallback, record: { classifier: 'jev', outcome: 'invalid', reason: error.message, ms: now() - started } };
+    }
     return failed(error instanceof Error ? error.message : String(error));
   } finally {
     clearTimeout(timer);

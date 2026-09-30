@@ -8,7 +8,7 @@ import type { NativeCandidate } from './helpers.js';
 import type { CredentialSource } from '../config.js';
 import type { NativeGatewayAuth } from '../config.js';
 import type { TierLists } from '../config.js';
-import { tierAgentNames, parseConfig } from '../config.js';
+import { autoAgentRoles, tierAgentNames, parseConfig } from '../config.js';
 import { litellmRequired } from '../native/providers.js';
 import { expandCandidates, loadAaCatalog, proposeTiers, unpinnedVariants } from '../catalog.js';
 import { nativeTomlFor } from './toml.js';
@@ -320,7 +320,11 @@ export function plan(
   // Counted with the same rule `sync` writes by (`tierAgentNames`), not by
   // roles × models: a role whose `simple` and `complex` lists match collapses
   // to one file, so the old count promised 8 files and `sync` then wrote 4.
-  const totalAgents = tierAgentNames(tiers).length;
+  // It includes the -auto agents `sync` adds when [auto_route] survives the
+  // config rewrite; a config that will not parse promises the tier agents only.
+  let autoAgents = 0;
+  try { autoAgents = autoAgentRoles(parseConfig(configToml)).length; } catch { /* reported elsewhere */ }
+  const totalAgents = tierAgentNames(tiers).length + autoAgents;
   // Parsed back out of the TOML about to be written: `serve` makes this same
   // call against that same file, and a summary derived from the selections
   // instead could promise something the written config does not say.
