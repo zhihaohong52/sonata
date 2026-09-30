@@ -178,6 +178,49 @@ code = ["a"]
       expect(res.checks.find((c) => c.name === name)?.ok).toBe(true);
     }
   });
+
+  const AUTO = `
+[auto_route]
+classifier = "jev"
+
+[models."a"]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+[models."b"]
+harness = "codex"
+id = "gpt-5.6-pro"
+
+[tiers.code]
+simple = ["a"]
+normal = ["a", "b"]
+complex = ["b"]
+`;
+
+  it('warns when auto-routing is on without a TypeSafe key', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.find((c) => c.name === 'auto route' && /sonata auth add typesafe/.test(c.detail))).toBeDefined();
+  });
+
+  it('names sonata sync when a -auto agent file is missing', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    writeSonataKey(home, 'typesafe', 'k');
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.find((c) => c.name === 'auto route' && /sonata sync/.test(c.detail) && /code-auto/.test(c.detail))).toBeDefined();
+  });
+
+  it('reports nothing about auto-routing when it is off', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO.replace('[auto_route]\nclassifier = "jev"\n\n', ''));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.some((c) => c.name === 'auto route')).toBe(false);
+  });
 });
 
 describe('cmdDoctor — stale wrapper agents', () => {
