@@ -27,6 +27,8 @@ import type { InitLog } from '../commands/init-log.js';
 import type { WizardData } from '../tui-ink/app.js';
 import type { TuiResult } from '../tui-ink/types.js';
 
+import type { UpdateDeps } from './harness-updates.js';
+
 export const OPENCODE_RANGE = '>=1.18.0 <2.0.0';
 
 export interface Detection {
@@ -212,6 +214,12 @@ export interface InitOptions {
    * wrong.
    */
   host?: InitHost;
+  /**
+   * The harness update check's machine and registry access. Defaults to the
+   * real ones only when detection is real too: a test that fakes `detect` is
+   * faking the machine, and must not reach the npm registry or run updaters.
+   */
+  updates?: UpdateDeps;
 }
 
 /** The interactive surfaces `cmdInit` needs, when the TUI shell is drawing them. */

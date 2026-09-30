@@ -26,6 +26,7 @@ import { openInitLog, type InitLog } from './init-log.js';
 import { nativeTomlFor } from '../init/toml.js';
 import { discover, type InitEnvironment } from '../init/discover.js';
 import { interactiveState } from '../init/interactive-state.js';
+import { offerHarnessUpdates, realUpdateDeps } from '../init/harness-updates.js';
 import { scriptedState } from '../init/scripted-state.js';
 import { plan, fsCredentialProbe } from '../init/plan.js';
 import { apply } from '../init/apply.js';
@@ -96,6 +97,14 @@ async function runInit(
   if (opts.host === undefined) {
     out(interactive ? banner() : '  sonata init');
     out('');
+  }
+
+  // ---- harness updates -------------------------------------------------
+  // Before detection, because detection is what lists models: a harness
+  // updated after its catalogue was read would still show the old one.
+  const updates = opts.updates ?? (opts.detect === undefined ? realUpdateDeps(opts.home) : undefined);
+  if (updates !== undefined) {
+    await offerHarnessUpdates({ interactive, ask: opts.host?.confirm ?? confirm, out, deps: updates });
   }
 
   // ---- discover ---------------------------------------------------------

@@ -226,6 +226,7 @@ export const piAdapter: HarnessAdapter = {
   versionCommand: ['pi', '--version'],
   supportedVersions: '>=0.84.0 <1.0.0',
   pathPrepend: ['$HOME/.local/bin'],
+  update: { npmPackage: '@earendil-works/pi-coding-agent', command: ['pi', 'update', '--self'] },
   plan: buildScript,
   canPromptForApproval: false,
   promptPatterns: PROMPT_PATTERNS,
