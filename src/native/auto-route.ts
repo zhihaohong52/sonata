@@ -4,10 +4,10 @@
  * Tier selection asks TypeSafe's System One model Jev one Choice question,
  * once per conversation, and hands the answer to the unchanged tier path.
  */
-import type { Tier } from "../commands/agents.js";
-import type { AutoRouteRecord } from "../ledger.js";
+import type { Tier } from '../commands/agents.js';
+import type { AutoRouteRecord } from '../ledger.js';
 
-export const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
+export const JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
 export const JEV_ATTEMPT_MS = 1_500;
 export const JEV_DEADLINE_MS = 3_000;
 export const TASK_CHAR_CAP = 8_000;
@@ -28,48 +28,51 @@ export function cleanTask(body: Buffer): string | undefined {
   }
   if (!Array.isArray(messages)) return undefined;
   const first = messages.find(
-    (m) => (m as { role?: unknown })?.role === "user",
+    (m) => (m as { role?: unknown })?.role === 'user',
   ) as { content?: unknown } | undefined;
   if (first === undefined) return undefined;
   const parts =
-    typeof first.content === "string"
+    typeof first.content === 'string'
       ? [first.content]
       : Array.isArray(first.content)
         ? first.content
             .filter(
               (b) =>
-                (b as { type?: unknown })?.type === "text" &&
-                typeof (b as { text?: unknown }).text === "string",
+                (b as { type?: unknown })?.type === 'text' &&
+                typeof (b as { text?: unknown }).text === 'string',
             )
             .map((b) => (b as { text: string }).text)
         : [];
-  const text = parts.join("\n").replace(REMINDER, "").trim();
+  const text = parts.join('\n').replace(REMINDER, '').trim();
   return text.length === 0 ? undefined : text.slice(0, TASK_CHAR_CAP);
 }
 
 export function fallbackTier(tiers: readonly Tier[]): Tier {
-  if (tiers.includes("normal")) return "normal";
-  if (tiers.includes("complex")) return "complex";
+  if (tiers.includes('normal')) return 'normal';
+  if (tiers.includes('complex')) return 'complex';
   return tiers[0];
 }
 
 const TIER_CRITERIA: Record<Tier, { what: string; not_for: string }> = {
   simple: {
     what:
-      "Specified closely enough that the change could be written without asking a question; typically one or two files and no interface change. " +
-      "A large mechanical change is simple.",
+      'Specified closely enough that the change could be written without asking a question; ' +
+      'typically one or two files and no interface change. A large mechanical change is simple.',
     not_for:
-      "Work that needs a design decision or reading the surrounding code to fit in.",
+      'Work that needs a design decision or reading the surrounding code to fit in.',
   },
   normal: {
-    what: 'You know what to change but not exactly how; needs reading the surrounding code; may touch several files; what "done" means is not in question.',
-    not_for: "Open design choices, or an ambiguous definition of done.",
+    what:
+      'You know what to change but not exactly how; needs reading the surrounding code; may touch several files; ' +
+      'what \'done\' means is not in question.',
+    not_for: 'Open design choices, or an ambiguous definition of done.',
   },
   complex: {
     what:
-      'Needs a design decision affecting other components, or is ambiguous about what "done" means, so the first job is deciding what to build. ' +
+      'Needs a design decision affecting other components, or is ambiguous about what \'done\' means, so the first job ' +
+      'is deciding what to build. ' +
       'A three-line change that decides an interface is complex.',
-    not_for: "Routine work with a clear implementation, however large.",
+    not_for: 'Routine work with a clear implementation, however large.',
   },
 };
 export function jevRequestBody(input: {
@@ -81,10 +84,10 @@ export function jevRequestBody(input: {
     state: { role: input.role, task: input.task },
     questions: {
       tier: {
-        type: "choice",
+        type: 'choice',
         instructions: [
-          "Pick the cheapest tier that can fully complete `task` in one pass, without being re-run at a higher tier.",
-          "`role` is the kind of work (code, review, explore or plan). Size is not difficulty.",
+          'Pick the cheapest tier that can fully complete `task` in one pass, without being re-run at a higher tier.',
+          '`role` is the kind of work (code, review, explore or plan). Size is not difficulty.',
         ],
         criteria: Object.fromEntries(
           input.tiers.map((tier) => [tier, TIER_CRITERIA[tier]]),
@@ -102,7 +105,7 @@ export interface ClassifierAnswer {
   tokens?: { input: number; output: number };
 }
 export interface TierClassifier {
-  name: "jev";
+  name: 'jev';
   classify(
     input: { role: string; task: string; tiers: readonly Tier[] },
     signal: AbortSignal,
@@ -120,34 +123,34 @@ export function parseJevAnswer(json: unknown): ClassifierAnswer {
   const probabilities = tier?.probabilities;
   const validProbabilities =
     probabilities !== null &&
-    typeof probabilities === "object" &&
+    typeof probabilities === 'object' &&
     !Array.isArray(probabilities) &&
     Object.values(probabilities as Record<string, unknown>).every(
       (value) =>
-        typeof value === "number" &&
+        typeof value === 'number' &&
         Number.isFinite(value) &&
         value >= 0 &&
         value <= 1,
     );
   if (
     tier === undefined ||
-    typeof tier.choice !== "string" ||
-    typeof tier.confidence !== "number" ||
+    typeof tier.choice !== 'string' ||
+    typeof tier.confidence !== 'number' ||
     !Number.isFinite(tier.confidence) ||
     tier.confidence < 0 ||
     tier.confidence > 1 ||
     !validProbabilities
   ) {
-    throw new Error("malformed classifier response");
+    throw new Error('malformed classifier response');
   }
   const usage = root.usage;
   return {
     choice: tier.choice,
     confidence: tier.confidence,
     probabilities: probabilities as Record<string, number>,
-    ...(typeof root.model === "string" ? { classifierModel: root.model } : {}),
-    ...(typeof usage?.input_tokens === "number" &&
-    typeof usage?.output_tokens === "number"
+    ...(typeof root.model === 'string' ? { classifierModel: root.model } : {}),
+    ...(typeof usage?.input_tokens === 'number' &&
+    typeof usage?.output_tokens === 'number'
       ? { tokens: { input: usage.input_tokens, output: usage.output_tokens } }
       : {}),
   };
@@ -162,20 +165,20 @@ export function jevClassifier(opts: {
   const attemptMs = opts.attemptMs ?? JEV_ATTEMPT_MS;
   const retries = opts.retries ?? 1;
   return {
-    name: "jev",
+    name: 'jev',
     async classify(input, signal) {
       const key = opts.key();
       if (key === undefined)
-        throw new Error("no TypeSafe key — run `sonata auth add typesafe`");
+        throw new Error('no TypeSafe key — run `sonata auth add typesafe`');
       let last: unknown;
       for (let attempt = 0; attempt <= retries; attempt += 1) {
         if (signal.aborted) break;
         try {
           const res = await opts.fetch(JEV_ENDPOINT, {
-            method: "POST",
+            method: 'POST',
             headers: {
               authorization: `Bearer ${key}`,
-              "content-type": "application/json",
+              'content-type': 'application/json',
             },
             body: JSON.stringify(jevRequestBody(input)),
             signal: AbortSignal.any([signal, AbortSignal.timeout(attemptMs)]),
@@ -189,7 +192,7 @@ export function jevClassifier(opts: {
           last = error;
         }
       }
-      throw last instanceof Error ? last : new Error("classifier unavailable");
+      throw last instanceof Error ? last : new Error('classifier unavailable');
     },
   };
 }
@@ -213,15 +216,15 @@ export async function decideTier(opts: {
   const failed = (reason: string): AutoDecision => ({
     tier: fallback,
     record: {
-      classifier: "jev",
-      outcome: "failed",
+      classifier: 'jev',
+      outcome: 'failed',
       reason,
       ms: now() - started,
     },
   });
-  if (opts.classifier === undefined) return failed("no classifier");
+  if (opts.classifier === undefined) return failed('no classifier');
   const task = cleanTask(opts.body);
-  if (task === undefined) return failed("empty task");
+  if (task === undefined) return failed('empty task');
   const controller = new AbortController();
   const deadline = opts.deadlineMs ?? JEV_DEADLINE_MS;
   let timer: NodeJS.Timeout | undefined;
@@ -245,14 +248,14 @@ export async function decideTier(opts: {
     clearTimeout(timer);
   }
   const record: AutoRouteRecord = {
-    classifier: "jev",
+    classifier: 'jev',
     ...(answer.classifierModel === undefined
       ? {}
       : { classifierModel: answer.classifierModel }),
     choice: answer.choice,
     confidence: answer.confidence,
     probabilities: answer.probabilities,
-    outcome: "accepted",
+    outcome: 'accepted',
     ms: now() - started,
     ...(answer.tokens === undefined ? {} : { tokens: answer.tokens }),
   };
@@ -261,12 +264,12 @@ export async function decideTier(opts: {
       tier: fallback,
       record: {
         ...record,
-        outcome: "invalid",
+        outcome: 'invalid',
         reason: `not an offered tier: ${answer.choice}`,
       },
     };
   if (answer.confidence < opts.minConfidence)
-    return { tier: fallback, record: { ...record, outcome: "low-confidence" } };
+    return { tier: fallback, record: { ...record, outcome: 'low-confidence' } };
   return { tier: answer.choice as Tier, record };
 }
 
