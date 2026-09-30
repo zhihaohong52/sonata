@@ -106,6 +106,22 @@ in `sonata usage`.
 Run `sonata sync` after editing the config; Claude Code picks up the
 generated agents automatically.
 
+## Auto-routed tiers
+
+Opt in per project by adding:
+
+```toml
+[auto_route]
+classifier = "jev"
+min_confidence = 0.5
+```
+
+`classifier` must be `"jev"`; `min_confidence` is optional and must be between 0 and 1 (the default is `0.5`). Store the machine-wide classifier key with `sonata auth add typesafe`. The key is read when each classification is made and is never logged.
+
+When enabled, `sonata sync` generates a `<role>-auto` agent for each role whose tiers differ. Jev chooses among that role's available `simple`, `normal` and `complex` tiers once per conversation; the selected tier then follows the same ranked native routing path as its explicit tier agent. If the key is missing, the request fails, the task is empty, Jev returns an invalid or low-confidence answer, or the deadline is exceeded, sonata falls back to `normal`, or `complex` when `normal` is unavailable. Use the explicit tier agents when you already know the right tier.
+
+Classifier calls are not charged against `[budget] daily_usd`. `sonata usage --by route` separates auto-routed requests from manual tier requests and reports classifier token volume beside the priced total.
+
 ## Seeing and changing a ranking
 
 `sonata agents` prints every generated tier agent, what each of its ranked

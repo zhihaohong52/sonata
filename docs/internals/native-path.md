@@ -273,3 +273,12 @@ Remote Control is the trade-off: `ANTHROPIC_BASE_URL` is process-wide, and `isFi
 The `claude-` prefix is load-bearing because the router sends that prefix to Anthropic. Native model keys and ids beginning with `claude-` are refused at parse time. Credentials flow only store → memory → LiteLLM environment; keys are never logged or put in a Claude conversation. The user starts `sonata serve`: the classifier correctly blocks launching an auth-forwarding proxy from inside a session.
 
 The `claude` harness adapter is the simplest adapter: it runs headless `claude -p`, has no TUI, and maps permission modes directly. For native dispatches it assumes `sonata serve` is already running.
+
+
+## Auto-routed tier branch
+
+After tenant resolution, the budget check and `repairNamelessToolCalls`, the router recognizes `sonata-<role>-auto` before the ordinary tier-alias path. With `[auto_route]` enabled it sends only the first user message's text, cleaned of `<system-reminder>` blocks and capped at 8,000 characters, to Jev at TypeSafe. The decision is stored by conversation and the chosen tier is converted to `sonata-<role>-<tier>`; that alias then takes the unchanged ranked tier path, including cooldowns, stickiness and budget handling.
+
+The decision store is bounded to 1,000 conversations with a two-hour TTL, and concurrent first requests for one conversation share one in-flight classification. Failures, invalid or low-confidence answers, missing keys and timeouts fail open to `normal`, or `complex` when no normal tier exists. A `-auto` request while auto-routing is disabled, or for a collapsed role, returns a typed 400 rather than silently behaving as a manual alias.
+
+Ledger rows reached through an explicit tier carry `route: "manual"`; rows resolved through an auto alias carry `route: "auto"`. The request that makes the decision additionally carries `autoRoute` with the choice, confidence, probabilities, outcome, latency, classifier model and token counts. `sonata usage --by route` groups the two routes and reports classifier tokens without pricing them. TypeSafe usage is not included in `[budget] daily_usd`, which bounds priced model traffic only.
