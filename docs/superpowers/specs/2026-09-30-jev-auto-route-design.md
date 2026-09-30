@@ -1,6 +1,6 @@
 # Auto-routed tiers: Jev chooses simple, normal or complex
 
-**Status:** designed, not implemented.
+**Status:** implemented (PR pending); live Jev check pending a TypeSafe key.
 **Date:** 2026-09-30
 **Ships in:** the next minor (it adds a config key and changes routing).
 
@@ -195,9 +195,17 @@ of the request that made the decision also carries:
 
 Raw values are stored as received, so any later rule (a different threshold,
 a per-tier bar, a target share) can be computed from history without calling
-Jev again. The ledger's row validation allow-lists `route` and `autoRoute`;
-a round-trip test proves such a row survives `readRows`, since an unexpected
-value makes the reader drop the row silently.
+Jev again. Only a well-formed answer is recorded this way: a malformed body
+(not a `choice` answer, probabilities outside [0, 1] or not summing to 1
+within 0.01) records outcome `invalid` with its reason and no answer fields,
+and usage counts that are not finite and non-negative leave `tokens` out.
+
+A persisted row is untrusted input, so `readRows` drops the whole row when
+`route` is present but not `auto`/`manual`, or when `autoRoute` is present
+but not an object with classifier `jev`, a known outcome, a finite
+non-negative `ms`, and finite non-negative `confidence`, probability values
+and token counts wherever those are present. Round-trip tests prove a valid
+row survives `readRows` and each malformed shape is dropped.
 
 **`sonata usage --by route`** groups auto against manual (requests, spend,
 tier split). A summary line counts decision outcomes, so the gate's firing
@@ -213,6 +221,8 @@ the docs say so.
 - `[auto_route]` set, no TypeSafe key → **warn** naming `sonata auth add
   typesafe` (routing still works; it always falls back).
 - `[auto_route]` set, `-auto` agents missing → names `sonata sync`.
+- `[auto_route]` set, a `<role>-auto.md` that sonata does not own → names the
+  file (`sync` will not overwrite it).
 - No live call: a probe spends tokens.
 
 ## Privacy
