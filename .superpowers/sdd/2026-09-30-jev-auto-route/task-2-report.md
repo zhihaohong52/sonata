@@ -78,3 +78,19 @@ Tests 25 passed (25)
 npm run typecheck
 passed (application and test typechecks)
 ```
+
+## Fix Round 2
+
+- Made `DecisionStore`'s pending cleanup identity-safe: an old creation can no longer delete a replacement promise installed after `clear()`.
+- Added regression coverage proving a replacement in-flight creation is shared by a third caller and that its decision is retained.
+
+Covering tests:
+
+```text
+npx vitest run tests/native/auto-route.test.ts
+Test Files 1 passed (1)
+Tests 26 passed (26)
+
+npm run typecheck
+passed (application and test typechecks)
+```

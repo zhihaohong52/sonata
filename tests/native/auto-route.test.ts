@@ -225,4 +225,24 @@ describe('DecisionStore', () => {
     await creation;
     expect(store.get('k', 1)).toBeUndefined();
   });
+
+  it('keeps a replacement creation pending when the cleared one settles', async () => {
+    const store = new DecisionStore(60_000, 10);
+    let resolveA!: (decision: { tier: 'simple'; record: { classifier: 'jev'; outcome: 'accepted'; ms: number } }) => void;
+    let resolveB!: (decision: { tier: 'normal'; record: { classifier: 'jev'; outcome: 'accepted'; ms: number } }) => void;
+    const a = new Promise<{ tier: 'simple'; record: { classifier: 'jev'; outcome: 'accepted'; ms: number } }>((r) => { resolveA = r; });
+    const b = new Promise<{ tier: 'normal'; record: { classifier: 'jev'; outcome: 'accepted'; ms: number } }>((r) => { resolveB = r; });
+    const first = store.getOrCreate('k', 0, () => a);
+    store.clear();
+    const second = store.getOrCreate('k', 1, () => b);
+    resolveA({ tier: 'simple', record: { classifier: 'jev', outcome: 'accepted', ms: 1 } });
+    await first;
+    const makeC = vi.fn(async () => ({ tier: 'complex' as const, record: { classifier: 'jev' as const, outcome: 'accepted' as const, ms: 1 } }));
+    const third = store.getOrCreate('k', 2, makeC);
+    expect(makeC).not.toHaveBeenCalled();
+    resolveB({ tier: 'normal', record: { classifier: 'jev', outcome: 'accepted', ms: 2 } });
+    await second;
+    await third;
+    expect(store.get('k', 3)?.tier).toBe('normal');
+  });
 });
