@@ -73,7 +73,7 @@ describe('offerHarnessUpdates', () => {
 
   it('runs the harness\'s own updater for each Yes, and skips each No', async () => {
     const d = outdated();
-    const run = vi.fn(async () => true);
+    const run = vi.fn(async (_command: string[], _out: (line: string) => void) => true);
     d.run = run;
     const ask = vi.fn(async (q: string) => q.includes('codex'));
     const lines: string[] = [];
@@ -126,7 +126,7 @@ describe('offerHarnessUpdates', () => {
 
   it('never prompts or updates when unattended; names the command instead', async () => {
     const d = outdated();
-    const run = vi.fn(async () => true);
+    const run = vi.fn(async (_command: string[], _out: (line: string) => void) => true);
     d.run = run;
     const ask = vi.fn(async () => true);
     const lines: string[] = [];
