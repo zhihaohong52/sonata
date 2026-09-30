@@ -20,5 +20,36 @@ describe('sonata-<role>-auto routing', () => {
   it('falls back to normal with no classifier', async () => { const { deps, seen, rows } = depsWith(undefined); await routed(req(), deps as any); expect(seen).toEqual(['t/n']); expect(rows[0].autoRoute?.outcome).toBe('failed'); });
   it('answers a typed 400 when [auto_route] is off', async () => { const { c, calls } = classifierSaying('simple'); const { deps } = depsWith(c, { auto: false }); const res = await routed(req(), deps as any); expect(res.status).toBe(400); expect(String(res.body)).toMatch(/\[auto_route\]/); expect(calls).toHaveLength(0); });
   it('refuses at the budget before asking the classifier', async () => { const { c, calls } = classifierSaying('simple'); const { deps } = depsWith(c, { budget: () => [{ dailyUsd: 1, spentUsd: 5, configPath: '/x/sonata.toml' }] }); const res = await routed(req(), deps as any); expect(res.status).toBe(429); expect(calls).toHaveLength(0); });
+  it('refuses a collapsed auto role with a sync hint without asking the classifier', async () => {
+    const { c, calls } = classifierSaying('simple');
+    const { deps } = depsWith(c);
+    deps.resolveTenant = () => ({
+      id: 't',
+      config: { ...config(), tiers: { code: { simple: ['s'], normal: ['s'], complex: ['s'] } } },
+    });
+    const res = await routed(req(), deps as any);
+    expect(res.status).toBe(400);
+    expect(String(res.body)).toMatch(/sonata sync/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('routes an auto body with unparseable messages as a fallback rather than throwing', async () => {
+    const { c, calls } = classifierSaying('simple');
+    const { deps, seen, rows } = depsWith(c);
+    const badBody = Buffer.from(JSON.stringify({ model: 'sonata-code-auto', messages: 'not an array' }));
+    const res = await routed({ ...req(), body: badBody }, deps as any);
+    expect(res.status).toBe(200);
+    expect(seen).toEqual(['t/n']);
+    expect(rows[0]).toMatchObject({ route: 'auto', autoRoute: { outcome: 'failed', reason: 'empty task' } });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does not label a bare model key as an auto or manual route', async () => {
+    const { deps, rows } = depsWith(undefined);
+    const bare = Buffer.from(JSON.stringify({ model: 'plain', messages: [{ role: 'user', content: 'x' }] }));
+    await routed({ ...req(), body: bare }, deps as any);
+    expect(Object.hasOwn(rows[0], 'route')).toBe(false);
+  });
+
   it('marks an explicit tier alias as a manual route', async () => { const { deps, rows } = depsWith(undefined); const body = Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: 'x' }] })); await routed({ ...req(), body }, deps as any); expect(rows[0]).toMatchObject({ route: 'manual' }); expect(rows[0].autoRoute).toBeUndefined(); });
 });

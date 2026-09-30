@@ -16,7 +16,7 @@
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../extended-context.js';
+import { EXTENDED_CONTEXT_SUFFIX, roleQualifiesForExtendedContext, tierQualifiesForExtendedContext } from '../extended-context.js';
 import { autoAgentRoles, configPath, loadConfig, parseConfig, TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
 import { assertEffortsPinned, candidateFacts, candidateLabel, expandCandidates, hasTaskCost, loadAaCatalog, reasoningOf, type AaCatalog, type CandidateFacts } from '../catalog.js';
 import { replaceTiersBlock } from '../init/toml.js';
@@ -105,7 +105,9 @@ export function agentRows(config: SonataConfig): AgentRow[] {
     }
   }
   for (const role of autoAgentRoles(config)) {
-    rows.push({ agent: `${role}-auto`, role, auto: true, models: [], extendedContext: false });
+    const lists = config.tiers?.[role];
+    if (lists === undefined) continue;
+    rows.push({ agent: `${role}-auto`, role, auto: true, models: [], extendedContext: roleQualifiesForExtendedContext(config, lists) });
   }
   return rows;
 }

@@ -251,6 +251,24 @@ function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
+/** The decision fields read by `aggregate`, checked before a row reaches it. */
+function autoRouteIsValid(record: unknown): boolean {
+  if (record === null || typeof record !== 'object' || Array.isArray(record)) return false;
+  const value = record as Partial<AutoRouteRecord>;
+  if (value.classifier !== 'jev' || !['accepted', 'low-confidence', 'invalid', 'failed'].includes(value.outcome ?? '')
+    || !isCount(value.ms)) return false;
+  if ('confidence' in value && !isCount(value.confidence)) return false;
+  if ('probabilities' in value) {
+    if (value.probabilities === null || typeof value.probabilities !== 'object' || Array.isArray(value.probabilities)
+      || !Object.values(value.probabilities).every(isCount)) return false;
+  }
+  if ('tokens' in value) {
+    if (value.tokens === null || typeof value.tokens !== 'object' || Array.isArray(value.tokens)
+      || !isCount(value.tokens.input) || !isCount(value.tokens.output)) return false;
+  }
+  return true;
+}
+
 /**
  * A persisted row is untrusted input. Every downstream reader (`aggregate`,
  * `recentRoutes`) reaches into `tokens.input`/`tokens.output`, `attempts.length`
@@ -267,6 +285,8 @@ function isCount(value: unknown): value is number {
  * existed carry none, and `normaliseCacheFields` reads those as 0.
  */
 function hasRequiredFields(row: LedgerRow): boolean {
+  if ('route' in row && row.route !== 'auto' && row.route !== 'manual') return false;
+  if ('autoRoute' in row && !autoRouteIsValid(row.autoRoute)) return false;
   const tokens = row.tokens;
   if (tokens === null || typeof tokens !== 'object' || Array.isArray(tokens)) return false;
   if (!isCount(tokens.input) || !isCount(tokens.output)) return false;

@@ -214,6 +214,20 @@ complex = ["b"]
     expect(checks.find((c) => c.name === 'auto route' && /sonata sync/.test(c.detail) && /code-auto/.test(c.detail))).toBeDefined();
   });
 
+  it('reports a non-sonata file occupying an auto agent name', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    mkdirSync(join(cwd, '.claude', 'agents'), { recursive: true });
+    writeFileSync(join(cwd, '.claude', 'agents', 'code-auto.md'), 'My own agent');
+    writeSonataKey(home, 'typesafe', 'k');
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const check = checks.find((c) => c.name === 'auto route' && !c.ok);
+    expect(check?.detail).toContain('code-auto.md');
+    expect(check?.detail).toContain('not sonata-owned');
+    expect(check?.detail).toMatch(/rename or remove it/);
+  });
+
   it('reports nothing about auto-routing when it is off', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));

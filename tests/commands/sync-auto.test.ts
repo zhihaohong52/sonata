@@ -49,6 +49,17 @@ describe('<role>-auto agents', () => {
     expect(renderAgents(rows).join('\n')).toMatch(/code-auto[\s\S]*auto-routed/);
   });
 
+  it('reports the same extended context as the generated auto alias', () => {
+    const config = CONFIG(true);
+    config.unifiedModels.a.contextWindow = 1_000_000;
+    config.unifiedModels.b.contextWindow = 1_000_000;
+    expect(agentRows(config).find((r) => r.agent === 'code-auto')?.extendedContext).toBe(true);
+    expect(plannedAgents(config).find((a) => a.name === 'code-auto')?.content).toMatch(/^model: sonata-code-auto\[1m\]$/m);
+    config.unifiedModels.b.contextWindow = 128_000;
+    expect(agentRows(config).find((r) => r.agent === 'code-auto')?.extendedContext).toBe(false);
+    expect(plannedAgents(config).find((a) => a.name === 'code-auto')?.content).toMatch(/^model: sonata-code-auto$/m);
+  });
+
   it('are matched by the routing hook matcher', () => {
     expect(new RegExp(SONATA_AGENT_MATCHER).test('code-auto')).toBe(true);
   });

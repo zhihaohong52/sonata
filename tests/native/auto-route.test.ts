@@ -7,6 +7,7 @@ import {
   fallbackTier,
   jevRequestBody,
   parseJevAnswer,
+  MalformedAnswerError,
   jevClassifier,
   decideTier,
   DecisionStore,
@@ -156,9 +157,10 @@ describe('parseJevAnswer', () => {
     const base = {
       answers: {
         tier: {
+          type: 'choice',
           choice: 'simple',
           confidence: 0.5,
-          probabilities: { simple: 0.5 },
+          probabilities: { simple: 1 },
         },
       },
     };
@@ -183,6 +185,35 @@ describe('parseJevAnswer', () => {
           answers: { tier: { ...base.answers.tier, confidence } },
         }),
       ).toThrow();
+    }
+  });
+
+  it('requires a choice answer and probabilities that sum to one', () => {
+    const valid = {
+      answers: {
+        tier: {
+          type: 'choice', choice: 'simple', confidence: 0.5, probabilities: { simple: 1 },
+        },
+      },
+    };
+    expect(() => parseJevAnswer({ ...valid, answers: { tier: { ...valid.answers.tier, type: 'score' } } })).toThrow(MalformedAnswerError);
+    expect(() => parseJevAnswer({ ...valid, answers: { tier: { ...valid.answers.tier, probabilities: { simple: 0.5 } } } })).toThrow(MalformedAnswerError);
+    expect(() => parseJevAnswer({ ...valid, answers: { tier: { ...valid.answers.tier, probabilities: { simple: 0.98 } } } })).toThrow(MalformedAnswerError);
+    expect(() => parseJevAnswer({ ...valid, answers: { tier: { ...valid.answers.tier, probabilities: { simple: 0.5, normal: 0.5, extra: 0.02 } } } })).toThrow(MalformedAnswerError);
+  });
+
+  it('omits invalid usage counts instead of recording them', () => {
+    const base = {
+      model: 'jev-1.13.0',
+      answers: { tier: { type: 'choice', choice: 'simple', confidence: 1, probabilities: { simple: 1 } } },
+    };
+    for (const usage of [
+      { input_tokens: -1, output_tokens: 2 },
+      { input_tokens: Number.NaN, output_tokens: 2 },
+      { input_tokens: 2, output_tokens: Number.POSITIVE_INFINITY },
+      { input_tokens: 2, output_tokens: '2' },
+    ]) {
+      expect(parseJevAnswer({ ...base, usage }).tokens).toBeUndefined();
     }
   });
 });
@@ -260,6 +291,32 @@ describe('decideTier', () => {
       tier: 'normal',
       record: { outcome: 'failed', reason: 'empty task' },
     });
+  });
+
+  it('records malformed classifier answers as invalid', async () => {
+    const malformed = [
+      null,
+      { answers: {} },
+      { answers: { tier: null } },
+      { answers: { tier: 42 } },
+      { answers: { tier: 'choice' } },
+      { answers: { tier: { choice: 'simple', confidence: 1, probabilities: { simple: 1 } } } },
+      { answers: { tier: { type: 'choice', choice: 1, confidence: 1, probabilities: { simple: 1 } } } },
+      { answers: { tier: { type: 'choice', choice: 'simple', confidence: NaN, probabilities: { simple: 1 } } } },
+      { answers: { tier: { type: 'choice', choice: 'simple', confidence: 1, probabilities: [] } } },
+      { answers: { tier: { type: 'choice', choice: 'simple', confidence: 1, probabilities: { simple: -1 } } } },
+      { answers: { tier: { type: 'score', choice: 'simple', confidence: 1, probabilities: { simple: 1 } } } },
+      { answers: { tier: { type: 'choice', choice: 'simple', confidence: 1, probabilities: { simple: 0.5 } } } },
+    ];
+    for (const payload of malformed) {
+      const d = await decideTier({
+        classifier: { name: 'jev', classify: async () => parseJevAnswer(payload) },
+        role: 'code', body: b, tiers: ALL, minConfidence: 0.5,
+      });
+      expect(d.tier).toBe('normal');
+      expect(d.record).toMatchObject({ classifier: 'jev', outcome: 'invalid' });
+      expect(d.record.reason).toMatch(/malformed classifier response/);
+    }
   });
 
   it('falls back when the classifier throws, recording the reason but not the task', async () => {
@@ -349,11 +406,42 @@ describe('jevClassifier', () => {
 
   it('reads the key per call, so a key added later is picked up', async () => {
     let key: string | undefined;
-    const f = vi.fn(async () => new Response(JSON.stringify({ answers: { tier: { choice: 'simple', confidence: 1, probabilities: { simple: 1 } } } }), { status: 200 }));
+    const f = vi.fn(async () => new Response(JSON.stringify({ answers: { tier: { type: 'choice', choice: 'simple', confidence: 1, probabilities: { simple: 1 } } } }), { status: 200 }));
     const c = jevClassifier({ fetch: f as any, key: () => key });
     await expect(c.classify({ role: 'code', task: 'T', tiers: ['simple'] }, new AbortController().signal)).rejects.toThrow();
     key = 'k';
     await expect(c.classify({ role: 'code', task: 'T', tiers: ['simple'] }, new AbortController().signal)).resolves.toMatchObject({ choice: 'simple' });
+  });
+
+  it('does not retry a malformed answer body', async () => {
+    let n = 0;
+    const c = jevClassifier({
+      fetch: (async () => {
+        n += 1;
+        return new Response(JSON.stringify({ answers: { tier: { type: 'choice', choice: 'simple', confidence: 1, probabilities: { simple: 0.5 } } } }), { status: 200 });
+      }) as any,
+      key: () => 'k',
+    });
+    await expect(c.classify({ role: 'code', task: 'T', tiers: ['simple'] }, new AbortController().signal)).rejects.toBeInstanceOf(MalformedAnswerError);
+    expect(n).toBe(1);
+  });
+
+  it('records non-JSON answers as invalid without retrying', async () => {
+    let calls = 0;
+    const classifier = jevClassifier({ fetch: (async () => { calls += 1; return new Response('not json'); }) as any, key: () => 'k' });
+    const d = await decideTier({ classifier, role: 'code', body: body([{ role: 'user', content: 'T' }]), tiers: ALL, minConfidence: 0.5 });
+    expect(d.record.outcome).toBe('invalid');
+    expect(calls).toBe(1);
+  });
+
+  it('records network and HTTP failures as failed after retrying', async () => {
+    for (const fail of [async () => { throw new Error('network unavailable'); }, async () => new Response('x', { status: 503 })]) {
+      let calls = 0;
+      const classifier = jevClassifier({ fetch: (async () => { calls += 1; return fail(); }) as any, key: () => 'k' });
+      const d = await decideTier({ classifier, role: 'code', body: body([{ role: 'user', content: 'T' }]), tiers: ALL, minConfidence: 0.5 });
+      expect(d.record.outcome).toBe('failed');
+      expect(calls).toBe(2);
+    }
   });
 
   it('retries once after a non-2xx, then succeeds', async () => {
