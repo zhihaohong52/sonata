@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to AI assistants when working with this repository. For a human-readable overview, see `@README.md`. **Starting a session? Read `docs/HANDOFF.md` first** — current state, open follow-ups, and the environment traps that have cost previous sessions real time. Design notes and the implementation plan (including defects found by running it) live in `docs/superpowers/`; lessons about dispatching work through sonata are in `docs/dispatching-work-through-sonata.md`.
+This file provides guidance to AI assistants when working with this repository. For a human-readable overview, see `@README.md`. **Starting a session? Read `docs/HANDOFF.md` first** — current state, open follow-ups, and the environment traps that have cost previous sessions real time. The full design record behind the rules below lives in `docs/internals/` (see *Where the detail lives*); design notes and the implementation plan live in `docs/superpowers/`; lessons about dispatching work through sonata are in `docs/dispatching-work-through-sonata.md`.
 
 ## Project Overview
 
@@ -21,6 +21,25 @@ This file provides guidance to AI assistants when working with this repository. 
 - LiteLLM for native gateways that need translation — sonata installs and pins its own
   (`sonata litellm install`); an Anthropic-native gateway needs none, and neither does Python
 
+## Where the detail lives
+
+This file is the day-to-day summary. The full design record — every measured
+fact, reverted experiment and "why not the obvious fix" — moved to
+`docs/internals/`. **Read the matching page before changing the code it
+describes**; most of these rules exist because the obvious change was tried
+and broke something.
+
+| Page | Covers |
+|---|---|
+| `docs/internals/cli-reference.md` | Every command in full, the release/publish process, and the complete `route auto` history (including the superseded "env is read at launch only" measurements) |
+| `docs/internals/architecture.md` | Design points: worktree fingerprint, harness-lane usage reading, tier ranking (`proposeTiers`, AA catalog, effort levels), `avoid_gateways`/`gateway_order`, pricing and models.dev |
+| `docs/internals/configuration.md` | `sonata.toml` in full: schema_version, `[budget]`, `[models]`/`[tiers]`, legacy migration, keys/ids, BYOK, CLAUDE.md guidance block, init logging |
+| `docs/internals/native-path.md` | Router tenancy, LiteLLM management, OAuth gateways (codex/copilot), ChatGPT token lineage, credential-store reads, opencode.ai session header, request transforms, serve state/restart |
+| `docs/internals/permission-modes.md` | Per-harness permission-mode mapping and the capture hook |
+| `docs/internals/limitations.md` | Known limitations, router fallback/400 handling, conversation affinity |
+| `docs/internals/conventions.md` | Full text and history of the conventions below |
+| `docs/guide/` | User-facing reference (README stays the front door) |
+
 ## Commands
 
 ```bash
@@ -30,110 +49,50 @@ npm run typecheck  # tsc --noEmit
 npm test           # vitest run (~2670 tests; needs tmux — runs against a fake harness)
 npm run dev        # tsx src/cli.ts
 
-npm link           # puts `sonata` on your PATH (development install; users get
-                   # it from `npm install -g @zhihaohong52/sonata`)
+npm link           # puts `sonata` on your PATH (development install)
 
-npm run release -- 0.4.0   # promote [Unreleased] → a dated section, bump the
-                           # manifest + lock, commit `chore(release): v0.4.0`,
-                           # annotate the tag. Pushes nothing.
+npm run release -- 0.4.0   # promote [Unreleased] → dated section, bump manifest + lock,
+                           # commit `chore(release): v0.4.0`, annotate the tag. Pushes nothing.
 git push --follow-tags     # this is what publishes: the tag fires release.yml
 ```
 
-**Which number to bump, so it is a lookup rather than a debate.** Pre-1.0,
-semver's own rules say nothing — `0.x` promises no compatibility at all — so
-this project states its own, set by the maintainer: **patch** (`0.12.0` →
-`0.12.1`) for minor changes that do not affect what sonata does — fixes,
-refinements, documentation, a screen that presents data sonata already
-reported; **minor** (`0.12.x` → `0.13.0`) for a major change that affects
-sonata's function — how it routes, ranks, prices or dispatches, a new config
-key, or behaviour a user relies on changing. Pre-1.0 the minor digit is the
-"major" one; the leading `0` stays until the 1.0 gate below. When unsure,
-ask rather than pick — v0.12.1 shipped a new usage screen as a patch by the
-maintainer's call, which the older rule here ("minor when a user-visible
-surface is added") would have filed as 0.13.0.
+**Which number to bump.** Pre-1.0 this project sets its own rule: **patch**
+(`0.12.0` → `0.12.1`) for changes that do not affect what sonata does — fixes,
+refinements, docs, a screen presenting data sonata already reported; **minor**
+(`0.12.x` → `0.13.0`) for a change to sonata's function — how it routes, ranks,
+prices or dispatches, a new config key, or behaviour a user relies on
+changing. When unsure, ask rather than pick. **1.0 is gated on exposure, not a
+checklist** (`docs/roadmap.md`).
 
-**1.0 is gated on exposure, not on a checklist**, and the gate has already been
-reached on its item list — all fourteen roadmap items shipped by 0.6.0. See
-`docs/roadmap.md`: tagging 1.0 to celebrate an empty checklist would freeze a
-contract nobody outside this repository has tried to use, which is the one
-mistake that milestone exists to prevent. Only an external bug report arriving
-and being answered, or a maintainer's decision that exposure has been enough,
-can move it.
+**Releases:** changelog entries accumulate under `## [Unreleased]` as work
+lands (`scripts/release.mjs` refuses an empty one; `release.yml` reads the
+Release body from `CHANGELOG.md`). Publishing is npm trusted publishing (OIDC)
+— no token in secrets. Details: `docs/internals/cli-reference.md`.
 
-**Releases are prepared locally and published by the tag.** Changelog entries
-accumulate under `## [Unreleased]` while the work is fresh, rather than being
-reconstructed at release time from `git log` — the moment you are least able
-to say why a change mattered. `scripts/release.mjs` promotes that section and
-refuses an absent or empty one, because `release.yml` reads the GitHub Release
-body straight back out of `CHANGELOG.md`. The workflow re-runs the same
-composite action CI does (`.github/actions/verify`) — one definition, since a
-release path that has quietly stopped matching the path gating merges is worth
-nothing — and refuses outright if the tag and `package.json` disagree.
+**`sonata` on PATH runs `dist/`, not `src/`.** After changing `src/`, run
+`npm run build`, or the global command keeps the old behaviour — two bugs here
+were "fixed" and kept reproducing for this reason. `sonata --version` on a
+local build reports `<version>+dev.<stamp>` plus the commit, which tells you
+which install answered.
 
-**Publishing uses npm trusted publishing (OIDC), so no npm token is stored in
-repository secrets.** The trust relationship is configured once, from the CLI:
+### CLI at a glance
 
-```bash
-npm trust github @zhihaohong52/sonata \
-  --file release.yml --repo zhihaohong52/sonata --allow-publish
-```
+Full behaviour and rationale for each: `docs/internals/cli-reference.md`.
 
-**`npm trust` works on a package that does not exist yet** — only the
-npmjs.com *web UI* has the chicken-and-egg limitation, and an earlier version
-of this file wrongly recorded that limitation as npm's. 0.4.0 was published by
-hand because of that mistake; nothing after it needs to be. The operation
-requires 2FA on the account, and npm requires 2FA (or a bypass token, itself
-[being retired](https://github.blog/changelog/2026-07-08-npm-install-time-security-and-gat-bypass2fa-deprecation/))
-to publish anything at all.
-
-`publishConfig` sets `access` but **not** `provenance`: provenance needs CI's
-OIDC token, so declaring it in the manifest would break any local publish —
-which is exactly the escape hatch you want available when the pipeline is the
-thing that is broken.
-
-**Trusted publishing makes GitHub repository write access equivalent to
-publish rights.** npm says so when configuring it. For a solo repository that
-is the same trust boundary as before; adding collaborators changes that, and
-`--environment` (a protected GitHub environment with required reviewers) is
-how it narrows.
-
-The CLI (after `npm link`):
-- `sonata --version` (`-v`, or a bare `version`) — the running version and the directory it ran from. **A local build reports `<version>+dev.<yyyymmdd-hhmmss>`**, plus a line naming the commit it was built from and `(dirty)` when the worktree was not clean: a development install's manifest version is whatever the last release set, so every clone at every commit otherwise claims the same number, and the question "is this build the one with my fix in it" has no answer. `npm run build` writes `dist/build-info.json` (`scripts/build-stamp.mjs`) — never `package.json`, which the release script and the tag must keep agreeing about. It is skipped on CI and under `SONATA_RELEASE_BUILD`, excluded from the tarball by a `files` negation, and CI fails the pack check if one ever appears there, since a published install reporting `-dev` would be worse than no stamp at all. `npm run dev` runs `src/` and is never stamped. The stamp is semver **build metadata**, after a `+`, not a prerelease: `<version>-dev-…` would sort *below* its own release, so a build made from newer code announced itself as older — backwards on the one question the stamp exists to answer. The path matters because `sonata` on PATH runs `dist/`, not `src/`: two bugs here were "fixed" and kept reproducing for that reason, and this is how you tell which install answered. Read from the manifest beside the executing file, never baked in at build time
-- `sonata init` — set up sonata (interactive wizard; asks the config scope, then providers, models, roles, per-role models, then ranks each role's selected models into `simple`, optional `normal`, and `complex` tiers — pre-sorted from a cached Artificial Analysis catalog when one exists, else built-in defaults. `simple` and `normal` are value-ranked, with `simple` filtered by the 12x best-value cost cap; `complex` is capability-ranked. Left goes back a screen, skipping any answered by a flag; `A` on a ranking screen confirms it **and every screen after it** with the ranking each would have opened on — a tier screen per role × tier means four roles cost up to twelve near-identical confirmations, and `acceptRemainingTiers` (`src/tui-ink/app-state.ts`) applies `seededRankingFor` so the result is indistinguishable from pressing enter through the rest, verified by writing a byte-identical `sonata.toml`. **Seeding alone is not that answer**, which is what made the first version of this wrong: `tierPickerKeys` withholds a key that has a native route but whose provider is deselected this session, and `RankedSelect` drops any seeded value missing from its rows — so confirming a screen writes the tier *without* that key, while bulk acceptance skipped the component and kept it. `seededRankingFor` reproduces both steps; writes `[models]`+`[tiers]`, generates up to 12 agents (one per role × present tier), offers the permission hook, installs the `sonata-loop` skill, offers `sonata route auto`, and offers the CLAUDE.md guidance block below). A config still in the older `[generate.roles]`/`[generate.native]` shape is migrated automatically (`migrateLegacyConfig`, `src/normalize.ts`). Unattended flags: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope project|global`, `--scope project|global|skip`, `--routing project|global|skip`, `--guidance project|global|skip`, `--prune`
-- `sonata doctor` — check tmux, harnesses, auth, versions, permission hook, tier routing (a tiered config with no routed session — and **which** of the five reasons it is not routed: nothing installed, hooks belonging to a *different* sonata install, an install carrying only the pre-subagent session pair, global routing that cannot serve a project holding its own `sonata.toml`, or a base URL left pointing at a since-changed router port; `diagnoseRouteAuto`/`routingFailureDetail`. All five printed one sentence naming only the fix, so a user who had just run `sonata route auto` was told to run it again), stale MCP registrations, legacy (pre-`[tiers]`) configs, gateways that price nothing (naming the exact `pricing_provider` line that would fix each one — `ok`, since an unpriced gateway routes fine; what it costs is observability and the budget cap. `pricing_provider` is the **third** thing `resolvePrice` consults, after a model `[price]` and a gateway `[price]`, so a gateway priced by hand needs none and is not named — reporting it would be a false claim about the user's own config, and the message goes on to say the budget does not bound it. A gateway serving no models is skipped too, since it cannot spend), ranking-catalog **coverage then freshness** (advisory: a catalog older than `AA_CATALOG_MAX_AGE_DAYS`, or none at all, still ranks — on superseded scores or the built-in table — so the failure is a silently-wrong ordering rather than an error. Coverage is checked *first* because age is the wrong instrument for the failure it was standing in for: a catalog fetched yesterday is "fresh" and still knows nothing about a model released today. `catalogCoverage` (`src/catalog.ts`) asks whether the catalog scores the models this config actually tiers, and names the ones it cannot. Tier lists hold config *keys* while the catalog is keyed by upstream *id*, so `cmdDoctor` resolves each key through `native.models` **and** `models` before asking — comparing keys would report every hand-named model as unscored)
-- `sonata reset [--global] [--yes]` — remove sonata's configuration and generated files at one scope: the config, the sonata-marked agent files, the loop skill, the CLAUDE.md block, and the routing env, the four lifecycle hooks, the permission hook and the tool allow-list from both settings files. It removes **only what sonata wrote** — an unmarked agent file survives, `permissions.allow` keeps every non-sonata entry, `CLAUDE.md` loses what is between the markers and the blank line separating them, and nothing else — a whitespace-only file round-trips byte-identically, while a file that ended with no trailing newline comes back with one, since `# Mine`, `# Mine\n` and `# Mine\n\n` produce identical bytes once the block is appended and the original is unrecoverable; adding a byte is the safe side of that ambiguity, and a settings file is rewritten rather than deleted since sonata is one writer of it among several. It **keeps** what is expensive to recreate — gateway keys, the usage ledger, the ranking and pricing caches, the `.sonata/` run store — and prints that list, because a command called "reset" that says nothing about keys and spend history reads as having destroyed both. Hooks are matched by the file they run, never by this install's absolute path, so a setup installed from a different checkout is still removable. It plans first and confirms, so the set named is exactly the set removed; a refusal from `planRouteOff` (a base URL sonata did not write) is a warning that does not take the rest of the file down with it
-- `sonata agents [--list] [--json]` — every generated tier agent, what each of its ranked candidates resolves to (gateway/id and context window), and whether its alias carries `[1m]`. In a terminal it is also the editor: enter re-ranks one list through the same `RankedSelect` the wizard uses, `w` writes. **It is the second writer of `sonata.toml`, and that is the risk it is designed around**: it writes through `replaceTiersBlock` (`src/init/toml.ts`), which removes the `[tiers.*]` tables and emits new ones in their place, leaving every other byte untouched. Round-tripping through `nativeTomlFor` instead was rejected — that rebuilds the file from a reconstructed `NativeCandidate[]`, so anything the reconstruction cannot recover is deleted on write, which is precisely the failure that silently un-priced a gateway on every `sonata init`; a second writer carrying the same hazard doubles the places it can recur. Here preservation is the default rather than a list of fields kept in step with the parser. The result is parsed back **before** it is written, since a rewrite that will not load leaves no working config at all and would surface later from an unrelated command. The view is derived with the same predicates `sync` writes by (`tiersCollapse`, `tierQualifiesForExtendedContext`) — a view that disagrees with the files on disk about what exists is worse than no view. The *editor* lists role × tier rather than agent-shaped, because a collapsed pair has to be openable separately or the tiers could never be made to differ again; each row names the file it will land in
-- `sonata sync` — regenerate agent files from `sonata.toml`; Claude Code picks them up automatically. When `[tiers]` is set, generates only tier agents (one per role × present tier, up to 12, or one collapsed agent when all of a role's present lists are element-wise identical) — legacy per-model generation is skipped entirely. Supports `--prune`
-- `sonata run` — launch a run, print its id
-- `sonata dispatch (--tier <role>-<tier> | --model <key>) [--task-file <path>] "<task>"` — blocking CLI dispatch with ranked harness fallback: tries each harness-routed candidate in order, moving to the next on a thrown launch, a degraded finish, or an empty report; prints the state, the model that ran, and the report. This is the fallback lane a tier agent reaches for when the router's native candidates are all exhausted (529 names the exact command). `PAUSED` prints `sonata approve <id>`; `RUNNING` prints `sonata wait <id>`; a `FAILED` outcome (every candidate failed) exits 1 with the ranked attempt history
-- `sonata tail` — human/debugging view of a run (PROGRESS | PAUSED | DONE | STALLED)
-- `sonata approve` — answer a pending approval
-- `sonata log <id>` — print what a run printed; the after-the-fact companion to `tmux attach`. **A non-interactive run** (opencode `run`, pi, reasonix `run`, codex `exec`) prints its own `harness.log`, which the harness tees its complete output into — nothing scrolls off it, no history limit trims it, no resize reflows it — with escapes (CSI, OSC, charset) stripped, CRLF read as a line break, a bare CR read as a terminal reads it (the last segment with content), and blank lines dropped. claude `-p` tees nothing — its output goes to `last-message.txt` — so a claude run prints `events.jsonl`. **An interactive run** (a full-screen TUI), or one whose `harness.log` is absent or empty, prints `events.jsonl`: the visible-screen diff tail records, one screen per poll, which misses a burst larger than a screen between two polls. The rule is `runLogFile` (`src/run-log.ts`), shared with the web UI's run detail so the two agree. Three earlier designs rebuilt the record from tmux (live by diffing scrollback; live by counting it with `#{history_size}`; once at the end from a history capture) and were reverted — see HANDOFF's trap on it
-- `sonata verify <id> [--model <key>]` — verify a completed run
-- `sonata auth` — manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`, `login <gateway>`; keys live in the store, never logged). Also how an Artificial Analysis key reaches `sonata catalog update`: `sonata auth add artificialanalysis`
-- `sonata catalog [update]` — bare `catalog` reports the cached model-ranking catalog's age and count, or points at `update`; `update` fetches `artificialanalysis.ai`'s models endpoint with the stored key (sent via `x-api-key`, never argv/logged) and caches `normalizeModelName` → coding index + blended price for `proposeTiers` to rank against. AA's free-tier license forbids redistributing its data, so the response is never committed — only a hand-invented fixture is
-- `sonata litellm install|status` — install or report sonata's own pinned LiteLLM venv (`~/.config/sonata/litellm`, pinned to `1.98.0`). `status` reports one of six states — `not-required` when no gateway in the config routes through it, which is a healthy answer and not a missing dependency. `install` is a no-op for such a config
-- `sonata serve` — run **the** native router: one per machine, serving every project by resolving each request's own `sonata.toml` (see Tenancy below). Its ports come only from the *machine* config's `[native.ports]`, else 4100/4000; a project's own `[native.ports]` is ignored and `sonata doctor` says so. Its managed LiteLLM child starts **only when some project needs one** (`litellmRequired`) and **lazily** — the first time a project that needs it appears, which may be long after startup, since tenants arrive with requests. An all-Anthropic set of projects starts no child and needs no Python. `--daemon` re-execs the CLI detached, **waits until the router answers**, then prints the pid, port and log path; a detached child that failed would otherwise report success and leave no server. Its output goes to `~/.config/sonata/logs/serve-<timestamp>.log`, since a detached process has nowhere else to say why it stopped. Watches its LiteLLM child and respawns it in place if it exits on its own (a crash-loop guard gives up after 5 respawns/60s)
-- `sonata restart` — kills whatever sonata router currently holds the machine router port using only a pid `cmdServe` itself recorded, then starts a fresh daemon. **This is the first thing to run when upgrading into multi-tenant routing**: routing now targets the machine port, and a daemon predating this change answers with whatever single config started it, which every caller refuses rather than trusts. Plain `sonata serve --daemon` cannot recover from this case: it just times out against `EADDRINUSE` with "the daemon did not answer", which reads as a startup failure rather than "something else already has it". See `stopServe`/`cmdRestart` in Configuration below.
-- `sonata code` — launch a Claude Code session routed through the local proxy (passes `claude` args through); auto-starts `sonata serve --daemon` when the router is down
-- `sonata route on|off|status [--global]` — route every plain `claude` session launched in the project through the proxy, not just ones `sonata code` starts: it writes the routing `ANTHROPIC_BASE_URL` env into `.claude/settings.local.json` (or, with `--global`, `~/.claude/settings.json`) and installs a SessionStart hook (`hooks/ensure-serve.mjs`) that keeps the router up, so editor integrations and `.mcp.json` entries route too. `off` removes both; `status` reports which scope(s) — project, global, or both — currently route. The session registry stays per-project regardless of scope: a global hook fires in every directory, but routing state still follows each session's own project
-- `sonata route auto|manual [--global]` — routing that keeps Remote Control. `auto` installs a SessionStart hook that turns routing on and a SessionEnd hook that turns it back off (`hooks/route-session.mjs`, whose body is `sonata route session-start|session-end --id <id>` so the logic is tested TypeScript rather than hook script). Each session therefore *launches* from a file with no `ANTHROPIC_BASE_URL` in it — which is the only moment Claude Code consults it for the Remote Control gate — and is routed from its first request, because the settings `env` is re-read per request. Session ids are counted in `.sonata/route-sessions.json`: `route off` fires only when the last one ends, since an auto session (unlike a `route on` one) has no exported env and *would* lose routing mid-run if a sibling cleaned the file. A session killed before its SessionEnd hook leaves its id behind and routing on — the safe failure direction, costing one launch's Remote Control rather than silently demoting a native agent to Claude; `sonata route off` clears the registry. `manual` removes the hook pair. `cmdRouteSession` validates the project has a config before touching the registry, so a global hook firing in a configless directory throws before writing anything
-  - **Each session routes itself at start, then clears the file again.** `cmdRouteSession('start')` writes the routing env and schedules `cmdRouteSettle`, which takes it back out a few seconds later in a detached child (the hook blocks the session's own start, so the delay cannot be waited out in-process). The session keeps routing on the value it has already read; what the removal buys is the *next* session launching into a clean file and keeping Remote Control. **Only the newest registered session's settle clears**, under the same lock `start` registers and writes the env in: two sessions starting inside one window otherwise race, and the older one's settle takes the env away before the newer has read it — starting a session silently unrouted, which is the one failure this design exists to remove. A settle whose session is already gone does nothing, since an unsettled env costs the next launch's Remote Control (visible, recoverable) while an early clear costs a live session's routing (silent). `auto` also installs a `SubagentStart`/`SubagentStop` pair (`hooks/route-subagent.mjs`, matcher `SONATA_AGENT_MATCHER` = `^(native-)?(code|review|explore|plan)(-|$)`), which now serves as a repair path rather than the routing mechanism: if a session's value has lapsed, the next foreign-model subagent's start re-writes the env and the session picks it up again.
-    - **The matcher's `(-|$)` is load-bearing.** A role whose `simple` and `complex` lists are element-wise identical collapses to ONE agent named for the role alone (`explore`, alias `sonata-explore`), so a matcher requiring the trailing hyphen never matched it: measured 2026-09-14, an `explore` dispatch fired no hook, wrote no routing env, and died with `model_not_found` at `api.anthropic.com` — indistinguishable from a broken agent. A matcher and a filename rule that disagree about what sonata generates is the failure this shape prevents.
-    - **This supersedes "the settings `env` block is read at launch only".** That conclusion (2026-09-10) was wrong, and everything built on it — including the "upstream-blocked" verdict — went with it. Measured 2026-09-14 on Claude Code 2.1.270, attributed per session id in the ledger rather than by log line: a session that launched into a clean settings file **picked up an env written mid-session** and routed 231 requests afterwards, its first landing in the same second as the hook's write. What actually fails is narrower — the subagent that *fires* `SubagentStart` has already resolved its endpoint, so it alone misses the write. Routing every session at `SessionStart`, before any subagent exists, removes that race entirely.
-    - **Removal is long-lived, not proven permanent.** A session kept routing 54 minutes after its env was deleted (confirmed per session id, not by log line). The reverted `bdf8e27` experiment saw a session hold for tens of minutes and then stop, so the settle is built on a value that is known to last and **not** known to last forever — which is exactly why the subagent pair is kept as the repair path rather than deleted as redundant. If a lapse is ever observed under the current design, that is the mechanism to reach for, not a longer settle delay.
-  - **Two measured facts justify that shape.** **Adding** the routing env is picked up by an already-running session within seconds — verified live 2026-08-27 with routing off at dispatch, the `SubagentStart` hook turning it on, and the router logging `model=sonata-explore-simple -> gpt-5.6-luna -> litellm` moments later, which is why a subagent's very first request is already routed. **Removing** it is observed only eventually, on a timescale not yet measured.
-  - **That first fact did not reproduce on 2026-09-01, and the failure is silent.** Two `code-simple` subagents dispatched from a session launched into a clean settings file both died with `model_not_found` for `sonata-code-simple` — the alias reached `api.anthropic.com`, not the router. The `SubagentStart` hook *had* fired both times (`.sonata/route-subagents.json` held the agent id and `.claude/settings.local.json` held `ANTHROPIC_BASE_URL`), and the second attempt started with the env already in place for minutes, so this is not a write race. `env | grep ANTHROPIC` in that session confirmed the variable was never in its process environment. Whether the per-request re-read regressed, or the 2026-08-27 session had been launched routed and only appeared to pick it up, is not established — but a session that will not route cannot be told apart from one that will, except by dispatching and watching it fail. A session launched *while* routing is already on works, which is why `/cmux` is the reliable way to get a routed session today.
-  - **Reproduced again on 2026-09-10, this time with the write proven to precede the dispatch.** In a `teambuilding` worktree with the router up on 4100, a session was launched from a clean settings file; `sonata route session-start` and `sonata route subagent-start` were then run *by hand*, `.claude/settings.local.json` gained `ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS` and `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, and `sonata route status` reported routing on. Two native agents dispatched from that same running session still 404'd `model_not_found` with Anthropic request ids (`req_011CetHnE6WeEVDS3oja6y5x`, `req_011CetHnMAuXwffMaVBswCqB`), and the router logged no request for them. The hook wiring was confirmed working in that same session — the CLI printed `routing on; 2 subagent(s) running` as the two agents started, so `SubagentStart` fired, found the config, and wrote the env, and the requests went to Anthropic anyway. So this is not a write race, not a hook-wiring failure, and not worktree-specific: **on the current Claude Code build the settings `env` block is read at launch only.** That removes the measured fact `route auto` was built on — its whole design is "launch clean, route at SubagentStart" — and leaves `sonata code`, or `sonata route on` *before* launching, as the supported way to get a routed session. Not yet fixed; `route auto` is left installed because a session launched while routing is already on does work.
-  - **Settled the same day, in both directions.** A third session in that worktree, launched by cmux at 02:22:12, had its env block written by the `SubagentStart` hook at 02:23:12 — a full minute before the dispatch — and still sent to `api.anthropic.com`. A fourth, launched with **`sonata code`**, routed correctly: `ANTHROPIC_BASE_URL` was in the process environment, and this repository's own router log recorded 28 tier-alias requests served to foreign models (`sonata-review-complex -> vendorz-grok-4.6`, `sonata-code-simple -> vendorz-gpt-5.6-luna`, `sonata-review-simple -> …`) with **no `sonata-*` alias falling through to Anthropic**; a native `code-simple` implementer completed and committed. So the failure is *exactly* the launch-time read and nothing else — not the worktree, not the hooks, not the header. What still works is the process environment, which is what `sonata code` and a pre-launch `route on` both establish; what is broken is the settings-file path `route auto` depends on entirely.
-  - **Superseded 2026-09-14, and the reason it failed is now the reason it works.** The three bullets above were written on the conclusion that the settings `env` is read at launch only; it is not, and the section at the top of this list has the measurements. Left in place because a reversal with its evidence is worth more than a clean document — and because the 2026-09-01 and 2026-09-10 observations are still *true*: those dispatches really did 404. What was wrong was the inference drawn from them, that nothing mid-session is ever picked up. Only the subagent that fires the hook misses the write, which is exactly the subagent those sessions were watching.
-  - **Do not "fix" Remote Control by cleaning the file on a timer after SessionStart.** ⚠️ **This warning is now partly overtaken — read the settle design above before acting on it.** `cmdRouteSettle` does clean the file after SessionStart, deliberately, and the difference is that routing no longer depends on the cleaning being harmless forever: the `SubagentStart` pair is kept as a repair path precisely because this bullet's failure mode is real. What remains true and unretracted is its core claim — the value a session holds is a cache with a lifetime, not a permanent state — so a lapse is to be expected eventually and must be recoverable, never assumed away. The original attempt was (`bdf8e27`, reverted in `f5ca015`) on the theory that a routed session *latches* — that once it has read `ANTHROPIC_BASE_URL`, removing the key cannot un-route it. Two fresh sessions appeared to confirm it, each still routing across several turns after removal. **The latch is a cache with a lifetime, not a permanent state.** The session that developed the change kept working for tens of minutes and then began sending `sonata-*` aliases to `api.anthropic.com`, which answers "issue with the selected model … it may not exist". That is worse than the bug it replaced: losing Remote Control is visible at launch, whereas a foreign-model agent dying mid-task reads as a defect in the agent's own work.
-  - **A refusal inside either hook is shown to the user.** A hook that runs the CLI with stdio ignored and exits 0 makes a refusal invisible: the session silently stayed unrouted and tier aliases 404ed at `api.anthropic.com` (reported 2026-09-09). Both hooks now relay a non-zero CLI exit as a hook `systemMessage`, which Claude Code honours on SessionStart and SubagentStart; the CLI exits 0 for `NoConfigError` alone, since a global hook firing in a configless directory is expected and must stay quiet. The refusal that prompted this — two projects colliding on one router port — **no longer exists**, since one router now serves both; what the hooks surface is the refusal that remains, a router predating multi-tenant routing. `cmdRouteSubagent` makes that check too, before it writes any routing env: it was the one entry point that did not, and a dispatch from this repository was consequently served by another project's config and failed against gateways this project never names.
-  - **An install predating this carries only the session pair, and would never route.** `autoInstalled` therefore requires all four hooks, so `sonata doctor` reports a stale install rather than a working one; the fix is re-running `sonata route auto`
-- `sonata usage [--since 7d] [--by model|role|tier|effort|gateway|lane|session|project] [--session <id>] [--project <dir>] [--json]` — tokens and cost from the router's ledger. In a terminal it opens the live usage screen in the shell (`d` breakdown, `w` window, `g` every project ↔ this one); `--json`, `--session` and `--project` naming another directory keep the printed report, since the screen has no session axis and its project axis is only this one or all (`shouldLaunchTui`). Flags are validated by one `parseUsageFlags` for both paths, so a bad `--by` fails before a screen opens. **Both lanes, measured differently**: a native request is observed in flight by the router; a `sonata dispatch` run executes in the foreign CLI's own process and never transits the router, so its tokens are read from the harness's own store once the run finishes (see *A finished dispatch run's usage is read from the harness's own store* below) — one row per run, `upstream: "harness"`, split out with `--by lane`. Unpriced volume is reported beside the priced total, never folded into it — a total that treats unknown as zero under-reports silently. Candidates a request fell **past** are reported too: the ledger has always recorded them in each row's `attempts` and nothing read them, so a candidate failing every time it was reached had no row in any breakdown while being very visible as dead subagents
-- `sonata status [--global] [--session <id>|--all]` — whether the router is up and on which port, then the recent routes from the ledger: local time, alias → model`@effort` served, the gateway it went through, tokens, and failed attempts behind it (the last hour). **Scoped to this project by default** — rows are filtered to the tenant the working directory resolves to, the router's own identity (`projectTenant`, `src/commands/status.ts`), never a bare cwd compare, so a worktree or symlinked path sees its project's rows. `--global` shows every project, named to match `sonata route status --global`. The two flag families are independent axes: `--global` selects along *project*, `--session`/`--all` along *session* — `--all` means every session **in this project**, not every project, and "the most recent session" default is computed within the project (it used to be computed across the machine, so one repository could print another's session in full). A subdirectory resolves as `configPath` resolves it, which checks the cwd's own `sonata.toml` only, so run it from the repository root. In a terminal it opens the live status screen (`g` toggles the project axis); `--session`/`--all` keep the plain output, since the screen has no session axis to honour them. Reachability and routing-state live in `sonata route status`, which reports whether *settings* route this project's sessions
-- `sonata runs [--json]` — list this project's dispatch runs. `sonata log <id>` previously required an id with no way to find one
-- `sonata gc` — kill finished tmux sessions
+- `sonata init` — interactive wizard (config scope → providers → provider rank → models → roles → per-role tier rankings); writes `[models]`+`[tiers]`, generates agents, offers hooks/skill/routing/CLAUDE.md block. `A` on a ranking screen accepts it and all later ones (`acceptRemainingTiers`/`seededRankingFor`). Unattended: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope`, `--scope`, `--routing`, `--guidance`, `--prune`
+- `sonata doctor` — tmux, harnesses, auth, permission hook, tier routing (and which of five reasons a session isn't routed), stale MCP registrations, legacy configs, unpriced gateways, catalog coverage then freshness
+- `sonata reset [--global] [--yes]` — removes only what sonata wrote at one scope; keeps keys, ledger, caches, run store
+- `sonata agents [--list] [--json]` — view/re-rank tier agents; the second writer of `sonata.toml`, via `replaceTiersBlock` (rewrites only `[tiers.*]`, parses back before writing)
+- `sonata sync [--prune]` — regenerate agent files from `sonata.toml`
+- `sonata run` / `sonata dispatch (--tier <role>-<tier> | --model <key>) [--task-file <path>] "<task>"` — harness-lane launch; `dispatch` blocks and falls through ranked harness candidates
+- `sonata wait` / `sonata approve` / `sonata tail` / `sonata log <id>` / `sonata verify <id>` / `sonata runs` / `sonata gc` — run lifecycle and inspection (`runLogFile` in `src/run-log.ts` decides which log)
+- `sonata auth list|add|remove|login <gateway>` — gateway keys (never logged); also the Artificial Analysis key
+- `sonata catalog [update]` — AA model-ranking cache (never committed; license forbids redistribution)
+- `sonata litellm install|status` — sonata's own pinned LiteLLM venv (`1.98.0`)
+- `sonata serve [--daemon]` / `sonata restart` — **the** machine router (one per machine, multi-tenant); `restart` kills only pids sonata recorded
+- `sonata code` — Claude Code session routed through the router
+- `sonata route on|off|status|auto|manual [--global]` — route plain `claude` sessions; `auto` keeps Remote Control (SessionStart routes then settles; SubagentStart/Stop pair is the repair path; matcher `^(native-)?(code|review|explore|plan)(-|$)` — the `(-|$)` is load-bearing)
+- `sonata usage [...]` / `sonata status [...]` — ledger reports (both lanes; unpriced volume reported beside priced, never folded in)
 
 ## Architecture
 
@@ -145,7 +104,7 @@ sonata-code-simple   (native — Claude Code's own loop, model: sonata-code-simp
     │
     ▼
 router  (sonata serve — one per machine; each request resolved to its own project's config)
-    │  resolveTierAlias against [tiers.code].simple, `.normal` when present, or `.complex`, ranked candidates,
+    │  resolveTierAlias against [tiers.code].simple, ranked candidates,
     │  cooldown on failure, first response < 500 wins
     ▼
 litellm → flash-1   (or the next-ranked model)
@@ -158,93 +117,20 @@ sonata dispatch --tier code-simple "<task>"
 opencode → deepseek-v4-flash   (or codex, pi, or reasonix)
 ```
 
-Key design points:
-- **The three dispatch tools must be allow-listed**, which `sonata init` now does and `sonata doctor` checks. In Claude Code's `auto` mode an un-allow-listed tool is judged per call and the decisions are not stable: on 2026-08-12 a wrapper had `run` allowed and `tail` allowed twice then denied twice mid-run ("Blocked by classifier"), so a foreign model kept writing to the repository with nothing able to observe it. `run` executes code and is the one the classifier tends to permit, which makes the failure silent by construction. Those tools are `Bash(sonata dispatch:*)`, `Bash(sonata wait:*)`, and `Bash(sonata approve:*)` — the tool surface moved from MCP to Bash, but the allow-listing story is unchanged: the classifier is still not to be trusted with these calls.
-- **There is no MCP server.** `sonata dispatch` blocks until a reportable state the same way the old MCP `dispatch` tool did, and `sonata wait`/`sonata approve` resume or unblock a specific run by id — but as ordinary Bash commands a model runs itself, not RPC calls a wrapper relays. `Bash(sonata:*)` was tested against the old MCP-only setup and found to be silently ignored by Claude Code; the current `Bash(sonata dispatch:*)`-style entries are the real, working allow-list form.
-- **`sonata dispatch` never parses harness output**; it only reads run state (state, degraded, report) from `cmdRun`/`cmdWait`. All harness-specific knowledge lives in one adapter file.
-- **Completion is read from an exit sentinel and a report file**, never scraped from the terminal. If a harness dies without a report, sonata returns the captured pane and marks the result `degraded`.
-- **A finished run also reports whether the worktree moved** (`src/worktree.ts`). Every other guard checks whether the harness *reported*; none checked whether the repository changed, so a run could finish `DONE`, un-degraded, claiming "fixed the bug" having touched nothing — the one shape of false success the report contract cannot see, since a model that did nothing writes the same file as one that did everything. `cmdRun` hashes a capture of `git rev-parse HEAD` + `git status --porcelain` + a `git hash-object` blob hash per not-committed-clean path into `meta.worktreeAtLaunch`; the launch wrapper writes the same capture once the harness exits and `tail` compares, surfacing `TailResult.worktreeUnchanged`. **The capture lands *after* the exit sentinel, not before it**: every adapter's `harness.sh` writes the sentinel itself, and the wrapper samples the tree only once that script has returned. So the wrapper writes `worktree-capture.partial` and renames it into place (a reader sees it absent or whole, never growing), and `tail`, for a run with a launch fingerprint, keeps answering PROGRESS while the sentinel exists and the capture does not — for at most 10 s after the sentinel's mtime (`CAPTURE_GRACE_MS`), never for a sentinel dated in the future — then falls back to sampling the live tree. **The content hashes are not optional**: `status` records which paths are in what state and never their content, so a file already modified-but-unstaged at launch and edited again reports the identical line — the ordinary mid-feature case, silently reported as "changed nothing". `WORKTREE_CAPTURE_SH` is the single definition both ends run (Node via `bash -c`, the wrapper inline), because two samples that disagree about what they measure are worse than no check; the fingerprint is then just sha256 of those bytes, so there is no formula left to reimplement in bash. `.sonata` is excluded from the enumeration — `status` collapses an untracked directory to one entry but `ls-files -o` lists every file under it, including the `report.md`/`exit`/capture files the run itself is about to write, which would mark every run as changed. `git hash-object` is called without `-w`, so nothing enters the user's object store. Three deliberate constraints: it is **inert outside git** (no repo, no git, any failure → `undefined`, read as *unknown*, never as "unchanged" — a check for silent failures must not invent one); it **annotates rather than degrades**, prefixing the report with `[no worktree change: …]`, because `degraded` means sonata cannot mechanically trust the result and a run that correctly concluded no change was needed is legitimate — degrading it would trade false successes for false alarms rather than removing either; and read-only roles skip it entirely, since a review or explore run is not expected to leave a mark. The launch sample is taken *after* `createRun`, so sonata's own `.sonata/` scaffolding is present in both samples and a repo that does not ignore it still gets a usable comparison. HEAD is in the hash so a run whose only trace is a commit — leaving a clean tree — still registers.
-- **A finished dispatch run's usage is read from the harness's own store** (`src/harness-usage.ts`, each adapter's `usage()`). A dispatch run never transits the router, but every harness records its tokens on disk — the approach cc-switch (`farion1231/cc-switch`) takes, verified field-by-field against this machine's stores on 2026-09-25: codex's rollout `token_count.total_token_usage` (cumulative; sonata owns the whole session, so the *last* one is the total, and `cached_input_tokens` is moved out of `input_tokens` because codex counts it inside, OpenAI-style), opencode's `message.data.tokens` in `opencode.db` (per message, finished messages only, root session plus `parent_id` children), pi's per-message `usage` in `~/.pi/agent/sessions`, reasonix's `~/.reasonix/stats/<date>.jsonl`, and — for an *unrouted* claude run only — the transcript found by the `--session-id` sonata now passes at launch. A **routed** claude run answers `router`: its requests are already ledger rows, and reading the transcript too would count every token twice. `usage` is **required** on `HarnessAdapter`, like `effortHonoured`, so a new adapter must answer rather than inherit a silent nothing. Three properties are load-bearing: **matching never guesses** — a run is matched by session id where one exists, else by canonical cwd plus the run's window (launch → the *earlier* of the exit sentinel's mtime and `endedAt`: measured on a real run, a restored run directory carried every file's mtime 90 minutes late, which widened the window over an unrelated session). Parallel dispatch into one directory is the normal case, so several candidates are narrowed by the **run marker** every prompt now ends with (`<!-- sonata run: <runDir> -->`, `runMarker` in `src/roles.ts`) — each harness stores the prompt, and the needle is the run's own directory, so a match is identification. Only if that still leaves more than one does the run become `unobservable`, with the count in the reason. Verified against 16 real past runs across three repositories: every routed claude run answered `router`, and concurrent opencode runs that had read as ambiguous resolved once narrowed; reasonix's stats name no session at all, so it attributes only when this was the one reasonix session running *anywhere* on the machine. **Once per run** — `cmdTail`'s DONE branch re-runs on every later tail of a finished run and the ledger has no dedup, so `usage.json` in the run directory is claimed with an exclusive create before anything is appended. **Unknown is never zero** — an unobservable run writes no row (the web UI's run row says why), and price comes from sonata's own rate for the model first, then the harness's own cost only when *every* record carries one and only when positive (opencode and pi write 0 for a model they cannot price), then models.dev under the provider the harness id names, else unpriced. `price.source: "harness"` and `upstream: "harness"` had to be added to the ledger's validation allow-lists, or `readRows` would drop every such row and `[budget]` would never see them — `tests/harness-usage.test.ts` round-trips a row into `spentTodayUsd` for that reason.
-- **A launch retries only when it raced the tmux server shutting down** (`retryWhenServerExits`, `src/tmux.ts`). A tmux server exits when its last session closes, and a `new-session` that connects while it is exiting fails with "server exited unexpectedly" having created nothing — so trying again is safe and starts a fresh server. Sonata's dispatches share the user's default server, so one run ending (or `sonata gc`) while another launches is enough; CI's parallel e2e tests hit it on PR #69. Reproduced 3 in 300 by churning sessions beside a creator, 0 in 300 with the retry. **Only that message** is retried: a duplicate session name or any other failure is the caller's to see. Keeping the server alive with `exit-empty off` was rejected because it is the *user's* server, and a private `-L` socket would break the documented `tmux attach -t sonata-<id>`.
-- **Progress comes from diffing the tmux pane.** You can attach to any live run: `tmux attach -t sonata-<id>` (`-r` read-only) — so you can correct a cheap model mid-run.
-- **`run_timeout_seconds` is a hard cap** enforced by a watchdog inside the launched shell; on expiry the whole process group is killed and the run is reported `DONE`, `degraded`, report beginning `[timed out: …]`.
-- **`sonata init`'s interactive TUI is an Ink app** (`src/tui-ink/`), not the hand-rolled prompt functions. The pure list primitives in `src/tui.ts` (`parseKey`/`reduce`/`renderList`) and the `select`/`confirm`/`runList` prompts are retained for the non-Ink interactive prompts that remain — init's hook-scope, tier-routing offer, and confirm steps, and `cli.ts`'s `confirm` — and are intentionally not deleted.
-- **The provider-setup step is a menu**: `Import from other harnesses` bulk-imports providers with detected Codex or OpenCode credentials, while `Add provider` lets the user pick any known provider or enter a fully custom provider (name, base URL, and wire format). Custom providers always use API-key authentication; Sonata has no generic OAuth flow beyond the Codex and GitHub Copilot LiteLLM-backed device flows.
-- **The models step asks each gateway what it serves**, rather than trusting a harness catalogue (`src/tui-ink/components/models-step.tsx`). A harness snapshot keeps listing a model the gateway has since dropped and misses one it has since added, so on entering the step every selected gateway with a base URL, a resolvable key, and non-OAuth auth is queried in parallel; `mergeLiveCandidates` (`src/tui-ink/app-state.ts`) then **replaces** that gateway's candidates, which is what actually retires a stale entry. Three things keep this safe: a gateway that does not answer (unreachable, empty, timed out, no key) keeps its harness list, so a failed refresh degrades to the old behaviour rather than emptying the picker; a **custom** provider added this run is the one case that still picks models on its own screen, because `allNativeCandidates` is computed at startup and cannot contain a provider that did not exist then — an *existing* gateway does not, since the models step refreshes it with the very key just typed (`state.byokKeys`), and asking twice is what produced the duplicate-key bug; an id the harness already listed **keeps its existing candidate key**, since the key addresses `nativeKeys` and the written config and reconstructing it would silently deselect the user's choices; and OAuth gateways are skipped outright, because a subscription credential is not a bearer key and those endpoints are not OpenAI-shaped (ChatGPT's is `backend-api/codex`, Copilot needs a token exchange first).
-- **`normalizeModelName` strips *configured* provider prefixes, not a hardcoded list.** A model key is `<gateway>-<id>`, so recovering the id needs the gateway names; the built-in list (`openrouter-`, `openai-`, `google-`, `anthropic-`) can only cover providers someone thought to hardcode, and every other user's gateway fell through to the `default` catalog entry — capable, *not cheap* — silently dropping its models out of the simple tier. When no model clears the cheap bar, `proposeTiers`' fallback makes simple mirror complex, so the tier stops discriminating at all. Callers pass their gateway names (`gatewayNamesOf`, `src/commands/init.ts`); prefixes are matched longest-first so `openai-codex-x` loses the whole gateway name rather than the shorter `openai-`.
+Invariants to hold when changing code (reasons in `docs/internals/architecture.md`):
 
-- **An OpenRouter ref needs two more repairs before it can be scored.** Its serving-variant suffix (`:free`, `:nitro`, `:floor`) picks a route for the *same weights*, so `normalizeModelName` strips it — unambiguous, since `:` appears in no name AA publishes, and measured: `openrouter-nvidia-nemotron-3-super-120b-a12b:free` matched nothing while AA held that exact row minus the suffix. Separately, a sonata key flattens `vendor/model` to `vendor-model`, and by lookup time the slash `normalizeModelName` would have cut on is long gone — so `z-ai/glm-5.2` looks up `z-ai-glm-5.2` while AA files it as `glm-5.2`. `aaLookupNames` offers up to two shortened spellings *after* the full name, and `aaEntryFor` is the single lookup both `lookupModel` and `scoreFor` route through. Three properties bound the guess so it can only ever add a score where there was none: the full name is tried first and **always wins**, so this cannot move a model that already matches; a shortened name is accepted only on an *exact* catalog hit; and a candidate must still carry a version digit, so `gemini-2.5-flash-lite` never offers `flash-lite` — a family, not a model, and exactly the sort of name another vendor also publishes under. Three of five OpenRouter models on a real config were mis-scored by this.
-
-- **A vendor's versionless alias is scored through its models.dev display name, and an id is never stripped of the vendor it begins with.** DeepSeek's API serves V4.1 Flash as `deepseek-flash`; AA keys the model `deepseek-v4-1-flash`, and no segment-dropping invents a version. models.dev keys each provider by that provider's own slug and carries the one field every reseller agrees on — `name: "DeepSeek V4.1 Flash"` under all thirty that list it — so `sonata catalog update` caches `names` beside prices, and `catalogSpellingsForGateway` (`src/pricing.ts`) offers `[id, name-as-slug]` for a model. `UpstreamFor` may therefore return several spellings; `normalizedFor` (`src/catalog.ts`) tries them in order and the first that scores wins, so the name can only add a score where the id found none. The name is read **only under the providers the gateway prices by** (`pricing_provider`, else `proposePricingProvider`, then OpenRouter), never across every provider as a context window is: `nan` files `deepseek-v4-flash` as V4.1 Flash while DeepSeek files that slug as V4 Flash, so a slug is only meaningful under its own provider. `configUpstreamFor` is the resolver every config-reading caller (`loadConfig`, the router's tenant load, `sonata agents`, `doctor`) uses, and the wizard and `plan()` build the same one from a candidate's gateway and auth — a BYOK gateway created this run has no config to read a provider from. Separately, `normalizedFor` offers each spelling stripped of the configured gateway names *and* as-is: the strip is for keys (`deepseek-deepseek-v4-pro`), but every ranking caller hands it the bare id, and a vendor's model names begin with the vendor — a gateway called `deepseek` had `deepseek-` eaten off `deepseek-v4-pro` and asked AA about `v4-pro`, so every model on it ranked unscored and lost its effort variants. Stripped first keeps every lookup that was right unchanged.
-
-- **Tiers rank only models AA prices per task.** `sonata catalog update` reads `/api/v2/language/models/free` (paginated) because its `artificial_analysis_intelligence_index_cost.cost_per_task` measures dollars to complete a unit of work, while `blendedPriceUsd` is a computed dollars-per-token rate. The units cannot be compared: dividing capability by whichever value a row carries once ranked `deepseek-v4-flash@none` (18.9 at $0.12/1M) ahead of `deepseek-flash@max` (39.5 at $0.265/task), a unit error rather than a judgement. The earlier repair prevented comparisons across units, but the ranking screen still displayed both and invited a human to make the same mistake. Therefore a cached AA catalog offers and ranks **only** candidates publishing `cost_per_task`; at measurement time 141 of 650 distinct AA models (22%) did, while 509 did not (296 still carried a per-token price). The split is recency-driven: the costed median release was 2026-06 and uncosted was 2025-09. The wizard names exclusions and says they can still be added by hand, doctor reports configured unoffered models, and the agents editor retains saved uncosted rows so a no-op edit cannot erase them. This restriction is deliberately limited to init proposal and offering: `parseConfig`, `resolveTierAlias`, the router, sync, and dispatch keep accepting any hand-added key. `blendedPriceUsd` remains for actual-usage pricing; it is not a tier-ranking fallback. Each tier is then **one pure sort key** over those two quantities. `complex` sorts by raw capability (cost breaks a near-tie); `normal` sorts by capability per task-dollar; `simple` is that same value-ranked list *filtered* by a cost cap of `SIMPLE_COST_CEILING` (12) × the best-value model's own cost-per-task. `normal` is **not** that list verbatim: it leads with the frontier's knee (the best capability-for-cost balance point, unless avoided or gated), then the rest in value order. So `simple` is the cost-capped *value order*, and where the knee falls under the cap the two disagree about the head — `simple` leads with the best-value model, `normal` with the knee. Anchoring the cap to a model that always clears it is what makes `simple` non-empty on every config, with no fallback rule; a cap below 100% of its own anchor would exclude that anchor and empty the tier. `SIMPLE_CAPABILITY_FLOOR` is **deleted, and must not be reinstated**: with a floor bounding capability from below and the best model bounding it above, the index term is nearly constant and the ratio is dominated by its denominator, so a floored `normal` produced a *byte-identical* list to `simple` — flooring the value tier turns it into the cheap tier. The accepted cost of having none is that on a config made of effort variants of one family, `simple` and `normal` agree on every dispatch; they diverge as soon as a second model family is present, and that is a property of the config rather than of the design.
-
-
-- **Tier *selection* is a measured problem, and the fix is wording.** Over 30 days of one machine's ledger, `complex` took **74% of tiered requests and 80% of priced spend** — caused by sonata's own instruction, which ended every generated `description` with "When unsure, use `-complex`" and so told a loss-averse model to default upward. That instruction was right when escalation was expensive; the `sonata-loop` skill now re-runs a failed task one tier up automatically (`simple` → `normal` → `complex`, stopping after two failures at `complex`), so defaulting up buys no safety and only spend. `-normal` is therefore the default, and the descriptions replace adjectives with observable criteria, because *mechanical*, *cross-cutting* and *design-sensitive* are judgement calls a loss-averse reader resolves upward. The line that does the most work is **size is not difficulty**: a large mechanical change is `simple`, a three-line change that decides an interface is `complex`, and a model otherwise maps "many files" onto "cross-cutting" and escalates. Judge this on `sonata usage --by tier`, not on how the wording reads — if the split is unchanged, the next lever is structural (resolving the unsuffixed `sonata-<role>` alias to `normal`).
-
-- **A tier candidate can pin a reasoning-effort level (`<key>@<effort>`), and the catalog ranks the levels as candidates.** AA publishes one row per level and names the level in the parenthetical of each row's `name` (`GPT-5.6 Luna (max)` is slug `gpt-5-6-luna`; `… (low)` is `gpt-5-6-luna-low`), so `catalog update` records a `family` and `effort` per row — the *slug* minus the level suffix, stripped before `normalizeModelName` so a trailing date is still trailing — and the unsuffixed default row knows its own level. `src/effort.ts` is the one definition of the enum and the split; `catalogFamily`/`expandCandidates` (`src/catalog.ts`) turn a key into its scored variants, and `proposeTiers` ranks the expanded set with its existing rules. Only ranking, labels and `TierRoute.effort` see the level: cooldowns, `tiersCollapse` and every `[models]` lookup key by the bare key, so a model that failed at `@xhigh` is skipped at `@high` too. **Every scored candidate names its level, and a bare one is refused at load** — a singleton family counts (`deepseek-v4-1-flash` is scored only "(Reasoning, Max Effort)", so its key is offered `@max`), and so does a row stating no level, which is recorded at `default` and offered `@default` — a level that sends no `reasoning_effort` at all, so the model runs as it ships, which is what AA measured. (It was once recorded at `none`, which then sent `reasoning_effort: none` to models ranked on a reasoning-on score; `none` now means only an explicit "Non-Reasoning" row.) The reason is the same in all three cases: a bare key ranks on one row's score and then runs at whatever the gateway defaults to, which is the mismatch the grammar exists to prevent. Refused — by `loadConfig`, `TenantRegistry.load` and `sonata agents`' write, never by `parseConfig`, which has no catalog; with no catalog cache the check is skipped and `doctor` says so. The wizard treats such a saved key as newly added, re-proposing its levels rather than dropping it. The level is sent upstream by the router on the native lane and by each adapter on the harness lane, per `docs/superpowers/specs/2026-09-13-effort-tiers-design.md`.
-
-- **On the harness lane the level travels beside the model key, and each adapter answers whether it sent it.** `PlanInput.effort` carries it into `adapter.plan`; `LaunchPlan.effortHonoured` is **required**, not optional, because accepting the `<key>@<effort>` grammar while quietly ignoring the level is the same silent mismatch the load-time refusal exists to prevent — a new adapter must answer rather than inherit a default. The level never enters `harness_id`: `cmdDispatch` splits each candidate, passes the bare key to `cmdRun` and the level alongside, so `harnessModelFor` is unchanged and the attempt history still names the *variant* (`joinCandidate`) — two slots holding one model at different levels are otherwise indistinguishable in a failure report. Measured against the real binaries on 2026-09-14: **codex** takes `-c model_reasoning_effort=<level>` on `codex exec` *and* the interactive TUI (the run header prints `reasoning effort: xhigh`), and the set it refuses an invalid level against is exactly sonata's `EFFORT_LEVELS`, so no mapping is needed; **opencode** takes `--variant <level>` on `opencode run` (reasoning tokens moved with it, 132 at `low` → 230 at `xhigh`, and the stored message records the variant); **pi** takes `--thinking <level>`, where sonata's `none` must be **mapped** to pi's own `off` — pi does not fail on a level it does not know, it warns and continues at its default, so an unmapped `none` would silently run *with* thinking, the opposite of the request; **claude** carries the level in the model name, since that harness routes through sonata's own router and `routeRequest` already splits `<key>@<effort>` off a bare model name — a second mechanism here would be one more place for the two to disagree.
-
-- **`effortHonoured` claims the level reached the command line, not that the model has that level.** opencode accepts an unknown `--variant` silently on the `run` path (the TUI path validates; `run` does not), and models.dev publishes the legal set *per model* — `gpt-5.6-luna` has no `minimal`. The adapter does not own that table, so it passes the level through **unmapped** rather than substituting a nearby one, which would run at a setting the user never chose while still reporting it honoured. Same class as the router's own `drop_params` limit and as unpriced volume: report what sonata can see, never assume the rest.
-
-- **A harness sonata has no effort control for is annotated, never degraded.** `tail`'s `decide()` prefixes `[effort <level> not honoured: sonata has no effort control for <harness>]`, the same shape as `[no worktree change: …]` — effort is a preference, not a safety boundary, so the permission-mode precedent of refusing rather than downgrading deliberately does not apply. It rides **both** trusted branches, where `noChange` rides one: `[read-only run: …]` does not say the report cannot be believed, it says the terminal output *is* the report, and that branch is explicitly un-degraded — so it is trusted, and it is also exactly where a read-only reasonix run lands, the one harness with no control. (`noChange` is absent there for its own reason rather than by oversight: a read-only role has no launch fingerprint to compare against.) The two degraded branches carry neither, since each already opens by saying why the report cannot be believed. The wording says what sonata knows: **reasonix** reports `effortHonoured: false` because it was not installed on the machine where the other four were probed, so whether it has a control is *unknown*; claiming "reasonix has no effort control" would assert absence from an absence of evidence. The annotation fires only when `effort` is present **and** `effortHonoured` is explicitly `false`, so a run predating the fields, or a bare candidate on a control-less harness, reads as nothing to report rather than as a mismatch.
-
-- **Anything `sonata init` does not write back, it deletes.** It is the sole
-  writer of the *whole* of `sonata.toml` — `sonata agents` replaces the
-  `[tiers]` tables alone and `sonata reset` deletes the file outright, so
-  neither can drop a setting the way a full rewrite can — and a setting that
-  `parseConfig` reads and `nativeTomlFor` does not emit therefore survives
-  exactly until the next `init`. This
-  bit `pricing_provider` and every `[price]` block, which were read and used
-  but never written: a rewrite un-priced the gateway outright, since
-  `resolvePrice` returns `source: 'none'` at its `provider === undefined`
-  guard before models.dev is consulted at all. Measured on a real config, one
-  rewrite flipped a gateway from priced to unpriced between two requests 64
-  seconds apart. The damage does not stop at the report — unpriced volume is
-  deliberately excluded from `[budget] daily_usd`, so a dropped key also
-  narrows the cap without saying so. `nativeTomlFor` takes the config being
-  rewritten and preserves `pricing_provider`, gateway `[price]` and per-model
-  `[price]`, windows in declaration order because the first match wins at read
-  time. Price rates are written only when present: `costOf` charges an absent
-  dimension at 0, so emitting a zero would turn "unknown" into "free". **Add a
-  round-trip test through `parseConfig` for any new config key** — asserting on
-  the emitted text cannot catch the sibling failure where the key is written
-  but bound to the wrong table.
-
-- **`avoid_gateways` demotes a gateway, it does not exclude it.** Ranking optimises capability per task-dollar and knows nothing about whether a gateway is reliable, rate-limited, or simply one you would rather not send work to — a hand-reordered `[tiers]` fixes that until the next `sonata init` re-proposes it away. A top-level `avoid_gateways = ["<name>"]` (not inside `[tiers]`, whose keys must all be roles) sorts that gateway's models *after* every other one in all tiers, so they survive as fallback candidates and avoiding a gateway costs preference rather than the depth a ranked tier exists to provide. `parseConfig` refuses a name matching no gateway — the setting's failure mode is that its absence is invisible, so a typo would read as "not avoided". The simple cap is anchored to the best-value model that can actually lead, since including an avoided model could raise the cap until nothing preferred qualifies. `nativeTomlFor` writes the key back out: dropping it would be exactly the bug it exists to prevent.
-
-- **`gateway_order` is the user's provider ranking, and it only ever breaks a tie.** `sonata init` asks for it on a *Rank providers* screen between the providers and the models (a `RankedSelect`; skipped for one gateway; reopened on the saved order via `deriveInitState`), and unattended the order of `--providers` is the ranking. `proposeTiers` takes it as `gatewayRank` (model key → position, `gatewayRankOf`) and appends it as the **last** term of both comparators, after `byLevel` — so it decides between routes that are otherwise equal (one model on two gateways: same score, same cost per task, same level) and can never move a model past a different model with a real edge. `avoid_gateways` still applies first. Written back by `nativeTomlFor`, trimmed to the gateways being written (a name absent from them would make the file refuse to load); `parseConfig` refuses an unknown or duplicated name, as it does for `avoid_gateways`.
-- **A tier is a rank, not a fixed model.** `RankedSelect` (`src/tui-ink/components/ranked-select*`) lets `sonata init` capture a *ranking* rather than a set: selection order **is** the ranking, so no separate up/down step is needed to express "try this one first, that one if it fails". `proposeTiers` (`src/catalog.ts`) seeds the initial order from a cached Artificial Analysis catalog (coding index for capability, blended price for cost) when one exists, falling back to a curated table otherwise.
-  - **The list is drawn in rank order, and the cursor addresses a display position, not an item.** `rsOrder` puts ranked models first in rank order, then the rest; `RsState.cursor` indexes *that*. Rows used to be drawn in item order with the rank as a marker, which is what made `[`/`]` read as broken — reported as "[ and ] does not work in sonata TUI" against a real 19-row screen whose markers ran `· · · · 1. 5. · · · · · · 2. 6. · · 3. 7. ·`. Reordering swapped two *numbers* between rows that were nowhere near each other and left the highlight where it was, so one press was often invisible and two were a round trip; the sixteen unranked rows did nothing at all, correctly, with nothing on screen to say why. Drawing in rank order makes a ranked item's display position *be* its rank position, which is what lets `moveUp`/`moveDown` need no lookup and lets the cursor travel with the row. `toggle` follows the same rule — the highlight tracks the item across the block boundary — so `[` right after `space` reorders the model just picked rather than whichever row slid into the vacated slot.
-- **Usage is read from the SSE stream, not from LiteLLM's cost headers.** LiteLLM does emit `x-litellm-response-cost-*` with no database configured, but headers flush before the body, so on a streaming request no output token exists yet and the cost is structurally `0` — and every Claude Code request streams. Tokens come from `message_start` merged with the final `message_delta`; sonata computes cost itself. The headers still carry `x-litellm-model-name` (which ranked candidate served) and `x-litellm-call-id`, which the ledger records as `litellmModel` and `callId`.
-- **models.dev is consulted for one unnamed provider — OpenRouter — and never
-  for the rest** (`PRICE_FALLBACK_PROVIDER`, `src/pricing.ts`). A lab's
-  first-party entry lags its own releases: `deepseek-v4.1-flash` is absent from
-  models.dev's `deepseek` provider while eight resellers carry it, so a gateway
-  serving that model reported unpriced although a rate existed. OpenRouter is
-  appended *after* every provider the config named, so it can never override a
-  stated preference, and an empty result there leaves the row unpriced rather
-  than reaching for another reseller — measured, they disagree by 2× on this
-  very model ($0.15/1M input from OpenRouter, $0.30 from kilo and vercel), so
-  a broader search would trade "unknown" for "wrong". The rate is still a
-  **proxy**: it is right for a gateway reselling at the lab's list rate, which
-  is what `pricing_provider` already assumes, and wrong by the markup for one
-  that does not. Its volatility is real — OpenRouter's published rate for this
-  model halved within a day of observation — which is what the 24h price
-  refresh exists to track.
-- **A bare id matches a vendor-qualifying provider by its slash-suffix, and
-  only unambiguously.** models.dev keys each provider as that provider does, so
-  OpenRouter's `deepseek/deepseek-v4.1-flash` is unreachable from a config
-  carrying the bare upstream id — `normalizeModelName` only ever strips
-  prefixes, never adds one. `qualifiedMatch` compares the part after the first
-  slash and returns a rate only when every candidate agrees on it; two vendors
-  can publish the same model name, and picking between two different prices is
-  a coin flip on money. It runs for every named provider too, not just the
-  fallback, because a user who lists OpenRouter and still gets nothing has
-  nothing on screen to explain why.
-- **A scraped price is only applied where the gateway says which public provider it is.** models.dev prices public serving providers, and one model spans an 8× range across five of them, so inferring which one a gateway resells would produce a number wrong by most of its own magnitude. Absent `pricing_provider`, the row is `unpriced`. models.dev also does not model peak/off-peak pricing, hence the UTC `price.windows` overrides.
-- **A gateway `sonata init` writes for the first time is born with a `pricing_provider`.** Nothing ever *originated* one, so a fresh config priced nothing: `resolvePrice` returns `source: 'none'` at its `provider === undefined` guard before models.dev is consulted at all (measured on a real machine config — 173 requests, $0.0000 priced). Two consequences are invisible from outside: `[budget] daily_usd` counts priced volume only, so it caps $0 forever and its only symptom is a refusal that never comes; and an OAuth gateway never reaches `relabelCovered`, so subscription work reads `unpriced` rather than `covered`. `MODELSDEV_PROVIDER_FOR_GATEWAY` (`src/pricing.ts`) is **not** `PROVIDER_FOR_GATEWAY` and must not be folded into it — that table names *LiteLLM* prefixes, which pick a wire format, while this one names *models.dev* ids, which pick a price table, and they disagree exactly where it is hardest to notice: LiteLLM wants `gemini` where models.dev files `google`, so a shared table returns no rate and an unpriced row looks identical to a model nobody has published a price for. `auth` is consulted **before** the name, since a gateway called `codex` serves OpenAI models and a user may name a gateway anything, while an OAuth credential can only reach the backend that issued it. A gateway already in the config keeps exactly what it has, **including nothing** — which is what makes the proposal declinable: delete the key once and no later rewrite puts it back. An unrecognised gateway is left unpriced rather than guessed, because one model spans an 8× range across serving providers.
+- **Dispatch tools must be allow-listed** (`Bash(sonata dispatch:*)`, `Bash(sonata wait:*)`, `Bash(sonata approve:*)`); the auto-mode classifier is not stable on them. There is no MCP server.
+- **`sonata dispatch` never parses harness output** — it reads run state only. All harness-specific knowledge lives in its adapter.
+- **Completion = exit sentinel + report file**, never terminal scraping. No report → `degraded`. A timed-out run (`run_timeout_seconds`) is `DONE`, degraded, `[timed out: …]`.
+- **Worktree fingerprint** (`src/worktree.ts`): annotates `[no worktree change: …]`, never degrades; inert outside git; skipped for read-only roles; capture lands after the sentinel.
+- **Harness-lane usage** is read from each harness's own store after the run (`src/harness-usage.ts`); `usage` is required on `HarnessAdapter`; matching never guesses; unknown is never zero; claimed once per run.
+- **Tier ranking**: only models AA prices per task are ranked; `complex` by capability, `normal` by value led by the knee, `simple` = value order capped at `SIMPLE_COST_CEILING` × best-value cost. **Do not reinstate `SIMPLE_CAPABILITY_FLOOR`.** `avoid_gateways` demotes (never excludes); `gateway_order` only breaks ties.
+- **Effort levels**: candidates are `<key>@<effort>`; a bare scored key is refused at load. On the harness lane each adapter reports `effortHonoured` (required); an unhonoured level is annotated, never degraded.
+- **`sonata init` deletes whatever it does not write back** — `nativeTomlFor` must round-trip every key `parseConfig` reads. Add a round-trip test through `parseConfig` for any new config key.
+- **Pricing**: `pricing_provider` names the models.dev provider; OpenRouter is the only unnamed fallback; ambiguous matches stay unpriced. `MODELSDEV_PROVIDER_FOR_GATEWAY` ≠ `PROVIDER_FOR_GATEWAY` — never fold them together.
+- **Usage comes from the SSE stream**, not LiteLLM cost headers (structurally 0 when streaming).
+- **Launch retries only on tmux "server exited unexpectedly"** (`retryWhenServerExits`).
+- **`sonata init`'s TUI is Ink** (`src/tui-ink/`); `src/tui.ts` primitives stay for the remaining non-Ink prompts. A prompt must `ref()` stdin while waiting.
 
 ### Source layout
 
@@ -291,7 +177,7 @@ tests/                   vitest suite against a fake harness + captured fixtures
 roles/                   role definitions (code, review, explore, plan) — owned by sonata, not the harness
 skills/loop/SKILL.md     sonata-loop — the tier-routed feature loop skill sonata init installs
 hooks/                   capture-mode.mjs + hooks.json — the PreToolUse permission hook
-docs/                    HANDOFF.md (read first: state, open follow-ups, environment traps) + dispatching-work-through-sonata.md + roadmap.md (1.0 roadmap and the source of record for it; it no longer mirrors anything, so update it here when an item ships) + guide/ (user-facing reference, split out of README.md — README stays the front door and links here) + reviews/ (architecture review) + superpowers/ (plans + specs, permanent design-history record, indexed in docs/superpowers/README.md)
+docs/                    HANDOFF.md (read first: state, open follow-ups, environment traps) + internals/ (the full design record moved out of CLAUDE.md) + dispatching-work-through-sonata.md + roadmap.md (1.0 roadmap and the source of record for it; it no longer mirrors anything, so update it here when an item ships) + guide/ (user-facing reference, split out of README.md — README stays the front door and links here) + reviews/ (architecture review) + superpowers/ (plans + specs, permanent design-history record, indexed in docs/superpowers/README.md)
 ```
 
 ### Adding a harness
@@ -304,642 +190,98 @@ The adapter boundary is the extension point — one new file plus registration:
 
 **Probe the real binary before writing an adapter** — every adapter bug found so far was invisible in documentation and obvious on the first real run. If you claim a harness prints something, capture it into `tests/fixtures/panes/` and test against that.
 
+
 ## Permission modes
 
-Sonata mirrors the Claude Code permission mode onto the harness; a sonata agent is never more permissive than the session that spawned it. Where a harness cannot honour a mode, sonata refuses the run rather than downgrading quietly.
-
-- **OpenCode** (`opencode run` has no approval UI — it either proceeds unasked or auto-rejects): `plan` → plan agent, no approve; `default` → **refused** for write-capable roles; `acceptEdits`/`bypassPermissions` → build agent, auto-approve.
-- **Pi** (no sandbox, `--tools` allowlist is real): `plan` → `--tools read,grep,find,ls`; `default` → refused for write-capable roles; `acceptEdits`/`bypassPermissions` → all built-in tools.
-
-**A read-only run cannot write `report.md`** on either opencode or pi, so sonata takes terminal output as the report and does NOT mark such a run degraded (`LaunchPlan.canWriteReport`). Pi's allowlist removes the write tool; opencode's `plan` agent is *instructed* not to modify files and declines — weaker enforcement, identical reporting consequence. Probed directly: a run asked only to write one file wrote nothing and reported "blocked by policy, not by error".
-- **Codex** (real sandbox, TUI prompts): `plan` → `codex exec` read-only; `default` → interactive TUI with `approval_policy=on-request` workspace-write; `acceptEdits` → `codex exec` workspace-write; `bypassPermissions` → `codex exec` danger-full-access. The TUI stdout stays attached to tmux: piping it through `tee` makes codex print `Error: stdout is not a terminal` and exit 0. A report watcher clears its composer and sends Ctrl-D once `report.md` lands. Sonata never passes `--dangerously-bypass-approvals-and-sandbox`.
-- **Reasonix** (real approval cards, so `default` is honoured): `plan` and every read-only role → `run --permission-mode dontAsk`; `default` → interactive TUI with `--permission-mode ask`; `acceptEdits` and `bypassPermissions` → `run` with the same-named mode.
-  - `--permission-mode plan` is **refused by `reasonix run`** ("requires an interactive session", exit 2), so read-only work uses `dontAsk` instead. That is real enforcement, probed: a run asked to read one file and write another read it fine and was refused both the write tool and the shell fallback. It cannot write `report.md` either, so `canWriteReport` is false.
-  - **Never use `-y`/`--auto`.** It aliases reasonix's own `auto`, which is wider than Claude Code's — it skips risk prompts for things like `git push`. Claude's `auto` maps to `acceptEdits`, so always pass `--permission-mode` explicitly.
-  - Reasonix loads the working directory's `.mcp.json` on top of its own config, so a dispatched model inherits whatever MCP servers the project defines — sonata itself is not one of them (there is no MCP server anymore), but a project's own servers still apply. `sonata doctor` warns on a `.mcp.json` that still registers a stale `sonata` entry (`staleMcpRegistration`), naming `claude mcp remove sonata`.
-- **Claude Code** (`claude -p` is headless and has no TUI): `plan`, `default`, `acceptEdits`, and `bypassPermissions` map directly to Claude Code's corresponding permission modes. Read-only roles get `--tools=Read,Grep,Glob` plus `--strict-mcp-config` with no `--mcp-config` — `--tools` restricts only the built-in set, and was probed live (2.1.284) to leave every user, project, plugin and claude.ai MCP tool reachable until strict mode loaded no server at all; native runs assume `sonata serve` is already up so the session is routed to the foreign model.
-
-The permission mode is not exposed as an env var, so this needs a **PreToolUse hook** (`hooks/capture-mode.mjs`), which `sonata init` offers to install at project or global scope. Without it sonata assumes `default` — for opencode/pi that means dispatches refuse, so `sonata doctor` reports a missing hook as a blocker.
-
-**Where the mode is stored mirrors config resolution.** A project with its own `sonata.toml` or `.sonata/` gets `<cwd>/.sonata/session-<id>.json`; a project relying only on `~/.config/sonata/sonata.toml` gets `~/.config/sonata/session-<id>.json`; a directory with neither is left alone. That second case matters — the hook is installed globally and fires on every Bash call, so writing into the repo would scatter `.sonata/` directories across the machine. `readPermissionMode` reads the same two locations in the same order.
-
-**`auto` mode** (Claude Code's current default) maps to `acceptEdits`. Residual gap: the foreign harness has no classifier, so it will run things auto mode would have blocked. Dispatch in `plan` mode, or to a read-only role, when that matters.
+Sonata mirrors Claude Code's permission mode onto the harness; a sonata agent
+is never more permissive than its session, and **a mode a harness cannot honour
+is refused, never quietly downgraded**. The mode reaches sonata only through
+the PreToolUse hook (`hooks/capture-mode.mjs`); without it sonata assumes
+`default`, so opencode/pi dispatches refuse. `auto` maps to `acceptEdits`.
+Never pass codex's `--dangerously-bypass-approvals-and-sandbox` or reasonix's
+`-y`/`--auto`. Per-harness mapping: `docs/internals/permission-modes.md`.
 
 ## Configuration
 
-Sonata resolves exactly one config, in this order (`configPath` in `src/config.ts`):
-
-1. `./sonata.toml` — the current repository, wins outright
-2. `~/.config/sonata/sonata.toml` — the machine
-
-A project config **replaces** the machine one; they are never merged, so it is always possible to say which file produced a run. `sonata doctor` prints the resolved path.
-
-**A linked git worktree resolves its main checkout's config, between those two.** `sonata.toml` is untracked, so `git worktree add` yields a directory holding none of the project's sonata state, and every command run there fell through to the machine config or to none — which is how a worktree session's native tier agents 404'd with `model_not_found` at `api.anthropic.com` instead of reaching the router (reported 2026-09-10). Borrowing sits *below* the worktree's own `sonata.toml`, because a worktree that has been given one means it, and *above* the machine config, because a checkout of this repository is this project; it also gives the worktree the same router tenant id as the main checkout, sharing its cooldowns and `[budget]` rather than splitting them. `mainWorktreeDir` (`src/git-worktree.ts`) is pure filesystem — the `.git` pointer file, then that gitdir's `commondir` — never `git rev-parse`, because `configPath` is on the router's per-request tenant-resolution path and a subprocess per request is not affordable; the `commondir` check is also what keeps a **submodule**'s `.git` file (a gitdir pointer with no `commondir`) from being read as a worktree. Every malformed shape answers "not a worktree" rather than throwing: a repository sonata cannot read must degrade to the old behaviour, not break a working command.
-
-**Routing settings and hooks are the one thing a worktree cannot borrow.** Claude Code reads `.claude/settings.local.json` relative to its *own* cwd, so `sonata route auto` in the main checkout does not reach a worktree and sonata cannot redirect it — it must be run in the worktree itself. `sonata doctor` says exactly that, naming the main checkout (`borrowedWorktreeConfigDir`, checked before every hook diagnosis, since in a fresh worktree they all reduce to "nothing is installed" and none of them says why).
+Exactly one config resolves (`configPath`, `src/config.ts`): `./sonata.toml`,
+else a linked worktree's main checkout's `sonata.toml`, else
+`~/.config/sonata/sonata.toml`. Never merged. Routing settings/hooks are the
+one thing a worktree cannot borrow — run `sonata route auto` in the worktree.
 
 ```toml
-# sonata.toml
-schema_version = 1                  # which shape this file is in
+schema_version = 1
 
 [models."flash"]
-gateway = "acme"                    # native route: resolves through the router
+gateway = "acme"                    # native route
 id = "deepseek-v4-flash-0731"
-context_window = 128000
 
 [models."kimi-k3"]
-harness = "opencode"                # harness route: sonata dispatch falls back to this
+harness = "opencode"                # harness route (dispatch fallback)
 id = "openrouter/kimi-k3"
 
 [native.gateways."acme"]
 base_url = "https://gateway.acme.example/v1"
 
 [tiers.code]
-simple  = ["flash", "kimi-k3"]       # ranked — first is tried first
-normal  = ["flash", "kimi-k3"]       # optional; absent is valid, empty is refused
+simple  = ["flash", "kimi-k3"]      # ranked — first is tried first
+normal  = ["flash", "kimi-k3"]      # optional; absent is valid, empty is refused
 complex = ["kimi-k3", "flash"]
 
-[tiers.review]
-simple  = ["kimi-k3"]
-normal  = ["kimi-k3"]       # optional
-complex = ["kimi-k3"]
-
-avoid_gateways = ["flaky-gw"]   # rank this gateway's models last, but keep them as fallbacks
-
 [budget]
-daily_usd = 25                 # this PROJECT's priced spend per UTC day; the
-                               # machine config's own cap bounds everything the
-                               # router forwards, and each refusal names its file
-
-# [native.ports] belongs in the MACHINE config only — one router serves every
-# project, so a project's own ports are ignored (`sonata doctor` warns).
-
-[run]
-tail_window_seconds   = 20     # how long `sonata tail` blocks per call
-stall_timeout_seconds = 120    # silence before a run is reported STALLED
-run_timeout_seconds   = 1800   # hard cap; the run is killed at this point
-dispatch_window_seconds = 1500 # blocking window for sonata wait/dispatch
+daily_usd = 25
 ```
 
-- **`schema_version` stamps the shape, and migration runs on load** (`src/migrations.ts`). `parseConfig` reads the stamp off the raw TOML, walks the file forward through an ordered chain **before** any field-level validation, and records the pre-migration number as `SonataConfig.schemaVersion` — read after migrating, it would always answer "current", and `sonata doctor` could never report a file as behind. A stamp *newer* than `CURRENT_SCHEMA_VERSION` is **refused**: a best-effort parse of a future shape does not fail, it succeeds and means something else. Absent means version 0, which is a real version, not a malformed file; a present-but-nonsense value is an error, because reading it as 0 would migrate a file whose author believed it was stamped. Migration is **in-memory only** — `sonata init` is the sole writer of `sonata.toml` (`sonata sync` regenerates agents and never touches it), so no read-only command rewrites your config. The chain ships **empty on purpose**: v1 names the shape `parseConfig` already accepts, so a v0 file needs no transform to load, and inventing one would risk the path that already works. `applyMigrations` takes the list as a parameter so composition is proven against a synthetic chain rather than asserted about an empty one, and it advances past a version with no step rather than looping forever. The stamp is written **above every table header** for the same reason `avoid_gateways` must be — a bare key after one belongs to *that table*.
-- **`[budget] daily_usd` is a ceiling the router enforces, and it is honest about what it cannot see** (`src/budget.ts`). A cap in a *project's* config bounds that project's priced spend; one in the *machine* config bounds everything the router forwards; both are checked per request and whichever is reached refuses, naming its own file. Before forwarding *anything* — checked at the top of `routeRequest`, above both the tier and direct branches, since a cap enforced on one of two paths is not a cap — the router sums the ledger's **priced** rows for the current UTC day and refuses at or past the cap with a 429 naming the cap, the spend, and the file to edit. Both halves are re-read per request, so raising the cap frees the router without `sonata restart`. Two limits are stated in the refusal itself rather than papered over: it counts **priced volume only** (the ledger reports unpriced volume separately and never folds it in as zero, so a cap that only sees the priced part can be exceeded — counting unknown as zero would make it quietly permissive in the case the user is least able to notice), and it counts a **`sonata dispatch` run only once it finishes** (its tokens are read from the harness's store afterwards and land in the same ledger, so both lanes count toward one cap; `sonata dispatch` refuses to launch once a cap is reached, `dispatchBudgetStatuses`, but cannot stop a run midway, so one run can carry spend past the cap). The refusal is deliberately *not* written to the ledger: a row records a request the router forwarded, and putting avoided spend into the store that defines spend is how the number stops meaning what it says. Absent `[budget]` means no cap; a non-numeric or non-positive `daily_usd` is **refused at parse time**, because a cap's only visible effect is a refusal that has not happened yet, so one silently dropped for being the wrong type reads exactly like one that is working. No forecasting, no per-role split, no auto-tuning — those need usage data nobody has measured yet.
-- **`[models."<key>"]` is unified: a native route (`gateway`/`id`/`context_window`), a harness route (`harness`/`harness_id`), or both** (`UnifiedModelConfig`, `src/config.ts`) — one model can be reachable two ways: natively through the router, and as a `sonata dispatch` fallback candidate through its harness. `harnessModelFor(config, key)` maps a unified entry's harness half onto the shape `cmdRun` already consumes, so a unified-only key dispatches with no legacy `[models]` entry needed.
-- **`[tiers.<role>]` is `{ simple: string[], normal?: string[], complex: string[] }`**, keys into `[models]`, ranked — position is priority, not a separate field. `resolveTierAlias(config, "sonata-<role>-<tier>")` resolves an alias to its ranked routes (`TierRoute[]`, each `{ key, native?, harness? }`); `normal` is optional: absent is valid and preserves the old behavior, while present-but-empty is refused at parse time. `sonata-<role>-normal` resolves only when `normal` is present and never substitutes another tier; it collapses to the unsuffixed `sonata-<role>` alias only when every present list is *element-wise* identical (same models, same order) — a role whose tiers differ even slightly keeps the explicit aliases live. `simple` and `normal` share a value ranking (intelligence index / cost per task), with `simple` filtered to a cost cap of `SIMPLE_COST_CEILING` (12) times the best-value model cost; `complex` ranks by capability. `simple` is a cost-capped *subsequence of the value order* — not a prefix: value is not monotonic in cost, so the filter can skip an over-ceiling candidate and keep a cheaper one behind it. Truncating at the first over-ceiling candidate would make it a prefix and drop qualifying cheap models, which is what the tier exists to hold. It is **not** a subsequence of `normal`, which leads with the frontier's knee before the rest of the value order: where the knee is under the cap, `simple` leads with the best-value model and `normal` with the knee.
-- **`parseConfig` refuses *mixing* `[tiers]` with legacy `[generate.roles]`/`[generate.native]`** in the same file — not refusing a legacy-only config outright, since that would brick every existing install the moment this shipped. A legacy config still parses (with a `sonata doctor` warning pointing at `sonata init`) until it's migrated; a migrated config cannot re-grow the old tables.
-- **A legacy config migrates automatically** (`migrateLegacyConfig`, `src/normalize.ts`, run by `cmdInit` whenever it loads a config with `generate` data and no `[tiers]`): every `[native.models]` entry becomes a unified native-routed entry; every legacy harness entry becomes a harness-routed entry keyed by `normalizeModelName(key)` — merged onto a native entry when its `id` normalizes to the same upstream (one model, two routes), or kept under its original un-normalized key when two *different* models would otherwise collide on the same normalized name (verified: never silently merges two different models). `[tiers.<role>]` is seeded native-first from `generate.native` + `generate.roles`, deduplicated. A harness-only model with no native counterpart — invisible to the current native-candidate picker — is still carried through into the rewritten config rather than silently dropped.
-- **Keys are always quoted.** An unquoted `[models.grok-4.5]` nests as `models → "grok-4" → "5"` and silently stops describing the model it names. Every key and value is written through `tomlKey`, which also escapes control characters. This includes `credential_source` on `[native.gateways]`: its values are `sonata`, `codex`, and `opencode`; when absent, today's credential resolution is unchanged. `parseConfig` refuses `credential_source = "codex"` with `auth = "api-key"` because a Codex subscription is not a bearer API key and the metered endpoint authenticates before failing on quota — see `docs/guide/codex-subscription.md`. Native API-key gateways may also set `wire_format` to `openai` (the default) or `anthropic`; it is refused on OAuth-auth gateways and supports fully custom providers entered through `sonata init`'s Add provider flow.
-- **The key is `<harness>-<provider>-<model>`, slashes flattened to dashes**, and doubles as the agent filename (`code-<key>.md`). The harness segment is load-bearing: pi and opencode can serve the identical ref. Flattening is *not* injective (`opencode/go-x` and `opencode-go/x` collide), so `init` checks the keys it is about to write.
-- **Ids are provider-qualified for opencode, pi and reasonix**, bare for codex; `parseConfig` enforces this per harness. Picker rows are labelled `<harness>/<provider>/<model>` (`refLabel`), because opencode and pi can serve the identical `provider/model` — labelling by ref alone printed two identical rows that also shared a selection value.
-- **Each role chooses its own ranked model list, per tier,** through `[tiers.<role>]`; `sonata sync` generates only tier agents when `[tiers]` is set (skipping legacy per-model generation entirely) — one agent per role × present tier, up to 12, or one collapsed agent when all present lists are element-wise identical. Generated descriptions make `normal` the default and use observable criteria: `simple` is specified closely enough to implement without a question, `normal` needs surrounding-code judgment, and `complex` needs a design decision or has an ambiguous definition of done. They state that size is not difficulty.
-- **`tiersCollapse` (`src/config.ts`) is the single definition of "element-wise identical".** Three call sites had each rebuilt that predicate — `cmdSync`, which *writes* the agent files; `resolveTierAlias`, which *routes* to them; and `sonata init`'s confirm summary, which *counts* them. The third had rebuilt it as roles × models, so a four-role config on two models promised 8 files and `sync` then wrote 4 — wrong on the one screen whose entire job is to say what is about to be written. Comparison is ordered, because a tier is a ranking: the same models in a different order are a different fallback chain.
-- Four roles ship: `code`, `review`, `explore`, `plan`. The last three are read-only, enforced by the harness (read-only sandbox on codex, tool allowlist on pi, read-only agent on opencode, `dontAsk` on reasonix); a read-only native tier agent can delegate writes through a `code-*` subagent, guarded only by prompt text.
-- `sonata init` discovers OpenCode, Pi and Reasonix models (reasonix's catalogue and its per-provider auth state both come from `reasonix doctor --json`). Codex has no provider dimension and is added by hand; hand-written entries survive `sonata init`, which carries through any model whose harness it does not manage.
-- **BYOK: a provider can be named directly, with no harness installed.** `init`
-  offers ~30 well-known providers from `WELL_KNOWN_PROVIDER_URLS` as a `byok`
-  pseudo-harness, alongside the existing `config` one — both bypass the harness
-  filter in `providersForHarnesses`, which is what makes the zero-harness case
-  work. A provider a harness already covers gets no BYOK row, so it is never
-  offered twice. Having no harness is a **warning**, not the blocking error it
-  used to be; that downgrade is where the zero-harness claim actually lives.
-  - Models come from `GET <base_url>/models` (`src/native/models.ts`), which
-    returns a `FetchModelsResult`, not a bare list. **Only 401/403 map to
-    `unauthorized`** — that is the one failure whose fix is a different key, so
-    it gets its own screen offering a re-prompt. 404, 429, non-JSON and a
-    payload with no `data` array stay on the manual-ids path: a provider with no
-    `/models` endpoint has nothing wrong with its key, and re-prompting there
-    misdiagnoses in the opposite direction from the bug the split exists to fix.
-    Fetched ids run through `isAnthropicRoutedName` for the same reason harness
-    candidates do.
-  - **The rejection screen must keep a way past itself.** Some providers 403 a
-    key that is fine for inference, so "keep it and type ids by hand" sits
-    beside "re-enter the key"; forcing the retry would trap that user in a loop.
-    The retry carries an `attempt` counter because retyping the *same* key
-    changes no effect dependency — and a retry usually is the same key, typed
-    again by someone who believes they mistyped it.
-  - **Keys are written once, after the confirm gate.** They live in
-    `InitState.byokKeys` in memory only — `runInitTui` renders in-process and
-    serializes nothing — so a cancelled wizard leaves no credential behind.
-    There is deliberately **no `--key` flag**: it would put a credential in argv
-    and shell history. The scripted path requires `sonata auth add <gateway>`
-    first and refuses by name if the key is missing.
-  - `byokCandidateKey` is exported and shared rather than inlined: the wizard
-    puts the key into `nativeKeys` and `cmdInit` looks the candidate up by it,
-    so two copies of the formula is how the two stop agreeing.
-- **A gateway unattributable to a single harness is offered as `config/<gateway>`.**
-  `deriveInitState` (`src/init/helpers.ts`) names a gateway `config/<gateway>` when
-  no harness offers it *or* when more than one distinct harness does — both are
-  equally unattributable, since a bare gateway name in `sonata.toml` doesn't record
-  which harness's discovery produced it (e.g. opencode and pi both separately
-  cataloguing the same public gateway, verified live). The discover phase
-  (`src/init/discover.ts`) synthesizes that row for both cases; previously it
-  synthesized only the absent case, so an ambiguous gateway produced a
-  `providerKey` that `offered` never contained, and scripted `sonata init --yes`
-  rejected it as unknown before role selection was even reached. Crediting
-  every overlapping harness would be just as wrong — it pre-selects a harness
-  the user never actually chose, with no way to make it stick unticked.
-- **A prompt must `ref()` stdin while it waits** (`src/tui.ts`, `readKeys`). A
-  paused stdin's handle is *unreferenced*, so waiting on a keystroke is not work
-  node knows about: with nothing else pending the process exits, code 0,
-  mid-prompt. Nothing paused stdin before the Ink wizard existed; Ink pauses it
-  on unmount, so **every prompt after the wizard died the instant it was
-  drawn** — prompt on screen, shell back, exit 0, nothing written. That was
-  "sonata init never saves the config", and it left no error because there was
-  no error. `unref()` on the way out, or the last prompt hangs instead.
-- **`sonata init` writes a log** (`src/commands/init-log.ts`) to
-  `~/.config/sonata/logs/init-<timestamp>.log`, newest ten kept. The wizard owns
-  the screen — Ink repaints and the list prompts use the alternate buffer, which
-  is discarded on exit — so a run that dies mid-wizard otherwise leaves a
-  restored shell and no trace. Every printed line is teed there, along with the
-  resolved selections and any error. Keys are recorded as the gateway they
-  belong to, never as their value. `cli.ts` prints the directory when a run
-  fails or cancels. Logging never throws: an unwritable home degrades to
-  `nullInitLog` rather than failing the command it was meant to explain.
-- **A `model` argument on the Agent tool silently defeats tier routing.** Each
-  generated agent pins its routed alias in frontmatter (`model:
-  sonata-code-complex[1m]`), and the tool's own `model` parameter takes
-  precedence over frontmatter — so a caller that passes one runs sonata's
-  prompt and tools on a Claude model that never reaches the router. Nothing
-  errors: reported 2026-09-15 after ~15 dispatches had already run that way,
-  noticed only when someone asked which models were in use, and every
-  "foreign-model review" in that session had been Claude reviewing Claude.
-  Sonata cannot detect it — the request goes straight to `api.anthropic.com`
-  and the router sees nothing — so the mitigation is text in the three places
-  a caller might read: each agent's `description` (what the dispatching model
-  reads while *choosing*, before the body is in context), each agent's body,
-  and the managed `CLAUDE.md` block, which is the only text the calling
-  session reads unconditionally. The generic multi-agent advice "always
-  specify the model explicitly" is what produces this, and is wrong here: for
-  a tier agent the model choice **is** the tier. A description is a plain YAML
-  scalar, so the warning carries an em dash rather than the colon that reads
-  more naturally — `": "` inside an unquoted scalar is a mapping.
+Rules that bite (full reference: `docs/internals/configuration.md`):
 
-- **A tier agent that fans out to a Claude subagent ends the lane, just as
-  silently.** Observed 2026-09-16: a `code-complex` agent called Claude's own
-  `Plan` (Opus), which runs, reports, and is indistinguishable from a routed
-  subagent. Every generated agent therefore carries a `## Fanning out` rule
-  naming the tier agent to reach for instead — `plan-complex`, not `Plan` —
-  where the older `## Delegating` guard (read-only roles must not delegate
-  writes) sat only on read-only roles, leaving the `code-*` agents most able to
-  fan out with no fan-out guidance at all. This is prompt text for the reason
-  recorded under Known Limitations: `tools:` frontmatter grants tools, not
-  permitted argument values, so it can withhold `Agent` outright but cannot
-  constrain the `subagent_type` passed to it. Real enforcement would need a
-  PreToolUse hook on the Agent tool that can identify its calling agent, which
-  has not been probed.
+- **Top-level keys (`schema_version`, `avoid_gateways`, `gateway_order`) go above every table header** — a bare key after one belongs to that table.
+- **Keys are always quoted** via `tomlKey` (`[models.grok-4.5]` nests wrongly); escape control characters everywhere.
+- A newer `schema_version` than supported is refused; migration is in-memory only.
+- `[tiers]` and legacy `[generate.*]` may not coexist; legacy configs migrate on `sonata init`.
+- `tiersCollapse` is the single definition of "element-wise identical" tiers (one collapsed agent per role).
+- `[budget] daily_usd` counts priced volume only; non-positive/non-numeric is refused at parse time.
+- `claude-` model keys/ids are refused — that prefix routes to Anthropic (`isAnthropicRoutedName`).
+- `sonata init` owns the managed CLAUDE.md block between standalone `<!-- sonata:begin -->`/`<!-- sonata:end -->` lines only; mismatched markers are refused, not repaired.
+- A tier agent's `model` frontmatter is overridden by the Agent tool's `model` argument — which silently defeats routing.
 
-- **Tier agents are discovered natively but not *preferred* natively, which is
-  what the CLAUDE.md guidance block exists to fix** (`src/init/guidance.ts`).
-  The generated agents are ordinary `.claude/agents/*.md` files, so Claude Code
-  lists them with no MCP or wrapper — but selection is the model matching a task
-  against each agent's `description`, and sonata's compete there with
-  `general-purpose`, `Explore` and `Plan`, every one of them broader and none
-  carrying a routing precondition. Nothing sonata already wrote could state a
-  preference: agent files describe what an agent *does*, and a skill is invoked
-  rather than always loaded. `CLAUDE.md` is the only file Claude Code reads in
-  every session unconditionally, so that is where the instruction has to live —
-  in a file sonata does not own, which is what shapes the rest of the design.
-  Sonata owns what is between `<!-- sonata:begin -->` and `<!-- sonata:end -->`
-  and nothing else: text either side is preserved byte-for-byte, and a file
-  whose markers do not pair up (or pair in the wrong order, **or repeat**) is
-  **refused** rather than repaired. **Only a marker standing alone on its own
-  line counts**: quoted inside a sentence it is a citation, not a container, so
-  a file that merely documents the contract has no block and is appended to
-  cleanly. Counting every occurrence is what let `sonata init` splice the block
-  into the middle of the sentence joining the two markers — destroying the one
-  paragraph that explains them, in this repository's own `CLAUDE.md` (#29), because every available repair — inventing
-  an end, reading a stray marker as prose, rewriting the first of two blocks —
-  can eat a paragraph the user wrote or leave a stale block contradicting the
-  new one. Counting occurrences is load-bearing rather than fussy: `indexOf`
-  alone splices from the *first* begin to the *first* end, and in a file shaped
-  begin/…/begin/…/end that span swallows the user text between the two begins.
-  For the same reason only a file that does not exist is written whole — a
-  whitespace-only `CLAUDE.md` still has bytes, and replacing them is a change
-  outside the markers. The
-  refusal is surfaced as a warning and does not fail the init, since the config,
-  agents and hook are already written and useful by then. The block names the
-  routing caveat deliberately: with `route auto` upstream-blocked, an unrouted
-  session's tier agent dies with `model_not_found` at `api.anthropic.com`, which
-  reads as a broken agent rather than a missing `sonata code`. Scope follows the
-  hook's shape — project writes the repository's own `CLAUDE.md` so the
-  preference travels with the repo, global writes the user's — and `skip` is a
-  true no-op that plans no path at all.
-- Run `sonata sync` after editing the config; Claude Code picks up the generated agents automatically. There is no MCP server to reconnect.
+## Native path
+
+Foreign models run inside Claude Code's own loop through the local router
+(`sonata serve`). Summary — the full record is `docs/internals/native-path.md`:
+
+- **One router per machine, multi-tenant**: each request resolves to a tenant (a realpath'd `sonata.toml`) via the authenticated `x-sonata-project` header, then `sessions.json`, then the machine config. Cooldowns, budget and credentials are per tenant. Ports come only from the machine config.
+- **Transport is derived from `provider` + `auth`**: `anthropic` api-key gateways go direct (credential swapped, body byte-identical); everything else goes through LiteLLM, started lazily and only when needed; `serve` never installs it.
+- **Request transforms on the LiteLLM path only**: `litellmBody = demoteSystemTurns ∘ sanitizeToolSchemas ∘ flattenSystemBlocks`, plus `repairNamelessToolCalls` and `stripForeignThinking` on every transport. Anthropic requests stay byte-identical.
+- **OAuth gateways** (`codex-oauth`, `copilot-oauth`) drive LiteLLM's own authenticator; sonata implements no OAuth. A harness-sourced ChatGPT token has exactly one writer once LiteLLM runs — do not reintroduce a live sync.
+- **Fallback**: ranked candidates, first < 500 wins, 60 s cooldown; a 400 is terminal except the captured signature lists and message-less 400s; exhaustion returns 529 naming the `sonata dispatch` command.
+- **Never kill the router by hand** — use `sonata restart`, which kills only recorded pids.
+- Routing through the proxy costs Remote Control for sessions *launched* routed; `route auto` exists to avoid that.
 
 ## Security
 
 Sonata launches other coding agents on your machine — they run **as you**, with your files and credentials. Codex and reasonix both offer a real sandbox (reasonix reports its own `write_roots`, which follow `--dir`); pi has none, and opencode's is advisory. Sonata never bypasses a harness's own safety flags; credentials stay with the harness (sonata reads harness config for health reporting but does not copy/forward/log API keys). Prompt injection is a real risk with foreign models — for untrusted code, dispatch read-only roles or run in a container.
 The native router transits the session credential locally and unmodified; native keys flow store → environment → LiteLLM only.
 
-## Known Limitations
+## Known limitations
 
-- **Harness-lane usage is read after the fact, and some runs cannot be attributed.** Two dispatches to the same harness in the same directory at the same time are both reported `unobservable` rather than split by guesswork; a reasonix run is attributable only when no other reasonix session ran anywhere on the machine, since its stats name no session; and a run is counted when it finishes, so `[budget]` refuses the *next* dispatch rather than stopping one in progress. `sonata runs` / the web UI's run row name the reason for any run with no row.
-- **Nested native agents have unbounded recursion, unattributed cost, and no run-level observability.** A generated tier agent (for example, `code-normal`) can call `Agent(subagent_type: "code-normal")` and recurse on itself because sonata has no depth counter; read-only roles rely on prompt text rather than enforcement because Claude Code's `tools:` frontmatter grants tools, not allowed argument values. `sonata usage` attributes the router ledger per session rather than to the dispatch that caused nested spend, so a runaway recursion is visible as a day's spend but not as *whose*. `[budget] daily_usd` now bounds the total — the blast radius is capped even though the attribution is not — but it is a whole-machine ceiling, not a per-run one. `sonata status`, `sonata runs`, and `sonata tail` assume one run = one model = one request chain, so nested agents have no representation in any of them.
-- `sonata init` discovers models for all three harnesses. Codex has no `models` subcommand, so its catalogue comes from `codex app-server`'s `model/list` (JSON-RPC over stdio); the schema is generated by `codex app-server generate-json-schema` and a real response is captured in `tests/fixtures/codex/model-list.json`.
-- **opencode's `event` table grows without bound** — 6.5 GB across 140k rows on the development machine, which is what produced `database is locked` under three concurrent dispatches. Sonata cannot prune another harness's store. Three concurrent runs against opencode 1.18.16 completed cleanly, so this is load- and size-dependent rather than a fixed limit; a run that dies without producing output is now reported `degraded` rather than silently succeeding.
-- The published package ships `dist/` plus `roles/`, `hooks/` and `skills/` (`files` in `package.json`); a runtime asset added outside those is absent from the tarball and fails only at a user's install. CI runs `npm pack --dry-run` against a required-files list to catch that at merge time rather than at publish time.
-- Prompt detection is regex against TUIs sonata does not control; `STALLED` timeout is the backstop. Codex prompt patterns are written from captured real output in `tests/fixtures/panes/`.
-- Codex through a proxy needs that proxy up (`sonata doctor` checks the endpoint).
-- `opencode run --format json` is broken upstream (v1.18.15 produces no output, never exits), so progress comes from pane text rather than a structured event stream. Pi's `--mode json` works; the adapter keeps a seam for adopting it.
-- **An interactive run has to be told to stop.** Reasonix's TUI is a chat session: it does not exit when the task is
-  done, so nothing writes the exit sentinel and a finished run sits at PROGRESS until the stall timeout, then gets
-  killed and reported degraded with its report sitting right there. The adapter's watcher waits for `report.md` and
-  then sends Ctrl-D, retrying until the sentinel appears. Ctrl-D, never the documented `exit` + Enter: typing blind
-  races the TUI, and a run that typed `exit` landed the letters in an open approval card and the Enter picked
-  whatever row was highlighted.
-- **A prompt stays in the pane after it is answered, so it can be re-reported.** Prompt detection reads the current
-  pane, and answering does not erase the block that matched. Under the one-call loop this is visible: a live
-  reasonix dispatch on 2026-08-18 returned PAUSED for a prompt that had already been approved, so `approve` sent
-  its `1` when no selection list was open and the digit landed in the composer as text. Two consequences —
-  wasted approve/wait round trips, and a composer that is no longer empty.
-- **Ctrl-D does not quit a reasonix TUI whose composer is not empty**, which is how the above turns a finished run
-  into a STALLED one: the report was written, the quit watcher sent Ctrl-D, nothing happened, and no exit sentinel
-  was ever produced. Clearing the line before quitting would fix the second half; the first half needs prompt
-  detection to know what it has already answered.
-- No streaming granularity guarantees — progress is whatever the harness prints.
-- **`default` mode is verified live on codex and reasonix** (2026-08-18). A codex dispatch surfaced its
-  directory-trust prompt as `PAUSED`, took `approve`, did the work and reached `DONE` un-degraded — the first
-  time codex `default` has ever run. A reasonix dispatch went from 9 calls with duplicated prompts ending
-  `STALLED`, to 5 calls, no duplicates, `DONE` with its report.
-- **The harness conversation cannot be *pushed* into Claude Code turn by turn.** A subagent receives text only as tool results, and its parent receives only its final message, so no push channel exists to stream into. `tmux attach -r -t sonata-<id>` is the live view and `sonata log <id>` the after-the-fact one; `sonata tail` remains a human/debugging CLI command.
-- **Tier fallback retries only before a response starts.** The router (`routeTierRequest`, `src/native/router.ts`) tries each `[tiers.<role>].<tier>` candidate in rank order and returns the first response with status < 500 — retry is inherently pre-first-byte, so it never interferes with an in-progress stream. A candidate that fails (a thrown fetch, or ≥500) cools down for `TIER_COOLDOWN_MS` (60s) so a burst of requests doesn't keep retrying a model that just failed; every native candidate exhausted returns 529 naming the `sonata dispatch --tier <role>-<tier>` fallback rather than a bare error.
-- **A 400 is terminal unless its body says otherwise, and four bodies do** — the fourth being a codex-oauth candidate's refused ChatGPT login (see *Native path*), which falls through at once. That refusal body is treated alike whether LiteLLM answers it as a **400, 401 or 500** (measured as a 400). `TERMINAL_STATUSES` hands a 400 back to the caller, because a malformed request is malformed at every candidate. The exceptions are keyed on the body: `CAPABILITY_400_SIGNATURES` (captured candidate-shape failures, cooled after 3 identical in a row) and `UNSERVABLE_400_SIGNATURES` (a gateway refusing how it is addressed, cooled at once) are text signatures, each added on captured evidence. **The message-less 400 is a deliberate, shape-based exception to that rule** (`isMessagelessError`): a 400 whose body names nothing (empty, or a JSON object with no `error`/`message`/`detail`, raw or as LiteLLM embeds the upstream detail in its envelope) says nothing about the request, so reading it as the request's fault is the less likely reading. On the LiteLLM path it falls through to the next candidate on the **first** occurrence and cools the candidate after 3 in a row; when it is the last answer the loop saw, that 400 is returned rather than a 529, so a request every candidate refuses still surfaces. Measured 2026-09-27: `opencode-deepseek-v4.1-flash@none` answered **10 of 10** real Claude Code subagent requests with a 400 whose body was empty or `{"model":"deepseek-v4.1-flash"}`, killing each agent, while ~30 hand-built requests to the same candidate (up to ~318k tokens, a long `metadata.user_id`, every awkward tool-schema keyword, 129 tools, a Claude Code-shaped body with betas) all returned 200. **The trigger is still unidentified.** Every terminal 400 is logged with its alias, candidate, status and the first 200 bytes of its body.
-- **`SONATA_CAPTURE_400_DIR` records what a candidate refused.** Set in `sonata serve`'s environment, it makes the router write the outbound body of every 400 a tier candidate answers — the request exactly as that candidate received it, plus the start of its answer — to one 0600 file per refusal, named by timestamp and candidate. It exists because the message-less 400 above could not be reproduced by hand, and the router otherwise logs no request bodies; it is **off by default because those bodies hold whole conversations**, and should be unset again once the shape is found.
-- **A conversation keeps the candidate that served it, and survives losing it.** Per-request candidate choice is right for one request and wrong for a conversation: a transcript carrying one model's extended-thinking blocks handed to another is rejected outright (`The content[].thinking in the thinking mode must be passed back to the API`), which killed multi-turn agents mid-task and read as a defect in their own work (observed twice 2026-09-13, issue #30). `conversationKey` hashes the first message — the one part of a transcript that does not change as turns are appended — with the tenant and alias, and the candidate that served it moves to the front of the ranked list on later turns. It is a **preference, not a pin**: its cooldown still applies, so a candidate that has genuinely failed is still skipped. `stripForeignThinking` is what makes that switch survivable, dropping `thinking`/`redacted_thinking` blocks whenever any *other* candidate has served that conversation key — a set that only grows, because a switch leaves the earlier model's blocks in the client's transcript for every later turn, and because two agents that opened with identical text share one key and cannot be told apart (a collision therefore strips rather than forwarding foreign blocks) — on **both** transports, including `direct`, whose byte-identical contract exists to echo vendor state back to the vendor that issued it, which is exactly what has stopped being true at that moment. Assistant text and tool_use survive; an assistant turn left with no content is dropped, since an empty content array is itself a 400. Bounded at 1000 conversations / 2h, oldest-touched evicted first.
-- **A tool call with no name is repaired, not forwarded** (`repairNamelessToolCalls`, `src/native/router.ts`, #66). A model can emit one — measured 2026-09-25, mimo-v2.6-pro through OpenRouter split one call's arguments into a second call named `""` — and Claude Code then runs it ("No such tool available") and replays it on every later request. OpenAI-format validation refuses a nameless call outright, so every LiteLLM candidate answered 400, and the 400 was correctly final: falling back would only have sent the next candidate the same invalid transcript. Two `code-normal` agents died on their next turn. The router now rewrites such a call, and the result answering it, as text notes before any branch sees the body — on every transport, since the transcript is invalid for any upstream — keeping surviving tool_results at the front of their turn as Anthropic requires. A body with nothing to repair is the same buffer, so healthy requests stay byte-identical. Verified live: the broken shape reproduced the exact 400 through the running router; the repaired body returned 200.
-
-## Native path
-
-The native path runs foreign models inside Claude Code's own loop, tools, and permission modes through a local routing proxy. The harness path instead runs the foreign model's own loop in OpenCode, Codex, Pi, or Reasonix.
-
-Its `[native]` config surface describes foreign `models`, `gateways`, and their `ports`; native model keys reach a role either through a unified `[models]` entry's `gateway`, listed in `[tiers.<role>]`, or (for a legacy config not yet migrated) `[generate.native]`. `sonata serve` runs the router, plus a managed LiteLLM child when — and only when — some routable model's gateway needs translating; `sonata code` launches a Claude Code session routed through it. `sonata route on` achieves the same routing for every plain `claude` launched in the project: it writes the routing `ANTHROPIC_BASE_URL` env into `.claude/settings.local.json` and installs a SessionStart hook (`hooks/ensure-serve.mjs`) so the router comes up like `sonata code` does — no wrapper needed. The Remote Control loss below then applies to every session in the project, not just wrapped ones, until `sonata route off`. Nuance, observed live 2026-08-25 on Claude Code 2.1.x: the Remote Control gate reads the base URL at session launch, but the settings `env` is picked up per-request — so a session already running when `route on` was issued keeps Remote Control *and* routes native agents (proven: a native-explore dispatch from such a session logged `-> litellm` on the router). Sessions launched after `route on` lose Remote Control as documented. The pickup is one-way: `route off` (also probed live) cleans the file for future sessions, but an already-routed session keeps sending through the router until restarted — the exported env survives the key's removal, so until then that session depends on the router staying up. `sonata route auto` turns that asymmetry from a curiosity into the supported way to route without losing Remote Control — see the command list above.
-
-**Tenancy: one router, every project.** A *tenant* is a resolved `sonata.toml`
-— a project's own, or the machine config — identified by the first 12 hex of
-sha256 over its **realpath**. `TenantRegistry` (`src/native/tenants.ts`)
-resolves a request in one order, first hit wins: the `x-sonata-project` header
-(honoured only beside `x-sonata-token`, matching the 0600
-`~/.config/sonata/router-token` — naming a project picks whose credentials
-serve the request, and the router authenticates nobody on loopback; an
-unauthorised hint is dropped and logged, never refused)
-(written into settings `env` as `ANTHROPIC_CUSTOM_HEADERS` at project scope by
-`nativeSessionEnv`, and picked up by a running session because Claude Code
-re-applies project `env` when the merged env changes); then `sessions.json`,
-keyed by `x-claude-code-session-id`; then the machine config, which is what a
-bare curl or an unregistered session gets. The header is **stripped before
-forwarding on every path** — a foreign upstream has no use for a local
-directory name, and an Anthropic request must stay byte-identical.
-
-Everything config-dependent in `RouterDeps` takes that tenant: tier resolution,
-gateway lookup, budget, pricing, credentials, and the ledger row's `project`.
-Cooldowns and capability-400 counters key off `<tenantId>/<key>`, so one
-project's failing candidate never cools another's. **The realpath is
-load-bearing**: on the first live run one config was registered as two tenants
-(`/var/…` and `/private/var/…`, macOS symlinking `/var`), which duplicated its
-LiteLLM entries, fired a needless restart, and split its cooldowns and budget
-across two ids. Canonicalising is best-effort — an unresolvable path keeps its
-spelling rather than throwing, because improving identity must never turn a
-working resolution into a failure.
-
-Four failures are shaped deliberately, and none is written to the ledger: a
-cwd with no config anywhere and a config that will not parse are **400**s
-naming the paths or the parse error (the request is not the router's fault); a
-tenant needing LiteLLM while the venv is unhealthy is a **502** naming `sonata
-litellm install` (and litellm candidates are skipped *without* cooling while it
-is unavailable, so a repair is picked up by the next request); a cap reached is
-a **429** naming the file that set it. A request carrying a session id while
-`sessions.json` has never been read successfully (the latest read failed, and
-there is no earlier good read to answer from) is also a **400**, saying to
-retry: "no record" would otherwise serve it as the machine tenant, with that
-config's credentials and budget. A ledger row records a request the
-router forwarded, so a refusal has no place in it.
-
-**LiteLLM is conditional and managed.** `litellmRequired` (`src/native/providers.ts`) asks whether any
-routable model — every `[models]` entry and every legacy `[native.models]` one, not just tier members,
-since a request naming a bare model key never calls `resolveTier` — sits on a gateway whose transport is
-`litellm`. When none does, `serve` starts no child, needs no port, and needs no Python. When one does,
-sonata runs its own venv at `~/.config/sonata/litellm`, pinned to exactly `1.98.0` — the version every
-LiteLLM behaviour recorded in this file was measured against. `init` installs it, `doctor` reports which
-of six states it is in, and **`serve` never installs**: `hooks/ensure-serve.mjs` starts serve headless
-from a SessionStart hook, where a silent multi-minute install is indistinguishable from a hang. A PATH
-`litellm` is reported as information and never used — measured on the development machine, `which
-litellm` resolves to a script whose interpreter cannot `import litellm`.
-
-Sonata implements no OAuth itself; it drives LiteLLM's own authenticator as a subprocess, so no token passes through sonata's process memory. A login needs neither the codex CLI nor a prior `codex login`: LiteLLM's authenticator is a self-contained HTTP client, and the Codex OAuth app id is compiled into it. The login script calls `get_access_token()`, never `_login()` — only the former persists the token, while `_login()` starts a second device flow against an empty directory.
-
-For Copilot, `api-key.json`, written by `get_api_key()`, proves entitlement. A bare `ghu_` token proves nothing: LiteLLM's Copilot credential is a GitHub App token with no OAuth scopes, while opencode's stored `gho_` token has only `read:user` and cannot be exchanged for a Copilot key. These are different credential kinds and remain distinct sources. Copilot's device flow polls for 60 seconds; ChatGPT's polls for 15 minutes. Copilot makes up to three attempts total, each with a fresh code.
-
-The `sonata` credential source points LiteLLM's token directory at `~/.config/sonata/credentials/<gateway>/`, so refreshes persist across runs. The old temp-directory approach silently discarded every refresh; Copilot's `api-key.json` is short-lived and re-exchanged in place, so persistence is load-bearing. Never pass `api_base` for Copilot: `get_api_base()` reads `endpoints.api` from `api-key.json`, and business tenants have different endpoints.
-
-**A harness-sourced ChatGPT token has exactly one writer once LiteLLM runs: LiteLLM.** For a `codex-oauth` gateway reading codex's or opencode's store, serve copies the token only into a **new, empty** directory it creates for a LiteLLM spawn (`seedTokenDirs`, `src/commands/serve.ts`), never into one a running LiteLLM uses. A crash respawn, or a restart for any other reason, reuses the directory as LiteLLM left it. LiteLLM refreshes `auth.json` in place with `open("w")` and ChatGPT rotates refresh tokens, so rounds 5–8 of review each found a new hole in "sync the store's copy in, newer wins" (an opencode v2 row has no `account_id` and always looked like another account, reviving `refresh_token_reused`; a re-merge overwrote LiteLLM's half-written file). Do not reintroduce a live sync. What restarts LiteLLM into a fresh directory is a **lineage change** — `chatgptLineageChanged`: another store (`resolvedOauthIdentity`'s spelling), or another account where both sides name one (`chatgptAccountId`: the record's `account_id`, else the JWT's `https://api.openai.com/auth.chatgpt_account_id` from the id token else the access token — the order LiteLLM's `get_account_id()` uses), or a login returning after positively going away — "gone" meaning the store the seeded login came from positively holds none (`chatgptGone`) — never a store that could not be read or was skipped for staying unreadable, which says nothing about the login it holds — keyed on the login and never the gateway's name, and for opencode.db's "empty twice" only once a later build reads empty too (the first such read refuses the request but keeps the gateway's LiteLLM config and seed — a `tentative` failure). Unknown→known is not a change. It rides the ordinary model-change restart: `litellmPlanSnapshot` names the seed *generation* a spawn would use, which moves only on a lineage change, so a same-account re-login or a store refreshing itself restarts nothing. A retired directory is removed only once every child spawned into it has been seen to exit, and a crash respawn is serialised with deliberate restarts: a restart that goes ahead cancels a pending crash respawn, a crash respawn waits for a model-change check in flight and spawns only if nothing replaced the crashed child, and a restart of a child whose exit was already observed neither signals nor waits on it. **Known limitation:** a login LiteLLM can no longer refresh (sessions revoked server-side, or its refresh token spent by another client) needs a re-login and `sonata restart`. LiteLLM 1.98.0 never reports that refusal to its caller — `get_access_token` logs "re-login required" and falls into a device-code login polling for fifteen minutes — so serve scans LiteLLM's output for that warning or the device-code prompt (`LITELLM_CHATGPT_LOGIN_REFUSED`, anchored on the lines as LiteLLM writes them — the warning after its `HH:MM:SS - LiteLLM:LEVEL: file:line - ` log prefix, colour codes optional, or as a JSON log line's `message`; the prompt at the start of its line — never on the phrase anywhere, since echoed request bodies pass through the same scanner), and the router's responses for how that login ends — read only for a candidate on a codex-oauth gateway (`isCodexOauth`), and matched against the envelope's `error.message` anchored at its start (`CHATGPT_LOGIN_REFUSED`, `src/native/router.ts`), never anywhere in a body, since an api-key gateway's own "re-login required" 401 used to take every ChatGPT gateway down. Measured through a real 1.98.0 proxy, that response is a **400** — `litellm.BadRequestError: GetLLMProvider Exception - ` then `litellm.AuthenticationError: Polling failed: …` / `…: Timed out waiting for device authorization` / `Failed to request device code: …` (`tests/fixtures/litellm/chatgpt-refresh-refused-proxy.json`; the messages as raised are in `chatgpt-refresh-refused-errors.json`) — which the router did not read at all until 400 was added beside 401 and 500. Either marks every codex-oauth gateway — all served from the one token directory — so `gatewayUnavailable` answers a named 502 at once, and logs the remedy once. That includes the request whose response showed it: `forwardToLitellm` marks such a response `loginRefused`, and the tier loop tries the next candidate, counting it as not served, so a tier left with nothing answers the same named 502 (`loginRefusedMessage`, serve's `gatewayUnavailable` text) — and so does a bare key — with no ledger row; returning LiteLLM's raw 400 instead ended the tier on a candidate-specific failure. **The detecting request cools nothing when serve's mark now covers the gateway**: the tier loop re-checks `gatewayUnavailable` after telling serve, and when it answers, the mark already skips the gateway and governs recovery — a 60 s cooldown on top outlived the mark's clearing and answered a new login 529. With no mark resulting (no serve to tell), the candidate and its gateway cool as for an unservable 400. The router also records the token directory a ChatGPT request was forwarded into (`chatgptTokenDir`) and passes it to `chatgptLoginRefused`: a refusal arriving after that LiteLLM was replaced by a new login neither marks nor cools the new child (the output scanner's own guard is `child === spawned`). **A crashed child stays the current one until its respawn replaces it**, and its directory is kept with it (`sweepRetiredTokenDirs` never removes the current child's `childTokenDir` entry): a refusal it gives in that window — stdout buffered past its exit, or a response to a request forwarded to it — is its own, and is marked on its directory. Sweeping that entry on its exit marked such a refusal with no directory, which "a different directory clears" then cleared on a same-directory restart serving the refused token, and dropped a response as "replaced". A mark that knows no directory at all is never cleared by a spawn — no spawn's directory can be told apart from it — and stays until `sonata restart`. The mark is keyed on the refused **token** (`chatgptTokenHash`: sha256 of the child's `auth.json` `refresh_token`, else `access_token`), never on the file's stat, and keeps the directory the refused child served. The token is read at mark time; a read that lands mid-write or finds no token is retried at later checks for `REFUSED_TOKEN_CAPTURE_MS` (1 s) only, then never (`refusedToken`) — reading on indefinitely caught a sonata-owned re-login written into that same directory as "the refused token" and kept the mark on it. A deliberate spawn clears the mark when **(a)** it starts LiteLLM on a different directory from the refused one — a lineage change, seeded fresh — whether or not a token was captured, or **(b)** on the same directory holding a readable token that differs from the captured one — a sonata-owned login rewritten by `sonata auth login`. The same directory with no token captured keeps it; `sonata restart` is the remedy. A crash respawn, a restart for anything else (a model-list edit), a restart with no ChatGPT gateway at all (no directory, which says nothing), and LiteLLM's own rewrite of `auth.json` to record `device_code_requested_at` all keep it; a fresh process (`sonata restart`) starts without it. Doctor says it beside each ChatGPT gateway.
-
-**An unreadable credential store is "torn" only while it may be mid-write** (`boundUnreadable`, `src/native/credential-reads.ts`). For a file whose bytes can be read — what failed is their parse — that is judged by content, never by time: `boundUnreadable` compares a hash of the bytes the read parsed (`StoreRead.contentHash`, set by `jsonStoreRead`) — never a second read of the file, which could find a valid file renamed into place in between and compare valid bytes — and a read is torn only while they differ from the previous failed read's, or were first seen less than `TORN_REPEAT_MS` (1 s) ago. A writer does not hold one partial state for a second, so the same bytes 1 s apart are stuck and skipped — however fresh the file's mtime (something touching it without changing it) and however long ago it was last read; different bytes are a new write and torn again, however long the file was quiet. Neither mtime (beyond a file's first sighting, below) nor a gap between reads counts: mtime could not tell a file being rewritten from one being touched, and a gap rule read a touched broken file as torn again after every quiet spell. **Known limitation:** a file rewritten with different unparseable bytes on every read stays torn for as long as that goes on — nothing on disk tells it from a writer mid-write, and the first read of new broken content is torn — unless it is the file's first sighting with a stale mtime, below — costing a refusal for every request within the following second (`TORN_REPEAT_MS`), not just one, before it is skipped: measured, a burst of requests ~0.2 s apart was refused for the first 0.7 s and served from 0.9 s. Bytes seen for the first time — no failed read on record — count from the file's mtime only when it is at least `FIRST_SIGHT_STALE_MS` (5 s) in the past, else from now: a file corrupt since before serve started, last written over 5 s ago, is skipped on its first read and costs no refused request; mtime counts only for that first sighting, never after. The margin rests on an assumption — a write in progress is never dated more than a few seconds back — sized for FAT's 2 s mtime granularity plus a file server's clock lagging the host's; counted from any mtime earlier than now, a torn codex file dated 1.5 s back was skipped on its first read and opencode's account served. A first-sight skip is logged as the file's age ("has not been modified for Ns"), never as "the same unparseable content for Ns", which only real observations may claim. A file whose bytes cannot be read at all (EACCES, EISDIR) has nothing to compare and is torn for `UNREADABLE_STORE_WINDOW_MS` (10 s) from its first failure, with no gap reset — nothing rewrites a file into EACCES. That run is timed apart from any unparseable bytes on record (`errorSince` beside `hash`/`since`): a read error returns no bytes, so it says nothing about them, and replacing their record with it made one EMFILE between two reads of the same stuck bytes count them as first seen and torn for another second. opencode.db keeps its own rule: it counts only for the first window of a run of failed queries, and its run is **not** ended by a gap — its length is the only evidence there, and a database locked for good but read once a minute would otherwise never be skipped. Past it the store is skipped as absent — logged once, naming path and error. **Each store is read once per build, and the classification and the parse share that read** (`withReadSnapshot`, `src/native/read-snapshot.ts`, opened around the gateway merge and `resolveChildEnv` together; the merge that decides LiteLLM's model list, `servableTenants`, runs in a snapshot of its own and so can read a store again — a disagreement there leaves the build uncommitted and is repaired by the next request's rebuild): inside it every `readOnce(path)` returns the first read's bytes or error, and opencode.db's `opencodeDbRead` count and `readOpencodeCredentials` parse come from one `queryCredentialRows`. They used to be separate reads, so a codex write landing between `jsonStoreRead` (clean: the store answered) and `readCodexOAuth` (torn: no login) read as a logout — `chatgptGone`, "logged in again", LiteLLM killed and reseeded. The scope is a module variable, so it takes synchronous functions only; `opencodeDbRead`'s deliberate second count on an empty table stays a fresh connection. **A skipped store reads as absent, and resolution goes on from the stores that remain — with one exception: the store the lineage's last-good credential came from.** `resolveChildEnv` records that store with each last-good entry (`CredentialMemory.lastGoodSource`: the last store in the lookup chain, which ends at the one that answered), and a gateway whose source is the skipped store keeps its last-good credential and ChatGPT seed (a `transient`, logged): that store not reading is not a logout, its lineage does not end, and the file reading again restarts and re-seeds nothing. A credential from any *other* store is not kept through it — keeping it there pinned a key rotated or removed in opencode while `keys.json` was skipped, and kept opencode's ChatGPT account through an opencode logout while codex's `auth.json` was skipped. A default ChatGPT gateway's identity in `mergeGateways` follows the same rule (kept through a skipped codex file only when it was `codex store`). A gateway that has never resolved falls through, so a permanently corrupt, empty or EACCES `~/.codex/auth.json` on a fresh gateway reaches opencode's login instead of answering 502 forever. A build that read anything as torn is never committed (and forgets the last committed fingerprint), so the next request really retries. The plan fingerprint's stat signal carries each store's inode, mtime, size and **mode**, so a `chmod` — which moves no mtime — is re-read on the next request; opencode.db's signal is its credential rows' hash, which a `chmod`, `chown` or ACL change does not move (an ACL change moves not even the mode), so the database's **ctime** is added to it. ctime also moves on opencode's own writes to the main file (a checkpoint, in WAL mode); that costs a re-merge and no restart unless a credential changed — measured, 20 checkpointed and 20 rollback-journal writes to an unrelated table spawned nothing. `sonata doctor` warns, naming the file.
-
-There are two deliverables: (A) `sonata serve`/`sonata code` for a complete local routing path, and (B) the `claude` harness adapter for dispatching foreign-on-Claude-loop through `sonata dispatch`.
-
-**A gateway declares how it authenticates.** `auth = "api-key"` (the default, so existing configs are unaffected) sends a stored bearer to `base_url`. `auth = "codex-oauth"` uses the ChatGPT subscription credential written by `codex login`, and takes **no** `base_url` — parsing refuses one, because that credential is refused by the metered `api.openai.com` with `insufficient_quota` *after* passing auth and scopes, and reaches only `https://chatgpt.com/backend-api/codex`. A subscription is not API credit; a config naming the metered URL authenticates and then 429s, which reads as a missing key. LiteLLM's `chatgpt` provider handles that endpoint, the Responses wire API, the mandatory streaming, and token refresh, so sonata emits `model: chatgpt/<id>` with `model_info.mode: responses` and **no** `api_base`/`api_key` — passing either overrides the provider and breaks it. Without `mode: responses` LiteLLM POSTs to the bare `backend-api/codex/` URL and gets a Cloudflare HTML page. Non-streaming calls hit an open upstream bug (BerriAI/litellm#25429) that streaming clients — Claude Code included — never reach. Full detail in `docs/guide/codex-subscription.md`.
-
-**`auth = "copilot-oauth"`** uses opencode's GitHub Copilot login and emits `model: github_copilot/<id>` — no `mode` override, because Copilot speaks chat-completions. `serve` writes the `gho_` token to `access-token` and sets `GITHUB_COPILOT_TOKEN_DIR`; LiteLLM exchanges it for a Copilot key. **That exchange usually fails**: opencode's token carries scope `read:user` only, so GitHub answers `copilot_internal/v2/token` with 403, LiteLLM drops the deployment, and the request fails as "no healthy deployments" naming neither cause. So `init` and `doctor` check the `copilot` scope first (asking GitHub, failing closed) and refuse to offer models the credential cannot serve.
-
-**One OAuth credential is offered as one provider.** opencode's `openai` entry is the *same* ChatGPT credential codex holds (identical `client_id`, which is how `oauthProvidersFor` recognises it), so both resolve to `codex-oauth`. Offering both let one subscription be configured as two gateways serving overlapping models under different keys (`gpt-5.6-luna` and `openai-gpt-5.6-luna`), doubling the generated agents for no added capability. `dedupeOauthProviders` (`src/commands/init.ts`) keeps the canonical provider per OAuth kind (`codex-oauth` → `codex`, `copilot-oauth` → `github-copilot`) — but only when that one is actually offered, so a machine with opencode and no codex still reaches ChatGPT through `openai`. It runs *after* the BYOK block, since that filter skips any name already in `offered` and would otherwise re-add the hidden provider as a BYOK row.
-
-**opencode.ai routes by a session header, and LiteLLM drops it unless told otherwise.** OpenCode Zen (`opencode.ai/zen/v1`) and Go (`opencode.ai/zen/go/v1`) answer any request that names no conversation with 400 `MissingSessionID` ("Request is missing x-opencode-session and cannot be routed efficiently"). Claude Code's own `x-claude-code-session-id` is accepted in its place, but LiteLLM forwards no client header by default, so the upstream saw neither and **no native request to an opencode.ai gateway ever succeeded** — the ledger held 30 such requests on 2026-09-26, every one a 400. Three pieces fix it, each necessary:
-- `litellmConfig` lists every model on an `opencode.ai` host under `litellm_settings.model_group_settings.forward_client_headers_to_llm_api` (`requiresSessionHeader`, `src/native/providers.ts`). Keyed by **host**, since a gateway may be called anything; scoped, never global, because forwarding hands the upstream every client `x-*` header.
-- The router sets `x-opencode-session` on every LiteLLM request (`withSessionHeader`, `src/native/router.ts`): the conversation key, which is stable across a transcript's turns and distinct between two subagents of one session, else Claude Code's session id. It then **drops every other client `x-*` header** — read the session first, strip after — so nothing but the session reaches opencode.ai (a CodeRabbit security finding on PR #69). Nothing on the LiteLLM path reads the dropped headers; the router takes its own session from the incoming request.
-- `UNSERVABLE_400_SIGNATURES` (`MissingSessionID`) is the backstop: such a 400 falls through on the **first** occurrence and cools the whole gateway. `CAPABILITY_400_SIGNATURES` wait for three in a row because a shape-specific 400 might be the request's fault; a refusal of *every* request is proof the first time, and waiting kills two agents to learn it. Without this, a tier ranking an opencode.ai model first killed every agent that reached it — including ones already running when the model above it hit a 5xx, which is how a six-agent audit died whole.
-
-Verified end to end through a scratch LiteLLM 1.98.0 on the generated config: `/v1/messages` 400 without the header, 200 with it. The Anthropic-shaped `/messages` endpoint is no escape: MiMo answers it `ModelProtocolUnsupported`.
-
-**`init` must never offer a model the router cannot reach.** Copilot, acme and anthropic all serve Claude models, and the router sends `claude-` upstream, so `parseConfig` refuses those ids — 27 such candidates were being offered, and selecting one wrote a config that then failed to load. `isAnthropicRoutedName` is the single definition, used by both the parser and the candidate filter.
-
-**The router port's occupant is usually sonata.** `sonata run`/`sonata dispatch`
-auto-start `sonata serve --daemon` when the router is down, so a prior dispatch
-can leave a daemon holding the port long after that dispatch ended. `serve`
-after that hits `EADDRINUSE`, and its old message called that "a non-sonata
-listener", sending the user to hunt a foreign program that did not exist.
-`occupiedPortMessage` asks the health endpoint first, which costs one request
-and makes the message true.
-
-**Serve state stays keyed by router port**, `serve-state-<port>.json`, even
-though there is now one daemon per machine rather than one per project. The key
-costs nothing, keeps the legacy fallback readable, and the reasoning it came
-from is worth keeping because it is what the multi-tenant router replaced: a
-project with its own `sonata.toml` used to get its own ports and therefore its
-own daemon, since the router resolved tiers with `loadConfig(<daemon cwd>,
-home)` and a shared daemon would have served every project the config of
-whichever directory started it. That is exactly the constraint per-request
-tenant resolution removes. With a single global `serve-state.json` those daemons overwrote
-each other field by field: measured live on 2026-09-03 with two routers up
-(:4100 pid 53992 and :4110 pid 72171, litellm children 73032 and 72298
-respectively, confirmed by ppid), the one record read
-`{routerPid: 72171, litellmPid: 73032}` — the *second* router paired with the
-*first* router's child. `sonata restart` in either project would have killed
-one daemon's router and the other's litellm, which reads as the surviving
-project suddenly 502ing on every native request. `readServeStateFrom` still
-falls back to the legacy unkeyed path, read-only, so a daemon started before
-this change stays stoppable across the upgrade, and clears whichever file it
-actually read rather than both.
-
-**`sonata restart` clears that occupant instead of just naming it.** `cmdServe`
-records `process.pid` as `routerPid` in `serve-state-<port>.json` once the
-router successfully binds. `stopServe` reads that file, kills only the pids sonata
-itself recorded (never a pid found by scanning the OS — the same discipline as
-the pre-existing litellm-orphan kill), and polls the health endpoint until the
-port actually frees before returning. `cmdRestart` runs that then
-`startServeDaemon`. If the port answers as a sonata router but the state file
-has no matching pid (a different sonata install, state left by an older
-version, or a live record damaged by LiteLLM startup), `stopServe` refuses
-rather than guessing — same principle as `occupiedPortMessage`. The old
-`killRecordedOrphan` unlinked the whole per-port file: the first request that
-started lazy LiteLLM, or a `serve` that lost the bind race after touching the
-file, could leave only `litellmPid`, so several `restart` attempts could refuse
-until someone killed the stale pid by hand. Shared-state cleanup now happens
-only after this process owns the port, which makes the losing instance harmless.
-
-**`serve` watches its own LiteLLM child and respawns it if it exits on its
-own** (`cmdServe`, `src/commands/serve.ts`) — the child dying used to go
-unnoticed until the next request 502'd and someone ran `sonata restart` by
-hand, with the router staying up and answering every request with a dead
-upstream in the meantime. A crash-loop guard (5 respawns/60s by default) stops
-trying and logs why rather than respawning forever against a genuinely broken
-gateway. This is safe in a way an *external* health-probe respawn is not:
-there is only ever one spawn racing here, never a second `serve` guessing
-whether an existing one is healthy.
-
-**The router logs which upstream served each request** — `POST /v1/messages
-model=gpt-5.6-terra -> litellm`. `serve` never passed a `log` before, so that
-line had never produced output, and LiteLLM's access log records the path and
-status but not the model. That left "did this native agent really run on the
-foreign model, or fall back to Claude?" answerable only by inference. It is now
-evidence: a `claude-`-prefixed model logs `-> anthropic` and never reaches
-LiteLLM at all, so a foreign-model line in `serve`'s log is proof of routing.
-
-**Claude Code's `system` array must be flattened for codex.** Claude Code always
-sends `system` as an array of text blocks. LiteLLM turns a *string* system prompt
-into a `developer` message the Codex backend accepts, but leaves block arrays as
-role `system` — and that backend answers `{"detail":"System messages are not
-allowed"}`, a 400 naming neither the field nor the shape, so it reads as a model
-or auth problem. Probed directly: a string system prompt streams fine, the
-identical text as a one-element array 400s, an empty array is accepted.
-`flattenSystemBlocks` (`src/native/router.ts`) joins the blocks with blank lines
-on the **litellm path only** — an Anthropic request stays byte-identical, since
-Anthropic understands its own shape. `cache_control` is dropped with the block
-wrapper, costing prompt caching on this path; the alternative is a request that
-cannot be sent. A non-text block (an image) has no string form, so the body is
-passed through unchanged rather than silently losing content. Verified live: the
-model obeys the flattened prompt, not just accepts it.
-
-**And mid-conversation system turns are demoted on that path — this was the
-hole.** Claude Code 2.1.266 sends "system turns" as a `role: "system"` entry
-inside `messages` (Anthropic accepts them). Neither `flattenSystemBlocks` nor
-`supports_system_message: false` looks at `messages`, which is why the pair
-was measured necessary but not sufficient on 2026-09-03. Captured 2026-09-09
-through a logging proxy (`messageRoles: ["user","system"]` on a session's
-first request) and probed directly against the live LiteLLM child: string
-`system`, no system turn → streams; same request plus a system turn → 400.
-`demoteSystemTurns` (`src/native/router.ts`) rewrites each such turn to
-`role: "user"` — the role LiteLLM's own `map_system_message_pt` demotes to —
-content and position untouched; `litellmBody` is now `demoteSystemTurns ∘
-sanitizeToolSchemas ∘ flattenSystemBlocks`. Verified live on a scratch daemon
-before the 4110 router was restarted onto it. Note LiteLLM 1.98.0 reads
-`supports_system_message` from `litellm_params`/kwargs (`main.py`), not from
-`model_info` where sonata writes it — so that declaration has never had an
-effect; it is left in place pending its own fix, since the demotion makes the
-question moot for the shape that actually failed.
-
-**Tool schemas are repaired for the regex dialect on the same path.** A tool
-schema may constrain a string with `\p{Cc}`-style Unicode property classes —
-the case that surfaced this was the Artifact tool's `field` parameter, sent to
-every write-capable agent.
-JavaScript and Anthropic accept those; an OpenAI-style endpoint validates each
-tool's parameters as JSON Schema with `format: regex`, and the reference
-validator runs that on Python's `re`, where `\p` is a *bad escape* — so Azure
-answered a `code-simple` request with 400 `'…' is not a 'regex'`
-(`tools[1].parameters`) and the agent died on its first request (reported
-2026-09-09 from another project; reproduced against `python3 -c
-"re.compile(...)"`). Read-only roles never hit it only because their agents
-carry an explicit `tools:` allowlist that omits Artifact. `sanitizeToolSchemas`
-(`src/native/router.ts`) strips exactly those patterns and nothing else, and
-`litellmBody` is the one transform both litellm forwarding paths take
-(`sanitizeToolSchemas ∘ flattenSystemBlocks`), so they cannot drift. An
-Anthropic request stays byte-identical; the direct path is a pass-through by
-contract. Giving write roles an allowlist instead was rejected: it would drop
-fan-out for the roles that use it, and any future tool with the same shape
-would break the same way.
-
-**Claude Code 2.1.268 fixed that Artifact schema, and the transform stays.**
-The upstream fix covers the tools Claude Code itself ships. A tool contributed
-by an **MCP server** can carry the same pattern, reach the same validator and
-fail identically — sonata forwards those schemas untouched otherwise — and
-sonata is installed from npm against whatever Claude Code the user already
-has, so a session on 2.1.265–2.1.267 still sends the old schema. Because
-`sanitizeToolSchemas` walks every tool rather than a named one, it covers both
-cases without knowing about either, and it returns the identical bytes when
-there is nothing to strip. Reverting it would trade a per-request JSON parse
-for a 400 that reads as a model or auth failure.
-
-**Flattening alone is not enough: the codex model is also declared
-`supports_system_message: false`.** The Codex backend refuses *any* `role:
-system` message — not merely the block-array shape — with
-`{"detail":"System messages are not allowed"}`, and LiteLLM's chatgpt provider
-does not normalize it: BerriAI/litellm#22968 reports exactly this, and its fix
-(PR #22967) was **closed without merging**, so 1.98.0 still emits the rejected
-role. Observed live 2026-08-28: a tier request the router had already flattened
-(`model=sonata-code-complex -> gpt-5.6-terra -> litellm`) still 400'd. The
-declaration (`src/native/litellm.ts`) routes the prompt through LiteLLM's own
-`map_system_message_pt` instead. The two fixes are a **pair**: that helper
-concatenates onto message content and raises `can only concatenate list (not
-"str") to list` on Claude Code's block arrays (BerriAI/litellm#32904), so
-flattening to a string first is what keeps this off its crash path. Neither is
-sufficient alone, and it is declared only for codex-oauth — an api-key gateway
-takes a system message fine, and folding it there would degrade the prompt for
-nothing.
-
-**ChatGPT's Codex endpoint returns `output: []` under concurrent load, which LiteLLM surfaces as a 500.** When 8+ native agents dispatched simultaneously hit the same `codex-oauth` gateway, the upstream accepts the requests (no 429) but returns empty completions. LiteLLM's Responses API transformation (`transformation.py`) raises `ValueError: Unknown items in responses API response: []` and the proxy emits 500. The router (`src/native/router.ts`) catches 500 responses from LiteLLM whose body contains that string and re-emits them as 529 (overloaded) — Claude Code treats 529 as a retriable backpressure signal rather than a hard fault, so the turn is retried automatically. The match is string-level because the body is LiteLLM's rendered exception, not a structured field. LiteLLM 1.97.0 added an SSE recovery attempt for this case but still raises when recovery fails, so the router catch is still needed.
-
-**A gateway declares its `provider`, and the transport is derived from it.**
-`provider` supersedes `wire_format` (which still parses, and is folded into
-`provider` at load) because the real axis is *which LiteLLM provider* — LiteLLM
-picks its wire format from the prefix on `litellm_params.model`, so this one
-decision determines whether a request reaches a vendor's native API or a
-compatibility shim. `PROVIDER_FOR_GATEWAY` (`src/native/providers.ts`) carries
-the prefix for gateways whose endpoint has been exercised, so a `google`
-gateway emits `gemini/<id>` rather than `openai/<id>`; `openai` is the fallback
-for the genuinely unknown, never the default for a known vendor. Transport is
-**derived, never configured separately** (`transportFor`): `provider =
-"anthropic"` with `auth = "api-key"` is reached **directly by sonata's own
-router with no LiteLLM in the path**, every other api-key provider goes through
-LiteLLM as `<provider>/<id>`, and an OAuth gateway's dialect is fixed by its
-auth. Two keys that can disagree is the shape of the item-14 scope bug, where a
-writer and a cleaner defaulted differently and ids leaked forever.
-
-**The direct path is a third header mode, and that is a security boundary.**
-`forwardDirect` strips the incoming `authorization`/`x-api-key` and injects
-*that gateway's* key: the caller's credential is Claude Code's own Anthropic
-credential, and forwarding it to a third-party gateway is a leak. The body is
-passed through **unmodified** — no `flattenSystemBlocks`, so `cache_control`
-survives, and assistant content blocks round-trip byte-identical because
-`redacted_thinking` carries opaque vendor state (measured: Gemini's
-`thought_signature` through OpenRouter) the upstream requires echoed back
-exactly. Tier ranking, cooldowns, capability-400 fingerprinting, the 529
-exhaustion message and usage recording are upstream-agnostic and shared by both
-transports. `serve` resolves each direct gateway's key into a record the router
-reads per request — without it every direct forward goes out with an empty
-credential, which is how the transport shipped structurally dead until the
-`serve` wiring landed.
-
-**`serve` forwards every line of LiteLLM's output to its own.** A per-model startup failure appears only in LiteLLM's own output; discarding it is what turned a plain 403 into an unrelated-looking "no healthy deployments for this model". The child's stdout and stderr are piped rather than inherited only so serve can read them on the way (`pipeLitellmOutput`, `src/native/litellm-output.ts`): every line is written to serve's stdout/stderr as it was — a final line with no newline included — except that a device-code prompt's user code is masked — ChatGPT's `Enter code: ****` and Copilot's `… enter code **** to authenticate.`, case-insensitively — since that login would be LiteLLM's, into a directory serve discards. A sink that fails asynchronously (EPIPE: `sonata serve | head`) gets one no-op `'error'` listener and is written to no more, while the child's output is still read and scanned; unhandled, that event crashed serve and skipped its `stop()` cleanup.
-
-**opencode's OAuth entries are not API keys.** `opencodeKeys()` resolves `type: api` entries only, which is correct — but the `type: oauth` ones (`openai`, `github-copilot`) were then invisible, so doctor reported "no key" for a credential sitting on disk. opencode's `openai` entry is the *same* ChatGPT credential codex holds (identical `client_id`), so `readChatGptOAuth` prefers codex and falls back to opencode; the `client_id` is checked, because another OpenAI grant would fail confusingly inside LiteLLM. opencode writes `expires: 0` on the Copilot entry to mean "never expires".
-
-**opencode v2 keeps credentials in `opencode.db`, beside `auth.json`, and migrates nothing.** Read from opencode's own source (dev branch, 2026-09-25) because no v2 release existed to measure: the `credential` table holds plaintext JSON keyed by `integration_id` (the same ids as `auth.json`'s keys), `{"type":"key","key":…}` or `{"type":"oauth","access":…,"refresh":…,"expires":<epoch ms>}`; `connector_id`, `method_id` and `active` are dead columns, and the newest `time_created` wins. v1 and v2 coexist, so `readOpencodeCredentials` (`src/native/opencode-store.ts`) overlays table rows on `auth.json` per provider — table wins — and every opencode credential reader goes through it. The db is opened read-only and synchronously (`src/sqlite.ts`, `node:sqlite` loaded with `createRequire` so Node < 22.13 degrades to `auth.json` rather than failing). `sonata doctor` names the store a credential came from and warns — never fixes — when `opencode.db` is group/world-readable while holding credentials, since opencode writes it 0644 where `auth.json` is 0600. If the released v2 disagrees with the source this was built from, this is the paragraph that is wrong.
-
-**`serve` must clean up on signals.** It runs until killed, so its signal handlers *are* its normal exit path; without them the run's temp directory survives, carrying the generated master key and, for a codex-oauth gateway, the ChatGPT credential. One such token was found in the system temp directory. `ServeDeps.tempDir` exists so tests never write into the real temp directory — two 0600 files carrying a test fixture's gateway URL were found there after a suite run.
-
-Remote Control is the trade-off: `ANTHROPIC_BASE_URL` is process-wide, and `isFirstPartyAnthropicBaseUrl` gates Remote Control. Sessions launched by `sonata code` therefore lose Remote Control while routed through the local proxy.
-
-The `claude-` prefix is load-bearing because the router sends that prefix to Anthropic. Native model keys and ids beginning with `claude-` are refused at parse time. Credentials flow only store → memory → LiteLLM environment; keys are never logged or put in a Claude conversation. The user starts `sonata serve`: the classifier correctly blocks launching an auth-forwarding proxy from inside a session.
-
-The `claude` harness adapter is the simplest adapter: it runs headless `claude -p`, has no TUI, and maps permission modes directly. For native dispatches it assumes `sonata serve` is already running.
+See `docs/internals/limitations.md` (maintainer detail) and
+`docs/guide/limitations.md` (user-facing). Most relevant day to day: nested
+native agents have no recursion limit or per-run attribution; concurrent
+same-harness dispatches in one directory report usage `unobservable`; prompt
+detection is regex with `STALLED` as the backstop.
 
 ## Conventions
 
-- **Run `node scripts/pr-status.mjs <n>` the moment a PR is opened, and never merge on a
-  thread count alone.** CodeRabbit posts some findings as **plain issue
-  comments** rather than review threads, so a PR can report "0 unresolved
-  threads" while a P1 sits in the comment body — which is how a blocking
-  finding on #23 was nearly merged past. The script reads mergeability, CI
-  checks, threads *and* the latest bot verdict, exits non-zero unless all four
-  are clean, and reports "no recognisable verdict" rather than guessing when
-  the wording changes. **Keep `--watch=60` running for as long as any PR is
-  open** rather than checking back by hand: it prints only when something moves
-  and stops itself when every open PR is clean, so a quiet watch costs nothing
-  and a review landing two minutes after you stopped looking is not missed.
-  **An agent running it in the background adds `--until-change`**: a plain
-  watch ends only when every PR is clean, so a review landing *with* findings
-  is printed and the process keeps polling, and nothing wakes the agent. That
-  is how PR #65's findings sat unseen for two hours. Restart it after acting on
-  each change. Opening a PR is
-  not the end of the task — a review lands within a minute, and #48 was
-  reported as finished while carrying four unresolved findings and two failed
-  pre-merge checks. Its first run
-  immediately caught a failing CI check that a manual sweep had missed.
+Full text and history: `docs/internals/conventions.md`.
 
-- **Never request a re-review after fixing findings.** Push the fix, reply on
-  each thread saying what changed, resolve the thread — that is the whole
-  response. No `@coderabbitai review` comment: the reply and the resolve
-  already answer the finding, and a re-review request adds a round trip plus a
-  top-level comment to a PR whose threads are the record. The bot re-reads a
-  pushed head on its own where that matters. Resolving is not optional — a
-  finding fixed but left open reads as outstanding to the next reader.
-
-- **Close issues with a keyword, and name pull requests as `PR #n`.** GitHub
-  closes an issue when a merged PR's *description* carries `Closes #n` /
-  `Fixes #n` / `Resolves #n`; a bare `#n` only links it, which is how #41
-  stayed open through the PR that fixed it and had to be closed by hand. And a
-  bare `#n` meaning a *pull* request is read as a linked issue — on #48 that
-  produced an "out of scope changes" warning saying the PR did not implement
-  issue #45, when the description meant PR #45. Both habits live in
-  `.github/pull_request_template.md`, which is the only place they get read at
-  the moment they matter. A duplicate closes with
-  `gh issue close <n> --reason duplicate`, which records it as a duplicate
-  rather than as done; there is no built-in duplicate *detector*, and at this
-  repository's issue volume a bot for it would cost more than it saves.
-
-- **Non-trivial work goes through a PR; docs and trivial fixes may go direct to
-  `main`.** "Non-trivial" means anything touching money (pricing, the ledger,
-  `[budget]`), security, routing, or config parsing — the paths where a plausible
-  wrong value is worse than an error, and where a second reader is the control
-  that catches it. **CodeRabbit does not review this repository
-  automatically** — it skips repositories with fewer than 10 stars, saying so
-  in its own comment — so a PR opened here gets **no review at all** until
-  someone asks for one with a `@coderabbitai review` comment. That is what
-  `pr-status.mjs`'s "no automatic review on this repo — run one by hand" means;
-  it is an accurate reading, not a parsing failure, and it was misread as a
-  stale verdict for most of a session. It also narrows the standing
-  no-re-review rule below: that rule assumes the bot re-reads a pushed head on
-  its own, which here it never does, so a *first* review must be requested by
-  hand and a head pushed after a review stays unreviewed until it is.
-  Direct-to-`main`
-  stays fine for `CHANGELOG.md`, `docs/`, and one-line fixes. This is written
-  down because it was learned the expensive way: the models.dev pricing
-  overhaul (9 commits, +1302/-382, every one of them about how money is
-  counted) went straight to `main` unreviewed and had to be rewound onto a
-  branch afterwards to get a review at all.
-
-- **Batch work into omnibus PRs, and trigger the review only once everything
-  has landed.** Because this repository gets no automatic reviews (above), each
-  PR costs a hand-typed `@coderabbitai review` against a limited free-tier
-  allowance, so one PR carrying five changes buys five changes' worth of review
-  for one request where five PRs would have spent five. That is the whole
-  reason; it is a rate-limit adaptation, not a claim that large PRs review
-  better.
-
-  **The sequencing is the part that matters.** The bot reviews a *single head*
-  and will not refresh on its own, so any commit pushed after the trigger rides
-  in unreviewed. Measured: #52 was merged with its review two commits behind,
-  and #53 with one. Land every commit first, trigger once, then push nothing
-  but review fixes — and when a review fix *is* pushed, say so, because that
-  head is now unreviewed too.
-
-  **The cost is real and is accepted rather than denied.** A PR carrying five
-  unrelated changes is harder to review than five carrying one, and #52 was
-  already judged too broad at five while it was open. The mitigation is a
-  description that separates the changes and states what was verified for each,
-  not a claim that the size does not matter.
-
-- **Harness-specific knowledge stays inside its adapter** — never in the CLI or `sonata dispatch`.
-- **Evidence over inference** for harness behaviour: a captured fixture in `tests/fixtures/panes/` beats a plausible regex.
-- **The suite's tmux sessions run on a private server** (`tests/global-setup.ts`, a vitest `globalSetup`): its own `TMUX_TMPDIR`, `TMUX` removed, and a server started from its own config — `/bin/sh` panes with no rc files and `HISTFILE=/dev/null`, `exit-empty off` so sonata's plain `tmux new-session` always reaches it rather than starting one that reads `~/.tmux.conf`. Panes used to run the user's login zsh on the user's own server: a pane killed ~100 ms after creation could die holding `~/.zsh_history.LOCK` and make the next pane's zsh wait 10 s (the flaky pane-poll timeouts), the suite appended its keystrokes to `~/.zsh_history`, and two suites at once collided on fixed session names (each suite now has its own server; nothing else two concurrent suites share has been checked, so run them one at a time). `src/tmux.ts` is untouched on purpose: a real dispatch pane keeps the user's login shell, whose rc files carry the harness's PATH. `tests/tmux.test.ts` asserts the environment reached the workers.
-- **Tests need no API keys** — the suite runs against a fake harness (scripted binary replaying a normal run, a crash, a captured approval prompt, a hang the watchdog kills, a clean exit with no report, and a harness-written report).
-- Run `npm test` and `npm run typecheck` before opening a PR; CI runs both on Linux with tmux installed.
-- Escape control characters and keys everywhere they are written (TOML escaping) — see the duplicate-TOML-table and control-char fixes in git history.
-- **`sonata` on PATH runs `dist/`, not `src/`.** After changing anything under `src/`, `npm run build` or the global command keeps the old behaviour. Two bugs in this repo's history were "fixed" but still reproducing for exactly this reason.
-- **The launch wrapper must `fg` the harness, and must not redirect that `fg`.** `set -m` gives the harness its own
-  process group so the watchdog can kill the tree, but that group is then not the terminal's foreground group, so any
-  harness reading the terminal takes SIGTTIN and stops dead — pane frozen, process in state `T`, no exit sentinel,
-  killed at the run timeout. `fg %1 >/dev/null 2>&1` runs, reports success, and leaves the job stopped anyway;
-  only the unredirected `fg %1` actually hands over. Both verified against the same wrapper.
-- **`sonata dispatch` relays; it must never reason about or parse harness output.** It reads run state (`state`, `degraded`, `report`) from `cmdRun`/`cmdWait` and decides only whether to try the next ranked candidate — the same discipline the old MCP wrapper agent followed, now enforced by there being no LLM in that loop at all.
+- **PR status**: run `node scripts/pr-status.mjs <n>` as soon as a PR opens and keep `--watch=60` running while any PR is open (agents add `--until-change` and restart after each change). Never merge on thread count alone — CodeRabbit also posts findings as plain comments.
+- **CodeRabbit does not auto-review this repo** (under 10 stars): request the *first* review with `@coderabbitai review`. After fixing findings, push, reply on each thread, and resolve it — never request a re-review.
+- **Non-trivial work goes through a PR** — anything touching money (pricing, ledger, `[budget]`), security, routing, or config parsing. Docs, `CHANGELOG.md` and one-line fixes may go direct to `main`.
+- **Batch into omnibus PRs**; land every commit first, trigger review once, then push only review fixes (and say when you do).
+- **Close issues with `Closes #n`** in the PR description; refer to pull requests as `PR #n`.
+- **Harness-specific knowledge stays inside its adapter**; evidence over inference — capture real output into `tests/fixtures/panes/`. Probe the real binary before writing an adapter.
+- **Tests need no API keys** and run on a private tmux server (`tests/global-setup.ts`); run one suite at a time. Run `npm test` and `npm run typecheck` before a PR.
+- **The launch wrapper must `fg %1` the harness, unredirected** — a redirected `fg` leaves it stopped on SIGTTIN.
+- **`sonata dispatch` relays; it never reasons about or parses harness output.**
 
 <!-- sonata:begin -->
 ## Subagent lane

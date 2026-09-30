@@ -14,7 +14,7 @@ of six native `review-*` agents died before any of them read a file:
 - **OpenCode Zen/Go never worked on the native path.** They need an
   `x-opencode-session` header; LiteLLM dropped it. Fixed by forwarding it to
   opencode.ai models only and sending no other client `x-*` header — see the
-  CLAUDE.md paragraph starting *opencode.ai routes by a session header*.
+  `docs/internals/native-path.md` paragraph starting *opencode.ai routes by a session header*.
 - **A 400 that refuses every request killed the whole tier.** `MissingSessionID`
   now falls through at once and cools the gateway (`UNSERVABLE_400_SIGNATURES`).
 - **tmux cold-start race** (`retryWhenServerExits`) — failed CI and can fail a
@@ -63,7 +63,7 @@ known to be unverified or deferred:
   (`repairNamelessToolCalls`) instead of failing over.
 - **#64 is built from opencode's dev-branch source, not a release.** No v2
   existed to measure. If the released `credential` table differs, the
-  paragraph in CLAUDE.md starting *opencode v2 keeps credentials in
+  paragraph in `docs/internals/native-path.md` starting *opencode v2 keeps credentials in
   `opencode.db`* is the one that is wrong.
 - **Dispatch-usage matching.** The readers were run against 16 real past
   runs in three repositories: routed claude runs answered `router`, and
@@ -370,7 +370,7 @@ not:
    removes the measured fact `sonata route auto` is built on** — its design is
    "launch clean, route at SubagentStart" — so `sonata code`, or `route on`
    *before* launching, is the supported path today. Not fixed; see the
-   `route auto` bullets in `CLAUDE.md` for the full history, including the
+   `route auto` bullets in `docs/internals/cli-reference.md` for the full history, including the
    reverted attempt that made it worse.
 
    Settled the same day: a `sonata code` relaunch **from the same worktree**
@@ -470,7 +470,7 @@ Analysis row was scored at, and both writers of a tier list rank every scored
 level of a model as its own candidate. Read
 `docs/superpowers/specs/2026-09-13-effort-tiers-design.md` and its plan
 (`docs/superpowers/plans/2026-09-13-effort-tiers-pr1.md`) before touching it;
-the `CLAUDE.md` bullet is the short version. Merged 2026-09-13 as PR #28
+the effort bullets in `docs/internals/architecture.md` are the short version. Merged 2026-09-13 as PR #28
 (`2c4549f`); unreleased, sitting in `[Unreleased]`.
 
 **A pinned level now reaches the model on both lanes** — that was PR 2
@@ -776,7 +776,7 @@ The branch turns `sonata serve` into a single machine-wide router that resolves
 each request's own `sonata.toml`. Read
 `docs/superpowers/specs/2026-09-09-multi-tenant-router-design.md` (including its
 live-run section) and `docs/superpowers/plans/2026-09-09-multi-tenant-router.md`
-before touching it; `CLAUDE.md`'s "Tenancy" paragraph is the short version.
+before touching it; `docs/internals/native-path.md`'s "Tenancy" paragraph is the short version.
 Unreleased at the time of writing, full suite green.
 
 **Two defects were found by running it, not by reading it**, which is the
@@ -827,10 +827,10 @@ signature change is done.
 |---|---|
 | The LiteLLM design, incl. a **retracted finding** and a live-evidence table | `docs/superpowers/specs/2026-09-01-litellm-strategy-design.md` |
 | The executed plan, incl. **five things it got wrong** | `docs/superpowers/plans/2026-09-01-litellm-strategy.md` |
-| Provider/transport model, direct-path auth boundary | `CLAUDE.md`, "Native path" |
+| Provider/transport model, direct-path auth boundary | `docs/internals/native-path.md` |
 | The 1.0 gate, in the roadmap's own words | `docs/roadmap.md` |
 | Why item 07 annotates instead of degrading; why item 12 left the verdict alone | `docs/roadmap.md` items 07 and 12, plus module headers in `src/worktree.ts` / `src/report-contract.ts` |
-| Why tiers rank on capability-per-task-dollar, and what the floor and ceiling each protect against | `CLAUDE.md`, the `proposeTiers` bullets |
+| Why tiers rank on capability-per-task-dollar, and what the floor and ceiling each protect against | `docs/internals/architecture.md`, the tier-ranking bullets |
 
 The spec keeps corrections visible rather than quietly fixing them — Finding 3
 is a retraction with the evidence that overturned it, and the codex-oauth
