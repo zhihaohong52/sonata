@@ -200,7 +200,6 @@ dispatch_window_seconds = 1500 # blocking window for sonata wait/dispatch
   true no-op that plans no path at all.
 - Run `sonata sync` after editing the config; Claude Code picks up the generated agents automatically. There is no MCP server to reconnect.
 
-
 ## Auto-routed tiers
 
 `[auto_route]` is absent by default. When present, `parseConfig` refuses every key other than `classifier` and `min_confidence`, refuses any classifier other than `"jev"`, and refuses a non-finite or non-numeric `min_confidence` outside `[0, 1]`. An omitted `min_confidence` loads as `0.5`. This deliberate refusal prevents a misspelled switch from appearing to work while silently disabling the feature.

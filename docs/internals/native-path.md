@@ -274,7 +274,6 @@ The `claude-` prefix is load-bearing because the router sends that prefix to Ant
 
 The `claude` harness adapter is the simplest adapter: it runs headless `claude -p`, has no TUI, and maps permission modes directly. For native dispatches it assumes `sonata serve` is already running.
 
-
 ## Auto-routed tier branch
 
 After tenant resolution, the budget check and `repairNamelessToolCalls`, the router recognizes `sonata-<role>-auto` before the ordinary tier-alias path. With `[auto_route]` enabled it sends only the first user message's text, cleaned of `<system-reminder>` blocks and capped at 8,000 characters, to Jev at TypeSafe. The decision is stored by conversation and the chosen tier is converted to `sonata-<role>-<tier>`; that alias then takes the unchanged ranked tier path, including cooldowns, stickiness and budget handling.
