@@ -8,6 +8,10 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in auto-routed tiers.** With `[auto_route]` enabled, generated `<role>-auto` agents ask TypeSafe Jev to choose `simple`, `normal` or `complex` once per conversation, then follow the selected tier's existing routing path. Only the cleaned first user message (system reminders removed, capped at 8,000 characters) is sent; failures and low confidence fail open to `normal` (or `complex` when needed). `sonata usage --by route` separates auto and manual traffic and reports classifier tokens without pricing them.
+
 ## [0.14.1] - 2026-09-30
 
 ### Added

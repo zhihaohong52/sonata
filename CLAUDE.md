@@ -245,6 +245,8 @@ Rules that bite (full reference: `docs/internals/configuration.md`):
 
 ## Native path
 
+- **Auto-routed tiers** (`[auto_route]`, `src/native/auto-route.ts`): `sonata-<role>-auto` gets one Jev tier decision per conversation, fail-open to `normal`; the chosen alias then takes the unchanged tier path.
+
 Foreign models run inside Claude Code's own loop through the local router
 (`sonata serve`). Summary — the full record is `docs/internals/native-path.md`:
 
