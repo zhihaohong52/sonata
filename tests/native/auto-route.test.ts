@@ -347,6 +347,15 @@ describe('jevClassifier', () => {
     expect(f).not.toHaveBeenCalled();
   });
 
+  it('reads the key per call, so a key added later is picked up', async () => {
+    let key: string | undefined;
+    const f = vi.fn(async () => new Response(JSON.stringify({ answers: { tier: { choice: 'simple', confidence: 1, probabilities: { simple: 1 } } } }), { status: 200 }));
+    const c = jevClassifier({ fetch: f as any, key: () => key });
+    await expect(c.classify({ role: 'code', task: 'T', tiers: ['simple'] }, new AbortController().signal)).rejects.toThrow();
+    key = 'k';
+    await expect(c.classify({ role: 'code', task: 'T', tiers: ['simple'] }, new AbortController().signal)).resolves.toMatchObject({ choice: 'simple' });
+  });
+
   it('retries once after a non-2xx, then succeeds', async () => {
     let n = 0;
     const c = jevClassifier({
