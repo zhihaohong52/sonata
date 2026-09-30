@@ -610,6 +610,10 @@ export async function main(argv: string[]): Promise<number> {
     if (report.covered.requests > 0) {
       console.log(`covered        $${report.covered.totalUsd.toFixed(2)}  ~ subscription — work valued at list, not billed per token`);
     }
+    if (report.autoRoute !== undefined) {
+      const o = report.autoRoute.outcomes;
+      console.log(`auto-route decisions: ${o.accepted} accepted, ${o['low-confidence']} low-confidence, ${o.invalid} invalid, ${o.failed} failed · classifier ${report.autoRoute.classifierTokens.input} in / ${report.autoRoute.classifierTokens.output} out tokens (not priced)`);
+    }
     if (report.noPromptTokens.requests > 0) {
       // Beside the total, never inside it. These completed and produced
       // output, so they are priced — on their output alone, because the

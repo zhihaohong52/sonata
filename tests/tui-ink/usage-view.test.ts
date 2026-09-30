@@ -23,7 +23,7 @@ describe('usage screen axes', () => {
     const seen = ['model'];
     let d = nextDimension('model');
     while (d !== 'model') { seen.push(d); d = nextDimension(d); }
-    expect(seen).toEqual(['model', 'role', 'tier', 'effort', 'gateway', 'lane', 'session', 'project']);
+    expect(seen).toEqual(['model', 'role', 'tier', 'route', 'effort', 'gateway', 'lane', 'session', 'project']);
   });
 
   it('names a window the way a reader says it', () => {
