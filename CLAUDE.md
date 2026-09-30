@@ -79,7 +79,7 @@ which install answered.
 
 Full behaviour and rationale for each: `docs/internals/cli-reference.md`.
 
-- `sonata init` — interactive wizard (config scope → providers → provider rank → models → roles → per-role tier rankings); writes `[models]`+`[tiers]`, generates agents, offers hooks/skill/routing/CLAUDE.md block. `A` on a ranking screen accepts it and all later ones (`acceptRemainingTiers`/`seededRankingFor`). Unattended: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope`, `--scope`, `--routing`, `--guidance`, `--prune`
+- `sonata init` — first offers a Yes/No update for each harness behind its npm latest, before any model is listed, since catalogues can be version-gated (`src/init/harness-updates.ts`; unattended runs never update); then the interactive wizard (config scope → providers → provider rank → models → roles → per-role tier rankings); writes `[models]`+`[tiers]`, generates agents, offers hooks/skill/routing/CLAUDE.md block. `A` on a ranking screen accepts it and all later ones (`acceptRemainingTiers`/`seededRankingFor`). Unattended: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope`, `--scope`, `--routing`, `--guidance`, `--prune`
 - `sonata doctor` — tmux, harnesses, auth, permission hook, tier routing (and which of five reasons a session isn't routed), stale MCP registrations, legacy configs, unpriced gateways, catalog coverage then freshness
 - `sonata reset [--global] [--yes]` — removes only what sonata wrote at one scope; keeps keys, ledger, caches, run store
 - `sonata agents [--list] [--json]` — view/re-rank tier agents; the second writer of `sonata.toml`, via `replaceTiersBlock` (rewrites only `[tiers.*]`, parses back before writing)

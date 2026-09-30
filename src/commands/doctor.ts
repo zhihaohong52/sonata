@@ -76,13 +76,13 @@ function opencodeSourceLabel(home: string, integrationId: string): 'opencode' | 
   return opencodeCredentialOrigin(home, integrationId) === 'opencode.db' ? 'opencode.db' : 'opencode';
 }
 
-function triple(v: string): [number, number, number] {
+export function triple(v: string): [number, number, number] {
   const m = v.replace(/^v/, '').match(/(\d+)\.(\d+)\.(\d+)/);
   if (!m) return [0, 0, 0];
   return [Number(m[1]), Number(m[2]), Number(m[3])];
 }
 
-function cmp(a: [number, number, number], b: [number, number, number]): number {
+export function cmp(a: [number, number, number], b: [number, number, number]): number {
   for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] - b[i];
   return 0;
 }

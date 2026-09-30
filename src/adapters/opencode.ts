@@ -198,6 +198,7 @@ export const openCodeAdapter: HarnessAdapter = {
   versionCommand: ['opencode', '--version'],
   supportedVersions: '>=1.18.0 <2.0.0',
   pathPrepend: ['$HOME/.opencode/bin'],
+  update: { npmPackage: 'opencode-ai', command: ['opencode', 'upgrade'] },
   plan: buildScript,
   canPromptForApproval: false,
   promptPatterns: PROMPT_PATTERNS,
