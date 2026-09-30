@@ -137,12 +137,16 @@ export async function offerHarnessUpdates(opts: {
 
 /** `$HOME` in an adapter's `pathPrepend`, expanded. */
 function harnessPath(harness: string, home: string): string {
-  const extra = getAdapter(harness).pathPrepend.map((p) => p.replace(/^\$HOME/, home));
+  // An unknown name (a test's stub, a future updater named by path) gets the
+  // plain PATH rather than a throw.
+  let prepend: string[] = [];
+  try { prepend = getAdapter(harness).pathPrepend; } catch { /* not a harness */ }
+  const extra = prepend.map((p) => p.replace(/^\$HOME/, home));
   return [...extra, process.env.PATH ?? ''].join(':');
 }
 
 /** The real machine and registry. */
-export function realUpdateDeps(home: string): UpdateDeps {
+export function realUpdateDeps(home: string, timeoutMs: number = UPDATE_TIMEOUT_MS): UpdateDeps {
   return {
     async installedVersion(harness) {
       const probe = await probeVersion(harness, { ...process.env, PATH: harnessPath(harness, home) });
@@ -170,7 +174,22 @@ export function realUpdateDeps(home: string): UpdateDeps {
           stdio: ['ignore', 'pipe', 'pipe'],
           env: { ...process.env, PATH: harnessPath(harness, home) },
         });
-        const timer = setTimeout(() => child.kill('SIGTERM'), UPDATE_TIMEOUT_MS);
+        // Settled once, by whichever comes first. The timeout does not wait
+        // for `close`: an updater that ignores SIGTERM, or a descendant still
+        // holding the pipes, would otherwise never close, and init would hang
+        // on what is meant to be at worst a warning.
+        let settled = false;
+        const finish = (ok: boolean) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(ok);
+        };
+        const timer = setTimeout(() => {
+          child.kill('SIGTERM');
+          setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
+          finish(false);
+        }, timeoutMs);
         const forward = (chunk: Buffer) => {
           for (const line of chunk.toString().split(/\r?\n|\r/)) {
             const text = line.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').trimEnd();
@@ -179,8 +198,8 @@ export function realUpdateDeps(home: string): UpdateDeps {
         };
         child.stdout?.on('data', forward);
         child.stderr?.on('data', forward);
-        child.on('error', () => { clearTimeout(timer); resolve(false); });
-        child.on('close', (code) => { clearTimeout(timer); resolve(code === 0); });
+        child.on('error', () => finish(false));
+        child.on('close', (code) => finish(code === 0));
       });
     },
   };
