@@ -119,6 +119,30 @@ describe('aggregate', () => {
     expect(report.pricedTotalUsd).toBe(0);
   });
 
+  it('groups by route: auto, manual, and unlabelled', () => {
+    const rows = [
+      row({ tier: 'simple', route: 'auto' }),
+      row({ tier: 'complex', route: 'manual' }),
+      row({ tier: 'complex' }),
+    ];
+    const report = aggregate(rows, 'route', {});
+    expect(report.buckets.map((b) => b.label).sort()).toEqual(['auto', 'manual', '—'].sort());
+  });
+
+  it('summarises classifier decisions and tokens, never pricing them', () => {
+    const rows = [
+      row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'accepted', ms: 300, tokens: { input: 300, output: 30 } } }),
+      row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'low-confidence', ms: 280, tokens: { input: 310, output: 30 } } }),
+      row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'failed', ms: 3000 } }),
+    ];
+    const report = aggregate(rows, 'tier', {});
+    expect(report.autoRoute).toEqual({
+      outcomes: { accepted: 1, 'low-confidence': 1, invalid: 0, failed: 1 },
+      classifierTokens: { input: 610, output: 60 },
+    });
+    expect(report.pricedTotalUsd).toBe(aggregate(rows.map(({ autoRoute: _, ...r }) => r), 'tier', {}).pricedTotalUsd);
+  });
+
   it('groups by role, tier and gateway', () => {
     expect(aggregate([row()], 'role', {}).buckets[0].label).toBe('code');
     expect(aggregate([row()], 'tier', {}).buckets[0].label).toBe('simple');

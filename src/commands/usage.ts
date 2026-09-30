@@ -19,10 +19,10 @@ import { loadModelsDev } from '../modelsdev.js';
 import { readRows, type LedgerRow } from '../ledger.js';
 import { loadSessions, type SessionRecord } from '../sessions.js';
 
-export type UsageDimension = 'model' | 'role' | 'tier' | 'effort' | 'gateway' | 'lane' | 'session' | 'project';
+export type UsageDimension = 'model' | 'role' | 'tier' | 'route' | 'effort' | 'gateway' | 'lane' | 'session' | 'project';
 
 /** Every `--by` value, in the order the usage screen cycles through them. */
-export const USAGE_DIMENSIONS: readonly UsageDimension[] = ['model', 'role', 'tier', 'effort', 'gateway', 'lane', 'session', 'project'];
+export const USAGE_DIMENSIONS: readonly UsageDimension[] = ['model', 'role', 'tier', 'route', 'effort', 'gateway', 'lane', 'session', 'project'];
 
 /** `sonata usage`'s flags, validated. */
 export interface UsageFlags {
@@ -140,6 +140,8 @@ export interface UsageReport {
    * the real signal under thousands of aborted requests.
    */
   noPromptTokens: { requests: number; output: number };
+  /** Auto-route decisions and classifier token volume; never priced. */
+  autoRoute?: { outcomes: Record<'accepted' | 'low-confidence' | 'invalid' | 'failed', number>; classifierTokens: { input: number; output: number } };
   covered: { requests: number; totalUsd: number };
   failedAttempts: FailedAttempt[];
   priceCacheAgeMs?: number;
@@ -258,6 +260,7 @@ export function labelOf(
     case 'model': return row.key || row.alias || '(unresolved)';
     case 'role': return row.role ?? '—';
     case 'tier': return row.tier ?? '—';
+    case 'route': return row.route ?? '—';
     // A row with no level is the baseline every pinned row is judged against,
     // so it is labelled rather than dropped: `drop_params` means the router
     // cannot tell a level that was honoured from one silently discarded, and
@@ -312,10 +315,17 @@ export function aggregate(
   const unpriced = { requests: 0, input: 0, output: 0 };
   const covered = { requests: 0, totalUsd: 0 };
   const noPromptTokens = { requests: 0, output: 0 };
+  let autoRoute: UsageReport['autoRoute'];
   const failed = new Map<string, { count: number; statuses: Set<number> }>();
   let pricedTotalUsd = 0;
 
   for (const row of rows) {
+    if (row.autoRoute !== undefined) {
+      autoRoute ??= { outcomes: { accepted: 0, 'low-confidence': 0, invalid: 0, failed: 0 }, classifierTokens: { input: 0, output: 0 } };
+      autoRoute.outcomes[row.autoRoute.outcome] += 1;
+      autoRoute.classifierTokens.input += row.autoRoute.tokens?.input ?? 0;
+      autoRoute.classifierTokens.output += row.autoRoute.tokens?.output ?? 0;
+    }
     const label = labelOf(row, by, sessions, resolve);
     const bucket = buckets.get(label) ?? {
       label, requests: 0, input: 0, output: 0, costUsd: 0, coveredUsd: 0, unpricedRequests: 0, coveredRequests: 0,
@@ -376,6 +386,7 @@ export function aggregate(
     pricedTotalUsd,
     unpriced,
     noPromptTokens,
+    ...(autoRoute === undefined ? {} : { autoRoute }),
     covered,
     failedAttempts: [...failed.entries()]
       .map(([key, { count, statuses }]) => ({ key, count, statuses: [...statuses].sort((a, b) => a - b) }))
