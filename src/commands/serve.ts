@@ -10,7 +10,7 @@ import { spentTodayUsd, unreadableMachineBudget, type BudgetStatus } from '../bu
 import { GLOBAL_CONFIG_RELATIVE, loadConfig, nativeRouteFor, oauthCredentialIdentity, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
-import { resolveKeyDetail, resolveKeys, sonataKeyStorePath } from '../native/credentials.js';
+import { resolveKeyDetail, resolveKeys, resolveKeyFromSource, sonataKeyStorePath } from '../native/credentials.js';
 import {
   boundUnreadable, boundUnreadableDb, fileStoreRead, jsonStoreRead, newUnreadableMemory, opencodeDbRead,
   UNREADABLE_SKIP_RULE, type StoreRead, type UnreadableMemory,
@@ -24,6 +24,7 @@ import { envVarForGateway, litellmConfigForTenants, litellmConfigYamlForTenants 
 import { litellmRequired, transportFor } from '../native/providers.js';
 import { litellmStatus, managedLitellmPath } from '../native/litellm-venv.js';
 import type { UiDeps } from '../native/ui.js';
+import { jevClassifier } from '../native/auto-route.js';
 import { createRouterServer, type RouterTenant } from '../native/router.js';
 import { LITELLM_CHATGPT_LOGIN_REFUSED, pipeLitellmOutput } from '../native/litellm-output.js';
 import { canonicalConfigPath, TenantRegistry } from '../native/tenants.js';
@@ -2635,6 +2636,9 @@ export async function cmdServe(
       // authorising its project hint across restarts.
       projectHintToken: ensureRouterToken(opts.home),
       resolveTier: (alias, tenant) => tenant.config === undefined ? undefined : resolveTierAlias(tenant.config, alias),
+      // Always present: with no key it throws per call and the router falls
+      // back, which is the documented off-by-default-key behaviour.
+      classifier: jevClassifier({ fetch, key: () => resolveKeyFromSource('typesafe', opts.home, 'sonata') }),
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
       gatewayUnavailable: (tenant, gateway) => droppedGateways.get(gateway) ?? credentialFailures.get(gateway) ??
         (chatgptLoginRefused !== undefined && tenant.config?.native?.gateways[gateway]?.auth === 'codex-oauth'
