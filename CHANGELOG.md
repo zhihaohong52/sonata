@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-09-30
+
 ### Added
 
 - **`sonata init` checks whether each harness is up to date before listing
