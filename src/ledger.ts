@@ -10,29 +10,40 @@
  * already a documented limitation caused by another tool doing this
  * carelessly, and sonata does not get to repeat it in its own store.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
-import * as fsp from 'node:fs/promises';
-import { join } from 'node:path';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+} from "node:fs";
+import * as fsp from "node:fs/promises";
+import { join } from "node:path";
 
-import type { Effort } from './effort.js';
-import type { UsageTokens } from './native/usage.js';
+import type { Effort } from "./effort.js";
+import type { UsageTokens } from "./native/usage.js";
 
 export type LedgerPrice =
-  | { source: 'none' }
+  | { source: "none" }
   /**
    * `ai-pricing` is **legacy, read-only**: it is never written any more, but
    * ledger files written before the models.dev switch carry it. Rejecting it
    * would drop that spend from `sonata usage` *and* from `spentTodayUsd`,
    * silently lowering a budget cap's view of a day it should still count.
    */
-  | { source: 'model' | 'gateway' | 'models-dev' | 'covered' | 'ai-pricing'; totalUsd: number; observedAt?: string }
+  | {
+      source: "model" | "gateway" | "models-dev" | "covered" | "ai-pricing";
+      totalUsd: number;
+      observedAt?: string;
+    }
   /**
    * The cost the harness computed itself (opencode's `cost`, pi's
    * `cost.total`, reasonix's `cost_*`) for a `sonata dispatch` run. Used only
    * when sonata has no rate of its own for the model; it is the harness's
    * number, so it can disagree with what sonata would have charged.
    */
-  | { source: 'harness'; totalUsd: number };
+  | { source: "harness"; totalUsd: number };
 
 /**
  * The classifier's decision for an auto-routed conversation, recorded on the
@@ -41,13 +52,13 @@ export type LedgerPrice =
  * without calling the classifier again.
  */
 export interface AutoRouteRecord {
-  classifier: 'jev';
+  classifier: "jev";
   /** The classifier's own version, e.g. `jev-1.13.0`. */
   classifierModel?: string;
   choice?: string;
   confidence?: number;
   probabilities?: Record<string, number>;
-  outcome: 'accepted' | 'low-confidence' | 'invalid' | 'failed';
+  outcome: "accepted" | "low-confidence" | "invalid" | "failed";
   /** Why a `failed` or `invalid` outcome happened. Never task text. */
   reason?: string;
   ms: number;
@@ -75,7 +86,7 @@ export interface LedgerRow {
   role?: string;
   tier?: string;
   /** `auto` when the tier was chosen by the classifier, `manual` when the caller named it. Absent on rows written before auto-routing. */
-  route?: 'auto' | 'manual';
+  route?: "auto" | "manual";
   /** The decision itself, only on the row of the request that made it. */
   autoRoute?: AutoRouteRecord;
   key?: string;
@@ -93,7 +104,7 @@ export interface LedgerRow {
    * the harness's own store after it finished rather than observed in
    * flight — one row per run and model, not per request.
    */
-  upstream: 'litellm' | 'anthropic' | 'direct' | 'harness';
+  upstream: "litellm" | "anthropic" | "direct" | "harness";
   /** The harness a `harness` row ran in (opencode, codex, pi, reasonix, claude). */
   harness?: string;
   /** The `sonata dispatch` run id a `harness` row belongs to. */
@@ -113,7 +124,7 @@ export const LEDGER_RETENTION_DAYS = 30;
 const FILE_PATTERN = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
 
 export function ledgerDir(home: string): string {
-  return join(home, '.config', 'sonata', 'usage');
+  return join(home, ".config", "sonata", "usage");
 }
 
 /** UTC date, never local: a local date would roll the file over at the wrong moment. */
@@ -144,7 +155,11 @@ const DAY_MS = 24 * 3600 * 1000;
  * per-row `ts` filter stays the source of truth; this only avoids opening
  * files that cannot contribute, so the selection is behaviour-preserving.
  */
-function ledgerFileNames(names: string[], sinceMs: number, now: number): string[] {
+function ledgerFileNames(
+  names: string[],
+  sinceMs: number,
+  now: number,
+): string[] {
   const from = Number.isFinite(sinceMs) ? sinceMs - DAY_MS : -Infinity;
   const to = Number.isFinite(now) ? now + DAY_MS : Infinity;
   const out: string[] = [];
@@ -154,20 +169,34 @@ function ledgerFileNames(names: string[], sinceMs: number, now: number): string[
     const dayStart = Date.parse(`${match[1]}T00:00:00.000Z`);
     // A filename this module wrote always parses; one that does not is kept
     // rather than skipped, so a surprise can never silently lose rows.
-    if (Number.isFinite(dayStart) && (dayStart + DAY_MS <= from || dayStart >= to)) continue;
+    if (
+      Number.isFinite(dayStart) &&
+      (dayStart + DAY_MS <= from || dayStart >= to)
+    )
+      continue;
     out.push(name);
   }
   return out;
 }
 
 /** One file's lines, validated and windowed, appended to `out`. */
-function collectRows(raw: string, sinceMs: number, now: number, out: LedgerRow[]): void {
-  for (const line of raw.split('\n')) {
-    if (line === '') continue;
+function collectRows(
+  raw: string,
+  sinceMs: number,
+  now: number,
+  out: LedgerRow[],
+): void {
+  for (const line of raw.split("\n")) {
+    if (line === "") continue;
     let row: LedgerRow;
     try {
       const parsed: unknown = JSON.parse(line);
-      if (parsed === null || typeof parsed !== 'object' || typeof (parsed as { ts?: unknown }).ts !== 'string') continue;
+      if (
+        parsed === null ||
+        typeof parsed !== "object" ||
+        typeof (parsed as { ts?: unknown }).ts !== "string"
+      )
+        continue;
       row = parsed as LedgerRow;
       if (!Number.isFinite(Date.parse(row.ts))) continue;
       if (!hasRequiredFields(row)) continue;
@@ -182,14 +211,18 @@ function collectRows(raw: string, sinceMs: number, now: number, out: LedgerRow[]
   }
 }
 
-export function readRows(home: string, sinceMs: number, now: number = Date.now()): LedgerRow[] {
+export function readRows(
+  home: string,
+  sinceMs: number,
+  now: number = Date.now(),
+): LedgerRow[] {
   const dir = ledgerDir(home);
   if (!existsSync(dir)) return [];
   const out: LedgerRow[] = [];
   for (const name of ledgerFileNames(readdirSync(dir), sinceMs, now)) {
     let raw: string;
     try {
-      raw = readFileSync(join(dir, name), 'utf8');
+      raw = readFileSync(join(dir, name), "utf8");
     } catch {
       continue;
     }
@@ -221,7 +254,7 @@ export async function readRowsAsync(
   for (const name of ledgerFileNames(names, sinceMs, now)) {
     let raw: string;
     try {
-      raw = await fsp.readFile(join(dir, name), 'utf8');
+      raw = await fsp.readFile(join(dir, name), "utf8");
     } catch {
       continue;
     }
@@ -230,15 +263,18 @@ export async function readRowsAsync(
   return out;
 }
 
-function priceIsValid(price: LedgerRow['price']): boolean {
-  if (price === null || typeof price !== 'object' || Array.isArray(price)) return false;
-  if (price.source === 'none') return true;
+function priceIsValid(price: LedgerRow["price"]): boolean {
+  if (price === null || typeof price !== "object" || Array.isArray(price))
+    return false;
+  if (price.source === "none") return true;
   if (
-    price.source === 'model' || price.source === 'gateway' || price.source === 'models-dev'
-    || price.source === 'covered'
-    || price.source === 'harness'
+    price.source === "model" ||
+    price.source === "gateway" ||
+    price.source === "models-dev" ||
+    price.source === "covered" ||
+    price.source === "harness" ||
     // Legacy, still readable — see LedgerPrice.
-    || price.source === 'ai-pricing'
+    price.source === "ai-pricing"
   ) {
     return isCount(price.totalUsd);
   }
@@ -247,7 +283,7 @@ function priceIsValid(price: LedgerRow['price']): boolean {
 
 /** A finite, non-negative number — what every token count and cost must be. */
 function isCount(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
 /**
@@ -267,10 +303,11 @@ function isCount(value: unknown): value is number {
  */
 function hasRequiredFields(row: LedgerRow): boolean {
   const tokens = row.tokens;
-  if (tokens === null || typeof tokens !== 'object' || Array.isArray(tokens)) return false;
+  if (tokens === null || typeof tokens !== "object" || Array.isArray(tokens))
+    return false;
   if (!isCount(tokens.input) || !isCount(tokens.output)) return false;
-  if ('cacheRead' in tokens && !isCount(tokens.cacheRead)) return false;
-  if ('cacheCreation' in tokens && !isCount(tokens.cacheCreation)) return false;
+  if ("cacheRead" in tokens && !isCount(tokens.cacheRead)) return false;
+  if ("cacheCreation" in tokens && !isCount(tokens.cacheCreation)) return false;
   if (!priceIsValid(row.price)) return false;
   return Array.isArray(row.attempts);
 }
@@ -282,10 +319,18 @@ function normaliseCacheFields(row: LedgerRow): void {
 }
 
 /** Deletes whole day-files older than the window. Returns how many were removed. */
-export function pruneLedger(home: string, retentionDays: number, now: Date = new Date()): number {
+export function pruneLedger(
+  home: string,
+  retentionDays: number,
+  now: Date = new Date(),
+): number {
   const dir = ledgerDir(home);
   if (!existsSync(dir)) return 0;
-  const cutoff = Math.floor((now.getTime() - retentionDays * 24 * 3600 * 1000) / (24 * 3600 * 1000)) * (24 * 3600 * 1000);
+  const cutoff =
+    Math.floor(
+      (now.getTime() - retentionDays * 24 * 3600 * 1000) / (24 * 3600 * 1000),
+    ) *
+    (24 * 3600 * 1000);
   let removed = 0;
   for (const name of readdirSync(dir)) {
     const match = FILE_PATTERN.exec(name);
@@ -295,7 +340,9 @@ export function pruneLedger(home: string, retentionDays: number, now: Date = new
     try {
       rmSync(join(dir, name), { force: true });
       removed += 1;
-    } catch { /* a file we cannot remove is not worth failing serve over */ }
+    } catch {
+      /* a file we cannot remove is not worth failing serve over */
+    }
   }
   return removed;
 }
