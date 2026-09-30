@@ -94,3 +94,22 @@ Tests 26 passed (26)
 npm run typecheck
 passed (application and test typechecks)
 ```
+
+## Fix Round 3
+
+- Reformatted the auto-route implementation and tests to use the brief's readable layout: one statement per line, 2-space indentation, restored explanatory comments, and normal line lengths.
+- Preserved the round 1 response validation and round 2 generation and pending-promise identity guards; no behavior changes were made.
+
+Covering tests:
+
+```text
+npx vitest run tests/native/auto-route.test.ts
+Test Files 1 passed (1)
+Tests 26 passed (26)
+
+npm run typecheck
+passed (application and test typechecks)
+
+awk 'length>160 {print NR ":" length}' src/native/auto-route.ts
+(no output)
+```
