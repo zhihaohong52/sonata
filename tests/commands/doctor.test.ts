@@ -10,7 +10,8 @@ import { opencodeDbPath } from '../../src/native/opencode-store.js';
 import { sqliteAvailable, writeOpencodeCredDb } from '../opencode-db-fixture.js';
 import { credentialDir } from '../../src/native/oauth-login.js';
 import { cmdRoute } from '../../src/commands/route.js';
-import { nativeAgentMarkdown } from '../../src/commands/sync.js';
+import { nativeAgentMarkdown, plannedAgents } from '../../src/commands/sync.js';
+import { parseConfig } from '../../src/config.js';
 
 vi.mock('../../src/native/litellm.js', async (importOriginal) => ({
   // The rest is real: doctor merges gateways through serve's own function,
@@ -212,6 +213,19 @@ complex = ["b"]
     writeSonataKey(home, 'typesafe', 'k');
     const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
     expect(checks.find((c) => c.name === 'auto route' && /sonata sync/.test(c.detail) && /code-auto/.test(c.detail))).toBeDefined();
+  });
+
+  it('accepts an auto agent written to the user agents directory by a global-scope init', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    writeSonataKey(home, 'typesafe', 'k');
+    mkdirSync(join(home, '.claude', 'agents'), { recursive: true });
+    const code = plannedAgents(parseConfig(AUTO)).find((a) => a.name === 'code-auto');
+    writeFileSync(join(home, '.claude', 'agents', 'code-auto.md'), code?.content ?? '');
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.some((c) => c.name === 'auto route' && !c.ok)).toBe(false);
+    expect(checks.find((c) => c.name === 'auto route' && c.ok && /on \(jev/.test(c.detail))).toBeDefined();
   });
 
   it('reports a non-sonata file occupying an auto agent name', async () => {

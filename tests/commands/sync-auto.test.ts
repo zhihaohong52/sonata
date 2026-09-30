@@ -43,6 +43,12 @@ describe('<role>-auto agents', () => {
     expect(plannedAgents(CONFIG(false)).some((a) => a.name.endsWith('-auto'))).toBe(false);
   });
 
+  it('may not delegate to another tier agent, whichever tier is chosen', () => {
+    const agent = plannedAgents(CONFIG(true)).find((a) => a.name === 'code-auto');
+    expect(agent?.content).toContain('Do not spawn another sonata tier agent.');
+    expect(agent?.content).not.toMatch(/You may spawn `\*-simple`/);
+  });
+
   it('appear in sonata agents, marked auto-routed', () => {
     const rows = agentRows(CONFIG(true));
     expect(rows.find((r) => r.agent === 'code-auto')).toMatchObject({ auto: true, role: 'code' });
