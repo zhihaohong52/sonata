@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
-  findHarnessUpdates, offerHarnessUpdates, UPDATABLE_HARNESSES, type UpdateDeps,
+  findHarnessUpdates, offerHarnessUpdates, realUpdateDeps, UPDATABLE_HARNESSES, type UpdateDeps,
 } from '../../src/init/harness-updates.js';
 
 /** Deps where every harness is installed at `installed` and npm says `latest`. */
@@ -150,5 +153,29 @@ describe('offerHarnessUpdates', () => {
       deps: deps({ opencode: '1.18.32' }, { 'opencode-ai': '2.0.0' }),
     });
     expect((ask.mock.calls as unknown as Array<[string, boolean]>)[0][0]).toMatch(/outside.*tested/);
+  });
+});
+
+describe('realUpdateDeps.run', () => {
+  it('settles false at the timeout even when the updater ignores SIGTERM', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sonata-updater-'));
+    const script = join(dir, 'stubborn');
+    writeFileSync(script, "#!/bin/sh\ntrap '' TERM\necho starting\nsleep 30\n");
+    chmodSync(script, 0o755);
+    const lines: string[] = [];
+    const started = Date.now();
+    const ok = await realUpdateDeps(dir, 300).run([script], (l) => lines.push(l));
+    expect(ok).toBe(false);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it('reports true for an updater that exits 0, forwarding its output', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sonata-updater-'));
+    const script = join(dir, 'fine');
+    writeFileSync(script, '#!/bin/sh\necho updated\n');
+    chmodSync(script, 0o755);
+    const lines: string[] = [];
+    expect(await realUpdateDeps(dir).run([script], (l) => lines.push(l))).toBe(true);
+    expect(lines).toContain('updated');
   });
 });
