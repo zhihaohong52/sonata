@@ -155,6 +155,24 @@ export function resolveKeys(gateways: string[], home: string): KeySource[] {
   return resolved;
 }
 
+/**
+ * The key a decision server's gateway name resolves to, with its store — the
+ * one policy serve, doctor, Setup and the Keys screen all use. `openrouter`
+ * is a provider gateway too, so it keeps the provider lookup (sonata, then
+ * opencode); `typesafe` and `auto-route` exist only for auto-routing and live
+ * in sonata's own store, never another harness's.
+ */
+export function resolveDecisionKey(
+  gateway: 'typesafe' | 'openrouter' | 'auto-route',
+  home: string,
+): { key: string; source: string } | undefined {
+  if (gateway === 'openrouter') {
+    const found = resolveKeys(['openrouter'], home)[0];
+    return found === undefined ? undefined : { key: found.key, source: found.source };
+  }
+  return resolveKeyDetail(gateway, home, 'sonata');
+}
+
 export function keyReport(gateways: string[], home: string): KeyReport[] {
   const sources = new Map(resolveKeys(gateways, home).map(({ gateway, source }) => [gateway, source]));
   return gateways.map((gateway) => ({ gateway, source: sources.get(gateway) ?? null }));

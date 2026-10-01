@@ -22,7 +22,7 @@ import { readChatGptOAuth, readOpencodeChatGptOAuth } from '../native/codex-auth
 import {
   KNOWN_ROLES, configPath,
 } from '../config.js';
-import { resolveKeys } from '../native/credentials.js';
+import { resolveDecisionKey, resolveKeys } from '../native/credentials.js';
 import { credentialAvailabilityFor, nativeLabel, deriveInitState, configPathFor, type NativeCandidate } from './helpers.js';
 import { runInitTui } from '../tui-ink/run.js';
 import type { InitState } from '../tui-ink/types.js';
@@ -116,6 +116,34 @@ export async function interactiveState(
   const daysUntil = (expiresAt: number | undefined): number | null => expiresAt === undefined
     ? null
     : Math.floor((expiresAt * 1000 - Date.now()) / (24 * 60 * 60 * 1000));
+  // Every offered gateway, not just the BYOK ones: the models step asks a
+  // gateway what it serves rather than trusting a harness snapshot, and that
+  // call has to authenticate. A gateway with no resolvable key simply keeps
+  // its harness list.
+  //
+  // The decision-server names resolve through `resolveDecisionKey` instead,
+  // the one policy serve, doctor and the Keys screen share. They were part of
+  // this generic lookup, which also reads opencode — so a TypeSafe key held
+  // only by opencode made the Auto-route step skip the prompt while the router,
+  // which never sends another harness's copy, failed every decision open.
+  const storedKeys: Record<string, string> = Object.fromEntries(
+    resolveKeys(
+      [...new Set([
+        ...env.byokProviders.map((provider) => provider.name),
+        ...env.offered.map((p) => p.provider),
+      ])],
+      opts.home,
+    ).map((source) => [source.gateway, source.key]),
+  );
+  // `openrouter` is a provider gateway too, so this is the same lookup the
+  // list above makes for it; `typesafe` and `auto-route` are decision-only and
+  // must never fall through to another harness's store.
+  for (const gateway of ['typesafe', 'auto-route', 'openrouter'] as const) {
+    const found = resolveDecisionKey(gateway, opts.home);
+    if (found === undefined) delete storedKeys[gateway];
+    else storedKeys[gateway] = found.key;
+  }
+
   const data: WizardData = {
     home: opts.home,
     harnesses: env.harnesses.map((h) => ({ name: h.name, installed: h.installed })),
@@ -123,23 +151,7 @@ export async function interactiveState(
     candidates: env.allNativeCandidates.map((c) => ({ key: c.key, gateway: c.gateway, id: c.id, label: nativeLabel(c) })),
     roles: [...KNOWN_ROLES],
     byokProviders: env.byokProviders,
-    // Every offered gateway, not just the BYOK ones: the models step asks a
-    // gateway what it serves rather than trusting a harness snapshot, and
-    // that call has to authenticate. A gateway with no resolvable key simply
-    // keeps its harness list. The decision-server names come too: the
-    // Auto-route step asks for a key only when none is already held under
-    // `typesafe`, `openrouter` or `auto-route`, which is how `sonata auth add`
-    // files one.
-    storedKeys: Object.fromEntries(
-      resolveKeys(
-        [...new Set([
-          ...env.byokProviders.map((provider) => provider.name),
-          ...env.offered.map((p) => p.provider),
-          'typesafe', 'openrouter', 'auto-route',
-        ])],
-        opts.home,
-      ).map((source) => [source.gateway, source.key]),
-    ),
+    storedKeys,
     credentialAvailability: credentialAvailabilityFor(
       env.offered,
       env.gatewayAuth,

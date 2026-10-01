@@ -37,7 +37,7 @@ import { loadModelsDev } from '../modelsdev.js';
 import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
-import { keyReport, resolveKeyDetail, resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
+import { keyReport, resolveDecisionKey, resolveKeyDetail } from '../native/credentials.js';
 import { decisionKeyFor } from '../native/auto-route.js';
 import { ModelListCache, chooseDecisionModel } from '../native/decision-models.js';
 import { loadDecisionCatalog } from '../decision-catalog.js';
@@ -838,9 +838,9 @@ export async function cmdDoctor(
     // OpenRouter require one; a local or custom server may need none, so a
     // missing key there is not reported.
     const credential = decisionKeyFor(auto.baseUrl, {
-      openrouter: () => resolveKeys(['openrouter'], home)[0]?.key,
-      typesafe: () => resolveKeyFromSource('typesafe', home, 'sonata'),
-      other: () => resolveKeyFromSource('auto-route', home, 'sonata'),
+      openrouter: () => resolveDecisionKey('openrouter', home)?.key,
+      typesafe: () => resolveDecisionKey('typesafe', home)?.key,
+      other: () => resolveDecisionKey('auto-route', home)?.key,
     });
     let decisionHost = '';
     try { decisionHost = new URL(auto.baseUrl).hostname; } catch { /* other */ }
@@ -899,6 +899,11 @@ export async function cmdDoctor(
         checks.push({ name: 'auto route', ok: true, detail: 'no decision-model catalog — run `sonata catalog update` so the best model can be chosen' });
       } else if (age !== undefined && age > AA_CATALOG_MAX_AGE_DAYS) {
         checks.push({ name: 'auto route', ok: true, detail: `decision-model catalog is ${age} days old (JevBench ${decisionCatalog.revision}) — run \`sonata catalog update\`` });
+      } else if (age !== undefined) {
+        // Its age and revision are part of the report, not just its absence or
+        // its staleness: a ranking is only as trustworthy as the data it came
+        // from, and a catalog nobody dates is a catalog nobody refreshes.
+        checks.push({ name: 'auto route', ok: true, detail: `decision-model catalog: JevBench ${decisionCatalog.revision}, ${age} day(s) old` });
       }
     }
 

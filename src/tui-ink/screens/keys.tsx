@@ -1,6 +1,6 @@
 import React from 'react';
 import { Text } from 'ink';
-import { keyReport } from '../../native/credentials.js';
+import { keyReport, resolveDecisionKey } from '../../native/credentials.js';
 import { decisionGatewayFor } from '../../native/auto-route.js';
 import { STATE } from '../theme.js';
 import { usePalette } from '../theme-context.js';
@@ -31,7 +31,10 @@ export function KeysScreen({ cwd, home }: { cwd: string; home: string }): React.
   // under the name its host files one under, which is not the URL.
   if (loaded.config.autoRoute !== undefined) {
     const baseUrl = loaded.config.autoRoute.baseUrl;
-    rows.push(autoRouteKeyRow(baseUrl, keyReport([decisionGatewayFor(baseUrl)], home)[0]?.source ?? null));
+    // Resolved through `resolveDecisionKey`, the same policy serve and doctor
+    // use — a key only another harness holds is not one the router will send,
+    // so the row says "no key" here exactly as the decisions fail there.
+    rows.push(autoRouteKeyRow(baseUrl, resolveDecisionKey(decisionGatewayFor(baseUrl), home)?.source ?? null));
   }
   const missing = new Set(gatewaysMissingKeys(rows));
   // Capped at 40% of the page. Grown to the longest identifier it let one
