@@ -78,8 +78,10 @@ JevBench #73 of 106).
   intelligence and calibration scores) and its estimated USD per 1,000
   decisions. Cache: `~/.config/sonata/decision-catalog.json`, with the
   benchmark revision and fetch time.
-- The revision fetched is the latest the site publishes; the published
-  `source_sha256` is recorded for traceability.
+- The revision is pinned (`v1.5.4`) in `JEVBENCH_URL`: the site publishes no
+  latest-revision index (its root serves an older v1 document), so a new
+  revision is adopted by changing the constant. The published `source_sha256`
+  is recorded for traceability.
 - JevBench data is not committed to the repository; tests use a hand-built
   fixture, as for the AA catalog.
 - `sonata doctor` reports the decision catalog's age and revision beside the
