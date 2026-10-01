@@ -10,10 +10,11 @@ import {
   GLOBAL_CONFIG_RELATIVE,
   expectedAgentNames,
   isOauthGatewayAuth,
+  autoAgentRoles,
 } from '../config.js';
 import type { NativeGatewayAuth } from '../config.js';
 import { outdatedAgents, plannedAgents } from './sync.js';
-import { staleAgents, disabledOpencodeAgents, enableOpencodeAgent, firstErrorLine,
+import { isSonataAgent, staleAgents, disabledOpencodeAgents, enableOpencodeAgent, firstErrorLine,
 } from '../detect.js';
 import { getAdapter } from '../adapters/index.js';
 import type { HarnessProblem } from '../adapters/types.js';
@@ -26,7 +27,7 @@ import {
 } from '../settings.js';
 import type { Settings } from '../settings.js';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { findLitellm } from '../native/litellm.js';
 import { litellmRequired, sharedBaseUrls, sharedBaseUrlWarning } from '../native/providers.js';
 import { litellmStatus, type InstallerDeps } from '../native/litellm-venv.js';
@@ -36,7 +37,7 @@ import { loadModelsDev } from '../modelsdev.js';
 import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
-import { keyReport, resolveKeyDetail } from '../native/credentials.js';
+import { keyReport, resolveKeyDetail, resolveKeyFromSource } from '../native/credentials.js';
 import { opencodeCredentialOrigin, opencodeDbPath, readOpencodeCredentials } from '../native/opencode-store.js';
 
 /**
@@ -822,6 +823,42 @@ export async function cmdDoctor(
           `define — run \`sonata sync\` to remove them: ${stale.slice(0, 3).join(', ')}` +
           (stale.length > 3 ? ', …' : ''),
        });
+
+  if (config.autoRoute !== undefined) {
+    // A missing key is advisory: auto-routing falls back to the default tier.
+    if (resolveKeyFromSource('typesafe', home, 'sonata') === undefined) {
+      checks.push({
+        name: 'auto route',
+        ok: true,
+        detail: 'on, but no TypeSafe key — every -auto request takes the fallback tier. Run `sonata auth add typesafe`',
+      });
+    }
+    // A file sonata does not own is one `sync` refuses to overwrite, so it
+    // needs its own advice: re-running sync would leave it in place.
+    //
+    // Claude Code reads agents from both the project and the user directory,
+    // and a global-scope `sonata init` writes them to the latter — so a file
+    // in either place counts, the project one first as Claude Code prefers it.
+    const agentDirs = [agentsDir, join(home, '.claude', 'agents')];
+    const files = autoAgentRoles(config).map((role) =>
+      agentDirs.map((dir) => join(dir, `${role}-auto.md`)).find((path) => existsSync(path))
+        ?? join(agentsDir, `${role}-auto.md`));
+    const missing = files.filter((path) => !existsSync(path)).map((path) => basename(path));
+    const foreign = files.filter((path) => existsSync(path) && !isSonataAgent(path));
+    if (missing.length > 0) {
+      checks.push({ name: 'auto route', ok: false, detail: `agent file(s) missing: ${missing.join(', ')} — run \`sonata sync\`` });
+    }
+    if (foreign.length > 0) {
+      checks.push({
+        name: 'auto route',
+        ok: false,
+        detail: `${foreign.join(', ')} is not sonata-owned, so \`sonata sync\` will not overwrite it — rename or remove it, then run \`sonata sync\``,
+      });
+    }
+    if (missing.length === 0 && foreign.length === 0) {
+      checks.push({ name: 'auto route', ok: true, detail: `on (jev, min_confidence ${config.autoRoute.minConfidence})` });
+    }
+  }
 
   // A *stale* agent names a model the config dropped; an **outdated** one keeps
   // its name and its old instructions. `staleAgents` compares filenames and so

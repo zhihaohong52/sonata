@@ -24,7 +24,7 @@
  * possible at all. The first is one number for every remaining alias, so it
  * has to stay the smallest window that could answer.
  */
-import type { SonataConfig } from './config.js';
+import type { SonataConfig, TierLists } from './config.js';
 import { splitCandidate } from './effort.js';
 
 /** The window Claude Code assumes for an id carrying `[1m]`. */
@@ -58,6 +58,12 @@ export function tierQualifiesForExtendedContext(config: SonataConfig, keys: read
     if (model.contextWindow === undefined || model.contextWindow < EXTENDED_CONTEXT_TOKENS) return false;
   }
   return native > 0;
+}
+
+/** An auto alias can choose any present tier, so every tier must qualify. */
+export function roleQualifiesForExtendedContext(config: SonataConfig, lists: TierLists): boolean {
+  return [lists.simple, lists.normal, lists.complex].every((keys) =>
+    keys === undefined || tierQualifiesForExtendedContext(config, keys));
 }
 
 /**

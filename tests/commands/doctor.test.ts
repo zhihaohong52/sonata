@@ -10,7 +10,8 @@ import { opencodeDbPath } from '../../src/native/opencode-store.js';
 import { sqliteAvailable, writeOpencodeCredDb } from '../opencode-db-fixture.js';
 import { credentialDir } from '../../src/native/oauth-login.js';
 import { cmdRoute } from '../../src/commands/route.js';
-import { nativeAgentMarkdown } from '../../src/commands/sync.js';
+import { nativeAgentMarkdown, plannedAgents } from '../../src/commands/sync.js';
+import { parseConfig } from '../../src/config.js';
 
 vi.mock('../../src/native/litellm.js', async (importOriginal) => ({
   // The rest is real: doctor merges gateways through serve's own function,
@@ -177,6 +178,76 @@ code = ["a"]
     for (const name of ['agents', 'agent tools']) {
       expect(res.checks.find((c) => c.name === name)?.ok).toBe(true);
     }
+  });
+
+  const AUTO = `
+[auto_route]
+classifier = "jev"
+
+[models."a"]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+[models."b"]
+harness = "codex"
+id = "gpt-5.6-pro"
+
+[tiers.code]
+simple = ["a"]
+normal = ["a", "b"]
+complex = ["b"]
+`;
+
+  it('warns when auto-routing is on without a TypeSafe key', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.find((c) => c.name === 'auto route' && /sonata auth add typesafe/.test(c.detail))).toBeDefined();
+  });
+
+  it('names sonata sync when a -auto agent file is missing', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    writeSonataKey(home, 'typesafe', 'k');
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.find((c) => c.name === 'auto route' && /sonata sync/.test(c.detail) && /code-auto/.test(c.detail))).toBeDefined();
+  });
+
+  it('accepts an auto agent written to the user agents directory by a global-scope init', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    writeSonataKey(home, 'typesafe', 'k');
+    mkdirSync(join(home, '.claude', 'agents'), { recursive: true });
+    const code = plannedAgents(parseConfig(AUTO)).find((a) => a.name === 'code-auto');
+    writeFileSync(join(home, '.claude', 'agents', 'code-auto.md'), code?.content ?? '');
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.some((c) => c.name === 'auto route' && !c.ok)).toBe(false);
+    expect(checks.find((c) => c.name === 'auto route' && c.ok && /on \(jev/.test(c.detail))).toBeDefined();
+  });
+
+  it('reports a non-sonata file occupying an auto agent name', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    mkdirSync(join(cwd, '.claude', 'agents'), { recursive: true });
+    writeFileSync(join(cwd, '.claude', 'agents', 'code-auto.md'), 'My own agent');
+    writeSonataKey(home, 'typesafe', 'k');
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const check = checks.find((c) => c.name === 'auto route' && !c.ok);
+    expect(check?.detail).toContain('code-auto.md');
+    expect(check?.detail).toContain('not sonata-owned');
+    expect(check?.detail).toMatch(/rename or remove it/);
+  });
+
+  it('reports nothing about auto-routing when it is off', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO.replace('[auto_route]\nclassifier = "jev"\n\n', ''));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.some((c) => c.name === 'auto route')).toBe(false);
   });
 });
 

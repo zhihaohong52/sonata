@@ -1,7 +1,7 @@
-import { EXTENDED_CONTEXT_SUFFIX, tierQualifiesForExtendedContext } from '../extended-context.js';
+import { EXTENDED_CONTEXT_SUFFIX, roleQualifiesForExtendedContext, tierQualifiesForExtendedContext } from '../extended-context.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { generatedAgents, generatedNativeAgents, expectedAgentNames, isReadOnlyRole, loadConfig, TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
+import { autoAgentRoles, generatedAgents, generatedNativeAgents, expectedAgentNames, isReadOnlyRole, loadConfig, TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
 
 /** One of the tiers a role can define. */
 type Tier = (typeof TIER_NAMES)[number];
@@ -564,6 +564,45 @@ Focus on ${blurb}.${delegating}
 `;
 }
 
+/**
+ * A `<role>-auto` agent: same role prompt, but the router chooses the tier
+ * once per conversation (`src/native/auto-route.ts`). Its fan-out rule is the
+ * `simple` leaf one: the tier is not known when the prompt is written, and the
+ * `normal` rule would let a conversation routed to `simple` delegate sideways
+ * to another `-simple` agent, breaking the downward-only rule.
+ */
+export function autoAgentMarkdown(spec: {
+  role: string;
+  extendedContext?: boolean;
+  availableTiers: readonly Tier[];
+  planTiers: readonly Tier[];
+}): string {
+  const blurb = ROLE_BLURB[spec.role] ?? spec.role;
+  const alias = `sonata-${spec.role}-auto`;
+  const model = spec.extendedContext === true ? `${alias}${EXTENDED_CONTEXT_SUFFIX}` : alias;
+  const tools = toolsForRole(spec.role);
+  const delegating = delegatingForRole(spec.role, spec.planTiers, 'simple', spec.availableTiers);
+  const description = `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop; sonata chooses the tier (${spec.availableTiers.join(', ')}) for each task. The default choice — use an explicit -${spec.availableTiers.join(' / -')} agent only when you know the tier better. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`;
+  return `---
+name: ${spec.role}-auto
+description: ${description}
+model: ${model}
+${tools}---
+
+This agent only works in a routed session (sonata code, or sonata route on/auto).
+
+${NO_MODEL_ARG}
+
+Sonata chooses the tier for this task once, from its first message, and keeps
+it for the whole conversation. If the choice was too low and the work fails
+review, re-run it on the explicit tier agent one step up.
+
+${TIER_AGENT_MARKER} — edits here are overwritten on the next sync.
+
+Focus on ${blurb}.${delegating}
+`;
+}
+
 export interface SyncOptions { cwd: string; agentsDir: string; home?: string }
 
 export interface SyncResult {
@@ -663,6 +702,19 @@ export function plannedAgents(config: SonataConfig): PlannedAgent[] {
         }),
       });
     }
+  }
+  for (const role of autoAgentRoles(config)) {
+    const lists = config.tiers[role];
+    const available = tiersOf(role);
+    out.push({
+      name: `${role}-auto`,
+      content: autoAgentMarkdown({
+        role,
+        extendedContext: roleQualifiesForExtendedContext(config, lists),
+        availableTiers: available,
+        planTiers,
+      }),
+    });
   }
   return out;
 }

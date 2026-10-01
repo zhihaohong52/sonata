@@ -8,7 +8,7 @@ import type { NativeCandidate } from './helpers.js';
 import type { CredentialSource } from '../config.js';
 import type { NativeGatewayAuth } from '../config.js';
 import type { TierLists } from '../config.js';
-import { tierAgentNames, parseConfig } from '../config.js';
+import { autoAgentRoles, tierAgentNames, parseConfig } from '../config.js';
 import { litellmRequired } from '../native/providers.js';
 import { expandCandidates, loadAaCatalog, proposeTiers, unpinnedVariants } from '../catalog.js';
 import { nativeTomlFor } from './toml.js';
@@ -48,7 +48,7 @@ export interface InitPlan {
    * file sonata does not own, so declining must be a real no-op rather than a
    * smaller edit.
    */
-  guidance: { scope: 'project' | 'global' | 'skip'; path?: string };
+  guidance: { scope: 'project' | 'global' | 'skip'; path?: string; autoRoute?: boolean };
   routing: 'project' | 'global' | 'skip';
   syncCwd: string;
   agentsDir: string;
@@ -249,7 +249,7 @@ export function plan(
   // writer would otherwise delete — `pricing_provider` and every `[price]`
   // block. Both were read on load and written back by nobody, so each
   // `sonata init` silently un-priced the gateway.
-  const configToml = nativeTomlFor(nativeRoleModels, state.credentialSources ?? {}, tiers, migratedModels, chosenNative, configForScope?.run, avoidGateways, configForScope, configForScope?.budget, gatewayOrder);
+  const configToml = nativeTomlFor(nativeRoleModels, state.credentialSources ?? {}, tiers, migratedModels, chosenNative, configForScope?.run, avoidGateways, configForScope, configForScope?.budget, gatewayOrder, configForScope?.autoRoute);
 
   // ---- notices (key check) ----
   const notices: string[] = [];
@@ -320,7 +320,11 @@ export function plan(
   // Counted with the same rule `sync` writes by (`tierAgentNames`), not by
   // roles × models: a role whose `simple` and `complex` lists match collapses
   // to one file, so the old count promised 8 files and `sync` then wrote 4.
-  const totalAgents = tierAgentNames(tiers).length;
+  // It includes the -auto agents `sync` adds when [auto_route] survives the
+  // config rewrite; a config that will not parse promises the tier agents only.
+  let autoAgents = 0;
+  try { autoAgents = autoAgentRoles(parseConfig(configToml)).length; } catch { /* reported elsewhere */ }
+  const totalAgents = tierAgentNames(tiers).length + autoAgents;
   // Parsed back out of the TOML about to be written: `serve` makes this same
   // call against that same file, and a summary derived from the selections
   // instead could promise something the written config does not say.
@@ -339,6 +343,7 @@ export function plan(
       path: guidanceScope === 'global'
         ? join(opts.home, '.claude', 'CLAUDE.md')
         : join(opts.cwd, 'CLAUDE.md'),
+      autoRoute: configForScope?.autoRoute !== undefined,
     };
 
   const summary: string[] = [

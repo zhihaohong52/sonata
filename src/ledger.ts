@@ -34,6 +34,26 @@ export type LedgerPrice =
    */
   | { source: 'harness'; totalUsd: number };
 
+/**
+ * The classifier's decision for an auto-routed conversation, recorded on the
+ * row of the request that made it. Raw values as received, so any later rule
+ * (a different threshold, a target share) can be computed from history
+ * without calling the classifier again.
+ */
+export interface AutoRouteRecord {
+  classifier: 'jev';
+  /** The classifier's own version, e.g. `jev-1.13.0`. */
+  classifierModel?: string;
+  choice?: string;
+  confidence?: number;
+  probabilities?: Record<string, number>;
+  outcome: 'accepted' | 'low-confidence' | 'invalid' | 'failed';
+  /** Why a `failed` or `invalid` outcome happened. Never task text. */
+  reason?: string;
+  ms: number;
+  tokens?: { input: number; output: number };
+}
+
 export interface LedgerRow {
   ts: string;
   ms: number;
@@ -54,6 +74,11 @@ export interface LedgerRow {
   alias: string;
   role?: string;
   tier?: string;
+  /** `auto` when the tier was chosen by the classifier, `manual` when the caller named it.
+   * Absent on rows written before auto-routing. */
+  route?: 'auto' | 'manual';
+  /** The decision itself, only on the row of the request that made it. */
+  autoRoute?: AutoRouteRecord;
   key?: string;
   /**
    * The reasoning-effort level the router sent (`reasoning_effort`), when the
@@ -226,6 +251,24 @@ function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
+/** The decision fields read by `aggregate`, checked before a row reaches it. */
+function autoRouteIsValid(record: unknown): boolean {
+  if (record === null || typeof record !== 'object' || Array.isArray(record)) return false;
+  const value = record as Partial<AutoRouteRecord>;
+  if (value.classifier !== 'jev' || !['accepted', 'low-confidence', 'invalid', 'failed'].includes(value.outcome ?? '')
+    || !isCount(value.ms)) return false;
+  if ('confidence' in value && !isCount(value.confidence)) return false;
+  if ('probabilities' in value) {
+    if (value.probabilities === null || typeof value.probabilities !== 'object' || Array.isArray(value.probabilities)
+      || !Object.values(value.probabilities).every(isCount)) return false;
+  }
+  if ('tokens' in value) {
+    if (value.tokens === null || typeof value.tokens !== 'object' || Array.isArray(value.tokens)
+      || !isCount(value.tokens.input) || !isCount(value.tokens.output)) return false;
+  }
+  return true;
+}
+
 /**
  * A persisted row is untrusted input. Every downstream reader (`aggregate`,
  * `recentRoutes`) reaches into `tokens.input`/`tokens.output`, `attempts.length`
@@ -242,6 +285,8 @@ function isCount(value: unknown): value is number {
  * existed carry none, and `normaliseCacheFields` reads those as 0.
  */
 function hasRequiredFields(row: LedgerRow): boolean {
+  if ('route' in row && row.route !== 'auto' && row.route !== 'manual') return false;
+  if ('autoRoute' in row && !autoRouteIsValid(row.autoRoute)) return false;
   const tokens = row.tokens;
   if (tokens === null || typeof tokens !== 'object' || Array.isArray(tokens)) return false;
   if (!isCount(tokens.input) || !isCount(tokens.output)) return false;
