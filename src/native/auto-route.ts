@@ -215,15 +215,27 @@ export function isLoopbackUrl(baseUrl: string): boolean {
   }
 }
 
+/**
+ * The key-store name a decision URL's key is filed under, by host — a key is
+ * only ever sent to the host it belongs to. `auto-route` is every other host:
+ * a self-hosted decision server, keyed under one shared name.
+ */
+export function decisionGatewayFor(baseUrl: string): 'typesafe' | 'openrouter' | 'auto-route' {
+  let host = '';
+  try { host = new URL(baseUrl).hostname; } catch { /* other */ }
+  if (host === 'api.typesafe.ai') return 'typesafe';
+  if (host === 'openrouter.ai') return 'openrouter';
+  return 'auto-route';
+}
+
 /** The key a decision URL needs, by host — a key is only ever sent to the host it belongs to. */
 export function decisionKeyFor(
   baseUrl: string,
   keys: { openrouter: () => string | undefined; typesafe: () => string | undefined; other: () => string | undefined },
 ): { key: string | undefined; hint: string } {
-  let host = '';
-  try { host = new URL(baseUrl).hostname; } catch { /* other */ }
-  if (host === 'openrouter.ai') return { key: keys.openrouter(), hint: 'sonata auth add openrouter' };
-  if (host === 'api.typesafe.ai') return { key: keys.typesafe(), hint: 'sonata auth add typesafe' };
+  const gateway = decisionGatewayFor(baseUrl);
+  if (gateway === 'openrouter') return { key: keys.openrouter(), hint: 'sonata auth add openrouter' };
+  if (gateway === 'typesafe') return { key: keys.typesafe(), hint: 'sonata auth add typesafe' };
   return { key: keys.other(), hint: 'sonata auth add auto-route' };
 }
 

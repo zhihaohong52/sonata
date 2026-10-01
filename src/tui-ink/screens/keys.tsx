@@ -1,11 +1,12 @@
 import React from 'react';
 import { Text } from 'ink';
 import { keyReport } from '../../native/credentials.js';
+import { decisionGatewayFor } from '../../native/auto-route.js';
 import { STATE } from '../theme.js';
 import { usePalette } from '../theme-context.js';
 import { Message, Screen, count, fit, ruleWidth } from '../components/screen.js';
 import { loadConfigForScreen } from './screen-config.js';
-import { keyRows, gatewaysMissingKeys } from './key-rows.js';
+import { autoRouteKeyRow, keyRows, gatewaysMissingKeys } from './key-rows.js';
 
 /**
  * Show credential sources without exposing or editing secret values.
@@ -25,6 +26,13 @@ export function KeysScreen({ cwd, home }: { cwd: string; home: string }): React.
   const entries = Object.entries(loaded.config.native?.gateways ?? {})
     .map(([gateway, gw]) => ({ gateway, auth: gw.auth }));
   const rows = keyRows(entries, keyReport(entries.map((e) => e.gateway), home));
+  // The decision key is not a gateway's, but it is a credential the config can
+  // be missing — and this read-only screen is where that stays visible. Asked
+  // under the name its host files one under, which is not the URL.
+  if (loaded.config.autoRoute !== undefined) {
+    const baseUrl = loaded.config.autoRoute.baseUrl;
+    rows.push(autoRouteKeyRow(baseUrl, keyReport([decisionGatewayFor(baseUrl)], home)[0]?.source ?? null));
+  }
   const missing = new Set(gatewaysMissingKeys(rows));
   // Capped at 40% of the page. Grown to the longest identifier it let one
   // long key push every row past the page and wrap, whatever the budget for

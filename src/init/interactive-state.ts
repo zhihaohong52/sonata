@@ -98,6 +98,15 @@ export async function interactiveState(
     );
   }
 
+  // The saved decision URL, by scope: what the Auto-route step opens on. It
+  // cannot ride on `InitState`, where an `autoRoute` entry means "chosen this
+  // run" and an absent one means "keep the saved table".
+  const savedAutoRouteBaseUrls: Partial<Record<ConfigScope, string>> = {};
+  for (const scope of ['project', 'global'] as const) {
+    const baseUrl = env.configsByScope[scope]?.autoRoute?.baseUrl;
+    if (baseUrl !== undefined) savedAutoRouteBaseUrls[scope] = baseUrl;
+  }
+
   const codexCredential = readChatGptOAuth(opts.home, 'codex');
   const opencodeCredential = readOpencodeChatGptOAuth(opts.home);
   const daysUntil = (expiresAt: number | undefined): number | null => expiresAt === undefined
@@ -113,10 +122,17 @@ export async function interactiveState(
     // Every offered gateway, not just the BYOK ones: the models step asks a
     // gateway what it serves rather than trusting a harness snapshot, and
     // that call has to authenticate. A gateway with no resolvable key simply
-    // keeps its harness list.
+    // keeps its harness list. The decision-server names come too: the
+    // Auto-route step asks for a key only when none is already held under
+    // `typesafe`, `openrouter` or `auto-route`, which is how `sonata auth add`
+    // files one.
     storedKeys: Object.fromEntries(
       resolveKeys(
-        [...new Set([...env.byokProviders.map((provider) => provider.name), ...env.offered.map((p) => p.provider)])],
+        [...new Set([
+          ...env.byokProviders.map((provider) => provider.name),
+          ...env.offered.map((p) => p.provider),
+          'typesafe', 'openrouter', 'auto-route',
+        ])],
         opts.home,
       ).map((source) => [source.gateway, source.key]),
     ),
@@ -142,6 +158,7 @@ export async function interactiveState(
     declaredGatewayNames: declaredGatewayNamesByScope,
     declaredPricingProviders: declaredPricingProvidersByScope,
     harnessOnlyUpstreams: harnessOnlyUpstreamsByScope,
+    savedAutoRouteBaseUrls,
     initialState,
     initialStateByScope,
   };
@@ -206,6 +223,12 @@ export async function interactiveState(
     liveModels: result.state.liveModels,
     customWireFormats: result.state.customWireFormats,
     byokKeys: result.state.byokKeys,
+    // Setup's auto-route answer and its key. Carried explicitly like every
+    // other field here: this object is built key by key, so a new answer that
+    // is not named is dropped before plan() can see it — which is how it would
+    // silently keep the saved table instead.
+    autoRoute: result.state.autoRoute,
+    decisionKey: result.state.decisionKey,
     tiers: result.state.tiers,
   };
   return { state: stateForPlan, nativeByKey, cancelled: false };

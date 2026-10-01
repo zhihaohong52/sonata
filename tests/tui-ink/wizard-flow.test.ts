@@ -102,7 +102,11 @@ describe('the wizard on a first run', () => {
     expect(w.lastFrame()).toMatch(/acme-(fast|deep)/);
 
     await w.press(ENTER);
+    // The Auto-route step sits between the rankings and the summary.
+    expect(w.lastFrame()).toContain('Auto-route subagent tiers?');
+    await w.press(ENTER); // Off
     expect(w.lastFrame()).toContain('Summary');
+    expect(w.lastFrame()).toContain('Auto-route: off');
   });
 });
 
@@ -116,11 +120,13 @@ describe('the wizard, remaining flow', () => {
     await w.press(ENTER);
     await w.press(ENTER, ENTER, 'test-key', ENTER, DOWN, ENTER);
     await w.press(SPACE, ENTER);
-    await w.press(ENTER, ENTER, ENTER, ENTER, ENTER);
+    // roles, the three tier screens, auto-route (Off), then the summary.
+    await w.press(ENTER, ENTER, ENTER, ENTER, ENTER, ENTER);
 
     const r = w.result();
     expect(r?.cancelled).toBe(false);
     expect(r?.state.configScope).toBe('project');
+    expect(r?.state.autoRoute).toBeNull();
     expect(r?.state.nativeKeys).toEqual(['acme-fast', 'acme-deep']);
     expect(r?.state.roles).toEqual(['code']);
     expect(r?.state.tiers?.code.simple.length).toBeGreaterThan(0);
@@ -318,6 +324,8 @@ describe('a tier screen for a config whose gateway this session never offered', 
     await w.press(ENTER);
     expect(w.lastFrame()).toContain('code: complex models');
     await w.press(ENTER);
+    expect(w.lastFrame()).toContain('Auto-route subagent tiers?');
+    await w.press(ENTER); // Off
     expect(w.lastFrame()).toContain('Summary');
     await w.press(ENTER);
 
