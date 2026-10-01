@@ -81,6 +81,13 @@ describe('the choice a URL opens on', () => {
     expect(initialChoiceFor(null, 'https://api.typesafe.ai')).toBe('off');
     expect(initialChoiceFor({ baseUrl: 'https://decisions.example.com' }, 'https://api.typesafe.ai')).toBe('custom');
   });
+
+  it('recognises a named host whatever case the URL was saved in', () => {
+    // `new URL` folds hostname case, so a hand-edited config must open on the
+    // named row rather than on Custom.
+    expect(choiceForUrl('https://API.typesafe.ai')).toBe('typesafe');
+    expect(choiceForUrl('https://openRouter.ai/API')).toBe('openrouter');
+  });
 });
 
 describe('AutoRouteStep', () => {
@@ -180,6 +187,70 @@ describe('AutoRouteStep', () => {
     const w = renderStep();
     await w.press('\x1B[D');
     expect(w.backed()).toBe(1);
+    w.unmount();
+  });
+
+  it('keeps a key already typed when the step is walked back into', async () => {
+    const w = renderStep();
+    await w.press(DOWN, ENTER);
+    await until(() => w.lastFrame().includes('Key for api.typesafe.ai'), 'the TypeSafe key screen');
+    await w.type('sk-decision');
+    await w.press(ENTER);
+    const gathered = w.state();
+    expect(gathered.decisionKey).toEqual({ gateway: 'typesafe', key: 'sk-decision' });
+    w.unmount();
+
+    // Back to the summary and forward again, the same state the wizard holds.
+    // The key screen must not reopen empty: a required host would demand a key
+    // just typed, and a blank submit would erase one.
+    const again = renderStep({ state: gathered });
+    await until(() => again.lastFrame().includes('Auto-route subagent tiers?'), 'the choice screen');
+    // The cursor opens on the URL this run already chose.
+    await again.press(ENTER);
+    expect(again.lastFrame()).not.toContain('Key for');
+    expect(again.done()).toBe(1);
+    expect(again.state().decisionKey).toEqual({ gateway: 'typesafe', key: 'sk-decision' });
+    again.unmount();
+  });
+
+  it('keeps an optional custom key the same way', async () => {
+    const w = renderStep();
+    await w.press(DOWN, DOWN, DOWN, ENTER);
+    await until(() => w.lastFrame().includes('Decision server URL'), 'the URL screen');
+    await w.type('https://decisions.example.com/v1');
+    await w.press(ENTER);
+    await until(() => w.lastFrame().includes('Key for decisions.example.com'), 'the optional key screen');
+    await w.type('sk-self');
+    await w.press(ENTER);
+    const gathered = w.state();
+    expect(gathered.decisionKey).toEqual({ gateway: 'auto-route', key: 'sk-self' });
+    w.unmount();
+
+    const again = renderStep({ state: gathered });
+    await until(() => again.lastFrame().includes('Auto-route subagent tiers?'), 'the choice screen');
+    await again.press(ENTER); // Custom — the cursor opens on the URL it already chose
+    await until(() => again.lastFrame().includes('Decision server URL'), 'the URL screen');
+    await again.press(ENTER); // the URL it already holds
+    expect(again.lastFrame()).not.toContain('Key for');
+    expect(again.done()).toBe(1);
+    // The key survives, rather than being erased by the blank submit an
+    // optional screen would have offered.
+    expect(again.state().decisionKey).toEqual({ gateway: 'auto-route', key: 'sk-self' });
+    again.unmount();
+  });
+
+  it('re-picks a saved TypeSafe URL without asking for the key it has', async () => {
+    const w = renderStep({
+      savedBaseUrl: 'https://api.typesafe.ai',
+      storedKeys: { typesafe: 'sk-stored' },
+    });
+    await until(() => w.lastFrame().includes('Auto-route subagent tiers?'), 'the choice screen');
+    expect(w.lastFrame()).toContain('› TypeSafe'); // opens on the saved URL
+    await w.press(ENTER);
+    expect(w.lastFrame()).not.toContain('Key for');
+    expect(w.done()).toBe(1);
+    expect(w.state().autoRoute).toEqual({ baseUrl: 'https://api.typesafe.ai' });
+    expect(w.state().decisionKey).toBeUndefined();
     w.unmount();
   });
 });

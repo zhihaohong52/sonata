@@ -543,4 +543,38 @@ describe('plan — [auto_route] from the Setup step', () => {
     const p = plan(withSaved(), { ...state, autoRoute: { baseUrl: 'https://api.typesafe.ai' } }, noCredentials, opts);
     expect(p.keysToStore).toEqual([]);
   });
+
+  // The confirm screen is where the [auto_route] change is announced: the
+  // table is written by this plan and named nowhere else. What it says is
+  // what is about to happen to the table — a carried-forward one is not a
+  // change being asked about.
+  it('names the change on the confirm summary, with a pin that survives', () => {
+    const unchanged = plan(withSaved(savedAutoRoute), state, noCredentials, opts);
+    expect(unchanged.summary.join('\n')).not.toContain('auto-route:');
+
+    const turnedOff = plan(withSaved(savedAutoRoute), { ...state, autoRoute: null }, noCredentials, opts);
+    expect(turnedOff.summary.join('\n')).toContain('auto-route: removed');
+
+    const sameUrl = plan(withSaved(savedAutoRoute), {
+      ...state, autoRoute: { baseUrl: 'https://api.typesafe.ai' },
+    }, noCredentials, opts);
+    expect(sameUrl.summary.join('\n')).toContain('auto-route: https://api.typesafe.ai (model jev-1.13)');
+
+    const moved = plan(withSaved(savedAutoRoute), {
+      ...state, autoRoute: { baseUrl: 'https://openrouter.ai/api' },
+    }, noCredentials, opts);
+    expect(moved.summary.join('\n')).toContain('auto-route: https://openrouter.ai/api');
+    expect(moved.summary.join('\n')).not.toContain('(model');
+
+    const firstTime = plan(withSaved(), {
+      ...state, autoRoute: { baseUrl: 'http://localhost:8000' },
+    }, noCredentials, opts);
+    expect(firstTime.summary.join('\n')).toContain('auto-route: http://localhost:8000');
+  });
+
+  it('says nothing when nothing about the table is changing', () => {
+    // Off over nothing-to-turn-off is not a change either.
+    const neverSet = plan(withSaved(), { ...state, autoRoute: null }, noCredentials, opts);
+    expect(neverSet.summary.join('\n')).not.toContain('auto-route:');
+  });
 });

@@ -97,6 +97,12 @@ export interface WizardData {
    * where an entry means "chosen this run".
    */
   savedAutoRouteBaseUrls?: Partial<Record<'project' | 'global', string>>;
+  /**
+   * The saved `[auto_route] model`, by scope — only the summary needs it, to
+   * say a pinned model will survive rather than that one is chosen
+   * automatically. A pin belongs to its URL, so the two are read together.
+   */
+  savedAutoRouteModels?: Partial<Record<'project' | 'global', string>>;
   /** Injected so tests never reach the network. */
   fetchModels?: typeof defaultFetchModels;
   /** Cached models.dev catalogue, injected so provider screens stay pure. */
@@ -150,10 +156,12 @@ function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: Choi
 }
 
 /** The wizard's closing summary of what `sonata init` is about to write, shown before the confirm. */
-function Summary({ state, savedBaseUrl, onDone, onBack }: {
+function Summary({ state, savedBaseUrl, savedModel, onDone, onBack }: {
   state: InitState;
   /** The saved `base_url`, for the line when the Auto-route step was never reached. */
   savedBaseUrl?: string;
+  /** The saved pin, so the line can say one survives rather than one is chosen. */
+  savedModel?: string;
   onDone: InitWizardProps['onDone'];
   onBack: () => void;
 }): React.ReactElement {
@@ -165,11 +173,16 @@ function Summary({ state, savedBaseUrl, onDone, onBack }: {
   const autoRoute = state.autoRoute === undefined
     ? (savedBaseUrl === undefined ? undefined : { baseUrl: savedBaseUrl })
     : state.autoRoute;
+  // The pin survives exactly when plan() keeps it: an untouched step carries
+  // the whole table, and a re-picked URL keeps `model` — a changed URL drops
+  // it, because a pinned model belongs to the URL that serves it.
+  const pinKept = savedModel !== undefined
+    && (state.autoRoute === undefined || (state.autoRoute !== null && state.autoRoute.baseUrl === savedBaseUrl));
   const autoRouteLine = autoRoute === undefined
     ? undefined
     : autoRoute === null
       ? 'Auto-route: off'
-      : `Auto-route: ${autoRoute.baseUrl} (model chosen automatically)`;
+      : `Auto-route: ${autoRoute.baseUrl} (${pinKept ? `pinned model ${savedModel}` : 'model chosen automatically'})`;
   useInput((_, key) => {
     if (key.escape) onDone({ cancelled: true, state });
     if (key.leftArrow) onBack();
@@ -231,6 +244,9 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
   const savedAutoRouteBaseUrl = state.configScope === undefined
     ? undefined
     : data.savedAutoRouteBaseUrls?.[state.configScope];
+  const savedAutoRouteModel = state.configScope === undefined
+    ? undefined
+    : data.savedAutoRouteModels?.[state.configScope];
   const cancel = () => onDone({ cancelled: true, state });
   const next = (value: unknown) => {
     setState((current) => applyStep(current, step, value));
@@ -313,7 +329,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       // Computed *before* this guard, not after: deciding from `candidates`
       // alone sent a BYOK-only run straight past the step.
       if (!hasModelsToPick(candidates, addedGateways)) {
-        return <Summary state={state} savedBaseUrl={savedAutoRouteBaseUrl} onDone={onDone} onBack={back} />;
+        return <Summary state={state} savedBaseUrl={savedAutoRouteBaseUrl} savedModel={savedAutoRouteModel} onDone={onDone} onBack={back} />;
       }
       const addedBaseUrls = Object.fromEntries(
         (state.customProviders ?? []).map((provider) => [provider.name, provider.url]),
@@ -365,7 +381,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const roles = state.roles ?? [];
       const role = roles[Math.floor(tierIndex / TIER_NAMES.length)];
       const tier = TIER_NAMES[tierIndex % TIER_NAMES.length]!;
-      if (!role) return <Summary state={state} savedBaseUrl={savedAutoRouteBaseUrl} onDone={onDone} onBack={back} />;
+      if (!role) return <Summary state={state} savedBaseUrl={savedAutoRouteBaseUrl} savedModel={savedAutoRouteModel} onDone={onDone} onBack={back} />;
       const catalog = loadAaCatalog(data.home);
       // Ranking runs over every model actually selected, not the startup set:
       // `data.candidates` predates this run's additions, and a model whose
@@ -560,6 +576,6 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     // Step 6, and the catch-all: a step number nobody sets still lands on the
     // confirm rather than on a blank screen.
     default:
-      return <Summary state={state} savedBaseUrl={savedAutoRouteBaseUrl} onDone={onDone} onBack={back} />;
+      return <Summary state={state} savedBaseUrl={savedAutoRouteBaseUrl} savedModel={savedAutoRouteModel} onDone={onDone} onBack={back} />;
   }
 }

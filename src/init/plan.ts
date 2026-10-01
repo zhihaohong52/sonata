@@ -362,6 +362,21 @@ export function plan(
       autoRoute: autoRoute !== undefined,
     };
 
+  // The one line naming the `[auto_route]` change: this table is written by
+  // this plan and named nowhere else on the confirm. Only when this run
+  // decided it — a table carried forward untouched is not a change being asked
+  // about, and neither is turning off what was already off.
+  const autoRouteLine = state.autoRoute === undefined
+    ? undefined
+    : state.autoRoute === null
+      ? (savedAutoRoute === undefined ? undefined : 'auto-route: removed')
+      // `model` survives only on an unchanged URL — the same rule the write
+      // above applies — so the line names a pin exactly when one will exist.
+      : `auto-route: ${state.autoRoute.baseUrl}` +
+        (savedAutoRoute?.model !== undefined && savedAutoRoute.baseUrl === state.autoRoute.baseUrl
+          ? ` (model ${savedAutoRoute.model})`
+          : '');
+
   const summary: string[] = [
     '  Summary',
     `    models  ${chosenNative.map((c) => `${c.gateway}/${c.id}`).join(', ')}`,
@@ -370,6 +385,7 @@ export function plan(
     `    hook    ${state.hookScope === 'skip' ? 'not installed' : `${state.hookScope} settings.json`}`,
     `    routing ${state.routing === 'skip' ? 'not configured' : `sonata route auto${state.routing === 'global' ? ' --global' : ''}`}`,
     `    guide   ${guidance.scope === 'skip' ? 'no CLAUDE.md block' : `prefer-tier-agents block in ${guidance.path}`}`,
+    ...(autoRouteLine === undefined ? [] : [`    ${autoRouteLine}`]),
     `    litellm ${installLitellmNeeded ? `install litellm[proxy] into ${'~/.config/sonata/litellm'}` : 'not needed — no gateway routes through it'}`,
     `    config  ${configPathResolved}`,
     '',

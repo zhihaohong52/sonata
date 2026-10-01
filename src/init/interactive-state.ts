@@ -98,13 +98,17 @@ export async function interactiveState(
     );
   }
 
-  // The saved decision URL, by scope: what the Auto-route step opens on. It
-  // cannot ride on `InitState`, where an `autoRoute` entry means "chosen this
-  // run" and an absent one means "keep the saved table".
+  // The saved decision URL and pin, by scope: what the Auto-route step opens
+  // on, and what the summary says survives. They cannot ride on `InitState`,
+  // where an `autoRoute` entry means "chosen this run" and an absent one means
+  // "keep the saved table".
   const savedAutoRouteBaseUrls: Partial<Record<ConfigScope, string>> = {};
+  const savedAutoRouteModels: Partial<Record<ConfigScope, string>> = {};
   for (const scope of ['project', 'global'] as const) {
     const baseUrl = env.configsByScope[scope]?.autoRoute?.baseUrl;
     if (baseUrl !== undefined) savedAutoRouteBaseUrls[scope] = baseUrl;
+    const model = env.configsByScope[scope]?.autoRoute?.model;
+    if (model !== undefined) savedAutoRouteModels[scope] = model;
   }
 
   const codexCredential = readChatGptOAuth(opts.home, 'codex');
@@ -159,6 +163,7 @@ export async function interactiveState(
     declaredPricingProviders: declaredPricingProvidersByScope,
     harnessOnlyUpstreams: harnessOnlyUpstreamsByScope,
     savedAutoRouteBaseUrls,
+    savedAutoRouteModels,
     initialState,
     initialStateByScope,
   };

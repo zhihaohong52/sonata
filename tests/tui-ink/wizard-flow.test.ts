@@ -176,6 +176,47 @@ describe('the wizard, remaining flow', () => {
   });
 });
 
+describe('the summary’s auto-route line', () => {
+  // What the line owes the confirm: a pin that will survive is named as one.
+  // A pin belongs to its URL, so moving hosts drops it — and then selection is
+  // automatic again, which is what the line has to say.
+  function withSavedPin(): WizardData {
+    return {
+      ...firstRunData(),
+      savedAutoRouteBaseUrls: { project: 'https://api.typesafe.ai' },
+      savedAutoRouteModels: { project: 'jev-1.13' },
+      storedKeys: { typesafe: 'sk-stored' },
+    };
+  }
+
+  async function toAutoRoute(w: ReturnType<typeof renderWizard>): Promise<void> {
+    await w.press(ENTER); // config scope -> project
+    await w.press(ENTER, ENTER, 'test-key', ENTER, DOWN, ENTER); // providers
+    await w.press(SPACE, ENTER); // models
+    await w.press(ENTER); // roles
+    await w.press(ENTER, ENTER, ENTER); // the three tiers
+  }
+
+  it('names a pinned model that survives on an unchanged URL', async () => {
+    const w = renderWizard(withSavedPin());
+    await toAutoRoute(w);
+    expect(w.lastFrame()).toContain('Auto-route subagent tiers?');
+    await w.press(ENTER); // TypeSafe, the saved row — its key is stored, so no key screen
+    expect(w.lastFrame()).toContain('Summary');
+    expect(w.lastFrame()).toContain('Auto-route: https://api.typesafe.ai (pinned model jev-1.13)');
+  });
+
+  it('says selection is automatic once the URL changed and the pin went with it', async () => {
+    const w = renderWizard(withSavedPin());
+    await toAutoRoute(w);
+    await w.press(DOWN, ENTER); // OpenRouter — a different host drops the pin
+    await w.press('sk-or', ENTER); // its required key
+    expect(w.lastFrame()).toContain('Summary');
+    expect(w.lastFrame()).toContain('Auto-route: https://openrouter.ai/api (model chosen automatically)');
+    expect(w.lastFrame()).not.toContain('pinned model');
+  });
+});
+
 /**
  * The candidate rows a ranking screen is offering, in screen order: the
  * marker stripped, the score columns dropped (a different concern from which
