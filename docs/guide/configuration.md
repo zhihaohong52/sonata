@@ -121,7 +121,7 @@ min_confidence = 0.5
 Jev is asked wherever `base_url` points — any http(s) URL speaking its API:
 
 - TypeSafe directly (the default, `https://api.typesafe.ai`). Store the key with `sonata auth add typesafe`.
-- OpenRouter (`base_url = "https://openrouter.ai/api"`), using the key your `openrouter` gateway already uses (`sonata auth add openrouter`, or one opencode holds). No TypeSafe account is needed. OpenRouter marks this API alpha.
+- OpenRouter (`base_url = "https://openrouter.ai/api"`), using the key your `openrouter` gateway already uses (`sonata auth add openrouter`, or one opencode holds). No TypeSafe account is needed.
 - A self-hosted `jev-compatible-server`, e.g. `base_url = "http://localhost:8000"`. A local server usually needs no key; any other host takes one stored with `sonata auth add auto-route` when there is one.
 
 The key follows the host and is only ever sent to it: the OpenRouter key goes to `openrouter.ai`, the TypeSafe key to `api.typesafe.ai`. The key is read when each classification is made and is never logged.
@@ -138,7 +138,7 @@ Unless `model` pins one, sonata lists the decision models the URL serves (cached
 
 When enabled, `sonata sync` generates a `<role>-auto` agent for each role whose tiers differ. Jev chooses among that role's available `simple`, `normal` and `complex` tiers once per conversation; the selected tier then follows the same ranked native routing path as its explicit tier agent. If the key is missing, the request fails, the task is empty, Jev returns an invalid or low-confidence answer, or the deadline is exceeded, sonata falls back to `normal`, or `complex` when `normal` is unavailable. Use the explicit tier agents when you already know the right tier.
 
-Classifier calls are not charged against `[budget] daily_usd`. `sonata usage --by route` separates auto-routed requests from manual tier requests and reports classifier token volume beside the priced total. Where the response reports a cost (OpenRouter's does), `sonata usage` sums it and shows it apart from the priced total; a decision asked on a loopback URL (`localhost`, `127.x`, `::1`) costs nothing, and one whose response reports no cost stays unpriced.
+Classifier calls are not charged against `[budget] daily_usd`. `sonata usage --by route` separates auto-routed requests from manual tier requests and reports classifier token volume beside the priced total. Where the response reports a cost (OpenRouter's does), `sonata usage` sums it and shows it apart from the priced total; a decision asked on a loopback URL (`localhost`, `127.0.0.0/8`, `::1`) is recorded as free ($0) even when its response reports no cost, and only a non-loopback decision whose response reports no cost stays unpriced.
 
 ## Seeing and changing a ranking
 
