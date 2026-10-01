@@ -1,0 +1,14 @@
+{
+  "benchmark": "JevBench", "revision": "v1.5.4", "source_sha256": "abc123",
+  "systems": [
+    { "key": "jev-1.13.0", "display": "Jev 1.13.0 (TypeSafe AI)", "repo": "https://docs.typesafe.ai",
+      "axes": { "intelligence": 72, "calibration": 88, "speed": 84, "cost": 55 },
+      "cost": { "kind": "estimate", "usd_per_1000": 0.032 } },
+    { "key": "kev-4b", "display": "kev 4B", "repo": "https://github.com/jaredpalmer/kev",
+      "axes": { "intelligence": 40, "calibration": 70, "speed": 60, "cost": 60 },
+      "cost": { "kind": "estimate", "usd_per_1000": 0.03 } },
+    { "key": "winnow-12b", "display": "Winnow-12B Q8", "repo": "https://huggingface.co/EldanRing/Winnow-12B",
+      "axes": { "intelligence": 74, "calibration": 84, "speed": 86, "cost": 57 } },
+    { "key": "broken", "display": "No axes" }
+  ]
+}
