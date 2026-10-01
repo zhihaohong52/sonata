@@ -82,11 +82,25 @@ describe('the choice a URL opens on', () => {
     expect(initialChoiceFor({ baseUrl: 'https://decisions.example.com' }, 'https://api.typesafe.ai')).toBe('custom');
   });
 
-  it('recognises a named host whatever case the URL was saved in', () => {
-    // `new URL` folds hostname case, so a hand-edited config must open on the
-    // named row rather than on Custom.
+  it('matches the canonical endpoints whatever case the host was saved in, and however the path was slashed', () => {
+    // `new URL` folds host case, and a trailing slash is not a different
+    // server — both are the named row rather than Custom.
     expect(choiceForUrl('https://API.typesafe.ai')).toBe('typesafe');
-    expect(choiceForUrl('https://openRouter.ai/API')).toBe('openrouter');
+    expect(choiceForUrl('https://api.typesafe.ai/')).toBe('typesafe');
+    expect(choiceForUrl('https://openRouter.ai/api')).toBe('openrouter');
+    expect(choiceForUrl('https://openrouter.ai/api/')).toBe('openrouter');
+  });
+
+  it('is Custom for anything that is not the canonical endpoint', () => {
+    // A named row adopts its canonical URL on confirm, so anything else must
+    // stay Custom: a different path, port, query or fragment is a different
+    // server, and one this step has no canonical form for.
+    expect(choiceForUrl('https://api.typesafe.ai:8443')).toBe('custom');
+    expect(choiceForUrl('https://api.typesafe.ai/api/custom')).toBe('custom');
+    expect(choiceForUrl('https://openrouter.ai/api/v2')).toBe('custom');
+    expect(choiceForUrl('https://openRouter.ai/API')).toBe('custom');
+    expect(choiceForUrl('https://api.typesafe.ai?token=abc')).toBe('custom');
+    expect(choiceForUrl('https://api.typesafe.ai#frag')).toBe('custom');
   });
 });
 
@@ -154,6 +168,19 @@ describe('AutoRouteStep', () => {
     expect(w.lastFrame()).toContain('Enter an absolute http(s) URL');
     expect(w.done()).toBe(0);
     expect(w.state().autoRoute).toBeUndefined();
+    w.unmount();
+  });
+
+  it('refuses a custom URL with a query string or fragment', async () => {
+    // The rule `parseConfig` enforces, asked first: endpoint suffixes are
+    // appended to this string, so a `?…` would swallow them.
+    const w = renderStep();
+    await w.press(DOWN, DOWN, DOWN, ENTER);
+    await until(() => w.lastFrame().includes('Decision server URL'), 'the URL screen');
+    await w.type('https://decisions.example.com/v1?token=abc');
+    await w.press(ENTER);
+    expect(w.lastFrame()).toContain('Enter a URL without a query string or fragment');
+    expect(w.done()).toBe(0);
     w.unmount();
   });
 

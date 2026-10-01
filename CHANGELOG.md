@@ -32,6 +32,28 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   Also fixes auto-routing on 0.15.0, where every TypeSafe decision was refused
   (HTTP 422, no `model`) and fell back to `normal`.
 
+- **When codex and opencode are both signed in to ChatGPT, Setup asks
+  which login the ChatGPT gateway uses** (`credential_source`), opening on
+  the source already chosen rather than on the first row.
+
+- **Setup gains an Auto-route step** — Off, TypeSafe, OpenRouter or a
+  custom decision-server URL, with the key that URL needs masked and saved
+  only after the confirm gate is passed — and the Keys screen shows the
+  decision key's row beside the provider keys.
+
+- **`sonata doctor` reports the last 24 hours of auto-route decisions**:
+  accepted, low-confidence, invalid and failed, with the most common
+  failure reason among them. Three or more decisions that got no answer is
+  a failed check, not a noisy one — auto-routing fails open, so a
+  classifier that never answers looks exactly like one that does.
+
+### Changed
+
+- **`sonata init` asks once to update every outdated harness and runs the
+  updaters in parallel**, printing each harness's output as a block when it
+  finishes, rather than asking per harness and running them one after
+  another.
+
 ## [0.15.0] - 2026-10-01
 
 ### Added

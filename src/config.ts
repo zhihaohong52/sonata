@@ -600,13 +600,20 @@ export function parseConfig(text: string): SonataConfig {
     }
     const rawBase = section.base_url ?? DEFAULT_DECISION_BASE_URL;
     let baseUrl: string;
+    let parsedBase: URL;
     try {
       if (typeof rawBase !== 'string') throw new Error('not a string');
-      const url = new URL(rawBase);
-      if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('not http(s)');
+      parsedBase = new URL(rawBase);
+      if (parsedBase.protocol !== 'http:' && parsedBase.protocol !== 'https:') throw new Error('not http(s)');
       baseUrl = rawBase.replace(/\/+$/, '');
     } catch {
       throw new Error(`sonata.toml: [auto_route] base_url must be an absolute http(s) URL, got ${JSON.stringify(rawBase)}`);
+    }
+    // Endpoint suffixes are appended to this string, so a `?…`/`#…` already
+    // on it would swallow them — refused rather than requested somewhere
+    // other than the server named.
+    if (parsedBase.search !== '' || parsedBase.hash !== '') {
+      throw new Error(`sonata.toml: [auto_route] base_url must not include a query string or fragment, got ${JSON.stringify(rawBase)}`);
     }
     const model = section.model;
     if (model !== undefined && (typeof model !== 'string' || model.trim() === '')) {
