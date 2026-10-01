@@ -30,11 +30,17 @@ export function urlForChoice(choice: AutoRouteChoice): string | undefined {
   return undefined;
 }
 
-/** The choice one URL is: the two named hosts, anything else Custom, no URL Off. */
+/**
+ * The choice one URL is: the two named hosts, anything else Custom, no URL
+ * Off. Matched on the hostname, not the string — `new URL` folds case, so
+ * `https://API.typesafe.ai` is TypeSafe's row and not a custom server.
+ */
 export function choiceForUrl(baseUrl: string | null | undefined): AutoRouteChoice {
   if (baseUrl === undefined || baseUrl === null) return 'off';
-  if (baseUrl === DEFAULT_DECISION_BASE_URL) return 'typesafe';
-  if (baseUrl === OPENROUTER_URL) return 'openrouter';
+  let host = '';
+  try { host = new URL(baseUrl).hostname; } catch { return 'custom'; }
+  if (host === 'api.typesafe.ai') return 'typesafe';
+  if (host === 'openrouter.ai') return 'openrouter';
   return 'custom';
 }
 
@@ -132,13 +138,25 @@ export function AutoRouteStep({
 }: AutoRouteStepProps): React.ReactElement {
   const [screen, setScreen] = useState<Screen>({ kind: 'choose' });
 
-  // A key already held for a host is never asked for again.
+  // A key already held for a host is never asked for again — including one
+  // this screen already gathered and keeps in `state.decisionKey`. Walking
+  // back to the summary and forward again must not reopen the field empty:
+  // for a required host that demands a key just typed, and for an optional one
+  // a blank submit would erase it.
   const keyPresent = (baseUrl: string): boolean => {
     const gateway = decisionGatewayFor(baseUrl);
-    return storedKeys[gateway] !== undefined || state.byokKeys?.[gateway] !== undefined;
+    return storedKeys[gateway] !== undefined
+      || state.byokKeys?.[gateway] !== undefined
+      || state.decisionKey?.gateway === gateway;
   };
 
-  /** Adopt a URL and clear a key typed for some other host — a key is only ever sent to the host it belongs to. */
+  /**
+   * Adopt a URL. A key already gathered is cleared only when its gateway name
+   * changes, so a key is only ever sent to the host it belongs to — a
+   * `typesafe` key does not follow a move to another host. Every custom host
+   * shares the `auto-route` name, so a self-hosted key does follow a change
+   * from one custom URL to another.
+   */
   const adoptUrl = (baseUrl: string): void => {
     onChange((current) => ({
       ...current,
