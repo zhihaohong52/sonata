@@ -6,7 +6,7 @@ import { decisionGatewayFor, isLoopbackUrl } from '../../native/auto-route.js';
 import type { InitState } from '../types.js';
 import { usePalette } from '../theme-context.js';
 
-/** OpenRouter's Jev-compatible endpoint; TypeSafe's is `DEFAULT_DECISION_BASE_URL`. */
+/** OpenRouter's canonical Jev endpoint; TypeSafe's is `DEFAULT_DECISION_BASE_URL`. */
 const OPENROUTER_URL = 'https://openrouter.ai/api';
 
 export type AutoRouteChoice = 'off' | 'typesafe' | 'openrouter' | 'custom';
@@ -31,17 +31,31 @@ export function urlForChoice(choice: AutoRouteChoice): string | undefined {
 }
 
 /**
- * The choice one URL is: the two named hosts, anything else Custom, no URL
- * Off. Matched on the hostname, not the string — `new URL` folds case, so
- * `https://API.typesafe.ai` is TypeSafe's row and not a custom server.
+ * The choice one URL is: the two canonical endpoints, anything else Custom,
+ * no URL Off. Compared as parsed hrefs with trailing path slashes stripped,
+ * so `https://API.typesafe.ai` (`new URL` folds the host) and
+ * `https://api.typesafe.ai/` are still the named row. A different path, port,
+ * query or fragment is a different server, and therefore Custom — which keeps
+ * the saved URL rather than overwriting it with a canonical one on confirm.
  */
 export function choiceForUrl(baseUrl: string | null | undefined): AutoRouteChoice {
   if (baseUrl === undefined || baseUrl === null) return 'off';
-  let host = '';
-  try { host = new URL(baseUrl).hostname; } catch { return 'custom'; }
-  if (host === 'api.typesafe.ai') return 'typesafe';
-  if (host === 'openrouter.ai') return 'openrouter';
+  const href = endpointHref(baseUrl);
+  if (href === undefined) return 'custom';
+  if (href === endpointHref(DEFAULT_DECISION_BASE_URL)) return 'typesafe';
+  if (href === endpointHref(OPENROUTER_URL)) return 'openrouter';
   return 'custom';
+}
+
+/** A URL's href with its path's trailing slashes stripped — the form `choiceForUrl` compares. */
+function endpointHref(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    url.pathname = url.pathname.replace(/\/+$/, '');
+    return url.href;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -212,7 +226,7 @@ export function AutoRouteStep({
       key="auto-route-url"
       title="Decision server URL"
       initial={initial}
-      validate={(value) => isAbsoluteHttpUrl(value) ? undefined : 'Enter an absolute http(s) URL'}
+      validate={(value) => decisionUrlError(value)}
       onSubmit={(value) => afterUrl(value.trim().replace(/\/+$/, ''), 'url')}
       onBack={() => setScreen({ kind: 'choose' })}
       onCancel={onCancel}
@@ -244,12 +258,20 @@ export function AutoRouteStep({
   />;
 }
 
-/** The rule `parseConfig` enforces on `[auto_route] base_url`, asked before the write. */
-function isAbsoluteHttpUrl(value: string): boolean {
+/**
+ * The rule `parseConfig` enforces on `[auto_route] base_url`, asked before
+ * the write: one message per refusal, since a query string or fragment is a
+ * real URL and only wrong here — endpoint suffixes are appended to this
+ * string, so a `?…`/`#…` would swallow them.
+ */
+function decisionUrlError(value: string): string | undefined {
+  let url: URL;
   try {
-    const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:';
+    url = new URL(value);
   } catch {
-    return false;
+    return 'Enter an absolute http(s) URL';
   }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'Enter an absolute http(s) URL';
+  if (url.search !== '' || url.hash !== '') return 'Enter a URL without a query string or fragment';
+  return undefined;
 }

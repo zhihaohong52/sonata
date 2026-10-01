@@ -1,12 +1,17 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import React from 'react';
+import { render } from 'ink-testing-library';
 import { describe, it, expect } from 'vitest';
 import { parseConfig, expectedAgentNames, tierAgentNames, type SonataConfig } from '../../src/config.js';
 import { plan, type CredentialProbe } from '../../src/init/plan.js';
 import { deriveInitState } from '../../src/init/helpers.js';
 import { litellmRequired } from '../../src/native/providers.js';
 import { aaCatalogPath } from '../../src/catalog.js';
+import { AutoRouteStep } from '../../src/tui-ink/components/auto-route-step.js';
+import type { InitState } from '../../src/tui-ink/types.js';
+import { tick, until } from '../tui-ink/ink-wait.js';
 import type { InitEnvironment } from '../../src/init/discover.js';
 
 const noCredentials: CredentialProbe = {
@@ -576,5 +581,40 @@ describe('plan — [auto_route] from the Setup step', () => {
     // Off over nothing-to-turn-off is not a change either.
     const neverSet = plan(withSaved(), { ...state, autoRoute: null }, noCredentials, opts);
     expect(neverSet.summary.join('\n')).not.toContain('auto-route:');
+  });
+
+  // The end-to-end regression behind the choice rule. A saved `base_url` that
+  // is not one of the two canonical endpoints opened on the named row anyway,
+  // and confirming that row wrote the canonical URL over it — and because the
+  // URL then differed from the saved one, `plan` dropped the pinned model as
+  // belonging to another server. It must open on Custom, keep the URL it was
+  // handed, and leave the pin standing.
+  it('keeps a saved non-standard decision URL, and its pin, through the step and plan', async () => {
+    const saved = { ...savedAutoRoute, baseUrl: 'https://api.typesafe.ai:8443' };
+    let stepState: InitState = {};
+    const app = render(React.createElement(AutoRouteStep, {
+      state: stepState,
+      // The host still has a key, so the step ends on the URL rather than
+      // reopening a key screen this test does not care about.
+      storedKeys: { typesafe: 'sk-stored' },
+      savedBaseUrl: saved.baseUrl,
+      onChange: (update) => { stepState = update(stepState); },
+      onDone: () => {},
+      onBack: () => {},
+      onCancel: () => {},
+    }));
+    const press = async (key: string) => { app.stdin.write(key); await tick(); };
+
+    await until(() => (app.lastFrame() ?? '').includes('Auto-route subagent tiers?'), 'the choice screen');
+    expect(app.lastFrame()).toContain('› Custom URL…'); // not the TypeSafe row
+    await press('\r'); // Custom — the URL screen opens on the saved URL
+    await until(() => (app.lastFrame() ?? '').includes('Decision server URL'), 'the URL screen');
+    await press('\r'); // the URL it already holds
+    app.unmount();
+
+    expect(stepState.autoRoute).toEqual({ baseUrl: 'https://api.typesafe.ai:8443' });
+    const p = plan(withSaved(saved), { ...state, autoRoute: stepState.autoRoute ?? undefined }, noCredentials, opts);
+    expect(parseConfig(p.configToml).autoRoute).toEqual(saved);
+    expect(p.summary.join('\n')).toContain('auto-route: https://api.typesafe.ai:8443 (model jev-1.13)');
   });
 });
