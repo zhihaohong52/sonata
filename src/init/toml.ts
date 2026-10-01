@@ -1,5 +1,6 @@
 import type { NativeCandidate } from './helpers.js';
 import type { CredentialSource } from '../config.js';
+import { DEFAULT_DECISION_BASE_URL } from '../config.js';
 import type { NativeGatewayAuth, NativeGatewayWireFormat } from '../config.js';
 import type { SonataConfig, PriceConfig, Rates, TierLists } from '../config.js';
 import { isOauthGatewayAuth, oauthGatewayBaseUrl } from '../config.js';
@@ -180,12 +181,12 @@ export function nativeTomlFor(
   }
   if (existingAutoRoute !== undefined) {
     lines.push('[auto_route]', `classifier = ${tomlKey(existingAutoRoute.classifier)}`);
-    // The typesafe default writes neither key, so a file that never named a
-    // provider round-trips unchanged.
-    if (existingAutoRoute.provider === 'openrouter') {
-      lines.push(`provider = ${tomlKey(existingAutoRoute.provider)}`);
-      if (existingAutoRoute.model !== undefined) lines.push(`model = ${tomlKey(existingAutoRoute.model)}`);
+    // Only what the user set: the default URL writes nothing, so a file that
+    // never named one round-trips unchanged.
+    if (existingAutoRoute.baseUrl !== undefined && existingAutoRoute.baseUrl !== DEFAULT_DECISION_BASE_URL) {
+      lines.push(`base_url = ${tomlKey(existingAutoRoute.baseUrl)}`);
     }
+    if (existingAutoRoute.model !== undefined) lines.push(`model = ${tomlKey(existingAutoRoute.model)}`);
     lines.push(`min_confidence = ${existingAutoRoute.minConfidence}`, '');
   }
 
