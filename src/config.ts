@@ -191,8 +191,22 @@ export interface NativeConfig {
 
 export const AUTO_ROUTE_DEFAULT_MIN_CONFIDENCE = 0.5;
 
+/** Where Jev's decision is asked: TypeSafe directly, or OpenRouter's Decisions API. */
+export type AutoRouteProvider = 'typesafe' | 'openrouter';
+
+/** The decision model OpenRouter is asked for when `[auto_route]` names none. */
+export const OPENROUTER_DEFAULT_DECISION_MODEL = '~typesafe/jev-latest';
+
 export interface AutoRouteConfig {
   classifier: 'jev';
+  /**
+   * Which endpoint answers. `typesafe` uses a TypeSafe key; `openrouter` uses
+   * the OpenRouter key and names a decision `model`, so a future decision
+   * model OpenRouter serves is a config change rather than a code change.
+   */
+  provider: AutoRouteProvider;
+  /** The Decisions-API model id; set only (and always) for `openrouter`. */
+  model?: string;
   /** Below this classifier confidence the fallback tier is used. */
   minConfidence: number;
 }
@@ -571,18 +585,31 @@ export function parseConfig(text: string): SonataConfig {
     // Refused rather than ignored, like [budget]: a switch silently dropped
     // for a typo reads exactly like one that is working.
     for (const key of Object.keys(section)) {
-      if (key !== 'classifier' && key !== 'min_confidence') {
-        throw new Error(`sonata.toml: [auto_route] has unknown key "${key}" (known: classifier, min_confidence)`);
+      if (key !== 'classifier' && key !== 'provider' && key !== 'model' && key !== 'min_confidence') {
+        throw new Error(`sonata.toml: [auto_route] has unknown key "${key}" (known: classifier, provider, model, min_confidence)`);
       }
     }
     if (section.classifier !== 'jev') {
       throw new Error(`sonata.toml: [auto_route] classifier must be "jev", got ${JSON.stringify(section.classifier)}`);
     }
+    const provider = section.provider ?? 'typesafe';
+    if (provider !== 'typesafe' && provider !== 'openrouter') {
+      throw new Error(`sonata.toml: [auto_route] provider must be "typesafe" or "openrouter", got ${JSON.stringify(provider)}`);
+    }
+    // TypeSafe's own endpoint takes no model, so a model there would be
+    // silently ignored — the shape of a setting that reads as working.
+    if (provider === 'typesafe' && section.model !== undefined) {
+      throw new Error('sonata.toml: [auto_route] model applies only to provider = "openrouter"');
+    }
+    const model = section.model ?? (provider === 'openrouter' ? OPENROUTER_DEFAULT_DECISION_MODEL : undefined);
+    if (model !== undefined && (typeof model !== 'string' || model.trim() === '')) {
+      throw new Error(`sonata.toml: [auto_route] model must be a non-empty string, got ${JSON.stringify(model)}`);
+    }
     const min = section.min_confidence ?? AUTO_ROUTE_DEFAULT_MIN_CONFIDENCE;
     if (typeof min !== 'number' || !Number.isFinite(min) || min < 0 || min > 1) {
       throw new Error(`sonata.toml: [auto_route] min_confidence must be a number from 0 to 1, got ${JSON.stringify(min)}`);
     }
-    autoRoute = { classifier: 'jev', minConfidence: min };
+    autoRoute = { classifier: 'jev', provider, ...(model === undefined ? {} : { model }), minConfidence: min };
   }
 
   const gen = (raw.generate ?? {}) as Record<string, unknown>;

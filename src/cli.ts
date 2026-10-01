@@ -34,7 +34,7 @@ import { cmdCatalogUpdate, validateAaKey } from './commands/catalog.js';
 import { cmdLitellm } from './commands/litellm.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
 import { MODELS_DEV_ATTRIBUTION } from './modelsdev.js';
-import { cmdUsage, coveredLabel, parseUsageFlags, spentLabel } from './commands/usage.js';
+import { classifierCostNote, cmdUsage, coveredLabel, parseUsageFlags, spentLabel } from './commands/usage.js';
 import { readRows } from './ledger.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
@@ -612,7 +612,7 @@ export async function main(argv: string[]): Promise<number> {
     }
     if (report.autoRoute !== undefined) {
       const o = report.autoRoute.outcomes;
-      console.log(`auto-route decisions: ${o.accepted} accepted, ${o['low-confidence']} low-confidence, ${o.invalid} invalid, ${o.failed} failed · classifier ${report.autoRoute.classifierTokens.input} in / ${report.autoRoute.classifierTokens.output} out tokens (not priced)`);
+      console.log(`auto-route decisions: ${o.accepted} accepted, ${o['low-confidence']} low-confidence, ${o.invalid} invalid, ${o.failed} failed · classifier ${report.autoRoute.classifierTokens.input} in / ${report.autoRoute.classifierTokens.output} out tokens${classifierCostNote(report.autoRoute)}`);
     }
     if (report.noPromptTokens.requests > 0) {
       // Beside the total, never inside it. These completed and produced

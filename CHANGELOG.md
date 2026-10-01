@@ -8,6 +8,17 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- **Auto-routing can ask Jev through OpenRouter.** `[auto_route] provider =
+  "openrouter"` sends the tier question to OpenRouter's Decisions API with
+  the key your `openrouter` gateway already uses — no TypeSafe account
+  needed. `model` picks the decision model (`~typesafe/jev-latest` by
+  default), so a pinned Jev release or a future decision model on OpenRouter
+  is a config change. OpenRouter reports each call's cost, which `sonata
+  usage` now shows beside the priced total. The default stays TypeSafe
+  direct, and existing configs are unchanged.
+
 ## [0.15.0] - 2026-10-01
 
 ### Added

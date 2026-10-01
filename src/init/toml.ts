@@ -179,8 +179,14 @@ export function nativeTomlFor(
     lines.push('[budget]', `daily_usd = ${existingBudget.dailyUsd}`, '');
   }
   if (existingAutoRoute !== undefined) {
-    lines.push('[auto_route]', `classifier = ${tomlKey(existingAutoRoute.classifier)}`,
-      `min_confidence = ${existingAutoRoute.minConfidence}`, '');
+    lines.push('[auto_route]', `classifier = ${tomlKey(existingAutoRoute.classifier)}`);
+    // The typesafe default writes neither key, so a file that never named a
+    // provider round-trips unchanged.
+    if (existingAutoRoute.provider === 'openrouter') {
+      lines.push(`provider = ${tomlKey(existingAutoRoute.provider)}`);
+      if (existingAutoRoute.model !== undefined) lines.push(`model = ${tomlKey(existingAutoRoute.model)}`);
+    }
+    lines.push(`min_confidence = ${existingAutoRoute.minConfidence}`, '');
   }
 
   for (const [gateway, { baseUrl: candidateUrl, auth, wireFormat }] of gateways) {

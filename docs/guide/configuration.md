@@ -116,11 +116,25 @@ classifier = "jev"
 min_confidence = 0.5
 ```
 
-`classifier` must be `"jev"`; `min_confidence` is optional and must be between 0 and 1 (the default is `0.5`). Store the machine-wide classifier key with `sonata auth add typesafe`. The key is read when each classification is made and is never logged.
+`classifier` must be `"jev"`; `min_confidence` is optional and must be between 0 and 1 (the default is `0.5`).
+
+Jev can be asked in one of two places, chosen with `provider`:
+
+- `provider = "typesafe"` (the default) — TypeSafe directly. Store the key with `sonata auth add typesafe`.
+- `provider = "openrouter"` — OpenRouter's Decisions API, using the key your `openrouter` gateway already uses (`sonata auth add openrouter`, or one opencode holds). No TypeSafe account is needed. `model` picks the decision model, `~typesafe/jev-latest` by default; pin a release with e.g. `model = "typesafe/jev-1.13"`, or name any other decision model OpenRouter serves. OpenRouter marks this API alpha.
+
+```toml
+[auto_route]
+classifier = "jev"
+provider = "openrouter"
+model = "~typesafe/jev-latest"
+```
+
+`model` is refused with the `typesafe` provider, whose endpoint takes none. The key is read when each classification is made and is never logged.
 
 When enabled, `sonata sync` generates a `<role>-auto` agent for each role whose tiers differ. Jev chooses among that role's available `simple`, `normal` and `complex` tiers once per conversation; the selected tier then follows the same ranked native routing path as its explicit tier agent. If the key is missing, the request fails, the task is empty, Jev returns an invalid or low-confidence answer, or the deadline is exceeded, sonata falls back to `normal`, or `complex` when `normal` is unavailable. Use the explicit tier agents when you already know the right tier.
 
-Classifier calls are not charged against `[budget] daily_usd`. `sonata usage --by route` separates auto-routed requests from manual tier requests and reports classifier token volume beside the priced total.
+Classifier calls are not charged against `[budget] daily_usd`. `sonata usage --by route` separates auto-routed requests from manual tier requests and reports classifier token volume beside the priced total. Through OpenRouter each call reports its USD cost, which `sonata usage` sums and shows apart from the priced total; TypeSafe direct reports none, so those calls stay unpriced.
 
 ## Seeing and changing a ranking
 
