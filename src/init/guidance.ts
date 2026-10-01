@@ -53,7 +53,7 @@ export const GUIDANCE_END = '<!-- sonata:end -->';
  * failure is completely silent, which is what makes stating it worth the
  * lines.
  */
-export function guidanceBlock(): string {
+export function guidanceBlock(opts: { autoRoute?: boolean } = {}): string {
   return [
     GUIDANCE_BEGIN,
     '## Subagent lane',
@@ -64,11 +64,23 @@ export function guidanceBlock(): string {
     'for: cheap models for mechanical work, and a different model family reviewing',
     "Claude's own code.",
     '',
-    'Match the tier to the work. `-simple` is writable without asking a question',
-    '(one or two files, no interface change). `-normal` is the default: you know',
-    'what to change but not exactly how. `-complex` needs a design decision, or',
-    '"done" is still ambiguous.',
-    '',
+    ...(opts.autoRoute === true ? [
+      '**Auto-routing is on:** `-auto` agents are the default (`code-auto`,',
+      '`review-auto`, …). Sonata chooses the tier for each task;',
+      'explicit tier agents are the manual override when you know better.',
+      '',
+      'For a manual override, match the tier to the work. `-simple` is writable',
+      'without asking a question (one or two files, no interface change).',
+      '`-normal` fits when you know what to change but not exactly how.',
+      '`-complex` needs a design decision, or "done" is still ambiguous.',
+      '',
+    ] : [
+      'Match the tier to the work. `-simple` is writable without asking a question',
+      '(one or two files, no interface change). `-normal` is the default: you know',
+      'what to change but not exactly how. `-complex` needs a design decision, or',
+      '"done" is still ambiguous.',
+      '',
+    ]),
     '**Your config decides which of those exist** — `sonata agents` lists them, and',
     'a config written before the `normal` tier has only `-simple` and `-complex`.',
     'Where there is no `-normal`, prefer `-simple` for work you could write without',

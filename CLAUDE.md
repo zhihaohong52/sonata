@@ -253,6 +253,7 @@ Foreign models run inside Claude Code's own loop through the local router
 - **Request transforms on the LiteLLM path only**: `litellmBody = demoteSystemTurns ∘ sanitizeToolSchemas ∘ flattenSystemBlocks`, plus `repairNamelessToolCalls` and `stripForeignThinking` on every transport. Anthropic requests stay byte-identical.
 - **OAuth gateways** (`codex-oauth`, `copilot-oauth`) drive LiteLLM's own authenticator; sonata implements no OAuth. A harness-sourced ChatGPT token has exactly one writer once LiteLLM runs — do not reintroduce a live sync.
 - **Fallback**: ranked candidates, first < 500 wins, 60 s cooldown; a 400 is terminal except the captured signature lists and message-less 400s; exhaustion returns 529 naming the `sonata dispatch` command.
+- **Auto-routed tiers** (`[auto_route]`, `src/native/auto-route.ts`): `sonata-<role>-auto` gets one Jev tier decision per conversation, fail-open to `normal`; the chosen alias then takes the unchanged tier path.
 - **Never kill the router by hand** — use `sonata restart`, which kills only recorded pids.
 - Routing through the proxy costs Remote Control for sessions *launched* routed; `route auto` exists to avoid that.
 

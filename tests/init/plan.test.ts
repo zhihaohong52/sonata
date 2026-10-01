@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { parseConfig, tierAgentNames, type SonataConfig } from '../../src/config.js';
+import { parseConfig, expectedAgentNames, tierAgentNames, type SonataConfig } from '../../src/config.js';
 import { plan, type CredentialProbe } from '../../src/init/plan.js';
 import { deriveInitState } from '../../src/init/helpers.js';
 import { litellmRequired } from '../../src/native/providers.js';
@@ -251,6 +251,20 @@ describe('plan — the agent count it promises', () => {
     });
   }
 
+  it('includes auto agents in the promised count when auto-routing is enabled', () => {
+    const existing = {
+      autoRoute: { classifier: 'jev', minConfidence: 0.5 },
+      unifiedModels: {
+        'acme-fast': { gateway: 'acme', id: 'fast' },
+        'flaky-slow': { gateway: 'flaky-gw', id: 'slow' },
+      },
+    } as unknown as SonataConfig;
+    const p = plan(env({ configsByScope: { project: existing } }), state, noCredentials, opts);
+    const written = expectedAgentNames(parseConfig(p.configToml));
+    expect(written).toContain('code-auto');
+    expect(promisedAgentCount(p.summary)).toBe(written.length);
+  });
+
   it('says "1 file" rather than "1 files"', () => {
     const collapsed = { code: { simple: ['acme-fast', 'flaky-slow'], complex: ['acme-fast', 'flaky-slow'] } };
     const p = plan(env(), { ...state, tiers: collapsed }, noCredentials, opts);
@@ -340,7 +354,7 @@ describe('plan — whether it installs litellm', () => {
 describe('plan — the CLAUDE.md guidance block', () => {
   it('defaults to the project CLAUDE.md', () => {
     const p = plan(env(), state, noCredentials, opts);
-    expect(p.guidance).toEqual({ scope: 'project', path: '/repo/CLAUDE.md' });
+    expect(p.guidance).toEqual({ scope: 'project', path: '/repo/CLAUDE.md', autoRoute: false });
   });
 
   it('writes into the user CLAUDE.md at global scope', () => {

@@ -199,3 +199,9 @@ dispatch_window_seconds = 1500 # blocking window for sonata wait/dispatch
   preference travels with the repo, global writes the user's — and `skip` is a
   true no-op that plans no path at all.
 - Run `sonata sync` after editing the config; Claude Code picks up the generated agents automatically. There is no MCP server to reconnect.
+
+## Auto-routed tiers
+
+`[auto_route]` is absent by default. When present, `parseConfig` refuses every key other than `classifier` and `min_confidence`, refuses any classifier other than `"jev"`, and refuses a non-finite or non-numeric `min_confidence` outside `[0, 1]`. An omitted `min_confidence` loads as `0.5`. This deliberate refusal prevents a misspelled switch from appearing to work while silently disabling the feature.
+
+`nativeTomlFor` carries the existing `[auto_route]` section through `sonata init`, including its classifier and confidence threshold. The configuration tests round-trip that emitted TOML through `parseConfig`; this is required because init rewrites the native configuration and must not delete keys it did not otherwise edit.

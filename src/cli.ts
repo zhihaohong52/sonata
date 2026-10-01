@@ -63,7 +63,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata catalog   show or refresh the Artificial Analysis model catalog
   sonata litellm   install or report sonata's own pinned LiteLLM (install|status)
   sonata usage     native-path token and cost usage from the ledger (live screen in a terminal)
-                   [--since 7d] [--by model|role|tier|effort|gateway|session|project]
+                   [--since 7d] [--by model|role|tier|route|effort|gateway|lane|session|project]
                    [--project <dir>] [--session <id>] [--json]
   sonata status    router health and this project's last hour of routes (--global: every project)
   sonata runs      list every run, with state and whether it wrote a report
@@ -609,6 +609,10 @@ export async function main(argv: string[]): Promise<number> {
     console.log(`\npriced total   $${report.pricedTotalUsd.toFixed(4)}`);
     if (report.covered.requests > 0) {
       console.log(`covered        $${report.covered.totalUsd.toFixed(2)}  ~ subscription — work valued at list, not billed per token`);
+    }
+    if (report.autoRoute !== undefined) {
+      const o = report.autoRoute.outcomes;
+      console.log(`auto-route decisions: ${o.accepted} accepted, ${o['low-confidence']} low-confidence, ${o.invalid} invalid, ${o.failed} failed · classifier ${report.autoRoute.classifierTokens.input} in / ${report.autoRoute.classifierTokens.output} out tokens (not priced)`);
     }
     if (report.noPromptTokens.requests > 0) {
       // Beside the total, never inside it. These completed and produced

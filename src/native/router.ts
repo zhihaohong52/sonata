@@ -4,8 +4,9 @@ import { join } from 'node:path';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import { budgetRefusal, type BudgetStatus } from '../budget.js';
-import { isTierAliasShape, type SonataConfig } from '../config.js';
-import type { LedgerRow } from '../ledger.js';
+import { isTierAliasShape, TIER_NAMES, tiersCollapse, type SonataConfig } from '../config.js';
+import type { AutoRouteRecord, LedgerRow } from '../ledger.js';
+import { autoRole, decideTier, DecisionStore, type TierClassifier } from './auto-route.js';
 import { SONATA_PROJECT_HEADER, TenantError } from './tenants.js';
 import { SONATA_TOKEN_HEADER, projectHintAuthorised } from './router-token.js';
 import { OPENCODE_SESSION_HEADER, type Transport } from './providers.js';
@@ -63,6 +64,8 @@ export interface RouterDeps {
   projectHintToken?: string;
   /** Resolves a `sonata-<role>-<tier>` alias to its ranked routes, or undefined if unknown. */
   resolveTier?: (alias: string, tenant: RouterTenant) => { role: string; tier: string; routes: TierRoute[] } | undefined;
+  /** Chooses the tier for `sonata-<role>-auto`. Absent -> every auto request takes the fallback tier. */
+  classifier?: TierClassifier;
   /**
    * Resolves a direct `--model <key>` request's key to its gateway name, so a
    * direct-model row carries `gateway` and can be priced (pricing's step 2
@@ -398,6 +401,8 @@ function withCompletion(response: RouterResponse, onEnd: (complete: boolean) => 
 }
 
 interface RecordContext {
+  route?: 'auto' | 'manual';
+  autoRoute?: AutoRouteRecord;
   startedAt: number;
   alias: string;
   role?: string;
@@ -450,6 +455,8 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
           alias: ctx.alias,
           role: ctx.role,
           tier: ctx.tier,
+          ...(ctx.route === undefined ? {} : { route: ctx.route }),
+          ...(ctx.autoRoute === undefined ? {} : { autoRoute: ctx.autoRoute }),
           key: ctx.key,
           // Only when a level was sent: an absent field means "no level was
           // asked for", which is a different fact from `effort: undefined`.
@@ -899,6 +906,14 @@ function stickyEvict(): void {
 /** Test seam: how many conversations the router currently remembers. */
 export function stickyConversationCount(): number {
   return stickyCandidates.size;
+}
+
+/** Auto-route decisions by conversation, bounded like the sticky map. */
+const autoDecisions = new DecisionStore(STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS);
+
+/** Test seam. */
+export function clearAutoDecisions(): void {
+  autoDecisions.clear();
 }
 
 function stickySet(conversation: string, key: string, at: number): void {
@@ -1625,6 +1640,7 @@ async function routeTierRequest(
   session: string | undefined,
   tenant: RouterTenant,
   unavailable: string | undefined,
+  auto?: { alias: string; record?: AutoRouteRecord },
 ): Promise<RouterResponse> {
   // Once per request, not once per candidate: a candidate skipped for being
   // in its post-failure cooldown window would otherwise mean this never
@@ -1642,6 +1658,11 @@ async function routeTierRequest(
       ),
     };
   }
+
+  // Recorded under the alias the caller asked for, so auto conversations stay attributable; the decision rides only on the request that made it.
+  const routeFields = auto === undefined
+    ? { route: 'manual' as const }
+    : { alias: auto.alias, route: 'auto' as const, ...(auto.record === undefined ? {} : { autoRoute: auto.record }) };
 
   const now = deps.now ?? Date.now;
   const flattened = litellmBody(req.body);
@@ -1951,6 +1972,7 @@ async function routeTierRequest(
         alias,
         role: resolved.role,
         tier: resolved.tier,
+        ...routeFields,
         key: route.key,
         effort: route.effort,
         gateway: route.native!.gateway,
@@ -1984,6 +2006,7 @@ async function routeTierRequest(
       alias,
       role: resolved.role,
       tier: resolved.tier,
+      ...routeFields,
       key: route.key,
       effort: route.effort,
       gateway: route.native!.gateway,
@@ -2028,6 +2051,7 @@ async function routeTierRequest(
       alias,
       role: resolved.role,
       tier: resolved.tier,
+      ...routeFields,
       key: last.route.key,
       effort: last.route.effort,
       gateway: last.route.native!.gateway,
@@ -2060,6 +2084,7 @@ async function routeTierRequest(
     alias,
     role: resolved.role,
     tier: resolved.tier,
+    ...routeFields,
     upstream: 'litellm',
     attempts,
   }, deps);
@@ -2147,6 +2172,34 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     try {
       startedAt = (deps.now ?? Date.now)();
     } catch { /* A broken accounting clock must not stop routing. */ }
+  }
+  const auto = alias === undefined ? undefined : autoRole(alias);
+  if (alias !== undefined && auto !== undefined) {
+    const lists = tenant.config?.tiers?.[auto];
+    const settings = tenant.config?.autoRoute;
+    if (settings === undefined || lists === undefined || tiersCollapse(lists)) {
+      const why = settings === undefined
+        ? 'auto-routing is off for this project — add [auto_route] to sonata.toml and run `sonata sync`'
+        : `role "${auto}" has no tiers to choose between — run \`sonata sync\``;
+      deps.log?.(`router: refused model=${alias} — ${why}`);
+      return { status: 400, headers: { 'content-type': 'application/json' }, body: anthropicErrorBody('invalid_request_error', `${alias}: ${why}`) };
+    }
+    const tiers = TIER_NAMES.filter((tier) => lists[tier] !== undefined);
+    const conversation = conversationKey(req.body, tenant.id, alias);
+    const make = () => decideTier({
+      classifier: deps.classifier, role: auto, body: req.body, tiers, minConfidence: settings.minConfidence, now: deps.now,
+    });
+    const { decision, fresh } = conversation === undefined
+      ? { decision: await make(), fresh: true }
+      : await autoDecisions.getOrCreate(conversation, (deps.now ?? Date.now)(), make);
+    if (fresh && decision.record.outcome !== 'accepted') {
+      // Once per conversation, never with the task text.
+      deps.log?.(`router: ${alias} → ${decision.tier} (${decision.record.outcome}${decision.record.reason === undefined ? '' : `: ${decision.record.reason}`})`);
+    }
+    return routeTierRequest(
+      req, deps, `sonata-${auto}-${decision.tier}`, startedAt, session, tenant, unavailable,
+      { alias, ...(fresh ? { record: decision.record } : {}) },
+    );
   }
   if (alias !== undefined && alias.startsWith('sonata-') && deps.resolveTier?.(alias, tenant) !== undefined) {
     return routeTierRequest(req, deps, alias, startedAt, session, tenant, unavailable);
