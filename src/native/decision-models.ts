@@ -92,7 +92,17 @@ export function chooseDecisionModel(opts: {
   return { model: defaultDecisionModel(opts.baseUrl), reason: `${why} — URL default`, ranked };
 }
 
-/** `GET <base>/v1/models`, cached per URL: 1 h on success, 5 min after a failure. */
+/** The listing timeout: 1 s, well under the 3 s decision deadline (`JEV_DEADLINE_MS`). */
+export const DEFAULT_MODEL_LIST_TIMEOUT_MS = 1_000;
+
+/**
+ * `GET <base>/v1/models`, cached per URL: 1 h on success, 5 min after a failure.
+ *
+ * The listing is capped at `DEFAULT_MODEL_LIST_TIMEOUT_MS` — well under the
+ * 3 s decision deadline — so a slow `/v1/models` degrades to the URL default
+ * model and the decision still gets its own attempts instead of spending the
+ * whole deadline on the listing.
+ */
 export class ModelListCache {
   private readonly entries = new Map<string, { at: number; ok: boolean; listed?: ListedDecisionModel[] }>();
   private readonly pending = new Map<string, Promise<ListedDecisionModel[] | undefined>>();
@@ -105,15 +115,17 @@ export class ModelListCache {
     this.now = opts.now ?? Date.now;
     this.ttlMs = opts.ttlMs ?? 60 * 60_000;
     this.failureTtlMs = opts.failureTtlMs ?? 5 * 60_000;
-    this.timeoutMs = opts.timeoutMs ?? 3_000;
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_MODEL_LIST_TIMEOUT_MS;
   }
 
-  async list(baseUrl: string, key: string | undefined): Promise<ListedDecisionModel[] | undefined> {
+  async list(baseUrl: string, key: string | undefined, signal?: AbortSignal): Promise<ListedDecisionModel[] | undefined> {
     const hit = this.entries.get(baseUrl);
     if (hit !== undefined && this.now() - hit.at < (hit.ok ? this.ttlMs : this.failureTtlMs)) return hit.listed;
     const inFlight = this.pending.get(baseUrl);
+    // Concurrent callers share one in-flight fetch and the first caller's signal
+    // governs it; each caller still has its own decision deadline.
     if (inFlight !== undefined) return inFlight;
-    const fetching = this.fetchList(baseUrl, key);
+    const fetching = this.fetchList(baseUrl, key, signal);
     this.pending.set(baseUrl, fetching);
     try {
       return await fetching;
@@ -122,15 +134,18 @@ export class ModelListCache {
     }
   }
 
-  private async fetchList(baseUrl: string, key: string | undefined): Promise<ListedDecisionModel[] | undefined> {
+  private async fetchList(baseUrl: string, key: string | undefined, signal: AbortSignal | undefined): Promise<ListedDecisionModel[] | undefined> {
     let listed: ListedDecisionModel[] | undefined;
     try {
       const res = await this.fetchFn(`${baseUrl}/v1/models`, {
         headers: key === undefined ? {} : { authorization: `Bearer ${key}` },
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: signal === undefined ? AbortSignal.timeout(this.timeoutMs) : AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]),
       });
       listed = res.ok ? parseModelListing(await res.json()) : undefined;
     } catch {
+      // A cancelled decision is not a failed listing: leave the cache alone so
+      // the next decision refetches instead of sitting out a failure TTL.
+      if (signal?.aborted === true) return undefined;
       listed = undefined;
     }
     this.entries.set(baseUrl, { at: this.now(), ok: listed !== undefined, listed });

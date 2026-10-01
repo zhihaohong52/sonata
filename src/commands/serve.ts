@@ -2659,9 +2659,9 @@ export async function cmdServe(
             fetch,
             key: () => credential().key,
             keyHint: credential().hint,
-            model: async () => settings.model ?? chooseDecisionModel({
+            model: async (signal) => settings.model ?? chooseDecisionModel({
               baseUrl: settings.baseUrl,
-              listed: await modelLists.list(settings.baseUrl, credential().key),
+              listed: await modelLists.list(settings.baseUrl, credential().key, signal),
               catalog: loadDecisionCatalog(opts.home),
             }).model,
           });
