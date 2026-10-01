@@ -12,6 +12,8 @@ import { credentialDir } from '../../src/native/oauth-login.js';
 import { cmdRoute } from '../../src/commands/route.js';
 import { nativeAgentMarkdown, plannedAgents } from '../../src/commands/sync.js';
 import { parseConfig } from '../../src/config.js';
+import { appendRow, type LedgerRow } from '../../src/ledger.js';
+import { projectTenant } from '../../src/commands/status.js';
 
 vi.mock('../../src/native/litellm.js', async (importOriginal) => ({
   // The rest is real: doctor merges gateways through serve's own function,
@@ -200,6 +202,18 @@ complex = ["b"]
 
   const noModelList = (async () => new Response('{}', { status: 404 })) as any;
 
+  function autoRouteRow(tenant: string | undefined, outcome: 'accepted' | 'low-confidence' | 'invalid' | 'failed', reason?: string): LedgerRow {
+    return {
+      ts: new Date().toISOString(), ms: 500,
+      alias: 'sonata-code-auto', role: 'code', tier: 'normal',
+      key: 'a', gateway: 'codex', upstream: 'harness',
+      status: 200, complete: true,
+      tokens: { input: 10, output: 2, cacheRead: 0, cacheCreation: 0 },
+      price: { source: 'none' }, attempts: [], tenant,
+      autoRoute: { classifier: 'jev', outcome, ms: 500, reason },
+    };
+  }
+
   it('warns when auto-routing is on without a TypeSafe key', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
@@ -273,6 +287,64 @@ complex = ["b"]
     expect(check?.detail).toContain('code-auto.md');
     expect(check?.detail).toContain('not sonata-owned');
     expect(check?.detail).toMatch(/rename or remove it/);
+  });
+
+  it('flags three or more decisions when none were answered', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    const tenant = projectTenant(cwd, home);
+    for (let i = 0; i < 5; i++) appendRow(home, autoRouteRow(tenant, 'failed', 'HTTP 422'));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
+    const check = checks.find((c) => c.name === 'auto route' && c.detail.includes('last 24h'));
+    expect(check?.ok).toBe(false);
+    expect(check?.detail).toContain('5 failed');
+    expect(check?.detail).toContain('most common failure: HTTP 422 (5)');
+    expect(check?.detail).toContain('not working');
+  });
+
+  it('reports decisions when some were answered', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    const tenant = projectTenant(cwd, home);
+    appendRow(home, autoRouteRow(tenant, 'accepted'));
+    appendRow(home, autoRouteRow(tenant, 'accepted'));
+    appendRow(home, autoRouteRow(tenant, 'failed', 'HTTP 422'));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
+    const check = checks.find((c) => c.name === 'auto route' && c.detail.includes('last 24h'));
+    expect(check?.ok).toBe(true);
+    expect(check?.detail).toContain('2 accepted');
+    expect(check?.detail).toContain('1 failed');
+  });
+
+  it('does not flag two unanswered decisions', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    const tenant = projectTenant(cwd, home);
+    appendRow(home, autoRouteRow(tenant, 'failed', 'HTTP 422'));
+    appendRow(home, autoRouteRow(tenant, 'failed', 'HTTP 422'));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
+    const check = checks.find((c) => c.name === 'auto route' && c.detail.includes('last 24h'));
+    expect(check?.ok).toBe(true);
+  });
+
+  it('does not count decisions from another tenant', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    appendRow(home, autoRouteRow('another-tenant', 'failed', 'HTTP 422'));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
+    expect(checks.filter((c) => c.name === 'auto route').some((c) => c.detail.includes('last 24h'))).toBe(false);
+  });
+
+  it('does not report a decision summary without rows', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
+    expect(checks.filter((c) => c.name === 'auto route').some((c) => c.detail.includes('last 24h'))).toBe(false);
   });
 
   it('reports nothing about auto-routing when it is off', async () => {
