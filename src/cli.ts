@@ -31,6 +31,7 @@ import { localTime } from './tui-ink/screens/status-poll.js';
 import { summarizeRuns } from './commands/runs.js';
 import { cmdRoute, cmdRouteSession, cmdRouteSettle, cmdRouteSubagent, type RouteAction } from './commands/route.js';
 import { cmdCatalogUpdate, validateAaKey } from './commands/catalog.js';
+import { JEVBENCH_ATTRIBUTION } from './decision-catalog.js';
 import { cmdLitellm } from './commands/litellm.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
 import { MODELS_DEV_ATTRIBUTION } from './modelsdev.js';
@@ -555,7 +556,14 @@ export async function main(argv: string[]): Promise<number> {
         console.log(`  fetched: ${result.modelsDev.fetchedAt}`);
         console.log(MODELS_DEV_ATTRIBUTION);
       }
-      return 'error' in result.aa || 'error' in result.modelsDev ? 1 : 0;
+      if ('error' in result.decisions) {
+        console.error(`JevBench decision catalog not updated: ${result.decisions.error.message}`);
+      } else {
+        console.log(`decision catalog updated: ${result.decisions.systems} systems (JevBench ${result.decisions.revision})`);
+        console.log(`  path: ${result.decisions.path}`);
+        console.log(JEVBENCH_ATTRIBUTION);
+      }
+      return 'error' in result.aa || 'error' in result.modelsDev || 'error' in result.decisions ? 1 : 0;
     }
     const path = aaCatalogPath(homedir());
     const catalog = loadAaCatalog(homedir());
