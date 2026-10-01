@@ -25,7 +25,7 @@ import {
   type AvailableCredentials,
   type ProviderOption,
 } from '../app-state.js';
-import { isAnthropicRoutedName, isOauthGatewayAuth, type NativeGatewayAuth } from '../../config.js';
+import { isAnthropicRoutedName, isOauthGatewayAuth, type CredentialSource, type NativeGatewayAuth } from '../../config.js';
 import { proposePricingProvider } from '../../pricing.js';
 import type { ModelsDevCache } from '../../modelsdev.js';
 import { loginGateway as defaultLoginGateway, type LoginResult } from '../../native/oauth-login.js';
@@ -95,6 +95,7 @@ type Screen =
   | { kind: 'rank' }
   | { kind: 'import-harnesses' }
   | { kind: 'import' }
+  | { kind: 'chatgpt-source'; queue: string[] }
   | { kind: 'pick' }
   | { kind: 'custom-name' }
   | { kind: 'custom-url'; name: string }
@@ -164,6 +165,29 @@ export function OAuthModelsStep({ provider, modelIds, onSubmit, onBack, onCancel
       onCancel={onCancel}
     />
   );
+}
+
+/** The expiry wording `importHint` uses, repeated here rather than shared. */
+function expiry(oauth: { expiresInDays: number | null }): string {
+  return oauth.expiresInDays === null ? 'expiry unknown'
+    : oauth.expiresInDays < 0 ? 'expired — re-login in that tool'
+    : `expires in ${oauth.expiresInDays}d`;
+}
+
+/**
+ * Checked imports whose credential is present in codex *and* opencode, in
+ * list order — each needs a choice of which login to read.
+ */
+export function providersNeedingChatgptChoice(
+  checkedProviders: readonly ProviderOption[],
+  credentialAvailability: Record<string, AvailableCredentials>,
+): string[] {
+  return checkedProviders
+    .filter((provider) => {
+      const have = credentialAvailability[provider.provider];
+      return have !== undefined && have.codex !== null && have.opencode !== null;
+    })
+    .map((provider) => provider.provider);
 }
 
 /**
@@ -299,6 +323,10 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
         }))}
         initialSelected={alreadyImportedKeys(state.providerKeys ?? [], importable)}
         onSubmit={(keys: string[]) => {
+          const queue = providersNeedingChatgptChoice(
+            importable.filter((provider) => keys.includes(provider.key)),
+            credentialAvailability,
+          );
           onChange((current) => {
             const checked = new Set(keys);
             const nextCredentialSources = { ...current.credentialSources };
@@ -335,9 +363,41 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
               credentialSources: nextCredentialSources,
             };
           });
-          setScreen({ kind: 'menu' });
+          setScreen(queue.length > 0 ? { kind: 'chatgpt-source', queue } : { kind: 'menu' });
         }}
         onBack={() => setScreen({ kind: 'import-harnesses' })}
+        onCancel={onCancel}
+      />
+    );
+  }
+
+  // Both logins are the same subscription stored twice — the user chooses which one sonata reads (`credential_source`).
+  if (screen.kind === 'chatgpt-source') {
+    const name = screen.queue[0];
+    const have = credentialAvailability[name];
+    const rest = screen.queue.slice(1);
+    const advance = () => setScreen(rest.length > 0 ? { kind: 'chatgpt-source', queue: rest } : { kind: 'menu' });
+    if (name === undefined || have === undefined || have.codex === null || have.opencode === null) {
+      advance();
+      return <></>;
+    }
+    return (
+      <Choice<CredentialSource>
+        key={`providers-chatgpt-source-${name}`}
+        title={`ChatGPT login for ${name}`}
+        choices={[
+          { value: 'codex', label: `codex — ${expiry(have.codex)}` },
+          { value: 'opencode', label: `opencode — ${expiry(have.opencode)}` },
+        ]}
+        initial={state.credentialSources?.[name] ?? 'codex'}
+        onSubmit={(choice) => {
+          onChange((current) => ({
+            ...current,
+            credentialSources: { ...current.credentialSources, [name]: choice },
+          }));
+          advance();
+        }}
+        onBack={() => setScreen({ kind: 'import' })}
         onCancel={onCancel}
       />
     );
