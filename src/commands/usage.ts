@@ -24,6 +24,18 @@ export type UsageDimension = 'model' | 'role' | 'tier' | 'route' | 'effort' | 'g
 /** Every `--by` value, in the order the usage screen cycles through them. */
 export const USAGE_DIMENSIONS: readonly UsageDimension[] = ['model', 'role', 'tier', 'route', 'effort', 'gateway', 'lane', 'session', 'project'];
 
+/**
+ * How the classifier's spend reads beside its token counts. A provider that
+ * reports no cost leaves the call unpriced, never free, and reported cost is
+ * shown apart from the priced total, which counts forwarded requests only.
+ */
+export function classifierCostNote(autoRoute: NonNullable<UsageReport['autoRoute']>): string {
+  if (autoRoute.classifierCostCalls === 0) return ' (not priced)';
+  const decisions = Object.values(autoRoute.outcomes).reduce((sum, count) => sum + count, 0);
+  return ` · $${autoRoute.classifierCostUsd.toFixed(6)} reported by the provider, outside the priced total`
+    + (autoRoute.classifierCostCalls < decisions ? ` (${autoRoute.classifierCostCalls} of ${decisions} decisions reported a cost)` : '');
+}
+
 /** `sonata usage`'s flags, validated. */
 export interface UsageFlags {
   by: UsageDimension;
@@ -141,7 +153,14 @@ export interface UsageReport {
    */
   noPromptTokens: { requests: number; output: number };
   /** Auto-route decisions and classifier token volume; never priced. */
-  autoRoute?: { outcomes: Record<'accepted' | 'low-confidence' | 'invalid' | 'failed', number>; classifierTokens: { input: number; output: number } };
+  autoRoute?: {
+    outcomes: Record<'accepted' | 'low-confidence' | 'invalid' | 'failed', number>;
+    classifierTokens: { input: number; output: number };
+    /** What providers reported charging for classifier calls (OpenRouter does; TypeSafe direct does not). */
+    classifierCostUsd: number;
+    /** How many decisions reported a cost — the rest are unpriced, not free. */
+    classifierCostCalls: number;
+  };
   covered: { requests: number; totalUsd: number };
   failedAttempts: FailedAttempt[];
   priceCacheAgeMs?: number;
@@ -321,10 +340,19 @@ export function aggregate(
 
   for (const row of rows) {
     if (row.autoRoute !== undefined) {
-      autoRoute ??= { outcomes: { accepted: 0, 'low-confidence': 0, invalid: 0, failed: 0 }, classifierTokens: { input: 0, output: 0 } };
+      autoRoute ??= {
+        outcomes: { accepted: 0, 'low-confidence': 0, invalid: 0, failed: 0 },
+        classifierTokens: { input: 0, output: 0 },
+        classifierCostUsd: 0,
+        classifierCostCalls: 0,
+      };
       autoRoute.outcomes[row.autoRoute.outcome] += 1;
       autoRoute.classifierTokens.input += row.autoRoute.tokens?.input ?? 0;
       autoRoute.classifierTokens.output += row.autoRoute.tokens?.output ?? 0;
+      if (row.autoRoute.costUsd !== undefined) {
+        autoRoute.classifierCostUsd += row.autoRoute.costUsd;
+        autoRoute.classifierCostCalls += 1;
+      }
     }
     const label = labelOf(row, by, sessions, resolve);
     const bucket = buckets.get(label) ?? {

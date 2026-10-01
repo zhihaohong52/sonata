@@ -53,3 +53,23 @@ describe('sonata-<role>-auto routing', () => {
 
   it('marks an explicit tier alias as a manual route', async () => { const { deps, rows } = depsWith(undefined); const body = Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content: 'x' }] })); await routed({ ...req(), body }, deps as any); expect(rows[0]).toMatchObject({ route: 'manual' }); expect(rows[0].autoRoute).toBeUndefined(); });
 });
+
+describe('per-project decision provider', () => {
+  beforeEach(() => { clearCooldowns(); clearAutoDecisions(); });
+
+  it('asks classifierFor for the tenant\'s own [auto_route] settings', async () => {
+    const seenSettings: unknown[] = [];
+    const { c, calls } = classifierSaying('complex');
+    const { deps, seen } = depsWith(undefined);
+    const settings = { classifier: 'jev', provider: 'openrouter', model: '~typesafe/jev-latest', minConfidence: 0.5 };
+    const withProvider = {
+      ...deps,
+      resolveTenant: () => ({ id: 't', config: { tiers: TIERS, autoRoute: settings } }),
+      classifierFor: (s: unknown) => { seenSettings.push(s); return c; },
+    };
+    await routed(req('a different task'), withProvider as any);
+    expect(seenSettings).toEqual([settings]);
+    expect(calls).toHaveLength(1);
+    expect(seen).toEqual(['t/c']);
+  });
+});

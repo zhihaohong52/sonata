@@ -206,6 +206,18 @@ complex = ["b"]
     expect(checks.find((c) => c.name === 'auto route' && /sonata auth add typesafe/.test(c.detail))).toBeDefined();
   });
 
+  it('checks the OpenRouter key when the decision provider is openrouter', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO.replace('classifier = "jev"\n', 'classifier = "jev"\nprovider = "openrouter"\n'));
+    writeSonataKey(home, 'typesafe', 'k');
+    const missing = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(missing.checks.find((c) => c.name === 'auto route' && /sonata auth add openrouter/.test(c.detail))).toBeDefined();
+    writeSonataKey(home, 'openrouter', 'or');
+    const present = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(present.checks.some((c) => c.name === 'auto route' && /auth add/.test(c.detail))).toBe(false);
+  });
+
   it('names sonata sync when a -auto agent file is missing', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));

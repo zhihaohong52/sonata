@@ -52,6 +52,8 @@ export interface AutoRouteRecord {
   reason?: string;
   ms: number;
   tokens?: { input: number; output: number };
+  /** What the provider charged, in USD, when it reported it. */
+  costUsd?: number;
 }
 
 export interface LedgerRow {
@@ -266,6 +268,8 @@ function autoRouteIsValid(record: unknown): boolean {
     if (value.tokens === null || typeof value.tokens !== 'object' || Array.isArray(value.tokens)
       || !isCount(value.tokens.input) || !isCount(value.tokens.output)) return false;
   }
+  // A negative cost would lower the reported classifier spend.
+  if ('costUsd' in value && !isCount(value.costUsd)) return false;
   return true;
 }
 

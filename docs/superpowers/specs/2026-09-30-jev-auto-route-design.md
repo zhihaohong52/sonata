@@ -1,8 +1,10 @@
 # Auto-routed tiers: Jev chooses simple, normal or complex
 
-**Status:** implemented (PR pending); live Jev check pending a TypeSafe key.
+**Status:** shipped in 0.15.0; the OpenRouter decision provider follows in 0.16.0. Live Jev check pending a key.
 **Date:** 2026-09-30
-**Ships in:** the next minor (it adds a config key and changes routing).
+**Ships in:** 0.15.0.
+
+**Amendment (2026-10-01): OpenRouter as a decision provider.** OpenRouter serves Jev through its Decisions API (`POST https://openrouter.ai/api/alpha/decisions`, OpenRouter key, the same `state` + `questions` request plus a `model`, the same `answers` shape plus `usage.cost`). `[auto_route]` gains `provider = "typesafe" | "openrouter"` (default `typesafe`) and, for `openrouter`, `model` (default `~typesafe/jev-latest`), so a pinned Jev release or a future decision model is a config change. Because `[auto_route]` is per project and one router serves them all, the router asks `classifierFor(settings)` per decision rather than holding one classifier. A provider-reported cost is recorded as `autoRoute.costUsd` and summed beside, never into, the priced total.
 
 ## The decision
 

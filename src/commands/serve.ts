@@ -24,7 +24,7 @@ import { envVarForGateway, litellmConfigForTenants, litellmConfigYamlForTenants 
 import { litellmRequired, transportFor } from '../native/providers.js';
 import { litellmStatus, managedLitellmPath } from '../native/litellm-venv.js';
 import type { UiDeps } from '../native/ui.js';
-import { jevClassifier } from '../native/auto-route.js';
+import { decisionClassifier, type TierClassifier } from '../native/auto-route.js';
 import { createRouterServer, type RouterTenant } from '../native/router.js';
 import { LITELLM_CHATGPT_LOGIN_REFUSED, pipeLitellmOutput } from '../native/litellm-output.js';
 import { canonicalConfigPath, TenantRegistry } from '../native/tenants.js';
@@ -2617,6 +2617,7 @@ export async function cmdServe(
     // a configured port of 0 means "pick an ephemeral one", and a UiDeps still
     // carrying 0 fails every request's Host check.
     uiDeps = { home: opts.home, port: ports.router, tenants: () => registry.summary() };
+    const decisionClassifiers = new Map<string, TierClassifier>();
     router = createRouterServer({
       fetch,
       litellmBase: `http://${LITELLM_HOST}:${ports.litellm}`,
@@ -2636,9 +2637,23 @@ export async function cmdServe(
       // authorising its project hint across restarts.
       projectHintToken: ensureRouterToken(opts.home),
       resolveTier: (alias, tenant) => tenant.config === undefined ? undefined : resolveTierAlias(tenant.config, alias),
-      // Always present: with no key it throws per call and the router falls
-      // back, which is the documented off-by-default-key behaviour.
-      classifier: jevClassifier({ fetch, key: () => resolveKeyFromSource('typesafe', opts.home, 'sonata') }),
+      // Built per project setting, since [auto_route] is per project and one
+      // router serves them all. With no key it throws per call and the router
+      // falls back, which is the documented off-by-default-key behaviour.
+      classifierFor: (settings) => {
+        const id = `${settings.provider}|${settings.model ?? ''}`;
+        let classifier = decisionClassifiers.get(id);
+        if (classifier === undefined) {
+          classifier = decisionClassifier(settings, {
+            fetch,
+            key: (provider) => provider === 'openrouter'
+              ? resolveKeys(['openrouter'], opts.home)[0]?.key
+              : resolveKeyFromSource('typesafe', opts.home, 'sonata'),
+          });
+          decisionClassifiers.set(id, classifier);
+        }
+        return classifier;
+      },
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
       gatewayUnavailable: (tenant, gateway) => droppedGateways.get(gateway) ?? credentialFailures.get(gateway) ??
         (chatgptLoginRefused !== undefined && tenant.config?.native?.gateways[gateway]?.auth === 'codex-oauth'

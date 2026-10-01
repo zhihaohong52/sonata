@@ -37,7 +37,7 @@ import { loadModelsDev } from '../modelsdev.js';
 import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
-import { keyReport, resolveKeyDetail, resolveKeyFromSource } from '../native/credentials.js';
+import { keyReport, resolveKeyDetail, resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
 import { opencodeCredentialOrigin, opencodeDbPath, readOpencodeCredentials } from '../native/opencode-store.js';
 
 /**
@@ -826,11 +826,18 @@ export async function cmdDoctor(
 
   if (config.autoRoute !== undefined) {
     // A missing key is advisory: auto-routing falls back to the default tier.
-    if (resolveKeyFromSource('typesafe', home, 'sonata') === undefined) {
+    // The key is the decision provider's: OpenRouter's is resolved the way the
+    // `openrouter` gateway's is, so an opencode-stored key counts too.
+    const openrouter = config.autoRoute.provider === 'openrouter';
+    const hasKey = openrouter
+      ? resolveKeys(['openrouter'], home).length > 0
+      : resolveKeyFromSource('typesafe', home, 'sonata') !== undefined;
+    if (!hasKey) {
       checks.push({
         name: 'auto route',
         ok: true,
-        detail: 'on, but no TypeSafe key — every -auto request takes the fallback tier. Run `sonata auth add typesafe`',
+        detail: `on, but no ${openrouter ? 'OpenRouter' : 'TypeSafe'} key — every -auto request takes the fallback tier. `
+          + `Run \`sonata auth add ${openrouter ? 'openrouter' : 'typesafe'}\``,
       });
     }
     // A file sonata does not own is one `sync` refuses to overwrite, so it
@@ -856,7 +863,7 @@ export async function cmdDoctor(
       });
     }
     if (missing.length === 0 && foreign.length === 0) {
-      checks.push({ name: 'auto route', ok: true, detail: `on (jev, min_confidence ${config.autoRoute.minConfidence})` });
+      checks.push({ name: 'auto route', ok: true, detail: `on (jev via ${config.autoRoute.provider}${config.autoRoute.model === undefined ? '' : ` ${config.autoRoute.model}`}, min_confidence ${config.autoRoute.minConfidence})` });
     }
   }
 
