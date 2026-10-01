@@ -10,14 +10,24 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Added
 
-- **Auto-routing can ask Jev through OpenRouter.** `[auto_route] provider =
-  "openrouter"` sends the tier question to OpenRouter's Decisions API with
-  the key your `openrouter` gateway already uses — no TypeSafe account
-  needed. `model` picks the decision model (`~typesafe/jev-latest` by
-  default), so a pinned Jev release or a future decision model on OpenRouter
-  is a config change. OpenRouter reports each call's cost, which `sonata
-  usage` now shows beside the priced total. The default stays TypeSafe
-  direct, and existing configs are unchanged.
+- **Auto-routed tiers can ask Jev at any Jev-compatible URL, and take the
+  best decision model there.** `[auto_route]` names that URL with
+  `base_url` — TypeSafe by default, OpenRouter
+  (`https://openrouter.ai/api`), or a self-hosted `jev-compatible-server`
+  (say `http://localhost:8000`) — and posts the tier question to
+  `<base_url>/v1/systemone`. The key follows the host: `openrouter.ai` uses
+  the `openrouter` gateway's key, `api.typesafe.ai` a `typesafe` one, any
+  other host an `auto-route` one when one is stored (a local server needs
+  none); the OpenRouter key is only ever sent to openrouter.ai. Unless
+  `model` pins one, sonata lists the URL's decision models (cached an hour
+  per URL) and picks the one with the highest JevBench capability score,
+  breaking an exact tie on price, with unscored models and aliases never
+  beating a scored one and nothing scored falling back to the URL's
+  default. `sonata catalog update` caches the JevBench scores, `sonata
+  doctor` shows the URL, the key it needs and the model chosen, and `sonata
+  usage` reports each call's cost beside the priced total where one is
+  known — the response's own `usage.cost`, free on a loopback URL,
+  unpriced otherwise.
 
 ## [0.15.0] - 2026-10-01
 
