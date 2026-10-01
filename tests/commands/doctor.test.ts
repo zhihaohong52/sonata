@@ -198,24 +198,45 @@ normal = ["a", "b"]
 complex = ["b"]
 `;
 
+  const noModelList = (async () => new Response('{}', { status: 404 })) as any;
+
   it('warns when auto-routing is on without a TypeSafe key', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
     writeFileSync(join(cwd, 'sonata.toml'), AUTO);
-    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
     expect(checks.find((c) => c.name === 'auto route' && /sonata auth add typesafe/.test(c.detail))).toBeDefined();
   });
 
-  it('checks the OpenRouter key when the decision provider is openrouter', async () => {
+  it('names the key the base_url needs, by host', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
-    writeFileSync(join(cwd, 'sonata.toml'), AUTO.replace('classifier = "jev"\n', 'classifier = "jev"\nprovider = "openrouter"\n'));
-    writeSonataKey(home, 'typesafe', 'k');
-    const missing = await cmdDoctor({ ...NO_CLIENT, cwd, home });
-    expect(missing.checks.find((c) => c.name === 'auto route' && /sonata auth add openrouter/.test(c.detail))).toBeDefined();
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO.replace('classifier = "jev"\n', 'classifier = "jev"\nbase_url = "https://openrouter.ai/api"\n'));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
+    expect(checks.find((c) => c.name === 'auto route' && /sonata auth add openrouter/.test(c.detail))).toBeDefined();
+  });
+
+  it('reports the chosen decision model, its score and the runner-up', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO.replace('classifier = "jev"\n', 'classifier = "jev"\nbase_url = "https://openrouter.ai/api"\n'));
     writeSonataKey(home, 'openrouter', 'or');
-    const present = await cmdDoctor({ ...NO_CLIENT, cwd, home });
-    expect(present.checks.some((c) => c.name === 'auto route' && /auth add/.test(c.detail))).toBe(false);
+    mkdirSync(join(cwd, '.claude', 'agents'), { recursive: true });
+    const code = plannedAgents(parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'))).find((a) => a.name === 'code-auto');
+    writeFileSync(join(cwd, '.claude', 'agents', 'code-auto.md'), code?.content ?? '');
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'decision-catalog.json'), JSON.stringify({
+      fetchedAt: new Date().toISOString(), revision: 'v1.5.4',
+      systems: [{ key: 'jev-1.13.0', display: 'Jev', capability: 80 }, { key: 'kev-4b', display: 'kev', capability: 55 }],
+    }));
+    const listing = { data: [
+      { id: 'typesafe/jev-1.13', architecture: { output_modalities: ['decisions'] } },
+      { id: 'jaredpalmer/kev-4b', architecture: { output_modalities: ['decisions'] } },
+    ] };
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: (async () => new Response(JSON.stringify(listing))) as any });
+    const detail = checks.filter((c) => c.name === 'auto route').map((c) => c.detail).join('\n');
+    expect(detail).toMatch(/model typesafe\/jev-1\.13 — JevBench capability 80\.0/);
+    expect(detail).toMatch(/runner-up jaredpalmer\/kev-4b 55\.0/);
   });
 
   it('names sonata sync when a -auto agent file is missing', async () => {
@@ -223,7 +244,7 @@ complex = ["b"]
     const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
     writeFileSync(join(cwd, 'sonata.toml'), AUTO);
     writeSonataKey(home, 'typesafe', 'k');
-    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
     expect(checks.find((c) => c.name === 'auto route' && /sonata sync/.test(c.detail) && /code-auto/.test(c.detail))).toBeDefined();
   });
 
@@ -235,9 +256,9 @@ complex = ["b"]
     mkdirSync(join(home, '.claude', 'agents'), { recursive: true });
     const code = plannedAgents(parseConfig(AUTO)).find((a) => a.name === 'code-auto');
     writeFileSync(join(home, '.claude', 'agents', 'code-auto.md'), code?.content ?? '');
-    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
     expect(checks.some((c) => c.name === 'auto route' && !c.ok)).toBe(false);
-    expect(checks.find((c) => c.name === 'auto route' && c.ok && /on \(jev/.test(c.detail))).toBeDefined();
+    expect(checks.find((c) => c.name === 'auto route' && c.ok && /on \(https?:/.test(c.detail))).toBeDefined();
   });
 
   it('reports a non-sonata file occupying an auto agent name', async () => {
@@ -247,7 +268,7 @@ complex = ["b"]
     mkdirSync(join(cwd, '.claude', 'agents'), { recursive: true });
     writeFileSync(join(cwd, '.claude', 'agents', 'code-auto.md'), 'My own agent');
     writeSonataKey(home, 'typesafe', 'k');
-    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
     const check = checks.find((c) => c.name === 'auto route' && !c.ok);
     expect(check?.detail).toContain('code-auto.md');
     expect(check?.detail).toContain('not sonata-owned');
@@ -258,7 +279,7 @@ complex = ["b"]
     const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
     writeFileSync(join(cwd, 'sonata.toml'), AUTO.replace('[auto_route]\nclassifier = "jev"\n\n', ''));
-    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
     expect(checks.some((c) => c.name === 'auto route')).toBe(false);
   });
 });

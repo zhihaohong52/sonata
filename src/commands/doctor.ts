@@ -38,6 +38,9 @@ import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
 import { keyReport, resolveKeyDetail, resolveKeyFromSource, resolveKeys } from '../native/credentials.js';
+import { decisionKeyFor } from '../native/auto-route.js';
+import { ModelListCache, chooseDecisionModel } from '../native/decision-models.js';
+import { loadDecisionCatalog } from '../decision-catalog.js';
 import { opencodeCredentialOrigin, opencodeDbPath, readOpencodeCredentials } from '../native/opencode-store.js';
 
 /**
@@ -359,6 +362,8 @@ export async function defaultHarnessVersion(command: string[]): Promise<string> 
 export async function cmdDoctor(
   opts: {
     cwd: string; home?: string; packageRoot?: string; now?: () => Date;
+    /** Network access for the one auto-route model-list call; tests pass a stub. */
+    fetch?: typeof fetch;
     /** Test seam: what to probe the machine with for the litellm check. */
     installerDeps?: InstallerDeps;
     /**
@@ -385,6 +390,7 @@ export async function cmdDoctor(
 ): Promise<{ ok: boolean; checks: Check[] }> {
   const home = opts.home ?? homedir();
   const now = opts.now ?? (() => new Date());
+  const fetchFn = opts.fetch ?? fetch;
   const checks: Check[] = [];
 
   try {
@@ -825,19 +831,24 @@ export async function cmdDoctor(
        });
 
   if (config.autoRoute !== undefined) {
+    const auto = config.autoRoute;
+    // The key the decision URL needs, chosen by host. Only TypeSafe and
+    // OpenRouter require one; a local or custom server may need none, so a
+    // missing key there is not reported.
+    const credential = decisionKeyFor(auto.baseUrl, {
+      openrouter: () => resolveKeys(['openrouter'], home)[0]?.key,
+      typesafe: () => resolveKeyFromSource('typesafe', home, 'sonata'),
+      other: () => resolveKeyFromSource('auto-route', home, 'sonata'),
+    });
+    let decisionHost = '';
+    try { decisionHost = new URL(auto.baseUrl).hostname; } catch { /* other */ }
+    const keyRequired = decisionHost === 'openrouter.ai' || decisionHost === 'api.typesafe.ai';
     // A missing key is advisory: auto-routing falls back to the default tier.
-    // The key is the decision provider's: OpenRouter's is resolved the way the
-    // `openrouter` gateway's is, so an opencode-stored key counts too.
-    const openrouter = config.autoRoute.provider === 'openrouter';
-    const hasKey = openrouter
-      ? resolveKeys(['openrouter'], home).length > 0
-      : resolveKeyFromSource('typesafe', home, 'sonata') !== undefined;
-    if (!hasKey) {
+    if (keyRequired && credential.key === undefined) {
       checks.push({
         name: 'auto route',
         ok: true,
-        detail: `on, but no ${openrouter ? 'OpenRouter' : 'TypeSafe'} key — every -auto request takes the fallback tier. `
-          + `Run \`sonata auth add ${openrouter ? 'openrouter' : 'typesafe'}\``,
+        detail: `on, but no key for ${auto.baseUrl} — every -auto request takes the fallback tier. Run \`${credential.hint}\``,
       });
     }
     // A file sonata does not own is one `sync` refuses to overwrite, so it
@@ -863,7 +874,30 @@ export async function cmdDoctor(
       });
     }
     if (missing.length === 0 && foreign.length === 0) {
-      checks.push({ name: 'auto route', ok: true, detail: `on (jev via ${config.autoRoute.provider}${config.autoRoute.model === undefined ? '' : ` ${config.autoRoute.model}`}, min_confidence ${config.autoRoute.minConfidence})` });
+      let choiceText: string;
+      if (auto.model !== undefined) {
+        choiceText = `pinned model ${auto.model}`;
+      } else {
+        // One free model-list call at most; doctor never makes a decision call.
+        const listed = keyRequired && credential.key === undefined
+          ? undefined
+          : await new ModelListCache(fetchFn).list(auto.baseUrl, credential.key);
+        const choice = chooseDecisionModel({ baseUrl: auto.baseUrl, listed, catalog: loadDecisionCatalog(home) });
+        const runnerUp = choice.ranked.find((r) => r.id !== choice.model && r.capability !== undefined);
+        choiceText = `model ${choice.model ?? 'server default'} — ${choice.reason}`
+          + (runnerUp?.capability === undefined ? '' : `; runner-up ${runnerUp.id} ${runnerUp.capability.toFixed(1)}`);
+      }
+      checks.push({ name: 'auto route', ok: true, detail: `on (${auto.baseUrl}, ${choiceText}, min_confidence ${auto.minConfidence})` });
+    }
+    // The ranking data. Absent or stale is advisory: selection falls back to the URL's default.
+    if (auto.model === undefined) {
+      const decisionCatalog = loadDecisionCatalog(home);
+      const age = decisionCatalog === undefined ? undefined : aaCatalogAgeDays(decisionCatalog.fetchedAt, now());
+      if (decisionCatalog === undefined) {
+        checks.push({ name: 'auto route', ok: true, detail: 'no decision-model catalog — run `sonata catalog update` so the best model can be chosen' });
+      } else if (age !== undefined && age > AA_CATALOG_MAX_AGE_DAYS) {
+        checks.push({ name: 'auto route', ok: true, detail: `decision-model catalog is ${age} days old (JevBench ${decisionCatalog.revision}) — run \`sonata catalog update\`` });
+      }
     }
   }
 
