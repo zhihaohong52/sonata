@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   keyReport,
+  resolveDecisionKey,
   resolveKeyDetail,
   resolveKeyFromSource,
   resolveKeys,
@@ -112,6 +113,47 @@ describe('gateways that share one key', () => {
     writeSonataKey(home, 'acme', 'acme-key');
     const stored = JSON.parse(readFileSync(sonataKeyStorePath(home), 'utf8'));
     expect(Object.keys(stored).sort()).toEqual(['acme', 'opencode-go']);
+  });
+});
+
+describe('resolveDecisionKey — the one decision-key policy', () => {
+  /** Writes an opencode `auth.json` holding `entries` under `home`. */
+  function opencodeAuth(home: string, entries: Record<string, unknown>): void {
+    mkdirSync(join(home, '.local/share/opencode'), { recursive: true });
+    writeFileSync(join(home, '.local/share/opencode/auth.json'), JSON.stringify(entries));
+  }
+
+  it('resolves a decision key from sonata\'s own store, and names that store', () => {
+    const home = tmp();
+    writeSonataKey(home, 'typesafe', 'ts-key');
+    writeSonataKey(home, 'auto-route', 'ar-key');
+
+    expect(resolveDecisionKey('typesafe', home)).toEqual({ key: 'ts-key', source: 'sonata' });
+    expect(resolveDecisionKey('auto-route', home)).toEqual({ key: 'ar-key', source: 'sonata' });
+  });
+
+  it('never sees a typesafe or auto-route key only another harness holds', () => {
+    // The router sends nothing but sonata's own copy, so one held only by
+    // opencode is not a credential at all here — reading it anyway is what let
+    // Setup skip the key prompt while every decision failed open.
+    const home = tmp();
+    opencodeAuth(home, { typesafe: { key: 'oc-ts' }, 'auto-route': { key: 'oc-ar' } });
+
+    expect(resolveDecisionKey('typesafe', home)).toBeUndefined();
+    expect(resolveDecisionKey('auto-route', home)).toBeUndefined();
+  });
+
+  it('keeps the provider lookup for openrouter, opencode included', () => {
+    // OpenRouter is a provider gateway as well as a decision host, so its key
+    // is found wherever a provider's would be.
+    const home = tmp();
+    opencodeAuth(home, { openrouter: { key: 'oc-or' } });
+    expect(resolveDecisionKey('openrouter', home)).toEqual({ key: 'oc-or', source: 'opencode' });
+
+    const both = tmp();
+    writeSonataKey(both, 'openrouter', 'sonata-or');
+    opencodeAuth(both, { openrouter: { key: 'oc-or' } });
+    expect(resolveDecisionKey('openrouter', both)).toEqual({ key: 'sonata-or', source: 'sonata' });
   });
 });
 

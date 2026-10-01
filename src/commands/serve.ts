@@ -10,7 +10,7 @@ import { spentTodayUsd, unreadableMachineBudget, type BudgetStatus } from '../bu
 import { GLOBAL_CONFIG_RELATIVE, loadConfig, nativeRouteFor, oauthCredentialIdentity, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
-import { resolveKeyDetail, resolveKeys, resolveKeyFromSource, sonataKeyStorePath } from '../native/credentials.js';
+import { resolveDecisionKey, resolveKeyDetail, resolveKeys, sonataKeyStorePath } from '../native/credentials.js';
 import {
   boundUnreadable, boundUnreadableDb, fileStoreRead, jsonStoreRead, newUnreadableMemory, opencodeDbRead,
   UNREADABLE_SKIP_RULE, type StoreRead, type UnreadableMemory,
@@ -2651,9 +2651,9 @@ export async function cmdServe(
         let classifier = decisionClassifiers.get(id);
         if (classifier === undefined) {
           const credential = () => decisionKeyFor(settings.baseUrl, {
-            openrouter: () => resolveKeys(['openrouter'], opts.home)[0]?.key,
-            typesafe: () => resolveKeyFromSource('typesafe', opts.home, 'sonata'),
-            other: () => resolveKeyFromSource('auto-route', opts.home, 'sonata'),
+            openrouter: () => resolveDecisionKey('openrouter', opts.home)?.key,
+            typesafe: () => resolveDecisionKey('typesafe', opts.home)?.key,
+            other: () => resolveDecisionKey('auto-route', opts.home)?.key,
           });
           classifier = decisionClassifier(settings, {
             fetch,

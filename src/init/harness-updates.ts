@@ -139,11 +139,18 @@ export async function offerHarnessUpdates(opts: {
       } catch {
         ok = false;
       }
-      const now = cleanVersion(await deps.installedVersion(u.harness).catch(() => undefined)) ?? u.installed;
+      const now = cleanVersion(await deps.installedVersion(u.harness).catch(() => undefined));
       for (const line of buffered) out(`    ${line}`);
-      out(ok
-        ? `  ✓ ${u.harness} updated to ${now}`
-        : `  ! ${u.harness} update did not complete; continuing with ${now}`);
+      if (!ok) {
+        out(`  ! ${u.harness} update did not complete; continuing with ${now ?? u.installed}`);
+      } else if (now === undefined) {
+        // The updater exited 0 but the installed version would not read back.
+        // Printing the pre-update version as "updated to" is a claim nothing
+        // verified — the one thing this block must never do.
+        out(`  ✓ ${u.harness} updater completed; installed version could not be verified`);
+      } else {
+        out(`  ✓ ${u.harness} updated to ${now}`);
+      }
     }));
   }
   out('');

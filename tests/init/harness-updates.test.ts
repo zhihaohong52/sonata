@@ -190,6 +190,31 @@ describe('offerHarnessUpdates', () => {
     expect(lines.join('\n')).toContain('codex updated to 0.159.2');
   });
 
+  it('never claims a version the re-probe cannot read', async () => {
+    // The updater exited 0, which is not the same as knowing what is now
+    // installed. Printing the pre-update version as "updated to" is a claim
+    // nothing verified; the honest line names that instead. Both ways a probe
+    // fails are covered: no version at all, and one that will not parse.
+    const probes: Record<string, number> = {};
+    const d: UpdateDeps = {
+      installedVersion: async (harness) => {
+        const n = probes[harness] = (probes[harness] ?? 0) + 1;
+        if (n === 1) return harness === 'codex' ? '0.156.1' : harness === 'pi' ? '0.87.1' : undefined;
+        return harness === 'codex' ? undefined : 'no version here';
+      },
+      latestVersion: async (pkg) => (pkg === '@openai/codex' ? '0.159.2'
+        : pkg === '@earendil-works/pi-coding-agent' ? '0.99.1' : undefined),
+      run: async () => true,
+    };
+    const lines: string[] = [];
+    await offerHarnessUpdates({ interactive: true, ask: async () => true, out: (l) => lines.push(l), deps: d });
+    const text = lines.join('\n');
+    expect(text).toContain('✓ codex updater completed; installed version could not be verified');
+    expect(text).toContain('✓ pi updater completed; installed version could not be verified');
+    expect(text).not.toContain('updated to 0.156.1');
+    expect(text).not.toContain('updated to 0.87.1');
+  });
+
   it('continues on the old version when the updater fails', async () => {
     const d = deps(
       { codex: '0.156.1' },
