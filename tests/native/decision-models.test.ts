@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   parseModelListing, normalizeDecisionId, scoreFor, chooseDecisionModel, defaultDecisionModel, ModelListCache,
+  DEFAULT_MODEL_LIST_TIMEOUT_MS,
 } from '../../src/native/decision-models.js';
 import type { DecisionCatalog } from '../../src/decision-catalog.js';
 
@@ -113,6 +114,38 @@ describe('ModelListCache', () => {
     t = 4 * 60_000; await cache.list('http://localhost:8000', undefined);
     expect(f).toHaveBeenCalledTimes(1);
     t = 6 * 60_000; await cache.list('http://localhost:8000', undefined);
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+  it('defaults the listing timeout to 1 s, under the 3 s decision deadline', () => {
+    expect(DEFAULT_MODEL_LIST_TIMEOUT_MS).toBe(1_000);
+  });
+  it('gives up on a listing that never answers, within the default timeout', async () => {
+    const cache = new ModelListCache(((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+    })) as any);
+    const started = Date.now();
+    expect(await cache.list('https://openrouter.ai/api', 'k')).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(1_500);
+  });
+  it('caches a network failure, but not one the caller cancelled', async () => {
+    let n = 0;
+    const f = vi.fn((_url: string, init: RequestInit) => {
+      n += 1;
+      return n === 1
+        ? new Promise<Response>((_resolve, reject) => { init.signal?.addEventListener('abort', () => reject(new Error('aborted'))); })
+        : Promise.reject(new Error('network unavailable'));
+    });
+    const cache = new ModelListCache(f as any);
+    const controller = new AbortController();
+    const cancelled = cache.list('https://openrouter.ai/api', 'k', controller.signal);
+    controller.abort();
+    expect(await cancelled).toBeUndefined();
+    expect(f).toHaveBeenCalledTimes(1);
+    // A cancelled decision leaves nothing cached, so the next call refetches.
+    expect(await cache.list('https://openrouter.ai/api', 'k')).toBeUndefined();
+    expect(f).toHaveBeenCalledTimes(2);
+    // That network failure is remembered for 5 minutes.
+    expect(await cache.list('https://openrouter.ai/api', 'k')).toBeUndefined();
     expect(f).toHaveBeenCalledTimes(2);
   });
 });

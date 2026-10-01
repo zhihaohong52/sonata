@@ -161,7 +161,7 @@ export function parseJevAnswer(json: unknown): ClassifierAnswer {
  */
 export function jevClassifier(opts: {
   fetch: typeof fetch; key: () => string | undefined; attemptMs?: number; retries?: number;
-  endpoint?: string; model?: string | (() => Promise<string | undefined>); keyHint?: string;
+  endpoint?: string; model?: string | ((signal: AbortSignal) => Promise<string | undefined>); keyHint?: string;
   /** False for a URL that may need no key (a local server): no key then sends no Authorization header. */
   keyRequired?: boolean;
   /** A local server charges nothing, so an answer reporting no cost is free rather than unpriced. */
@@ -176,7 +176,7 @@ export function jevClassifier(opts: {
     async classify(input, signal) {
       const key = opts.key();
       if (key === undefined && opts.keyRequired !== false) throw new Error(`no classifier key — run \`${keyHint}\``);
-      const model = typeof opts.model === 'function' ? await opts.model() : opts.model;
+      const model = typeof opts.model === 'function' ? await opts.model(signal) : opts.model;
       let last: unknown;
       for (let attempt = 0; attempt <= retries; attempt += 1) {
         if (signal.aborted) break;
@@ -242,7 +242,7 @@ export function decisionKeyFor(
 /** The classifier for one `[auto_route]` URL; `model` is resolved per call. */
 export function decisionClassifier(
   settings: Pick<AutoRouteConfig, 'baseUrl'>,
-  deps: { fetch: typeof fetch; key: () => string | undefined; keyHint: string; model: () => Promise<string | undefined> },
+  deps: { fetch: typeof fetch; key: () => string | undefined; keyHint: string; model: (signal: AbortSignal) => Promise<string | undefined> },
 ): TierClassifier {
   let host = '';
   try { host = new URL(settings.baseUrl).hostname; } catch { /* treated as other */ }

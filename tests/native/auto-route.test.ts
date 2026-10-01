@@ -17,6 +17,7 @@ import {
   isLoopbackUrl,
   type TierClassifier,
 } from '../../src/native/auto-route.js';
+import { ModelListCache, chooseDecisionModel } from '../../src/native/decision-models.js';
 
 const body = (messages: unknown[]) =>
   Buffer.from(JSON.stringify({ model: 'sonata-code-auto', messages }));
@@ -686,5 +687,64 @@ describe('URL-based decision classifier', () => {
   it('recognises loopback hosts', () => {
     expect(['http://localhost:8000', 'http://127.0.0.1:9', 'http://[::1]:8000'].every(isLoopbackUrl)).toBe(true);
     expect(isLoopbackUrl('https://openrouter.ai/api')).toBe(false);
+  });
+
+  it('hands the decision signal to the model resolver, and aborts it with the decision', async () => {
+    let seen: AbortSignal | undefined;
+    let aborts = 0;
+    const c = decisionClassifier({ baseUrl: 'http://localhost:8000' }, {
+      fetch: (async () => ok()) as any,
+      key: () => undefined, keyHint: 'sonata auth add auto-route',
+      model: (signal) => {
+        seen = signal;
+        signal.addEventListener('abort', () => { aborts += 1; });
+        return new Promise<string | undefined>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      },
+    });
+    const d = await decideTier({ classifier: c, role: 'code', body: body([{ role: 'user', content: 'T' }]), tiers: ALL, minConfidence: 0.5, deadlineMs: 200 });
+    expect(seen).toBeInstanceOf(AbortSignal);
+    expect(aborts).toBe(1);
+    expect(d.record.outcome).toBe('failed');
+    expect(d.tier).toBe('normal');
+  });
+
+  it('still decides when the model resolver answers inside the deadline', async () => {
+    const c = decisionClassifier({ baseUrl: 'http://localhost:8000' }, {
+      fetch: (async () => ok()) as any,
+      key: () => undefined, keyHint: 'sonata auth add auto-route',
+      model: async () => { await new Promise((r) => setTimeout(r, 250)); return 'typesafe/jev-1.13'; },
+    });
+    const d = await decideTier({ classifier: c, role: 'code', body: body([{ role: 'user', content: 'T' }]), tiers: ALL, minConfidence: 0.5 });
+    expect(d.record.outcome).toBe('accepted');
+    expect(d.tier).toBe('simple');
+    expect(d.record.ms).toBeLessThan(3_000);
+  });
+
+  it('a slow model listing cannot spend the decision deadline', async () => {
+    const cache = new ModelListCache(((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+    })) as any);
+    const sent: Array<Record<string, unknown>> = [];
+    const c = decisionClassifier({ baseUrl: 'https://openrouter.ai/api' }, {
+      fetch: (async (_url: string, init: RequestInit) => {
+        sent.push(JSON.parse(init.body as string));
+        return new Response(JSON.stringify({
+          answers: { tier: { type: 'choice', choice: 'normal', confidence: 0.9, probabilities: { simple: 0.05, normal: 0.9, complex: 0.05 } } },
+        }), { status: 200 });
+      }) as any,
+      key: () => 'or', keyHint: 'sonata auth add openrouter',
+      model: async (signal) => chooseDecisionModel({
+        baseUrl: 'https://openrouter.ai/api',
+        listed: await cache.list('https://openrouter.ai/api', 'or', signal),
+        catalog: undefined,
+      }).model,
+    });
+    const d = await decideTier({ classifier: c, role: 'code', body: body([{ role: 'user', content: 'T' }]), tiers: ALL, minConfidence: 0.5 });
+    expect(d.record.outcome).toBe('accepted');
+    expect(d.tier).toBe('normal');
+    expect(sent[0].model).toBe('~typesafe/jev-latest');
+    expect(d.record.ms).toBeLessThan(3_000);
   });
 });
