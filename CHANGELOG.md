@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-10-01
+
 ### Added
 
 - **Auto-routed tiers can ask Jev at any Jev-compatible URL, and take the
