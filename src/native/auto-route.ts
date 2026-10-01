@@ -15,15 +15,9 @@
 // Tier is defined by agent generation, not config parsing.
 import type { Tier } from '../commands/agents.js';
 import type { AutoRouteRecord } from '../ledger.js';
-import type { AutoRouteConfig, AutoRouteProvider } from '../config.js';
+import type { AutoRouteConfig } from '../config.js';
 
 export const JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
-/**
- * OpenRouter's Decisions API: the same `state` + `questions` request plus a
- * `model`, answered with the same `answers` shape and a USD `usage.cost`.
- * Still marked alpha by OpenRouter.
- */
-export const OPENROUTER_DECISIONS_ENDPOINT = 'https://openrouter.ai/api/alpha/decisions';
 export const JEV_ATTEMPT_MS = 1_500;
 export const JEV_DEADLINE_MS = 3_000;
 export const TASK_CHAR_CAP = 8_000;
@@ -167,7 +161,11 @@ export function parseJevAnswer(json: unknown): ClassifierAnswer {
  */
 export function jevClassifier(opts: {
   fetch: typeof fetch; key: () => string | undefined; attemptMs?: number; retries?: number;
-  endpoint?: string; model?: string; keyHint?: string;
+  endpoint?: string; model?: string | (() => Promise<string | undefined>); keyHint?: string;
+  /** False for a URL that may need no key (a local server): no key then sends no Authorization header. */
+  keyRequired?: boolean;
+  /** A local server charges nothing, so an answer reporting no cost is free rather than unpriced. */
+  loopbackFree?: boolean;
 }): TierClassifier {
   const endpoint = opts.endpoint ?? JEV_ENDPOINT;
   const keyHint = opts.keyHint ?? 'sonata auth add typesafe';
@@ -177,15 +175,16 @@ export function jevClassifier(opts: {
     name: 'jev',
     async classify(input, signal) {
       const key = opts.key();
-      if (key === undefined) throw new Error(`no classifier key — run \`${keyHint}\``);
+      if (key === undefined && opts.keyRequired !== false) throw new Error(`no classifier key — run \`${keyHint}\``);
+      const model = typeof opts.model === 'function' ? await opts.model() : opts.model;
       let last: unknown;
       for (let attempt = 0; attempt <= retries; attempt += 1) {
         if (signal.aborted) break;
         try {
           const res = await opts.fetch(endpoint, {
             method: 'POST',
-            headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
-            body: JSON.stringify({ ...(opts.model === undefined ? {} : { model: opts.model }), ...jevRequestBody(input) }),
+            headers: { ...(key === undefined ? {} : { authorization: `Bearer ${key}` }), 'content-type': 'application/json' },
+            body: JSON.stringify({ ...(model === undefined ? {} : { model }), ...jevRequestBody(input) }),
             signal: AbortSignal.any([signal, AbortSignal.timeout(attemptMs)]),
           });
           if (!res.ok) { last = new Error(`HTTP ${res.status}`); continue; }
@@ -194,7 +193,8 @@ export function jevClassifier(opts: {
             if (error instanceof SyntaxError) throw new MalformedAnswerError();
             throw error;
           }
-          return parseJevAnswer(json);
+          const answer = parseJevAnswer(json);
+          return opts.loopbackFree === true && answer.costUsd === undefined ? { ...answer, costUsd: 0 } : answer;
         } catch (error) {
           if (error instanceof MalformedAnswerError) throw error;
           last = error;
@@ -205,23 +205,44 @@ export function jevClassifier(opts: {
   };
 }
 
-/**
- * The classifier one project's `[auto_route]` settings describe. `key` is
- * asked for the provider's key per call, so the caller owns where keys live.
- */
+/** Whether a URL points at this machine — a decision model there costs nothing. */
+export function isLoopbackUrl(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, '');
+    return host === 'localhost' || host === '::1' || /^127\.\d+\.\d+\.\d+$/.test(host);
+  } catch {
+    return false;
+  }
+}
+
+/** The key a decision URL needs, by host — a key is only ever sent to the host it belongs to. */
+export function decisionKeyFor(
+  baseUrl: string,
+  keys: { openrouter: () => string | undefined; typesafe: () => string | undefined; other: () => string | undefined },
+): { key: string | undefined; hint: string } {
+  let host = '';
+  try { host = new URL(baseUrl).hostname; } catch { /* other */ }
+  if (host === 'openrouter.ai') return { key: keys.openrouter(), hint: 'sonata auth add openrouter' };
+  if (host === 'api.typesafe.ai') return { key: keys.typesafe(), hint: 'sonata auth add typesafe' };
+  return { key: keys.other(), hint: 'sonata auth add auto-route' };
+}
+
+/** The classifier for one `[auto_route]` URL; `model` is resolved per call. */
 export function decisionClassifier(
-  settings: Pick<AutoRouteConfig, 'provider' | 'model'>,
-  deps: { fetch: typeof fetch; key: (provider: AutoRouteProvider) => string | undefined },
+  settings: Pick<AutoRouteConfig, 'baseUrl'>,
+  deps: { fetch: typeof fetch; key: () => string | undefined; keyHint: string; model: () => Promise<string | undefined> },
 ): TierClassifier {
-  return settings.provider === 'openrouter'
-    ? jevClassifier({
-      fetch: deps.fetch,
-      key: () => deps.key('openrouter'),
-      endpoint: OPENROUTER_DECISIONS_ENDPOINT,
-      model: settings.model,
-      keyHint: 'sonata auth add openrouter',
-    })
-    : jevClassifier({ fetch: deps.fetch, key: () => deps.key('typesafe') });
+  let host = '';
+  try { host = new URL(settings.baseUrl).hostname; } catch { /* treated as other */ }
+  return jevClassifier({
+    fetch: deps.fetch,
+    key: deps.key,
+    keyHint: deps.keyHint,
+    keyRequired: host === 'openrouter.ai' || host === 'api.typesafe.ai',
+    endpoint: `${settings.baseUrl}/v1/systemone`,
+    model: deps.model,
+    loopbackFree: isLoopbackUrl(settings.baseUrl),
+  });
 }
 
 export interface AutoDecision { tier: Tier; record: AutoRouteRecord }
