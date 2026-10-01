@@ -197,6 +197,13 @@ export const DEFAULT_DECISION_BASE_URL = 'https://api.typesafe.ai';
 /** The decision model OpenRouter is asked for when nothing better is selected. */
 export const OPENROUTER_DEFAULT_DECISION_MODEL = '~typesafe/jev-latest';
 
+/**
+ * The decision model TypeSafe is asked for when nothing better is selected.
+ * TypeSafe requires `model` (it answers 422 without one) and lists only
+ * aliases, so this is what a TypeSafe URL resolves to in practice.
+ */
+export const TYPESAFE_DEFAULT_DECISION_MODEL = 'jev-latest';
+
 export interface AutoRouteConfig {
   classifier: 'jev';
   /**

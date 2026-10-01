@@ -46,8 +46,8 @@ JevBench #73 of 106).
 - Decisions go to `<base_url>/v1/systemone`. Verified 2026-10-01: TypeSafe
   (`https://api.typesafe.ai`), OpenRouter (`https://openrouter.ai/api` —
   answers 401 there without a key, 404 on an unknown path) and
-  `jev-compatible-server` (`http://localhost:8000`) all serve that path with
-  the same request and response.
+  `jev-compatible-server` (`http://localhost:8000`) all serve that path. The
+  request to TypeSafe must include `model`; it returns HTTP 422 without one.
 - `base_url` is any `http`/`https` URL; a trailing `/` is ignored. Absent
   means `https://api.typesafe.ai`, so a 0.15.0 config behaves unchanged.
 - The key is chosen by host: `openrouter.ai` → the `openrouter` gateway's key
@@ -105,9 +105,10 @@ points at is the one that gets ranked.
    price after listed).
 3. Unscored models rank after every scored one, in listed order — an unknown
    score is not a good score.
-4. No list, or nothing scored → the URL's default: no `model` field for
-   TypeSafe and other hosts (the server's default), `~typesafe/jev-latest`
-   for `openrouter.ai`, which requires a model.
+4. No list, or nothing scored → `~typesafe/jev-latest` for
+   `openrouter.ai`, `jev-latest` for `api.typesafe.ai` (TypeSafe requires a
+   model and returns HTTP 422 without it), and no `model` field for any other
+   host (the server's default).
 
 On OpenRouter on 2026-10-01 this picks `typesafe/jev-1.13` (capability 80.0;
 `kev-4b` is the only other scored model there).
@@ -157,6 +158,7 @@ unpriced; config refusal and round trip; doctor output.
 - Real `usage` and latency from OpenRouter's decision endpoint are unmeasured
   until the account has credit.
 - Whether JevBench keeps its JSON URL stable across revisions.
+- Follow-up (not built): shadow comparison — ask Jev alongside manually tiered dispatches and record agreement, to measure correctness over time.
 
 ## Setup TUI step (added 2026-10-01)
 

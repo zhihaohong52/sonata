@@ -75,11 +75,15 @@ describe('chooseDecisionModel', () => {
     expect(chooseDecisionModel({ baseUrl: or, listed: undefined, catalog }).model).toBe('~typesafe/jev-latest');
     expect(chooseDecisionModel({ baseUrl: or, listed: [{ id: 'x/unknown' }], catalog }).model).toBe('~typesafe/jev-latest');
     expect(chooseDecisionModel({ baseUrl: 'http://localhost:8000', listed: undefined, catalog: undefined }).model).toBeUndefined();
-    expect(chooseDecisionModel({ baseUrl: 'https://api.typesafe.ai', listed: [{ id: 'jev-1.13' }], catalog: undefined }).model).toBeUndefined();
+    expect(chooseDecisionModel({ baseUrl: 'https://api.typesafe.ai', listed: [{ id: 'jev-1.13' }], catalog: undefined }).model).toBe('jev-latest');
+  });
+  it('asks TypeSafe for jev-latest when its listing has only unscored aliases (it 422s without a model)', () => {
+    const c = chooseDecisionModel({ baseUrl: 'https://api.typesafe.ai', listed: [{ id: 'jev-latest' }, { id: 'jev-preview' }], catalog });
+    expect(c.model).toBe('jev-latest');
   });
   it('knows the default per host', () => {
     expect(defaultDecisionModel('https://openrouter.ai/api')).toBe('~typesafe/jev-latest');
-    expect(defaultDecisionModel('https://api.typesafe.ai')).toBeUndefined();
+    expect(defaultDecisionModel('https://api.typesafe.ai')).toBe('jev-latest');
   });
 });
 
