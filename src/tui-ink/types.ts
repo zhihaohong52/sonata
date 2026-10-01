@@ -77,6 +77,16 @@ export interface InitState {
   /** Routing mode for tier agents: project, global, or skip. */
   routing?: 'project' | 'global' | 'skip';
   guidance?: 'project' | 'global' | 'skip';
+  /**
+   * Auto-route as chosen in Setup: a URL, or `null` for turned off this run.
+   * Absent means the step was not used, and plan() keeps the saved table.
+   */
+  autoRoute?: { baseUrl: string } | null;
+  /**
+   * The decision server's key typed in Setup. Kept apart from `byokKeys`,
+   * which the provider pipeline reads as gateways to build.
+   */
+  decisionKey?: { gateway: 'typesafe' | 'openrouter' | 'auto-route'; key: string };
 }
 
 // The JSON written by the Ink app, read by cmdInit

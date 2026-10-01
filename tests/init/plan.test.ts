@@ -1,12 +1,17 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import React from 'react';
+import { render } from 'ink-testing-library';
 import { describe, it, expect } from 'vitest';
 import { parseConfig, expectedAgentNames, tierAgentNames, type SonataConfig } from '../../src/config.js';
 import { plan, type CredentialProbe } from '../../src/init/plan.js';
 import { deriveInitState } from '../../src/init/helpers.js';
 import { litellmRequired } from '../../src/native/providers.js';
 import { aaCatalogPath } from '../../src/catalog.js';
+import { AutoRouteStep } from '../../src/tui-ink/components/auto-route-step.js';
+import type { InitState } from '../../src/tui-ink/types.js';
+import { tick, until } from '../tui-ink/ink-wait.js';
 import type { InitEnvironment } from '../../src/init/discover.js';
 
 const noCredentials: CredentialProbe = {
@@ -463,5 +468,153 @@ describe('plan — effort variants', () => {
     expect(back.tiers!.code.simple).not.toContain('acme-fast');
     expect(back.tiers!.code.simple).toEqual(expect.arrayContaining(['acme-fast@high', 'acme-fast@max', 'flaky-slow']));
     expect(back.tiers!.code.complex).toEqual(expect.arrayContaining(['acme-fast@max', 'acme-fast@high', 'flaky-slow']));
+  });
+});
+
+describe('plan — [auto_route] from the Setup step', () => {
+  // Setup's answer is the only thing that may change this table. It is also
+  // the only writer of it, so a step that was not reached must leave the
+  // saved table byte-identical rather than re-emit a defaulted one.
+  const savedAutoRoute = {
+    classifier: 'jev' as const,
+    baseUrl: 'https://api.typesafe.ai',
+    model: 'jev-1.13',
+    minConfidence: 0.3,
+  };
+  const withSaved = (autoRoute?: typeof savedAutoRoute) => env({
+    configsByScope: {
+      project: { ...(autoRoute === undefined ? {} : { autoRoute }) } as unknown as SonataConfig,
+    },
+  });
+
+  it('keeps the saved table when the step was not used', () => {
+    const p = plan(withSaved(savedAutoRoute), state, noCredentials, opts);
+    const back = parseConfig(p.configToml);
+    expect(back.autoRoute).toEqual(savedAutoRoute);
+    expect(p.guidance.autoRoute).toBe(true);
+  });
+
+  it('writes no table when the step turned auto-route off', () => {
+    const p = plan(withSaved(savedAutoRoute), { ...state, autoRoute: null }, noCredentials, opts);
+    const back = parseConfig(p.configToml);
+    expect(back.autoRoute).toBeUndefined();
+    expect(p.configToml).not.toContain('[auto_route]');
+    expect(p.guidance.autoRoute).toBe(false);
+  });
+
+  it('keeps the pinned model and min_confidence when the URL is unchanged', () => {
+    const p = plan(withSaved(savedAutoRoute), {
+      ...state, autoRoute: { baseUrl: 'https://api.typesafe.ai' },
+    }, noCredentials, opts);
+    const back = parseConfig(p.configToml);
+    expect(back.autoRoute).toEqual({
+      classifier: 'jev', baseUrl: 'https://api.typesafe.ai', model: 'jev-1.13', minConfidence: 0.3,
+    });
+  });
+
+  it('drops a pinned model when the URL changes — a model belongs to its URL', () => {
+    const p = plan(withSaved(savedAutoRoute), {
+      ...state, autoRoute: { baseUrl: 'https://openrouter.ai/api' },
+    }, noCredentials, opts);
+    const back = parseConfig(p.configToml);
+    expect(back.autoRoute).toEqual({
+      classifier: 'jev', baseUrl: 'https://openrouter.ai/api', minConfidence: 0.3,
+    });
+  });
+
+  it('writes a first [auto_route] at the default min_confidence, and follows the guidance flag', () => {
+    const p = plan(withSaved(), {
+      ...state, autoRoute: { baseUrl: 'http://localhost:8000' },
+    }, noCredentials, opts);
+    const back = parseConfig(p.configToml);
+    expect(back.autoRoute).toEqual({ classifier: 'jev', baseUrl: 'http://localhost:8000', minConfidence: 0.5 });
+    expect(p.guidance.autoRoute).toBe(true);
+  });
+
+  it('puts the decision key in keysToStore beside the provider keys', () => {
+    const p = plan(withSaved(), {
+      ...state,
+      autoRoute: { baseUrl: 'https://api.typesafe.ai' },
+      byokKeys: { acme: 'sk-provider' },
+      decisionKey: { gateway: 'typesafe', key: 'sk-decision' },
+    }, noCredentials, opts);
+    expect(p.keysToStore).toEqual([
+      { gateway: 'acme', key: 'sk-provider' },
+      { gateway: 'typesafe', key: 'sk-decision' },
+    ]);
+  });
+
+  it('stores nothing for a decision key there is none of', () => {
+    const p = plan(withSaved(), { ...state, autoRoute: { baseUrl: 'https://api.typesafe.ai' } }, noCredentials, opts);
+    expect(p.keysToStore).toEqual([]);
+  });
+
+  // The confirm screen is where the [auto_route] change is announced: the
+  // table is written by this plan and named nowhere else. What it says is
+  // what is about to happen to the table — a carried-forward one is not a
+  // change being asked about.
+  it('names the change on the confirm summary, with a pin that survives', () => {
+    const unchanged = plan(withSaved(savedAutoRoute), state, noCredentials, opts);
+    expect(unchanged.summary.join('\n')).not.toContain('auto-route:');
+
+    const turnedOff = plan(withSaved(savedAutoRoute), { ...state, autoRoute: null }, noCredentials, opts);
+    expect(turnedOff.summary.join('\n')).toContain('auto-route: removed');
+
+    const sameUrl = plan(withSaved(savedAutoRoute), {
+      ...state, autoRoute: { baseUrl: 'https://api.typesafe.ai' },
+    }, noCredentials, opts);
+    expect(sameUrl.summary.join('\n')).toContain('auto-route: https://api.typesafe.ai (model jev-1.13)');
+
+    const moved = plan(withSaved(savedAutoRoute), {
+      ...state, autoRoute: { baseUrl: 'https://openrouter.ai/api' },
+    }, noCredentials, opts);
+    expect(moved.summary.join('\n')).toContain('auto-route: https://openrouter.ai/api');
+    expect(moved.summary.join('\n')).not.toContain('(model');
+
+    const firstTime = plan(withSaved(), {
+      ...state, autoRoute: { baseUrl: 'http://localhost:8000' },
+    }, noCredentials, opts);
+    expect(firstTime.summary.join('\n')).toContain('auto-route: http://localhost:8000');
+  });
+
+  it('says nothing when nothing about the table is changing', () => {
+    // Off over nothing-to-turn-off is not a change either.
+    const neverSet = plan(withSaved(), { ...state, autoRoute: null }, noCredentials, opts);
+    expect(neverSet.summary.join('\n')).not.toContain('auto-route:');
+  });
+
+  // The end-to-end regression behind the choice rule. A saved `base_url` that
+  // is not one of the two canonical endpoints opened on the named row anyway,
+  // and confirming that row wrote the canonical URL over it — and because the
+  // URL then differed from the saved one, `plan` dropped the pinned model as
+  // belonging to another server. It must open on Custom, keep the URL it was
+  // handed, and leave the pin standing.
+  it('keeps a saved non-standard decision URL, and its pin, through the step and plan', async () => {
+    const saved = { ...savedAutoRoute, baseUrl: 'https://api.typesafe.ai:8443' };
+    let stepState: InitState = {};
+    const app = render(React.createElement(AutoRouteStep, {
+      state: stepState,
+      // The host still has a key, so the step ends on the URL rather than
+      // reopening a key screen this test does not care about.
+      storedKeys: { typesafe: 'sk-stored' },
+      savedBaseUrl: saved.baseUrl,
+      onChange: (update) => { stepState = update(stepState); },
+      onDone: () => {},
+      onBack: () => {},
+      onCancel: () => {},
+    }));
+    const press = async (key: string) => { app.stdin.write(key); await tick(); };
+
+    await until(() => (app.lastFrame() ?? '').includes('Auto-route subagent tiers?'), 'the choice screen');
+    expect(app.lastFrame()).toContain('› Custom URL…'); // not the TypeSafe row
+    await press('\r'); // Custom — the URL screen opens on the saved URL
+    await until(() => (app.lastFrame() ?? '').includes('Decision server URL'), 'the URL screen');
+    await press('\r'); // the URL it already holds
+    app.unmount();
+
+    expect(stepState.autoRoute).toEqual({ baseUrl: 'https://api.typesafe.ai:8443' });
+    const p = plan(withSaved(saved), { ...state, autoRoute: stepState.autoRoute ?? undefined }, noCredentials, opts);
+    expect(parseConfig(p.configToml).autoRoute).toEqual(saved);
+    expect(p.summary.join('\n')).toContain('auto-route: https://api.typesafe.ai:8443 (model jev-1.13)');
   });
 });

@@ -74,27 +74,108 @@ describe('offerHarnessUpdates', () => {
     { '@openai/codex': '0.159.2', '@earendil-works/pi-coding-agent': '0.99.1' },
   );
 
-  it('runs the harness\'s own updater for each Yes, and skips each No', async () => {
+  /** Three outdated harnesses, one of them past its adapter's tested range. */
+  const outdated3 = () => deps(
+    { codex: '0.156.1', pi: '0.87.1', opencode: '1.18.32' },
+    {
+      '@openai/codex': '0.159.2',
+      '@earendil-works/pi-coding-agent': '0.99.1',
+      'opencode-ai': '2.0.0',
+    },
+  );
+
+  it('asks once, naming every harness with both versions and the tested-range note only where it applies', async () => {
+    const ask = vi.fn(async () => false);
+    await offerHarnessUpdates({ interactive: true, ask, out: () => {}, deps: outdated3() });
+    expect(ask).toHaveBeenCalledTimes(1);
+    const [question, initial] = ask.mock.calls[0] as unknown as [string, boolean];
+    expect(initial).toBe(true);
+    expect(question).toContain('3 harness updates are available');
+    expect(question).toContain('codex');
+    expect(question).toContain('0.156.1');
+    expect(question).toContain('0.159.2');
+    expect(question).toContain('pi');
+    expect(question).toContain('0.87.1');
+    expect(question).toContain('0.99.1');
+    expect(question).toContain('opencode');
+    expect(question).toContain('1.18.32');
+    expect(question).toContain('2.0.0');
+    expect(question).toContain('Newer versions can serve models these do not list.');
+    const noted = question.split('\n').filter((l) => l.includes('outside the range sonata has tested'));
+    expect(noted).toHaveLength(1);
+    expect(noted[0]).toContain('opencode');
+    expect(noted[0]).toContain('>=1.18.0 <2.0.0');
+    expect(noted[0]).toContain('prompt detection may misbehave');
+  });
+
+  it('runs every updater concurrently: all started before any is released', async () => {
+    const d = outdated();
+    let started = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const run = vi.fn(async (_command: string[], _out: (line: string) => void) => {
+      started += 1;
+      await gate;
+      return true;
+    });
+    d.run = run;
+    const lines: string[] = [];
+    const done = offerHarnessUpdates({ interactive: true, ask: async () => true, out: (l) => lines.push(l), deps: d });
+    // Sequential updaters hold the gate open forever and never both arrive
+    // here, so `bothStarted` below fails instead of the test deadlocking.
+    const deadline = Date.now() + 500;
+    while (started < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+    const bothStarted = started;
+    release();
+    await done;
+    expect(bothStarted).toBe(2);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls.map((c) => c[0].join(' ')).sort()).toEqual(['codex update', 'pi update --self']);
+  });
+
+  it('keeps each harness\'s output contiguous even when the updaters interleave', async () => {
+    const d = outdated();
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    d.run = async (command, emit) => {
+      const tag = command[0] === 'codex' ? 'c' : 'p';
+      emit(`${tag}1`);
+      await sleep(15);
+      emit(`${tag}2`);
+      return true;
+    };
+    const lines: string[] = [];
+    await offerHarnessUpdates({ interactive: true, ask: async () => true, out: (l) => lines.push(l), deps: d });
+    for (const tag of ['c', 'p']) {
+      const first = lines.indexOf(`    ${tag}1`);
+      expect(first).toBeGreaterThanOrEqual(0);
+      expect(lines[first + 1]).toBe(`    ${tag}2`);
+      expect(lines[first + 2]).toMatch(new RegExp(`^  [✓!] ${tag === 'c' ? 'codex' : 'pi'} `));
+    }
+  });
+
+  it('one updater throwing still lets the other finish, and both print a result', async () => {
+    const d = outdated();
+    d.run = async (command) => {
+      if (command[0] === 'codex') throw new Error('spawn failed');
+      return true;
+    };
+    const lines: string[] = [];
+    await offerHarnessUpdates({ interactive: true, ask: async () => true, out: (l) => lines.push(l), deps: d });
+    const text = lines.join('\n');
+    expect(text).toMatch(/! codex update did not complete; continuing with 0\.156\.1/);
+    expect(text).toMatch(/✓ pi updated to/);
+  });
+
+  it('declining the single prompt runs nothing and says the updates were skipped', async () => {
     const d = outdated();
     const run = vi.fn(async (_command: string[], _out: (line: string) => void) => true);
     d.run = run;
-    const ask = vi.fn(async (q: string) => q.includes('codex'));
+    const ask = vi.fn(async () => false);
     const lines: string[] = [];
     await offerHarnessUpdates({ interactive: true, ask, out: (l) => lines.push(l), deps: d });
-    expect(ask).toHaveBeenCalledTimes(2);
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(run.mock.calls[0][0]).toEqual(['codex', 'update']);
-    expect(lines.join('\n')).toMatch(/pi.*skipped/);
-  });
-
-  it('asks with Yes as the default and names both versions', async () => {
-    const ask = vi.fn(async () => false);
-    await offerHarnessUpdates({ interactive: true, ask, out: () => {}, deps: outdated() });
-    const calls = ask.mock.calls as unknown as Array<[string, boolean]>;
-    const [question, initial] = calls.find(([q]) => q.startsWith('codex'))!;
-    expect(question).toContain('0.156.1');
-    expect(question).toContain('0.159.2');
-    expect(initial).toBe(true);
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(run).not.toHaveBeenCalled();
+    expect(lines.join('\n')).toContain('harness updates skipped');
   });
 
   it('reports the version reached after an update', async () => {
@@ -109,22 +190,42 @@ describe('offerHarnessUpdates', () => {
     expect(lines.join('\n')).toContain('codex updated to 0.159.2');
   });
 
-  it('continues on the old version when the updater fails', async () => {
-    const d = outdated();
-    d.run = async () => false;
+  it('never claims a version the re-probe cannot read', async () => {
+    // The updater exited 0, which is not the same as knowing what is now
+    // installed. Printing the pre-update version as "updated to" is a claim
+    // nothing verified; the honest line names that instead. Both ways a probe
+    // fails are covered: no version at all, and one that will not parse.
+    const probes: Record<string, number> = {};
+    const d: UpdateDeps = {
+      installedVersion: async (harness) => {
+        const n = probes[harness] = (probes[harness] ?? 0) + 1;
+        if (n === 1) return harness === 'codex' ? '0.156.1' : harness === 'pi' ? '0.87.1' : undefined;
+        return harness === 'codex' ? undefined : 'no version here';
+      },
+      latestVersion: async (pkg) => (pkg === '@openai/codex' ? '0.159.2'
+        : pkg === '@earendil-works/pi-coding-agent' ? '0.99.1' : undefined),
+      run: async () => true,
+    };
     const lines: string[] = [];
-    await expect(offerHarnessUpdates({
-      interactive: true, ask: async (q) => q.includes('codex'), out: (l) => lines.push(l), deps: d,
-    })).resolves.toBeUndefined();
-    expect(lines.join('\n')).toMatch(/codex update did not complete.*0\.156\.1/);
+    await offerHarnessUpdates({ interactive: true, ask: async () => true, out: (l) => lines.push(l), deps: d });
+    const text = lines.join('\n');
+    expect(text).toContain('✓ codex updater completed; installed version could not be verified');
+    expect(text).toContain('✓ pi updater completed; installed version could not be verified');
+    expect(text).not.toContain('updated to 0.156.1');
+    expect(text).not.toContain('updated to 0.87.1');
   });
 
-  it('continues when the updater throws', async () => {
-    const d = outdated();
-    d.run = async () => { throw new Error('spawn failed'); };
+  it('continues on the old version when the updater fails', async () => {
+    const d = deps(
+      { codex: '0.156.1' },
+      { '@openai/codex': '0.159.2' },
+      async () => false,
+    );
     const lines: string[] = [];
-    await offerHarnessUpdates({ interactive: true, ask: async (q) => q.includes('codex'), out: (l) => lines.push(l), deps: d });
-    expect(lines.join('\n')).toMatch(/codex update did not complete/);
+    await expect(offerHarnessUpdates({
+      interactive: true, ask: async () => true, out: (l) => lines.push(l), deps: d,
+    })).resolves.toBeUndefined();
+    expect(lines.join('\n')).toMatch(/codex update did not complete.*0\.156\.1/);
   });
 
   it('never prompts or updates when unattended; names the command instead', async () => {
@@ -144,15 +245,6 @@ describe('offerHarnessUpdates', () => {
     const lines: string[] = [];
     await offerHarnessUpdates({ interactive: true, ask: async () => true, out: (l) => lines.push(l), deps: deps({}, {}) });
     expect(lines).toEqual([]);
-  });
-
-  it('warns in the question when the new version is outside the tested range', async () => {
-    const ask = vi.fn(async () => false);
-    await offerHarnessUpdates({
-      interactive: true, ask, out: () => {},
-      deps: deps({ opencode: '1.18.32' }, { 'opencode-ai': '2.0.0' }),
-    });
-    expect((ask.mock.calls as unknown as Array<[string, boolean]>)[0][0]).toMatch(/outside.*tested/);
   });
 });
 

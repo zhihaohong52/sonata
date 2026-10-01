@@ -10,7 +10,7 @@ your files and your credentials.
 - **Credentials stay with the harness.** Sonata reads harness config to report
   health; it does not copy, forward or log API keys. Keys live wherever the
   harness put them (e.g. `~/.config/opencode/opencode.json`).
-- **Auto-routing sends a limited task excerpt to TypeSafe.** When `[auto_route]` is set, the first message of each `-auto` subagent task is sent to TypeSafe at `api.typesafe.ai`, after `<system-reminder>` blocks are removed and the text is capped at 8,000 characters. Nothing else is sent: no system prompt, tool results or later turns. The feature is off unless `[auto_route]` is written.
+- **Auto-routing sends a limited task excerpt to whatever `base_url` names.** When `[auto_route]` is set, the first message of each `-auto` subagent task is sent to that URL — TypeSafe at `api.typesafe.ai` by default, OpenRouter at `openrouter.ai/api`, or a `jev-compatible-server` you run yourself — after `<system-reminder>` blocks are removed and the text is capped at 8,000 characters. Nothing else is sent: no system prompt, tool results or later turns. The key follows the host, and a key is only ever sent to the host it belongs to: the `openrouter` key goes to `openrouter.ai` and nowhere else. The feature is off unless `[auto_route]` is written.
 
 - **Prompt injection is a real risk.** A foreign model reading a hostile
   repository can be steered, and it has no classifier between it and your

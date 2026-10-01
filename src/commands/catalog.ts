@@ -14,6 +14,7 @@ import {
   type ModelsDevCache,
 } from '../modelsdev.js';
 import { resolveKeyFromSource } from '../native/credentials.js';
+import { updateDecisionCatalog } from '../decision-catalog.js';
 import { parseAaEffort, aaEffortSuffix, type Effort } from '../effort.js';
 
 /**
@@ -51,6 +52,8 @@ export interface CatalogUpdateFailure {
 export interface CatalogUpdateResult {
   aa: CatalogUpdateSuccess | CatalogUpdateFailure;
   modelsDev: CatalogUpdateSuccess | CatalogUpdateFailure;
+  /** JevBench's decision-model scores, which rank `[auto_route]`'s decision models. */
+  decisions: { systems: number; path: string; fetchedAt: string; revision: string } | CatalogUpdateFailure;
 }
 
 export interface AaKeyValidation {
@@ -347,9 +350,10 @@ export async function cmdCatalogUpdate(
   deps: { fetch?: typeof fetch; now?: () => Date } = {},
 ): Promise<CatalogUpdateResult> {
   const fetchFn = deps.fetch ?? fetch;
-  const [aa, modelsDev] = await Promise.all([
+  const [aa, modelsDev, decisions] = await Promise.all([
     outcome(updateAaCatalog(home, fetchFn, deps)),
     outcome(updateModelsDev(home, fetchFn, deps)),
+    outcome(updateDecisionCatalog(home, fetchFn, deps)),
   ]);
-  return { aa, modelsDev };
+  return { aa, modelsDev, decisions };
 }

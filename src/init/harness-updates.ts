@@ -6,8 +6,8 @@
  * `model/list` is answered for the client version asking — codex 0.156.1 got
  * seven models, 0.159.2 got eight. Nothing in sonata was wrong, and nothing
  * said why. So init now compares each installed harness with its latest npm
- * release and, interactively, offers to run the harness's own updater before
- * detection lists models.
+ * release and, interactively, asks once before detection lists models, then
+ * runs every outdated harness's own updater in parallel.
  *
  * Three rules keep this from getting in the way:
  * - **Unknown is never a prompt.** Not installed, a registry lookup that fails
@@ -16,8 +16,8 @@
  * - **Unattended never updates.** A `--yes` or non-TTY run prints the command
  *   and leaves the toolchain alone — a scripted init changing what is
  *   installed is not something its author asked for.
- * - **A failed update is a warning.** Init continues on the version that is
- *   still there.
+ * - **A failed update is a warning, and never stops the others.** Init
+ *   continues on the version that is still there.
  */
 import { spawn } from 'node:child_process';
 import { getAdapter } from '../adapters/index.js';
@@ -83,8 +83,9 @@ export async function findHarnessUpdates(deps: UpdateDeps): Promise<HarnessUpdat
 }
 
 /**
- * Offer each outdated harness's update, one Yes/No at a time, then return so
- * detection can list models from whatever is now installed.
+ * Offer every outdated harness's update in one Yes/No, then run all of the
+ * updaters at once and report each one's own block of output, before returning
+ * so detection can list models from whatever is now installed.
  */
 export async function offerHarnessUpdates(opts: {
   interactive: boolean;
@@ -104,33 +105,53 @@ export async function offerHarnessUpdates(opts: {
     return;
   }
 
-  for (const u of updates) {
-    // The prompt draws on the alternate screen, so it carries everything the
-    // user needs to decide — the same reason the write confirmation does.
-    const lines = [
-      `${u.harness} ${u.installed} → ${u.latest} is available.`,
-      'Newer versions can serve models this one does not list.',
-      ...(u.outsideTested === undefined ? [] : [
-        `${u.latest} is outside the range sonata has tested (${u.outsideTested}); its prompt detection may misbehave.`,
-      ]),
-      '',
-      `Update now? (runs \`${u.command.join(' ')}\`)`,
-    ];
-    if (!(await ask(lines.join('\n'), true))) {
-      out(`  · ${u.harness} update skipped (${u.installed})`);
-      continue;
-    }
-    out(`  ↻ updating ${u.harness}: ${u.command.join(' ')}`);
-    let ok = false;
-    try {
-      ok = await deps.run(u.command, (line) => out(`    ${line}`));
-    } catch {
-      ok = false;
-    }
-    const now = cleanVersion(await deps.installedVersion(u.harness).catch(() => undefined)) ?? u.installed;
-    out(ok
-      ? `  ✓ ${u.harness} updated to ${now}`
-      : `  ! ${u.harness} update did not complete; continuing with ${now}`);
+  const width = Math.max(...updates.map((u) => u.harness.length));
+  const n = updates.length;
+  // The prompt draws on the alternate screen, so it carries everything the
+  // user needs to decide — the same reason the write confirmation does.
+  const question = [
+    `${n} harness update${n === 1 ? '' : 's'} ${n === 1 ? 'is' : 'are'} available:`,
+    ...updates.map((u) => {
+      const row = `  ${u.harness.padEnd(width)}  ${u.installed} → ${u.latest}`;
+      return u.outsideTested === undefined
+        ? row
+        : `${row}   (outside the range sonata has tested: ${u.outsideTested}; prompt detection may misbehave)`;
+    }),
+    '',
+    'Newer versions can serve models these do not list.',
+    '',
+    'Update all now? (runs each harness\'s own updater)',
+  ];
+  if (!(await ask(question.join('\n'), true))) {
+    out('  · harness updates skipped');
+  } else {
+    out(`  ↻ updating ${n} harness${n === 1 ? '' : 'es'} in parallel…`);
+    // Started together, each buffering its own output: concurrent updater
+    // output would interleave on `out`, and a harness's log is only readable
+    // as a block. A runner that settles prints its block whole, so the order
+    // of the blocks is the order the updaters finish in, and one that throws
+    // is a warning that leaves the rest alone.
+    await Promise.all(updates.map(async (u) => {
+      const buffered: string[] = [];
+      let ok = false;
+      try {
+        ok = await deps.run(u.command, (line) => buffered.push(line));
+      } catch {
+        ok = false;
+      }
+      const now = cleanVersion(await deps.installedVersion(u.harness).catch(() => undefined));
+      for (const line of buffered) out(`    ${line}`);
+      if (!ok) {
+        out(`  ! ${u.harness} update did not complete; continuing with ${now ?? u.installed}`);
+      } else if (now === undefined) {
+        // The updater exited 0 but the installed version would not read back.
+        // Printing the pre-update version as "updated to" is a claim nothing
+        // verified — the one thing this block must never do.
+        out(`  ✓ ${u.harness} updater completed; installed version could not be verified`);
+      } else {
+        out(`  ✓ ${u.harness} updated to ${now}`);
+      }
+    }));
   }
   out('');
 }

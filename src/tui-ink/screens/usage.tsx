@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
-import { cmdUsage, coveredLabel, spentLabel, type UsageDimension, type UsageReport } from '../../commands/usage.js';
+import { classifierCostNote, cmdUsage, coveredLabel, spentLabel, type UsageDimension, type UsageReport } from '../../commands/usage.js';
 import { usableWidth } from '../theme.js';
 import { fit } from '../components/screen.js';
 import { usePalette } from '../theme-context.js';
@@ -91,7 +91,7 @@ export function UsageScreen({ cwd, home, by: initialBy = 'model', since: initial
     if (report.autoRoute !== undefined) {
       const o = report.autoRoute.outcomes;
       notes.push({ text: `auto-route  ${o.accepted} accepted, ${o['low-confidence']} low-confidence, ${o.invalid} invalid, ${o.failed} failed`, tone: 'MUTED' });
-      notes.push({ text: `classifier ${compactCount(report.autoRoute.classifierTokens.input)} in / ${compactCount(report.autoRoute.classifierTokens.output)} out tokens (not priced)`, tone: 'MUTED' });
+      notes.push({ text: `classifier ${compactCount(report.autoRoute.classifierTokens.input)} in / ${compactCount(report.autoRoute.classifierTokens.output)} out tokens${classifierCostNote(report.autoRoute)}`, tone: 'MUTED' });
     }
     if (report.noPromptTokens.requests > 0) {
       notes.push({ text: `${report.noPromptTokens.requests} requests reported no prompt tokens and are priced on output only`, tone: 'MID' });

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import { budgetRefusal, type BudgetStatus } from '../budget.js';
-import { isTierAliasShape, TIER_NAMES, tiersCollapse, type SonataConfig } from '../config.js';
+import { isTierAliasShape, TIER_NAMES, tiersCollapse, type SonataConfig, type AutoRouteConfig } from '../config.js';
 import type { AutoRouteRecord, LedgerRow } from '../ledger.js';
 import { autoRole, decideTier, DecisionStore, type TierClassifier } from './auto-route.js';
 import { SONATA_PROJECT_HEADER, TenantError } from './tenants.js';
@@ -66,6 +66,12 @@ export interface RouterDeps {
   resolveTier?: (alias: string, tenant: RouterTenant) => { role: string; tier: string; routes: TierRoute[] } | undefined;
   /** Chooses the tier for `sonata-<role>-auto`. Absent -> every auto request takes the fallback tier. */
   classifier?: TierClassifier;
+  /**
+   * The classifier for one project's `[auto_route]` settings — its provider
+   * and decision model are per project, while one router serves them all.
+   * Preferred over `classifier` when present.
+   */
+  classifierFor?: (settings: AutoRouteConfig) => TierClassifier | undefined;
   /**
    * Resolves a direct `--model <key>` request's key to its gateway name, so a
    * direct-model row carries `gateway` and can be priced (pricing's step 2
@@ -2187,7 +2193,8 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     const tiers = TIER_NAMES.filter((tier) => lists[tier] !== undefined);
     const conversation = conversationKey(req.body, tenant.id, alias);
     const make = () => decideTier({
-      classifier: deps.classifier, role: auto, body: req.body, tiers, minConfidence: settings.minConfidence, now: deps.now,
+      classifier: deps.classifierFor?.(settings) ?? deps.classifier, role: auto, body: req.body, tiers,
+      minConfidence: settings.minConfidence, now: deps.now,
     });
     const { decision, fresh } = conversation === undefined
       ? { decision: await make(), fresh: true }

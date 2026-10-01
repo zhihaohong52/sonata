@@ -12,8 +12,12 @@ import {
   decideTier,
   DecisionStore,
   JEV_ENDPOINT,
+  decisionClassifier,
+  decisionKeyFor,
+  isLoopbackUrl,
   type TierClassifier,
 } from '../../src/native/auto-route.js';
+import { ModelListCache, chooseDecisionModel } from '../../src/native/decision-models.js';
 
 const body = (messages: unknown[]) =>
   Buffer.from(JSON.stringify({ model: 'sonata-code-auto', messages }));
@@ -400,7 +404,7 @@ describe('jevClassifier', () => {
         { role: 'code', task: 'T', tiers: ['simple'] },
         new AbortController().signal,
       ),
-    ).rejects.toThrow(/no TypeSafe key/);
+    ).rejects.toThrow(/sonata auth add typesafe/);
     expect(f).not.toHaveBeenCalled();
   });
 
@@ -584,5 +588,163 @@ describe('DecisionStore', () => {
     await second;
     await third;
     expect(store.get('k', 3)?.tier).toBe('normal');
+  });
+});
+
+describe('decision providers', () => {
+  const answerBody = (usage: Record<string, unknown> = { input_tokens: 476, output_tokens: 70, cost: 0.000019992 }) => JSON.stringify({
+    id: 'gen-1', model: 'typesafe/jev-1.13-20260917', provider: 'TypeSafe',
+    answers: { tier: { type: 'choice', choice: 'normal', confidence: 0.67, probabilities: { simple: 0.11, normal: 0.78, complex: 0.11 } } },
+    usage,
+  });
+
+  it('posts to OpenRouter\'s Decisions API with the model and the OpenRouter key', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const c = jevClassifier({
+      fetch: (async (url: string, init: RequestInit) => { calls.push({ url, init }); return new Response(answerBody(), { status: 200 }); }) as any,
+      key: () => 'or-key', endpoint: 'https://openrouter.ai/api/v1/systemone', model: '~typesafe/jev-latest',
+    });
+    const a = await c.classify({ role: 'code', task: 'T', tiers: ['simple', 'normal', 'complex'] }, new AbortController().signal);
+    expect(calls[0].url).toBe('https://openrouter.ai/api/v1/systemone');
+    expect((calls[0].init.headers as Record<string, string>).authorization).toBe('Bearer or-key');
+    const sent = JSON.parse(calls[0].init.body as string);
+    expect(sent.model).toBe('~typesafe/jev-latest');
+    expect(sent.questions.tier.type).toBe('choice');
+    expect(a).toMatchObject({ choice: 'normal', classifierModel: 'typesafe/jev-1.13-20260917', costUsd: 0.000019992 });
+  });
+
+  it('sends no model field to TypeSafe\'s own endpoint', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const c = jevClassifier({ fetch: (async (url: string, init: RequestInit) => { calls.push({ url, init }); return new Response(answerBody(), { status: 200 }); }) as any, key: () => 'k' });
+    await c.classify({ role: 'code', task: 'T', tiers: ['simple', 'normal', 'complex'] }, new AbortController().signal);
+    expect(calls[0].url).toBe(JEV_ENDPOINT);
+    expect(JSON.parse(calls[0].init.body as string).model).toBeUndefined();
+  });
+
+  it('ignores a cost that is not a finite non-negative number', () => {
+    expect(parseJevAnswer(JSON.parse(answerBody({ input_tokens: 1, output_tokens: 1, cost: -1 }))).costUsd).toBeUndefined();
+    expect(parseJevAnswer(JSON.parse(answerBody({ input_tokens: 1, output_tokens: 1 }))).costUsd).toBeUndefined();
+  });
+
+  it('records the classifier cost on the decision', async () => {
+    const d = await decideTier({
+      classifier: { name: 'jev', classify: async () => ({ choice: 'simple', confidence: 0.9, probabilities: { simple: 1 }, costUsd: 0.00002 }) },
+      role: 'code', body: Buffer.from(JSON.stringify({ messages: [{ role: 'user', content: 'Rename foo' }] })), tiers: ['simple', 'normal', 'complex'], minConfidence: 0.5,
+    });
+    expect(d.record.costUsd).toBe(0.00002);
+  });
+
+  it('names the key to add in the missing-key error', async () => {
+    const c = jevClassifier({ fetch: (async () => new Response('')) as any, key: () => undefined, keyHint: 'sonata auth add openrouter' });
+    await expect(c.classify({ role: 'code', task: 'T', tiers: ['simple'] }, new AbortController().signal)).rejects.toThrow(/sonata auth add openrouter/);
+  });
+});
+
+describe('URL-based decision classifier', () => {
+  const ok = (usage?: Record<string, unknown>) => new Response(JSON.stringify({
+    answers: { tier: { type: 'choice', choice: 'simple', confidence: 1, probabilities: { simple: 1 } } }, ...(usage ? { usage } : {}),
+  }), { status: 200 });
+
+  it('posts to <base_url>/v1/systemone with the lazily chosen model', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const c = decisionClassifier({ baseUrl: 'https://openrouter.ai/api' }, {
+      fetch: (async (url: string, init: RequestInit) => { calls.push({ url, init }); return ok({ cost: 0.00002 }); }) as any,
+      key: () => 'or', keyHint: 'sonata auth add openrouter', model: async () => 'typesafe/jev-1.13',
+    });
+    const a = await c.classify({ role: 'code', task: 'T', tiers: ['simple'] }, new AbortController().signal);
+    expect(calls[0].url).toBe('https://openrouter.ai/api/v1/systemone');
+    expect(JSON.parse(calls[0].init.body as string).model).toBe('typesafe/jev-1.13');
+    expect(a.costUsd).toBe(0.00002);
+  });
+
+  it('sends no model field when none is chosen, and no auth header without a key', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const c = decisionClassifier({ baseUrl: 'http://localhost:8000' }, {
+      fetch: (async (url: string, init: RequestInit) => { calls.push({ url, init }); return ok(); }) as any,
+      key: () => undefined, keyHint: 'sonata auth add auto-route', model: async () => undefined,
+    });
+    const a = await c.classify({ role: 'code', task: 'T', tiers: ['simple'] }, new AbortController().signal);
+    expect(JSON.parse(calls[0].init.body as string).model).toBeUndefined();
+    expect((calls[0].init.headers as Record<string, string>).authorization).toBeUndefined();
+    expect(a.costUsd).toBe(0);
+  });
+
+  it('leaves a non-loopback answer without a reported cost unpriced', async () => {
+    const c = decisionClassifier({ baseUrl: 'https://decide.example.com' }, {
+      fetch: (async () => ok()) as any, key: () => 'k', keyHint: 'h', model: async () => undefined,
+    });
+    expect((await c.classify({ role: 'code', task: 'T', tiers: ['simple'] }, new AbortController().signal)).costUsd).toBeUndefined();
+  });
+
+  it('picks the key by host and never sends the OpenRouter key elsewhere', () => {
+    const keys = { openrouter: () => 'OR', typesafe: () => 'TS', other: () => 'OTHER' };
+    expect(decisionKeyFor('https://openrouter.ai/api', keys)).toEqual({ key: 'OR', hint: 'sonata auth add openrouter' });
+    expect(decisionKeyFor('https://api.typesafe.ai', keys)).toEqual({ key: 'TS', hint: 'sonata auth add typesafe' });
+    expect(decisionKeyFor('http://localhost:8000', keys)).toEqual({ key: 'OTHER', hint: 'sonata auth add auto-route' });
+    expect(decisionKeyFor('https://evil.example/openrouter.ai', keys).key).toBe('OTHER');
+  });
+
+  it('recognises loopback hosts', () => {
+    expect(['http://localhost:8000', 'http://127.0.0.1:9', 'http://[::1]:8000'].every(isLoopbackUrl)).toBe(true);
+    expect(isLoopbackUrl('https://openrouter.ai/api')).toBe(false);
+  });
+
+  it('hands the decision signal to the model resolver, and aborts it with the decision', async () => {
+    let seen: AbortSignal | undefined;
+    let aborts = 0;
+    const c = decisionClassifier({ baseUrl: 'http://localhost:8000' }, {
+      fetch: (async () => ok()) as any,
+      key: () => undefined, keyHint: 'sonata auth add auto-route',
+      model: (signal) => {
+        seen = signal;
+        signal.addEventListener('abort', () => { aborts += 1; });
+        return new Promise<string | undefined>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      },
+    });
+    const d = await decideTier({ classifier: c, role: 'code', body: body([{ role: 'user', content: 'T' }]), tiers: ALL, minConfidence: 0.5, deadlineMs: 200 });
+    expect(seen).toBeInstanceOf(AbortSignal);
+    expect(aborts).toBe(1);
+    expect(d.record.outcome).toBe('failed');
+    expect(d.tier).toBe('normal');
+  });
+
+  it('still decides when the model resolver answers inside the deadline', async () => {
+    const c = decisionClassifier({ baseUrl: 'http://localhost:8000' }, {
+      fetch: (async () => ok()) as any,
+      key: () => undefined, keyHint: 'sonata auth add auto-route',
+      model: async () => { await new Promise((r) => setTimeout(r, 250)); return 'typesafe/jev-1.13'; },
+    });
+    const d = await decideTier({ classifier: c, role: 'code', body: body([{ role: 'user', content: 'T' }]), tiers: ALL, minConfidence: 0.5 });
+    expect(d.record.outcome).toBe('accepted');
+    expect(d.tier).toBe('simple');
+    expect(d.record.ms).toBeLessThan(3_000);
+  });
+
+  it('a slow model listing cannot spend the decision deadline', async () => {
+    const cache = new ModelListCache(((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+    })) as any);
+    const sent: Array<Record<string, unknown>> = [];
+    const c = decisionClassifier({ baseUrl: 'https://openrouter.ai/api' }, {
+      fetch: (async (_url: string, init: RequestInit) => {
+        sent.push(JSON.parse(init.body as string));
+        return new Response(JSON.stringify({
+          answers: { tier: { type: 'choice', choice: 'normal', confidence: 0.9, probabilities: { simple: 0.05, normal: 0.9, complex: 0.05 } } },
+        }), { status: 200 });
+      }) as any,
+      key: () => 'or', keyHint: 'sonata auth add openrouter',
+      model: async (signal) => chooseDecisionModel({
+        baseUrl: 'https://openrouter.ai/api',
+        listed: await cache.list('https://openrouter.ai/api', 'or', signal),
+        catalog: undefined,
+      }).model,
+    });
+    const d = await decideTier({ classifier: c, role: 'code', body: body([{ role: 'user', content: 'T' }]), tiers: ALL, minConfidence: 0.5 });
+    expect(d.record.outcome).toBe('accepted');
+    expect(d.tier).toBe('normal');
+    expect(sent[0].model).toBe('~typesafe/jev-latest');
+    expect(d.record.ms).toBeLessThan(3_000);
   });
 });

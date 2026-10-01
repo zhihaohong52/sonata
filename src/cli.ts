@@ -31,10 +31,11 @@ import { localTime } from './tui-ink/screens/status-poll.js';
 import { summarizeRuns } from './commands/runs.js';
 import { cmdRoute, cmdRouteSession, cmdRouteSettle, cmdRouteSubagent, type RouteAction } from './commands/route.js';
 import { cmdCatalogUpdate, validateAaKey } from './commands/catalog.js';
+import { JEVBENCH_ATTRIBUTION } from './decision-catalog.js';
 import { cmdLitellm } from './commands/litellm.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
 import { MODELS_DEV_ATTRIBUTION } from './modelsdev.js';
-import { cmdUsage, coveredLabel, parseUsageFlags, spentLabel } from './commands/usage.js';
+import { classifierCostNote, cmdUsage, coveredLabel, parseUsageFlags, spentLabel } from './commands/usage.js';
 import { readRows } from './ledger.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
@@ -555,7 +556,14 @@ export async function main(argv: string[]): Promise<number> {
         console.log(`  fetched: ${result.modelsDev.fetchedAt}`);
         console.log(MODELS_DEV_ATTRIBUTION);
       }
-      return 'error' in result.aa || 'error' in result.modelsDev ? 1 : 0;
+      if ('error' in result.decisions) {
+        console.error(`JevBench decision catalog not updated: ${result.decisions.error.message}`);
+      } else {
+        console.log(`decision catalog updated: ${result.decisions.systems} systems (JevBench ${result.decisions.revision})`);
+        console.log(`  path: ${result.decisions.path}`);
+        console.log(JEVBENCH_ATTRIBUTION);
+      }
+      return 'error' in result.aa || 'error' in result.modelsDev || 'error' in result.decisions ? 1 : 0;
     }
     const path = aaCatalogPath(homedir());
     const catalog = loadAaCatalog(homedir());
@@ -612,7 +620,7 @@ export async function main(argv: string[]): Promise<number> {
     }
     if (report.autoRoute !== undefined) {
       const o = report.autoRoute.outcomes;
-      console.log(`auto-route decisions: ${o.accepted} accepted, ${o['low-confidence']} low-confidence, ${o.invalid} invalid, ${o.failed} failed · classifier ${report.autoRoute.classifierTokens.input} in / ${report.autoRoute.classifierTokens.output} out tokens (not priced)`);
+      console.log(`auto-route decisions: ${o.accepted} accepted, ${o['low-confidence']} low-confidence, ${o.invalid} invalid, ${o.failed} failed · classifier ${report.autoRoute.classifierTokens.input} in / ${report.autoRoute.classifierTokens.output} out tokens${classifierCostNote(report.autoRoute)}`);
     }
     if (report.noPromptTokens.requests > 0) {
       // Beside the total, never inside it. These completed and produced

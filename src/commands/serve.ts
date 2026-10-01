@@ -10,7 +10,7 @@ import { spentTodayUsd, unreadableMachineBudget, type BudgetStatus } from '../bu
 import { GLOBAL_CONFIG_RELATIVE, loadConfig, nativeRouteFor, oauthCredentialIdentity, resolveTierAlias, type NativeConfig, type SonataConfig } from '../config.js';
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
-import { resolveKeyDetail, resolveKeys, resolveKeyFromSource, sonataKeyStorePath } from '../native/credentials.js';
+import { resolveDecisionKey, resolveKeyDetail, resolveKeys, sonataKeyStorePath } from '../native/credentials.js';
 import {
   boundUnreadable, boundUnreadableDb, fileStoreRead, jsonStoreRead, newUnreadableMemory, opencodeDbRead,
   UNREADABLE_SKIP_RULE, type StoreRead, type UnreadableMemory,
@@ -24,7 +24,9 @@ import { envVarForGateway, litellmConfigForTenants, litellmConfigYamlForTenants 
 import { litellmRequired, transportFor } from '../native/providers.js';
 import { litellmStatus, managedLitellmPath } from '../native/litellm-venv.js';
 import type { UiDeps } from '../native/ui.js';
-import { jevClassifier } from '../native/auto-route.js';
+import { decisionClassifier, decisionKeyFor, type TierClassifier } from '../native/auto-route.js';
+import { ModelListCache, chooseDecisionModel } from '../native/decision-models.js';
+import { loadDecisionCatalog } from '../decision-catalog.js';
 import { createRouterServer, type RouterTenant } from '../native/router.js';
 import { LITELLM_CHATGPT_LOGIN_REFUSED, pipeLitellmOutput } from '../native/litellm-output.js';
 import { canonicalConfigPath, TenantRegistry } from '../native/tenants.js';
@@ -2617,6 +2619,8 @@ export async function cmdServe(
     // a configured port of 0 means "pick an ephemeral one", and a UiDeps still
     // carrying 0 fails every request's Host check.
     uiDeps = { home: opts.home, port: ports.router, tenants: () => registry.summary() };
+    const decisionClassifiers = new Map<string, TierClassifier>();
+    const modelLists = new ModelListCache(fetch);
     router = createRouterServer({
       fetch,
       litellmBase: `http://${LITELLM_HOST}:${ports.litellm}`,
@@ -2636,9 +2640,35 @@ export async function cmdServe(
       // authorising its project hint across restarts.
       projectHintToken: ensureRouterToken(opts.home),
       resolveTier: (alias, tenant) => tenant.config === undefined ? undefined : resolveTierAlias(tenant.config, alias),
-      // Always present: with no key it throws per call and the router falls
-      // back, which is the documented off-by-default-key behaviour.
-      classifier: jevClassifier({ fetch, key: () => resolveKeyFromSource('typesafe', opts.home, 'sonata') }),
+      // Built per project setting, since [auto_route] is per project and one
+      // router serves them all. With no key it throws per call and the router
+      // falls back, which is the documented off-by-default-key behaviour.
+      // One classifier per URL + pin; the model is chosen per call from the
+      // URL's listed decision models and the cached JevBench scores, so a
+      // `sonata catalog update` or a new model at the URL needs no restart.
+      classifierFor: (settings) => {
+        const id = `${settings.baseUrl}|${settings.model ?? ''}`;
+        let classifier = decisionClassifiers.get(id);
+        if (classifier === undefined) {
+          const credential = () => decisionKeyFor(settings.baseUrl, {
+            openrouter: () => resolveDecisionKey('openrouter', opts.home)?.key,
+            typesafe: () => resolveDecisionKey('typesafe', opts.home)?.key,
+            other: () => resolveDecisionKey('auto-route', opts.home)?.key,
+          });
+          classifier = decisionClassifier(settings, {
+            fetch,
+            key: () => credential().key,
+            keyHint: credential().hint,
+            model: async (signal) => settings.model ?? chooseDecisionModel({
+              baseUrl: settings.baseUrl,
+              listed: await modelLists.list(settings.baseUrl, credential().key, signal),
+              catalog: loadDecisionCatalog(opts.home),
+            }).model,
+          });
+          decisionClassifiers.set(id, classifier);
+        }
+        return classifier;
+      },
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
       gatewayUnavailable: (tenant, gateway) => droppedGateways.get(gateway) ?? credentialFailures.get(gateway) ??
         (chatgptLoginRefused !== undefined && tenant.config?.native?.gateways[gateway]?.auth === 'codex-oauth'

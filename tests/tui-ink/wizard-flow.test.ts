@@ -102,7 +102,11 @@ describe('the wizard on a first run', () => {
     expect(w.lastFrame()).toMatch(/acme-(fast|deep)/);
 
     await w.press(ENTER);
+    // The Auto-route step sits between the rankings and the summary.
+    expect(w.lastFrame()).toContain('Auto-route subagent tiers?');
+    await w.press(ENTER); // Off
     expect(w.lastFrame()).toContain('Summary');
+    expect(w.lastFrame()).toContain('Auto-route: off');
   });
 });
 
@@ -116,11 +120,13 @@ describe('the wizard, remaining flow', () => {
     await w.press(ENTER);
     await w.press(ENTER, ENTER, 'test-key', ENTER, DOWN, ENTER);
     await w.press(SPACE, ENTER);
-    await w.press(ENTER, ENTER, ENTER, ENTER, ENTER);
+    // roles, the three tier screens, auto-route (Off), then the summary.
+    await w.press(ENTER, ENTER, ENTER, ENTER, ENTER, ENTER);
 
     const r = w.result();
     expect(r?.cancelled).toBe(false);
     expect(r?.state.configScope).toBe('project');
+    expect(r?.state.autoRoute).toBeNull();
     expect(r?.state.nativeKeys).toEqual(['acme-fast', 'acme-deep']);
     expect(r?.state.roles).toEqual(['code']);
     expect(r?.state.tiers?.code.simple.length).toBeGreaterThan(0);
@@ -167,6 +173,47 @@ describe('the wizard, remaining flow', () => {
     expect(w.lastFrame()).toContain('code: complex models');
     await w.press(LEFT);
     expect(w.lastFrame()).toContain('code: normal models');
+  });
+});
+
+describe('the summary’s auto-route line', () => {
+  // What the line owes the confirm: a pin that will survive is named as one.
+  // A pin belongs to its URL, so moving hosts drops it — and then selection is
+  // automatic again, which is what the line has to say.
+  function withSavedPin(): WizardData {
+    return {
+      ...firstRunData(),
+      savedAutoRouteBaseUrls: { project: 'https://api.typesafe.ai' },
+      savedAutoRouteModels: { project: 'jev-1.13' },
+      storedKeys: { typesafe: 'sk-stored' },
+    };
+  }
+
+  async function toAutoRoute(w: ReturnType<typeof renderWizard>): Promise<void> {
+    await w.press(ENTER); // config scope -> project
+    await w.press(ENTER, ENTER, 'test-key', ENTER, DOWN, ENTER); // providers
+    await w.press(SPACE, ENTER); // models
+    await w.press(ENTER); // roles
+    await w.press(ENTER, ENTER, ENTER); // the three tiers
+  }
+
+  it('names a pinned model that survives on an unchanged URL', async () => {
+    const w = renderWizard(withSavedPin());
+    await toAutoRoute(w);
+    expect(w.lastFrame()).toContain('Auto-route subagent tiers?');
+    await w.press(ENTER); // TypeSafe, the saved row — its key is stored, so no key screen
+    expect(w.lastFrame()).toContain('Summary');
+    expect(w.lastFrame()).toContain('Auto-route: https://api.typesafe.ai (pinned model jev-1.13)');
+  });
+
+  it('says selection is automatic once the URL changed and the pin went with it', async () => {
+    const w = renderWizard(withSavedPin());
+    await toAutoRoute(w);
+    await w.press(DOWN, ENTER); // OpenRouter — a different host drops the pin
+    await w.press('sk-or', ENTER); // its required key
+    expect(w.lastFrame()).toContain('Summary');
+    expect(w.lastFrame()).toContain('Auto-route: https://openrouter.ai/api (model chosen automatically)');
+    expect(w.lastFrame()).not.toContain('pinned model');
   });
 });
 
@@ -318,6 +365,8 @@ describe('a tier screen for a config whose gateway this session never offered', 
     await w.press(ENTER);
     expect(w.lastFrame()).toContain('code: complex models');
     await w.press(ENTER);
+    expect(w.lastFrame()).toContain('Auto-route subagent tiers?');
+    await w.press(ENTER); // Off
     expect(w.lastFrame()).toContain('Summary');
     await w.press(ENTER);
 
