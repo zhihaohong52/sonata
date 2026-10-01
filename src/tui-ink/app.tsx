@@ -4,6 +4,7 @@ import { MultiSelect } from './components/multi-select.js';
 import { RankedSelect } from './components/ranked-select.js';
 import { ProvidersStep } from './components/providers-step.js';
 import { ModelsStep } from './components/models-step.js';
+import { AutoRouteStep } from './components/auto-route-step.js';
 import { candidateFacts, candidateLabel, reasoningOf, expandCandidates, hasTaskCost, loadAaCatalog, proposeTiers, taskCostedCandidates, unpinnedVariants } from '../catalog.js';
 import { loadModelsDev, type ModelsDevCache } from '../modelsdev.js';
 import { loginGateway as defaultLoginGateway } from '../native/oauth-login.js';
@@ -88,6 +89,14 @@ export interface WizardData {
    * built, matching the tier editor and effort-pin validation.
    */
   harnessOnlyUpstreams?: Partial<Record<'project' | 'global', Record<string, string>>>;
+  /**
+   * The saved `[auto_route] base_url`, by scope — what the Auto-route step
+   * opens on. By scope for the same reason `gatewayBaseUrlsByScope` is: the
+   * scope answer is re-read when the user walks back to it, and the URL asked
+   * about is the one that scope's config holds. Never carried on `InitState`,
+   * where an entry means "chosen this run".
+   */
+  savedAutoRouteBaseUrls?: Partial<Record<'project' | 'global', string>>;
   /** Injected so tests never reach the network. */
   fetchModels?: typeof defaultFetchModels;
   /** Cached models.dev catalogue, injected so provider screens stay pure. */
@@ -141,9 +150,26 @@ function Choice<T>({ title, choices, initial, onSubmit, onBack, onCancel }: Choi
 }
 
 /** The wizard's closing summary of what `sonata init` is about to write, shown before the confirm. */
-function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWizardProps['onDone']; onBack: () => void }): React.ReactElement {
+function Summary({ state, savedBaseUrl, onDone, onBack }: {
+  state: InitState;
+  /** The saved `base_url`, for the line when the Auto-route step was never reached. */
+  savedBaseUrl?: string;
+  onDone: InitWizardProps['onDone'];
+  onBack: () => void;
+}): React.ReactElement {
   const palette = usePalette();
   const hasModels = (state.nativeKeys?.length ?? 0) > 0;
+  // What plan() will write: this run's answer when there is one, otherwise
+  // the saved table carried forward — which the summary has to say, or an
+  // untouched step reads as "off" while the config keeps routing.
+  const autoRoute = state.autoRoute === undefined
+    ? (savedBaseUrl === undefined ? undefined : { baseUrl: savedBaseUrl })
+    : state.autoRoute;
+  const autoRouteLine = autoRoute === undefined
+    ? undefined
+    : autoRoute === null
+      ? 'Auto-route: off'
+      : `Auto-route: ${autoRoute.baseUrl} (model chosen automatically)`;
   useInput((_, key) => {
     if (key.escape) onDone({ cancelled: true, state });
     if (key.leftArrow) onBack();
@@ -175,6 +201,7 @@ function Summary({ state, onDone, onBack }: { state: InitState; onDone: InitWiza
           : 'none';
         return <Text key={role}>  {role}: {line}</Text>;
       })}
+      {autoRouteLine !== undefined && <Text color={palette.TEXT}>{autoRouteLine}</Text>}
       <Text color={palette.MUTED}>{hasModels ? 'enter confirm' : '← back to select models'}   ← back   esc cancel</Text>
     </Box>
   );
@@ -197,6 +224,13 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
   const [step, setStep] = useState(0);
   const [state, setState] = useState<InitState>(data.initialState ?? {});
   const [tierIndex, setTierIndex] = useState(0);
+  // The saved `base_url` for the scope being edited, so the Auto-route step
+  // and the summary open on the URL this config already holds. Recomputed per
+  // render: the scope answer can change mid-run, and then so does the config
+  // being edited.
+  const savedAutoRouteBaseUrl = state.configScope === undefined
+    ? undefined
+    : data.savedAutoRouteBaseUrls?.[state.configScope];
   const cancel = () => onDone({ cancelled: true, state });
   const next = (value: unknown) => {
     setState((current) => applyStep(current, step, value));
@@ -279,7 +313,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       // Computed *before* this guard, not after: deciding from `candidates`
       // alone sent a BYOK-only run straight past the step.
       if (!hasModelsToPick(candidates, addedGateways)) {
-        return <Summary state={state} onDone={onDone} onBack={back} />;
+        return <Summary state={state} savedBaseUrl={savedAutoRouteBaseUrl} onDone={onDone} onBack={back} />;
       }
       const addedBaseUrls = Object.fromEntries(
         (state.customProviders ?? []).map((provider) => [provider.name, provider.url]),
@@ -331,7 +365,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const roles = state.roles ?? [];
       const role = roles[Math.floor(tierIndex / TIER_NAMES.length)];
       const tier = TIER_NAMES[tierIndex % TIER_NAMES.length]!;
-      if (!role) return <Summary state={state} onDone={onDone} onBack={back} />;
+      if (!role) return <Summary state={state} savedBaseUrl={savedAutoRouteBaseUrl} onDone={onDone} onBack={back} />;
       const catalog = loadAaCatalog(data.home);
       // Ranking runs over every model actually selected, not the startup set:
       // `data.candidates` predates this run's additions, and a model whose
@@ -508,7 +542,24 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         onCancel={cancel}
       />;
     }
+    case 5:
+      // After the tier rankings and before the summary: the decision server
+      // those rankings will be asked about. `onBack` returns to the last tier
+      // screen — `tierIndex` is only advanced while tier screens remain, so it
+      // still points at the one that set step 5.
+      return <AutoRouteStep
+        key="auto-route"
+        state={state}
+        storedKeys={data.storedKeys}
+        savedBaseUrl={savedAutoRouteBaseUrl}
+        onChange={setState}
+        onDone={() => setStep(6)}
+        onBack={() => setStep(4)}
+        onCancel={cancel}
+      />;
+    // Step 6, and the catch-all: a step number nobody sets still lands on the
+    // confirm rather than on a blank screen.
     default:
-      return <Summary state={state} onDone={onDone} onBack={back} />;
+      return <Summary state={state} savedBaseUrl={savedAutoRouteBaseUrl} onDone={onDone} onBack={back} />;
   }
 }

@@ -8,7 +8,7 @@ import type { NativeCandidate } from './helpers.js';
 import type { CredentialSource } from '../config.js';
 import type { NativeGatewayAuth } from '../config.js';
 import type { TierLists } from '../config.js';
-import { autoAgentRoles, tierAgentNames, parseConfig } from '../config.js';
+import { autoAgentRoles, tierAgentNames, parseConfig, AUTO_ROUTE_DEFAULT_MIN_CONFIDENCE } from '../config.js';
 import { litellmRequired } from '../native/providers.js';
 import { expandCandidates, loadAaCatalog, proposeTiers, unpinnedVariants } from '../catalog.js';
 import { nativeTomlFor } from './toml.js';
@@ -244,12 +244,28 @@ export function plan(
       ]),
   );
 
+  // ---- autoRoute ----
+  // Setup's auto-route answer wins; absent means the step was not used and
+  // the saved table is carried forward unchanged.
+  const savedAutoRoute = configForScope?.autoRoute;
+  const autoRoute = state.autoRoute === undefined
+    ? savedAutoRoute
+    : state.autoRoute === null
+      ? undefined
+      : {
+        classifier: 'jev' as const,
+        baseUrl: state.autoRoute.baseUrl,
+        // A pinned model belongs to its URL; changing the URL drops it.
+        ...(savedAutoRoute?.model !== undefined && savedAutoRoute.baseUrl === state.autoRoute.baseUrl ? { model: savedAutoRoute.model } : {}),
+        minConfidence: savedAutoRoute?.minConfidence ?? AUTO_ROUTE_DEFAULT_MIN_CONFIDENCE,
+      };
+
   // ---- configToml ----
   // `configForScope` is passed so the rewrite preserves the settings this
   // writer would otherwise delete — `pricing_provider` and every `[price]`
   // block. Both were read on load and written back by nobody, so each
   // `sonata init` silently un-priced the gateway.
-  const configToml = nativeTomlFor(nativeRoleModels, state.credentialSources ?? {}, tiers, migratedModels, chosenNative, configForScope?.run, avoidGateways, configForScope, configForScope?.budget, gatewayOrder, configForScope?.autoRoute);
+  const configToml = nativeTomlFor(nativeRoleModels, state.credentialSources ?? {}, tiers, migratedModels, chosenNative, configForScope?.run, avoidGateways, configForScope, configForScope?.budget, gatewayOrder, autoRoute);
 
   // ---- notices (key check) ----
   const notices: string[] = [];
@@ -343,7 +359,7 @@ export function plan(
       path: guidanceScope === 'global'
         ? join(opts.home, '.claude', 'CLAUDE.md')
         : join(opts.cwd, 'CLAUDE.md'),
-      autoRoute: configForScope?.autoRoute !== undefined,
+      autoRoute: autoRoute !== undefined,
     };
 
   const summary: string[] = [
@@ -386,7 +402,12 @@ export function plan(
     configScope,
     configPath: configPathResolved,
     configToml,
-    keysToStore: Object.entries(state.byokKeys ?? {}).map(([gateway, key]) => ({ gateway, key })),
+    // The decision key joins the provider keys and is written the same way —
+    // only after the confirm gate, so a cancelled run stores nothing.
+    keysToStore: [
+      ...Object.entries(state.byokKeys ?? {}).map(([gateway, key]) => ({ gateway, key })),
+      ...(state.decisionKey ? [{ gateway: state.decisionKey.gateway, key: state.decisionKey.key }] : []),
+    ],
     hook,
     skillPath,
     guidance,

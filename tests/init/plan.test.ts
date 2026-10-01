@@ -465,3 +465,82 @@ describe('plan — effort variants', () => {
     expect(back.tiers!.code.complex).toEqual(expect.arrayContaining(['acme-fast@max', 'acme-fast@high', 'flaky-slow']));
   });
 });
+
+describe('plan — [auto_route] from the Setup step', () => {
+  // Setup's answer is the only thing that may change this table. It is also
+  // the only writer of it, so a step that was not reached must leave the
+  // saved table byte-identical rather than re-emit a defaulted one.
+  const savedAutoRoute = {
+    classifier: 'jev' as const,
+    baseUrl: 'https://api.typesafe.ai',
+    model: 'jev-1.13',
+    minConfidence: 0.3,
+  };
+  const withSaved = (autoRoute?: typeof savedAutoRoute) => env({
+    configsByScope: {
+      project: { ...(autoRoute === undefined ? {} : { autoRoute }) } as unknown as SonataConfig,
+    },
+  });
+
+  it('keeps the saved table when the step was not used', () => {
+    const p = plan(withSaved(savedAutoRoute), state, noCredentials, opts);
+    const back = parseConfig(p.configToml);
+    expect(back.autoRoute).toEqual(savedAutoRoute);
+    expect(p.guidance.autoRoute).toBe(true);
+  });
+
+  it('writes no table when the step turned auto-route off', () => {
+    const p = plan(withSaved(savedAutoRoute), { ...state, autoRoute: null }, noCredentials, opts);
+    const back = parseConfig(p.configToml);
+    expect(back.autoRoute).toBeUndefined();
+    expect(p.configToml).not.toContain('[auto_route]');
+    expect(p.guidance.autoRoute).toBe(false);
+  });
+
+  it('keeps the pinned model and min_confidence when the URL is unchanged', () => {
+    const p = plan(withSaved(savedAutoRoute), {
+      ...state, autoRoute: { baseUrl: 'https://api.typesafe.ai' },
+    }, noCredentials, opts);
+    const back = parseConfig(p.configToml);
+    expect(back.autoRoute).toEqual({
+      classifier: 'jev', baseUrl: 'https://api.typesafe.ai', model: 'jev-1.13', minConfidence: 0.3,
+    });
+  });
+
+  it('drops a pinned model when the URL changes — a model belongs to its URL', () => {
+    const p = plan(withSaved(savedAutoRoute), {
+      ...state, autoRoute: { baseUrl: 'https://openrouter.ai/api' },
+    }, noCredentials, opts);
+    const back = parseConfig(p.configToml);
+    expect(back.autoRoute).toEqual({
+      classifier: 'jev', baseUrl: 'https://openrouter.ai/api', minConfidence: 0.3,
+    });
+  });
+
+  it('writes a first [auto_route] at the default min_confidence, and follows the guidance flag', () => {
+    const p = plan(withSaved(), {
+      ...state, autoRoute: { baseUrl: 'http://localhost:8000' },
+    }, noCredentials, opts);
+    const back = parseConfig(p.configToml);
+    expect(back.autoRoute).toEqual({ classifier: 'jev', baseUrl: 'http://localhost:8000', minConfidence: 0.5 });
+    expect(p.guidance.autoRoute).toBe(true);
+  });
+
+  it('puts the decision key in keysToStore beside the provider keys', () => {
+    const p = plan(withSaved(), {
+      ...state,
+      autoRoute: { baseUrl: 'https://api.typesafe.ai' },
+      byokKeys: { acme: 'sk-provider' },
+      decisionKey: { gateway: 'typesafe', key: 'sk-decision' },
+    }, noCredentials, opts);
+    expect(p.keysToStore).toEqual([
+      { gateway: 'acme', key: 'sk-provider' },
+      { gateway: 'typesafe', key: 'sk-decision' },
+    ]);
+  });
+
+  it('stores nothing for a decision key there is none of', () => {
+    const p = plan(withSaved(), { ...state, autoRoute: { baseUrl: 'https://api.typesafe.ai' } }, noCredentials, opts);
+    expect(p.keysToStore).toEqual([]);
+  });
+});
