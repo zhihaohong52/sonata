@@ -59,6 +59,8 @@ import { TenantRegistry, canonicalConfigPath } from '../native/tenants.js';
 import { routerPorts } from './ports.js';
 import { nativeSessionEnv } from './code.js';
 import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile, diagnoseRouteAuto, isLocalhostUrl } from './route.js';
+import { readRows } from '../ledger.js';
+import { projectTenant } from './status.js';
 
 const run = promisify(execFile);
 
@@ -899,7 +901,34 @@ export async function cmdDoctor(
         checks.push({ name: 'auto route', ok: true, detail: `decision-model catalog is ${age} days old (JevBench ${decisionCatalog.revision}) — run \`sonata catalog update\`` });
       }
     }
-  }
+
+    // What actually happened, not just what is configured: auto-routing fails
+    // open, so a classifier that never answers looks exactly like one that
+    // does — every request still routes, to the fallback tier. Measured
+    // 2026-10-01: five decisions, all refused (HTTP 422), found only by
+    // reading the ledger by hand.
+    const tenant = projectTenant(opts.cwd, home);
+    const nowMs = now().getTime();
+    const decisions = readRows(home, nowMs - 24 * 3_600_000, nowMs)
+      .filter((row) => row.autoRoute !== undefined && (tenant === undefined || row.tenant === tenant))
+      .map((row) => row.autoRoute!);
+    if (decisions.length > 0) {
+      const count = (outcome: string) => decisions.filter((d) => d.outcome === outcome).length;
+      const answered = count('accepted') + count('low-confidence');
+      const reasons = new Map<string, number>();
+      for (const d of decisions) {
+        if ((d.outcome === 'failed' || d.outcome === 'invalid') && d.reason !== undefined) reasons.set(d.reason, (reasons.get(d.reason) ?? 0) + 1);
+      }
+      const top = [...reasons.entries()].sort((a, b) => b[1] - a[1])[0];
+      const summary = `last 24h: ${decisions.length} decision(s) — ${count('accepted')} accepted, ${count('low-confidence')} low-confidence, ${count('invalid')} invalid, ${count('failed')} failed`
+        + (top === undefined ? '' : `; most common failure: ${top[0]} (${top[1]})`);
+      // Broken, not merely noisy: three or more decisions and the classifier
+      // answered none of them, so every -auto request took the fallback tier.
+      checks.push(decisions.length >= 3 && answered === 0
+        ? { name: 'auto route', ok: false, detail: `${summary} — auto-routing is not working; every -auto request fell back` }
+        : { name: 'auto route', ok: true, detail: summary });
+    }
+}
 
   // A *stale* agent names a model the config dropped; an **outdated** one keeps
   // its name and its old instructions. `staleAgents` compares filenames and so
