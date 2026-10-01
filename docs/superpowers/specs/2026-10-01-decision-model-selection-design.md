@@ -155,3 +155,50 @@ unpriced; config refusal and round trip; doctor output.
 - Real `usage` and latency from OpenRouter's decision endpoint are unmeasured
   until the account has credit.
 - Whether JevBench keeps its JSON URL stable across revisions.
+
+## Setup TUI step (added 2026-10-01)
+
+Auto-routing could only be configured by hand, and its key only with
+`sonata auth add` in a terminal. Setup (`sonata init`, or the shell's
+**Setup**) gains an **Auto-route** step, after the tier rankings and before
+the summary.
+
+1. **"Auto-route subagent tiers?"** — a choice: **Off**, **TypeSafe**
+   (`https://api.typesafe.ai`), **OpenRouter** (`https://openrouter.ai/api`),
+   **Custom URL…**. Opens on the saved `base_url` (or Off when there is no
+   `[auto_route]`). Left goes back to the last tier screen.
+2. **Custom URL…** → a text field for the URL, validated as an absolute
+   `http(s)` URL — the same rule as `parseConfig`.
+3. **Key** — a masked field ("stored in sonata's key store, not shown
+   again"), the same component provider keys use:
+   - TypeSafe → shown when no `typesafe` key is stored; required.
+   - OpenRouter → shown only when the `openrouter` gateway resolves no key
+     (a provider key added in this run counts); required.
+   - Custom URL → shown when the host is not loopback and no `auto-route`
+     key is stored; **optional** — an empty submission means no key.
+4. **No model screen.** The best model is chosen automatically at decision
+   time (the selection above); pinning one stays a hand edit of `model`.
+   The summary says which URL and that selection is automatic.
+
+**State and writes.** `InitState` gains `autoRoute?: { baseUrl: string } |
+null` (`null` = turned off this run; absent = untouched) and
+`decisionKey?: { gateway: 'typesafe' | 'openrouter' | 'auto-route'; key:
+string }` — kept apart from `byokKeys`, which the provider pipeline reads as
+gateways to build. `plan()` writes `[auto_route]` from the state: absent →
+the saved table unchanged; `null` → no table; set → `classifier = "jev"`,
+the chosen `base_url`, the saved `model` only when the URL is unchanged, the
+saved `min_confidence` or 0.5. The decision key joins `keysToStore` and is
+written after the confirm gate, like provider keys — a cancelled wizard
+leaves nothing. The guidance block's auto-route flag follows the same state.
+The scripted (`--yes`) path is unchanged: it keeps whatever `[auto_route]`
+the file has.
+
+**Keys screen.** When `[auto_route]` is set, the shell's read-only Keys
+screen adds one row for the decision key (`auto-route → <host>`) with its
+source, or "no key" when one is required and missing.
+
+**Tests.** The step's state transitions (each choice; custom URL validation;
+key shown/skipped per host and stored key; optional empty key for custom);
+`plan()` writing each case (absent, null, set, model kept only for the same
+URL) and round-tripping through `parseConfig`; the decision key in
+`keysToStore` only after confirm; the Keys-screen row.
