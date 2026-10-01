@@ -1,8 +1,10 @@
 # Auto-routed tiers: Jev chooses simple, normal or complex
 
-**Status:** implemented (PR pending); live Jev check pending a TypeSafe key.
+**Status:** shipped in 0.15.0; decision-model selection follows in 0.15.1. Live Jev check pending a key.
 **Date:** 2026-09-30
-**Ships in:** the next minor (it adds a config key and changes routing).
+**Ships in:** 0.15.0.
+
+**Amendment (2026-10-01):** how the decision endpoint and model are chosen is replaced by `2026-10-01-decision-model-selection-design.md` — one `base_url`, the best JevBench-scored model it serves.
 
 ## The decision
 

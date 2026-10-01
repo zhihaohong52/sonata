@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { aggregate, cmdUsage, parseDuration, parseUsageFlags, projectResolver } from '../../src/commands/usage.js';
+import { aggregate, classifierCostNote, cmdUsage, parseDuration, parseUsageFlags, projectResolver } from '../../src/commands/usage.js';
 import { appendRow, type LedgerRow } from '../../src/ledger.js';
 
 function row(over: Partial<LedgerRow> = {}): LedgerRow {
@@ -139,7 +139,21 @@ describe('aggregate', () => {
     expect(report.autoRoute).toEqual({
       outcomes: { accepted: 1, 'low-confidence': 1, invalid: 0, failed: 1 },
       classifierTokens: { input: 610, output: 60 },
+      classifierCostUsd: 0,
+      classifierCostCalls: 0,
     });
+    expect(report.pricedTotalUsd).toBe(aggregate(rows.map(({ autoRoute: _, ...r }) => r), 'tier', {}).pricedTotalUsd);
+  });
+
+  it('sums the cost a provider reported for classifier calls, outside the priced total', () => {
+    const rows = [
+      row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'accepted', ms: 300, costUsd: 0.00002 } }),
+      row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'accepted', ms: 300, costUsd: 0.00003 } }),
+      row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'failed', ms: 3000 } }),
+    ];
+    const report = aggregate(rows, 'tier', {});
+    expect(report.autoRoute?.classifierCostUsd).toBeCloseTo(0.00005, 10);
+    expect(report.autoRoute?.classifierCostCalls).toBe(2);
     expect(report.pricedTotalUsd).toBe(aggregate(rows.map(({ autoRoute: _, ...r }) => r), 'tier', {}).pricedTotalUsd);
   });
 
@@ -434,5 +448,19 @@ describe('parseUsageFlags', () => {
     expect(() => parseUsageFlags(['--by', 'colour'])).toThrow(/--by must be one of/);
     expect(() => parseUsageFlags(['--since', 'soon'])).toThrow(/duration/);
     expect(() => parseUsageFlags(['--sincee', '1d'])).toThrow();
+  });
+});
+
+describe('classifierCostNote', () => {
+  const summary = (cost: number, calls: number, accepted = 2) => ({
+    outcomes: { accepted, 'low-confidence': 0, invalid: 0, failed: 0 },
+    classifierTokens: { input: 0, output: 0 }, classifierCostUsd: cost, classifierCostCalls: calls,
+  });
+  it('says not priced when no provider reported a cost', () => {
+    expect(classifierCostNote(summary(0, 0))).toBe(' (not priced)');
+  });
+  it('shows reported cost outside the priced total, and how many calls it covers', () => {
+    expect(classifierCostNote(summary(0.00005, 2))).toBe(' · $0.000050 reported by the provider, outside the priced total');
+    expect(classifierCostNote(summary(0.00002, 1))).toMatch(/1 of 2 decisions reported a cost/);
   });
 });

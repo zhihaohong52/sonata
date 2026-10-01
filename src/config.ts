@@ -191,8 +191,28 @@ export interface NativeConfig {
 
 export const AUTO_ROUTE_DEFAULT_MIN_CONFIDENCE = 0.5;
 
+/** Where the tier question is asked when `[auto_route]` names no `base_url`. */
+export const DEFAULT_DECISION_BASE_URL = 'https://api.typesafe.ai';
+
+/** The decision model OpenRouter is asked for when nothing better is selected. */
+export const OPENROUTER_DEFAULT_DECISION_MODEL = '~typesafe/jev-latest';
+
+/**
+ * The decision model TypeSafe is asked for when nothing better is selected.
+ * TypeSafe requires `model` (it answers 422 without one) and lists only
+ * aliases, so this is what a TypeSafe URL resolves to in practice.
+ */
+export const TYPESAFE_DEFAULT_DECISION_MODEL = 'jev-latest';
+
 export interface AutoRouteConfig {
   classifier: 'jev';
+  /**
+   * Any server speaking Jev's API: TypeSafe, OpenRouter (`https://openrouter.ai/api`)
+   * or a self-hosted `jev-compatible-server`. Stored without a trailing slash.
+   */
+  baseUrl: string;
+  /** A pinned decision model; absent means sonata selects the best one the URL lists. */
+  model?: string;
   /** Below this classifier confidence the fallback tier is used. */
   minConfidence: number;
 }
@@ -571,18 +591,39 @@ export function parseConfig(text: string): SonataConfig {
     // Refused rather than ignored, like [budget]: a switch silently dropped
     // for a typo reads exactly like one that is working.
     for (const key of Object.keys(section)) {
-      if (key !== 'classifier' && key !== 'min_confidence') {
-        throw new Error(`sonata.toml: [auto_route] has unknown key "${key}" (known: classifier, min_confidence)`);
+      if (key !== 'classifier' && key !== 'base_url' && key !== 'model' && key !== 'min_confidence') {
+        throw new Error(`sonata.toml: [auto_route] has unknown key "${key}" (known: classifier, base_url, model, min_confidence)`);
       }
     }
     if (section.classifier !== 'jev') {
       throw new Error(`sonata.toml: [auto_route] classifier must be "jev", got ${JSON.stringify(section.classifier)}`);
     }
+    const rawBase = section.base_url ?? DEFAULT_DECISION_BASE_URL;
+    let baseUrl: string;
+    let parsedBase: URL;
+    try {
+      if (typeof rawBase !== 'string') throw new Error('not a string');
+      parsedBase = new URL(rawBase);
+      if (parsedBase.protocol !== 'http:' && parsedBase.protocol !== 'https:') throw new Error('not http(s)');
+      baseUrl = rawBase.replace(/\/+$/, '');
+    } catch {
+      throw new Error(`sonata.toml: [auto_route] base_url must be an absolute http(s) URL, got ${JSON.stringify(rawBase)}`);
+    }
+    // Endpoint suffixes are appended to this string, so a `?…`/`#…` already
+    // on it would swallow them — refused rather than requested somewhere
+    // other than the server named.
+    if (parsedBase.search !== '' || parsedBase.hash !== '') {
+      throw new Error(`sonata.toml: [auto_route] base_url must not include a query string or fragment, got ${JSON.stringify(rawBase)}`);
+    }
+    const model = section.model;
+    if (model !== undefined && (typeof model !== 'string' || model.trim() === '')) {
+      throw new Error(`sonata.toml: [auto_route] model must be a non-empty string, got ${JSON.stringify(model)}`);
+    }
     const min = section.min_confidence ?? AUTO_ROUTE_DEFAULT_MIN_CONFIDENCE;
     if (typeof min !== 'number' || !Number.isFinite(min) || min < 0 || min > 1) {
       throw new Error(`sonata.toml: [auto_route] min_confidence must be a number from 0 to 1, got ${JSON.stringify(min)}`);
     }
-    autoRoute = { classifier: 'jev', minConfidence: min };
+    autoRoute = { classifier: 'jev', baseUrl, ...(model === undefined ? {} : { model }), minConfidence: min };
   }
 
   const gen = (raw.generate ?? {}) as Record<string, unknown>;

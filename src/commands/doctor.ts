@@ -37,7 +37,10 @@ import { loadModelsDev } from '../modelsdev.js';
 import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
-import { keyReport, resolveKeyDetail, resolveKeyFromSource } from '../native/credentials.js';
+import { keyReport, resolveDecisionKey, resolveKeyDetail } from '../native/credentials.js';
+import { decisionKeyFor } from '../native/auto-route.js';
+import { ModelListCache, chooseDecisionModel } from '../native/decision-models.js';
+import { loadDecisionCatalog } from '../decision-catalog.js';
 import { opencodeCredentialOrigin, opencodeDbPath, readOpencodeCredentials } from '../native/opencode-store.js';
 
 /**
@@ -56,6 +59,8 @@ import { TenantRegistry, canonicalConfigPath } from '../native/tenants.js';
 import { routerPorts } from './ports.js';
 import { nativeSessionEnv } from './code.js';
 import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile, diagnoseRouteAuto, isLocalhostUrl } from './route.js';
+import { readRows } from '../ledger.js';
+import { projectTenant } from './status.js';
 
 const run = promisify(execFile);
 
@@ -359,6 +364,8 @@ export async function defaultHarnessVersion(command: string[]): Promise<string> 
 export async function cmdDoctor(
   opts: {
     cwd: string; home?: string; packageRoot?: string; now?: () => Date;
+    /** Network access for the one auto-route model-list call; tests pass a stub. */
+    fetch?: typeof fetch;
     /** Test seam: what to probe the machine with for the litellm check. */
     installerDeps?: InstallerDeps;
     /**
@@ -385,6 +392,7 @@ export async function cmdDoctor(
 ): Promise<{ ok: boolean; checks: Check[] }> {
   const home = opts.home ?? homedir();
   const now = opts.now ?? (() => new Date());
+  const fetchFn = opts.fetch ?? fetch;
   const checks: Check[] = [];
 
   try {
@@ -825,12 +833,24 @@ export async function cmdDoctor(
        });
 
   if (config.autoRoute !== undefined) {
+    const auto = config.autoRoute;
+    // The key the decision URL needs, chosen by host. Only TypeSafe and
+    // OpenRouter require one; a local or custom server may need none, so a
+    // missing key there is not reported.
+    const credential = decisionKeyFor(auto.baseUrl, {
+      openrouter: () => resolveDecisionKey('openrouter', home)?.key,
+      typesafe: () => resolveDecisionKey('typesafe', home)?.key,
+      other: () => resolveDecisionKey('auto-route', home)?.key,
+    });
+    let decisionHost = '';
+    try { decisionHost = new URL(auto.baseUrl).hostname; } catch { /* other */ }
+    const keyRequired = decisionHost === 'openrouter.ai' || decisionHost === 'api.typesafe.ai';
     // A missing key is advisory: auto-routing falls back to the default tier.
-    if (resolveKeyFromSource('typesafe', home, 'sonata') === undefined) {
+    if (keyRequired && credential.key === undefined) {
       checks.push({
         name: 'auto route',
         ok: true,
-        detail: 'on, but no TypeSafe key — every -auto request takes the fallback tier. Run `sonata auth add typesafe`',
+        detail: `on, but no key for ${auto.baseUrl} — every -auto request takes the fallback tier. Run \`${credential.hint}\``,
       });
     }
     // A file sonata does not own is one `sync` refuses to overwrite, so it
@@ -856,9 +876,64 @@ export async function cmdDoctor(
       });
     }
     if (missing.length === 0 && foreign.length === 0) {
-      checks.push({ name: 'auto route', ok: true, detail: `on (jev, min_confidence ${config.autoRoute.minConfidence})` });
+      let choiceText: string;
+      if (auto.model !== undefined) {
+        choiceText = `pinned model ${auto.model}`;
+      } else {
+        // One free model-list call at most; doctor never makes a decision call.
+        const listed = keyRequired && credential.key === undefined
+          ? undefined
+          : await new ModelListCache(fetchFn).list(auto.baseUrl, credential.key);
+        const choice = chooseDecisionModel({ baseUrl: auto.baseUrl, listed, catalog: loadDecisionCatalog(home) });
+        const runnerUp = choice.ranked.find((r) => r.id !== choice.model && r.capability !== undefined);
+        choiceText = `model ${choice.model ?? 'server default'} — ${choice.reason}`
+          + (runnerUp?.capability === undefined ? '' : `; runner-up ${runnerUp.id} ${runnerUp.capability.toFixed(1)}`);
+      }
+      checks.push({ name: 'auto route', ok: true, detail: `on (${auto.baseUrl}, ${choiceText}, min_confidence ${auto.minConfidence})` });
     }
-  }
+    // The ranking data. Absent or stale is advisory: selection falls back to the URL's default.
+    if (auto.model === undefined) {
+      const decisionCatalog = loadDecisionCatalog(home);
+      const age = decisionCatalog === undefined ? undefined : aaCatalogAgeDays(decisionCatalog.fetchedAt, now());
+      if (decisionCatalog === undefined) {
+        checks.push({ name: 'auto route', ok: true, detail: 'no decision-model catalog — run `sonata catalog update` so the best model can be chosen' });
+      } else if (age !== undefined && age > AA_CATALOG_MAX_AGE_DAYS) {
+        checks.push({ name: 'auto route', ok: true, detail: `decision-model catalog is ${age} days old (JevBench ${decisionCatalog.revision}) — run \`sonata catalog update\`` });
+      } else if (age !== undefined) {
+        // Its age and revision are part of the report, not just its absence or
+        // its staleness: a ranking is only as trustworthy as the data it came
+        // from, and a catalog nobody dates is a catalog nobody refreshes.
+        checks.push({ name: 'auto route', ok: true, detail: `decision-model catalog: JevBench ${decisionCatalog.revision}, ${age} day(s) old` });
+      }
+    }
+
+    // What actually happened, not just what is configured: auto-routing fails
+    // open, so a classifier that never answers looks exactly like one that
+    // does — every request still routes, to the fallback tier. Measured
+    // 2026-10-01: five decisions, all refused (HTTP 422), found only by
+    // reading the ledger by hand.
+    const tenant = projectTenant(opts.cwd, home);
+    const nowMs = now().getTime();
+    const decisions = readRows(home, nowMs - 24 * 3_600_000, nowMs)
+      .filter((row) => row.autoRoute !== undefined && (tenant === undefined || row.tenant === tenant))
+      .map((row) => row.autoRoute!);
+    if (decisions.length > 0) {
+      const count = (outcome: string) => decisions.filter((d) => d.outcome === outcome).length;
+      const answered = count('accepted') + count('low-confidence');
+      const reasons = new Map<string, number>();
+      for (const d of decisions) {
+        if ((d.outcome === 'failed' || d.outcome === 'invalid') && d.reason !== undefined) reasons.set(d.reason, (reasons.get(d.reason) ?? 0) + 1);
+      }
+      const top = [...reasons.entries()].sort((a, b) => b[1] - a[1])[0];
+      const summary = `last 24h: ${decisions.length} decision(s) — ${count('accepted')} accepted, ${count('low-confidence')} low-confidence, ${count('invalid')} invalid, ${count('failed')} failed`
+        + (top === undefined ? '' : `; most common failure: ${top[0]} (${top[1]})`);
+      // Broken, not merely noisy: three or more decisions and the classifier
+      // answered none of them, so every -auto request took the fallback tier.
+      checks.push(decisions.length >= 3 && answered === 0
+        ? { name: 'auto route', ok: false, detail: `${summary} — auto-routing is not working; every -auto request fell back` }
+        : { name: 'auto route', ok: true, detail: summary });
+    }
+}
 
   // A *stale* agent names a model the config dropped; an **outdated** one keeps
   // its name and its old instructions. `staleAgents` compares filenames and so

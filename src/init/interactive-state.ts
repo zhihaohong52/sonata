@@ -22,7 +22,7 @@ import { readChatGptOAuth, readOpencodeChatGptOAuth } from '../native/codex-auth
 import {
   KNOWN_ROLES, configPath,
 } from '../config.js';
-import { resolveKeys } from '../native/credentials.js';
+import { resolveDecisionKey, resolveKeys } from '../native/credentials.js';
 import { credentialAvailabilityFor, nativeLabel, deriveInitState, configPathFor, type NativeCandidate } from './helpers.js';
 import { runInitTui } from '../tui-ink/run.js';
 import type { InitState } from '../tui-ink/types.js';
@@ -98,11 +98,52 @@ export async function interactiveState(
     );
   }
 
+  // The saved decision URL and pin, by scope: what the Auto-route step opens
+  // on, and what the summary says survives. They cannot ride on `InitState`,
+  // where an `autoRoute` entry means "chosen this run" and an absent one means
+  // "keep the saved table".
+  const savedAutoRouteBaseUrls: Partial<Record<ConfigScope, string>> = {};
+  const savedAutoRouteModels: Partial<Record<ConfigScope, string>> = {};
+  for (const scope of ['project', 'global'] as const) {
+    const baseUrl = env.configsByScope[scope]?.autoRoute?.baseUrl;
+    if (baseUrl !== undefined) savedAutoRouteBaseUrls[scope] = baseUrl;
+    const model = env.configsByScope[scope]?.autoRoute?.model;
+    if (model !== undefined) savedAutoRouteModels[scope] = model;
+  }
+
   const codexCredential = readChatGptOAuth(opts.home, 'codex');
   const opencodeCredential = readOpencodeChatGptOAuth(opts.home);
   const daysUntil = (expiresAt: number | undefined): number | null => expiresAt === undefined
     ? null
     : Math.floor((expiresAt * 1000 - Date.now()) / (24 * 60 * 60 * 1000));
+  // Every offered gateway, not just the BYOK ones: the models step asks a
+  // gateway what it serves rather than trusting a harness snapshot, and that
+  // call has to authenticate. A gateway with no resolvable key simply keeps
+  // its harness list.
+  //
+  // The decision-server names resolve through `resolveDecisionKey` instead,
+  // the one policy serve, doctor and the Keys screen share. They were part of
+  // this generic lookup, which also reads opencode — so a TypeSafe key held
+  // only by opencode made the Auto-route step skip the prompt while the router,
+  // which never sends another harness's copy, failed every decision open.
+  const storedKeys: Record<string, string> = Object.fromEntries(
+    resolveKeys(
+      [...new Set([
+        ...env.byokProviders.map((provider) => provider.name),
+        ...env.offered.map((p) => p.provider),
+      ])],
+      opts.home,
+    ).map((source) => [source.gateway, source.key]),
+  );
+  // `openrouter` is a provider gateway too, so this is the same lookup the
+  // list above makes for it; `typesafe` and `auto-route` are decision-only and
+  // must never fall through to another harness's store.
+  for (const gateway of ['typesafe', 'auto-route', 'openrouter'] as const) {
+    const found = resolveDecisionKey(gateway, opts.home);
+    if (found === undefined) delete storedKeys[gateway];
+    else storedKeys[gateway] = found.key;
+  }
+
   const data: WizardData = {
     home: opts.home,
     harnesses: env.harnesses.map((h) => ({ name: h.name, installed: h.installed })),
@@ -110,16 +151,7 @@ export async function interactiveState(
     candidates: env.allNativeCandidates.map((c) => ({ key: c.key, gateway: c.gateway, id: c.id, label: nativeLabel(c) })),
     roles: [...KNOWN_ROLES],
     byokProviders: env.byokProviders,
-    // Every offered gateway, not just the BYOK ones: the models step asks a
-    // gateway what it serves rather than trusting a harness snapshot, and
-    // that call has to authenticate. A gateway with no resolvable key simply
-    // keeps its harness list.
-    storedKeys: Object.fromEntries(
-      resolveKeys(
-        [...new Set([...env.byokProviders.map((provider) => provider.name), ...env.offered.map((p) => p.provider)])],
-        opts.home,
-      ).map((source) => [source.gateway, source.key]),
-    ),
+    storedKeys,
     credentialAvailability: credentialAvailabilityFor(
       env.offered,
       env.gatewayAuth,
@@ -142,6 +174,8 @@ export async function interactiveState(
     declaredGatewayNames: declaredGatewayNamesByScope,
     declaredPricingProviders: declaredPricingProvidersByScope,
     harnessOnlyUpstreams: harnessOnlyUpstreamsByScope,
+    savedAutoRouteBaseUrls,
+    savedAutoRouteModels,
     initialState,
     initialStateByScope,
   };
@@ -206,6 +240,12 @@ export async function interactiveState(
     liveModels: result.state.liveModels,
     customWireFormats: result.state.customWireFormats,
     byokKeys: result.state.byokKeys,
+    // Setup's auto-route answer and its key. Carried explicitly like every
+    // other field here: this object is built key by key, so a new answer that
+    // is not named is dropped before plan() can see it — which is how it would
+    // silently keep the saved table instead.
+    autoRoute: result.state.autoRoute,
+    decisionKey: result.state.decisionKey,
     tiers: result.state.tiers,
   };
   return { state: stateForPlan, nativeByKey, cancelled: false };

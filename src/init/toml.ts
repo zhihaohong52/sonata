@@ -1,5 +1,6 @@
 import type { NativeCandidate } from './helpers.js';
 import type { CredentialSource } from '../config.js';
+import { DEFAULT_DECISION_BASE_URL } from '../config.js';
 import type { NativeGatewayAuth, NativeGatewayWireFormat } from '../config.js';
 import type { SonataConfig, PriceConfig, Rates, TierLists } from '../config.js';
 import { isOauthGatewayAuth, oauthGatewayBaseUrl } from '../config.js';
@@ -179,8 +180,14 @@ export function nativeTomlFor(
     lines.push('[budget]', `daily_usd = ${existingBudget.dailyUsd}`, '');
   }
   if (existingAutoRoute !== undefined) {
-    lines.push('[auto_route]', `classifier = ${tomlKey(existingAutoRoute.classifier)}`,
-      `min_confidence = ${existingAutoRoute.minConfidence}`, '');
+    lines.push('[auto_route]', `classifier = ${tomlKey(existingAutoRoute.classifier)}`);
+    // Only what the user set: the default URL writes nothing, so a file that
+    // never named one round-trips unchanged.
+    if (existingAutoRoute.baseUrl !== undefined && existingAutoRoute.baseUrl !== DEFAULT_DECISION_BASE_URL) {
+      lines.push(`base_url = ${tomlKey(existingAutoRoute.baseUrl)}`);
+    }
+    if (existingAutoRoute.model !== undefined) lines.push(`model = ${tomlKey(existingAutoRoute.model)}`);
+    lines.push(`min_confidence = ${existingAutoRoute.minConfidence}`, '');
   }
 
   for (const [gateway, { baseUrl: candidateUrl, auth, wireFormat }] of gateways) {
