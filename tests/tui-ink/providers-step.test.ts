@@ -193,6 +193,7 @@ describe('Rank providers in ProvidersStep', () => {
 
 describe('ChatGPT login source in ProvidersStep', () => {
   const DOWN = '\u001B[B';
+  const LEFT = '\u001B[D';
 
   /** `null` is "not signed in there"; `expiresInDays: null` is "signed in, expiry unknown". */
   function logins(
@@ -202,25 +203,36 @@ describe('ChatGPT login source in ProvidersStep', () => {
     return { codex, opencode, key: null, keyEntryAvailable: false };
   }
 
-  function renderFlow(availability: Record<string, AvailableCredentials>) {
-    let state: InitState = { harnesses: ['codex', 'opencode'] };
-    const app = render(React.createElement(ProvidersStep, {
+  /**
+   * Each onChange re-renders with the new state, the way the wizard does —
+   * without it the choice screen's `initial` would read the state the run
+   * started on rather than what this run has since recorded.
+   */
+  function renderFlow(availability: Record<string, AvailableCredentials>, initial: InitState = {}) {
+    let state: InitState = { harnesses: ['codex', 'opencode'], ...initial };
+    const element = () => React.createElement(ProvidersStep, {
       home: '/tmp/sonata-chatgpt-source-test',
       harnesses: [
         { name: 'codex', installed: true },
         { name: 'opencode', installed: true },
       ],
-      providers: [{ key: 'codex/chatgpt', harness: 'codex', provider: 'chatgpt', count: 1 }],
+      providers: Object.keys(availability).map((name) => ({
+        key: `codex/${name}`, harness: 'codex', provider: name, count: 1,
+      })),
       byokProviders: [],
       credentialAvailability: availability,
       gatewayAuth: { chatgpt: 'codex-oauth' },
       storedKeys: {},
       state,
-      onChange: (updater: (current: InitState) => InitState) => { state = updater(state); },
+      onChange: (updater: (current: InitState) => InitState) => {
+        state = updater(state);
+        app.rerender(element());
+      },
       onContinue: () => {},
       onBack: () => {},
       onCancel: () => {},
-    }));
+    });
+    const app = render(element());
     return {
       app,
       state: () => state,
@@ -231,14 +243,15 @@ describe('ChatGPT login source in ProvidersStep', () => {
     };
   }
 
-  /** menu -> harness picker -> import list, with the ChatGPT row checked and submitted. */
-  async function toImport(w: ReturnType<typeof renderFlow>) {
+  /** menu -> harness picker -> import list, with every row checked and the list submitted. */
+  async function toImport(w: ReturnType<typeof renderFlow>, rows = 1) {
     await settle();
     await w.press(ENTER); // menu: Import from other harnesses
     await until(() => w.frame().includes('Import from which harnesses?'), 'the harness picker');
     await w.press(ENTER); // both harnesses pre-checked
     await until(() => w.frame().includes('via codex'), 'the import list');
-    await w.press(DOWN, SPACE, ENTER); // check the ChatGPT row, submit
+    for (let row = 0; row < rows; row += 1) await w.press(DOWN, SPACE); // check each row
+    await w.press(ENTER); // submit
   }
 
   it('asks which login to use when codex and opencode both hold one', async () => {
@@ -271,6 +284,73 @@ describe('ChatGPT login source in ProvidersStep', () => {
     await until(() => w.frame().includes('Set up providers'), 'the providers menu');
     expect(w.frame()).not.toContain('ChatGPT login for chatgpt');
     expect(w.state().credentialSources).toEqual({ chatgpt: 'opencode' });
+    w.app.unmount();
+  });
+
+  it('opens on a source a previous run chose, and enter keeps it', async () => {
+    const w = renderFlow(
+      { chatgpt: logins({ expiresInDays: 3 }, { expiresInDays: 5 }) },
+      { credentialSources: { chatgpt: 'opencode' } },
+    );
+    await toImport(w);
+    await until(() => w.frame().includes('ChatGPT login for chatgpt'), 'the ChatGPT login choice');
+    expect(w.frame()).toContain('› opencode — expires in 5d');
+    await w.press(ENTER); // keep the seeded source
+    await until(() => w.frame().includes('Set up providers'), 'the providers menu');
+    expect(w.state().credentialSources).toEqual({ chatgpt: 'opencode' });
+    w.app.unmount();
+  });
+
+  it('keeps a picked source across a back to import and a re-submit', async () => {
+    const w = renderFlow({
+      chatgpt: logins({ expiresInDays: 3 }, { expiresInDays: 5 }),
+      grok: logins({ expiresInDays: 3 }, { expiresInDays: 5 }),
+    });
+    await toImport(w, 2);
+    await until(() => w.frame().includes('ChatGPT login for chatgpt'), 'the chatgpt choice');
+    await w.press(DOWN, ENTER); // pick opencode for chatgpt
+    await until(() => w.frame().includes('ChatGPT login for grok'), 'the grok choice');
+    await w.press(LEFT); // back to the import list
+    await until(() => w.frame().includes('via codex'), 'the import list');
+    await w.press(ENTER); // re-submit
+    await until(() => w.frame().includes('ChatGPT login for chatgpt'), 'the chatgpt choice again');
+    expect(w.frame()).toContain('› opencode — expires in 5d');
+    await w.press(ENTER); // enter keeps opencode
+    await until(() => w.frame().includes('ChatGPT login for grok'), 'the grok choice again');
+    await w.press(ENTER); // enter keeps grok's codex default
+    await until(() => w.frame().includes('Set up providers'), 'the providers menu');
+    expect(w.state().credentialSources).toEqual({ chatgpt: 'opencode', grok: 'codex' });
+    w.app.unmount();
+  });
+
+  it('asks one provider after another and records each answer under its own name', async () => {
+    const w = renderFlow({
+      chatgpt: logins({ expiresInDays: 3 }, { expiresInDays: 5 }),
+      grok: logins({ expiresInDays: 3 }, { expiresInDays: 5 }),
+    });
+    await toImport(w, 2);
+    await until(() => w.frame().includes('ChatGPT login for chatgpt'), 'the chatgpt choice');
+    await w.press(ENTER); // chatgpt keeps its codex default
+    await until(() => w.frame().includes('ChatGPT login for grok'), 'the grok choice');
+    await w.press(DOWN, ENTER); // grok picks opencode
+    await until(() => w.frame().includes('Set up providers'), 'the providers menu');
+    expect(w.state().credentialSources).toEqual({ chatgpt: 'codex', grok: 'opencode' });
+    w.app.unmount();
+  });
+
+  it('removes the credential source of an unchecked provider', async () => {
+    const w = renderFlow({ chatgpt: logins({ expiresInDays: 3 }, null) }); // codex only: no choice screen
+    await toImport(w);
+    await until(() => w.frame().includes('Set up providers'), 'the providers menu');
+    expect(w.state().credentialSources).toEqual({ chatgpt: 'codex' });
+    await w.press(ENTER); // menu: Import from other harnesses
+    await until(() => w.frame().includes('Import from which harnesses?'), 'the harness picker');
+    await w.press(ENTER); // both harnesses pre-checked
+    await until(() => w.frame().includes('via codex'), 'the import list');
+    await w.press(DOWN, SPACE, ENTER); // uncheck the row, submit
+    await until(() => w.frame().includes('Set up providers'), 'the providers menu');
+    expect(w.state().credentialSources).toEqual({});
+    expect(w.state().providerKeys).toEqual([]);
     w.app.unmount();
   });
 
