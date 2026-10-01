@@ -342,6 +342,11 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
               // checks sonata's own store then opencode's live, in that
               // order, so pinning a source would only foreclose that
               // fallback without buying anything.
+              const existing = current.credentialSources?.[provider.provider];
+              if (have.codex !== null && have.opencode !== null) {
+                // The choice screen opens on this value, so overwriting it would make enter revert a source already chosen.
+                if (existing === 'codex' || existing === 'opencode') continue;
+              }
               if (have.codex !== null) nextCredentialSources[provider.provider] = 'codex';
               else if (have.opencode !== null) nextCredentialSources[provider.provider] = 'opencode';
               else delete nextCredentialSources[provider.provider];
