@@ -24,7 +24,9 @@ import { envVarForGateway, litellmConfigForTenants, litellmConfigYamlForTenants 
 import { litellmRequired, transportFor } from '../native/providers.js';
 import { litellmStatus, managedLitellmPath } from '../native/litellm-venv.js';
 import type { UiDeps } from '../native/ui.js';
-import { decisionClassifier, type TierClassifier } from '../native/auto-route.js';
+import { decisionClassifier, decisionKeyFor, type TierClassifier } from '../native/auto-route.js';
+import { ModelListCache, chooseDecisionModel } from '../native/decision-models.js';
+import { loadDecisionCatalog } from '../decision-catalog.js';
 import { createRouterServer, type RouterTenant } from '../native/router.js';
 import { LITELLM_CHATGPT_LOGIN_REFUSED, pipeLitellmOutput } from '../native/litellm-output.js';
 import { canonicalConfigPath, TenantRegistry } from '../native/tenants.js';
@@ -2618,6 +2620,7 @@ export async function cmdServe(
     // carrying 0 fails every request's Host check.
     uiDeps = { home: opts.home, port: ports.router, tenants: () => registry.summary() };
     const decisionClassifiers = new Map<string, TierClassifier>();
+    const modelLists = new ModelListCache(fetch);
     router = createRouterServer({
       fetch,
       litellmBase: `http://${LITELLM_HOST}:${ports.litellm}`,
@@ -2640,15 +2643,27 @@ export async function cmdServe(
       // Built per project setting, since [auto_route] is per project and one
       // router serves them all. With no key it throws per call and the router
       // falls back, which is the documented off-by-default-key behaviour.
+      // One classifier per URL + pin; the model is chosen per call from the
+      // URL's listed decision models and the cached JevBench scores, so a
+      // `sonata catalog update` or a new model at the URL needs no restart.
       classifierFor: (settings) => {
-        const id = `${settings.provider}|${settings.model ?? ''}`;
+        const id = `${settings.baseUrl}|${settings.model ?? ''}`;
         let classifier = decisionClassifiers.get(id);
         if (classifier === undefined) {
+          const credential = () => decisionKeyFor(settings.baseUrl, {
+            openrouter: () => resolveKeys(['openrouter'], opts.home)[0]?.key,
+            typesafe: () => resolveKeyFromSource('typesafe', opts.home, 'sonata'),
+            other: () => resolveKeyFromSource('auto-route', opts.home, 'sonata'),
+          });
           classifier = decisionClassifier(settings, {
             fetch,
-            key: (provider) => provider === 'openrouter'
-              ? resolveKeys(['openrouter'], opts.home)[0]?.key
-              : resolveKeyFromSource('typesafe', opts.home, 'sonata'),
+            key: () => credential().key,
+            keyHint: credential().hint,
+            model: async () => settings.model ?? chooseDecisionModel({
+              baseUrl: settings.baseUrl,
+              listed: await modelLists.list(settings.baseUrl, credential().key),
+              catalog: loadDecisionCatalog(opts.home),
+            }).model,
           });
           decisionClassifiers.set(id, classifier);
         }
