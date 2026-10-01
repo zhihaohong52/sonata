@@ -27,7 +27,10 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   doctor` shows the URL, the key it needs and the model chosen, and `sonata
   usage` reports each call's cost beside the priced total where one is
   known — the response's own `usage.cost`, free on a loopback URL,
-  unpriced otherwise.
+  unpriced otherwise. No scored model defaults to `~typesafe/jev-latest` on
+  OpenRouter, `jev-latest` on TypeSafe, and no `model` field on other hosts.
+  Also fixes auto-routing on 0.15.0, where every TypeSafe decision was refused
+  (HTTP 422, no `model`) and fell back to `normal`.
 
 ## [0.15.0] - 2026-10-01
 

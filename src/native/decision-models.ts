@@ -4,10 +4,12 @@
  * A URL lists its decision models (`GET /v1/models`); JevBench scores them;
  * the highest capability wins and cost only breaks a tie. Matching is exact
  * after normalisation — a guessed match would rank a model on another
- * model's score, the failure the AA lookup rules exist to prevent.
+ * model's score, the failure the AA lookup rules exist to prevent. With no
+ * scored model, OpenRouter defaults to `~typesafe/jev-latest`, TypeSafe to
+ * `jev-latest` (required by its endpoint), and other hosts receive no model.
  */
 import type { DecisionCatalog, DecisionCatalogEntry } from '../decision-catalog.js';
-import { OPENROUTER_DEFAULT_DECISION_MODEL } from '../config.js';
+import { OPENROUTER_DEFAULT_DECISION_MODEL, TYPESAFE_DEFAULT_DECISION_MODEL } from '../config.js';
 
 export interface ListedDecisionModel { id: string; pricePerToken?: number }
 
@@ -55,7 +57,10 @@ export function scoreFor(id: string, catalog: DecisionCatalog | undefined): Deci
 
 export function defaultDecisionModel(baseUrl: string): string | undefined {
   try {
-    return new URL(baseUrl).hostname === 'openrouter.ai' ? OPENROUTER_DEFAULT_DECISION_MODEL : undefined;
+    const hostname = new URL(baseUrl).hostname;
+    if (hostname === 'openrouter.ai') return OPENROUTER_DEFAULT_DECISION_MODEL;
+    if (hostname === 'api.typesafe.ai') return TYPESAFE_DEFAULT_DECISION_MODEL;
+    return undefined;
   } catch {
     return undefined;
   }
