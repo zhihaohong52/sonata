@@ -143,6 +143,13 @@ function createScanner(tools: ToolSchemas, counts: TextToolCallCounts) {
 
 const sse = (data: Record<string, unknown>): string => `event: ${String(data.type)}\ndata: ${JSON.stringify(data)}\n\n`;
 
+function normalizeLineEndings(text: string, final: boolean): string {
+  if (!final && text.endsWith('\r')) {
+    return text.slice(0, -1).replace(/\r\n?/g, '\n') + '\r';
+  }
+  return text.replace(/\r\n?/g, '\n');
+}
+
 export function rewriteTextToolCallStream(
   body: AsyncIterable<Uint8Array>,
   tools: ToolSchemas,
@@ -185,10 +192,11 @@ export function rewriteTextToolCallStream(
     };
 
     const handle = (raw: string): string => {
-      const dataLine = raw.split('\n').find((line) => line.startsWith('data: '));
-      if (dataLine === undefined) return `${raw}\n\n`;
+      const dataLines = raw.split('\n').filter((line) => line.startsWith('data:'));
+      if (dataLines.length === 0) return `${raw}\n\n`;
+      const payload = dataLines.map((line) => line.slice(5).replace(/^ /, '')).join('\n');
       let data: Record<string, any>;
-      try { data = JSON.parse(dataLine.slice(6)) as Record<string, any>; } catch { return `${raw}\n\n`; }
+      try { data = JSON.parse(payload) as Record<string, any>; } catch { return `${raw}\n\n`; }
       switch (data.type) {
         case 'content_block_start': {
           const index = nextOut++;
@@ -201,6 +209,11 @@ export function rewriteTextToolCallStream(
         case 'content_block_delta': {
           if (data.index === textUpstream && data.delta?.type === 'text_delta' && scanner !== undefined) {
             return emitPieces(scanner.push(String(data.delta.text ?? '')));
+          }
+          if (data.index === textUpstream && scanner !== undefined) {
+            // This delta belongs to text replaced by a tool call; a closed-block delta breaks client assembly.
+            if (textOut === undefined) return '';
+            return sse({ ...data, index: textOut });
           }
           return sse({ ...data, index: outIndex.get(data.index) ?? data.index });
         }
@@ -226,6 +239,7 @@ export function rewriteTextToolCallStream(
     try {
       for await (const chunk of body) {
         buffer += decoder.decode(chunk, { stream: true });
+        buffer = normalizeLineEndings(buffer, false);
         let out = '';
         let split: number;
         while ((split = buffer.indexOf('\n\n')) !== -1) {
@@ -235,7 +249,9 @@ export function rewriteTextToolCallStream(
         if (out !== '') yield encoder.encode(out);
       }
       buffer += decoder.decode();
+      buffer = normalizeLineEndings(buffer, true);
       if (buffer.trim() !== '') yield encoder.encode(handle(buffer.replace(/\n+$/, '')));
+      if (scanner !== undefined) yield encoder.encode(emitPieces(scanner.end()));
     } finally {
       try { onEnd(counts); } catch { /* bookkeeping never reaches the client */ }
     }
