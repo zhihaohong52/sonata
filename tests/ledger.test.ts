@@ -76,7 +76,7 @@ describe('appendRow / readRows', () => {
 
   it('keeps a row with valid textToolCalls and drops one with negative or non-numeric counts', () => {
     const base = { ts: new Date().toISOString(), ms: 1, alias: 'a', upstream: 'litellm', status: 200, complete: true,
-      tokens: { input: 1, output: 1 }, price: { source: 'none' }, attempts: [] };
+      tokens: { input: 1, output: 1, cacheRead: 0, cacheCreation: 0 }, price: { source: 'none' }, attempts: [] };
     appendRow(home, { ...base, textToolCalls: { recovered: 1, unparsed: 0 } } as LedgerRow);
     appendRow(home, { ...base, textToolCalls: { recovered: -1, unparsed: 0 } } as LedgerRow);
     appendRow(home, { ...base, textToolCalls: { recovered: 'x', unparsed: 0 } } as unknown as LedgerRow);

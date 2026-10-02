@@ -137,18 +137,18 @@ describe('rewriteTextToolCallStream', () => {
   it('passes a stream with no markup through unchanged in content', async () => {
     const { events, counts } = await run(textStream(['Hello ', 'world']));
     expect(text(events)).toBe('Hello world');
-    expect(events.find((e) => e.type === 'message_delta').delta.stop_reason).toBe('end_turn');
+    expect(events.find((e) => e.type === 'message_delta')!.delta.stop_reason).toBe('end_turn');
     expect(counts).toEqual({ recovered: 0, unparsed: 0 });
   });
 
   it('turns prose then a call into a text block and a tool_use block', async () => {
     const { events, counts } = await run(textStream(['Listing now: ', CALL]));
     expect(text(events)).toBe('Listing now: ');
-    const start = events.find((e) => e.type === 'content_block_start' && e.content_block.type === 'tool_use');
+    const start = events.find((e) => e.type === 'content_block_start' && e.content_block.type === 'tool_use')!;
     expect(start).toMatchObject({ index: 1, content_block: { type: 'tool_use', id: 'toolu_test0', name: 'Bash', input: {} } });
-    const json = events.find((e) => e.type === 'content_block_delta' && e.delta.type === 'input_json_delta');
+    const json = events.find((e) => e.type === 'content_block_delta' && e.delta.type === 'input_json_delta')!;
     expect(JSON.parse(json.delta.partial_json)).toEqual({ command: 'ls /tmp' });
-    expect(events.find((e) => e.type === 'message_delta').delta.stop_reason).toBe('tool_use');
+    expect(events.find((e) => e.type === 'message_delta')!.delta.stop_reason).toBe('tool_use');
     expect(counts).toEqual({ recovered: 1, unparsed: 0 });
     // Exactly one stop per opened block, and indexes strictly increasing by first appearance.
     const starts = events.filter((e) => e.type === 'content_block_start').map((e) => e.index);
@@ -209,7 +209,7 @@ describe('rewriteTextToolCallStream', () => {
     const { events, counts } = await run(textStream(['x', unknown]));
     expect(text(events)).toBe('x' + unknown);
     expect(counts).toEqual({ recovered: 0, unparsed: 1 });
-    expect(events.find((e) => e.type === 'message_delta').delta.stop_reason).toBe('end_turn');
+    expect(events.find((e) => e.type === 'message_delta')!.delta.stop_reason).toBe('end_turn');
   });
 
   it('releases unclosed markup at the block end and counts it unparsed', async () => {
@@ -233,7 +233,7 @@ describe('rewriteTextToolCallStream', () => {
 
   it('leaves a thinking block alone and shifts the text after it correctly', async () => {
     const { events, counts } = await run(textStream(['ok ', CALL], 'end_turn', true));
-    expect(events.find((e) => e.delta?.type === 'thinking_delta').delta.thinking).toBe('hmm <tool_call>');
+    expect(events.find((e) => e.delta?.type === 'thinking_delta')!.delta.thinking).toBe('hmm <tool_call>');
     expect(counts.recovered).toBe(1);
     expect(events.filter((e) => e.type === 'content_block_start').map((e) => e.index)).toEqual([0, 1, 2]);
   });
