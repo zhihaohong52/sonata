@@ -74,6 +74,17 @@ describe('appendRow / readRows', () => {
     expect(back[0].autoRoute).toMatchObject({ classifier: 'jev', choice: 'simple', ms: 300 });
   });
 
+  it('keeps a row with valid textToolCalls and drops one with negative or non-numeric counts', () => {
+    const base = { ts: new Date().toISOString(), ms: 1, alias: 'a', upstream: 'litellm', status: 200, complete: true,
+      tokens: { input: 1, output: 1 }, price: { source: 'none' }, attempts: [] };
+    appendRow(home, { ...base, textToolCalls: { recovered: 1, unparsed: 0 } } as LedgerRow);
+    appendRow(home, { ...base, textToolCalls: { recovered: -1, unparsed: 0 } } as LedgerRow);
+    appendRow(home, { ...base, textToolCalls: { recovered: 'x', unparsed: 0 } } as unknown as LedgerRow);
+    const rows = readRows(home, 0, Date.now() + 1000);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
+  });
+
   it('N appends produce N whole parseable lines and end with a newline', () => {
     appendRow(home, row());
     appendRow(home, row({ alias: 'sonata-review-simple' }));
