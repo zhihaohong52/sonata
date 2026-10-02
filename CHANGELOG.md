@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-10-02
+
 ### Changed
 
 - **The `sonata-loop` skill uses the `-auto` agents for every step when
