@@ -8,6 +8,22 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Changed
+
+- **The `sonata-loop` skill uses the `-auto` agents for every step when
+  auto-routing is on** — planning (`plan-auto`), each task and each fix
+  (`code-auto`), the per-task gate and the final gate (`review-auto`) — and
+  sonata picks the tier per conversation instead of the orchestrator judging
+  difficulty itself. A task that fails review twice on `-auto` re-runs from
+  scratch on explicit `code-complex`, since the tier Jev picked is not visible
+  to the caller and "one tier up" is undefined for an `-auto` dispatch. With
+  auto-routing off, the loop is unchanged and still names the explicit tiers.
+
+- **`sonata sync` refreshes an installed copy of the loop skill when it is out
+  of date.** Only `sonata init` used to write it, so an upgrade never reached a
+  project that was already set up; `sync` now overwrites a stale installed copy
+  with the packaged skill (and creates none — installing stays `init`'s).
+
 ## [0.15.1] - 2026-10-01
 
 ### Added

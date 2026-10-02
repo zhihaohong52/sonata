@@ -603,7 +603,7 @@ Focus on ${blurb}.${delegating}
 `;
 }
 
-export interface SyncOptions { cwd: string; agentsDir: string; home?: string }
+export interface SyncOptions { cwd: string; agentsDir: string; home?: string; packageRoot?: string }
 
 export interface SyncResult {
   /** Paths written. */
@@ -620,6 +620,40 @@ export interface SyncResult {
   stale: string[];
   /** Paths sonata declined to overwrite because they already exist and are not sonata-owned. */
   skipped: string[];
+  /** Installed loop-skill copies this run refreshed. */
+  skills?: string[];
+}
+
+/**
+ * Bring an installed copy of the loop skill up to the packaged one.
+ *
+ * Only `sonata init` used to write the skill, so a change to it never reached a
+ * project that was already set up — the agents regenerate on every `sync` and
+ * the skill beside them quietly stayed months old. Refreshing is `sync`'s job;
+ * *installing* stays `init`'s, so a missing copy is never created here.
+ */
+function refreshLoopSkill(opts: SyncOptions): string[] {
+  // Same resolution `init`'s apply.ts uses: the packaged skill when there is
+  // one, else the checkout the command was run from.
+  const packaged = opts.packageRoot === undefined
+    ? undefined
+    : join(opts.packageRoot, 'skills', 'loop', 'SKILL.md');
+  const source = [packaged, join(process.cwd(), 'skills', 'loop', 'SKILL.md')]
+    .find((path) => path !== undefined && existsSync(path));
+  if (source === undefined) return [];
+  const content = readFileSync(source, 'utf8');
+  const targets = [
+    join(opts.cwd, '.claude', 'skills', 'sonata-loop', 'SKILL.md'),
+    ...(opts.home === undefined ? [] : [join(opts.home, '.claude', 'skills', 'sonata-loop', 'SKILL.md')]),
+  ];
+  const refreshed: string[] = [];
+  for (const path of targets) {
+    if (!existsSync(path)) continue;
+    if (readFileSync(path, 'utf8') === content) continue;
+    writeFileSync(path, content);
+    refreshed.push(path);
+  }
+  return refreshed;
 }
 
 /**
@@ -802,6 +836,7 @@ export function cmdSync(opts: SyncOptions): SyncResult {
       changed,
       stale: staleAgents(opts.agentsDir, expectedAgentNames(config)),
       skipped,
+      skills: refreshLoopSkill(opts),
     };
   }
 
@@ -835,5 +870,6 @@ export function cmdSync(opts: SyncOptions): SyncResult {
     written,
     stale: staleAgents(opts.agentsDir, expectedAgentNames(config)),
     skipped: [],
+    skills: refreshLoopSkill(opts),
   };
 }
