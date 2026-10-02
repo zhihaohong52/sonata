@@ -595,8 +595,9 @@ This agent only works in a routed session (sonata code, or sonata route on/auto)
 ${NO_MODEL_ARG}
 
 Sonata chooses the tier for this task once, from its first message, and keeps
-it for the whole conversation. If the choice was too low and the work fails
-review, re-run it on the explicit tier agent one step up.
+it for the whole conversation. The tier it chose is not visible to the caller,
+so if the work fails review twice, re-run it from scratch on the explicit
+-complex agent rather than "one tier up".
 
 ${TIER_AGENT_MARKER} — edits here are overwritten on the next sync.
 
