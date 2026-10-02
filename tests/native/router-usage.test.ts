@@ -26,6 +26,20 @@ function body200(text: string, contentType: string): Response {
   return new Response(stream, { status: 200, headers: { 'content-type': contentType } });
 }
 
+/** A 200 JSON body streamed as the given chunks, with a pause between them when asked. */
+function jsonChunks(chunks: string[], gapMs = 0): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      for (const [i, chunk] of chunks.entries()) {
+        if (i > 0 && gapMs > 0) await new Promise((resolve) => setTimeout(resolve, gapMs));
+        controller.enqueue(new TextEncoder().encode(chunk));
+      }
+      controller.close();
+    },
+  });
+  return new Response(stream, { status: 200, headers: { 'content-type': 'application/json' } });
+}
+
 function deps(rows: LedgerRow[], response: () => Response): RouterDeps {
   return {
     fetch: (async () => response()) as unknown as typeof fetch,
@@ -350,6 +364,46 @@ describe('router — text-form tool calls', () => {
       content: [{ type: 'text', text: big }],
     });
     const res = await routeRequest(withTools('sonata-code-simple'), deps(rows, () => body200(json, 'application/json')));
+    expect(await drain(res.body)).toBe(json);
+  });
+
+  it('passes a JSON body past the byte cap through byte-identical instead of rewriting it', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    // Exactly 3000 bytes carrying the text-call fixture, in three chunks:
+    // read whole it would be rewritten, past the cap it is the client's bytes
+    // and nothing else.
+    const doc = (pad: number) => JSON.stringify({
+      id: 'm', type: 'message', role: 'assistant', stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Go ' + CALL + 'A'.repeat(pad) }],
+    });
+    let pad = 0;
+    while (doc(pad).length < 3000) pad += 1;
+    const json = doc(pad);
+    expect(Buffer.byteLength(json)).toBe(3000);
+    const chunks = [json.slice(0, 1000), json.slice(1000, 2000), json.slice(2000)];
+    const res = await routeRequest(withTools('sonata-code-simple'), {
+      ...deps(rows, () => jsonChunks(chunks)),
+      textToolCallReadLimits: { maxBytes: 1024, idleMs: 10_000 },
+    });
+    expect(await drain(res.body)).toBe(json);
+    expect('textToolCalls' in rows[0]).toBe(false);
+  });
+
+  it('passes a JSON body that stalls mid-flight through unchanged rather than holding the request', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const json = JSON.stringify({
+      id: 'm', type: 'message', role: 'assistant', stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Go ' + CALL }],
+    });
+    const mid = Math.ceil(json.length / 2);
+    // Chunk A, a 200 ms silence, then chunk B: the idle bound gives up trying
+    // to rewrite, and both halves still reach the client from the same read.
+    const res = await routeRequest(withTools('sonata-code-simple'), {
+      ...deps(rows, () => jsonChunks([json.slice(0, mid), json.slice(mid)], 200)),
+      textToolCallReadLimits: { maxBytes: 1024 * 1024, idleMs: 50 },
+    });
     expect(await drain(res.body)).toBe(json);
   });
 

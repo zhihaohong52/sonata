@@ -6,7 +6,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { budgetRefusal, type BudgetStatus } from '../budget.js';
 import { isTierAliasShape, TIER_NAMES, tiersCollapse, type SonataConfig, type AutoRouteConfig } from '../config.js';
 import type { AutoRouteRecord, LedgerRow } from '../ledger.js';
-import { autoRole, decideTier, DecisionStore, type TierClassifier } from './auto-route.js';
+import { autoRole, cleanTask, decideTier, DecisionStore, type TierClassifier } from './auto-route.js';
 import { SONATA_PROJECT_HEADER, TenantError } from './tenants.js';
 import { SONATA_TOKEN_HEADER, projectHintAuthorised } from './router-token.js';
 import { OPENCODE_SESSION_HEADER, type Transport } from './providers.js';
@@ -172,6 +172,13 @@ export interface RouterDeps {
    */
   errorBodyLimits?: { maxBytes: number; timeoutMs: number };
   /**
+   * How much of a non-streamed JSON reply the router reads while looking for
+   * text-form tool calls, and how long it waits between chunks, before it
+   * stops trying to rewrite and passes the body through untouched. Test seam;
+   * defaults to `TEXT_TOOL_CALL_READ_LIMITS`.
+   */
+  textToolCallReadLimits?: { maxBytes: number; idleMs: number };
+  /**
    * Where to write the outbound body of every 400 a tier candidate answers,
    * one 0600 file per refusal. Unset (the default) writes nothing: bodies
    * hold conversation content. `serve` sets it from `SONATA_CAPTURE_400_DIR`.
@@ -187,6 +194,14 @@ export interface RouterDeps {
  * ranked fallback on one candidate, forever.
  */
 export const ERROR_BODY_LIMITS = { maxBytes: 1024 * 1024, timeoutMs: 10_000 };
+
+/**
+ * How much of a non-streamed JSON reply is read whole so it can be rewritten,
+ * and how long between chunks counts as a stall. Past either the body is
+ * passed through untouched — far past any reply that carries a tool call in
+ * its text, and far past what rewriting needs.
+ */
+export const TEXT_TOOL_CALL_READ_LIMITS = { maxBytes: 64 * 1024 * 1024, idleMs: 10_000 };
 
 export interface RouterRequest {
   method: string;
@@ -1197,16 +1212,65 @@ async function bufferBody(body: AsyncIterable<Uint8Array> | Buffer, deps: Router
 }
 
 /**
- * Reads a finished body in full — no byte cap and no timeout, unlike
- * `bufferBody`. This is a complete JSON document the upstream has already
- * produced, and `ERROR_BODY_LIMITS` were sized for error bodies: a larger
- * reply would be silently cut off mid-document. The request's abort signal
- * still covers a client that leaves.
+ * Every chunk already read, in order, then the rest of the same iterator —
+ * never a fresh read of the upstream. `cancel` forwards to the body it wraps,
+ * so a client that leaves still releases the connection.
  */
-async function concatBody(body: AsyncIterable<Uint8Array>): Promise<Buffer> {
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of body) chunks.push(chunk);
-  return Buffer.concat(chunks);
+function passThroughFrom(
+  buffered: readonly Buffer[],
+  iterator: AsyncIterator<Uint8Array>,
+  body: AsyncIterable<Uint8Array>,
+  pending?: Promise<IteratorResult<Uint8Array>>,
+): AsyncIterable<Uint8Array> & { cancel(): void } {
+  async function* chunks(): AsyncIterable<Uint8Array> {
+    for (const chunk of buffered) yield chunk;
+    let next = await (pending ?? iterator.next());
+    while (next.done !== true) {
+      yield next.value;
+      next = await iterator.next();
+    }
+  }
+  return Object.assign(chunks(), { cancel: () => cancelBody(body) });
+}
+
+/**
+ * A finished document is read whole so it can be rewritten; past the cap, or
+ * when the upstream stalls, it is passed through untouched rather than held or
+ * failed. `ERROR_BODY_LIMITS` were sized for error bodies and would cut a
+ * larger reply off mid-document, so this bound is far higher — and unlike
+ * those it never cancels or abandons the upstream: a body given up on is one
+ * the client is still owed.
+ */
+async function readWholeOrPassThrough(
+  body: AsyncIterable<Uint8Array>,
+  limits: { maxBytes: number; idleMs: number },
+): Promise<{ whole: Buffer } | { passThrough: AsyncIterable<Uint8Array> & { cancel(): void } }> {
+  const iterator = body[Symbol.asyncIterator]();
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for (;;) {
+    const pending = iterator.next();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const idle = new Promise<'idle'>((resolve) => { timer = setTimeout(() => resolve('idle'), limits.idleMs); });
+    let next: IteratorResult<Uint8Array> | 'idle';
+    try {
+      next = await Promise.race([pending, idle]);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (next === 'idle') {
+      // The read already in flight is the passthrough's first result, not a
+      // fresh `next()`; the catch only keeps a late rejection from being
+      // unhandled before the passthrough awaits it.
+      pending.catch(() => { /* surfaced where the passthrough awaits it */ });
+      return { passThrough: passThroughFrom(chunks, iterator, body, pending) };
+    }
+    if (next.done === true) return { whole: Buffer.concat(chunks) };
+    const chunk = Buffer.from(next.value);
+    chunks.push(chunk);
+    bytes += chunk.length;
+    if (bytes > limits.maxBytes) return { passThrough: passThroughFrom(chunks, iterator, body) };
+  }
 }
 
 /**
@@ -1219,6 +1283,7 @@ async function concatBody(body: AsyncIterable<Uint8Array>): Promise<Buffer> {
 async function recoverTextToolCalls(
   response: RouterResponse,
   req: RouterRequest,
+  deps: RouterDeps,
   counts: TextToolCallCounts,
   onUnparsed?: (unparsed: number) => void,
 ): Promise<RouterResponse> {
@@ -1234,16 +1299,21 @@ async function recoverTextToolCalls(
     return { ...response, body: rewriteTextToolCallStream(response.body, tools, settle) };
   }
   if (!type.includes('application/json')) return response;
-  let buffered: Buffer;
+  let read: { whole: Buffer } | { passThrough: AsyncIterable<Uint8Array> & { cancel(): void } };
   try {
-    buffered = Buffer.isBuffer(response.body) ? response.body : await concatBody(response.body);
+    read = Buffer.isBuffer(response.body)
+      ? { whole: response.body }
+      : await readWholeOrPassThrough(response.body, deps.textToolCallReadLimits ?? TEXT_TOOL_CALL_READ_LIMITS);
   } catch (error) {
     // The client left while the body was still arriving: the same answer
     // every other forwarding path gives, and like those, no ledger row.
     if (clientLeft(req)) return clientGone();
     throw error;
   }
-  const { body, counts: found } = rewriteTextToolCallJson(buffered, tools);
+  // A body the bounded read gave up on is served as it arrived, with nothing
+  // recovered and `counts` left at zero.
+  if ('passThrough' in read) return { ...response, body: read.passThrough };
+  const { body, counts: found } = rewriteTextToolCallJson(read.whole, tools);
   settle(found);
   return { ...response, body };
 }
@@ -2055,7 +2125,7 @@ async function routeTierRequest(
     const textToolCalls: TextToolCallCounts = { recovered: 0, unparsed: 0 };
     let servedResponse = response;
     if (!direct) {
-      servedResponse = await recoverTextToolCalls(response, req, textToolCalls, (n) => {
+      servedResponse = await recoverTextToolCalls(response, req, deps, textToolCalls, (n) => {
         cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
         deps.log?.(`router: ${alias} ${variant} wrote ${n} tool call(s) as text that could not be recovered; cooling it`);
       });
@@ -2269,7 +2339,9 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       classifier: deps.classifierFor?.(settings) ?? deps.classifier, role: auto, body: req.body, tiers,
       minConfidence: settings.minConfidence, now: deps.now,
     });
-    const { decision, fresh } = conversation === undefined
+    // Never cache a no-task decision: the key hashes messages[0] while `cleanTask` reads the first user message, so a taskless request can share it with a later one that has a task.
+    const taskless = cleanTask(req.body) === undefined;
+    const { decision, fresh } = taskless || conversation === undefined
       ? { decision: await make(), fresh: true }
       : await autoDecisions.getOrCreate(conversation, (deps.now ?? Date.now)(), make);
     if (fresh && decision.record.outcome !== 'accepted') {
@@ -2382,7 +2454,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     }
     const textToolCalls: TextToolCallCounts = { recovered: 0, unparsed: 0 };
     // No cooldown here: a bare key has no next candidate to fall through to.
-    const served = await recoverTextToolCalls(response, req, textToolCalls);
+    const served = await recoverTextToolCalls(response, req, deps, textToolCalls);
     if (isClientGone(served)) return served;
     return withUsageRecording(
       served,
