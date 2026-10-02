@@ -269,6 +269,33 @@ describe('router — text-form tool calls', () => {
     expect(seen[0]).not.toBe(seen[1]);
   });
 
+  it('does not cool the candidate on a recovered call so the next request takes the same one', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const seen: string[] = [];
+    const twoModels: RouterDeps = {
+      ...deps(rows, () => sse(stream('Go ' + CALL))),
+      fetch: (async (_url: string, init: { body: string }) => {
+        seen.push(JSON.parse(init.body).model);
+        return sse(stream('Go ' + CALL));
+      }) as unknown as typeof fetch,
+      resolveTier: (alias) => alias === 'sonata-code-simple'
+        ? { role: 'code', tier: 'simple', routes: [{ key: 'flash', native: { gateway: 'acme', id: 'x' } }, { key: 'pro', native: { gateway: 'acme', id: 'y' } }] }
+        : undefined,
+    };
+    await drain((await routeRequest(withTools('sonata-code-simple'), twoModels)).body);
+    await drain((await routeRequest(withTools('sonata-code-simple'), twoModels)).body);
+    // A recovered call is a turn the model served: nothing is cooled, so both
+    // requests stay on the first candidate and `pro` is never reached.
+    expect(rows).toHaveLength(2);
+    expect(rows[0].key).toBe('flash');
+    expect(rows[1].key).toBe('flash');
+    expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
+    expect(rows[1].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toBe(seen[1]);
+  });
+
   it('writes no textToolCalls field when nothing was found', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];

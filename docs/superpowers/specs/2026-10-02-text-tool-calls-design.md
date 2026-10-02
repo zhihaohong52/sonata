@@ -59,9 +59,10 @@ A new module, `src/native/text-tool-calls.ts`, with two parts:
 - **The parser** — pure, no I/O. Recognises the Qwen-Coder form
   `<tool_call><function=NAME><parameter=KEY>VALUE</parameter>…</function></tool_call>`
   (whitespace and newlines between tags allowed; one or more calls in one
-  turn). Returns the text before, each call, and the text after. The format is
-  one entry in a table, so another family's format is an addition, not a
-  rewrite.
+  turn). Returns the text before, each call, and the text after. The
+  Qwen-Coder form is the one pattern `parseToolCallMarkup` recognises, and
+  another family's format would be added there as a second pattern, with
+  the scanner and both rewriters unchanged.
 - **The stream rewriter** — an Anthropic SSE transformer the router places
   between LiteLLM's response and the client, on the LiteLLM transport only.
   Text deltas pass through unchanged until a `<` that could begin
