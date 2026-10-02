@@ -399,6 +399,31 @@ complex = ["b"]
     expect(check?.detail).toContain('4 without a task');
   });
 
+  it('two failures beside no-task decisions are still a working classifier', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    const tenant = projectTenant(cwd, home);
+    for (let i = 0; i < 2; i++) appendRow(home, autoRouteRow(tenant, 'failed', 'HTTP 422'));
+    for (let i = 0; i < 3; i++) appendRow(home, autoRouteRow(tenant, 'no-task'));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
+    const check = checks.find((c) => c.name === 'auto route' && c.detail.includes('last 24h'));
+    expect(check?.ok).toBe(true);
+  });
+
+  it('three failures are broken even when a no-task row is beside them', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    const tenant = projectTenant(cwd, home);
+    for (let i = 0; i < 3; i++) appendRow(home, autoRouteRow(tenant, 'failed', 'HTTP 422'));
+    appendRow(home, autoRouteRow(tenant, 'no-task'));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
+    const check = checks.find((c) => c.name === 'auto route' && c.detail.includes('last 24h'));
+    expect(check?.ok).toBe(false);
+    expect(check?.detail).toContain('not working');
+  });
+
   it('does not count decisions from another tenant', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
@@ -2135,6 +2160,15 @@ describe('doctor — text tool calls', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-ttc-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-ttc-home-'));
     writeFileSync(join(cwd, 'sonata.toml'), 'schema_version = 1\n');
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.some((c) => c.name === 'text tool calls')).toBe(false);
+  });
+
+  it('ignores unrecovered calls from another tenant', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-ttc-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-ttc-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), 'schema_version = 1\n');
+    appendRow(home, row('other-tenant', 'anexto-mimo-v2.6-pro', { recovered: 0, unparsed: 1 }));
     const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
     expect(checks.some((c) => c.name === 'text tool calls')).toBe(false);
   });
