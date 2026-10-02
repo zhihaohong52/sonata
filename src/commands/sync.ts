@@ -1,6 +1,7 @@
 import { EXTENDED_CONTEXT_SUFFIX, roleQualifiesForExtendedContext, tierQualifiesForExtendedContext } from '../extended-context.js';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { autoAgentRoles, generatedAgents, generatedNativeAgents, expectedAgentNames, isReadOnlyRole, loadConfig, TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
 
 /** One of the tiers a role can define. */
@@ -594,8 +595,9 @@ This agent only works in a routed session (sonata code, or sonata route on/auto)
 ${NO_MODEL_ARG}
 
 Sonata chooses the tier for this task once, from its first message, and keeps
-it for the whole conversation. If the choice was too low and the work fails
-review, re-run it on the explicit tier agent one step up.
+it for the whole conversation. The tier it chose is not visible to the caller,
+so if the work fails review twice, re-run it from scratch on the explicit
+-complex agent rather than "one tier up".
 
 ${TIER_AGENT_MARKER} — edits here are overwritten on the next sync.
 
@@ -603,7 +605,7 @@ Focus on ${blurb}.${delegating}
 `;
 }
 
-export interface SyncOptions { cwd: string; agentsDir: string; home?: string }
+export interface SyncOptions { cwd: string; agentsDir: string; home?: string; packageRoot?: string }
 
 export interface SyncResult {
   /** Paths written. */
@@ -620,6 +622,48 @@ export interface SyncResult {
   stale: string[];
   /** Paths sonata declined to overwrite because they already exist and are not sonata-owned. */
   skipped: string[];
+  /** Installed loop-skill copies this run refreshed. */
+  skills?: string[];
+}
+
+/**
+ * Bring an installed copy of the loop skill up to the packaged one.
+ *
+ * Only `sonata init` used to write the skill, so a change to it never reached a
+ * project that was already set up — the agents regenerate on every `sync` and
+ * the skill beside them quietly stayed months old. Refreshing is `sync`'s job;
+ * *installing* stays `init`'s, so a missing copy is never created here.
+ */
+function refreshLoopSkill(opts: SyncOptions): string[] {
+  // The package this module ships in (two levels above dist/commands/ or
+  // src/commands/) unless the caller names one, so every caller of `cmdSync` —
+  // `sonata agents` and the shell's Sync action too — refreshes the same copy.
+  const root = opts.packageRoot ?? join(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
+  const source = join(root, 'skills', 'loop', 'SKILL.md');
+  if (!existsSync(source)) return [];
+  const content = readFileSync(source, 'utf8');
+  const targets = [
+    join(opts.cwd, '.claude', 'skills', 'sonata-loop', 'SKILL.md'),
+    ...(opts.home === undefined ? [] : [join(opts.home, '.claude', 'skills', 'sonata-loop', 'SKILL.md')]),
+  ];
+  const refreshed: string[] = [];
+  // Each copy is replaced whole (temp file + rename, so an interrupted write
+  // never leaves half a skill) and on its own: this runs after the agents are
+  // written, and a copy sonata cannot replace is left as it was rather than
+  // failing a sync that has already changed files.
+  for (const path of targets) {
+    const tmp = `${path}.${process.pid}.tmp`;
+    try {
+      if (!existsSync(path)) continue;
+      if (readFileSync(path, 'utf8') === content) continue;
+      writeFileSync(tmp, content);
+      renameSync(tmp, path);
+      refreshed.push(path);
+    } catch {
+      rmSync(tmp, { force: true });
+    }
+  }
+  return refreshed;
 }
 
 /**
@@ -802,6 +846,7 @@ export function cmdSync(opts: SyncOptions): SyncResult {
       changed,
       stale: staleAgents(opts.agentsDir, expectedAgentNames(config)),
       skipped,
+      skills: refreshLoopSkill(opts),
     };
   }
 
@@ -835,5 +880,6 @@ export function cmdSync(opts: SyncOptions): SyncResult {
     written,
     stale: staleAgents(opts.agentsDir, expectedAgentNames(config)),
     skipped: [],
+    skills: refreshLoopSkill(opts),
   };
 }

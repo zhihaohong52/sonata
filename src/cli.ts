@@ -440,8 +440,10 @@ export async function main(argv: string[]): Promise<number> {
       cwd: process.cwd(),
       home: homedir(),
       agentsDir,
+      packageRoot: packageRoot(),
     });
     for (const p of sync.written) console.log(`wrote ${p}`);
+    for (const p of sync.skills ?? []) console.log(`  ✓ refreshed loop skill in ${p}`);
     if (sync.skipped.length > 0) {
       for (const f of sync.skipped.slice(0, 5)) console.log(`skipped ${f} (exists, not sonata-owned)`);
       if (sync.skipped.length > 5) console.log(`skipped ... and ${sync.skipped.length - 5} more`);
