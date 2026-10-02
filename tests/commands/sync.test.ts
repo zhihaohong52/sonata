@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agentMarkdown, cmdSync, nativeAgentMarkdown, outdatedAgents, plannedAgents, tierAgentMarkdown, TIER_AGENT_MARKER } from '../../src/commands/sync.js';
@@ -922,6 +922,24 @@ describe('cmdSync — refreshing the installed loop skill', () => {
 
     expect(res.skills).toEqual([skillPath]);
     expect(readFileSync(skillPath, 'utf8')).toBe(PACKAGED);
+  });
+
+  it('skips a copy it cannot replace without failing the sync, and leaves it intact', () => {
+    // The refresh runs after the agents are written; an unwritable skill copy
+    // must not turn a sync that already changed files into a thrown error.
+    const packageRoot = packageRootWith(PACKAGED);
+    const skillPath = installStale(cwd);
+    const dir = join(cwd, '.claude', 'skills', 'sonata-loop');
+    chmodSync(skillPath, 0o400);
+    chmodSync(dir, 0o500);
+    try {
+      const res = cmdSync({ cwd, agentsDir: join(cwd, '.claude', 'agents'), packageRoot });
+      expect(res.skills).toEqual([]);
+      expect(readFileSync(skillPath, 'utf8')).toBe('stale copy\n');
+      expect(readdirSync(dir)).toEqual(['SKILL.md']);
+    } finally {
+      chmodSync(dir, 0o700);
+    }
   });
 
   it('uses the skill shipped with sonata when the caller names no package root', () => {
