@@ -923,4 +923,15 @@ describe('cmdSync — refreshing the installed loop skill', () => {
     expect(res.skills).toEqual([skillPath]);
     expect(readFileSync(skillPath, 'utf8')).toBe(PACKAGED);
   });
+
+  it('uses the skill shipped with sonata when the caller names no package root', () => {
+    // `sonata agents` and the shell's Sync action call cmdSync without one.
+    const skillPath = installStale(cwd);
+    const shipped = readFileSync(join(process.cwd(), 'skills', 'loop', 'SKILL.md'), 'utf8');
+
+    const res = cmdSync({ cwd, agentsDir: join(cwd, '.claude', 'agents') });
+
+    expect(res.skills).toEqual([skillPath]);
+    expect(readFileSync(skillPath, 'utf8')).toBe(shipped);
+  });
 });
