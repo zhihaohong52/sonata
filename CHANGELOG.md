@@ -17,7 +17,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   report. The router now turns that markup into real tool calls on the
   LiteLLM path, and a call it cannot recover (an unknown tool, unclosed
   markup) cools that model so the next request falls through to the next
-  ranked one. `sonata doctor` names models doing this in the last 24 h, and
+  ranked one on a tier only; a bare-key request is recovered but not
+  cooled. `sonata doctor` names models doing this in the last 24 h, and
   the ledger records `textToolCalls` per request.
 - **Auto-route no longer records Claude Code's own task-less side requests as
   failed decisions.** They take the fallback tier without asking the

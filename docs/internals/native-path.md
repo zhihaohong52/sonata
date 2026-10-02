@@ -245,7 +245,10 @@ request actually offered, with each argument coerced to the type that tool's
 never guessed at and stays the text it was. That is a turn the model never
 served, so the candidate is cooled for `TIER_COOLDOWN_MS` (60 s) and the
 conversation stops preferring it — stickiness is set only on a turn with
-nothing left unparsed. The ledger records `textToolCalls: { recovered,
+nothing left unparsed. That cooling holds on tier aliases only: a bare-key
+request (`--model <key>`, a legacy per-model agent) is recovered the same
+way but cools nothing, because it has no next candidate to fall through to.
+The ledger records `textToolCalls: { recovered,
 unparsed }` per request, and `sonata doctor` carries a `text tool calls`
 check that names the models doing this in the last 24 h and goes red when a
 call was left unrecovered.
