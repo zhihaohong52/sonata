@@ -1,6 +1,6 @@
 # Text-form tool calls: recover them, fall back when they can't be
 
-**Status:** designed, not implemented.
+**Status:** implemented (0.15.3).
 **Date:** 2026-10-02
 **Ships in:** 0.15.3 (maintainer's call; the repo's rule would read it as a
 minor, since the router starts rewriting part of a response and a 200 can now

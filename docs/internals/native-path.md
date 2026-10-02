@@ -227,6 +227,29 @@ sufficient alone, and it is declared only for codex-oauth — an api-key gateway
 takes a system message fine, and folding it there would degrade the prompt for
 nothing.
 
+**The response side is rewritten too, for models that write their tool calls
+as text.** Some open models reply with the Qwen-Coder `tool_call` markup
+instead of a structured call and leave the server to parse it; when the
+serving backend has no such parser the markup arrives as plain text in a turn
+that ends `end_turn`, and Claude Code reads the agent as finished — it ended
+with no report. Measured 2026-10-02 on `mimo-v2.6-pro` through one gateway,
+intermittently within a single agent (spec:
+docs/superpowers/specs/2026-10-02-text-tool-calls-design.md).
+`src/native/text-tool-calls.ts` turns that markup into real `tool_use` blocks
+on the **LiteLLM path only** — Anthropic speaks `tool_use` itself, so a direct
+response is left byte-identical — and rewrites `end_turn` to `tool_use`
+whenever anything was recovered, so the client runs the call instead of
+ending the turn. It recovers only what it can prove: a call naming a tool the
+request actually offered, with each argument coerced to the type that tool's
+`input_schema` declares. An unknown tool, or markup that does not close, is
+never guessed at and stays the text it was. That is a turn the model never
+served, so the candidate is cooled for `TIER_COOLDOWN_MS` (60 s) and the
+conversation stops preferring it — stickiness is set only on a turn with
+nothing left unparsed. The ledger records `textToolCalls: { recovered,
+unparsed }` per request, and `sonata doctor` carries a `text tool calls`
+check that names the models doing this in the last 24 h and goes red when a
+call was left unrecovered.
+
 **ChatGPT's Codex endpoint returns `output: []` under concurrent load, which LiteLLM surfaces as a 500.** When 8+ native agents dispatched simultaneously hit the same `codex-oauth` gateway, the upstream accepts the requests (no 429) but returns empty completions. LiteLLM's Responses API transformation (`transformation.py`) raises `ValueError: Unknown items in responses API response: []` and the proxy emits 500. The router (`src/native/router.ts`) catches 500 responses from LiteLLM whose body contains that string and re-emits them as 529 (overloaded) — Claude Code treats 529 as a retriable backpressure signal rather than a hard fault, so the turn is retried automatically. The match is string-level because the body is LiteLLM's rendered exception, not a structured field. LiteLLM 1.97.0 added an SSE recovery attempt for this case but still raises when recovery fails, so the router catch is still needed.
 
 **A gateway declares its `provider`, and the transport is derived from it.**
@@ -278,6 +301,6 @@ The `claude` harness adapter is the simplest adapter: it runs headless `claude -
 
 After tenant resolution, the budget check and `repairNamelessToolCalls`, the router recognizes `sonata-<role>-auto` before the ordinary tier-alias path. With `[auto_route]` enabled it sends only the first user message's text, cleaned of `<system-reminder>` blocks and capped at 8,000 characters, to Jev at `<base_url>/v1/systemone` — TypeSafe (`https://api.typesafe.ai`), OpenRouter (`https://openrouter.ai/api`) or a self-hosted `jev-compatible-server`, whichever the project's `base_url` names. The key follows the host (`decisionKeyFor`): `openrouter.ai` takes the `openrouter` gateway's key, `api.typesafe.ai` a `typesafe` one, any other host an `auto-route` one when one is stored, else none — and a key is only ever sent to the host it belongs to. The URL is per project while one router serves every project, so `serve` hands the router `classifierFor(settings)`, which builds one classifier per `baseUrl|model` (`decisionClassifier`) and resolves the model per call: `settings.model` when it pins one, else `chooseDecisionModel` over that URL's listing (`ModelListCache` — `GET <base_url>/v1/models`, cached 1 h per URL, 5 min after a failure) and the cached JevBench scores (`loadDecisionCatalog`), so a `sonata catalog update` or a new model at the URL needs no restart. The decision is stored by conversation and the chosen tier is converted to `sonata-<role>-<tier>`; that alias then takes the unchanged ranked tier path, including cooldowns, stickiness and budget handling.
 
-The decision store is bounded to 1,000 conversations with a two-hour TTL, and concurrent first requests for one conversation share one in-flight classification. Failures, invalid or low-confidence answers, missing keys and timeouts fail open to `normal`, or `complex` when no normal tier exists. A `-auto` request while auto-routing is disabled, or for a collapsed role, returns a typed 400 rather than silently behaving as a manual alias.
+The decision store is bounded to 1,000 conversations with a two-hour TTL, and concurrent first requests for one conversation share one in-flight classification. Failures, invalid or low-confidence answers, missing keys and timeouts fail open to `normal`, or `complex` when no normal tier exists. A request with no task at all — Claude Code's own task-less side requests, whose first message is nothing but reminders — asks the classifier nothing, takes that same fallback tier with outcome `no-task`, and is left out of `sonata doctor`'s decision health rather than counted as a failure. A `-auto` request while auto-routing is disabled, or for a collapsed role, returns a typed 400 rather than silently behaving as a manual alias.
 
 Ledger rows reached through an explicit tier carry `route: "manual"`; rows resolved through an auto alias carry `route: "auto"`. The request that makes the decision additionally carries `autoRoute` with the choice, confidence, probabilities, outcome, latency, classifier model and token counts. `sonata usage --by route` groups the two routes and reports classifier tokens beside the priced total; a response-reported `usage.cost` (OpenRouter reports one) is recorded as `autoRoute.costUsd` and summed separately, never into the priced total, and a loopback URL (`localhost`, `127.0.0.0/8`, `::1`) records $0 when its response reports none (`loopbackFree` in `decisionClassifier`). Only a non-loopback decision whose response reports no cost stays unpriced, and none of it is counted in `[budget] daily_usd`, which bounds priced model traffic only.

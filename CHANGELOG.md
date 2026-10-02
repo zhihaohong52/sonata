@@ -8,6 +8,22 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- **Native agents no longer end silently when a model writes its tool calls
+  as text.** Some open models, behind some serving backends, emit
+  `<tool_call><function=…>` markup in their reply instead of a structured
+  call; Claude Code read the turn as finished and ended the agent with no
+  report. The router now turns that markup into real tool calls on the
+  LiteLLM path, and a call it cannot recover (an unknown tool, unclosed
+  markup) cools that model so the next request falls through to the next
+  ranked one. `sonata doctor` names models doing this in the last 24 h, and
+  the ledger records `textToolCalls` per request.
+- **Auto-route no longer records Claude Code's own task-less side requests as
+  failed decisions.** They take the fallback tier without asking the
+  classifier, as `no-task`, and no longer count against `doctor`'s decision
+  health.
+
 ## [0.15.2] - 2026-10-02
 
 ### Changed
