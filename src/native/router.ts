@@ -1197,6 +1197,19 @@ async function bufferBody(body: AsyncIterable<Uint8Array> | Buffer, deps: Router
 }
 
 /**
+ * Reads a finished body in full — no byte cap and no timeout, unlike
+ * `bufferBody`. This is a complete JSON document the upstream has already
+ * produced, and `ERROR_BODY_LIMITS` were sized for error bodies: a larger
+ * reply would be silently cut off mid-document. The request's abort signal
+ * still covers a client that leaves.
+ */
+async function concatBody(body: AsyncIterable<Uint8Array>): Promise<Buffer> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of body) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
+/**
  * An Anthropic-shaped error body: `{"type":"error","error":{"type":...,
  * "message":...}}`. An Anthropic-compatible client (Claude Code included)
  * expects this exact envelope on every path — a flat `{type, message}` or a
@@ -2009,14 +2022,13 @@ async function routeTierRequest(
         textToolCalls.unparsed = counts.unparsed;
         if (counts.unparsed > 0) {
           cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
-          if (conversation !== undefined) stickyDemote(conversation, route.key);
           deps.log?.(`router: ${alias} ${variant} wrote ${counts.unparsed} tool call(s) as text that could not be recovered; cooling it`);
         }
       };
       if ((response.headers['content-type'] ?? '').includes('text/event-stream') && !Buffer.isBuffer(response.body)) {
         servedResponse = { ...response, body: rewriteTextToolCallStream(response.body, tools, onEnd) };
-      } else {
-        const buffered = Buffer.isBuffer(response.body) ? response.body : await bufferBody(response.body, deps);
+      } else if ((response.headers['content-type'] ?? '').includes('application/json')) {
+        const buffered = Buffer.isBuffer(response.body) ? response.body : await concatBody(response.body);
         const { body: rewritten, counts } = rewriteTextToolCallJson(buffered, tools);
         onEnd(counts);
         servedResponse = { ...response, body: rewritten };
@@ -2031,7 +2043,8 @@ async function routeTierRequest(
     const completed = conversation === undefined
       ? servedResponse
       : withCompletion(servedResponse, (complete) => {
-        if (complete) stickySet(conversation, route.key, now());
+        // An unparsed tool call is a turn the model never served: record it, but never prefer it again.
+        if (complete && textToolCalls.unparsed === 0) stickySet(conversation, route.key, now());
         else stickyIncomplete(conversation, route.key, now());
       });
     deps.log?.(`${req.method} ${req.url} model=${alias} -> ${variant} -> ${direct ? 'direct' : 'litellm'}`);
