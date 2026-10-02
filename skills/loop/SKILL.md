@@ -14,24 +14,35 @@ the task text directly as the trailing argument).
 
 ## When auto-routing is on
 
-You can tell: `sonata agents` lists `code-auto` and friends, and the project's
-`sonata.toml` has `[auto_route]`. When it is on, use the `-auto` agent for
-**every** dispatch in the loop — `plan-auto` for the plan (step 1), `code-auto`
-for each task and each fix (steps 2–3), `review-auto` for the per-task gate
-(step 3) and for the final gate (step 4). Sonata chooses the tier per
-conversation; do not second-guess it by switching to an explicit tier.
+You can tell: `sonata agents` lists `code-auto` and friends (they exist only
+when the `sonata.toml` that resolves here has `[auto_route]`). When it is on,
+**this section overrides every explicit tier named in the rest of this skill**:
+wherever the loop below or *Decide the fix* says `-simple`, `-normal` or
+`-complex`, dispatch the role's `-auto` agent instead — `plan-auto` for the
+plan (step 1), `code-auto` for each task and each fix (steps 2–3),
+`review-auto` for the per-task gate (step 3) and for the final gate (step 4).
+Sonata chooses the tier per conversation; do not second-guess it by switching
+to an explicit tier. The one exception is escalation, below.
 
 You still do the orchestrator's part: write self-contained briefs, and decide
 each fix's approach before dispatching it — a fully decided brief is what lets
-the classifier pick `simple`.
+the classifier pick `simple`. "The lowest tier that approach allows" becomes
+"a brief with nothing left to decide".
 
 **Escalation.** The tier Jev picked is not visible to you, so "one tier up" is
-undefined for an `-auto` dispatch. A task that fails review twice on `-auto`
-re-runs from scratch on explicit `code-complex`; failing twice there stops and
-is reported, exactly as the existing rule. The loop bound (3 fix iterations) is
-unchanged. The final gate's purpose is unchanged: it stays a fresh foreign
-review (`review-auto`), never you. Dispatch with no `model` argument, as for
-any tier agent.
+undefined for an `-auto` dispatch. A task that fails review twice on
+`code-auto` re-runs from scratch on explicit `code-complex`, and from then on
+that task stays on `code-complex` — its fixes included, so a re-pick of
+`simple` cannot undo the escalation. Its reviews stay on `review-auto`. Failing
+twice on `code-complex` stops and is reported, exactly as the existing rule.
+The loop bound (3 fix iterations) is unchanged. The final gate stays a fresh
+foreign review (`review-auto`), never you. Dispatch with no `model` argument,
+as for any tier agent.
+
+**Fallback.** `sonata dispatch --tier` takes no `-auto` name. When an `-auto`
+agent fails with "all native routes … failed", use the tier the error names
+(`sonata dispatch --tier code-normal …`); if it names none, use
+`<role>-normal`.
 
 ## Difficulty heuristic
 
@@ -49,8 +60,8 @@ any tier agent.
 ## The loop
 
 1. **Plan.** Dispatch `plan-complex` (or `plan-auto` when auto-routing is on)
-   with the feature description; planning stays at `plan-complex` because it is
-   where a design decision lives. Ask it for a numbered task list with per-task
+   with the feature description; with auto-routing off, planning stays at
+   `plan-complex` because it is where a design decision lives. Ask it for a numbered task list with per-task
    difficulty guesses.
 2. **Route.** For each task, judge difficulty yourself (the plan's guess is
    advice, not binding) and dispatch `code-simple`, `code-normal` or
@@ -61,7 +72,7 @@ any tier agent.
    auto-routing is on) on the diff. For each
    finding, **decide the fix yourself first**, then dispatch the execution at
    the lowest tier that approach allows — usually `-simple`, since nothing is
-   left to decide — and re-review. See *Decide the fix before dispatching it*
+   left to decide (`code-auto` when auto-routing is on) — and re-review. See *Decide the fix before dispatching it*
    below; a fix dispatched undecided is what buys a `-complex` agent to make a
    judgement you were better placed to make.
    - **Escalation rule:** a task that fails review twice re-runs one tier up,
@@ -72,8 +83,9 @@ any tier agent.
    - **Loop bound:** at most 3 fix iterations per task; then stop and surface
      the findings to the user.
 4. **Final gate.** When every task passed, dispatch `review-complex` (or
-   `review-auto` when auto-routing is on) over the whole change. Keep the final
-   gate at `review-complex` even when the tasks used a lower tier; findings
+   `review-auto` when auto-routing is on) over the whole change. With
+   auto-routing off, keep the final gate at `review-complex` even when the
+   tasks used a lower tier; findings
    loop back through step 3. **Do not review it yourself instead** — see *The
    final gate stays foreign* below.
 

@@ -168,7 +168,7 @@ export async function apply(
 
   // ---- sync (generates agent files) ----
   const agentsDirCreated = !existsSync(plan.agentsDir);
-  const sync = cmdSync({ cwd: plan.syncCwd, home, agentsDir: plan.agentsDir });
+  const sync = cmdSync({ cwd: plan.syncCwd, home, agentsDir: plan.agentsDir, packageRoot });
   const agentsWritten = sync.written;
   // `written` without `changed` (a sync predating the field) counts as all
   // changed: better an unnecessary reload hint than a missing one.
