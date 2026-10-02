@@ -99,7 +99,7 @@ async function run(text: string, sizes: number[] = [text.length]): Promise<{ eve
   const out = rewriteTextToolCallStream(chunked(text, sizes), tools, (c) => { counts = c; }, () => `toolu_test${n++}`);
   let raw = '';
   for await (const chunk of out) raw += new TextDecoder().decode(chunk);
-  const events = raw.split('\n\n').filter(Boolean).map((e) => JSON.parse(e.split('\n').find((l) => l.startsWith('data: '))!.slice(6)));
+  const events = raw.split('\n\n').filter(Boolean).map((e) => JSON.parse(e.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.replace(/^data: ?/, '')).join('\n')));
   return { events, counts: counts! };
 }
 
@@ -109,6 +109,31 @@ const text = (events: Array<Record<string, any>>): string => events
 const CALL = '<tool_call><function=Bash><parameter=command>ls /tmp</parameter></function></tool_call>';
 
 describe('rewriteTextToolCallStream', () => {
+  it('releases held text when the stream ends without a text block stop', async () => {
+    const markup = 'x <tool_call><function=Bash><parameter=command>ls';
+    const input = [
+      ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+      ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: markup } }),
+    ].join('');
+    const { events, counts } = await run(input);
+    expect(text(events)).toBe(markup);
+    expect(events.some((event) => event.type === 'content_block_stop')).toBe(false);
+    expect(counts).toEqual({ recovered: 0, unparsed: 1 });
+  });
+
+  it('releases a held tool-call prefix at end of stream without counting it unparsed', async () => {
+    const input = [
+      ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+      ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: '<tool_c' } }),
+    ].join('');
+    const { events, counts } = await run(input);
+    expect(text(events)).toBe('<tool_c');
+    expect(events.some((event) => event.type === 'content_block_stop')).toBe(false);
+    expect(counts).toEqual({ recovered: 0, unparsed: 0 });
+  });
+
   it('passes a stream with no markup through unchanged in content', async () => {
     const { events, counts } = await run(textStream(['Hello ', 'world']));
     expect(text(events)).toBe('Hello world');
@@ -141,10 +166,36 @@ describe('rewriteTextToolCallStream', () => {
     }
   });
 
+  it('recovers a call from a CRLF-framed stream split at every byte offset', async () => {
+    const full = textStream(['Listing now: ', CALL]).replace(/\n/g, '\r\n');
+    for (let cut = 1; cut < full.length; cut++) {
+      const { events, counts } = await run(full, [cut]);
+      expect(counts, `cut at ${cut}`).toEqual({ recovered: 1, unparsed: 0 });
+      expect(text(events)).toBe('Listing now: ');
+    }
+  });
+
   it('recovers markup split across text deltas', async () => {
     const { counts, events } = await run(textStream(['Go <tool_', 'call><function=Bash><parameter=command>ls', ' /tmp</parameter></function></tool_call>']));
     expect(counts).toEqual({ recovered: 1, unparsed: 0 });
     expect(text(events)).toBe('Go ');
+  });
+
+  it('recovers a call when text-delta JSON spans multiple data lines', async () => {
+    const lines = textStream([CALL]).split('\n');
+    const eventIndex = lines.findIndex((line) => line.startsWith('data: {"type":"content_block_delta"'));
+    const payload = lines[eventIndex].slice(6);
+    const splitAt = payload.indexOf('"text"');
+    lines.splice(eventIndex, 1, `data: ${payload.slice(0, splitAt)}`, `data: ${payload.slice(splitAt)}`);
+    const { events, counts } = await run(lines.join('\n'));
+    expect(counts).toEqual({ recovered: 1, unparsed: 0 });
+    expect(events.some((event) => event.delta?.type === 'input_json_delta')).toBe(true);
+  });
+
+  it('recovers a call from data lines without a space after the colon', async () => {
+    const { events, counts } = await run(textStream([CALL]).replaceAll('data: ', 'data:'));
+    expect(counts).toEqual({ recovered: 1, unparsed: 0 });
+    expect(events.some((event) => event.delta?.type === 'input_json_delta')).toBe(true);
   });
 
   it('passes a < that is not a tool call through unchanged and in order', async () => {
@@ -185,6 +236,19 @@ describe('rewriteTextToolCallStream', () => {
     expect(events.find((e) => e.delta?.type === 'thinking_delta').delta.thinking).toBe('hmm <tool_call>');
     expect(counts.recovered).toBe(1);
     expect(events.filter((e) => e.type === 'content_block_start').map((e) => e.index)).toEqual([0, 1, 2]);
+  });
+
+  it('drops deltas for a text block after a recovered call closes it', async () => {
+    const input = [
+      ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+      ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: CALL } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'citations_delta', citation: { type: 'web_search_result_location' } } }),
+      ev('content_block_stop', { index: 0 }),
+    ].join('');
+    const { events } = await run(input);
+    const stop = events.findIndex((event) => event.type === 'content_block_stop' && event.index === 0);
+    expect(events.slice(stop + 1).some((event) => event.index === 0)).toBe(false);
   });
 
   it('calls onEnd once even when the consumer stops early, and forwards cancel', async () => {
