@@ -1,6 +1,7 @@
 import { EXTENDED_CONTEXT_SUFFIX, roleQualifiesForExtendedContext, tierQualifiesForExtendedContext } from '../extended-context.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { autoAgentRoles, generatedAgents, generatedNativeAgents, expectedAgentNames, isReadOnlyRole, loadConfig, TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
 
 /** One of the tiers a role can define. */
@@ -633,14 +634,12 @@ export interface SyncResult {
  * *installing* stays `init`'s, so a missing copy is never created here.
  */
 function refreshLoopSkill(opts: SyncOptions): string[] {
-  // Same resolution `init`'s apply.ts uses: the packaged skill when there is
-  // one, else the checkout the command was run from.
-  const packaged = opts.packageRoot === undefined
-    ? undefined
-    : join(opts.packageRoot, 'skills', 'loop', 'SKILL.md');
-  const source = [packaged, join(process.cwd(), 'skills', 'loop', 'SKILL.md')]
-    .find((path) => path !== undefined && existsSync(path));
-  if (source === undefined) return [];
+  // The package this module ships in (two levels above dist/commands/ or
+  // src/commands/) unless the caller names one, so every caller of `cmdSync` —
+  // `sonata agents` and the shell's Sync action too — refreshes the same copy.
+  const root = opts.packageRoot ?? join(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
+  const source = join(root, 'skills', 'loop', 'SKILL.md');
+  if (!existsSync(source)) return [];
   const content = readFileSync(source, 'utf8');
   const targets = [
     join(opts.cwd, '.claude', 'skills', 'sonata-loop', 'SKILL.md'),
