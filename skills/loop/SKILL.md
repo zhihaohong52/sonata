@@ -1,6 +1,6 @@
 ---
 name: sonata-loop
-description: Use when building a feature end-to-end with sonata tier agents — plans the work, routes each task to a difficulty tier, gates every change behind review, and escalates tiers on repeated failure.
+description: Use when building a feature end-to-end with sonata tier agents — plans the work, routes each task to a difficulty tier, gates every change behind review, and escalates tiers on repeated failure. Uses the `-auto` agents for every dispatch when auto-routing is on.
 ---
 
 # Loop engineering with sonata tier agents
@@ -11,6 +11,38 @@ work on foreign models. All of them require a routed session (`sonata route
 auto`) — if a tier agent errors with "all native routes … failed", fall back
 to `sonata dispatch --tier <role>-<tier> --task-file <path>` in Bash (or pass
 the task text directly as the trailing argument).
+
+## When auto-routing is on
+
+You can tell: `sonata agents` lists `code-auto` and friends (they exist only
+when the `sonata.toml` that resolves here has `[auto_route]`). When it is on,
+**this section overrides every explicit tier named in the rest of this skill**:
+wherever the loop below or *Decide the fix* says `-simple`, `-normal` or
+`-complex`, dispatch the role's `-auto` agent instead — `plan-auto` for the
+plan (step 1), `code-auto` for each task and each fix (steps 2–3),
+`review-auto` for the per-task gate (step 3) and for the final gate (step 4).
+Sonata chooses the tier per conversation; do not second-guess it by switching
+to an explicit tier. The one exception is escalation, below.
+
+You still do the orchestrator's part: write self-contained briefs, and decide
+each fix's approach before dispatching it — a fully decided brief is what lets
+the classifier pick `simple`. "The lowest tier that approach allows" becomes
+"a brief with nothing left to decide".
+
+**Escalation.** The tier Jev picked is not visible to you, so "one tier up" is
+undefined for an `-auto` dispatch. A task that fails review twice on
+`code-auto` re-runs from scratch on explicit `code-complex`, and from then on
+that task stays on `code-complex` — its fixes included, so a re-pick of
+`simple` cannot undo the escalation. Its reviews stay on `review-auto`. Failing
+twice on `code-complex` stops and is reported, exactly as the existing rule.
+The loop bound (3 fix iterations) is unchanged. The final gate stays a fresh
+foreign review (`review-auto`), never you. Dispatch with no `model` argument,
+as for any tier agent.
+
+**Fallback.** `sonata dispatch --tier` takes no `-auto` name. When an `-auto`
+agent fails with "all native routes … failed", use the tier the error names
+(`sonata dispatch --tier code-normal …`); if it names none, use
+`<role>-normal`.
 
 ## Difficulty heuristic
 
@@ -27,29 +59,35 @@ the task text directly as the trailing argument).
 
 ## The loop
 
-1. **Plan.** Dispatch `plan-complex` with the feature description; planning
-   stays at `plan-complex` because it is where a design decision lives. Ask it
-   for a numbered task list with per-task difficulty guesses.
+1. **Plan.** Dispatch `plan-complex` (or `plan-auto` when auto-routing is on)
+   with the feature description; with auto-routing off, planning stays at
+   `plan-complex` because it is where a design decision lives. Ask it for a numbered task list with per-task
+   difficulty guesses.
 2. **Route.** For each task, judge difficulty yourself (the plan's guess is
    advice, not binding) and dispatch `code-simple`, `code-normal` or
-   `code-complex` with a self-contained task description — name the files to
-   touch and the files to leave alone; never say "see the plan".
-3. **Gate.** After each task, dispatch `review-simple` on the diff. For each
+   `code-complex` (or `code-auto` when auto-routing is on) with a
+   self-contained task description — name the files to touch and the files to
+   leave alone; never say "see the plan".
+3. **Gate.** After each task, dispatch `review-simple` (or `review-auto` when
+   auto-routing is on) on the diff. For each
    finding, **decide the fix yourself first**, then dispatch the execution at
    the lowest tier that approach allows — usually `-simple`, since nothing is
-   left to decide — and re-review. See *Decide the fix before dispatching it*
+   left to decide (`code-auto` when auto-routing is on) — and re-review. See *Decide the fix before dispatching it*
    below; a fix dispatched undecided is what buys a `-complex` agent to make a
    judgement you were better placed to make.
    - **Escalation rule:** a task that fails review twice re-runs one tier up,
-     from scratch — `simple` to `normal`, `normal` to `complex`. A task that
+     from scratch — `simple` to `normal`, `normal` to `complex` (on `-auto`,
+     see the escalation rule in *When auto-routing is on*). A task that
      fails twice at `complex` stops and is reported, not re-run: another
      attempt at the same tier is the definition of no progress.
    - **Loop bound:** at most 3 fix iterations per task; then stop and surface
      the findings to the user.
-4. **Final gate.** When every task passed, dispatch `review-complex` over the
-   whole change. Keep the final gate at `review-complex` even when the tasks
-   used a lower tier; findings loop back through step 3. **Do not review it
-   yourself instead** — see *The final gate stays foreign* below.
+4. **Final gate.** When every task passed, dispatch `review-complex` (or
+   `review-auto` when auto-routing is on) over the whole change. With
+   auto-routing off, keep the final gate at `review-complex` even when the
+   tasks used a lower tier; findings
+   loop back through step 3. **Do not review it yourself instead** — see *The
+   final gate stays foreign* below.
 
 ## The final gate stays foreign; you write its brief
 
@@ -187,4 +225,5 @@ vanish from its own. No `git add -A`, `git reset --hard`, `git checkout -- .`,
 ## When not to loop
 
 A single contained change does not need the loop — dispatch one `code-*`
-agent directly, review it yourself or with one `review-simple` pass, done.
+agent directly (or `code-auto` when auto-routing is on), review it yourself or
+with one `review-simple` pass (or `review-auto` when auto-routing is on), done.

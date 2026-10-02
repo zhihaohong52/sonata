@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agentMarkdown, cmdSync, nativeAgentMarkdown, outdatedAgents, plannedAgents, tierAgentMarkdown, TIER_AGENT_MARKER } from '../../src/commands/sync.js';
@@ -859,5 +859,97 @@ complex = ["b", "a"]
     cmdSync({ cwd, home, agentsDir });
     writeFileSync(join(cwd, 'sonata.toml'), cfg(['b', 'a']));
     expect(cmdSync({ cwd, home, agentsDir }).changed).toEqual([join(agentsDir, 'code.md')]);
+  });
+});
+
+describe('cmdSync — refreshing the installed loop skill', () => {
+  // Only `sonata init` used to write the skill, so a change to it never
+  // reached a project that was already set up: `sync` regenerates the agents
+  // beside it while the skill stays months old. Refreshing an installed copy
+  // is `sync`'s job; creating one is still `init`'s.
+  const PACKAGED = 'packaged skill body\n';
+
+  const packageRootWith = (content: string): string => {
+    const root = mkdtempSync(join(tmpdir(), 'sync-pkg-'));
+    mkdirSync(join(root, 'skills', 'loop'), { recursive: true });
+    writeFileSync(join(root, 'skills', 'loop', 'SKILL.md'), content);
+    return root;
+  };
+
+  const installStale = (base: string): string => {
+    const path = join(base, '.claude', 'skills', 'sonata-loop', 'SKILL.md');
+    mkdirSync(join(base, '.claude', 'skills', 'sonata-loop'), { recursive: true });
+    writeFileSync(path, 'stale copy\n');
+    return path;
+  };
+
+  it('overwrites an existing stale project copy with the packaged skill and lists it', () => {
+    const packageRoot = packageRootWith(PACKAGED);
+    const skillPath = installStale(cwd);
+
+    const res = cmdSync({ cwd, agentsDir: join(cwd, '.claude', 'agents'), packageRoot });
+
+    expect(res.skills).toEqual([skillPath]);
+    expect(readFileSync(skillPath, 'utf8')).toBe(PACKAGED);
+  });
+
+  it('leaves an identical copy alone and does not list it', () => {
+    const packageRoot = packageRootWith(PACKAGED);
+    const skillPath = installStale(cwd);
+    writeFileSync(skillPath, PACKAGED);
+
+    const res = cmdSync({ cwd, agentsDir: join(cwd, '.claude', 'agents'), packageRoot });
+
+    expect(res.skills).toEqual([]);
+    expect(readFileSync(skillPath, 'utf8')).toBe(PACKAGED);
+  });
+
+  it('creates no copy when none is installed', () => {
+    const packageRoot = packageRootWith(PACKAGED);
+
+    const res = cmdSync({ cwd, agentsDir: join(cwd, '.claude', 'agents'), packageRoot });
+
+    expect(res.skills).toEqual([]);
+    expect(existsSync(join(cwd, '.claude', 'skills', 'sonata-loop', 'SKILL.md'))).toBe(false);
+  });
+
+  it('refreshes a stale copy under home as well', () => {
+    const packageRoot = packageRootWith(PACKAGED);
+    const home = mkdtempSync(join(tmpdir(), 'sync-home-'));
+    const skillPath = installStale(home);
+
+    const res = cmdSync({ cwd, home, agentsDir: join(cwd, '.claude', 'agents'), packageRoot });
+
+    expect(res.skills).toEqual([skillPath]);
+    expect(readFileSync(skillPath, 'utf8')).toBe(PACKAGED);
+  });
+
+  it('skips a copy it cannot replace without failing the sync, and leaves it intact', () => {
+    // The refresh runs after the agents are written; an unwritable skill copy
+    // must not turn a sync that already changed files into a thrown error.
+    const packageRoot = packageRootWith(PACKAGED);
+    const skillPath = installStale(cwd);
+    const dir = join(cwd, '.claude', 'skills', 'sonata-loop');
+    chmodSync(skillPath, 0o400);
+    chmodSync(dir, 0o500);
+    try {
+      const res = cmdSync({ cwd, agentsDir: join(cwd, '.claude', 'agents'), packageRoot });
+      expect(res.skills).toEqual([]);
+      expect(readFileSync(skillPath, 'utf8')).toBe('stale copy\n');
+      expect(readdirSync(dir)).toEqual(['SKILL.md']);
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+  });
+
+  it('uses the skill shipped with sonata when the caller names no package root', () => {
+    // `sonata agents` and the shell's Sync action call cmdSync without one.
+    const skillPath = installStale(cwd);
+    const shipped = readFileSync(join(process.cwd(), 'skills', 'loop', 'SKILL.md'), 'utf8');
+
+    const res = cmdSync({ cwd, agentsDir: join(cwd, '.claude', 'agents') });
+
+    expect(res.skills).toEqual([skillPath]);
+    expect(readFileSync(skillPath, 'utf8')).toBe(shipped);
   });
 });
