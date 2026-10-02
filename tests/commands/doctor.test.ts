@@ -202,7 +202,7 @@ complex = ["b"]
 
   const noModelList = (async () => new Response('{}', { status: 404 })) as any;
 
-  function autoRouteRow(tenant: string | undefined, outcome: 'accepted' | 'low-confidence' | 'invalid' | 'failed', reason?: string): LedgerRow {
+  function autoRouteRow(tenant: string | undefined, outcome: 'accepted' | 'low-confidence' | 'invalid' | 'failed' | 'no-task', reason?: string): LedgerRow {
     return {
       ts: new Date().toISOString(), ms: 500,
       alias: 'sonata-code-auto', role: 'code', tier: 'normal',
@@ -383,6 +383,20 @@ complex = ["b"]
     const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
     const check = checks.find((c) => c.name === 'auto route' && c.detail.includes('last 24h'));
     expect(check?.ok).toBe(true);
+  });
+
+  it('does not count no-task decisions as unanswered', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    const tenant = projectTenant(cwd, home);
+    appendRow(home, autoRouteRow(tenant, 'accepted'));
+    for (let i = 0; i < 4; i++) appendRow(home, autoRouteRow(tenant, 'no-task'));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
+    const check = checks.find((c) => c.name === 'auto route' && c.detail.includes('last 24h'));
+    expect(check?.ok).toBe(true);
+    expect(check?.detail).toContain('1 decision(s)');
+    expect(check?.detail).toContain('4 without a task');
   });
 
   it('does not count decisions from another tenant', async () => {

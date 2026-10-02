@@ -914,9 +914,14 @@ export async function cmdDoctor(
     // reading the ledger by hand.
     const tenant = projectTenant(opts.cwd, home);
     const nowMs = now().getTime();
-    const decisions = readRows(home, nowMs - 24 * 3_600_000, nowMs)
+    const all = readRows(home, nowMs - 24 * 3_600_000, nowMs)
       .filter((row) => row.autoRoute !== undefined && (tenant === undefined || row.tenant === tenant))
       .map((row) => row.autoRoute!);
+    // A request with no task made no classifier call, so it is neither an
+    // answered decision nor a failure — counted apart, never inside the
+    // health check below.
+    const noTask = all.filter((d) => d.outcome === 'no-task').length;
+    const decisions = all.filter((d) => d.outcome !== 'no-task');
     if (decisions.length > 0) {
       const count = (outcome: string) => decisions.filter((d) => d.outcome === outcome).length;
       const answered = count('accepted') + count('low-confidence');
@@ -926,6 +931,7 @@ export async function cmdDoctor(
       }
       const top = [...reasons.entries()].sort((a, b) => b[1] - a[1])[0];
       const summary = `last 24h: ${decisions.length} decision(s) — ${count('accepted')} accepted, ${count('low-confidence')} low-confidence, ${count('invalid')} invalid, ${count('failed')} failed`
+        + (noTask > 0 ? `; ${noTask} without a task` : '')
         + (top === undefined ? '' : `; most common failure: ${top[0]} (${top[1]})`);
       // Broken, not merely noisy: three or more decisions and the classifier
       // answered none of them, so every -auto request took the fallback tier.

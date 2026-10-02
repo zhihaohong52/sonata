@@ -90,7 +90,7 @@ export function UsageScreen({ cwd, home, by: initialBy = 'model', since: initial
     }
     if (report.autoRoute !== undefined) {
       const o = report.autoRoute.outcomes;
-      notes.push({ text: `auto-route  ${o.accepted} accepted, ${o['low-confidence']} low-confidence, ${o.invalid} invalid, ${o.failed} failed`, tone: 'MUTED' });
+      notes.push({ text: `auto-route  ${o.accepted} accepted, ${o['low-confidence']} low-confidence, ${o.invalid} invalid, ${o.failed} failed, ${o['no-task']} without a task`, tone: 'MUTED' });
       notes.push({ text: `classifier ${compactCount(report.autoRoute.classifierTokens.input)} in / ${compactCount(report.autoRoute.classifierTokens.output)} out tokens${classifierCostNote(report.autoRoute)}`, tone: 'MUTED' });
     }
     if (report.noPromptTokens.requests > 0) {
