@@ -935,6 +935,33 @@ export async function cmdDoctor(
     }
 }
 
+  // A model that writes its tool calls as text ends agents silently. The
+  // router recovers what parses and cools the model on what does not; this is
+  // where a user finds out it is happening (incident 2026-10-02).
+  {
+    const tenant = projectTenant(opts.cwd, home);
+    const nowMs = now().getTime();
+    const byKey = new Map<string, { recovered: number; unparsed: number }>();
+    for (const row of readRows(home, nowMs - 24 * 3_600_000, nowMs)) {
+      if (row.textToolCalls === undefined || (tenant !== undefined && row.tenant !== tenant)) continue;
+      const key = row.key ?? row.alias;
+      const total = byKey.get(key) ?? { recovered: 0, unparsed: 0 };
+      total.recovered += row.textToolCalls.recovered;
+      total.unparsed += row.textToolCalls.unparsed;
+      byKey.set(key, total);
+    }
+    if (byKey.size > 0) {
+      const parts = [...byKey.entries()].map(([key, t]) => `${key}: ${t.recovered} recovered, ${t.unparsed} unrecovered`);
+      const unrecovered = [...byKey.values()].some((t) => t.unparsed > 0);
+      checks.push({
+        name: 'text tool calls',
+        ok: !unrecovered,
+        detail: `last 24h, tool calls written as text — ${parts.join('; ')}`
+          + (unrecovered ? ' — an unrecovered call ends the agent; consider ranking that model lower' : ''),
+      });
+    }
+  }
+
   // A *stale* agent names a model the config dropped; an **outdated** one keeps
   // its name and its old instructions. `staleAgents` compares filenames and so
   // cannot see the second, which is how a fix to a generated prompt never
