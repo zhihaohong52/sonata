@@ -207,3 +207,60 @@ describe('the usage recorder gets the config the request was routed under', () =
     expect(seen[0]).toBe(atStart);
   });
 });
+
+describe('router — text-form tool calls', () => {
+  const CALL = '<tool_call><function=Bash><parameter=command>ls</parameter></function></tool_call>';
+  const ev = (type: string, data: Record<string, unknown>): string => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+  const stream = (text: string): string => [
+    ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+    ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+    ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text } }),
+    ev('content_block_stop', { index: 0 }),
+    ev('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { input_tokens: 10, output_tokens: 5 } }),
+    ev('message_stop', {}),
+  ].join('');
+  const withTools = (model: string) => ({
+    ...req(model),
+    body: Buffer.from(JSON.stringify({ model, messages: [], tools: [{ name: 'Bash', input_schema: { type: 'object', properties: { command: { type: 'string' } } } }] })),
+  });
+
+  it('recovers a text tool call, rewrites stop_reason, and records it', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const res = await routeRequest(withTools('sonata-code-simple'), deps(rows, () => sse(stream('Go ' + CALL))));
+    const out = await drain(res.body);
+    expect(out).toContain('"type":"tool_use"');
+    expect(out).toContain('"stop_reason":"tool_use"');
+    expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
+  });
+
+  it('cools the candidate on an unparsed call so the next request takes the next one', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const seen: string[] = [];
+    const twoModels: RouterDeps = {
+      ...deps(rows, () => sse(stream('x <tool_call><function=Nope></function></tool_call>'))),
+      fetch: (async (_url: string, init: { body: string }) => {
+        seen.push(JSON.parse(init.body).model);
+        return sse(stream('x <tool_call><function=Nope></function></tool_call>'));
+      }) as unknown as typeof fetch,
+      resolveTier: (alias) => alias === 'sonata-code-simple'
+        ? { role: 'code', tier: 'simple', routes: [{ key: 'flash', native: { gateway: 'acme', id: 'x' } }, { key: 'pro', native: { gateway: 'acme', id: 'y' } }] }
+        : undefined,
+    };
+    await drain((await routeRequest(withTools('sonata-code-simple'), twoModels)).body);
+    await drain((await routeRequest(withTools('sonata-code-simple'), twoModels)).body);
+    expect(rows[0].textToolCalls).toEqual({ recovered: 0, unparsed: 1 });
+    expect(rows[0].key).toBe('flash');
+    expect(rows[1].key).toBe('pro');
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).not.toBe(seen[1]);
+  });
+
+  it('writes no textToolCalls field when nothing was found', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    await drain((await routeRequest(withTools('sonata-code-simple'), deps(rows, () => sse(stream('plain'))))).body);
+    expect('textToolCalls' in rows[0]).toBe(false);
+  });
+});

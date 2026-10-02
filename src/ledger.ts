@@ -109,6 +109,12 @@ export interface LedgerRow {
   price: LedgerPrice;
   attempts: { key: string; status: number }[];
   litellm?: { fallbacks: number; retries: number };
+  /**
+   * Tool calls the model wrote as text: `recovered` were turned into real
+   * calls by the router, `unparsed` could not be (and cooled the candidate).
+   * Absent when there were none.
+   */
+  textToolCalls?: { recovered: number; unparsed: number };
 }
 
 export const LEDGER_RETENTION_DAYS = 30;
@@ -291,6 +297,10 @@ function autoRouteIsValid(record: unknown): boolean {
 function hasRequiredFields(row: LedgerRow): boolean {
   if ('route' in row && row.route !== 'auto' && row.route !== 'manual') return false;
   if ('autoRoute' in row && !autoRouteIsValid(row.autoRoute)) return false;
+  if ('textToolCalls' in row) {
+    const t = row.textToolCalls;
+    if (t === null || typeof t !== 'object' || Array.isArray(t) || !isCount(t.recovered) || !isCount(t.unparsed)) return false;
+  }
   const tokens = row.tokens;
   if (tokens === null || typeof tokens !== 'object' || Array.isArray(tokens)) return false;
   if (!isCount(tokens.input) || !isCount(tokens.output)) return false;

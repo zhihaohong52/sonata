@@ -12,6 +12,7 @@ import { SONATA_TOKEN_HEADER, projectHintAuthorised } from './router-token.js';
 import { OPENCODE_SESSION_HEADER, type Transport } from './providers.js';
 import { joinCandidate, splitCandidate, wireEffort, type Effort } from '../effort.js';
 import { createUsageCollector, type UsageTokens, usageFromJsonBody } from './usage.js';
+import { rewriteTextToolCallJson, rewriteTextToolCallStream, toolSchemas, type TextToolCallCounts } from './text-tool-calls.js';
 import { handleUiRequest, type UiDeps } from './ui.js';
 
 export interface TierRoute {
@@ -428,6 +429,7 @@ interface RecordContext {
    * not whatever the file says when the stream ends.
    */
   tenantConfig?: SonataConfig;
+  textToolCalls?: TextToolCallCounts;
 }
 
 function headerNumber(headers: Record<string, string>, name: string): number | undefined {
@@ -480,6 +482,9 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
           litellm: fallbacks === undefined && retries === undefined
             ? undefined
             : { fallbacks: fallbacks ?? 0, retries: retries ?? 0 },
+          ...(ctx.textToolCalls !== undefined && (ctx.textToolCalls.recovered > 0 || ctx.textToolCalls.unparsed > 0)
+            ? { textToolCalls: { ...ctx.textToolCalls } }
+            : {}),
         }, ctx.tenantConfig);
       } catch { /* Accounting is strictly best-effort. */ }
     };
@@ -1990,6 +1995,33 @@ async function routeTierRequest(
     for (const key of capability400Counts.keys()) {
       if (key.startsWith(`${cool} `)) capability400Counts.delete(key);
     }
+    // A model whose serving backend has no tool-call parser writes its calls
+    // as text and ends the turn; Claude Code then ends the agent. Recover
+    // what parses; an unparsable call still reaches the client as text (it
+    // has started streaming), but cools this candidate so the next request
+    // takes the next one. LiteLLM path only: Anthropic speaks tool_use itself.
+    const textToolCalls: TextToolCallCounts = { recovered: 0, unparsed: 0 };
+    let servedResponse = response;
+    if (!direct && response.status === 200) {
+      const tools = toolSchemas(req.body);
+      const onEnd = (counts: TextToolCallCounts): void => {
+        textToolCalls.recovered = counts.recovered;
+        textToolCalls.unparsed = counts.unparsed;
+        if (counts.unparsed > 0) {
+          cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+          if (conversation !== undefined) stickyDemote(conversation, route.key);
+          deps.log?.(`router: ${alias} ${variant} wrote ${counts.unparsed} tool call(s) as text that could not be recovered; cooling it`);
+        }
+      };
+      if ((response.headers['content-type'] ?? '').includes('text/event-stream') && !Buffer.isBuffer(response.body)) {
+        servedResponse = { ...response, body: rewriteTextToolCallStream(response.body, tools, onEnd) };
+      } else {
+        const buffered = Buffer.isBuffer(response.body) ? response.body : await bufferBody(response.body, deps);
+        const { body: rewritten, counts } = rewriteTextToolCallJson(buffered, tools);
+        onEnd(counts);
+        servedResponse = { ...response, body: rewritten };
+      }
+    }
     // Pin only on a response the client actually receives IN FULL. A 400
     // handed back above is a request this candidate could not serve, and a
     // stream that breaks partway is one it did not finish serving: pinning to
@@ -1997,8 +2029,8 @@ async function routeTierRequest(
     // status alone arrives before a single byte of the body, so the decision
     // waits for the body's end.
     const completed = conversation === undefined
-      ? response
-      : withCompletion(response, (complete) => {
+      ? servedResponse
+      : withCompletion(servedResponse, (complete) => {
         if (complete) stickySet(conversation, route.key, now());
         else stickyIncomplete(conversation, route.key, now());
       });
@@ -2018,6 +2050,7 @@ async function routeTierRequest(
       gateway: route.native!.gateway,
       upstream: direct ? 'direct' : 'litellm',
       attempts,
+      textToolCalls,
     }, deps);
   }
 
