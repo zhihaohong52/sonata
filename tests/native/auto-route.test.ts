@@ -293,8 +293,19 @@ describe('decideTier', () => {
     expect(classify).not.toHaveBeenCalled();
     expect(d).toMatchObject({
       tier: 'normal',
-      record: { outcome: 'failed', reason: 'empty task' },
+      record: { outcome: 'no-task' },
     });
+  });
+
+  it('skips the classifier and records no-task when the first user message has no task', async () => {
+    let calls = 0;
+    const classifier: TierClassifier = { name: 'jev', classify: async () => { calls += 1; return { choice: 'simple', confidence: 1, probabilities: { simple: 1 } }; } };
+    const body = Buffer.from(JSON.stringify({ messages: [{ role: 'user', content: '<system-reminder>only context</system-reminder>' }] }));
+    const decision = await decideTier({ classifier, role: 'code', body, tiers: ['simple', 'normal', 'complex'], minConfidence: 0.5 });
+    expect(calls).toBe(0);
+    expect(decision.tier).toBe('normal');
+    expect(decision.record.outcome).toBe('no-task');
+    expect(decision.record.reason).toBeUndefined();
   });
 
   it('records malformed classifier answers as invalid', async () => {

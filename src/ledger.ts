@@ -47,7 +47,12 @@ export interface AutoRouteRecord {
   choice?: string;
   confidence?: number;
   probabilities?: Record<string, number>;
-  outcome: 'accepted' | 'low-confidence' | 'invalid' | 'failed';
+  /**
+   * What became of the decision. `no-task`: the request's first user message
+   * had no task once reminders were removed (Claude Code's own side requests);
+   * no classifier call was made.
+   */
+  outcome: 'accepted' | 'low-confidence' | 'invalid' | 'failed' | 'no-task';
   /** Why a `failed` or `invalid` outcome happened. Never task text. */
   reason?: string;
   ms: number;
@@ -263,7 +268,7 @@ function isCount(value: unknown): value is number {
 function autoRouteIsValid(record: unknown): boolean {
   if (record === null || typeof record !== 'object' || Array.isArray(record)) return false;
   const value = record as Partial<AutoRouteRecord>;
-  if (value.classifier !== 'jev' || !['accepted', 'low-confidence', 'invalid', 'failed'].includes(value.outcome ?? '')
+  if (value.classifier !== 'jev' || !['accepted', 'low-confidence', 'invalid', 'failed', 'no-task'].includes(value.outcome ?? '')
     || !isCount(value.ms)) return false;
   if ('confidence' in value && !isCount(value.confidence)) return false;
   if ('probabilities' in value) {

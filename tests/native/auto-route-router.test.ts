@@ -40,7 +40,7 @@ describe('sonata-<role>-auto routing', () => {
     const res = await routed({ ...req(), body: badBody }, deps as any);
     expect(res.status).toBe(200);
     expect(seen).toEqual(['t/n']);
-    expect(rows[0]).toMatchObject({ route: 'auto', autoRoute: { outcome: 'failed', reason: 'empty task' } });
+    expect(rows[0]).toMatchObject({ route: 'auto', autoRoute: { outcome: 'no-task' } });
     expect(calls).toHaveLength(0);
   });
 
