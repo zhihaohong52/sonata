@@ -1210,6 +1210,45 @@ async function concatBody(body: AsyncIterable<Uint8Array>): Promise<Buffer> {
 }
 
 /**
+ * Recovers tool calls a model wrote as text, on a 200 from LiteLLM (spec
+ * docs/superpowers/specs/2026-10-02-text-tool-calls-design.md). Fills
+ * `counts` once the body has been read: at stream end for SSE, at once for
+ * JSON. Calls `onUnparsed` when a call could not be recovered. Any other
+ * status or content type passes through untouched and unbuffered.
+ */
+async function recoverTextToolCalls(
+  response: RouterResponse,
+  req: RouterRequest,
+  counts: TextToolCallCounts,
+  onUnparsed?: (unparsed: number) => void,
+): Promise<RouterResponse> {
+  if (response.status !== 200) return response;
+  const tools = toolSchemas(req.body);
+  const settle = (found: TextToolCallCounts): void => {
+    counts.recovered = found.recovered;
+    counts.unparsed = found.unparsed;
+    if (found.unparsed > 0) onUnparsed?.(found.unparsed);
+  };
+  const type = response.headers['content-type'] ?? '';
+  if (type.includes('text/event-stream') && !Buffer.isBuffer(response.body)) {
+    return { ...response, body: rewriteTextToolCallStream(response.body, tools, settle) };
+  }
+  if (!type.includes('application/json')) return response;
+  let buffered: Buffer;
+  try {
+    buffered = Buffer.isBuffer(response.body) ? response.body : await concatBody(response.body);
+  } catch (error) {
+    // The client left while the body was still arriving: the same answer
+    // every other forwarding path gives, and like those, no ledger row.
+    if (clientLeft(req)) return clientGone();
+    throw error;
+  }
+  const { body, counts: found } = rewriteTextToolCallJson(buffered, tools);
+  settle(found);
+  return { ...response, body };
+}
+
+/**
  * An Anthropic-shaped error body: `{"type":"error","error":{"type":...,
  * "message":...}}`. An Anthropic-compatible client (Claude Code included)
  * expects this exact envelope on every path — a flat `{type, message}` or a
@@ -2015,24 +2054,12 @@ async function routeTierRequest(
     // takes the next one. LiteLLM path only: Anthropic speaks tool_use itself.
     const textToolCalls: TextToolCallCounts = { recovered: 0, unparsed: 0 };
     let servedResponse = response;
-    if (!direct && response.status === 200) {
-      const tools = toolSchemas(req.body);
-      const onEnd = (counts: TextToolCallCounts): void => {
-        textToolCalls.recovered = counts.recovered;
-        textToolCalls.unparsed = counts.unparsed;
-        if (counts.unparsed > 0) {
-          cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
-          deps.log?.(`router: ${alias} ${variant} wrote ${counts.unparsed} tool call(s) as text that could not be recovered; cooling it`);
-        }
-      };
-      if ((response.headers['content-type'] ?? '').includes('text/event-stream') && !Buffer.isBuffer(response.body)) {
-        servedResponse = { ...response, body: rewriteTextToolCallStream(response.body, tools, onEnd) };
-      } else if ((response.headers['content-type'] ?? '').includes('application/json')) {
-        const buffered = Buffer.isBuffer(response.body) ? response.body : await concatBody(response.body);
-        const { body: rewritten, counts } = rewriteTextToolCallJson(buffered, tools);
-        onEnd(counts);
-        servedResponse = { ...response, body: rewritten };
-      }
+    if (!direct) {
+      servedResponse = await recoverTextToolCalls(response, req, textToolCalls, (n) => {
+        cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+        deps.log?.(`router: ${alias} ${variant} wrote ${n} tool call(s) as text that could not be recovered; cooling it`);
+      });
+      if (isClientGone(servedResponse)) return servedResponse;
     }
     // Pin only on a response the client actually receives IN FULL. A 400
     // handed back above is a request this candidate could not serve, and a
@@ -2353,8 +2380,12 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
         body: anthropicErrorBody('router_error', `${alias}: not served — ${loginRefusedMessage(deps, tenant, native.gateway)}`),
       };
     }
+    const textToolCalls: TextToolCallCounts = { recovered: 0, unparsed: 0 };
+    // No cooldown here: a bare key has no next candidate to fall through to.
+    const served = await recoverTextToolCalls(response, req, textToolCalls);
+    if (isClientGone(served)) return served;
     return withUsageRecording(
-      response,
+      served,
       {
         startedAt,
         session,
@@ -2373,6 +2404,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
         effort: bareEffort,
         upstream: 'litellm',
         attempts: [],
+        textToolCalls,
       },
       deps,
     );

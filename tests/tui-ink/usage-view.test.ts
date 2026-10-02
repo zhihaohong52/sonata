@@ -131,6 +131,7 @@ describe('UsageScreen', () => {
       await until(() => (app.lastFrame() ?? '').includes('$0.5000'), 'the report');
       expect(app.lastFrame()).toContain('auto-route');
       expect(app.lastFrame()).toContain('1 accepted');
+      expect(app.lastFrame()).toContain('without a task');
       expect(app.lastFrame()).toContain('classifier');
       expect(app.lastFrame()).toContain('not priced');
     } finally { app.unmount(); }

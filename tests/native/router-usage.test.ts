@@ -347,4 +347,70 @@ describe('router — text-form tool calls', () => {
     expect(out).toContain('"stop_reason":"tool_use"');
     expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
   });
+
+  it('recovers a text tool call on a bare --model key request too', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    // `flash` is a config key, not a tier alias: `resolveTier` never sees it
+    // and the request is forwarded to LiteLLM as itself.
+    const d = {
+      ...deps(rows, () => sse(stream('Go ' + CALL))),
+      resolveGateway: (key: string) => (key === 'flash' ? 'acme' : undefined),
+    };
+    const res = await routeRequest(withTools('flash'), d);
+    const out = await drain(res.body);
+    expect(out).toContain('"type":"tool_use"');
+    expect(out).toContain('"stop_reason":"tool_use"');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
+  });
+
+  it('answers client-gone and records nothing when the client leaves mid-JSON', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const ac = new AbortController();
+    const d = {
+      ...deps(rows, () => {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"id":"m","type":"message","content":['));
+          },
+          pull(controller) {
+            // The client left first; the upstream notices on the next read
+            // and fails the body it was still sending.
+            ac.abort();
+            controller.error(new Error('upstream stream failed'));
+          },
+        });
+        return new Response(body, { status: 200, headers: { 'content-type': 'application/json' } });
+      }),
+    };
+    const res = await routeRequest({ ...withTools('sonata-code-simple'), signal: ac.signal }, d);
+    expect((res as { clientGone?: boolean }).clientGone).toBe(true);
+    expect(res.status).toBe(499);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('leaves a direct-transport candidate byte-identical', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const upstream = stream('Go ' + CALL);
+    const d: RouterDeps = {
+      ...deps(rows, () => sse(upstream)),
+      resolveTier: () => ({
+        role: 'code', tier: 'simple',
+        routes: [{
+          key: 'direct-1',
+          native: { gateway: 'g', id: 'model-1', transport: 'direct' as const, baseUrl: 'https://gw.example/v1' },
+        }],
+      }),
+      gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
+    };
+    const res = await routeRequest(withTools('sonata-code-simple'), d);
+    // Anthropic speaks tool_use itself: nothing on this path is recovered or
+    // rewritten, and the bytes the gateway sent are the bytes the client gets.
+    expect(await drain(res.body)).toBe(upstream);
+    expect(rows).toHaveLength(1);
+    expect('textToolCalls' in rows[0]).toBe(false);
+  });
 });
