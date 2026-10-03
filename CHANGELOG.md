@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.15.4] - 2026-10-03
+
 ### Fixed
 
 - **`sonata init` no longer hides a newly released model behind a stale
