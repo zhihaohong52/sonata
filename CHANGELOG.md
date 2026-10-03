@@ -8,6 +8,18 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- **`sonata init` no longer hides a newly released model behind a stale
+  ranking catalog.** The models screen offers only models the cached
+  Artificial Analysis catalog can rank, and nothing refreshed that cache
+  short of `sonata catalog update` — so a new harness model (codex's
+  `gpt-6.1-sol`) went missing from the picker after every release. Init now
+  refreshes the catalog before the wizard when a discovered model is not in
+  it (with a stored AA key, at most once per 12 h), and the picker says
+  which hidden models are missing from the catalog — fixed by a catalog
+  update — apart from those AA scores without a cost per task.
+
 ## [0.15.3] - 2026-10-03
 
 ### Fixed
