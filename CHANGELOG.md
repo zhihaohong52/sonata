@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.15.3] - 2026-10-03
+
 ### Fixed
 
 - **Native agents no longer end silently when a model writes its tool calls
