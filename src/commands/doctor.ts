@@ -914,9 +914,14 @@ export async function cmdDoctor(
     // reading the ledger by hand.
     const tenant = projectTenant(opts.cwd, home);
     const nowMs = now().getTime();
-    const decisions = readRows(home, nowMs - 24 * 3_600_000, nowMs)
+    const all = readRows(home, nowMs - 24 * 3_600_000, nowMs)
       .filter((row) => row.autoRoute !== undefined && (tenant === undefined || row.tenant === tenant))
       .map((row) => row.autoRoute!);
+    // A request with no task made no classifier call, so it is neither an
+    // answered decision nor a failure — counted apart, never inside the
+    // health check below.
+    const noTask = all.filter((d) => d.outcome === 'no-task').length;
+    const decisions = all.filter((d) => d.outcome !== 'no-task');
     if (decisions.length > 0) {
       const count = (outcome: string) => decisions.filter((d) => d.outcome === outcome).length;
       const answered = count('accepted') + count('low-confidence');
@@ -926,6 +931,7 @@ export async function cmdDoctor(
       }
       const top = [...reasons.entries()].sort((a, b) => b[1] - a[1])[0];
       const summary = `last 24h: ${decisions.length} decision(s) — ${count('accepted')} accepted, ${count('low-confidence')} low-confidence, ${count('invalid')} invalid, ${count('failed')} failed`
+        + (noTask > 0 ? `; ${noTask} without a task` : '')
         + (top === undefined ? '' : `; most common failure: ${top[0]} (${top[1]})`);
       // Broken, not merely noisy: three or more decisions and the classifier
       // answered none of them, so every -auto request took the fallback tier.
@@ -934,6 +940,33 @@ export async function cmdDoctor(
         : { name: 'auto route', ok: true, detail: summary });
     }
 }
+
+  // A model that writes its tool calls as text ends agents silently. The
+  // router recovers what parses and cools the model on what does not; this is
+  // where a user finds out it is happening (incident 2026-10-02).
+  {
+    const tenant = projectTenant(opts.cwd, home);
+    const nowMs = now().getTime();
+    const byKey = new Map<string, { recovered: number; unparsed: number }>();
+    for (const row of readRows(home, nowMs - 24 * 3_600_000, nowMs)) {
+      if (row.textToolCalls === undefined || (tenant !== undefined && row.tenant !== tenant)) continue;
+      const key = row.key ?? row.alias;
+      const total = byKey.get(key) ?? { recovered: 0, unparsed: 0 };
+      total.recovered += row.textToolCalls.recovered;
+      total.unparsed += row.textToolCalls.unparsed;
+      byKey.set(key, total);
+    }
+    if (byKey.size > 0) {
+      const parts = [...byKey.entries()].map(([key, t]) => `${key}: ${t.recovered} recovered, ${t.unparsed} unrecovered`);
+      const unrecovered = [...byKey.values()].some((t) => t.unparsed > 0);
+      checks.push({
+        name: 'text tool calls',
+        ok: !unrecovered,
+        detail: `last 24h, tool calls written as text — ${parts.join('; ')}`
+          + (unrecovered ? ' — an unrecovered call ends the agent; consider ranking that model lower' : ''),
+      });
+    }
+  }
 
   // A *stale* agent names a model the config dropped; an **outdated** one keeps
   // its name and its old instructions. `staleAgents` compares filenames and so

@@ -622,7 +622,7 @@ export async function main(argv: string[]): Promise<number> {
     }
     if (report.autoRoute !== undefined) {
       const o = report.autoRoute.outcomes;
-      console.log(`auto-route decisions: ${o.accepted} accepted, ${o['low-confidence']} low-confidence, ${o.invalid} invalid, ${o.failed} failed · classifier ${report.autoRoute.classifierTokens.input} in / ${report.autoRoute.classifierTokens.output} out tokens${classifierCostNote(report.autoRoute)}`);
+      console.log(`auto-route decisions: ${o.accepted} accepted, ${o['low-confidence']} low-confidence, ${o.invalid} invalid, ${o.failed} failed, ${o['no-task']} without a task · classifier ${report.autoRoute.classifierTokens.input} in / ${report.autoRoute.classifierTokens.output} out tokens${classifierCostNote(report.autoRoute)}`);
     }
     if (report.noPromptTokens.requests > 0) {
       // Beside the total, never inside it. These completed and produced

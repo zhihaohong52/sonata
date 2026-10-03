@@ -16,6 +16,25 @@ describe('sonata-<role>-auto routing', () => {
   beforeEach(() => { clearCooldowns(); clearAutoDecisions(); });
   it('routes to the tier the classifier chose, and records the decision', async () => { const { c } = classifierSaying('simple'); const { deps, seen, rows } = depsWith(c); expect((await routed(req(), deps as any)).status).toBe(200); expect(seen).toEqual(['t/s']); expect(rows[0]).toMatchObject({ alias: 'sonata-code-auto', tier: 'simple', route: 'auto', autoRoute: { outcome: 'accepted', choice: 'simple' } }); });
   it('asks once per conversation; later turns carry route but no decision', async () => { const { c, calls } = classifierSaying('complex'); const { deps, rows } = depsWith(c); await routed(req(), deps as any); await routed(req(), deps as any); expect(calls).toHaveLength(1); expect(rows[1].route).toBe('auto'); expect(rows[1].autoRoute).toBeUndefined(); });
+  it('does not cache a no-task decision for a later request in the same conversation that has one', async () => {
+    // `conversationKey` hashes messages[0] while `cleanTask` reads the first
+    // *user* message, so a system-first request with no task and a later one
+    // that has a task share a key. The taskless decision must not be cached
+    // under it.
+    const { c, calls } = classifierSaying('simple');
+    const { deps, rows } = depsWith(c);
+    const withMessages = (messages: unknown[]) => ({
+      ...req(),
+      body: Buffer.from(JSON.stringify({ model: 'sonata-code-auto', messages })),
+    });
+    await routed(withMessages([{ role: 'system', content: 'ctx' }, { role: 'user', content: '<system-reminder>only</system-reminder>' }]), deps as any);
+    await routed(withMessages([{ role: 'system', content: 'ctx' }, { role: 'user', content: 'Implement the parser' }]), deps as any);
+    expect(calls).toEqual(['Implement the parser']);
+    expect(rows[0].autoRoute?.outcome).toBe('no-task');
+    expect(rows[1].autoRoute?.outcome).toBe('accepted');
+    expect(rows[1].tier).toBe('simple');
+  });
+
   it('makes one call for concurrent first requests', async () => { const { c, calls } = classifierSaying('normal'); const { deps, rows } = depsWith(c); await Promise.all([routed(req(), deps as any), routed(req(), deps as any)]); expect(calls).toHaveLength(1); expect(rows.filter((r) => r.autoRoute !== undefined)).toHaveLength(1); });
   it('falls back to normal with no classifier', async () => { const { deps, seen, rows } = depsWith(undefined); await routed(req(), deps as any); expect(seen).toEqual(['t/n']); expect(rows[0].autoRoute?.outcome).toBe('failed'); });
   it('answers a typed 400 when [auto_route] is off', async () => { const { c, calls } = classifierSaying('simple'); const { deps } = depsWith(c, { auto: false }); const res = await routed(req(), deps as any); expect(res.status).toBe(400); expect(String(res.body)).toMatch(/\[auto_route\]/); expect(calls).toHaveLength(0); });
@@ -40,7 +59,7 @@ describe('sonata-<role>-auto routing', () => {
     const res = await routed({ ...req(), body: badBody }, deps as any);
     expect(res.status).toBe(200);
     expect(seen).toEqual(['t/n']);
-    expect(rows[0]).toMatchObject({ route: 'auto', autoRoute: { outcome: 'failed', reason: 'empty task' } });
+    expect(rows[0]).toMatchObject({ route: 'auto', autoRoute: { outcome: 'no-task' } });
     expect(calls).toHaveLength(0);
   });
 

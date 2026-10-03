@@ -275,9 +275,12 @@ export async function decideTier(opts: {
   const failed = (reason: string): AutoDecision => ({
     tier: fallback, record: { classifier: 'jev', outcome: 'failed', reason, ms: now() - started },
   });
-  if (opts.classifier === undefined) return failed('no classifier');
+  // No task means no question to ask: Claude Code's own side requests for a
+  // background agent (measured 2026-10-02: one 7–13 s after each agent start,
+  // its first message nothing but reminders) land here. Not a failure.
   const task = cleanTask(opts.body);
-  if (task === undefined) return failed('empty task');
+  if (task === undefined) return { tier: fallback, record: { classifier: 'jev', outcome: 'no-task', ms: now() - started } };
+  if (opts.classifier === undefined) return failed('no classifier');
 
   const controller = new AbortController();
   const deadline = opts.deadlineMs ?? JEV_DEADLINE_MS;

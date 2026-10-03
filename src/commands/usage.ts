@@ -31,7 +31,7 @@ export const USAGE_DIMENSIONS: readonly UsageDimension[] = ['model', 'role', 'ti
  */
 export function classifierCostNote(autoRoute: NonNullable<UsageReport['autoRoute']>): string {
   if (autoRoute.classifierCostCalls === 0) return ' (not priced)';
-  const decisions = Object.values(autoRoute.outcomes).reduce((sum, count) => sum + count, 0);
+  const decisions = Object.entries(autoRoute.outcomes).filter(([k]) => k !== 'no-task').reduce((s, [, c]) => s + c, 0);
   return ` · $${autoRoute.classifierCostUsd.toFixed(6)} reported by the provider, outside the priced total`
     + (autoRoute.classifierCostCalls < decisions ? ` (${autoRoute.classifierCostCalls} of ${decisions} decisions reported a cost)` : '');
 }
@@ -154,7 +154,7 @@ export interface UsageReport {
   noPromptTokens: { requests: number; output: number };
   /** Auto-route decisions and classifier token volume; never priced. */
   autoRoute?: {
-    outcomes: Record<'accepted' | 'low-confidence' | 'invalid' | 'failed', number>;
+    outcomes: Record<'accepted' | 'low-confidence' | 'invalid' | 'failed' | 'no-task', number>;
     classifierTokens: { input: number; output: number };
     /** What providers reported charging for classifier calls (OpenRouter does; TypeSafe direct does not). */
     classifierCostUsd: number;
@@ -341,7 +341,7 @@ export function aggregate(
   for (const row of rows) {
     if (row.autoRoute !== undefined) {
       autoRoute ??= {
-        outcomes: { accepted: 0, 'low-confidence': 0, invalid: 0, failed: 0 },
+        outcomes: { accepted: 0, 'low-confidence': 0, invalid: 0, failed: 0, 'no-task': 0 },
         classifierTokens: { input: 0, output: 0 },
         classifierCostUsd: 0,
         classifierCostCalls: 0,
