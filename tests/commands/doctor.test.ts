@@ -202,7 +202,7 @@ complex = ["b"]
 
   const noModelList = (async () => new Response('{}', { status: 404 })) as any;
 
-  function autoRouteRow(tenant: string | undefined, outcome: 'accepted' | 'low-confidence' | 'invalid' | 'failed', reason?: string): LedgerRow {
+  function autoRouteRow(tenant: string | undefined, outcome: 'accepted' | 'low-confidence' | 'invalid' | 'failed' | 'no-task', reason?: string): LedgerRow {
     return {
       ts: new Date().toISOString(), ms: 500,
       alias: 'sonata-code-auto', role: 'code', tier: 'normal',
@@ -383,6 +383,45 @@ complex = ["b"]
     const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
     const check = checks.find((c) => c.name === 'auto route' && c.detail.includes('last 24h'));
     expect(check?.ok).toBe(true);
+  });
+
+  it('does not count no-task decisions as unanswered', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    const tenant = projectTenant(cwd, home);
+    appendRow(home, autoRouteRow(tenant, 'accepted'));
+    for (let i = 0; i < 4; i++) appendRow(home, autoRouteRow(tenant, 'no-task'));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
+    const check = checks.find((c) => c.name === 'auto route' && c.detail.includes('last 24h'));
+    expect(check?.ok).toBe(true);
+    expect(check?.detail).toContain('1 decision(s)');
+    expect(check?.detail).toContain('4 without a task');
+  });
+
+  it('two failures beside no-task decisions are still a working classifier', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    const tenant = projectTenant(cwd, home);
+    for (let i = 0; i < 2; i++) appendRow(home, autoRouteRow(tenant, 'failed', 'HTTP 422'));
+    for (let i = 0; i < 3; i++) appendRow(home, autoRouteRow(tenant, 'no-task'));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
+    const check = checks.find((c) => c.name === 'auto route' && c.detail.includes('last 24h'));
+    expect(check?.ok).toBe(true);
+  });
+
+  it('three failures are broken even when a no-task row is beside them', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), AUTO);
+    const tenant = projectTenant(cwd, home);
+    for (let i = 0; i < 3; i++) appendRow(home, autoRouteRow(tenant, 'failed', 'HTTP 422'));
+    appendRow(home, autoRouteRow(tenant, 'no-task'));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: noModelList });
+    const check = checks.find((c) => c.name === 'auto route' && c.detail.includes('last 24h'));
+    expect(check?.ok).toBe(false);
+    expect(check?.detail).toContain('not working');
   });
 
   it('does not count decisions from another tenant', async () => {
@@ -2081,5 +2120,56 @@ describe('doctor survives an unreadable agent file', () => {
     } finally {
       chmodSync(agent, 0o600);
     }
+  });
+});
+
+describe('doctor — text tool calls', () => {
+  const row = (tenant: string | undefined, key: string, counts: { recovered: number; unparsed: number }): LedgerRow => ({
+    ts: new Date().toISOString(), ms: 500, alias: 'sonata-code-normal', role: 'code', tier: 'normal',
+    key, gateway: 'acme', upstream: 'litellm', status: 200, complete: true,
+    tokens: { input: 10, output: 2, cacheRead: 0, cacheCreation: 0 }, price: { source: 'none' }, attempts: [], tenant,
+    textToolCalls: counts,
+  });
+
+  it('fails naming the model when calls could not be recovered in the last 24h', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-ttc-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-ttc-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), 'schema_version = 1\n');
+    const tenant = projectTenant(cwd, home);
+    appendRow(home, row(tenant, 'vendorz-mimo-v2.6-pro', { recovered: 2, unparsed: 1 }));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const check = checks.find((c) => c.name === 'text tool calls');
+    expect(check?.ok).toBe(false);
+    expect(check?.detail).toContain('vendorz-mimo-v2.6-pro');
+    expect(check?.detail).toContain('1 unrecovered');
+    expect(check?.detail).toContain('2 recovered');
+  });
+
+  it('reports recovered-only calls as information, not a failure', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-ttc-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-ttc-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), 'schema_version = 1\n');
+    appendRow(home, row(projectTenant(cwd, home), 'm', { recovered: 3, unparsed: 0 }));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const check = checks.find((c) => c.name === 'text tool calls');
+    expect(check?.ok).toBe(true);
+    expect(check?.detail).toContain('3 recovered');
+  });
+
+  it('says nothing when no row has text tool calls', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-ttc-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-ttc-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), 'schema_version = 1\n');
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.some((c) => c.name === 'text tool calls')).toBe(false);
+  });
+
+  it('ignores unrecovered calls from another tenant', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-ttc-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-ttc-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), 'schema_version = 1\n');
+    appendRow(home, row('other-tenant', 'vendorz-mimo-v2.6-pro', { recovered: 0, unparsed: 1 }));
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.some((c) => c.name === 'text tool calls')).toBe(false);
   });
 });

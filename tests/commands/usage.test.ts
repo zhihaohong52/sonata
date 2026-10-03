@@ -134,14 +134,16 @@ describe('aggregate', () => {
       row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'accepted', ms: 300, tokens: { input: 300, output: 30 } } }),
       row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'low-confidence', ms: 280, tokens: { input: 310, output: 30 } } }),
       row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'failed', ms: 3000 } }),
+      row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'no-task', ms: 5 } }),
     ];
     const report = aggregate(rows, 'tier', {});
     expect(report.autoRoute).toEqual({
-      outcomes: { accepted: 1, 'low-confidence': 1, invalid: 0, failed: 1 },
+      outcomes: { accepted: 1, 'low-confidence': 1, invalid: 0, failed: 1, 'no-task': 1 },
       classifierTokens: { input: 610, output: 60 },
       classifierCostUsd: 0,
       classifierCostCalls: 0,
     });
+    expect(report.autoRoute?.outcomes['no-task']).toBe(1);
     expect(report.pricedTotalUsd).toBe(aggregate(rows.map(({ autoRoute: _, ...r }) => r), 'tier', {}).pricedTotalUsd);
   });
 
@@ -452,8 +454,8 @@ describe('parseUsageFlags', () => {
 });
 
 describe('classifierCostNote', () => {
-  const summary = (cost: number, calls: number, accepted = 2) => ({
-    outcomes: { accepted, 'low-confidence': 0, invalid: 0, failed: 0 },
+  const summary = (cost: number, calls: number, accepted = 2, noTask = 0) => ({
+    outcomes: { accepted, 'low-confidence': 0, invalid: 0, failed: 0, 'no-task': noTask },
     classifierTokens: { input: 0, output: 0 }, classifierCostUsd: cost, classifierCostCalls: calls,
   });
   it('says not priced when no provider reported a cost', () => {
@@ -462,5 +464,10 @@ describe('classifierCostNote', () => {
   it('shows reported cost outside the priced total, and how many calls it covers', () => {
     expect(classifierCostNote(summary(0.00005, 2))).toBe(' · $0.000050 reported by the provider, outside the priced total');
     expect(classifierCostNote(summary(0.00002, 1))).toMatch(/1 of 2 decisions reported a cost/);
+  });
+  it('counts no-task rows out of the decisions a cost could cover', () => {
+    // They made no classifier call, so counting them would report every
+    // priced decision as a cost that went missing.
+    expect(classifierCostNote(summary(0.00002, 1, 2, 1))).toMatch(/1 of 2 decisions reported a cost/);
   });
 });

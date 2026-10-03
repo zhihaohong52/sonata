@@ -47,7 +47,12 @@ export interface AutoRouteRecord {
   choice?: string;
   confidence?: number;
   probabilities?: Record<string, number>;
-  outcome: 'accepted' | 'low-confidence' | 'invalid' | 'failed';
+  /**
+   * What became of the decision. `no-task`: the request's first user message
+   * had no task once reminders were removed (Claude Code's own side requests);
+   * no classifier call was made.
+   */
+  outcome: 'accepted' | 'low-confidence' | 'invalid' | 'failed' | 'no-task';
   /** Why a `failed` or `invalid` outcome happened. Never task text. */
   reason?: string;
   ms: number;
@@ -109,6 +114,12 @@ export interface LedgerRow {
   price: LedgerPrice;
   attempts: { key: string; status: number }[];
   litellm?: { fallbacks: number; retries: number };
+  /**
+   * Tool calls the model wrote as text: `recovered` were turned into real
+   * calls by the router, `unparsed` could not be (and cooled the candidate).
+   * Absent when there were none.
+   */
+  textToolCalls?: { recovered: number; unparsed: number };
 }
 
 export const LEDGER_RETENTION_DAYS = 30;
@@ -257,7 +268,7 @@ function isCount(value: unknown): value is number {
 function autoRouteIsValid(record: unknown): boolean {
   if (record === null || typeof record !== 'object' || Array.isArray(record)) return false;
   const value = record as Partial<AutoRouteRecord>;
-  if (value.classifier !== 'jev' || !['accepted', 'low-confidence', 'invalid', 'failed'].includes(value.outcome ?? '')
+  if (value.classifier !== 'jev' || !['accepted', 'low-confidence', 'invalid', 'failed', 'no-task'].includes(value.outcome ?? '')
     || !isCount(value.ms)) return false;
   if ('confidence' in value && !isCount(value.confidence)) return false;
   if ('probabilities' in value) {
@@ -291,6 +302,10 @@ function autoRouteIsValid(record: unknown): boolean {
 function hasRequiredFields(row: LedgerRow): boolean {
   if ('route' in row && row.route !== 'auto' && row.route !== 'manual') return false;
   if ('autoRoute' in row && !autoRouteIsValid(row.autoRoute)) return false;
+  if ('textToolCalls' in row) {
+    const t = row.textToolCalls;
+    if (t === null || typeof t !== 'object' || Array.isArray(t) || !isCount(t.recovered) || !isCount(t.unparsed)) return false;
+  }
   const tokens = row.tokens;
   if (tokens === null || typeof tokens !== 'object' || Array.isArray(tokens)) return false;
   if (!isCount(tokens.input) || !isCount(tokens.output)) return false;

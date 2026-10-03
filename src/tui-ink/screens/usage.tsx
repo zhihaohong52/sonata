@@ -91,6 +91,11 @@ export function UsageScreen({ cwd, home, by: initialBy = 'model', since: initial
     if (report.autoRoute !== undefined) {
       const o = report.autoRoute.outcomes;
       notes.push({ text: `auto-route  ${o.accepted} accepted, ${o['low-confidence']} low-confidence, ${o.invalid} invalid, ${o.failed} failed`, tone: 'MUTED' });
+      // Its own line: the outcome note is long enough to truncate at the
+      // terminal edge, and this is the count that was going missing there.
+      if (o['no-task'] > 0) {
+        notes.push({ text: `auto-route  ${o['no-task']} without a task (no classifier call)`, tone: 'MUTED' });
+      }
       notes.push({ text: `classifier ${compactCount(report.autoRoute.classifierTokens.input)} in / ${compactCount(report.autoRoute.classifierTokens.output)} out tokens${classifierCostNote(report.autoRoute)}`, tone: 'MUTED' });
     }
     if (report.noPromptTokens.requests > 0) {

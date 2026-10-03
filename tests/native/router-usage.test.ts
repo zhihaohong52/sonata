@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { clearCooldowns, routeRequest, type RouterDeps } from '../../src/native/router.js';
+import { clearCooldowns, routeRequest, TIER_COOLDOWN_MS, type RouterDeps } from '../../src/native/router.js';
 import type { LedgerRow } from '../../src/ledger.js';
 
 const DELTA = 'event: message_delta\ndata: {"type":"message_delta","usage":{"input_tokens":100,"output_tokens":7}}\n\n';
@@ -13,6 +13,31 @@ function sse(text: string, headers: Record<string, string> = {}): Response {
     },
   });
   return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream', ...headers } });
+}
+
+/** A 200 of any content type, streamed the way an upstream would send it. */
+function body200(text: string, contentType: string): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(text));
+      controller.close();
+    },
+  });
+  return new Response(stream, { status: 200, headers: { 'content-type': contentType } });
+}
+
+/** A 200 JSON body streamed as the given chunks, with a pause between them when asked. */
+function jsonChunks(chunks: string[], gapMs = 0): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      for (const [i, chunk] of chunks.entries()) {
+        if (i > 0 && gapMs > 0) await new Promise((resolve) => setTimeout(resolve, gapMs));
+        controller.enqueue(new TextEncoder().encode(chunk));
+      }
+      controller.close();
+    },
+  });
+  return new Response(stream, { status: 200, headers: { 'content-type': 'application/json' } });
 }
 
 function deps(rows: LedgerRow[], response: () => Response): RouterDeps {
@@ -205,5 +230,268 @@ describe('the usage recorder gets the config the request was routed under', () =
     await drain(res.body);
     expect(seen).toHaveLength(1);
     expect(seen[0]).toBe(atStart);
+  });
+});
+
+describe('router — text-form tool calls', () => {
+  const CALL = '<tool_call><function=Bash><parameter=command>ls</parameter></function></tool_call>';
+  const UNPARSED = 'x <tool_call><function=Nope></function></tool_call>';
+  const ev = (type: string, data: Record<string, unknown>): string => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+  const stream = (text: string): string => [
+    ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+    ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+    ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text } }),
+    ev('content_block_stop', { index: 0 }),
+    ev('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { input_tokens: 10, output_tokens: 5 } }),
+    ev('message_stop', {}),
+  ].join('');
+  const withTools = (model: string) => ({
+    ...req(model),
+    body: Buffer.from(JSON.stringify({ model, messages: [], tools: [{ name: 'Bash', input_schema: { type: 'object', properties: { command: { type: 'string' } } } }] })),
+  });
+
+  it('recovers a text tool call, rewrites stop_reason, and records it', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const res = await routeRequest(withTools('sonata-code-simple'), deps(rows, () => sse(stream('Go ' + CALL))));
+    const out = await drain(res.body);
+    expect(out).toContain('"type":"tool_use"');
+    expect(out).toContain('"stop_reason":"tool_use"');
+    expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
+  });
+
+  it('cools the candidate on an unparsed call so the next request takes the next one', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const seen: string[] = [];
+    const twoModels: RouterDeps = {
+      ...deps(rows, () => sse(stream('x <tool_call><function=Nope></function></tool_call>'))),
+      fetch: (async (_url: string, init: { body: string }) => {
+        seen.push(JSON.parse(init.body).model);
+        return sse(stream('x <tool_call><function=Nope></function></tool_call>'));
+      }) as unknown as typeof fetch,
+      resolveTier: (alias) => alias === 'sonata-code-simple'
+        ? { role: 'code', tier: 'simple', routes: [{ key: 'flash', native: { gateway: 'acme', id: 'x' } }, { key: 'pro', native: { gateway: 'acme', id: 'y' } }] }
+        : undefined,
+    };
+    await drain((await routeRequest(withTools('sonata-code-simple'), twoModels)).body);
+    await drain((await routeRequest(withTools('sonata-code-simple'), twoModels)).body);
+    expect(rows[0].textToolCalls).toEqual({ recovered: 0, unparsed: 1 });
+    expect(rows[0].key).toBe('flash');
+    expect(rows[1].key).toBe('pro');
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).not.toBe(seen[1]);
+  });
+
+  it('does not cool the candidate on a recovered call so the next request takes the same one', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const seen: string[] = [];
+    const twoModels: RouterDeps = {
+      ...deps(rows, () => sse(stream('Go ' + CALL))),
+      fetch: (async (_url: string, init: { body: string }) => {
+        seen.push(JSON.parse(init.body).model);
+        return sse(stream('Go ' + CALL));
+      }) as unknown as typeof fetch,
+      resolveTier: (alias) => alias === 'sonata-code-simple'
+        ? { role: 'code', tier: 'simple', routes: [{ key: 'flash', native: { gateway: 'acme', id: 'x' } }, { key: 'pro', native: { gateway: 'acme', id: 'y' } }] }
+        : undefined,
+    };
+    await drain((await routeRequest(withTools('sonata-code-simple'), twoModels)).body);
+    await drain((await routeRequest(withTools('sonata-code-simple'), twoModels)).body);
+    // A recovered call is a turn the model served: nothing is cooled, so both
+    // requests stay on the first candidate and `pro` is never reached.
+    expect(rows).toHaveLength(2);
+    expect(rows[0].key).toBe('flash');
+    expect(rows[1].key).toBe('flash');
+    expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
+    expect(rows[1].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toBe(seen[1]);
+  });
+
+  it('writes no textToolCalls field when nothing was found', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    await drain((await routeRequest(withTools('sonata-code-simple'), deps(rows, () => sse(stream('plain'))))).body);
+    expect('textToolCalls' in rows[0]).toBe(false);
+  });
+
+  it('does not re-pin a candidate whose tool call could not be recovered', async () => {
+    clearCooldowns();
+    let clock = 1_000_000;
+    let plain = false;
+    const rows: LedgerRow[] = [];
+    const chat = (model: string) => ({
+      ...req(model),
+      body: Buffer.from(JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [{ name: 'Bash', input_schema: { type: 'object', properties: { command: { type: 'string' } } } }],
+      })),
+    });
+    const twoModels: RouterDeps = {
+      ...deps(rows, () => sse(stream('plain'))),
+      fetch: (async (_url: string, init: { body: string }) => {
+        const model = String(JSON.parse(init.body).model);
+        if (plain) return body200('fine', 'text/plain');
+        return model.endsWith('/pro') ? new Response('boom', { status: 500 }) : sse(stream(UNPARSED));
+      }) as unknown as typeof fetch,
+      resolveTier: (alias) => alias === 'sonata-code-simple'
+        ? { role: 'code', tier: 'simple', routes: [{ key: 'pro', native: { gateway: 'acme', id: 'y' } }, { key: 'flash', native: { gateway: 'acme', id: 'x' } }] }
+        : undefined,
+      now: () => clock,
+    };
+    // pro answers 500 and is skipped; flash serves the turn but writes a call
+    // sonata cannot recover, so it is cooled rather than preferred.
+    await drain((await routeRequest(chat('sonata-code-simple'), twoModels)).body);
+    // Past the cooldown with the sticky entry still in place — clearCooldowns()
+    // would clear that too, so the clock moves instead.
+    clock += TIER_COOLDOWN_MS + 1;
+    plain = true;
+    await drain((await routeRequest(chat('sonata-code-simple'), twoModels)).body);
+    expect(rows[0].key).toBe('flash');
+    expect(rows[0].textToolCalls).toEqual({ recovered: 0, unparsed: 1 });
+    expect(rows[1].key).toBe('pro');
+  });
+
+  it('passes a large non-streamed JSON reply through byte-identical', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const big = 'A'.repeat(1024 * 1024 + 64);
+    const json = JSON.stringify({
+      id: 'm', type: 'message', role: 'assistant', stop_reason: 'end_turn',
+      content: [{ type: 'text', text: big }],
+    });
+    const res = await routeRequest(withTools('sonata-code-simple'), deps(rows, () => body200(json, 'application/json')));
+    expect(await drain(res.body)).toBe(json);
+  });
+
+  it('passes a JSON body past the byte cap through byte-identical instead of rewriting it', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    // Exactly 3000 bytes carrying the text-call fixture, in three chunks:
+    // read whole it would be rewritten, past the cap it is the client's bytes
+    // and nothing else.
+    const doc = (pad: number) => JSON.stringify({
+      id: 'm', type: 'message', role: 'assistant', stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Go ' + CALL + 'A'.repeat(pad) }],
+    });
+    let pad = 0;
+    while (doc(pad).length < 3000) pad += 1;
+    const json = doc(pad);
+    expect(Buffer.byteLength(json)).toBe(3000);
+    const chunks = [json.slice(0, 1000), json.slice(1000, 2000), json.slice(2000)];
+    const res = await routeRequest(withTools('sonata-code-simple'), {
+      ...deps(rows, () => jsonChunks(chunks)),
+      textToolCallReadLimits: { maxBytes: 1024, idleMs: 10_000 },
+    });
+    expect(await drain(res.body)).toBe(json);
+    expect('textToolCalls' in rows[0]).toBe(false);
+  });
+
+  it('passes a JSON body that stalls mid-flight through unchanged rather than holding the request', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const json = JSON.stringify({
+      id: 'm', type: 'message', role: 'assistant', stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Go ' + CALL }],
+    });
+    const mid = Math.ceil(json.length / 2);
+    // Chunk A, a 200 ms silence, then chunk B: the idle bound gives up trying
+    // to rewrite, and both halves still reach the client from the same read.
+    const res = await routeRequest(withTools('sonata-code-simple'), {
+      ...deps(rows, () => jsonChunks([json.slice(0, mid), json.slice(mid)], 200)),
+      textToolCallReadLimits: { maxBytes: 1024 * 1024, idleMs: 50 },
+    });
+    expect(await drain(res.body)).toBe(json);
+  });
+
+  it('leaves a non-JSON 200 body untouched and unbuffered', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const res = await routeRequest(withTools('sonata-code-simple'), deps(rows, () => body200('not json at all', 'text/plain')));
+    expect(Buffer.isBuffer(res.body)).toBe(false);
+    expect(await drain(res.body)).toBe('not json at all');
+  });
+
+  it('recovers a text tool call from a non-streamed JSON reply', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const json = JSON.stringify({
+      id: 'm', type: 'message', role: 'assistant', stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Go ' + CALL }],
+    });
+    const res = await routeRequest(withTools('sonata-code-simple'), deps(rows, () => body200(json, 'application/json')));
+    const out = await drain(res.body);
+    expect(out).toContain('"type":"tool_use"');
+    expect(out).toContain('"stop_reason":"tool_use"');
+    expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
+  });
+
+  it('recovers a text tool call on a bare --model key request too', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    // `flash` is a config key, not a tier alias: `resolveTier` never sees it
+    // and the request is forwarded to LiteLLM as itself.
+    const d = {
+      ...deps(rows, () => sse(stream('Go ' + CALL))),
+      resolveGateway: (key: string) => (key === 'flash' ? 'acme' : undefined),
+    };
+    const res = await routeRequest(withTools('flash'), d);
+    const out = await drain(res.body);
+    expect(out).toContain('"type":"tool_use"');
+    expect(out).toContain('"stop_reason":"tool_use"');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
+  });
+
+  it('answers client-gone and records nothing when the client leaves mid-JSON', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const ac = new AbortController();
+    const d = {
+      ...deps(rows, () => {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"id":"m","type":"message","content":['));
+          },
+          pull(controller) {
+            // The client left first; the upstream notices on the next read
+            // and fails the body it was still sending.
+            ac.abort();
+            controller.error(new Error('upstream stream failed'));
+          },
+        });
+        return new Response(body, { status: 200, headers: { 'content-type': 'application/json' } });
+      }),
+    };
+    const res = await routeRequest({ ...withTools('sonata-code-simple'), signal: ac.signal }, d);
+    expect((res as { clientGone?: boolean }).clientGone).toBe(true);
+    expect(res.status).toBe(499);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('leaves a direct-transport candidate byte-identical', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const upstream = stream('Go ' + CALL);
+    const d: RouterDeps = {
+      ...deps(rows, () => sse(upstream)),
+      resolveTier: () => ({
+        role: 'code', tier: 'simple',
+        routes: [{
+          key: 'direct-1',
+          native: { gateway: 'g', id: 'model-1', transport: 'direct' as const, baseUrl: 'https://gw.example/v1' },
+        }],
+      }),
+      gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
+    };
+    const res = await routeRequest(withTools('sonata-code-simple'), d);
+    // Anthropic speaks tool_use itself: nothing on this path is recovered or
+    // rewritten, and the bytes the gateway sent are the bytes the client gets.
+    expect(await drain(res.body)).toBe(upstream);
+    expect(rows).toHaveLength(1);
+    expect('textToolCalls' in rows[0]).toBe(false);
   });
 });

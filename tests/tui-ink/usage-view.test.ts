@@ -125,14 +125,30 @@ describe('UsageScreen', () => {
   it('shows auto-route decisions beside the total without pricing classifier tokens', async () => {
     const home = mkdtempSync(join(tmpdir(), 'usage-screen-'));
     appendRow(home, row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'accepted', ms: 12, tokens: { input: 3, output: 2 } } }));
+    // A taskless request too, so the no-task count is one that must stay on
+    // screen — as its own line, since the note above it truncates at the edge.
+    appendRow(home, row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'no-task', ms: 1 }, price: { source: 'none' } }));
     const app = render(React.createElement(ThemeProvider, null,
       React.createElement(UsageScreen, { cwd: home, home })));
     try {
       await until(() => (app.lastFrame() ?? '').includes('$0.5000'), 'the report');
       expect(app.lastFrame()).toContain('auto-route');
       expect(app.lastFrame()).toContain('1 accepted');
+      expect(app.lastFrame()).toContain('auto-route  1 without a task (no classifier call)');
       expect(app.lastFrame()).toContain('classifier');
       expect(app.lastFrame()).toContain('not priced');
+    } finally { app.unmount(); }
+  });
+
+  it('says nothing about a missing task when every decision had one', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'usage-screen-'));
+    appendRow(home, row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'accepted', ms: 12, tokens: { input: 3, output: 2 } } }));
+    const app = render(React.createElement(ThemeProvider, null,
+      React.createElement(UsageScreen, { cwd: home, home })));
+    try {
+      await until(() => (app.lastFrame() ?? '').includes('$0.5000'), 'the report');
+      expect(app.lastFrame()).toContain('1 accepted');
+      expect(app.lastFrame()).not.toContain('without a task');
     } finally { app.unmount(); }
   });
 
