@@ -546,3 +546,73 @@ describe('a tier screen for a gateway whose slug is a versionless alias', () => 
     ]);
   });
 });
+
+// Unchecking a provider on the Import screen dropped only its providerKeys
+// entry. A key typed for it this run stayed in `byokKeys`, so the models step
+// still asked the removed gateway what it serves and listed the answer.
+describe('a provider removed on the import screen', () => {
+  it('contributes nothing to the models step, even with a key typed this run', async () => {
+    const available = { codex: null, opencode: { expiresInDays: null }, key: null, keyEntryAvailable: true };
+    const w = renderWizard({
+      ...firstRunData(),
+      providers: [
+        { key: 'opencode/acme', harness: 'opencode', provider: 'acme', count: 1 },
+        { key: 'opencode/beta', harness: 'opencode', provider: 'beta', count: 1 },
+      ],
+      candidates: [
+        { key: 'acme-fast', gateway: 'acme', id: 'fast', label: 'opencode/acme/fast' },
+        { key: 'beta-slow', gateway: 'beta', id: 'slow', label: 'opencode/beta/slow' },
+      ],
+      credentialAvailability: { acme: available, beta: available },
+      gatewayBaseUrls: { acme: 'https://acme.example/v1', beta: 'https://beta.example/v1' },
+      fetchModels: async () => ({ outcome: 'ok', models: [{ id: 'live-one' }] }),
+    });
+
+    await w.press(ENTER);
+    // Add provider → beta → type its key.
+    await w.press(DOWN, ENTER, DOWN, ENTER, 'test-key', ENTER);
+    // Import → every harness → check acme, uncheck beta.
+    await w.press(ENTER, ENTER, DOWN, SPACE, DOWN, SPACE, ENTER);
+    // Continue.
+    await w.press(DOWN, DOWN, ENTER);
+    await tick(50);
+
+    const frame = w.lastFrame() ?? '';
+    expect(frame).toContain('opencode/acme/fast');
+    expect(frame).not.toContain('beta');
+  });
+});
+
+// With nothing left to pick, the models step is skipped — and with it the
+// picker that would have dropped a removed provider's selected model.
+describe('a provider removed when the models step is then skipped', () => {
+  it('leaves none of its models selected', async () => {
+    const w = renderWizard({
+      ...firstRunData(),
+      providers: [
+        { key: 'opencode/acme', harness: 'opencode', provider: 'acme', count: 1 },
+        { key: 'config/beta', harness: 'config', provider: 'beta', count: 1 },
+      ],
+      candidates: [{ key: 'acme-fast', gateway: 'acme', id: 'fast', label: 'opencode/acme/fast' }],
+      initialStateByScope: {
+        project: {
+          configScope: 'project',
+          providerKeys: ['opencode/acme', 'config/beta'],
+          nativeKeys: ['acme-fast', 'beta-saved'],
+        },
+      },
+    });
+
+    await w.press(ENTER);
+    // Menu: Add provider / Continue / Remove provider → remove acme.
+    await w.press(DOWN, DOWN, ENTER, DOWN, SPACE, ENTER);
+    // Continue, straight past the models step to Roles.
+    await w.press(DOWN, ENTER);
+    expect(w.lastFrame()).toContain('Roles');
+    await w.press(ESC);
+    await tick();
+
+    expect(w.result()?.state.providerKeys).toEqual(['config/beta']);
+    expect(w.result()?.state.nativeKeys).toEqual(['beta-saved']);
+  });
+});
