@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
@@ -774,8 +774,8 @@ const MESSAGELESS_400_FINGERPRINT = 'message-less 400';
 function capture400(
   deps: RouterDeps,
   entry: { alias: string; candidate: string; status: number; outbound: Buffer; response: Buffer },
-): void {
-  writeCapture(deps, deps.capture400Dir, entry.candidate, `a ${entry.status}`, {
+): Promise<void> {
+  return writeCapture(deps, deps.capture400Dir, entry.candidate, `a ${entry.status}`, {
     alias: entry.alias,
     candidate: entry.candidate,
     status: entry.status,
@@ -788,14 +788,19 @@ function parsedOrText(body: Buffer): unknown {
   try { return JSON.parse(body.toString()); } catch { return body.toString(); }
 }
 
-/** One owner-only JSON file in `dir`, named by time and candidate; never fatal. */
-function writeCapture(deps: RouterDeps, dir: string | undefined, candidate: string, what: string, doc: Record<string, unknown>): void {
+/**
+ * One owner-only JSON file in `dir`, named by time and candidate plus a
+ * random suffix, so two captures in the same millisecond never share a path
+ * (`wx` refuses to overwrite either way). Asynchronous, because a capture can
+ * hold a whole conversation and the router serves every session; never fatal.
+ */
+async function writeCapture(deps: RouterDeps, dir: string | undefined, candidate: string, what: string, doc: Record<string, unknown>): Promise<void> {
   if (dir === undefined || dir === '') return;
   try {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    await mkdir(dir, { recursive: true, mode: 0o700 });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const name = `${stamp}-${candidate.replace(/[^A-Za-z0-9@._-]/g, '_')}.json`;
-    writeFileSync(join(dir, name), `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o600 });
+    const name = `${stamp}-${candidate.replace(/[^A-Za-z0-9@._-]/g, '_')}-${randomBytes(4).toString('hex')}.json`;
+    await writeFile(join(dir, name), `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
   } catch (error) {
     deps.log?.(`router: could not capture ${what} to ${dir}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -1345,7 +1350,9 @@ async function recoverTextToolCalls(
     if (found.unparsed > 0) {
       onUnparsed?.(found.unparsed);
       if (capture !== undefined) {
-        writeCapture(deps, deps.captureTextCallsDir, capture.candidate, 'an unrecovered text tool call', {
+        // Not awaited: this runs as the stream ends, and the client's last
+        // bytes must not wait on a disk write. writeCapture logs its own failures.
+        void writeCapture(deps, deps.captureTextCallsDir, capture.candidate, 'an unrecovered text tool call', {
           alias: capture.alias,
           candidate: capture.candidate,
           counts: found,
@@ -1994,7 +2001,7 @@ async function routeTierRequest(
     // an unservable 400.
     if ('loginRefused' in response && response.loginRefused === true) {
       if (response.status === 400) {
-        capture400(deps, { alias, candidate: variant, status: response.status, outbound: body, response: response.body as Buffer });
+        await capture400(deps, { alias, candidate: variant, status: response.status, outbound: body, response: response.body as Buffer });
       }
       attempts.push({ key: route.key, status: response.status });
       const cooling = !('replaced' in response && response.replaced === true) &&
@@ -2087,7 +2094,7 @@ async function routeTierRequest(
       // them an empty error. This mirrors the 500 path in `forwardToLitellm`.
       const bodyBuf = await bufferBody(response.body, deps);
       if (response.status === 400) {
-        capture400(deps, { alias, candidate: variant, status: response.status, outbound: body, response: bodyBuf });
+        await capture400(deps, { alias, candidate: variant, status: response.status, outbound: body, response: bodyBuf });
       }
       const unservable = response.status === 400
         ? UNSERVABLE_400_SIGNATURES.find((signature) => bodyBuf.toString().includes(signature))

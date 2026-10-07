@@ -312,10 +312,17 @@ describe('router — text-form tool calls', () => {
     const { join } = await import('node:path');
     const dir = join(mkdtempSync(join(tmpdir(), 'sonata-textcalls-')), 'captures');
     const raw = stream(UNPARSED);
-    const res = await routeRequest(withTools('sonata-code-simple'), { ...deps([], () => sse(raw)), captureTextCallsDir: dir });
-    await drain(res.body);
+    const d = { ...deps([], () => sse(raw)), captureTextCallsDir: dir };
+    // Twice back to back: each response gets its own file, neither overwritten.
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    clearCooldowns();
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    // Written after the stream ends, without holding it: wait for the files.
+    const deadline = Date.now() + 2_000;
+    const count = () => { try { return readdirSync(dir).length; } catch { return 0; } };
+    while (count() < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
     const files = readdirSync(dir);
-    expect(files).toHaveLength(1);
+    expect(files).toHaveLength(2);
     expect(statSync(join(dir, files[0])).mode & 0o777).toBe(0o600);
     const doc = JSON.parse(readFileSync(join(dir, files[0]), 'utf8'));
     expect(doc.alias).toBe('sonata-code-simple');
@@ -332,6 +339,7 @@ describe('router — text-form tool calls', () => {
     const { join } = await import('node:path');
     const dir = join(mkdtempSync(join(tmpdir(), 'sonata-textcalls-')), 'captures');
     await drain((await routeRequest(withTools('sonata-code-simple'), { ...deps([], () => sse(stream(CALL))), captureTextCallsDir: dir })).body);
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(existsSync(dir)).toBe(false);
     clearCooldowns();
     const rows: LedgerRow[] = [];
