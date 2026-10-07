@@ -28,6 +28,7 @@ import type { WizardData } from '../tui-ink/app.js';
 import type { TuiResult } from '../tui-ink/types.js';
 
 import type { UpdateDeps } from './harness-updates.js';
+import type { CatalogRefreshDeps } from './catalog-refresh.js';
 
 export const OPENCODE_RANGE = '>=1.18.0 <2.0.0';
 
@@ -220,6 +221,11 @@ export interface InitOptions {
    * faking the machine, and must not reach the npm registry or run updaters.
    */
   updates?: UpdateDeps;
+  /**
+   * The ranking-catalog refresh's key lookup and fetch. Defaults to the real
+   * ones only when detection is real, for the same reason as `updates`.
+   */
+  catalogRefresh?: CatalogRefreshDeps;
 }
 
 /** The interactive surfaces `cmdInit` needs, when the TUI shell is drawing them. */

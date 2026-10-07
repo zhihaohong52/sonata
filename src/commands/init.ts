@@ -27,6 +27,7 @@ import { nativeTomlFor } from '../init/toml.js';
 import { discover, type InitEnvironment } from '../init/discover.js';
 import { interactiveState } from '../init/interactive-state.js';
 import { offerHarnessUpdates, realUpdateDeps } from '../init/harness-updates.js';
+import { realCatalogRefreshDeps, refreshCatalogIfUncovered } from '../init/catalog-refresh.js';
 import { scriptedState } from '../init/scripted-state.js';
 import { plan, fsCredentialProbe } from '../init/plan.js';
 import { apply } from '../init/apply.js';
@@ -123,6 +124,15 @@ async function runInit(
     return blockedResult(env.problems, opts);
   }
   for (const p of env.problems) out(renderProblem(p));
+
+  // ---- ranking catalog --------------------------------------------------
+  // After discovery, because it is the discovered models the catalog has to
+  // cover; before the wizard, because the picker only offers models the
+  // catalog can rank. Real network only when detection is real too.
+  const catalogRefresh = opts.catalogRefresh ?? (opts.detect === undefined ? realCatalogRefreshDeps(opts.home) : undefined);
+  if (catalogRefresh !== undefined) {
+    await refreshCatalogIfUncovered(env.allNativeCandidates, catalogRefresh, out);
+  }
 
   // ---- choose -----------------------------------------------------------
   // The two front ends (`interactiveState`, `scriptedState`) live in
