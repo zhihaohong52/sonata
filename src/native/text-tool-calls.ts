@@ -143,13 +143,6 @@ function createScanner(tools: ToolSchemas, counts: TextToolCallCounts) {
 
 const sse = (data: Record<string, unknown>): string => `event: ${String(data.type)}\ndata: ${JSON.stringify(data)}\n\n`;
 
-function normalizeLineEndings(text: string, final: boolean): string {
-  if (!final && text.endsWith('\r')) {
-    return text.slice(0, -1).replace(/\r\n?/g, '\n') + '\r';
-  }
-  return text.replace(/\r\n?/g, '\n');
-}
-
 export function rewriteTextToolCallStream(
   body: AsyncIterable<Uint8Array>,
   tools: ToolSchemas,
@@ -237,9 +230,13 @@ export function rewriteTextToolCallStream(
     };
 
     try {
+      // Normalise only each new piece, carrying a pending \r across chunks so a
+      // \r\n split by the chunk boundary still becomes one \n.
+      let carry = '';
       for await (const chunk of body) {
-        buffer += decoder.decode(chunk, { stream: true });
-        buffer = normalizeLineEndings(buffer, false);
+        let piece = carry + decoder.decode(chunk, { stream: true });
+        if (piece.endsWith('\r')) { carry = '\r'; piece = piece.slice(0, -1); } else carry = '';
+        buffer += piece.replace(/\r\n?/g, '\n');
         let out = '';
         let split: number;
         while ((split = buffer.indexOf('\n\n')) !== -1) {
@@ -248,8 +245,7 @@ export function rewriteTextToolCallStream(
         }
         if (out !== '') yield encoder.encode(out);
       }
-      buffer += decoder.decode();
-      buffer = normalizeLineEndings(buffer, true);
+      buffer += (carry + decoder.decode()).replace(/\r\n?/g, '\n');
       if (buffer.trim() !== '') yield encoder.encode(handle(buffer.replace(/\n+$/, '')));
       if (scanner !== undefined) yield encoder.encode(emitPieces(scanner.end()));
     } finally {
@@ -271,10 +267,25 @@ export function rewriteTextToolCallJson(body: Buffer, tools: ToolSchemas, newId:
     if (block?.type !== 'text' || !String(block.text).includes(TOOL_CALL_OPEN)) { content.push(block); continue; }
     const scanner = createScanner(tools, counts);
     let text = '';
-    const flush = (): void => { if (text.trim() !== '') content.push({ type: 'text', text }); text = ''; };
+    let afterCall = false;
+    let firstText = true;
+    // Whitespace-only text separates blocks only after a call; before one it is
+    // real text. The first piece keeps the block's own fields (citations); a
+    // split piece cannot, they refer to the original text.
+    const flush = (): void => {
+      if (text !== '' && !(afterCall && text.trim() === '')) {
+        content.push(firstText ? { ...block, text } : { type: 'text', text });
+        firstText = false;
+      }
+      text = '';
+    };
     for (const piece of [...scanner.push(String(block.text)), ...scanner.end()]) {
       if (piece.kind === 'text') text += piece.text;
-      else { flush(); content.push({ type: 'tool_use', id: newId(), name: piece.call.name, input: piece.call.input }); }
+      else {
+        flush();
+        content.push({ type: 'tool_use', id: newId(), name: piece.call.name, input: piece.call.input });
+        afterCall = true;
+      }
     }
     flush();
   }

@@ -31,7 +31,7 @@ export const USAGE_DIMENSIONS: readonly UsageDimension[] = ['model', 'role', 'ti
  */
 export function classifierCostNote(autoRoute: NonNullable<UsageReport['autoRoute']>): string {
   if (autoRoute.classifierCostCalls === 0) return ' (not priced)';
-  const decisions = Object.entries(autoRoute.outcomes).filter(([k]) => k !== 'no-task').reduce((s, [, c]) => s + c, 0);
+  const decisions = Object.values(autoRoute.outcomes).reduce((s, c) => s + c, 0) - autoRoute.uncalled;
   return ` · $${autoRoute.classifierCostUsd.toFixed(6)} reported by the provider, outside the priced total`
     + (autoRoute.classifierCostCalls < decisions ? ` (${autoRoute.classifierCostCalls} of ${decisions} decisions reported a cost)` : '');
 }
@@ -155,6 +155,8 @@ export interface UsageReport {
   /** Auto-route decisions and classifier token volume; never priced. */
   autoRoute?: {
     outcomes: Record<'accepted' | 'low-confidence' | 'invalid' | 'failed' | 'no-task', number>;
+    /** Decisions that made no classifier call (`no-task`, or `failed` with reason `no classifier`); never able to report a cost. */
+    uncalled: number;
     classifierTokens: { input: number; output: number };
     /** What providers reported charging for classifier calls (OpenRouter does; TypeSafe direct does not). */
     classifierCostUsd: number;
@@ -342,11 +344,15 @@ export function aggregate(
     if (row.autoRoute !== undefined) {
       autoRoute ??= {
         outcomes: { accepted: 0, 'low-confidence': 0, invalid: 0, failed: 0, 'no-task': 0 },
+        uncalled: 0,
         classifierTokens: { input: 0, output: 0 },
         classifierCostUsd: 0,
         classifierCostCalls: 0,
       };
       autoRoute.outcomes[row.autoRoute.outcome] += 1;
+      if (row.autoRoute.outcome === 'no-task' || (row.autoRoute.outcome === 'failed' && row.autoRoute.reason === 'no classifier')) {
+        autoRoute.uncalled += 1;
+      }
       autoRoute.classifierTokens.input += row.autoRoute.tokens?.input ?? 0;
       autoRoute.classifierTokens.output += row.autoRoute.tokens?.output ?? 0;
       if (row.autoRoute.costUsd !== undefined) {
