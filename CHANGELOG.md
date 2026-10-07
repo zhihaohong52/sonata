@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.15.5] - 2026-10-07
+
 ### Fixed
 
 - **`sonata usage` no longer understates how many auto-route decisions
