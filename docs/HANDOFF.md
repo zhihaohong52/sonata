@@ -6,6 +6,23 @@ Read this before starting new work. It records what is done, what is
 deliberately *not* done, what to pick up if you want work, and the traps that
 have cost previous sessions real time.
 
+## Inline tool definitions (2026-10-07, `fix/inline-tool-definitions`) — open follow-ups
+
+- **The refusal layer is verified against Claude Code 2.1.292's source only.**
+  `src/native/inline-tools.ts` answers a request that defines tools inside
+  `messages` with a 400 Claude Code reads as `unsupported_on_platform`. If a
+  later Claude Code stops matching `/Input tag 'tool_definition'/`, that 400
+  ends the agent (a 400 is not retried). Re-check `pse` in the binary when
+  Claude Code changes these fallbacks; the fold works without it.
+- **`No tool call found for function call output with call_id …` is still
+  live** after 0.15.5: 3 on `gpt-6-luna@low` and 7 on `gpt-6.1-sol@xhigh` in
+  one decision_model serve log (`serve-2026-10-07T14-32-23-073Z.log`).
+  Claude Code's retry usually succeeds, so it reads as fixed; it is not, and
+  it hits `code-complex` too. Root cause not yet traced.
+- **mimo-v2.6-pro heads every `normal` list in decision_model** while
+  `sonata doctor` flags it for text tool calls. Most of those were this bug
+  (no tools offered); re-measure after the fix before demoting it.
+
 ## 0.13.1 (2026-09-27) — open follow-ups
 
 A patch release of three fixes (PR #69), all found because a "full audit"

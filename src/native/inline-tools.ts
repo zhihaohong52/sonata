@@ -34,9 +34,15 @@
  * 2. **Fold.** Everything else — a conversation already refused that sends
  *    them again, a client that did not advertise the beta, a request with no
  *    conversation key — is folded: the blocks are applied in order onto
- *    `tools[]` and removed from the transcript. The refusal leans on a Claude
- *    Code internal string; the fold depends on nothing but the wire shape, so
- *    it is the layer that must always hold.
+ *    `tools[]` and removed from the transcript. The fold depends on nothing
+ *    but the wire shape, so it is the layer that must always hold.
+ *
+ * The refusal leans on a Claude Code internal string, verified against
+ * Claude Code 2.1.292 only. If a later version stops recognising it, the 400
+ * is an ordinary API error: Claude Code does not retry a 400, so the agent
+ * ends on that request. Firing once per conversation bounds that to one agent
+ * per conversation, not one turn — which is why it is pinned by a test of the
+ * message and must be re-checked when Claude Code changes its fallbacks.
  */
 
 /** The `anthropic-beta` value Claude Code sends when it may define tools inline. */

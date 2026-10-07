@@ -1521,8 +1521,8 @@ function litellmBody(body: Buffer): Buffer {
  * The 400 that makes Claude Code stop defining tools inside messages for this
  * conversation, or undefined when this request should be folded instead (see
  * src/native/inline-tools.ts). Answered locally — nothing reaches upstream —
- * and at most once per conversation, so a Claude Code that does not recognise
- * it loses one turn, after which the fold carries the conversation.
+ * and at most once per conversation. A Claude Code that does not recognise it
+ * (verified on 2.1.292 only) treats it as an API error and ends that agent.
  */
 function inlineToolsRefusal(req: RouterRequest, conversation: string | undefined, deps: RouterDeps, alias: string): RouterResponse | undefined {
   if (conversation === undefined || !advertisesInlineTools(req.headers) || !hasInlineToolDefinitions(req.body)) return undefined;

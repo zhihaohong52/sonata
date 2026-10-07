@@ -204,9 +204,11 @@ the conversation. The message must not name the mid-conversation betas or
 tool-change one can fall back to inline tools again, so it is not used).
 **Fold:** `foldInlineToolChanges` applies the blocks in transcript order onto
 `tools[]` and strips them; it runs first in `litellmBody` and in recovery's
-tool list. The refusal leans on a Claude Code internal string, so it fires at
-most once per conversation and the fold carries everything after — a Claude
-Code that stops recognising it loses one turn, not the agent. A tier refuses
+tool list. The refusal leans on a Claude Code internal string, verified on
+2.1.292 only: a Claude Code that stops recognising it sees an ordinary 400,
+which it does not retry, and that agent ends. So it fires at most once per
+conversation, its message is pinned by a test, and it must be re-checked when
+Claude Code changes these fallbacks; the fold is the layer that always holds. A tier refuses
 when any candidate is behind LiteLLM (the fallback serves a direct candidate
 equally); a tier of only direct candidates, and every Anthropic request, stays
 byte-identical. `litellmBody` is now `demoteSystemTurns ∘ sanitizeToolSchemas
