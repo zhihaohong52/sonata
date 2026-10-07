@@ -16,6 +16,18 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   models step still asked that gateway what it serves and listed the answer,
   and BYOK models chosen for it stayed selected. Removal now clears the
   provider's key, models, custom-provider entry and rank position too.
+- **`sonata init`: unchecking a harness on "Import from which harnesses?"
+  now removes the providers imported from it.** It used to only hide them
+  from the Import list, leaving them configured with no row to uncheck.
+  Providers you set up by hand (a typed key, or a login run through sonata)
+  are kept.
+
+### Added
+
+- **`sonata init`: a Remove provider entry on the providers menu.** It lists
+  every provider selected this run and removes the checked ones, including
+  custom providers and typed-key BYOK providers, which the Import screen never
+  lists and so could not be removed before.
 
 ## [0.15.4] - 2026-10-03
 
