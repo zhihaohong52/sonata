@@ -8,6 +8,15 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- **`sonata init`: a provider removed on the Import screen no longer shows up
+  in the models list.** Unchecking a provider dropped only its provider
+  entry; a key typed for it earlier in the same run stayed behind, so the
+  models step still asked that gateway what it serves and listed the answer,
+  and BYOK models chosen for it stayed selected. Removal now clears the
+  provider's key, models, custom-provider entry and rank position too.
+
 ## [0.15.4] - 2026-10-03
 
 ### Fixed

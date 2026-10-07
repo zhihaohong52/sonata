@@ -11,6 +11,7 @@ import {
   mergeLiveCandidates,
   addProviderCatalog,
   configuredProviderNames,
+  dropProviders,
   completeGatewayOrder,
   seedGatewayOrder,
   importableProviders,
@@ -338,6 +339,36 @@ describe('alreadyImportedKeys', () => {
     expect(alreadyImportedKeys(['opencode/google', 'pi/google'], importable)).toEqual(
       new Set(['opencode/google', 'pi/google']),
     );
+  });
+});
+
+describe('dropProviders', () => {
+  it('forgets every per-gateway record of a removed provider, and only its own', () => {
+    const state: InitState = {
+      providerKeys: ['opencode/acme'],
+      byokKeys: { beta: 'k-beta', acme: 'k-acme' },
+      byokModels: { beta: ['m1'], acme: ['a1'] },
+      liveModels: { beta: ['m2'], acme: ['a2'] },
+      customProviders: [{ name: 'beta', url: 'https://b' }],
+      customWireFormats: { beta: 'anthropic' },
+      gatewayOrder: ['beta', 'acme'],
+      nativeKeys: ['beta-m1', 'acme-a1', 'acme-fast'],
+    };
+    expect(dropProviders(state, new Set(['beta']))).toEqual({
+      providerKeys: ['opencode/acme'],
+      byokKeys: { acme: 'k-acme' },
+      byokModels: { acme: ['a1'] },
+      liveModels: { acme: ['a2'] },
+      customProviders: [],
+      customWireFormats: {},
+      gatewayOrder: ['acme'],
+      nativeKeys: ['acme-a1', 'acme-fast'],
+    });
+  });
+
+  it('returns the state untouched when nothing was removed', () => {
+    const state: InitState = { byokKeys: { beta: 'k' } };
+    expect(dropProviders(state, new Set())).toBe(state);
   });
 });
 

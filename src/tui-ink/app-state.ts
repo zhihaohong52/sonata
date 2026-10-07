@@ -178,6 +178,37 @@ export function addedGatewayNames(
 }
 
 /**
+ * Forget everything this run recorded for providers the user just removed.
+ *
+ * Dropping a provider's `providerKeys` entry is not enough on its own: a key
+ * typed for it lives on in `byokKeys`, which `addedGatewayNames` reads, so the
+ * models step still asked the removed gateway what it serves and listed the
+ * answer. Its BYOK models likewise stayed in `byokModels` and `nativeKeys`,
+ * where the models step's submit deliberately keeps them. Removal therefore
+ * clears every per-gateway record at once, by name.
+ */
+export function dropProviders(state: InitState, names: ReadonlySet<string>): InitState {
+  if (names.size === 0) return state;
+  const without = <V>(record: Record<string, V> | undefined): Record<string, V> | undefined =>
+    record === undefined
+      ? undefined
+      : Object.fromEntries(Object.entries(record).filter(([name]) => !names.has(name)));
+  const droppedKeys = new Set(Object.entries(state.byokModels ?? {})
+    .filter(([name]) => names.has(name))
+    .flatMap(([name, ids]) => ids.map((id) => byokCandidateKey(name, id))));
+  return {
+    ...state,
+    byokKeys: without(state.byokKeys),
+    byokModels: without(state.byokModels),
+    liveModels: without(state.liveModels),
+    customWireFormats: without(state.customWireFormats),
+    customProviders: state.customProviders?.filter((provider) => !names.has(provider.name)),
+    gatewayOrder: state.gatewayOrder?.filter((name) => !names.has(name)),
+    nativeKeys: state.nativeKeys?.filter((key) => !droppedKeys.has(key)),
+  };
+}
+
+/**
  * Whether the models step has anything to offer, and so whether it may be
  * skipped.
  *

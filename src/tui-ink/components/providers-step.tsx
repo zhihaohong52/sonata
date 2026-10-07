@@ -16,6 +16,7 @@ import {
   byokProviderRoute,
   completeGatewayOrder,
   configuredProviderNames,
+  dropProviders,
   importableProviders,
   importHint,
   providersForHarnesses,
@@ -362,11 +363,15 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
               const name = byokProviderName(key) ?? byKey.get(key);
               return name === undefined || !shownNames.has(name);
             });
-            return {
+            // Removal clears the rest of what this run recorded for the
+            // provider too — a key typed for it otherwise kept its models
+            // on the next screen.
+            const removed = new Set(importable.filter((p) => !checked.has(p.key)).map((p) => p.provider));
+            return dropProviders({
               ...current,
               providerKeys: [...new Set([...kept, ...keys])],
               credentialSources: nextCredentialSources,
-            };
+            }, removed);
           });
           setScreen(queue.length > 0 ? { kind: 'chatgpt-source', queue } : { kind: 'menu' });
         }}
