@@ -546,3 +546,39 @@ describe('a tier screen for a gateway whose slug is a versionless alias', () => 
     ]);
   });
 });
+
+// Unchecking a provider on the Import screen dropped only its providerKeys
+// entry. A key typed for it this run stayed in `byokKeys`, so the models step
+// still asked the removed gateway what it serves and listed the answer.
+describe('a provider removed on the import screen', () => {
+  it('contributes nothing to the models step, even with a key typed this run', async () => {
+    const available = { codex: null, opencode: { expiresInDays: null }, key: null, keyEntryAvailable: true };
+    const w = renderWizard({
+      ...firstRunData(),
+      providers: [
+        { key: 'opencode/acme', harness: 'opencode', provider: 'acme', count: 1 },
+        { key: 'opencode/beta', harness: 'opencode', provider: 'beta', count: 1 },
+      ],
+      candidates: [
+        { key: 'acme-fast', gateway: 'acme', id: 'fast', label: 'opencode/acme/fast' },
+        { key: 'beta-slow', gateway: 'beta', id: 'slow', label: 'opencode/beta/slow' },
+      ],
+      credentialAvailability: { acme: available, beta: available },
+      gatewayBaseUrls: { acme: 'https://acme.example/v1', beta: 'https://beta.example/v1' },
+      fetchModels: async () => ({ outcome: 'ok', models: [{ id: 'live-one' }] }),
+    });
+
+    await w.press(ENTER);
+    // Add provider → beta → type its key.
+    await w.press(DOWN, ENTER, DOWN, ENTER, 'test-key', ENTER);
+    // Import → every harness → check acme, uncheck beta.
+    await w.press(ENTER, ENTER, DOWN, SPACE, DOWN, SPACE, ENTER);
+    // Continue.
+    await w.press(DOWN, DOWN, ENTER);
+    await tick(50);
+
+    const frame = w.lastFrame() ?? '';
+    expect(frame).toContain('opencode/acme/fast');
+    expect(frame).not.toContain('beta');
+  });
+});
