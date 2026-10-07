@@ -103,7 +103,16 @@ export function hasInlineToolDefinitions(body: Buffer): boolean {
  *
  * A message left with no content is dropped: an empty content array is a 400
  * upstream, and a turn that was only tool changes has nothing else to say.
- * A tool keeps its `tools[]` position; additions append. Returns the same
+ * A tool keeps its `tools[]` position; additions append.
+ *
+ * Deferred tools (`defer_loading: true`) start active here, not withheld
+ * until an addition surfaces them. LiteLLM drops `defer_loading` and offers
+ * every `tools[]` entry as a plain function regardless (checked against
+ * 1.98.0's adapter), and Claude Code's ToolSearch surfaces a deferred tool
+ * through `tool_reference` blocks inside a tool result, which LiteLLM drops
+ * too — so withholding one would make it uncallable on this path, not lazy.
+ *
+ * Returns the same
  * buffer when there is nothing to fold, so a request without these blocks is
  * untouched.
  */
