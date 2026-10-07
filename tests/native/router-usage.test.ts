@@ -1,6 +1,7 @@
+import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
 
-import { clearCooldowns, routeRequest, TIER_COOLDOWN_MS, type RouterDeps } from '../../src/native/router.js';
+import { clearCooldowns, respond, routeRequest, TIER_COOLDOWN_MS, type RouterDeps } from '../../src/native/router.js';
 import type { LedgerRow } from '../../src/ledger.js';
 
 const DELTA = 'event: message_delta\ndata: {"type":"message_delta","usage":{"input_tokens":100,"output_tokens":7}}\n\n';
@@ -248,6 +249,50 @@ describe('router — text-form tool calls', () => {
   const withTools = (model: string) => ({
     ...req(model),
     body: Buffer.from(JSON.stringify({ model, messages: [], tools: [{ name: 'Bash', input_schema: { type: 'object', properties: { command: { type: 'string' } } } }] })),
+  });
+
+  it('cancels upstream when the client disconnects through the full wrapper chain', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    let cancelled = false;
+    const message = (type: string, data: Record<string, unknown>) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+    const firstChunk = [
+      message('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+      message('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      message('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'hello' } }),
+    ].join('');
+    const d = deps(rows, () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode(firstChunk)); },
+      cancel() { cancelled = true; },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+    const request = {
+      ...withTools('sonata-code-simple'),
+      body: Buffer.from(JSON.stringify({
+        model: 'sonata-code-simple', messages: [{ role: 'user', content: 'hello' }],
+        tools: [{ name: 'Bash', input_schema: { type: 'object', properties: { command: { type: 'string' } } } }],
+      })),
+    };
+    const routed = await routeRequest(request, d);
+    const chunks: string[] = [];
+    const res = Object.assign(new EventEmitter(), {
+      destroyed: false, writableEnded: false,
+      writeHead: () => undefined,
+      write: (chunk: Uint8Array) => {
+        chunks.push(Buffer.from(chunk).toString());
+        res.destroyed = true;
+        res.emit('close');
+        return true;
+      },
+      end: () => undefined,
+    });
+    await respond(res as never, routed);
+    const deadline = Date.now() + 2_000;
+    while (rows.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(cancelled).toBe(true);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].complete).toBe(false);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toContain('hello');
   });
 
   it('recovers a text tool call, rewrites stop_reason, and records it', async () => {

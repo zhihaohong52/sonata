@@ -175,6 +175,15 @@ describe('rewriteTextToolCallStream', () => {
     }
   });
 
+  it('normalises a long CRLF-framed event arriving one byte at a time', async () => {
+    const body = 'now: ' + CALL + ' done';
+    const full = textStream([body]).replace(/\n/g, '\r\n');
+    const oneByte = Array.from({ length: full.length }, () => 1);
+    const { events, counts } = await run(full, oneByte);
+    expect(counts).toEqual({ recovered: 1, unparsed: 0 });
+    expect(text(events)).toBe('now:  done');
+  });
+
   it('recovers markup split across text deltas', async () => {
     const { counts, events } = await run(textStream(['Go <tool_', 'call><function=Bash><parameter=command>ls', ' /tmp</parameter></function></tool_call>']));
     expect(counts).toEqual({ recovered: 1, unparsed: 0 });
@@ -278,5 +287,20 @@ describe('rewriteTextToolCallJson', () => {
   it('returns the identical buffer when there is nothing to recover', () => {
     const body = Buffer.from(JSON.stringify({ type: 'message', content: [{ type: 'text', text: 'hi' }], stop_reason: 'end_turn' }));
     expect(rewriteTextToolCallJson(body, tools).body).toBe(body);
+  });
+  it('keeps whitespace before the first recovered call', () => {
+    const body = Buffer.from(JSON.stringify({ type: 'message', content: [{ type: 'text', text: '\n\n' + CALL }], stop_reason: 'end_turn' }));
+    const { body: out } = rewriteTextToolCallJson(body, tools, () => 'toolu_x');
+    expect(JSON.parse(out.toString()).content).toEqual([
+      { type: 'text', text: '\n\n' },
+      { type: 'tool_use', id: 'toolu_x', name: 'Bash', input: { command: 'ls /tmp' } },
+    ]);
+  });
+  it('keeps the original block fields on the first text piece', () => {
+    const body = Buffer.from(JSON.stringify({ type: 'message', content: [{ type: 'text', text: 'Now: ' + CALL, citations: [{ x: 1 }] }], stop_reason: 'end_turn' }));
+    const { body: out } = rewriteTextToolCallJson(body, tools, () => 'toolu_x');
+    const content = JSON.parse(out.toString()).content;
+    expect(content[0]).toEqual({ type: 'text', text: 'Now: ', citations: [{ x: 1 }] });
+    expect(content[1]).toMatchObject({ type: 'tool_use', id: 'toolu_x' });
   });
 });
