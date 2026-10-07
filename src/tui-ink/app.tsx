@@ -20,6 +20,7 @@ import {
   acceptRemainingTiers,
   tierPickerKeys,
   withoutExpandedBareCandidates,
+  withoutUnofferedModels,
   type AvailableCredentials,
   type CandidateOption,
   type ProviderOption,
@@ -289,6 +290,8 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
           // design, so deciding from that set alone skipped the models step
           // for exactly the provider whose key was just typed.
           setStep(hasModelsToPick(candidates, addedGatewayNames(state)) ? 2 : 3);
+          // An updater, so it lands after the gateway order just recorded.
+          setState((current) => withoutUnofferedModels(current, data.candidates, providers));
         }}
         onBack={back}
         onCancel={cancel}

@@ -26,6 +26,7 @@ import {
   removeProviders,
   tierPickerKeys,
   withoutExpandedBareCandidates,
+  withoutUnofferedModels,
   type CandidateOption,
   type ProviderOption,
 } from '../../src/tui-ink/app-state.js';
@@ -429,6 +430,32 @@ describe('deselectHarnesses', () => {
   it('reads every installed harness as selected on a first run', () => {
     const state: InitState = { providerKeys: ['opencode/acme'] };
     expect(deselectHarnesses(state, ['pi'], installed, providers).providerKeys).toEqual([]);
+  });
+});
+
+describe('withoutUnofferedModels', () => {
+  const providers: ProviderOption[] = [
+    { key: 'opencode/acme', harness: 'opencode', provider: 'acme', count: 1 },
+    { key: 'opencode/beta', harness: 'opencode', provider: 'beta', count: 1 },
+  ];
+  const candidates: CandidateOption[] = [
+    { key: 'acme-fast', gateway: 'acme', id: 'fast', label: 'opencode/acme/fast' },
+    { key: 'beta-slow', gateway: 'beta', id: 'slow', label: 'opencode/beta/slow' },
+  ];
+
+  it('drops a model only a deselected provider offers, keeping unexplained and BYOK keys', () => {
+    const state: InitState = {
+      providerKeys: ['opencode/beta', 'byok/gamma'],
+      byokModels: { gamma: ['g1'] },
+      nativeKeys: ['acme-fast', 'beta-slow', 'saved-elsewhere', 'gamma-g1'],
+    };
+    expect(withoutUnofferedModels(state, candidates, providers).nativeKeys)
+      .toEqual(['beta-slow', 'saved-elsewhere', 'gamma-g1']);
+  });
+
+  it('returns the state untouched when every selected model is still offered', () => {
+    const state: InitState = { providerKeys: ['opencode/acme'], nativeKeys: ['acme-fast'] };
+    expect(withoutUnofferedModels(state, candidates, providers)).toBe(state);
   });
 });
 
