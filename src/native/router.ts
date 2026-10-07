@@ -14,7 +14,7 @@ import { joinCandidate, splitCandidate, wireEffort, type Effort } from '../effor
 import { createUsageCollector, type UsageTokens, usageFromJsonBody } from './usage.js';
 import { rewriteTextToolCallJson, rewriteTextToolCallStream, toolSchemas, type TextToolCallCounts } from './text-tool-calls.js';
 import { handleUiRequest, type UiDeps } from './ui.js';
-import { advertisesInlineTools, clearInlineToolRefusals, foldInlineToolChanges, hasInlineToolDefinitions, inlineToolsRefusedFor, INLINE_TOOLS_REFUSAL, markInlineToolsRefused } from './inline-tools.js';
+import { advertisesInlineTools, clearInlineToolRefusals, describeInlineToolChanges, firstInlineToolNote, foldInlineToolChanges, hasInlineToolDefinitions, inlineToolsRefusedFor, INLINE_TOOLS_REFUSAL, markInlineToolsRefused } from './inline-tools.js';
 
 export interface TierRoute {
   key: string;
@@ -1525,6 +1525,16 @@ function litellmBody(body: Buffer): Buffer {
  * (verified on 2.1.292 only) treats it as an API error and ends that agent.
  */
 function inlineToolsRefusal(req: RouterRequest, conversation: string | undefined, deps: RouterDeps, alias: string): RouterResponse | undefined {
+  // Once per conversation: which shape Claude Code sent decides which layer
+  // ran, and nothing else in the log would say.
+  const changes = conversation === undefined ? undefined : describeInlineToolChanges(req.body);
+  if (changes !== undefined && firstInlineToolNote(conversation!)) {
+    deps.log?.(
+      `router: ${alias} carries tool changes inside messages (${changes.byValue} by value, ` +
+      `${changes.byReference} by reference, ${changes.removals} removed; inline beta ` +
+      `${advertisesInlineTools(req.headers) ? 'offered' : 'not offered'})`,
+    );
+  }
   if (conversation === undefined || !advertisesInlineTools(req.headers) || !hasInlineToolDefinitions(req.body)) return undefined;
   if (inlineToolsRefusedFor(conversation)) {
     deps.log?.(`router: ${alias} still defines tools inside messages after the refusal; folding them into tools[]`);

@@ -145,6 +145,24 @@ export function foldInlineToolChanges(body: Buffer): Buffer {
   return Buffer.from(JSON.stringify(next));
 }
 
+/** What a request's tool-change blocks carry, for the router's log; undefined when there are none. */
+export function describeInlineToolChanges(body: Buffer): { byValue: number; byReference: number; removals: number } | undefined {
+  if (!body.includes('"tool_addition"') && !body.includes('"tool_removal"')) return undefined;
+  const messages = parse(body)?.messages;
+  if (!Array.isArray(messages)) return undefined;
+  const counts = { byValue: 0, byReference: 0, removals: 0 };
+  for (const message of messages) {
+    if (!isRecord(message) || !Array.isArray(message.content)) continue;
+    for (const block of message.content.filter(isToolChange)) {
+      const kind = isRecord(block.tool) ? block.tool.type : undefined;
+      if (block.type === 'tool_removal') counts.removals += 1;
+      else if (kind === 'tool_definition') counts.byValue += 1;
+      else counts.byReference += 1;
+    }
+  }
+  return counts.byValue + counts.byReference + counts.removals > 0 ? counts : undefined;
+}
+
 /**
  * Conversations already sent the refusal. Bounded oldest-first, like the
  * router's sticky map: a key evicted early only costs that conversation one
@@ -167,7 +185,27 @@ export function markInlineToolsRefused(conversation: string): void {
   }
 }
 
+/**
+ * Conversations whose inline tool changes have been logged, so the router
+ * says once what a conversation sent rather than on every later turn that
+ * still carries the same blocks. Bounded like `refused`.
+ */
+const noted = new Set<string>();
+
+/** True the first time a conversation is seen here, false after. */
+export function firstInlineToolNote(conversation: string): boolean {
+  if (noted.has(conversation)) return false;
+  noted.add(conversation);
+  while (noted.size > INLINE_TOOLS_REFUSED_MAX) {
+    const oldest = noted.values().next().value;
+    if (oldest === undefined) break;
+    noted.delete(oldest);
+  }
+  return true;
+}
+
 /** Test seam, cleared with the router's other per-conversation memory. */
 export function clearInlineToolRefusals(): void {
   refused.clear();
+  noted.clear();
 }

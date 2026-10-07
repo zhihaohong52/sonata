@@ -1598,6 +1598,13 @@ describe('routeRequest — tools defined inside messages', () => {
     expect(logs.some((line) => line.includes('still defines tools inside messages'))).toBe(true);
   });
 
+  it('logs once per conversation which shape of tool change arrived', async () => {
+    await serveFully(request('sonata-code-normal'), deps());
+    await serveFully(request('sonata-code-normal'), deps());
+    const notes = logs.filter((line) => line.includes('carries tool changes inside messages'));
+    expect(notes).toEqual(['router: sonata-code-normal carries tool changes inside messages (1 by value, 0 by reference, 0 removed; inline beta not offered)']);
+  });
+
   it('folds without refusing when the client did not offer the beta', async () => {
     const res = await serveFully(request('sonata-code-normal'), deps());
     expect(res.status).toBe(200);
