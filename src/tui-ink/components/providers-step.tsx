@@ -16,10 +16,12 @@ import {
   byokProviderRoute,
   completeGatewayOrder,
   configuredProviderNames,
+  deselectHarnesses,
   dropProviders,
   importableProviders,
   importHint,
   providersForHarnesses,
+  removeProviders,
   seedGatewayOrder,
   validateCustomProviderName,
   validateProviderUrl,
@@ -96,6 +98,7 @@ type Screen =
   | { kind: 'rank' }
   | { kind: 'import-harnesses' }
   | { kind: 'import' }
+  | { kind: 'remove' }
   | { kind: 'chatgpt-source'; queue: string[] }
   | { kind: 'pick' }
   | { kind: 'custom-name' }
@@ -263,10 +266,12 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
 
   if (screen.kind === 'menu') {
     const importable = importableProviders(providers, credentialAvailability);
-    const choices: Array<{ value: 'import' | 'add' | 'continue'; label: string }> = [];
+    const choices: Array<{ value: 'import' | 'add' | 'continue' | 'remove'; label: string }> = [];
     if (importable.length > 0) choices.push({ value: 'import', label: 'Import from other harnesses' });
     choices.push({ value: 'add', label: 'Add provider' });
     if (configured.length > 0) choices.push({ value: 'continue', label: 'Continue' });
+    // Last, so Continue keeps its place in the menu.
+    if (selectedGateways.length > 0) choices.push({ value: 'remove', label: 'Remove provider' });
     return (
       <Box flexDirection="column">
         {problem !== undefined && <Text color={palette.HIGH}>{problem}</Text>}
@@ -279,6 +284,7 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
             setProblem(undefined);
             if (choice === 'import') setScreen({ kind: 'import-harnesses' });
             else if (choice === 'add') setScreen({ kind: 'pick' });
+            else if (choice === 'remove') setScreen({ kind: 'remove' });
             else if (selectedGateways.length < 2) {
               // Nothing to order: one gateway is trivially first.
               onChange((current) => ({ ...current, gatewayOrder: [...selectedGateways] }));
@@ -301,7 +307,9 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
         items={installed.map((harness) => ({ value: harness.name, label: harness.name }))}
         initialSelected={new Set(state.harnesses ?? installed.map((harness) => harness.name))}
         onSubmit={(names) => {
-          onChange((current) => ({ ...current, harnesses: names as string[] }));
+          onChange((current) => deselectHarnesses(
+            current, names as string[], installed.map((harness) => harness.name), providers,
+          ));
           setScreen({ kind: 'import' });
         }}
         onBack={() => setScreen({ kind: 'menu' })}
@@ -377,6 +385,24 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
         }}
         onBack={() => setScreen({ kind: 'import-harnesses' })}
         onCancel={onCancel}
+      />
+    );
+  }
+
+  if (screen.kind === 'remove') {
+    return (
+      <MultiSelect
+        key="providers-remove"
+        title="Remove which providers?"
+        items={selectedGateways.map((name) => ({ value: name, label: name }))}
+        initialSelected={new Set<string>()}
+        onSubmit={(names: string[]) => {
+          onChange((current) => removeProviders(current, new Set(names), providers));
+          setScreen({ kind: 'menu' });
+        }}
+        onBack={() => setScreen({ kind: 'menu' })}
+        onCancel={onCancel}
+        filterable={false}
       />
     );
   }

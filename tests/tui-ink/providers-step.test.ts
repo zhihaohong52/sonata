@@ -369,3 +369,91 @@ describe('ChatGPT login source in ProvidersStep', () => {
       .toEqual(['chatgpt', 'grok']);
   });
 });
+
+describe('removing providers in ProvidersStep', () => {
+  const DOWN = '\u001B[B';
+  const available: AvailableCredentials = { codex: null, opencode: { expiresInDays: null }, key: null, keyEntryAvailable: true };
+
+  function renderProviders(initial: InitState, overrides: Record<string, unknown> = {}) {
+    let state: InitState = initial;
+    const app = render(React.createElement(ProvidersStep, {
+      home: '/tmp/sonata-remove-test',
+      harnesses: [],
+      providers: [],
+      byokProviders: [],
+      credentialAvailability: {},
+      gatewayAuth: {},
+      storedKeys: {},
+      state,
+      onChange: (updater: (current: InitState) => InitState) => { state = updater(state); },
+      onContinue: () => {},
+      onBack: () => {},
+      onCancel: () => {},
+      ...overrides,
+    }));
+    return {
+      app,
+      press: async (...keys: string[]) => {
+        for (const key of keys) { app.stdin.write(key); await tick(); }
+      },
+      state: () => state,
+    };
+  }
+
+  // A custom provider is never on the Import list, so nothing could take one
+  // back out once added.
+  it('removes a custom provider and everything recorded for it', async () => {
+    const w = renderProviders({
+      providerKeys: ['byok/alpha', 'byok/beta'],
+      customProviders: [
+        { name: 'alpha', url: 'https://alpha.example/v1' },
+        { name: 'beta', url: 'https://beta.example/v1' },
+      ],
+      byokKeys: { alpha: 'k-alpha', beta: 'k-beta' },
+      byokModels: { alpha: ['a1'], beta: ['b1'] },
+      nativeKeys: ['alpha-a1', 'beta-b1'],
+    });
+    // Nothing importable, so the menu is Add provider / Continue / Remove provider.
+    await w.press(DOWN, DOWN, ENTER);
+    expect(w.app.lastFrame()).toContain('Remove which providers?');
+    await w.press(DOWN, SPACE, ENTER);
+    expect(w.app.lastFrame()).toContain('Set up providers');
+    expect(w.state()).toEqual({
+      providerKeys: ['byok/beta'],
+      customProviders: [{ name: 'beta', url: 'https://beta.example/v1' }],
+      byokKeys: { beta: 'k-beta' },
+      byokModels: { beta: ['b1'] },
+      nativeKeys: ['beta-b1'],
+    });
+    w.app.unmount();
+  });
+
+  it('offers no Remove provider row when nothing is configured', async () => {
+    const w = renderProviders({});
+    expect(w.app.lastFrame()).not.toContain('Remove provider');
+    w.app.unmount();
+  });
+
+  // Unchecking a harness only hid its providers from the Import list, so they
+  // stayed configured with no row left to uncheck them from.
+  it('drops what was imported from a harness unchecked on the harness screen', async () => {
+    const w = renderProviders({
+      harnesses: ['opencode', 'pi'],
+      providerKeys: ['opencode/acme', 'pi/beta'],
+    }, {
+      harnesses: [{ name: 'opencode', installed: true }, { name: 'pi', installed: true }],
+      providers: [
+        { key: 'opencode/acme', harness: 'opencode', provider: 'acme', count: 1 },
+        { key: 'pi/beta', harness: 'pi', provider: 'beta', count: 1 },
+      ],
+      credentialAvailability: { acme: available, beta: available },
+    });
+    await w.press(ENTER); // Import from other harnesses
+    expect(w.app.lastFrame()).toContain('Import from which harnesses?');
+    // Rows: the select-all toggle, opencode, pi — uncheck pi.
+    await w.press(DOWN, DOWN, SPACE, ENTER);
+    expect(w.state().harnesses).toEqual(['opencode']);
+    expect(w.state().providerKeys).toEqual(['opencode/acme']);
+    w.app.unmount();
+  });
+});

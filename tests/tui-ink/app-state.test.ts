@@ -11,6 +11,7 @@ import {
   mergeLiveCandidates,
   addProviderCatalog,
   configuredProviderNames,
+  deselectHarnesses,
   dropProviders,
   completeGatewayOrder,
   seedGatewayOrder,
@@ -22,6 +23,7 @@ import {
   validateProviderUrl,
   providersForHarnesses,
   reduceInit,
+  removeProviders,
   tierPickerKeys,
   withoutExpandedBareCandidates,
   type CandidateOption,
@@ -369,6 +371,64 @@ describe('dropProviders', () => {
   it('returns the state untouched when nothing was removed', () => {
     const state: InitState = { byokKeys: { beta: 'k' } };
     expect(dropProviders(state, new Set())).toBe(state);
+  });
+});
+
+describe('removeProviders', () => {
+  const providers: ProviderOption[] = [
+    { key: 'opencode/acme', harness: 'opencode', provider: 'acme', count: 1 },
+    { key: 'pi/acme', harness: 'pi', provider: 'acme', count: 1 },
+    { key: 'config/beta', harness: 'config', provider: 'beta', count: 1 },
+  ];
+
+  it('drops every entry naming the provider, whichever harness it came through', () => {
+    const state: InitState = {
+      providerKeys: ['opencode/acme', 'pi/acme', 'config/beta', 'byok/gamma'],
+      byokKeys: { acme: 'k' },
+      customProviders: [{ name: 'gamma', url: 'https://g' }],
+    };
+    expect(removeProviders(state, new Set(['acme', 'gamma']), providers)).toMatchObject({
+      providerKeys: ['config/beta'],
+      byokKeys: {},
+      customProviders: [],
+    });
+  });
+});
+
+describe('deselectHarnesses', () => {
+  const providers: ProviderOption[] = [
+    { key: 'opencode/acme', harness: 'opencode', provider: 'acme', count: 1 },
+    { key: 'opencode/beta', harness: 'opencode', provider: 'beta', count: 1 },
+    { key: 'pi/beta', harness: 'pi', provider: 'beta', count: 1 },
+    { key: 'opencode/gamma', harness: 'opencode', provider: 'gamma', count: 1 },
+    { key: 'opencode/delta', harness: 'opencode', provider: 'delta', count: 1 },
+  ];
+  const installed = ['opencode', 'pi'];
+
+  it("removes what came from an unchecked harness, keeping hand-added providers and other harnesses' entries", () => {
+    const state: InitState = {
+      harnesses: ['opencode', 'pi'],
+      providerKeys: ['opencode/acme', 'opencode/beta', 'pi/beta', 'opencode/gamma', 'opencode/delta'],
+      byokKeys: { gamma: 'typed' },
+      credentialSources: { acme: 'opencode', delta: 'sonata' },
+      gatewayOrder: ['acme', 'beta', 'gamma', 'delta'],
+    };
+    expect(deselectHarnesses(state, ['pi'], installed, providers)).toMatchObject({
+      harnesses: ['pi'],
+      providerKeys: ['pi/beta', 'opencode/gamma', 'opencode/delta'],
+      credentialSources: { delta: 'sonata' },
+      gatewayOrder: ['beta', 'gamma', 'delta'],
+    });
+  });
+
+  it('removes nothing for a harness that was never selected', () => {
+    const state: InitState = { harnesses: ['pi'], providerKeys: ['opencode/acme'] };
+    expect(deselectHarnesses(state, ['pi'], installed, providers).providerKeys).toEqual(['opencode/acme']);
+  });
+
+  it('reads every installed harness as selected on a first run', () => {
+    const state: InitState = { providerKeys: ['opencode/acme'] };
+    expect(deselectHarnesses(state, ['pi'], installed, providers).providerKeys).toEqual([]);
   });
 });
 
