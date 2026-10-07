@@ -582,3 +582,37 @@ describe('a provider removed on the import screen', () => {
     expect(frame).not.toContain('beta');
   });
 });
+
+// With nothing left to pick, the models step is skipped — and with it the
+// picker that would have dropped a removed provider's selected model.
+describe('a provider removed when the models step is then skipped', () => {
+  it('leaves none of its models selected', async () => {
+    const w = renderWizard({
+      ...firstRunData(),
+      providers: [
+        { key: 'opencode/acme', harness: 'opencode', provider: 'acme', count: 1 },
+        { key: 'config/beta', harness: 'config', provider: 'beta', count: 1 },
+      ],
+      candidates: [{ key: 'acme-fast', gateway: 'acme', id: 'fast', label: 'opencode/acme/fast' }],
+      initialStateByScope: {
+        project: {
+          configScope: 'project',
+          providerKeys: ['opencode/acme', 'config/beta'],
+          nativeKeys: ['acme-fast', 'beta-saved'],
+        },
+      },
+    });
+
+    await w.press(ENTER);
+    // Menu: Add provider / Continue / Remove provider → remove acme.
+    await w.press(DOWN, DOWN, ENTER, DOWN, SPACE, ENTER);
+    // Continue, straight past the models step to Roles.
+    await w.press(DOWN, ENTER);
+    expect(w.lastFrame()).toContain('Roles');
+    await w.press(ESC);
+    await tick();
+
+    expect(w.result()?.state.providerKeys).toEqual(['config/beta']);
+    expect(w.result()?.state.nativeKeys).toEqual(['beta-saved']);
+  });
+});

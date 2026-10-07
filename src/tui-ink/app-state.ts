@@ -209,6 +209,30 @@ export function dropProviders(state: InitState, names: ReadonlySet<string>): Ini
   };
 }
 
+/**
+ * Drop selected models that no selected provider offers any more.
+ *
+ * `dropProviders` cannot do this alone: a harness candidate's key only looks
+ * like `<gateway>-<id>`, and the providers screen has no candidate set to
+ * resolve it through. The models step's picker would drop such a key — but
+ * that step is skipped when nothing is left to pick, so a removed provider's
+ * model stayed selected and reached the tiers. A key no candidate explains is
+ * kept (a saved key can outlive the candidate behind it), as is a BYOK model.
+ */
+export function withoutUnofferedModels(
+  state: InitState,
+  candidates: CandidateOption[],
+  providers: ProviderOption[],
+): InitState {
+  if (state.nativeKeys === undefined) return state;
+  const offered = new Set(candidatesForProviders(candidates, providers, state.providerKeys).map((c) => c.key));
+  const byok = new Set(Object.entries(state.byokModels ?? {})
+    .flatMap(([name, ids]) => ids.map((id) => byokCandidateKey(name, id))));
+  const unoffered = new Set(candidates.map((c) => c.key).filter((key) => !offered.has(key) && !byok.has(key)));
+  if (!state.nativeKeys.some((key) => unoffered.has(key))) return state;
+  return { ...state, nativeKeys: state.nativeKeys.filter((key) => !unoffered.has(key)) };
+}
+
 /** The provider name behind a `providerKeys` entry, or undefined. */
 function providerNameOf(key: string, byKey: ReadonlyMap<string, string>): string | undefined {
   return byokProviderName(key) ?? byKey.get(key);
