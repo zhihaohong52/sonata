@@ -4,7 +4,7 @@ import { MultiSelect } from './multi-select.js';
 import { mergeLiveCandidates, type CandidateOption } from '../app-state.js';
 import { isAnthropicRoutedName, isOauthGatewayAuth, type NativeGatewayAuth } from '../../config.js';
 import { fetchModels as defaultFetchModels } from '../../native/models.js';
-import { hasTaskCost, type AaCatalog } from '../../catalog.js';
+import { hasTaskCost, lookupModel, type AaCatalog } from '../../catalog.js';
 import { usePalette } from '../theme-context.js';
 
 export interface ModelsStepProps {
@@ -138,22 +138,32 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
   // Gateways added this run are absent from the startup list, so their prefix
   // would survive `normalizeModelName` and the lookup would miss.
   const names = [...new Set([...gatewayNames, ...merged.map((candidate) => candidate.gateway)])];
+  const upstreamOf = (candidate: CandidateOption) =>
+    upstreamForCandidate === undefined ? undefined : () => upstreamForCandidate(candidate);
   const costed = aa === undefined
     ? merged
-    : merged.filter((candidate) => hasTaskCost(
-      candidate.key,
-      aa,
-      names,
-      upstreamForCandidate === undefined ? undefined : () => upstreamForCandidate(candidate),
-    ));
+    : merged.filter((candidate) => hasTaskCost(candidate.key, aa, names, upstreamOf(candidate)));
   const offered = costed;
   const excluded = merged.filter((candidate) => !costed.includes(candidate));
+  // Two different reasons, with two different fixes. A model the catalog does
+  // not hold at all is usually newer than the cache — a codex release the day
+  // after `catalog update` — and refreshing is the fix; one AA scores without
+  // a cost per task will not be fixed by refreshing. One line used to say the
+  // second for both, so a stale cache read as AA's verdict on the model.
+  const unknown = aa === undefined ? [] : excluded.filter((candidate) =>
+    lookupModel(candidate.key, aa, names, upstreamOf(candidate)).source !== 'aa');
+  const uncosted = excluded.filter((candidate) => !unknown.includes(candidate));
   const refreshed = Object.keys(live).length;
   return (
     <Box flexDirection="column">
-      {excluded.length > 0 && (
+      {unknown.length > 0 && (
+        <Text color={palette.TEXT}>
+          not offered — not in the ranking catalog fetched {aa?.fetchedAt.slice(0, 10)}: {unknown.map((candidate) => candidate.key).join(', ')}. Run `sonata catalog update`, then `sonata init` again.
+        </Text>
+      )}
+      {uncosted.length > 0 && (
         <Text color={palette.MUTED}>
-          excluded {excluded.map((candidate) => candidate.key).join(', ')} — AA publishes no usable cost-per-task; add by hand to sonata.toml
+          not offered — AA publishes no usable cost-per-task: {uncosted.map((candidate) => candidate.key).join(', ')}; add by hand to sonata.toml
         </Text>
       )}
       {refreshed > 0 && (

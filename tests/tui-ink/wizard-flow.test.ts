@@ -74,9 +74,37 @@ describe('the wizard on a first run', () => {
     });
     await w.press(ENTER);
     await w.press(ENTER, ENTER, 'test-key', ENTER, DOWN, ENTER);
-    expect(w.lastFrame()).toContain('excluded acme-deep');
+    expect(w.lastFrame()).toContain('acme-deep');
     expect(w.lastFrame()).toContain('AA publishes no usable cost-per-task');
     expect(w.lastFrame()).toContain('opencode/acme/fast');
+  });
+
+  // A model newer than the cache — a codex release after the last `catalog
+  // update` — was reported as "AA publishes no cost-per-task", which reads as
+  // AA's verdict on the model rather than a stale cache with a one-command fix.
+  it('says a model missing from the catalog needs a catalog update', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-wizard-unknown-'));
+    const path = aaCatalogPath(home);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      fetchedAt: '2026-09-15T00:00:00Z',
+      models: { fast: { codingIndex: 60, blendedPriceUsd: 0.2, costPerTask: 0.1 } },
+    }));
+    const w = renderWizard({
+      ...firstRunData(),
+      home,
+      candidates: [
+        { key: 'acme-fast', gateway: 'acme', id: 'fast', label: 'opencode/acme/fast' },
+        { key: 'acme-new', gateway: 'acme', id: 'new', label: 'opencode/acme/new' },
+      ],
+    });
+    await w.press(ENTER);
+    await w.press(ENTER, ENTER, 'test-key', ENTER, DOWN, ENTER);
+    const frame = w.lastFrame() ?? '';
+    expect(frame).toContain('not in the ranking catalog fetched 2026-09-15');
+    expect(frame).toContain('acme-new');
+    expect(frame).toContain('sonata catalog update');
+    expect(frame).not.toContain('AA publishes no usable cost-per-task');
   });
 
   it('renders non-empty rankings on all three tiers and lets them be submitted', async () => {
