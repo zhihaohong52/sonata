@@ -6,6 +6,31 @@ Read this before starting new work. It records what is done, what is
 deliberately *not* done, what to pick up if you want work, and the traps that
 have cost previous sessions real time.
 
+## mimo text tool calls (2026-10-07) — open follow-ups
+
+- **A wrong diagnosis, closed as PR #81.** The decision_model failures (mimo
+  writing tool calls as text, agents ending without `SubagentHandback`) were
+  first blamed on Claude Code defining tools inside `messages`
+  (`tool_addition` blocks LiteLLM drops). It does not: Claude Code 2.1.292
+  sends changed tools in `tools[]`. 70+ requests through a build that logged
+  such blocks carried none, and the failing agent `aa5dcc…` had full context
+  (89–114k tokens) on sol, astra and mimo in the turns right after its
+  tool-set switch. Don't revisit that theory without a captured body.
+- **What fits:** every failing turn was mimo-v2.6-pro via opencode-go at
+  4–10k input tokens with no cache, and every working turn on the same alias
+  was 100k+. That is one backend behind the gateway answering from a truncated
+  prompt with no tool-call parser — the 2026-10-02 spec's hypothesis. It's
+  upstream, but sonata routes `normal` to it first in decision_model; demoting
+  it there is the only mitigation in hand.
+- **Unexplained: recovery went 0 for 6** while replaying the transcript text
+  against a real `tools[]` recovers both calls. Set
+  `SONATA_CAPTURE_TEXT_CALLS_DIR` on `sonata serve` and read the next capture:
+  it holds the raw upstream stream and the tool names recovery searched.
+- **`No tool call found for function call output with call_id …` is still
+  live** after 0.15.5: 3 on `gpt-6-luna@low` and 7 on `gpt-6.1-sol@xhigh` in
+  one decision_model serve log (`serve-2026-10-07T14-32-23-073Z.log`).
+  Claude Code's retry usually succeeds, so it looks fixed; it is not.
+
 ## 0.13.1 (2026-09-27) — open follow-ups
 
 A patch release of three fixes (PR #69), all found because a "full audit"

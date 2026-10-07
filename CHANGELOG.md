@@ -8,6 +8,14 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- **`SONATA_CAPTURE_TEXT_CALLS_DIR`**, an opt-in diagnosis capture for the
+  router. When a response carries a tool call written as text that cannot be
+  recovered, the router saves the raw upstream stream, the outbound request
+  and the tool names it searched. Off by default: the files hold whole
+  conversations.
+
 ## [0.15.5] - 2026-10-07
 
 ### Fixed
