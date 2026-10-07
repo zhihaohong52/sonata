@@ -8,6 +8,19 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- **Foreign models behind LiteLLM now see tools Claude Code adds
+  mid-conversation.** Claude Code 2.1.292 delivers a changed tool set (MCP
+  servers connecting after the first turn, `SubagentHandback`) as
+  `tool_addition` blocks inside `messages`, which LiteLLM drops — so the model
+  was offered no tools at all, mimo-v2.6-pro wrote its calls as unrecoverable
+  `<tool_call>` text, and agents could not hand back their report. The router
+  now answers such a request once per conversation with the 400 that makes
+  Claude Code declare every tool in `tools[]` instead, and folds any inline
+  tool changes into `tools[]` itself after that. Text tool call recovery reads
+  the folded list too. Anthropic requests and direct-only tiers are untouched.
+
 ## [0.15.5] - 2026-10-07
 
 ### Fixed

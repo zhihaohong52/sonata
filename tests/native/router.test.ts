@@ -1548,6 +1548,84 @@ describe('routeRequest — system turns', () => {
   });
 });
 
+describe('routeRequest — tools defined inside messages', () => {
+  const BETA = 'claude-code-20250219,inline-tools-2026-09-15,mid-conversation-tool-changes-2026-07-01';
+  const bash = { name: 'Bash', description: 'run', input_schema: { type: 'object', properties: { command: { type: 'string' } } } };
+  // Claude Code 2.1.292's shape once MCP servers connect after the first turn.
+  const payload = (model: string) => ({
+    model,
+    tools: [{ name: 'Read', input_schema: { type: 'object' } }],
+    messages: [
+      { role: 'user', content: 'task' },
+      { role: 'assistant', content: [{ type: 'text', text: 'reading' }] },
+      { role: 'system', content: [{ type: 'tool_addition', tool: { type: 'tool_definition', definition: bash } }] },
+      { role: 'user', content: 'go on' },
+    ],
+  });
+  const request = (model: string, beta?: string) => ({
+    method: 'POST', url: '/v1/messages',
+    headers: { 'content-type': 'application/json', ...(beta === undefined ? {} : { 'anthropic-beta': beta }) },
+    body: Buffer.from(JSON.stringify(payload(model))),
+  });
+  const tier = (transport?: 'direct') => () => ({
+    role: 'code', tier: 'normal',
+    routes: [{ key: 'mimo', native: { gateway: 'g', id: 'mimo', ...(transport === undefined ? {} : { transport, baseUrl: 'http://direct' }) } }],
+  });
+  let seen: string[];
+  let logs: string[];
+  const capture: typeof fetch = (async (_url: string, init: RequestInit) => {
+    seen.push(typeof init.body === 'string' ? init.body : Buffer.from(init.body as Uint8Array).toString());
+    return new Response(COMPLETE_BODY, { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const deps = (resolveTier = tier()) => ({ ...base, fetch: capture, resolveTier, log: (line: string) => logs.push(line) });
+
+  beforeEach(() => { clearCooldowns(); seen = []; logs = []; });
+
+  it('refuses once with the 400 Claude Code falls back on, without calling upstream, then folds', async () => {
+    const first = await serveFully(request('sonata-code-normal', BETA), deps());
+    expect(first.status).toBe(400);
+    expect(JSON.parse((first.body as Buffer).toString()).error.message).toMatch(/Input tag 'tool_definition'/);
+    expect(seen).toHaveLength(0);
+
+    // A Claude Code that ignored the refusal sends the same conversation again: it is served, folded.
+    const second = await serveFully(request('sonata-code-normal', BETA), deps());
+    expect(second.status).toBe(200);
+    const sent = JSON.parse(seen[0]);
+    expect(sent.tools.map((t: { name: string }) => t.name)).toEqual(['Read', 'Bash']);
+    expect(JSON.stringify(sent.messages)).not.toContain('tool_addition');
+    expect(sent.messages.map((m: { role: string }) => m.role)).toEqual(['user', 'assistant', 'user']);
+    expect(logs.some((line) => line.includes('refusing once'))).toBe(true);
+    expect(logs.some((line) => line.includes('still defines tools inside messages'))).toBe(true);
+  });
+
+  it('folds without refusing when the client did not offer the beta', async () => {
+    const res = await serveFully(request('sonata-code-normal'), deps());
+    expect(res.status).toBe(200);
+    expect(JSON.parse(seen[0]).tools.map((t: { name: string }) => t.name)).toEqual(['Read', 'Bash']);
+  });
+
+  it('refuses and folds on the bare-key litellm path too', async () => {
+    const first = await serveFully(request('gpt-5.6-terra', BETA), { ...base, fetch: capture });
+    expect(first.status).toBe(400);
+    expect(seen).toHaveLength(0);
+    await serveFully(request('gpt-5.6-terra', BETA), { ...base, fetch: capture });
+    expect(JSON.parse(seen[0]).tools.map((t: { name: string }) => t.name)).toEqual(['Read', 'Bash']);
+  });
+
+  it('leaves a tier of only direct candidates alone — Anthropic applies these blocks itself', async () => {
+    const req = request('sonata-code-normal', BETA);
+    const res = await serveFully(req, { ...deps(tier('direct')), gatewayKeys: () => ({ g: 'k' }) });
+    expect(res.status).toBe(200);
+    expect(JSON.parse(seen[0]).messages).toEqual(payload('sonata-code-normal').messages);
+  });
+
+  it('leaves an Anthropic request byte-identical', async () => {
+    const req = request('claude-sonnet-5', BETA);
+    await serveFully(req, { ...base, fetch: capture, anthropicBase: 'http://anthropic' });
+    expect(seen[0]).toBe(req.body.toString());
+  });
+});
+
 describe('routeRequest — tenants', () => {
   const seen: { url: string; model: string; headers: Record<string, string> }[] = [];
   const capture: typeof fetch = (async (url: string, init: RequestInit) => {

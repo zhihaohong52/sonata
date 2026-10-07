@@ -305,6 +305,26 @@ describe('router — text-form tool calls', () => {
     expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
   });
 
+  it('recovers a text call to a tool Claude Code defined inside messages, not in tools[]', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const inline = {
+      ...req('sonata-code-simple'),
+      body: Buffer.from(JSON.stringify({
+        model: 'sonata-code-simple',
+        tools: [{ name: 'Read', input_schema: { type: 'object' } }],
+        messages: [
+          { role: 'user', content: 'task' },
+          { role: 'system', content: [{ type: 'tool_addition', tool: { type: 'tool_definition', definition: { name: 'Bash', input_schema: { type: 'object', properties: { command: { type: 'string' } } } } } }] },
+        ],
+      })),
+    };
+    const res = await routeRequest(inline, deps(rows, () => sse(stream(CALL))));
+    const out = await drain(res.body);
+    expect(out).toContain('"name":"Bash"');
+    expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
+  });
+
   it('cools the candidate on an unparsed call so the next request takes the next one', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];

@@ -14,6 +14,7 @@ import { joinCandidate, splitCandidate, wireEffort, type Effort } from '../effor
 import { createUsageCollector, type UsageTokens, usageFromJsonBody } from './usage.js';
 import { rewriteTextToolCallJson, rewriteTextToolCallStream, toolSchemas, type TextToolCallCounts } from './text-tool-calls.js';
 import { handleUiRequest, type UiDeps } from './ui.js';
+import { advertisesInlineTools, clearInlineToolRefusals, foldInlineToolChanges, hasInlineToolDefinitions, inlineToolsRefusedFor, INLINE_TOOLS_REFUSAL, markInlineToolsRefused } from './inline-tools.js';
 
 export interface TierRoute {
   key: string;
@@ -1199,6 +1200,7 @@ export function clearCooldowns(): void {
   providerCooldowns.clear();
   capability400Counts.clear();
   stickyCandidates.clear();
+  clearInlineToolRefusals();
 }
 
 /** Which capability failure this 400 body is, or undefined if it is not one. */
@@ -1288,7 +1290,9 @@ async function recoverTextToolCalls(
   onUnparsed?: (unparsed: number) => void,
 ): Promise<RouterResponse> {
   if (response.status !== 200) return response;
-  const tools = toolSchemas(req.body);
+  // Folded: a tool Claude Code defined inside messages is one the model was
+  // offered (litellmBody folds it upstream), so its text-form call is ours to recover.
+  const tools = toolSchemas(foldInlineToolChanges(req.body));
   const settle = (found: TextToolCallCounts): void => {
     counts.recovered = found.recovered;
     counts.unparsed = found.unparsed;
@@ -1508,7 +1512,31 @@ export function demoteSystemTurns(body: Buffer): Buffer {
  * see it — both litellm forwarding paths take this, so they cannot drift.
  */
 function litellmBody(body: Buffer): Buffer {
-  return demoteSystemTurns(sanitizeToolSchemas(flattenSystemBlocks(body)));
+  // Folded first, so the schema repair sees inline-defined tools too and the
+  // demotion never turns a tool-change turn into a user turn LiteLLM empties.
+  return demoteSystemTurns(sanitizeToolSchemas(flattenSystemBlocks(foldInlineToolChanges(body))));
+}
+
+/**
+ * The 400 that makes Claude Code stop defining tools inside messages for this
+ * conversation, or undefined when this request should be folded instead (see
+ * src/native/inline-tools.ts). Answered locally — nothing reaches upstream —
+ * and at most once per conversation, so a Claude Code that does not recognise
+ * it loses one turn, after which the fold carries the conversation.
+ */
+function inlineToolsRefusal(req: RouterRequest, conversation: string | undefined, deps: RouterDeps, alias: string): RouterResponse | undefined {
+  if (conversation === undefined || !advertisesInlineTools(req.headers) || !hasInlineToolDefinitions(req.body)) return undefined;
+  if (inlineToolsRefusedFor(conversation)) {
+    deps.log?.(`router: ${alias} still defines tools inside messages after the refusal; folding them into tools[]`);
+    return undefined;
+  }
+  markInlineToolsRefused(conversation);
+  deps.log?.(`router: ${alias} defined tools inside messages; refusing once so Claude Code declares them in tools[]`);
+  return {
+    status: 400,
+    headers: { 'content-type': 'application/json' },
+    body: anthropicErrorBody('invalid_request_error', INLINE_TOOLS_REFUSAL),
+  };
 }
 
 /**
@@ -1820,6 +1848,13 @@ async function routeTierRequest(
   // keeps a multi-turn agent on one model, which is what stops its transcript
   // growing extended-thinking blocks the next candidate would reject.
   const conversation = conversationKey(req.body, tenant.id, alias);
+  // Any candidate behind LiteLLM is enough: Claude Code's fallback (every tool
+  // in tools[]) serves a direct candidate just as well, and the alternative is
+  // deciding per candidate after the first has already been tried.
+  if (ranked.some((route) => route.native?.transport !== 'direct')) {
+    const refusal = inlineToolsRefusal(req, conversation, deps, alias);
+    if (refusal !== undefined) return refusal;
+  }
   const headers = withSessionHeader(litellmHeaders(requestHeaders(req.headers), deps.litellmKey), conversation);
   const pinned = conversation === undefined ? undefined : stickyGet(conversation, now());
   // Two different questions, deliberately read from two fields. `served` is
@@ -2432,12 +2467,12 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     // key isn't a `sonata-*` alias), so this is the only place such a
     // request's config-change check can fire.
     deps.checkModelChange?.();
+    const conversation = alias === undefined ? undefined : conversationKey(req.body, tenant.id, alias);
+    const refusal = inlineToolsRefusal(req, conversation, deps, alias ?? requested ?? '?');
+    if (refusal !== undefined) return refusal;
     const response = await forwardToLitellm(
       body,
-      withSessionHeader(
-        litellmHeaders(headers, deps.litellmKey),
-        alias === undefined ? undefined : conversationKey(req.body, tenant.id, alias),
-      ),
+      withSessionHeader(litellmHeaders(headers, deps.litellmKey), conversation),
       req,
       deps,
       isCodexOauth(tenant, native?.gateway),

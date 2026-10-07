@@ -161,7 +161,7 @@ src/
 ├── pricing.ts            per-model/per-gateway price tables, optional UTC price windows, 0-vs-unpriced resolution
 ├── modelsdev.ts          models.dev per-token rate cache (per-token rates for public serving providers)
 ├── sessions.ts           session → project map for attributing native requests to a project
-├── native/               native path — credentials.ts (gateway keys), litellm.ts (managed LiteLLM child config, now fed by unified [models] too), router.ts (local routing proxy; tier alias resolution, ranked fallback, cooldowns), models.ts (BYOK /models discovery), usage.ts (token accounting from the SSE stream)
+├── native/               native path — credentials.ts (gateway keys), litellm.ts (managed LiteLLM child config, now fed by unified [models] too), router.ts (local routing proxy; tier alias resolution, ranked fallback, cooldowns), inline-tools.ts (tools Claude Code defines inside `messages`: the once-per-conversation refusal and the fold into `tools[]`), models.ts (BYOK /models discovery), usage.ts (token accounting from the SSE stream)
 ├── types.ts              shared types
 ├── tui-ink/              Ink app for `sonata init`; components/ranked-select-state.ts + ranked-select.tsx (RankedSelect — selection order is the ranking), components/models-step.tsx (live /models refresh over the harness catalogue)
 └── adapters/
@@ -250,7 +250,7 @@ Foreign models run inside Claude Code's own loop through the local router
 
 - **One router per machine, multi-tenant**: each request resolves to a tenant (a realpath'd `sonata.toml`) via the authenticated `x-sonata-project` header, then `sessions.json`, then the machine config. Cooldowns, budget and credentials are per tenant. Ports come only from the machine config.
 - **Transport is derived from `provider` + `auth`**: `anthropic` api-key gateways go direct (credential swapped, body byte-identical); everything else goes through LiteLLM, started lazily and only when needed; `serve` never installs it.
-- **Request transforms on the LiteLLM path only**: `litellmBody = demoteSystemTurns ∘ sanitizeToolSchemas ∘ flattenSystemBlocks`, plus `repairNamelessToolCalls` and `stripForeignThinking` on every transport. Anthropic requests stay byte-identical.
+- **Request transforms on the LiteLLM path only**: `litellmBody = demoteSystemTurns ∘ sanitizeToolSchemas ∘ flattenSystemBlocks ∘ foldInlineToolChanges` (tools Claude Code defines inside `messages`, after a once-per-conversation refusal — `src/native/inline-tools.ts`), plus `repairNamelessToolCalls` and `stripForeignThinking` on every transport. Anthropic requests stay byte-identical.
 - **OAuth gateways** (`codex-oauth`, `copilot-oauth`) drive LiteLLM's own authenticator; sonata implements no OAuth. A harness-sourced ChatGPT token has exactly one writer once LiteLLM runs — do not reintroduce a live sync.
 - **Fallback**: ranked candidates, first < 500 wins, 60 s cooldown; a 400 is terminal except the captured signature lists and message-less 400s; exhaustion returns 529 naming the `sonata dispatch` command.
 - **Auto-routed tiers** (`[auto_route]`, `src/native/auto-route.ts`): `sonata-<role>-auto` gets one Jev tier decision per conversation, asked at one `base_url` (TypeSafe by default, OpenRouter, or a local `jev-compatible-server`) using the best JevBench-scored model there unless `model` pins one; fail-open to `normal`, and the chosen alias then takes the unchanged tier path.

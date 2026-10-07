@@ -179,6 +179,39 @@ before the 4110 router was restarted onto it. Note LiteLLM 1.98.0 reads
 effect; it is left in place pending its own fix, since the demotion makes the
 question moot for the shape that actually failed.
 
+**Tools Claude Code defines inside `messages` are folded into `tools[]` on
+that path, after one refusal.** Claude Code 2.1.292 keeps `tools[]` stable
+when its tool set changes mid-conversation (MCP servers connecting after the
+first turn, a deferred tool loaded) and appends a `system` turn of
+`tool_addition` / `tool_removal` blocks instead — a `tool_addition` either
+carries the whole definition (`tool_definition`, the `inline-tools-2026-09-15`
+beta) or names a `tools[]` entry (`tool_reference`). LiteLLM keeps only text,
+image, document and tool_result blocks in a user turn, so after the demotion
+above the whole turn vanished. Measured 2026-10-07 in decision_model: an
+agent's first turn went upstream at ~103k input tokens, the next — right after
+MCP servers connected — at ~10k with every definition gone (verified offline
+through LiteLLM's own adapter). mimo-v2.6-pro then wrote its calls in
+`<tool_call>` markup the router could not recover, because recovery read
+`tools[]` alone (0 recovered of 6 in the ledger), and no model on this path
+could call `SubagentHandback`, which arrives the same way.
+`src/native/inline-tools.ts` adds two layers. **Refusal:** when the request
+offers the beta and defines a tool inside `messages`, the router answers 400
+`Input tag 'tool_definition' …` locally, once per conversation key — the
+message Claude Code (`pse`) reads as `unsupported_on_platform`, retrying the
+turn with every tool in `tools[]` and inline definitions off for the rest of
+the conversation. The message must not name the mid-conversation betas or
+`Input tag 'tool_addition'`, which route a 400 to other fallbacks (the
+tool-change one can fall back to inline tools again, so it is not used).
+**Fold:** `foldInlineToolChanges` applies the blocks in transcript order onto
+`tools[]` and strips them; it runs first in `litellmBody` and in recovery's
+tool list. The refusal leans on a Claude Code internal string, so it fires at
+most once per conversation and the fold carries everything after — a Claude
+Code that stops recognising it loses one turn, not the agent. A tier refuses
+when any candidate is behind LiteLLM (the fallback serves a direct candidate
+equally); a tier of only direct candidates, and every Anthropic request, stays
+byte-identical. `litellmBody` is now `demoteSystemTurns ∘ sanitizeToolSchemas
+∘ flattenSystemBlocks ∘ foldInlineToolChanges`.
+
 **Tool schemas are repaired for the regex dialect on the same path.** A tool
 schema may constrain a string with `\p{Cc}`-style Unicode property classes —
 the case that surfaced this was the Artifact tool's `field` parameter, sent to
