@@ -11,6 +11,8 @@ import {
   mergeLiveCandidates,
   addProviderCatalog,
   configuredProviderNames,
+  deselectHarnesses,
+  dropProviders,
   completeGatewayOrder,
   seedGatewayOrder,
   importableProviders,
@@ -21,8 +23,10 @@ import {
   validateProviderUrl,
   providersForHarnesses,
   reduceInit,
+  removeProviders,
   tierPickerKeys,
   withoutExpandedBareCandidates,
+  withoutUnofferedModels,
   type CandidateOption,
   type ProviderOption,
 } from '../../src/tui-ink/app-state.js';
@@ -338,6 +342,120 @@ describe('alreadyImportedKeys', () => {
     expect(alreadyImportedKeys(['opencode/google', 'pi/google'], importable)).toEqual(
       new Set(['opencode/google', 'pi/google']),
     );
+  });
+});
+
+describe('dropProviders', () => {
+  it('forgets every per-gateway record of a removed provider, and only its own', () => {
+    const state: InitState = {
+      providerKeys: ['opencode/acme'],
+      byokKeys: { beta: 'k-beta', acme: 'k-acme' },
+      byokModels: { beta: ['m1'], acme: ['a1'] },
+      liveModels: { beta: ['m2'], acme: ['a2'] },
+      customProviders: [{ name: 'beta', url: 'https://b' }],
+      customWireFormats: { beta: 'anthropic' },
+      gatewayOrder: ['beta', 'acme'],
+      nativeKeys: ['beta-m1', 'acme-a1', 'acme-fast'],
+    };
+    expect(dropProviders(state, new Set(['beta']))).toEqual({
+      providerKeys: ['opencode/acme'],
+      byokKeys: { acme: 'k-acme' },
+      byokModels: { acme: ['a1'] },
+      liveModels: { acme: ['a2'] },
+      customProviders: [],
+      customWireFormats: {},
+      gatewayOrder: ['acme'],
+      nativeKeys: ['acme-a1', 'acme-fast'],
+    });
+  });
+
+  it('returns the state untouched when nothing was removed', () => {
+    const state: InitState = { byokKeys: { beta: 'k' } };
+    expect(dropProviders(state, new Set())).toBe(state);
+  });
+});
+
+describe('removeProviders', () => {
+  const providers: ProviderOption[] = [
+    { key: 'opencode/acme', harness: 'opencode', provider: 'acme', count: 1 },
+    { key: 'pi/acme', harness: 'pi', provider: 'acme', count: 1 },
+    { key: 'config/beta', harness: 'config', provider: 'beta', count: 1 },
+  ];
+
+  it('drops every entry naming the provider, whichever harness it came through', () => {
+    const state: InitState = {
+      providerKeys: ['opencode/acme', 'pi/acme', 'config/beta', 'byok/gamma'],
+      byokKeys: { acme: 'k' },
+      customProviders: [{ name: 'gamma', url: 'https://g' }],
+    };
+    expect(removeProviders(state, new Set(['acme', 'gamma']), providers)).toMatchObject({
+      providerKeys: ['config/beta'],
+      byokKeys: {},
+      customProviders: [],
+    });
+  });
+});
+
+describe('deselectHarnesses', () => {
+  const providers: ProviderOption[] = [
+    { key: 'opencode/acme', harness: 'opencode', provider: 'acme', count: 1 },
+    { key: 'opencode/beta', harness: 'opencode', provider: 'beta', count: 1 },
+    { key: 'pi/beta', harness: 'pi', provider: 'beta', count: 1 },
+    { key: 'opencode/gamma', harness: 'opencode', provider: 'gamma', count: 1 },
+    { key: 'opencode/delta', harness: 'opencode', provider: 'delta', count: 1 },
+  ];
+  const installed = ['opencode', 'pi'];
+
+  it("removes what came from an unchecked harness, keeping hand-added providers and other harnesses' entries", () => {
+    const state: InitState = {
+      harnesses: ['opencode', 'pi'],
+      providerKeys: ['opencode/acme', 'opencode/beta', 'pi/beta', 'opencode/gamma', 'opencode/delta'],
+      byokKeys: { gamma: 'typed' },
+      credentialSources: { acme: 'opencode', delta: 'sonata' },
+      gatewayOrder: ['acme', 'beta', 'gamma', 'delta'],
+    };
+    expect(deselectHarnesses(state, ['pi'], installed, providers)).toMatchObject({
+      harnesses: ['pi'],
+      providerKeys: ['pi/beta', 'opencode/gamma', 'opencode/delta'],
+      credentialSources: { delta: 'sonata' },
+      gatewayOrder: ['beta', 'gamma', 'delta'],
+    });
+  });
+
+  it('removes nothing for a harness that was never selected', () => {
+    const state: InitState = { harnesses: ['pi'], providerKeys: ['opencode/acme'] };
+    expect(deselectHarnesses(state, ['pi'], installed, providers).providerKeys).toEqual(['opencode/acme']);
+  });
+
+  it('reads every installed harness as selected on a first run', () => {
+    const state: InitState = { providerKeys: ['opencode/acme'] };
+    expect(deselectHarnesses(state, ['pi'], installed, providers).providerKeys).toEqual([]);
+  });
+});
+
+describe('withoutUnofferedModels', () => {
+  const providers: ProviderOption[] = [
+    { key: 'opencode/acme', harness: 'opencode', provider: 'acme', count: 1 },
+    { key: 'opencode/beta', harness: 'opencode', provider: 'beta', count: 1 },
+  ];
+  const candidates: CandidateOption[] = [
+    { key: 'acme-fast', gateway: 'acme', id: 'fast', label: 'opencode/acme/fast' },
+    { key: 'beta-slow', gateway: 'beta', id: 'slow', label: 'opencode/beta/slow' },
+  ];
+
+  it('drops a model only a deselected provider offers, keeping unexplained and BYOK keys', () => {
+    const state: InitState = {
+      providerKeys: ['opencode/beta', 'byok/gamma'],
+      byokModels: { gamma: ['g1'] },
+      nativeKeys: ['acme-fast', 'beta-slow', 'saved-elsewhere', 'gamma-g1'],
+    };
+    expect(withoutUnofferedModels(state, candidates, providers).nativeKeys)
+      .toEqual(['beta-slow', 'saved-elsewhere', 'gamma-g1']);
+  });
+
+  it('returns the state untouched when every selected model is still offered', () => {
+    const state: InitState = { providerKeys: ['opencode/acme'], nativeKeys: ['acme-fast'] };
+    expect(withoutUnofferedModels(state, candidates, providers)).toBe(state);
   });
 });
 

@@ -178,6 +178,122 @@ export function addedGatewayNames(
 }
 
 /**
+ * Forget everything this run recorded for providers the user just removed.
+ *
+ * Dropping a provider's `providerKeys` entry is not enough on its own: a key
+ * typed for it lives on in `byokKeys`, which `addedGatewayNames` reads, so the
+ * models step still asked the removed gateway what it serves and listed the
+ * answer. Its BYOK models likewise stayed in `byokModels` and `nativeKeys`,
+ * where the models step's submit deliberately keeps them. Removal therefore
+ * clears every per-gateway record at once, by name.
+ */
+export function dropProviders(state: InitState, names: ReadonlySet<string>): InitState {
+  if (names.size === 0) return state;
+  const without = <V>(record: Record<string, V> | undefined): Record<string, V> | undefined =>
+    record === undefined
+      ? undefined
+      : Object.fromEntries(Object.entries(record).filter(([name]) => !names.has(name)));
+  const droppedKeys = new Set(Object.entries(state.byokModels ?? {})
+    .filter(([name]) => names.has(name))
+    .flatMap(([name, ids]) => ids.map((id) => byokCandidateKey(name, id))));
+  return {
+    ...state,
+    byokKeys: without(state.byokKeys),
+    byokModels: without(state.byokModels),
+    liveModels: without(state.liveModels),
+    customWireFormats: without(state.customWireFormats),
+    credentialSources: without(state.credentialSources),
+    customProviders: state.customProviders?.filter((provider) => !names.has(provider.name)),
+    gatewayOrder: state.gatewayOrder?.filter((name) => !names.has(name)),
+    nativeKeys: state.nativeKeys?.filter((key) => !droppedKeys.has(key)),
+  };
+}
+
+/**
+ * Drop selected models that no selected provider offers any more.
+ *
+ * `dropProviders` cannot do this alone: a harness candidate's key only looks
+ * like `<gateway>-<id>`, and the providers screen has no candidate set to
+ * resolve it through. The models step's picker would drop such a key — but
+ * that step is skipped when nothing is left to pick, so a removed provider's
+ * model stayed selected and reached the tiers. A key no candidate explains is
+ * kept (a saved key can outlive the candidate behind it), as is a BYOK model.
+ */
+export function withoutUnofferedModels(
+  state: InitState,
+  candidates: CandidateOption[],
+  providers: ProviderOption[],
+): InitState {
+  if (state.nativeKeys === undefined) return state;
+  const offered = new Set(candidatesForProviders(candidates, providers, state.providerKeys).map((c) => c.key));
+  const byok = new Set(Object.entries(state.byokModels ?? {})
+    .flatMap(([name, ids]) => ids.map((id) => byokCandidateKey(name, id))));
+  const unoffered = new Set(candidates.map((c) => c.key).filter((key) => !offered.has(key) && !byok.has(key)));
+  if (!state.nativeKeys.some((key) => unoffered.has(key))) return state;
+  return { ...state, nativeKeys: state.nativeKeys.filter((key) => !unoffered.has(key)) };
+}
+
+/** The provider name behind a `providerKeys` entry, or undefined. */
+function providerNameOf(key: string, byKey: ReadonlyMap<string, string>): string | undefined {
+  return byokProviderName(key) ?? byKey.get(key);
+}
+
+/**
+ * Remove providers by name, whichever way they were added: every
+ * `providerKeys` entry naming one, then the rest of its records. The one path
+ * that reaches a custom or typed-key BYOK provider, which the Import screen
+ * never lists and so could not uncheck.
+ */
+export function removeProviders(state: InitState, names: ReadonlySet<string>, providers: ProviderOption[]): InitState {
+  if (names.size === 0) return state;
+  const byKey = new Map(providers.map((provider) => [provider.key, provider.provider]));
+  return dropProviders({
+    ...state,
+    providerKeys: state.providerKeys?.filter((key) => {
+      const name = providerNameOf(key, byKey);
+      return name === undefined || !names.has(name);
+    }),
+  }, names);
+}
+
+/**
+ * Record the "Import from which harnesses?" answer, removing what was
+ * imported from a harness the user just unchecked.
+ *
+ * Unchecking a harness only hid its providers from the Import list, so they
+ * stayed configured with no row left to uncheck them from. Only what this
+ * answer took away counts — a harness newly left unchecked, not one that was
+ * never selected — and a provider the user set up by hand (a key typed, or a
+ * login run through sonata) is kept: its credential is not the harness's. A
+ * provider still reachable through a selected harness keeps that entry, and
+ * loses the rest of its records only once no entry names it.
+ */
+export function deselectHarnesses(
+  state: InitState,
+  selected: readonly string[],
+  installed: readonly string[],
+  providers: ProviderOption[],
+): InitState {
+  const kept = new Set(selected);
+  const deselected = new Set((state.harnesses ?? installed).filter((harness) => !kept.has(harness)));
+  const next: InitState = { ...state, harnesses: [...selected] };
+  if (deselected.size === 0) return next;
+  const byKey = new Map(providers.map((provider) => [provider.key, provider] as const));
+  const handAdded = (name: string) =>
+    state.byokKeys?.[name] !== undefined || state.credentialSources?.[name] === 'sonata';
+  const providerKeys = (state.providerKeys ?? []).filter((key) => {
+    const provider = byKey.get(key);
+    return provider === undefined || !deselected.has(provider.harness) || handAdded(provider.provider);
+  });
+  const nameByKey = new Map(providers.map((provider) => [provider.key, provider.provider]));
+  const remaining = new Set(providerKeys.map((key) => providerNameOf(key, nameByKey)));
+  const gone = new Set((state.providerKeys ?? [])
+    .map((key) => providerNameOf(key, nameByKey))
+    .filter((name): name is string => name !== undefined && !remaining.has(name)));
+  return dropProviders({ ...next, providerKeys }, gone);
+}
+
+/**
  * Whether the models step has anything to offer, and so whether it may be
  * skipped.
  *
