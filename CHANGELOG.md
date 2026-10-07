@@ -10,6 +10,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **`sonata usage` no longer understates how many auto-route decisions
+  reported a cost.** Decisions that never called the classifier (`no-task`,
+  or no classifier configured) were counted in the "N of M decisions reported
+  a cost" total, though they could never report one.
+- **Text tool call recovery, small fixes.** A non-streamed reply keeps the
+  whitespace before a recovered call and the original text block's fields
+  (`citations`); line endings are normalised per chunk rather than across the
+  whole pending event, so one very large event no longer costs quadratic time.
+  A new test pins that a client disconnect cancels the upstream through the
+  router's whole wrapper chain.
 - **`sonata init`: a provider removed on the Import screen no longer shows up
   in the models list.** Unchecking a provider dropped only its provider
   entry; a key typed for it earlier in the same run stayed behind, so the
