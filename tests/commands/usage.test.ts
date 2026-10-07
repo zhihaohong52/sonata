@@ -142,9 +142,19 @@ describe('aggregate', () => {
       classifierTokens: { input: 610, output: 60 },
       classifierCostUsd: 0,
       classifierCostCalls: 0,
+      uncalled: 1,
     });
     expect(report.autoRoute?.outcomes['no-task']).toBe(1);
     expect(report.pricedTotalUsd).toBe(aggregate(rows.map(({ autoRoute: _, ...r }) => r), 'tier', {}).pricedTotalUsd);
+  });
+
+  it('counts decisions with no classifier call as uncalled', () => {
+    const report = aggregate([
+      row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'no-task', ms: 1 } }),
+      row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'failed', reason: 'no classifier', ms: 1 } }),
+      row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'failed', reason: 'HTTP 422', ms: 1 } }),
+    ], 'tier', {});
+    expect(report.autoRoute?.uncalled).toBe(2);
   });
 
   it('sums the cost a provider reported for classifier calls, outside the priced total', () => {
@@ -454,9 +464,9 @@ describe('parseUsageFlags', () => {
 });
 
 describe('classifierCostNote', () => {
-  const summary = (cost: number, calls: number, accepted = 2, noTask = 0) => ({
-    outcomes: { accepted, 'low-confidence': 0, invalid: 0, failed: 0, 'no-task': noTask },
-    classifierTokens: { input: 0, output: 0 }, classifierCostUsd: cost, classifierCostCalls: calls,
+  const summary = (cost: number, calls: number, accepted = 2, noTask = 0, failed = 0, uncalled = noTask) => ({
+    outcomes: { accepted, 'low-confidence': 0, invalid: 0, failed, 'no-task': noTask },
+    uncalled, classifierTokens: { input: 0, output: 0 }, classifierCostUsd: cost, classifierCostCalls: calls,
   });
   it('says not priced when no provider reported a cost', () => {
     expect(classifierCostNote(summary(0, 0))).toBe(' (not priced)');
@@ -469,5 +479,11 @@ describe('classifierCostNote', () => {
     // They made no classifier call, so counting them would report every
     // priced decision as a cost that went missing.
     expect(classifierCostNote(summary(0.00002, 1, 2, 1))).toMatch(/1 of 2 decisions reported a cost/);
+  });
+  it('excludes failed decisions that never called the classifier', () => {
+    expect(classifierCostNote(summary(0.00002, 2, 2, 0, 1, 1))).not.toMatch(/\(\d+ of \d+ decisions reported a cost\)/);
+  });
+  it('includes failed decisions that called the classifier', () => {
+    expect(classifierCostNote(summary(0.00002, 2, 2, 0, 1))).toMatch(/2 of 3 decisions reported a cost/);
   });
 });
