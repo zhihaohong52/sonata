@@ -10,12 +10,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Added
 
+- **`SONATA_CAPTURE_TEXT_CALLS_DIR`**, an opt-in diagnosis capture for the
+  router. When a response carries a tool call written as text that cannot be
+  recovered, the router saves the raw upstream stream, the outbound request
+  and the tool names it searched. Off by default: the files hold whole
+  conversations.
 - **`sonata upgrade` installs the latest published release.** It compares the
   running version with npm's `latest` and runs `npm install -g` when it is
   behind. A development install (`npm link`) is refused and told to
   `git pull && npm run build` instead, because installing over the link would
   silently replace the clone with the published package.
-
 - **`api = "responses"` on a `[models]` entry sends that model to the gateway's
   `/responses` endpoint.** `gpt-6.1-sol` and `gpt-6-astra` on vendorz refuse
   function tools with `reasoning_effort` on `/chat/completions`, and every Claude

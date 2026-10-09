@@ -2678,6 +2678,7 @@ export async function cmdServe(
       resolveNative: (key, tenant) => tenant.config === undefined ? undefined : nativeRouteFor(tenant.config, key),
       // Opt-in only: a captured request is a whole conversation.
       capture400Dir: process.env.SONATA_CAPTURE_400_DIR,
+      captureTextCallsDir: process.env.SONATA_CAPTURE_TEXT_CALLS_DIR,
       budget: (tenant) => {
         const statuses = budgetStatusesFor({
           tenant,

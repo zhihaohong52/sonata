@@ -3089,7 +3089,7 @@ describe('message-less 400s', () => {
     await routeRequest(request('capture me'), { ...deps, capture400Dir: dir });
     const files = readdirSync(dir).sort();
     expect(files).toHaveLength(2);
-    expect(files.some((f) => f.endsWith('-ds@none.json'))).toBe(true);
+    expect(files.some((f) => /-ds@none-[0-9a-f]{8}\.json$/.test(f))).toBe(true);
     for (const file of files) {
       expect(statSync(join(dir, file)).mode & 0o777).toBe(0o600);
       const doc = JSON.parse(readFileSync(join(dir, file), 'utf8')) as { alias: string; request: { messages: unknown[] }; status: number };
