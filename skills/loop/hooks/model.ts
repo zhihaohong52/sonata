@@ -61,17 +61,19 @@ export function spawnAgent(
 ): Tracked {
   if (!isSonataAgent(e.subagentType)) return s
   const parent = e.parentAgentId === undefined ? undefined : s.agents.find(a => a.id === e.parentAgentId)
-  // A child belongs to its parent's task; only a top-level spawn takes the pending one.
-  const taskId = e.parentAgentId !== undefined ? parent?.taskId : s.loop?.pendingTaskId
+  // A child belongs to its tracked parent's task. Without one (no parent, or a
+  // parent that is not a sonata agent) it is top-level and takes the pending task.
+  const parentId = parent?.id
+  const taskId = parent !== undefined ? parent.taskId : s.loop?.pendingTaskId
   const row: AgentRow = {
-    id: e.agentId, type: e.subagentType, description: e.description, parentId: e.parentAgentId,
+    id: e.agentId, type: e.subagentType, description: e.description, parentId,
     taskId, status: 'running', steps: 0, stepTimes: [], usedBash: false, hunks: [], startedAt: now,
   }
   let loop = s.loop
   if (loop !== null && taskId !== undefined) {
     loop = {
       ...loop,
-      pendingTaskId: e.parentAgentId === undefined ? undefined : loop.pendingTaskId,
+      pendingTaskId: parent === undefined ? undefined : loop.pendingTaskId,
       tasks: loop.tasks.map(t => (t.id === taskId ? { ...t, agentIds: [...t.agentIds, e.agentId] } : t)),
     }
   }
@@ -153,22 +155,20 @@ export function diffStat(hunks: Hunk[]): { added: number; removed: number; files
 
 export type Attribution = { served: string[]; tier?: string; usd?: number; isExact: boolean }
 
-// A route belongs to an agent when it names the agent's alias and lands
-// within this long after one of the agent's steps.
-const WINDOW_MS = 120_000
+// Slack around an agent's lifetime for the router's clock and its ledger write.
+const GRACE_MS = 5_000
 
+const isAlive = (agent: AgentRow, at: number): boolean =>
+  at >= agent.startedAt - GRACE_MS && at <= (agent.endedAt ?? Infinity) + GRACE_MS
+
+// A route belongs to an agent when it names the agent's alias inside its lifetime.
 function routesOf(agent: AgentRow, routes: RouteLine[]): RouteLine[] {
-  return routes.filter(r => {
-    if (r.alias !== agent.alias || r.ts === undefined) return false
-    const at = Date.parse(r.ts)
-    return agent.stepTimes.some(t => at >= t && at - t <= WINDOW_MS)
-  })
+  return routes.filter(r => r.alias === agent.alias && r.ts !== undefined && isAlive(agent, Date.parse(r.ts)))
 }
 
-// Another agent on the same alias was running then: the router cannot say whose request it was.
+// Another agent on the same alias was alive then: the router cannot say whose request it was.
 function isShared(agents: AgentRow[], agent: AgentRow, at: number): boolean {
-  return agents.some(o => o.id !== agent.id && o.alias === agent.alias &&
-    o.startedAt <= at && (o.endedAt === undefined || o.endedAt >= at - WINDOW_MS))
+  return agents.some(o => o.id !== agent.id && o.alias === agent.alias && isAlive(o, at))
 }
 
 export function attribute(agents: AgentRow[], routes: RouteLine[], agentId: string): Attribution {

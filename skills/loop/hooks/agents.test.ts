@@ -31,10 +31,10 @@ test('unplanned and non-sonata spawns', () => {
   expect(s2.agents).toEqual([])
 })
 
-test('a child of a non-sonata parent is still tracked, with no task', () => {
+test('a child of an untracked parent is drawn as top-level, taking the pending task', () => {
   const s = spawnAgent({ loop: started(), agents: [] }, { agentId: 'c', subagentType: 'code-simple', description: 'x', parentAgentId: 'gp' }, 1)
-  expect(s.agents[0]).toMatchObject({ parentId: 'gp', taskId: undefined })
-  expect(s.loop!.pendingTaskId).toBe('1')
+  expect(s.agents[0]).toMatchObject({ parentId: undefined, taskId: '1' })
+  expect(s.loop!.pendingTaskId).toBeUndefined()
 })
 
 test('steps, activity and completion', () => {

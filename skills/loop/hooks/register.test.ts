@@ -33,3 +33,20 @@ test('the panel command does not take the skill\'s own /sonata-loop name', async
   await $.session.start({ source: 'startup', cwd: '/tmp' } as never)
   expect(names).toEqual(['loop-panel'])
 })
+
+test('an agent finishing triggers one more router fetch, so its last request is counted', async ($, on) => {
+  let fetches = 0
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'sonata-code-simple', agentId: 'a1' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('http.fetch', () => { fetches++; return { value: { status: 200, ok: true, headers: {}, text: '{"routes":[]}' } } })
+  let parked!: () => void
+  const isParked = new Promise<void>(r => { parked = r })
+  on('clock.sleep', () => { parked(); return new Promise(() => {}) })
+  on('turn.complete', () => ({ text: '' }))
+  await $.agent.spawn({ subagentType: 'code-simple', description: 'x', prompt: 'x' } as never)
+  await isParked
+  const before = fetches
+  await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't' } as never)
+  expect(fetches).toBe(before + 1)
+})

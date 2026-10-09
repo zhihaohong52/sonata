@@ -31,3 +31,10 @@ test('an unpriced route makes the agent cost unknown, not 0', () => {
 test('no routes (router unreachable): nothing served, cost unknown', () => {
   expect(attribute([agent('a', 0, undefined, [1_000])], [], 'a')).toEqual({ served: [], tier: undefined, usd: undefined, isExact: false })
 })
+
+test('back-to-back agents on one alias: the running one is exact, the finished one does not claim its routes', () => {
+  const agents = [agent('a', 0, 50_000, [1_000, 20_000]), agent('b', 59_000, undefined, [60_000])]
+  const routes = [route(61_000, 'flash', 0.02)]
+  expect(attribute(agents, routes, 'b')).toEqual({ served: ['flash'], tier: 'simple', usd: 0.02, isExact: true })
+  expect(attribute(agents, routes, 'a').served).toEqual([])
+})

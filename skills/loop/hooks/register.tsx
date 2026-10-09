@@ -25,26 +25,32 @@ const RESERVED = new Set(['tool', 'tool_use_id', 'agentId', 'consent', 'requestM
 const argsOf = (e: object): Record<string, unknown> =>
   Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k)))
 
-// Module state: reset on reload, which is fine — a poll restarts on the next spawn.
+// Module state: reset on reload. A poll restarts on the next spawn or step, so
+// a reload mid-loop does not freeze the model and cost columns.
 let routerUrl = 'http://127.0.0.1:4100'
 let polling = false
 
-// Polls the router's view of this session while any agent runs; stops by itself.
+// One read of the router's view of this session.
+async function fetchOnce($: EngineInterface): Promise<void> {
+  try {
+    const session = await $.session.id()
+    const res = await $.http.fetch(`${routerUrl}/__sonata/api/session/${encodeURIComponent(session)}`)
+    const body = res.ok ? (JSON.parse(res.text) as { routes?: RouterState['routes'] }) : undefined
+    await update($, routerAtom, () => (body?.routes === undefined
+      ? { routes: [], error: `router answered ${res.status}` }
+      : { routes: body.routes }))
+  } catch {
+    await update($, routerAtom, r => ({ ...r, error: 'router not reachable' }))
+  }
+}
+
+// Polls while any agent runs; stops by itself, and runs one at a time.
 async function poll($: EngineInterface): Promise<void> {
   if (polling) return
   polling = true
   try {
     while ((await read($, agentsAtom)).some(a => a.status === 'running')) {
-      try {
-        const session = await $.session.id()
-        const res = await $.http.fetch(`${routerUrl}/__sonata/api/session/${encodeURIComponent(session)}`)
-        const body = res.ok ? (JSON.parse(res.text) as { routes?: RouterState['routes'] }) : undefined
-        await update($, routerAtom, () => (body?.routes === undefined
-          ? { routes: [], error: `router answered ${res.status}` }
-          : { routes: body.routes }))
-      } catch {
-        await update($, routerAtom, r => ({ ...r, error: 'router not reachable' }))
-      }
+      await fetchOnce($)
       await $.clock.sleep(3_000)
     }
   } finally {
@@ -103,7 +109,13 @@ export const register: Register = (on, options) => {
     const result = applyLoopAction(await read($, loopAtom), input, Date.now())
     if ('error' in result) return { deny: result.error }
     await update($, loopAtom, () => result.loop)
-    if (input.action === 'plan') void $.ui.open({ id: PANE, title: 'sonata loop' })
+    if (input.action === 'plan') {
+      // A new loop replaces the last one's rows, so they cannot linger or blur attribution.
+      await update($, agentsAtom, () => [])
+      await update($, routerAtom, () => ({ routes: [] }))
+      await update($, viewAtom, () => ({ showAll: true, expanded: [] }))
+      void $.ui.open({ id: PANE, title: 'sonata loop' })
+    }
     const n = result.loop?.tasks.length ?? 0
     // A registered tool's result is a string (or content blocks), never an object.
     return { result: `sonata_loop recorded (${n} task${n === 1 ? '' : 's'}).` }
@@ -128,6 +140,7 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined) {
       const agentId = e.agentId
       await update($, agentsAtom, a => stepAgent(a, { agentId, model: e.model }, Date.now()))
+      void poll($)
     }
     return yield* next(e)
   })
@@ -149,6 +162,8 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined) {
       const agentId = e.agentId
       await update($, agentsAtom, a => completeAgent(a, { agentId, reason: e.reason }, Date.now()))
+      // The poll may stop before the router logs this agent's last request.
+      await fetchOnce($)
     }
     return next(e)
   })

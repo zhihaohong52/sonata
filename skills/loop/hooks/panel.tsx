@@ -44,7 +44,8 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
   }
 
   const agentLines = (a: AgentRow): any[] => {
-    if (!view.showAll && a.status !== 'running') return []
+    // A filtered-out parent still shows its running descendants.
+    if (!view.showAll && a.status !== 'running') return childrenOf(agents, a.id).flatMap(agentLines)
     const depth = depthOf(agents, a.id)
     const kids = childrenOf(agents, a.id)
     const notes = `${kids.length > 0 ? ` · fanned out ${kids.length}` : ''}${a.usedBash ? ' · Bash may have changed files: not shown' : ''}`

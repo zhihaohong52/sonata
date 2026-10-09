@@ -27,3 +27,35 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.unmount()
   })
 }
+
+test('a new plan replaces the previous loop\'s agents', async ($, on) => {
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'sonata-code-simple', agentId: 'old' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: '{"routes":[]}' } }))
+  on('clock.sleep', () => new Promise(() => {}))
+  await $.agent.spawn({ subagentType: 'explore-simple', description: 'stray', prompt: 'x' } as never)
+  await $.tool.call({ tool: TOOL, action: 'plan', title: 'two', tasks: [{ id: '1', title: 'B' }] })
+  const ui = await $.ui.mount({ plugin: 'sonata-loop', surface: 'terminal', ...PANE })
+  expect(await ui.find({ key: 'agent:old' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('"active only" still shows a running child of a finished parent', async ($, on) => {
+  let next = 0
+  const ids = ['p', 'c']
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'sonata-code-complex', agentId: ids[next++] }))
+  on('session.id', () => ({ value: 's1' }))
+  on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: '{"routes":[]}' } }))
+  on('clock.sleep', () => new Promise(() => {}))
+  on('turn.complete', () => ({ text: '' }))
+  await $.agent.spawn({ subagentType: 'code-complex', description: 'parent', prompt: 'x' } as never)
+  await $.agent.spawn({ subagentType: 'code-simple', description: 'child', prompt: 'x', parentAgentId: 'p' } as never)
+  await $.turn.complete({ agentId: 'p', reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't' } as never)
+  const ui = await $.ui.mount({ plugin: 'sonata-loop', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'toggle:active' })
+  expect(await ui.find({ key: 'agent:p' })).toBeUndefined()
+  expect(await ui.find({ key: 'agent:c' })).toBeDefined()
+  await ui.unmount()
+})
