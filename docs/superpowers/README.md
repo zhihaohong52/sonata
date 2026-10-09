@@ -44,4 +44,4 @@ that didn't lead to a standalone implementation plan.
 | 2026-09-22 | Model → provider routing: one model, many ways to reach it | [spec](specs/2026-09-22-model-provider-routing-design.md) | — **queued**, ships in 0.12.0 |
 | 2026-09-30 | Auto-routed tiers: Jev chooses simple, normal or complex | [spec](specs/2026-09-30-jev-auto-route-design.md) | [plan](plans/2026-09-30-jev-auto-route.md) |
 | 2026-10-01 | Auto-route: any decision URL, best available model (JevBench) | [spec](specs/2026-10-01-decision-model-selection-design.md) | [plan](plans/2026-10-01-decision-model-selection.md) |
-| 2026-10-09 | sonata-loop as a mod: a live panel of the loop and its agents | [spec](specs/2026-10-09-sonata-loop-panel-design.md) | — **spec in review** |
+| 2026-10-09 | sonata-loop as a mod: a live panel of the loop and its agents | [spec](specs/2026-10-09-sonata-loop-panel-design.md) | [plan](plans/2026-10-09-sonata-loop-panel.md) |

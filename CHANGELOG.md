@@ -8,6 +8,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- **The sonata-loop skill is now also a Claude Code mod with a live panel.**
+  It shows the loop's tasks and their states, each tier agent's current tool
+  and step, the model the router actually served with its cost (or `≈` and
+  `unknown` where that cannot be attributed), and an agent's applied diff when
+  its row is selected. `sonata init` and `sonata sync` now install the whole
+  skill folder, and `sonata doctor` says when the installed panel is missing
+  or out of date.
+
 ### Changed
 
 - **Auto-routing judges reviews, plans and explores by their own criteria.**

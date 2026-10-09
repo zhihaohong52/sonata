@@ -212,6 +212,28 @@ export function strandedNoneCandidates(
   return stranded;
 }
 
+/** Whether each installed sonata-loop skill folder carries the panel mod the package ships. */
+export function loopPanelCheck(dirs: string[], packageRoot: string): { ok: boolean; line: string } {
+  const version = (dir: string): string | undefined => {
+    try {
+      const v = (JSON.parse(readFileSync(join(dir, '.claude-plugin', 'plugin.json'), 'utf8')) as { version?: unknown }).version;
+      return typeof v === 'string' ? v : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const shipped = version(join(packageRoot, 'skills', 'loop'));
+  for (const dir of dirs.filter((d) => existsSync(join(d, 'SKILL.md')))) {
+    const installed = version(dir);
+    if (installed === undefined) return { ok: false, line: `loop panel missing in ${dir} — run \`sonata sync\`` };
+    if (shipped !== undefined && installed !== shipped) {
+      return { ok: false, line: `loop panel ${installed} in ${dir}, package has ${shipped} — run \`sonata sync\`` };
+    }
+    return { ok: true, line: `loop panel ${installed} installed (${dir})` };
+  }
+  return { ok: true, line: 'loop skill not installed' };
+}
+
 export function staleMcpRegistration(cwd: string, home: string): string | undefined {
   for (const path of [join(cwd, '.mcp.json'), join(home, '.claude.json')]) {
     if (!existsSync(path)) continue;
@@ -1427,6 +1449,15 @@ export async function cmdDoctor(
   const staleMcp = staleMcpRegistration(opts.cwd, home);
   if (staleMcp !== undefined) {
     checks.push({ name: 'stale MCP registration', ok: false, detail: staleMcp });
+  }
+
+  if (opts.packageRoot !== undefined) {
+    const panel = loopPanelCheck(
+      [join(opts.cwd, '.claude', 'skills', 'sonata-loop'), join(home, '.claude', 'skills', 'sonata-loop')],
+      opts.packageRoot,
+    );
+    // Silent where the skill was never installed: nothing to keep in step.
+    if (panel.line !== 'loop skill not installed') checks.push({ name: 'loop panel', ok: panel.ok, detail: panel.line });
   }
 
   const harnesses = new Set(Object.values(config.models).map((m) => m.harness));
