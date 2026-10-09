@@ -110,6 +110,6 @@ export function recentRoutes(rows: LedgerRow[], limit: number): RouteLine[] {
       effort: row.effort,
       role: row.role,
       tier: row.tier,
-      priceUsd: 'totalUsd' in row.price ? row.price.totalUsd : undefined,
+      priceUsd: row.price !== undefined && 'totalUsd' in row.price ? row.price.totalUsd : undefined,
     }));
 }

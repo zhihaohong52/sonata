@@ -55,6 +55,11 @@ describe('recentRoutes for the loop panel', () => {
     expect(line).toMatchObject({ role: 'code', tier: 'normal', priceUsd: 0.0123 });
   });
 
+  it('tolerates a ledger row with no price at all', () => {
+    const [line] = recentRoutes([row({ price: undefined })], 10);
+    expect(line.priceUsd).toBeUndefined();
+  });
+
   it('leaves priceUsd absent for an unpriced row rather than 0', () => {
     const [line] = recentRoutes([row({ price: { source: 'none' } })], 10);
     expect(line.priceUsd).toBeUndefined();
