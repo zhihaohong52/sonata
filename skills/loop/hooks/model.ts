@@ -44,9 +44,12 @@ export function applyLoopAction(loop: Loop | null, input: unknown, now: number):
   if (a.action === 'result') {
     if (task.openPhase === undefined) return { error: `result for task "${task.id}" with no start before it` }
     if (a.outcome !== 'pass' && a.outcome !== 'fail') return { error: 'outcome must be pass or fail' }
-    if (a.outcome === 'fail') return put({ ...task, failures: task.failures + 1, openPhase: undefined })
+    // A dispatch that never happened must not leave its task waiting to
+    // claim the next, unrelated spawn; another task's pending start stays.
+    const clear: Partial<Loop> = loop.pendingTaskId === task.id ? { pendingTaskId: undefined } : {}
+    if (a.outcome === 'fail') return put({ ...task, failures: task.failures + 1, openPhase: undefined }, clear)
     const isReview = task.openPhase === 'review' || task.openPhase === 'final'
-    return put({ ...task, state: isReview ? 'done' : task.state, openPhase: undefined })
+    return put({ ...task, state: isReview ? 'done' : task.state, openPhase: undefined }, clear)
   }
   if (!TIERS.includes(a.to as Tier)) return { error: 'to must be simple, normal or complex' }
   return put({ ...task, escalatedTo: a.to as Tier })

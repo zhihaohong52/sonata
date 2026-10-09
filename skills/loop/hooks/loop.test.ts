@@ -58,3 +58,14 @@ test('sonata agent matcher', () => {
   for (const t of ['code-simple', 'review-auto', 'plan', 'native-explore-normal']) expect(isSonataAgent(t)).toBe(true)
   for (const t of ['general-purpose', 'Explore', 'coder', 'planner']) expect(isSonataAgent(t)).toBe(false)
 })
+
+test('a result clears a pending dispatch for its task, and only for its task', () => {
+  let loop = ok(applyLoopAction(planned(), { action: 'start', taskId: '1', phase: 'review' }, 1))
+  loop = ok(applyLoopAction(loop, { action: 'result', taskId: '1', outcome: 'pass' }, 2))
+  expect(loop.pendingTaskId).toBeUndefined()
+  loop = ok(applyLoopAction(loop, { action: 'start', taskId: '2', phase: 'code' }, 3))
+  loop = ok(applyLoopAction(loop, { action: 'start', taskId: '1', phase: 'fix' }, 4))
+  loop = ok(applyLoopAction(loop, { action: 'start', taskId: '2', phase: 'review' }, 5))
+  loop = ok(applyLoopAction(loop, { action: 'result', taskId: '1', outcome: 'fail' }, 6))
+  expect(loop.pendingTaskId).toBe('2')
+})

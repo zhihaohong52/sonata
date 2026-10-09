@@ -223,15 +223,18 @@ export function loopPanelCheck(dirs: string[], packageRoot: string): { ok: boole
     }
   };
   const shipped = version(join(packageRoot, 'skills', 'loop'));
+  // Every installed copy is checked: sync refreshes them all, and a current
+  // project copy must not hide a stale user-level one.
+  let current: string | undefined;
   for (const dir of dirs.filter((d) => existsSync(join(d, 'SKILL.md')))) {
     const installed = version(dir);
     if (installed === undefined) return { ok: false, line: `loop panel missing in ${dir} — run \`sonata sync\`` };
     if (shipped !== undefined && installed !== shipped) {
       return { ok: false, line: `loop panel ${installed} in ${dir}, package has ${shipped} — run \`sonata sync\`` };
     }
-    return { ok: true, line: `loop panel ${installed} installed (${dir})` };
+    current ??= `loop panel ${installed} installed (${dir})`;
   }
-  return { ok: true, line: 'loop skill not installed' };
+  return { ok: true, line: current ?? 'loop skill not installed' };
 }
 
 export function staleMcpRegistration(cwd: string, home: string): string | undefined {

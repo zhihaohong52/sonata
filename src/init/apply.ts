@@ -126,7 +126,13 @@ export async function apply(
 
   // ---- skill ----
   // The whole folder: the skill and the mod Claude Code auto-loads from it.
-  writeLoopSkill(dirname(plan.skillPath), loopSkillFiles(loopSkillSource(packageRoot)));
+  // init installs the whole folder or says why it could not; it never reports
+  // a skill it did not write.
+  const skillFiles = loopSkillFiles(loopSkillSource(packageRoot));
+  if (skillFiles.length === 0) {
+    throw new Error(`cannot install the loop skill: no skills/loop folder in ${packageRoot} or ${process.cwd()}`);
+  }
+  writeLoopSkill(dirname(plan.skillPath), skillFiles);
   io.out(`  ✓ installed loop skill and panel in ${dirname(plan.skillPath)}`);
 
   // ---- guidance ----

@@ -14,6 +14,7 @@ export function loopSkillSource(packageRoot: string): string {
 
 export function loopSkillFiles(root: string): LoopSkillFile[] {
   const base = join(root, 'skills', 'loop');
+  if (!existsSync(base)) return [];
   const out: LoopSkillFile[] = [];
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {

@@ -32,4 +32,8 @@ describe('loop skill folder', () => {
     expect(existsSync(join(dir, 'hooks/model.test.ts'))).toBe(false);
     expect(writeLoopSkill(dir, files)).toEqual([]);
   });
+
+  it('lists nothing, rather than throwing, when the package has no skill folder', () => {
+    expect(loopSkillFiles(mkdtempSync(join(tmpdir(), 'no-skill-')))).toEqual([]);
+  });
 });

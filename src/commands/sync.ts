@@ -641,7 +641,14 @@ function refreshLoopSkill(opts: SyncOptions): string[] {
   // `sonata agents` and the shell's Sync action too — refreshes the same copy.
   const root = opts.packageRoot ?? join(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
   if (!existsSync(join(root, 'skills', 'loop', 'SKILL.md'))) return [];
-  const files = loopSkillFiles(root);
+  // The refresh is optional: a source that cannot be read leaves the
+  // installed copies as they are rather than failing a sync of the agents.
+  let files: ReturnType<typeof loopSkillFiles>;
+  try {
+    files = loopSkillFiles(root);
+  } catch {
+    return [];
+  }
   const dirs = [
     join(opts.cwd, '.claude', 'skills', 'sonata-loop'),
     ...(opts.home === undefined ? [] : [join(opts.home, '.claude', 'skills', 'sonata-loop')]),

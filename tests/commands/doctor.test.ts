@@ -2198,6 +2198,14 @@ describe('loop panel check', () => {
     expect(loopPanelCheck([dir], pkg).line).toBe(`loop panel 0.0.9 in ${dir}, package has 0.1.0 — run \`sonata sync\``);
   });
 
+  it('checks every installed copy, not only the first', () => {
+    const current = join(mkdtempSync(join(tmpdir(), 'inst-')), 'sonata-loop');
+    manifest(current, '0.1.0');
+    const stale = join(mkdtempSync(join(tmpdir(), 'inst-')), 'sonata-loop');
+    manifest(stale, '0.0.9');
+    expect(loopPanelCheck([current, stale], pkg)).toEqual({ ok: false, line: `loop panel 0.0.9 in ${stale}, package has 0.1.0 — run \`sonata sync\`` });
+  });
+
   it('is silent when the skill is not installed at all', () => {
     expect(loopPanelCheck([join(tmpdir(), 'nope-sonata-loop')], pkg)).toEqual({ ok: true, line: 'loop skill not installed' });
   });
