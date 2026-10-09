@@ -134,6 +134,7 @@ describe('jevRequestBody', () => {
     expect(complexFor('explore')).toMatch(/Surveys a subsystem/);
     expect(complexFor('code')).toMatch(/design decision/);
     expect(complexFor('docs')).toBe(complexFor('code'));
+    expect(complexFor('constructor')).toBe(complexFor('code'));
   });
 });
 

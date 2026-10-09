@@ -145,7 +145,7 @@ const ROLE_CRITERIA: Record<string, Criteria> = {
 
 /** The System One request: `state` plus one Choice named `tier`. */
 export function jevRequestBody(input: { role: string; task: string; tiers: readonly Tier[] }): object {
-  const criteria = ROLE_CRITERIA[input.role] ?? CODE_CRITERIA;
+  const criteria = Object.hasOwn(ROLE_CRITERIA, input.role) ? ROLE_CRITERIA[input.role] : CODE_CRITERIA;
   return {
     state: { role: input.role, task: input.task },
     questions: {
