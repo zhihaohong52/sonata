@@ -42,6 +42,7 @@ function litellmModelEntry(
   gateway: string,
   id: string,
   gateways: NativeConfig['gateways'],
+  api?: 'responses',
 ): LiteLLMModelConfig {
   // An OAuth gateway is served by one of LiteLLM's own providers, which
   // supplies the base URL, the bearer and any refresh or token exchange.
@@ -95,10 +96,16 @@ function litellmModelEntry(
   const provider = gateways[gateway].provider
     ?? gateways[gateway].wireFormat
     ?? providerForBaseUrl(gateway);
+  // `responses/` is LiteLLM's own per-model switch onto its Responses bridge,
+  // and it holds under `use_chat_completions_url_for_anthropic_messages`, which
+  // only decides the default. Measured 2026-10-09 on vendorz (vendorz):
+  // `gpt-6.1-sol` and `gpt-6-astra` answer every chat-completions request that
+  // carries tools and `reasoning_effort` with a 400 naming `/v1/responses`,
+  // and serve multi-turn tool use at `xhigh` through this prefix.
   return {
     model_name: modelName,
     litellm_params: {
-      model: `${provider}/${id}`,
+      model: `${provider}/${api === 'responses' ? 'responses/' : ''}${id}`,
       api_base: gateways[gateway].baseUrl,
       api_key: `os.environ/${envVarForGateway(gateway)}`,
     },
@@ -138,7 +145,7 @@ export function litellmConfig(
   unifiedModels: Record<string, UnifiedModelConfig> = {},
 ): LiteLLMConfig {
   const modelList = Object.entries(native.models).map(
-    ([modelName, model]) => litellmModelEntry(modelName, model.gateway, model.id, native.gateways),
+    ([modelName, model]) => litellmModelEntry(modelName, model.gateway, model.id, native.gateways, model.api),
   );
   const forwardHeaders = Object.entries(native.models)
     .filter(([, model]) => requiresSessionHeader(native.gateways[model.gateway]?.baseUrl))
@@ -150,7 +157,7 @@ export function litellmConfig(
   for (const [modelName, model] of Object.entries(unifiedModels)) {
     if (modelName in native.models) continue;
     if (model.gateway === undefined || model.id === undefined) continue;
-    modelList.push(litellmModelEntry(modelName, model.gateway, model.id, native.gateways));
+    modelList.push(litellmModelEntry(modelName, model.gateway, model.id, native.gateways, model.api));
     if (requiresSessionHeader(native.gateways[model.gateway]?.baseUrl)) forwardHeaders.push(modelName);
   }
 
