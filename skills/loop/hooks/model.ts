@@ -1,4 +1,4 @@
-import type { AgentRow, Hunk, Loop, LoopTask, Phase, Tier } from '../types'
+import type { AgentRow, Hunk, Loop, LoopTask, Phase, RouteLine, Tier } from '../types'
 
 const SONATA_AGENT = /^(native-)?(code|review|explore|plan)(-|$)/
 export const isSonataAgent = (type: string): boolean => SONATA_AGENT.test(type)
@@ -149,4 +149,49 @@ export function diffStat(hunks: Hunk[]): { added: number; removed: number; files
     removed: hunks.reduce((n, h) => n + h.removed.length, 0),
     files: new Set(hunks.map(h => h.file)).size,
   }
+}
+
+export type Attribution = { served: string[]; tier?: string; usd?: number; isExact: boolean }
+
+// A route belongs to an agent when it names the agent's alias and lands
+// within this long after one of the agent's steps.
+const WINDOW_MS = 120_000
+
+function routesOf(agent: AgentRow, routes: RouteLine[]): RouteLine[] {
+  return routes.filter(r => {
+    if (r.alias !== agent.alias || r.ts === undefined) return false
+    const at = Date.parse(r.ts)
+    return agent.stepTimes.some(t => at >= t && at - t <= WINDOW_MS)
+  })
+}
+
+// Another agent on the same alias was running then: the router cannot say whose request it was.
+function isShared(agents: AgentRow[], agent: AgentRow, at: number): boolean {
+  return agents.some(o => o.id !== agent.id && o.alias === agent.alias &&
+    o.startedAt <= at && (o.endedAt === undefined || o.endedAt >= at - WINDOW_MS))
+}
+
+export function attribute(agents: AgentRow[], routes: RouteLine[], agentId: string): Attribution {
+  const agent = agents.find(a => a.id === agentId)
+  if (agent === undefined) return { served: [], tier: undefined, usd: undefined, isExact: false }
+  const mine = routesOf(agent, routes)
+  const served = [...new Set(mine.map(r => r.served).filter((s): s is string => s !== undefined))]
+  const tier = mine.find(r => r.tier !== undefined)?.tier
+  if (mine.length === 0) return { served, tier, usd: undefined, isExact: false }
+  const isExact = !mine.some(r => isShared(agents, agent, Date.parse(r.ts!)))
+  const isPriced = mine.every(r => r.priceUsd !== undefined)
+  // Unknown is never zero: an ambiguous or unpriced agent has no cost at all.
+  const usd = isExact && isPriced ? mine.reduce((n, r) => n + r.priceUsd!, 0) : undefined
+  return { served, tier, usd, isExact }
+}
+
+export function taskCost(agents: AgentRow[], routes: RouteLine[], ids: string[]): { usd: number; isPartial: boolean } {
+  let usd = 0
+  let isPartial = false
+  for (const id of ids) {
+    const a = attribute(agents, routes, id)
+    if (a.usd === undefined) isPartial = true
+    else usd += a.usd
+  }
+  return { usd, isPartial }
 }
