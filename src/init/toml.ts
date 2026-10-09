@@ -275,6 +275,10 @@ export function nativeTomlFor(
     if (c.harness !== undefined) {
       lines.push(`harness = ${tomlKey(c.harness)}`, `harness_id = ${tomlKey(c.harnessId ?? c.id)}`);
     }
+    // Hand-written, like `price`: init has no way to discover it, so it is
+    // carried over from the config being replaced.
+    const keptApi = existing?.unifiedModels?.[key]?.api;
+    if (keptApi !== undefined) lines.push(`api = ${tomlKey(keptApi)}`);
     lines.push('');
     const keptPrice = existing?.unifiedModels?.[key]?.price;
     if (keptPrice !== undefined) lines.push(...priceLines(`models.${tomlKey(key)}`, keptPrice));

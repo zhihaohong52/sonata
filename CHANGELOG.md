@@ -8,6 +8,18 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- **`api = "responses"` on a `[models]` entry sends that model to the gateway's
+  `/responses` endpoint.** `gpt-6.1-sol` and `gpt-6-astra` on vendorz refuse
+  function tools with `reasoning_effort` on `/chat/completions`, and every Claude
+  Code request carries tools, so every `-complex` agent ranking them first died
+  on its first call with a 400. Through LiteLLM's Responses bridge both serve
+  multi-turn tool use at `xhigh`. The key is opt-in per model, refused on OAuth
+  and direct Anthropic gateways, and kept by `sonata init`. That 400 now also
+  falls through to the next candidate after the usual run of three, for configs
+  without the key.
+
 ### Changed
 
 - **Auto-routing judges reviews, plans and explores by their own criteria.**

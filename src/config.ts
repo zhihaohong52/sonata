@@ -78,6 +78,13 @@ export interface UnifiedModelConfig {
   gateway?: string;
   id?: string;
   contextWindow?: number;
+  /**
+   * `responses` sends this model to the gateway's `/responses` endpoint instead
+   * of `/chat/completions`. For a model that refuses function tools with
+   * `reasoning_effort` on chat-completions — every Claude Code request carries
+   * tools, so it can serve none of them there. See `litellmModelEntry`.
+   */
+  api?: 'responses';
   harness?: string;
   harnessId?: string;
   price?: PriceConfig;
@@ -93,7 +100,7 @@ export interface TierRoute {
   harness?: { harness: string; id: string };
 }
 
-export interface NativeModelConfig { gateway: string; id: string; contextWindow: number }
+export interface NativeModelConfig { gateway: string; id: string; contextWindow: number; api?: 'responses' }
 
 /**
  * How a gateway authenticates.
@@ -403,6 +410,9 @@ export function parseConfig(text: string): SonataConfig {
       if (d.context_window !== undefined && typeof d.context_window !== 'number') {
         throw new Error(`sonata.toml: model "${name}" has non-number "context_window"`);
       }
+      if (d.api !== undefined && d.api !== 'responses') {
+        throw new Error(`sonata.toml: model "${name}" has unknown "api" ${JSON.stringify(d.api)}; the only value is "responses"`);
+      }
       // Only opencode/pi/reasonix take provider-qualified ids; defaulting
       // codex the same way synthesized `<gateway>/<id>` (e.g. `openai/gpt-5.6-sol`)
       // for a harness that takes a bare id, and that invalid ref reached
@@ -417,6 +427,7 @@ export function parseConfig(text: string): SonataConfig {
         gateway: d.gateway,
         id: d.id,
         contextWindow: d.context_window ?? 128000,
+        ...(d.api === 'responses' ? { api: 'responses' as const } : {}),
         price: parsePrice(d.price, `[models."${name}"]`),
         ...(typeof d.harness === 'string' ? {
           harness: d.harness,
@@ -898,6 +909,19 @@ export function parseConfig(text: string): SonataConfig {
         `Define [native.gateways."${model.gateway}"] first.`,
       );
     }
+    // Only an api-key gateway reached through LiteLLM has an endpoint to
+    // choose: codex-oauth is already Responses, copilot-oauth is LiteLLM's own
+    // provider, and a direct Anthropic gateway never meets LiteLLM at all.
+    // Refused rather than ignored, so the line never reads as doing something.
+    if (model.api !== undefined && model.gateway !== undefined) {
+      const gw = native!.gateways[model.gateway];
+      if (gw.auth !== 'api-key' || transportFor(gw, model.gateway) !== 'litellm') {
+        throw new Error(
+          `sonata.toml: model "${name}" sets api = "${model.api}", which only applies to an api-key gateway ` +
+          `served through LiteLLM; gateway "${model.gateway}" is not one.`,
+        );
+      }
+    }
   }
 
   // Tier configs are the unified format. Keep a native projection so the
@@ -911,6 +935,7 @@ export function parseConfig(text: string): SonataConfig {
           gateway: model.gateway,
           id: model.id,
           contextWindow: model.contextWindow ?? 128000,
+          ...(model.api !== undefined ? { api: model.api } : {}),
         };
       }
     }
