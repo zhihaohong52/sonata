@@ -113,3 +113,96 @@ test('an OK router reply that is not JSON is not reported as unreachable', async
   expect(await ui.find({ text: /router not reachable/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('a fetch in flight across /clear does not write its result back', async ($, on) => {
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'sonata-code-simple', agentId: 'a1' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('session.end', () => ({ sessionId: 's' }))
+  on('turn.complete', () => ({ text: '' }))
+  let fail!: (e: Error) => void
+  on('http.fetch', () => new Promise((_, rej) => { fail = rej }))
+  let parked!: () => void
+  const isParked = new Promise<void>(r => { parked = r })
+  on('clock.sleep', () => { parked(); return new Promise(() => {}) })
+  await $.agent.spawn({ subagentType: 'code-simple', description: 'x', prompt: 'x' } as never)
+  await $.session.end({ reason: 'clear' })
+  fail(new Error('down'))
+  await isParked
+  const ui = await $.ui.mount({ plugin: 'sonata-loop', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /router not reachable/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a reply whose routes is not a list says so, and the pane still draws', async ($, on) => {
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'sonata-code-simple', agentId: 'a1' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('session.end', () => ({ sessionId: 's' }))
+  on('turn.complete', () => ({ text: '' }))
+  on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: '{"routes":null}' } }))
+  let parked!: () => void
+  const isParked = new Promise<void>(r => { parked = r })
+  on('clock.sleep', () => { parked(); return new Promise(() => {}) })
+  await $.tool.call({ tool: TOOL, action: 'plan', title: 'auth', tasks: [{ id: '1', title: 'Retry queue' }] })
+  await $.agent.spawn({ subagentType: 'code-simple', description: 'x', prompt: 'x' } as never)
+  await isParked
+  const ui = await $.ui.mount({ plugin: 'sonata-loop', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /router replied with no routes/ })).toBeDefined()
+  expect(await ui.find({ key: 'task:1' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('an OK reply without routes is not shown as "answered 200"', async ($, on) => {
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'sonata-code-simple', agentId: 'a1' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('session.end', () => ({ sessionId: 's' }))
+  on('turn.complete', () => ({ text: '' }))
+  on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: '{}' } }))
+  let parked!: () => void
+  const isParked = new Promise<void>(r => { parked = r })
+  on('clock.sleep', () => { parked(); return new Promise(() => {}) })
+  await $.tool.call({ tool: TOOL, action: 'plan', title: 'auth', tasks: [{ id: '1', title: 'Retry queue' }] })
+  await $.agent.spawn({ subagentType: 'code-simple', description: 'x', prompt: 'x' } as never)
+  await isParked
+  const ui = await $.ui.mount({ plugin: 'sonata-loop', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /router replied with no routes/ })).toBeDefined()
+  expect(await ui.find({ text: /answered 200/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a router error keeps the last reported models and says how old they are', async ($, on) => {
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'sonata-code-simple', agentId: 'a1' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('session.end', () => ({ sessionId: 's' }))
+  on('turn.step', async function* (_$, e) { return { ...e, answer: '', toolUses: [], stopReason: null, usage: null } })
+  on('turn.complete', () => ({ text: '' }))
+  let calls = 0
+  on('http.fetch', () => {
+    calls += 1
+    if (calls > 1) throw new Error('down')
+    return {
+      value: {
+        status: 200,
+        ok: true,
+        headers: {},
+        text: JSON.stringify({ routes: [{ alias: 'sonata-code-simple', served: 'flash-1', status: 200, ts: new Date().toISOString(), tier: 'simple', priceUsd: 0.01 }] }),
+      },
+    }
+  })
+  let parked!: () => void
+  const isParked = new Promise<void>(r => { parked = r })
+  on('clock.sleep', () => { parked(); return new Promise(() => {}) })
+  await $.agent.spawn({ subagentType: 'code-simple', description: 'x', prompt: 'x' } as never)
+  // One step, so the row carries the alias the route line names.
+  const step = $.turn.step({ turnId: 't', index: 0, model: 'sonata-code-simple', messageCount: 1, agentId: 'a1' } as never)
+  for await (const _chunk of step) { /* drain */ }
+  await isParked
+  await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't' } as never)
+  const ui = await $.ui.mount({ plugin: 'sonata-loop', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /showing what it reported/ })).toBeDefined()
+  expect(await ui.find({ text: /flash-1/ })).toBeDefined()
+  await ui.unmount()
+})

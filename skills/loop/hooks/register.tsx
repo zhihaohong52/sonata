@@ -29,26 +29,34 @@ const argsOf = (e: object): Record<string, unknown> =>
 // a reload mid-loop does not freeze the model and cost columns.
 let routerUrl = 'http://127.0.0.1:4100'
 let polling = false
+// Marks router resets, so a fetch started before one cannot write stale state after it.
+let epoch = 0
 
 // One read of the router's view of this session.
 async function fetchOnce($: EngineInterface): Promise<void> {
+  const mine = epoch
   try {
     const session = await $.session.id()
     const res = await $.http.fetch(`${routerUrl}/__sonata/api/session/${encodeURIComponent(session)}`)
-    let body: { routes?: RouterState['routes'] } | undefined
-    if (res.ok) {
-      try {
-        body = JSON.parse(res.text) as { routes?: RouterState['routes'] }
-      } catch {
-        await update($, routerAtom, () => ({ routes: [], error: 'router answered with an unreadable body' }))
-        return
-      }
+    if (!res.ok) {
+      await update($, routerAtom, r => (mine === epoch ? { ...r, error: `router answered ${res.status}` } : r))
+      return
     }
-    await update($, routerAtom, () => (body?.routes === undefined
-      ? { routes: [], error: `router answered ${res.status}` }
-      : { routes: body.routes, at: Date.now() }))
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(res.text)
+    } catch {
+      await update($, routerAtom, r => (mine === epoch ? { ...r, error: 'router answered with an unreadable body' } : r))
+      return
+    }
+    const routes = (parsed as { routes?: unknown } | null | undefined)?.routes
+    if (!Array.isArray(routes)) {
+      await update($, routerAtom, r => (mine === epoch ? { ...r, error: 'router replied with no routes' } : r))
+      return
+    }
+    await update($, routerAtom, r => (mine === epoch ? { routes, at: Date.now() } : r))
   } catch {
-    await update($, routerAtom, r => ({ ...r, error: 'router not reachable' }))
+    await update($, routerAtom, r => (mine === epoch ? { ...r, error: 'router not reachable' } : r))
   }
 }
 
@@ -100,6 +108,7 @@ export const register: Register = (on, options) => {
       await update($, loopAtom, () => null)
       await update($, agentsAtom, () => [])
       await update($, viewAtom, () => ({ showAll: true, expanded: [] }))
+      epoch++
       await update($, routerAtom, () => ({ routes: [] }))
     }
     return next(e)
@@ -121,6 +130,7 @@ export const register: Register = (on, options) => {
     if (input.action === 'plan') {
       // A new loop replaces the last one's rows, so they cannot linger or blur attribution.
       await update($, agentsAtom, () => [])
+      epoch++
       await update($, routerAtom, () => ({ routes: [] }))
       await update($, viewAtom, () => ({ showAll: true, expanded: [] }))
       void $.ui.open({ id: PANE, title: 'sonata loop' })

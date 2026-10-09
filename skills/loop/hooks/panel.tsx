@@ -106,7 +106,6 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
 
   // ── model cell: what the router actually served, or why it cannot say ──
   const modelOf = (a: AgentRow): { text: string; color: string } => {
-    if (router.error !== undefined) return { text: '?', color: C.mid }
     const at = attribute(agents, router.routes, a.id)
     if (at.served.length === 0) return { text: a.status === 'running' ? 'waiting for router' : '?', color: C.rule }
     const tier = at.tier ? ` · ${at.tier}` : ''
@@ -253,7 +252,13 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
       ].filter(Boolean).join(' · ')
 
   const routerLine = router.error !== undefined
-    ? { mark: STROKE.condition, color: C.mid, text: `${router.error} · models ?, costs unknown` }
+    ? {
+        mark: STROKE.condition,
+        color: C.mid,
+        text: router.at !== undefined
+          ? `${router.error} · showing what it reported ${ago(now - router.at)}`
+          : `${router.error} · models ?, costs unknown`,
+      }
     : router.at === undefined
       ? { mark: STROKE.queued, color: C.muted, text: 'router not read yet' }
       : { mark: STROKE.done, color: C.accent, text: `router up · updated ${ago(now - router.at)}` }
