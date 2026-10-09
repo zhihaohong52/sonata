@@ -86,8 +86,15 @@ export function spawnAgent(
 const patch = (agents: AgentRow[], id: string, fn: (a: AgentRow) => AgentRow): AgentRow[] =>
   agents.some(a => a.id === id) ? agents.map(a => (a.id === id ? fn(a) : a)) : agents
 
+/**
+ * The router alias a step's model names. Claude Code appends a context-window
+ * marker (`sonata-explore-simple[1m]`, measured 2026-10-09) that the router's
+ * ledger never carries, so an exact comparison matched no route at all.
+ */
+export const routerAlias = (model: string): string => model.replace(/\[[^\]]*\]$/, '')
+
 export const stepAgent = (agents: AgentRow[], e: { agentId: string; model: string }, now: number): AgentRow[] =>
-  patch(agents, e.agentId, a => ({ ...a, steps: a.steps + 1, alias: e.model, stepTimes: [...a.stepTimes, now].slice(-200) }))
+  patch(agents, e.agentId, a => ({ ...a, steps: a.steps + 1, alias: routerAlias(e.model), stepTimes: [...a.stepTimes, now].slice(-200) }))
 
 const base = (p: string): string => p.split('/').pop() ?? p
 

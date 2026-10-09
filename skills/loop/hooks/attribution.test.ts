@@ -1,5 +1,5 @@
 import { test, expect } from 'claude-code/testing'
-import { attribute, taskCost } from './model'
+import { attribute, taskCost, spawnAgent, stepAgent } from './model'
 import type { AgentRow, RouteLine } from '../types'
 
 const agent = (id: string, startedAt: number, endedAt: number | undefined, steps: number[]): AgentRow => ({
@@ -37,4 +37,12 @@ test('back-to-back agents on one alias: the running one is exact, the finished o
   const routes = [route(61_000, 'flash', 0.02)]
   expect(attribute(agents, routes, 'b')).toEqual({ served: ['flash'], tier: 'simple', usd: 0.02, isExact: true })
   expect(attribute(agents, routes, 'a').served).toEqual([])
+})
+
+test('a step model carrying a context marker still matches the router alias', () => {
+  // Measured 2026-10-09: steps report `sonata-explore-simple[1m]`; the router logs `sonata-explore-simple`.
+  let agents = spawnAgent({ loop: null, agents: [] }, { agentId: 'a', subagentType: 'explore-simple', description: 'x' }, 1_000).agents
+  agents = stepAgent(agents, { agentId: 'a', model: 'sonata-explore-simple[1m]' }, 1_000)
+  const routes = [{ alias: 'sonata-explore-simple', served: 'flash-1', status: 200, ts: new Date(2_000).toISOString(), tier: 'simple', priceUsd: 0.01 }]
+  expect(attribute(agents, routes, 'a')).toMatchObject({ served: ['flash-1'], isExact: true })
 })
