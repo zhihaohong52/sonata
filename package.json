@@ -30,6 +30,7 @@
     "roles",
     "hooks",
     "skills",
+    "!skills/loop/**/*.test.ts",
     "ui",
     "README.md",
     "LICENSE",

@@ -4,6 +4,7 @@ import {
   installHook, allowSonataTools, hookCommand, settingsPath, updateSettings,
 } from '../settings.js';
 import { pruneAgents } from '../detect.js';
+import { loopSkillFiles, loopSkillSource, writeLoopSkill } from '../loop-skill.js';
 import { cmdSync } from '../commands/sync.js';
 import { cmdRoute } from '../commands/route.js';
 import { writeSonataKey } from '../native/credentials.js';
@@ -124,13 +125,9 @@ export async function apply(
   }
 
   // ---- skill ----
-  mkdirSync(dirname(plan.skillPath), { recursive: true });
-  const packageSkill = join(packageRoot, 'skills', 'loop', 'SKILL.md');
-  const skillSource = existsSync(packageSkill)
-    ? packageSkill
-    : join(process.cwd(), 'skills', 'loop', 'SKILL.md');
-  writeFileSync(plan.skillPath, readFileSync(skillSource));
-  io.out(`  ✓ installed loop skill in ${plan.skillPath}`);
+  // The whole folder: the skill and the mod Claude Code auto-loads from it.
+  writeLoopSkill(dirname(plan.skillPath), loopSkillFiles(loopSkillSource(packageRoot)));
+  io.out(`  ✓ installed loop skill and panel in ${dirname(plan.skillPath)}`);
 
   // ---- guidance ----
   // Sonata owns only what is between its markers here; everything else in the
