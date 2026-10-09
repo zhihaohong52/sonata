@@ -238,6 +238,11 @@ export function loopPanelCheck(dirs: string[], packageRoot: string, userDir?: st
     }
     const installed = version(dir);
     if (installed === undefined) return { ok: false, line: `loop panel missing in ${dir} — run \`sonata sync\`` };
+    // A version alone is not a usable panel: a partial refresh can leave the
+    // manifest without the hooks that are the panel.
+    if (!existsSync(join(dir, 'hooks', 'hooks.json')) || !existsSync(join(dir, 'hooks', 'register.tsx'))) {
+      return { ok: false, line: `loop panel incomplete in ${dir} — run \`sonata sync\`` };
+    }
     if (shipped !== undefined && installed !== shipped) {
       return { ok: false, line: `loop panel ${installed} in ${dir}, package has ${shipped} — run \`sonata sync\`` };
     }

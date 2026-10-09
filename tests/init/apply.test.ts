@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { apply } from '../../src/init/apply.js';
@@ -54,6 +54,21 @@ describe('apply', () => {
     try {
       await expect(apply(planFor(), { cwd, home, packageRoot: empty }, { out: (l: string) => lines.push(l), prune: false }))
         .rejects.toThrow(/loop skill/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(lines.some((l) => /installed loop skill/.test(l))).toBe(false);
+  });
+
+  it('fails when the package skill folder has no SKILL.md, even with other files in it', async () => {
+    const partial = mkdtempSync(join(tmpdir(), 'partial-pkg-'));
+    mkdirSync(join(partial, 'skills', 'loop', 'hooks'), { recursive: true });
+    writeFileSync(join(partial, 'skills', 'loop', 'hooks', 'hooks.json'), '{}');
+    const spy = vi.spyOn(process, 'cwd').mockReturnValue(partial);
+    const lines: string[] = [];
+    try {
+      await expect(apply(planFor(), { cwd, home, packageRoot: partial }, { out: (l: string) => lines.push(l), prune: false }))
+        .rejects.toThrow(/SKILL\.md/);
     } finally {
       spy.mockRestore();
     }

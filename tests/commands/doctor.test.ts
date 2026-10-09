@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { checkVersion, cmdDoctor, staleMcpRegistration, routingFailureDetail, loopPanelCheck } from '../../src/commands/doctor.js';
@@ -2179,6 +2179,9 @@ describe('loop panel check', () => {
     mkdirSync(join(dir, '.claude-plugin'), { recursive: true });
     writeFileSync(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'sonata-loop', version }));
     writeFileSync(join(dir, 'SKILL.md'), '#');
+    mkdirSync(join(dir, 'hooks'), { recursive: true });
+    writeFileSync(join(dir, 'hooks', 'hooks.json'), '{}');
+    writeFileSync(join(dir, 'hooks', 'register.tsx'), '');
   };
   const pkg = mkdtempSync(join(tmpdir(), 'pkg-'));
   manifest(join(pkg, 'skills', 'loop'), '0.1.0');
@@ -2221,6 +2224,13 @@ describe('loop panel check', () => {
     const project = join(mkdtempSync(join(tmpdir(), 'proj-')), 'sonata-loop');
     manifest(project, '0.1.0');
     expect(loopPanelCheck([project, user], pkg, user)).toEqual({ ok: false, line: `loop panel in ${project} is shadowed by ${user} — run \`sonata sync\`` });
+  });
+
+  it('reports a panel whose hook files are missing as incomplete', () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'inst-')), 'sonata-loop');
+    manifest(dir, '0.1.0');
+    rmSync(join(dir, 'hooks'), { recursive: true, force: true });
+    expect(loopPanelCheck([dir], pkg)).toEqual({ ok: false, line: `loop panel incomplete in ${dir} — run \`sonata sync\`` });
   });
 
   it('is silent when the skill is not installed at all', () => {

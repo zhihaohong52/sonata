@@ -129,8 +129,8 @@ export async function apply(
   // init installs the whole folder or says why it could not; it never reports
   // a skill it did not write.
   const skillFiles = loopSkillFiles(loopSkillSource(packageRoot));
-  if (skillFiles.length === 0) {
-    throw new Error(`cannot install the loop skill: no skills/loop folder in ${packageRoot} or ${process.cwd()}`);
+  if (!skillFiles.some((f) => f.rel === 'SKILL.md')) {
+    throw new Error(`cannot install the loop skill: no skills/loop/SKILL.md in ${packageRoot} or ${process.cwd()}`);
   }
   installLoopSkill(dirname(plan.skillPath), skillFiles, home);
   io.out(existsSync(join(dirname(plan.skillPath), '.claude-plugin'))

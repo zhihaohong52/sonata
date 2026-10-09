@@ -62,4 +62,15 @@ describe('loop skill folder', () => {
     installLoopSkill(user, files, home);
     expect(existsSync(join(user, 'hooks', 'register.tsx'))).toBe(true);
   });
+
+  it('gives a user-level copy that predates the panel its panel before deferring to it', () => {
+    const files = loopSkillFiles(fakePackage());
+    const home = mkdtempSync(join(tmpdir(), 'home-'));
+    const user = join(home, '.claude', 'skills', 'sonata-loop');
+    writeLoopSkill(user, files.filter((f) => f.rel === 'SKILL.md'));
+    const project = join(mkdtempSync(join(tmpdir(), 'proj-')), '.claude', 'skills', 'sonata-loop');
+    installLoopSkill(project, files, home);
+    expect(existsSync(join(user, '.claude-plugin', 'plugin.json'))).toBe(true);
+    expect(existsSync(join(project, '.claude-plugin'))).toBe(false);
+  });
 });

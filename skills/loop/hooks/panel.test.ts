@@ -282,3 +282,26 @@ test('a routes list holding junk entries keeps the good ones and the pane draws'
   expect(await ui.find({ text: /router up/ })).toBeDefined()
   await ui.unmount()
 })
+
+test('a route with a malformed timestamp or price is dropped and the pane draws', async ($, on) => {
+  on('turn.step', async function* (_$, e) { return { ...e, answer: '', toolUses: [], stopReason: null, usage: null } })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'sonata-code-simple', agentId: 'a1' }))
+  on('session.id', () => ({ value: 's1' }))
+  let parked!: () => void
+  const isParked = new Promise<void>(r => { parked = r })
+  on('clock.sleep', () => { parked(); return new Promise(() => {}) })
+  const bad = JSON.stringify({ routes: [
+    { alias: 'sonata-code-simple', ts: { toString: 1 }, served: 'x', status: 200 },
+    { alias: 'sonata-code-simple', ts: new Date().toISOString(), served: 'y', status: 200, priceUsd: 'free' },
+  ] })
+  on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: bad } }))
+  await $.tool.call({ tool: TOOL, action: 'plan', title: 't', tasks: [{ id: '1', title: 'A' }] })
+  await $.tool.call({ tool: TOOL, action: 'start', taskId: '1', phase: 'code' })
+  await $.agent.spawn({ subagentType: 'code-simple', description: 'x', prompt: 'x' } as never)
+  for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'sonata-code-simple', messageCount: 1, agentId: 'a1' } as never)) { /* drain */ }
+  await isParked
+  const ui = await $.ui.mount({ plugin: 'sonata-loop', surface: 'terminal', ...PANE })
+  expect(await ui.find({ key: 'task:1' })).toBeDefined()
+  await ui.unmount()
+})

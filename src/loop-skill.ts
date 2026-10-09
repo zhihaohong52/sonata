@@ -66,7 +66,10 @@ export function installLoopSkill(dir: string, files: LoopSkillFile[], home: stri
   const userDir = home === undefined ? undefined : join(home, '.claude', 'skills', 'sonata-loop')
   const shadowed = userDir !== undefined && resolve(dir) !== resolve(userDir) && existsSync(join(userDir, 'SKILL.md'))
   if (!shadowed) return writeLoopSkill(dir, files)
-  const changed = writeLoopSkill(dir, files.filter(f => f.rel === 'SKILL.md'))
+  // A user-level copy from before the panel shadows the project's without
+  // carrying a panel of its own: give it the panel before deferring to it.
+  const changed = existsSync(join(userDir, '.claude-plugin', 'plugin.json')) ? [] : writeLoopSkill(userDir, files)
+  changed.push(...writeLoopSkill(dir, files.filter(f => f.rel === 'SKILL.md')))
   for (const rel of MOD_PATHS) {
     const path = join(dir, rel)
     if (existsSync(path)) {
