@@ -373,6 +373,7 @@ killed and the run is reported `DONE`, `degraded`, with a report beginning
 
 | Command | Purpose |
 |---|---|
+| `sonata upgrade` | Installs the latest published release with `npm install -g`. A development install (`npm link`) is refused and told to `git pull && npm run build` instead. Run `sonata restart` afterwards so the router runs the new version |
 | `sonata --version` (`-v`) | The running version and the directory it ran from. The path matters: `sonata` on PATH runs `dist/`, not `src/`, so this is how you tell which install answered |
 | `sonata init` | Set up sonata in this project (interactive); `--prune` removes stale generated agents |
 | `sonata reset [--global] [--yes]` | Remove sonata's configuration and generated files at one scope — the config, the generated agents, the loop skill, the CLAUDE.md block, and the routing env/hooks/allow-list. Keeps your gateway keys, the usage ledger and the caches, and shows the full plan before touching anything |

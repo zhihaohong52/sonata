@@ -11,6 +11,8 @@ import { cmdSync } from './commands/sync.js';
 import { cmdReset } from './commands/reset.js';
 import { cmdAgents } from './commands/agents.js';
 import { cmdDoctor } from './commands/doctor.js';
+import { cmdUpgrade } from './commands/upgrade.js';
+import { realUpdateDeps } from './init/harness-updates.js';
 import { cmdGc } from './commands/gc.js';
 import { cmdInit, isCancellation } from './commands/init.js';
 import { initLogDir } from './commands/init-log.js';
@@ -18,6 +20,7 @@ import { banner, isInteractive, confirm } from './tui.js';
 import { pruneAgents } from './detect.js';
 import { shouldLaunchTui } from './tui-ink/launch.js';
 import type { HookScope } from './settings.js';
+import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { readBuildInfo, stampedVersion } from './build-info.js';
 import { fileURLToPath } from 'node:url';
@@ -43,6 +46,7 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
   sonata tui       open the config TUI (a bare sonata does the same on a terminal)
   sonata init      set up sonata in this project (interactive)
   sonata --version         print the running version and the install it ran from
+  sonata upgrade           install the latest published release (refused on a development install)
   sonata doctor [--json]   check tmux, harnesses, auth and versions
   sonata sync      regenerate agent files from sonata.toml
   sonata reset     remove sonata's configuration and generated files [--global] [--yes]
@@ -95,6 +99,22 @@ function packageRoot(): string {
   return join(fileURLToPath(new URL('.', import.meta.url)), '..');
 }
 
+/** The running manifest's name and version; `unknown` for a version it cannot read. */
+function manifest(root: string): { name: string; version: string } {
+  const read = { name: '@zhihaohong52/sonata', version: 'unknown' };
+  try {
+    const parsed = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { name?: unknown; version?: unknown };
+    // A manifest without a usable version is reported as unknown rather than
+    // as whatever JSON held: a wrong version is worse than an absent one when
+    // the whole point is telling two installs apart.
+    if (typeof parsed.version === 'string' && parsed.version !== '') read.version = parsed.version;
+    if (typeof parsed.name === 'string' && parsed.name !== '') read.name = parsed.name;
+  } catch {
+    // An unreadable manifest still leaves the path worth printing.
+  }
+  return read;
+}
+
 /**
  * The running build's version, and where it ran from.
  *
@@ -111,17 +131,7 @@ function versionLines(): string[] {
   // `dist/` for an installed or linked build and `src/` under `npm run dev`,
   // which is never stamped — so the answer describes the code that ran.
   const info = readBuildInfo(fileURLToPath(new URL('.', import.meta.url)));
-  let version = 'unknown';
-  try {
-    const raw = readFileSync(join(root, 'package.json'), 'utf8');
-    const parsed = JSON.parse(raw) as { version?: unknown };
-    // A manifest without a usable version is reported as unknown rather than
-    // as whatever JSON held: a wrong version is worse than an absent one when
-    // the whole point is telling two installs apart.
-    if (typeof parsed.version === 'string' && parsed.version !== '') version = parsed.version;
-  } catch {
-    // An unreadable manifest still leaves the path worth printing.
-  }
+  const version = manifest(root).version;
   const lines = [stampedVersion(version, info), root];
   // The commit is a second line rather than more suffix: the version is what
   // gets quoted in a bug report, and it stays readable.
@@ -194,6 +204,24 @@ export async function main(argv: string[]): Promise<number> {
   if (command === '--version' || command === '-v' || command === 'version') {
     for (const line of versionLines()) console.log(line);
     return 0;
+  }
+
+  if (command === 'upgrade') {
+    const root = packageRoot();
+    const { name, version } = manifest(root);
+    const stamped = readBuildInfo(fileURLToPath(new URL('.', import.meta.url))) !== undefined;
+    return cmdUpgrade({
+      name,
+      installed: version,
+      devRoot: stamped ? root : undefined,
+      latestVersion: (pkg) => realUpdateDeps(homedir()).latestVersion(pkg),
+      run: ([cmd, ...args]) => new Promise((resolve) => {
+        const child = spawn(cmd, args, { stdio: 'inherit' });
+        child.on('error', () => resolve(false));
+        child.on('close', (code) => resolve(code === 0));
+      }),
+      out: (line) => console.log(line),
+    });
   }
 
   if (command === 'init') {

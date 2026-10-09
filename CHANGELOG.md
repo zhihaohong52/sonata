@@ -8,6 +8,14 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- **`sonata upgrade` installs the latest published release.** It compares the
+  running version with npm's `latest` and runs `npm install -g` when it is
+  behind. A development install (`npm link`) is refused and told to
+  `git pull && npm run build` instead, because installing over the link would
+  silently replace the clone with the published package.
+
 ### Changed
 
 - **Auto-routing judges reviews, plans and explores by their own criteria.**
