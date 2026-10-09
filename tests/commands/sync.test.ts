@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { chmodSync, mkdtempSync, mkdirSync, readdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { agentMarkdown, cmdSync, nativeAgentMarkdown, outdatedAgents, plannedAgents, tierAgentMarkdown, TIER_AGENT_MARKER } from '../../src/commands/sync.js';
 import { parseConfig, type SonataConfig } from '../../src/config.js';
 
@@ -949,7 +949,11 @@ describe('cmdSync — refreshing the installed loop skill', () => {
 
     const res = cmdSync({ cwd, agentsDir: join(cwd, '.claude', 'agents') });
 
-    expect(res.skills).toEqual([skillPath]);
+    // The whole shipped folder: the skill and its panel mod.
+    expect(res.skills).toContain(skillPath);
+    expect(res.skills).toContain(join(dirname(skillPath), '.claude-plugin', 'plugin.json'));
+    expect(res.skills).toContain(join(dirname(skillPath), 'hooks', 'register.tsx'));
+    expect(res.skills.some((p) => p.endsWith('.test.ts'))).toBe(false);
     expect(readFileSync(skillPath, 'utf8')).toBe(shipped);
   });
 });
