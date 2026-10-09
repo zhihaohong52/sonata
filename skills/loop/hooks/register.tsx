@@ -165,6 +165,6 @@ export const register: Register = (on, options) => {
       jumpLatest: () => void $.ui.scroll({ in: PANE, to: 'end' }),
       copy: text => void $.ui.copy({ text }),
     }
-    return panelTree($.ui.resolve(e), data, act)
+    return panelTree(h, $.ui.resolve(e), data, act)
   })
 }
