@@ -1,4 +1,4 @@
-import type { AgentRow, Loop, LoopTask, Phase, Tier } from '../types'
+import type { AgentRow, Hunk, Loop, LoopTask, Phase, Tier } from '../types'
 
 const SONATA_AGENT = /^(native-)?(code|review|explore|plan)(-|$)/
 export const isSonataAgent = (type: string): boolean => SONATA_AGENT.test(type)
@@ -114,4 +114,39 @@ export function depthOf(agents: AgentRow[], id: string): number {
     depth++
   }
   return depth
+}
+
+export const HUNK_LINES = 40
+export const MAX_HUNKS = 30
+
+function capped(file: string, removed: string[], added: string[], isNewFile: boolean): Hunk {
+  // Removed lines first; added lines get the rest of the budget, or the whole
+  // budget when removed used it all, so a big replacement still shows its new side.
+  const keepRemoved = removed.slice(0, HUNK_LINES)
+  const keepAdded = added.slice(0, Math.max(0, HUNK_LINES - keepRemoved.length) || HUNK_LINES)
+  const omitted = removed.length - keepRemoved.length + added.length - keepAdded.length
+  return { file, removed: keepRemoved, added: keepAdded, omitted, isNewFile }
+}
+
+export function hunksFor(tool: string, input: Record<string, unknown>): Hunk[] {
+  const file = input.file_path
+  if (typeof file !== 'string') return []
+  if (tool === 'Edit' && typeof input.old_string === 'string' && typeof input.new_string === 'string') {
+    return [capped(file, input.old_string.split('\n'), input.new_string.split('\n'), false)]
+  }
+  if (tool === 'Write' && typeof input.content === 'string') {
+    return [capped(file, [], input.content.split('\n'), true)]
+  }
+  return []
+}
+
+export const addHunks = (agents: AgentRow[], agentId: string, hunks: Hunk[]): AgentRow[] =>
+  hunks.length === 0 ? agents : patch(agents, agentId, a => ({ ...a, hunks: [...a.hunks, ...hunks].slice(-MAX_HUNKS) }))
+
+export function diffStat(hunks: Hunk[]): { added: number; removed: number; files: number } {
+  return {
+    added: hunks.reduce((n, h) => n + h.added.length, 0),
+    removed: hunks.reduce((n, h) => n + h.removed.length, 0),
+    files: new Set(hunks.map(h => h.file)).size,
+  }
 }
