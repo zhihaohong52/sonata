@@ -213,7 +213,7 @@ export function strandedNoneCandidates(
 }
 
 /** Whether each installed sonata-loop skill folder carries the panel mod the package ships. */
-export function loopPanelCheck(dirs: string[], packageRoot: string): { ok: boolean; line: string } {
+export function loopPanelCheck(dirs: string[], packageRoot: string, userDir?: string): { ok: boolean; line: string } {
   const version = (dir: string): string | undefined => {
     try {
       const v = (JSON.parse(readFileSync(join(dir, '.claude-plugin', 'plugin.json'), 'utf8')) as { version?: unknown }).version;
@@ -226,7 +226,16 @@ export function loopPanelCheck(dirs: string[], packageRoot: string): { ok: boole
   // Every installed copy is checked: sync refreshes them all, and a current
   // project copy must not hide a stale user-level one.
   let current: string | undefined;
+  // A user-level copy carries the panel for every project; a project copy
+  // beside it should be the skill alone (Claude Code would refuse its plugin).
+  const userHasSkill = userDir !== undefined && existsSync(join(userDir, 'SKILL.md'));
   for (const dir of dirs.filter((d) => existsSync(join(d, 'SKILL.md')))) {
+    if (userHasSkill && dir !== userDir) {
+      if (existsSync(join(dir, '.claude-plugin'))) {
+        return { ok: false, line: `loop panel in ${dir} is shadowed by ${userDir} — run \`sonata sync\`` };
+      }
+      continue;
+    }
     const installed = version(dir);
     if (installed === undefined) return { ok: false, line: `loop panel missing in ${dir} — run \`sonata sync\`` };
     if (shipped !== undefined && installed !== shipped) {
@@ -1458,6 +1467,7 @@ export async function cmdDoctor(
     const panel = loopPanelCheck(
       [join(opts.cwd, '.claude', 'skills', 'sonata-loop'), join(home, '.claude', 'skills', 'sonata-loop')],
       opts.packageRoot,
+      join(home, '.claude', 'skills', 'sonata-loop'),
     );
     // Silent where the skill was never installed: nothing to keep in step.
     if (panel.line !== 'loop skill not installed') checks.push({ name: 'loop panel', ok: panel.ok, detail: panel.line });

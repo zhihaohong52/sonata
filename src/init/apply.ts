@@ -4,7 +4,7 @@ import {
   installHook, allowSonataTools, hookCommand, settingsPath, updateSettings,
 } from '../settings.js';
 import { pruneAgents } from '../detect.js';
-import { loopSkillFiles, loopSkillSource, writeLoopSkill } from '../loop-skill.js';
+import { installLoopSkill, loopSkillFiles, loopSkillSource } from '../loop-skill.js';
 import { cmdSync } from '../commands/sync.js';
 import { cmdRoute } from '../commands/route.js';
 import { writeSonataKey } from '../native/credentials.js';
@@ -132,8 +132,10 @@ export async function apply(
   if (skillFiles.length === 0) {
     throw new Error(`cannot install the loop skill: no skills/loop folder in ${packageRoot} or ${process.cwd()}`);
   }
-  writeLoopSkill(dirname(plan.skillPath), skillFiles);
-  io.out(`  ✓ installed loop skill and panel in ${dirname(plan.skillPath)}`);
+  installLoopSkill(dirname(plan.skillPath), skillFiles, home);
+  io.out(existsSync(join(dirname(plan.skillPath), '.claude-plugin'))
+    ? `  ✓ installed loop skill and panel in ${dirname(plan.skillPath)}`
+    : `  ✓ installed loop skill in ${dirname(plan.skillPath)} (its panel is the user-level copy's)`);
 
   // ---- guidance ----
   // Sonata owns only what is between its markers here; everything else in the

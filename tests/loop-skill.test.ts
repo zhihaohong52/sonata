@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loopSkillFiles, writeLoopSkill } from '../src/loop-skill.js';
+import { installLoopSkill, loopSkillFiles, writeLoopSkill } from '../src/loop-skill.js';
 
 function fakePackage(): string {
   const root = mkdtempSync(join(tmpdir(), 'loop-skill-'));
@@ -35,5 +35,31 @@ describe('loop skill folder', () => {
 
   it('lists nothing, rather than throwing, when the package has no skill folder', () => {
     expect(loopSkillFiles(mkdtempSync(join(tmpdir(), 'no-skill-')))).toEqual([]);
+  });
+
+  // Claude Code loads one plugin per name and lets the user-level copy shadow
+  // the project's, reporting the project's as a load error. The mod therefore
+  // lives at one level: the user's, when there is one.
+  it('writes the skill alone into a project copy shadowed by a user-level copy, removing the old mod', () => {
+    const files = loopSkillFiles(fakePackage());
+    const home = mkdtempSync(join(tmpdir(), 'home-'));
+    writeLoopSkill(join(home, '.claude', 'skills', 'sonata-loop'), files);
+    const project = join(mkdtempSync(join(tmpdir(), 'proj-')), '.claude', 'skills', 'sonata-loop');
+    writeLoopSkill(project, files);
+    installLoopSkill(project, files, home);
+    expect(existsSync(join(project, 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(project, '.claude-plugin'))).toBe(false);
+    expect(existsSync(join(project, 'hooks'))).toBe(false);
+  });
+
+  it('writes the whole folder when there is no user-level copy, and at the user level itself', () => {
+    const files = loopSkillFiles(fakePackage());
+    const home = mkdtempSync(join(tmpdir(), 'home-'));
+    const project = join(mkdtempSync(join(tmpdir(), 'proj-')), '.claude', 'skills', 'sonata-loop');
+    installLoopSkill(project, files, home);
+    expect(existsSync(join(project, '.claude-plugin', 'plugin.json'))).toBe(true);
+    const user = join(home, '.claude', 'skills', 'sonata-loop');
+    installLoopSkill(user, files, home);
+    expect(existsSync(join(user, 'hooks', 'register.tsx'))).toBe(true);
   });
 });

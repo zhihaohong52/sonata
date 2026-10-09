@@ -2206,6 +2206,23 @@ describe('loop panel check', () => {
     expect(loopPanelCheck([current, stale], pkg)).toEqual({ ok: false, line: `loop panel 0.0.9 in ${stale}, package has 0.1.0 — run \`sonata sync\`` });
   });
 
+  it('expects the panel only at the user level when that copy exists', () => {
+    const user = join(mkdtempSync(join(tmpdir(), 'home-')), 'sonata-loop');
+    manifest(user, '0.1.0');
+    const project = join(mkdtempSync(join(tmpdir(), 'proj-')), 'sonata-loop');
+    mkdirSync(project, { recursive: true });
+    writeFileSync(join(project, 'SKILL.md'), '#');
+    expect(loopPanelCheck([project, user], pkg, user)).toEqual({ ok: true, line: `loop panel 0.1.0 installed (${user})` });
+  });
+
+  it('flags a project copy that still carries the plugin a user-level copy shadows', () => {
+    const user = join(mkdtempSync(join(tmpdir(), 'home-')), 'sonata-loop');
+    manifest(user, '0.1.0');
+    const project = join(mkdtempSync(join(tmpdir(), 'proj-')), 'sonata-loop');
+    manifest(project, '0.1.0');
+    expect(loopPanelCheck([project, user], pkg, user)).toEqual({ ok: false, line: `loop panel in ${project} is shadowed by ${user} — run \`sonata sync\`` });
+  });
+
   it('is silent when the skill is not installed at all', () => {
     expect(loopPanelCheck([join(tmpdir(), 'nope-sonata-loop')], pkg)).toEqual({ ok: true, line: 'loop skill not installed' });
   });

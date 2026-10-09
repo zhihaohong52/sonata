@@ -1,5 +1,5 @@
 import { EXTENDED_CONTEXT_SUFFIX, roleQualifiesForExtendedContext, tierQualifiesForExtendedContext } from '../extended-context.js';
-import { loopSkillFiles, writeLoopSkill } from '../loop-skill.js';
+import { installLoopSkill, loopSkillFiles } from '../loop-skill.js';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -660,7 +660,7 @@ function refreshLoopSkill(opts: SyncOptions): string[] {
   for (const dir of dirs) {
     if (!existsSync(join(dir, 'SKILL.md'))) continue;
     try {
-      refreshed.push(...writeLoopSkill(dir, files));
+      refreshed.push(...installLoopSkill(dir, files, opts.home));
     } catch {
       // left as it was
     }
