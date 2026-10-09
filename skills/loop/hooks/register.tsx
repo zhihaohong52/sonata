@@ -1,0 +1,239 @@
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
+import type { AgentRow, Loop, RouterState, View } from '../types'
+import { addHunks, addUsage, applyLoopAction, completeAgent, hunksFor, spawnAgent, stepAgent, toolActivity } from './model'
+import { panelTree } from './panel'
+import type { PanelActions, PanelData } from './panel'
+
+const PLUGIN = 'sonata-loop'
+const PANE = 'sonata-loop'
+
+export const loopAtom = atom({ plugin: 'sonata-loop', key: 'loop' } as const, null as Loop | null)
+export const agentsAtom = atom({ plugin: 'sonata-loop', key: 'agents' } as const, [] as AgentRow[])
+export const routerAtom = atom({ plugin: 'sonata-loop', key: 'router' } as const, { routes: [] } as RouterState)
+export const viewAtom = atom({ plugin: 'sonata-loop', key: 'view' } as const, { showAll: true, expanded: [] } as View)
+
+const TOOL_DESCRIPTION = [
+  'Report sonata-loop progress to the loop panel. Call it at each loop step:',
+  'plan {title, tasks:[{id,title}]} after planning; start {taskId, phase: code|fix|review|final}',
+  'right before each dispatch; result {taskId, outcome: pass|fail, note?} after each review;',
+  'escalate {taskId, to: simple|normal|complex}; done {summary?} at the end.',
+].join(' ')
+
+// The keys tool.call carries beside a tool's own arguments.
+const RESERVED = new Set(['tool', 'tool_use_id', 'agentId', 'consent', 'requestMeta'])
+const argsOf = (e: object): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k)))
+
+// Module state: reset on reload. A poll restarts on the next spawn or step, so
+// a reload mid-loop does not freeze the model and cost columns.
+let routerUrl = 'http://127.0.0.1:4100'
+let polling = false
+// The session's directory, so the panel can show diff paths relative to it.
+let sessionCwd: string | undefined
+// Marks router resets, so a fetch started before one cannot write stale state after it.
+let epoch = 0
+
+// One read of the router's view of this session.
+async function fetchOnce($: EngineInterface): Promise<void> {
+  const mine = epoch
+  try {
+    const session = await $.session.id()
+    const res = await $.http.fetch(`${routerUrl}/__sonata/api/session/${encodeURIComponent(session)}`)
+    if (!res.ok) {
+      await update($, routerAtom, r => (mine === epoch ? { ...r, error: `router answered ${res.status}` } : r))
+      return
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(res.text)
+    } catch {
+      await update($, routerAtom, r => (mine === epoch ? { ...r, error: 'router answered with an unreadable body' } : r))
+      return
+    }
+    const routes = (parsed as { routes?: unknown } | null | undefined)?.routes
+    if (!Array.isArray(routes)) {
+      await update($, routerAtom, r => (mine === epoch ? { ...r, error: 'router replied with no routes' } : r))
+      return
+    }
+    // Only route-shaped entries: one `null`, or a `ts` Date.parse cannot read,
+    // would crash every attribution and with it the pane.
+    const optional = (v: unknown, kind: 'string' | 'number') =>
+      v === undefined || (kind === 'number' ? typeof v === 'number' && Number.isFinite(v) : typeof v === kind)
+    const kept = routes.filter((x): x is RouterState['routes'][number] => {
+      if (typeof x !== 'object' || x === null) return false
+      const r = x as Record<string, unknown>
+      return typeof r.alias === 'string' && optional(r.ts, 'string') && optional(r.served, 'string')
+        && optional(r.tier, 'string') && optional(r.priceUsd, 'number')
+    })
+    await update($, routerAtom, r => (mine === epoch ? { routes: kept, at: Date.now() } : r))
+  } catch {
+    await update($, routerAtom, r => (mine === epoch ? { ...r, error: 'router not reachable' } : r))
+  }
+}
+
+// Polls while any agent runs; stops by itself, and runs one at a time.
+async function poll($: EngineInterface): Promise<void> {
+  if (polling) return
+  polling = true
+  try {
+    while ((await read($, agentsAtom)).some(a => a.status === 'running')) {
+      await fetchOnce($)
+      await $.clock.sleep(3_000)
+    }
+  } catch {
+    // The poll is started unawaited (`void poll($)`). An engine call it is
+    // waiting on can be rejected when the environment goes away (a reload,
+    // a torn-down test); that ends this poll, and the next spawn or step
+    // starts another. It must never surface as an unhandled rejection.
+  } finally {
+    polling = false
+  }
+}
+
+export const register: Register = (on, options) => {
+  routerUrl = String((options as { router_url?: unknown } | undefined)?.router_url ?? 'http://127.0.0.1:4100')
+  on('session.start', async ($, e, next) => {
+    await $.tool.register({
+      name: 'sonata_loop',
+      description: TOOL_DESCRIPTION,
+      isDeferred: false,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { enum: ['plan', 'start', 'result', 'escalate', 'done'] },
+          title: { type: 'string' }, taskId: { type: 'string' }, summary: { type: 'string' }, note: { type: 'string' },
+          phase: { enum: ['code', 'fix', 'review', 'final'] }, outcome: { enum: ['pass', 'fail'] },
+          to: { enum: ['simple', 'normal', 'complex'] },
+          tasks: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' } }, required: ['id', 'title'] } },
+        },
+        required: ['action'],
+      },
+    })
+    // Not /sonata-loop: that name is the skill's own. A refused registration
+    // must not cost the rest of this hook (the tool is registered above).
+    try {
+      await $.command.register({ name: 'loop-panel', description: 'Show or hide the sonata loop panel' })
+    } catch {
+      // the panel still opens on the loop's first plan
+    }
+    const started = await next(e)
+    sessionCwd = started.cwd
+    return started
+  })
+
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') {
+      await update($, loopAtom, () => null)
+      await update($, agentsAtom, () => [])
+      await update($, viewAtom, () => ({ showAll: true, expanded: [] }))
+      epoch++
+      await update($, routerAtom, () => ({ routes: [] }))
+    }
+    return next(e)
+  })
+
+  on('command.run', { command: 'loop-panel' }, async $ => {
+    const isOpen = (await $.ui.panes()).some(p => p.id === PANE)
+    if (isOpen) await $.ui.close({ id: PANE })
+    else await $.ui.open({ id: PANE, title: 'sonata loop' })
+    return { text: isOpen ? 'Loop panel closed.' : 'Loop panel opened.' }
+  })
+
+  // The mod's own tool: the one place a refusal is allowed (validation only).
+  on('tool.call', { tool: 'mcp__sonata-loop__sonata_loop' }, async ($, e) => {
+    const input = argsOf(e)
+    const result = applyLoopAction(await read($, loopAtom), input, Date.now())
+    if ('error' in result) return { deny: result.error }
+    await update($, loopAtom, () => result.loop)
+    if (input.action === 'plan') {
+      // A new loop replaces the last one's rows, so they cannot linger or blur attribution.
+      await update($, agentsAtom, () => [])
+      epoch++
+      await update($, routerAtom, () => ({ routes: [] }))
+      await update($, viewAtom, () => ({ showAll: true, expanded: [] }))
+      void $.ui.open({ id: PANE, title: 'sonata loop' })
+    }
+    const n = result.loop?.tasks.length ?? 0
+    // A registered tool's result is a string (or content blocks), never an object.
+    return { result: `sonata_loop recorded (${n} task${n === 1 ? '' : 's'}).` }
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    if ('agentId' in started && started.agentId !== undefined) {
+      const s = spawnAgent(
+        { loop: await read($, loopAtom), agents: await read($, agentsAtom) },
+        { agentId: started.agentId, subagentType: e.subagentType, description: e.description, parentAgentId: e.parentAgentId },
+        Date.now(),
+      )
+      await update($, loopAtom, () => s.loop)
+      await update($, agentsAtom, () => s.agents)
+      void poll($)
+    }
+    return started
+  })
+
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId !== undefined) {
+      const agentId = e.agentId
+      await update($, agentsAtom, a => stepAgent(a, { agentId, model: e.model }, Date.now()))
+      void poll($)
+    }
+    const result = yield* next(e)
+    // The engine's own count of what this step's request moved: no router needed.
+    if (e.agentId !== undefined && result?.usage) {
+      const agentId = e.agentId
+      const usage = result.usage
+      await update($, agentsAtom, a => addUsage(a, agentId, usage))
+    }
+    return result
+  })
+
+  // Every other tool call: observe the subagent's activity and its applied edits.
+  on('tool.call', async ($, e, next) => {
+    const agentId = e.agentId
+    const input = argsOf(e)
+    if (agentId !== undefined) await update($, agentsAtom, a => toolActivity(a, { agentId, tool: e.tool, input }))
+    const ran = await next(e)
+    if (agentId !== undefined && !('deny' in ran && ran.deny !== undefined) && ran.isError !== true) {
+      const hunks = hunksFor(e.tool, input)
+      if (hunks.length > 0) await update($, agentsAtom, a => addHunks(a, agentId, hunks))
+    }
+    return ran
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId !== undefined) {
+      const agentId = e.agentId
+      await update($, agentsAtom, a => completeAgent(a, { agentId, reason: e.reason }, Date.now()))
+      // The poll may stop before the router logs this agent's last request.
+      await fetchOnce($)
+    }
+    return next(e)
+  })
+
+  // $ never crosses an import, so the hook gathers the data and the press
+  // handlers here and panel.tsx only arranges them.
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const data: PanelData = {
+      loop: await read($, loopAtom),
+      agents: await read($, agentsAtom),
+      router: await read($, routerAtom),
+      view: await read($, viewAtom),
+      now: Date.now(),
+      cwd: sessionCwd,
+      cols: Number((e as { props?: { bodyColumns?: unknown } }).props?.bodyColumns) || 80,
+    }
+    const act: PanelActions = {
+      select: key => void update($, viewAtom, v => ({ ...v, selected: v.selected === key ? undefined : key })),
+      toggleFold: key => void update($, viewAtom, v => ({
+        ...v, expanded: v.expanded.includes(key) ? v.expanded.filter(k => k !== key) : [...v.expanded, key],
+      })),
+      toggleActive: () => void update($, viewAtom, v => ({ ...v, showAll: !v.showAll })),
+      jumpLatest: () => void $.ui.scroll({ in: PANE, to: 'end' }),
+      copy: text => void $.ui.copy({ text }),
+    }
+    return panelTree(h, $.ui.resolve(e), data, act)
+  })
+}

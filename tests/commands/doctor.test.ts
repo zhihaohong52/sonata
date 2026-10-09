@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { checkVersion, cmdDoctor, staleMcpRegistration, routingFailureDetail } from '../../src/commands/doctor.js';
+import { checkVersion, cmdDoctor, staleMcpRegistration, routingFailureDetail, loopPanelCheck } from '../../src/commands/doctor.js';
 import { planRouteAuto } from '../../src/commands/route.js';
 import type { Settings } from '../../src/settings.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
@@ -2171,5 +2171,69 @@ describe('doctor — text tool calls', () => {
     appendRow(home, row('other-tenant', 'vendorz-mimo-v2.6-pro', { recovered: 0, unparsed: 1 }));
     const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
     expect(checks.some((c) => c.name === 'text tool calls')).toBe(false);
+  });
+});
+
+describe('loop panel check', () => {
+  const manifest = (dir: string, version: string) => {
+    mkdirSync(join(dir, '.claude-plugin'), { recursive: true });
+    writeFileSync(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'sonata-loop', version }));
+    writeFileSync(join(dir, 'SKILL.md'), '#');
+    mkdirSync(join(dir, 'hooks'), { recursive: true });
+    writeFileSync(join(dir, 'hooks', 'hooks.json'), '{}');
+    writeFileSync(join(dir, 'hooks', 'register.tsx'), '');
+  };
+  const pkg = mkdtempSync(join(tmpdir(), 'pkg-'));
+  manifest(join(pkg, 'skills', 'loop'), '0.1.0');
+
+  it('reports an installed, matching panel', () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'inst-')), 'sonata-loop');
+    manifest(dir, '0.1.0');
+    expect(loopPanelCheck([dir], pkg)).toEqual({ ok: true, line: `loop panel 0.1.0 installed (${dir})` });
+  });
+
+  it('says to run sonata sync when the installed skill has no panel or an old one', () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'inst-')), 'sonata-loop');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'SKILL.md'), '#');
+    expect(loopPanelCheck([dir], pkg)).toEqual({ ok: false, line: `loop panel missing in ${dir} — run \`sonata sync\`` });
+    manifest(dir, '0.0.9');
+    expect(loopPanelCheck([dir], pkg).line).toBe(`loop panel 0.0.9 in ${dir}, package has 0.1.0 — run \`sonata sync\``);
+  });
+
+  it('checks every installed copy, not only the first', () => {
+    const current = join(mkdtempSync(join(tmpdir(), 'inst-')), 'sonata-loop');
+    manifest(current, '0.1.0');
+    const stale = join(mkdtempSync(join(tmpdir(), 'inst-')), 'sonata-loop');
+    manifest(stale, '0.0.9');
+    expect(loopPanelCheck([current, stale], pkg)).toEqual({ ok: false, line: `loop panel 0.0.9 in ${stale}, package has 0.1.0 — run \`sonata sync\`` });
+  });
+
+  it('expects the panel only at the user level when that copy exists', () => {
+    const user = join(mkdtempSync(join(tmpdir(), 'home-')), 'sonata-loop');
+    manifest(user, '0.1.0');
+    const project = join(mkdtempSync(join(tmpdir(), 'proj-')), 'sonata-loop');
+    mkdirSync(project, { recursive: true });
+    writeFileSync(join(project, 'SKILL.md'), '#');
+    expect(loopPanelCheck([project, user], pkg, user)).toEqual({ ok: true, line: `loop panel 0.1.0 installed (${user})` });
+  });
+
+  it('flags a project copy that still carries the plugin a user-level copy shadows', () => {
+    const user = join(mkdtempSync(join(tmpdir(), 'home-')), 'sonata-loop');
+    manifest(user, '0.1.0');
+    const project = join(mkdtempSync(join(tmpdir(), 'proj-')), 'sonata-loop');
+    manifest(project, '0.1.0');
+    expect(loopPanelCheck([project, user], pkg, user)).toEqual({ ok: false, line: `loop panel in ${project} is shadowed by ${user} — run \`sonata sync\`` });
+  });
+
+  it('reports a panel whose hook files are missing as incomplete', () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'inst-')), 'sonata-loop');
+    manifest(dir, '0.1.0');
+    rmSync(join(dir, 'hooks'), { recursive: true, force: true });
+    expect(loopPanelCheck([dir], pkg)).toEqual({ ok: false, line: `loop panel incomplete in ${dir} — run \`sonata sync\`` });
+  });
+
+  it('is silent when the skill is not installed at all', () => {
+    expect(loopPanelCheck([join(tmpdir(), 'nope-sonata-loop')], pkg)).toEqual({ ok: true, line: 'loop skill not installed' });
   });
 });

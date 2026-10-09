@@ -51,3 +51,34 @@ so no native request to an opencode.ai gateway could succeed.
 See also: [Codex subscription auth](codex-subscription.md), for how the
 `codex-oauth` gateway type authenticates against a ChatGPT subscription rather
 than a metered API key.
+
+## The loop panel
+
+The `sonata-loop` skill folder `sonata init` installs is also a Claude Code mod,
+which Claude Code loads from the skills folder by itself. While a loop runs it
+shows a side panel (toggle it with `/loop-panel`):
+
+- **Tasks** from the loop's plan, one line each, with a state stroke: `━━`
+  active, `── done`, `· · queued`, and `─ ─` for a condition (`failed 1x`,
+  an escalation). The orchestrator reports these through the panel's
+  `sonata_loop` tool; nothing is inferred.
+- **Agents** under their task, one line each: role and tier, the model the
+  router served, tokens, elapsed time and state. A running agent adds one line
+  with its current tool, step count and how long ago its last step was; one
+  silent for 90 s reads `─ ─ stalled`.
+- **Model and cost** come from the router. `≈` means two agents on one alias
+  ran at once and the router cannot say whose request was whose, so neither is
+  given a cost. A dash or `cost unknown` means unpriced or unattributable,
+  never `$0`.
+- **Tokens** come from Claude Code itself, so they show even when the router
+  cannot be read.
+- **Detail**: select a row (click, or focus the pane with `ctrl+x tab` and
+  press enter) to open, beneath it, its token breakdown (input, output, cache
+  read, cache write) and the edits it applied. A task's detail covers its whole
+  agent tree. Only applied `Edit` and `Write` calls are diffed; when `Bash` ran
+  too, the detail says so.
+
+The panel reads the router at `http://127.0.0.1:4100` by default. With a
+different `[native.ports] router`, set the mod's `router_url` option. When the
+router is not reachable the footer says so and the panel keeps showing what it
+last reported, with its age.

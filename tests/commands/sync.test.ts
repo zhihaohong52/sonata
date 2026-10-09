@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { chmodSync, mkdtempSync, mkdirSync, readdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { agentMarkdown, cmdSync, nativeAgentMarkdown, outdatedAgents, plannedAgents, tierAgentMarkdown, TIER_AGENT_MARKER } from '../../src/commands/sync.js';
 import { parseConfig, type SonataConfig } from '../../src/config.js';
 
@@ -924,6 +924,29 @@ describe('cmdSync — refreshing the installed loop skill', () => {
     expect(readFileSync(skillPath, 'utf8')).toBe(PACKAGED);
   });
 
+  // `home` is optional on SyncOptions; the shadow check must still find the
+  // user-level copy, or a sync recreates the duplicate-plugin load error.
+  it('treats a project copy as shadowed by the user-level copy even when no home is passed', () => {
+    const packageRoot = mkdtempSync(join(tmpdir(), 'sync-pkg-'));
+    mkdirSync(join(packageRoot, 'skills', 'loop', '.claude-plugin'), { recursive: true });
+    writeFileSync(join(packageRoot, 'skills', 'loop', 'SKILL.md'), PACKAGED);
+    writeFileSync(join(packageRoot, 'skills', 'loop', '.claude-plugin', 'plugin.json'), '{}');
+    const home = mkdtempSync(join(tmpdir(), 'sync-home-'));
+    installStale(home);
+    const project = installStale(cwd);
+    mkdirSync(join(cwd, '.claude', 'skills', 'sonata-loop', '.claude-plugin'), { recursive: true });
+    writeFileSync(join(cwd, '.claude', 'skills', 'sonata-loop', '.claude-plugin', 'plugin.json'), '{}');
+    const saved = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      cmdSync({ cwd, agentsDir: join(cwd, '.claude', 'agents'), packageRoot });
+    } finally {
+      process.env.HOME = saved;
+    }
+    expect(readFileSync(project, 'utf8')).toBe(PACKAGED);
+    expect(existsSync(join(cwd, '.claude', 'skills', 'sonata-loop', '.claude-plugin'))).toBe(false);
+  });
+
   it('skips a copy it cannot replace without failing the sync, and leaves it intact', () => {
     // The refresh runs after the agents are written; an unwritable skill copy
     // must not turn a sync that already changed files into a thrown error.
@@ -947,9 +970,13 @@ describe('cmdSync — refreshing the installed loop skill', () => {
     const skillPath = installStale(cwd);
     const shipped = readFileSync(join(process.cwd(), 'skills', 'loop', 'SKILL.md'), 'utf8');
 
-    const res = cmdSync({ cwd, agentsDir: join(cwd, '.claude', 'agents') });
+    const res = cmdSync({ cwd, home: mkdtempSync(join(tmpdir(), 'sync-home-')), agentsDir: join(cwd, '.claude', 'agents') });
 
-    expect(res.skills).toEqual([skillPath]);
+    // The whole shipped folder: the skill and its panel mod.
+    expect(res.skills).toContain(skillPath);
+    expect(res.skills).toContain(join(dirname(skillPath), '.claude-plugin', 'plugin.json'));
+    expect(res.skills).toContain(join(dirname(skillPath), 'hooks', 'register.tsx'));
+    expect((res.skills ?? []).some((p) => p.endsWith('.test.ts'))).toBe(false);
     expect(readFileSync(skillPath, 'utf8')).toBe(shipped);
   });
 });

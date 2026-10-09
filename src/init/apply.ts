@@ -4,6 +4,7 @@ import {
   installHook, allowSonataTools, hookCommand, settingsPath, updateSettings,
 } from '../settings.js';
 import { pruneAgents } from '../detect.js';
+import { installLoopSkill, loopSkillFiles, loopSkillSource } from '../loop-skill.js';
 import { cmdSync } from '../commands/sync.js';
 import { cmdRoute } from '../commands/route.js';
 import { writeSonataKey } from '../native/credentials.js';
@@ -124,13 +125,17 @@ export async function apply(
   }
 
   // ---- skill ----
-  mkdirSync(dirname(plan.skillPath), { recursive: true });
-  const packageSkill = join(packageRoot, 'skills', 'loop', 'SKILL.md');
-  const skillSource = existsSync(packageSkill)
-    ? packageSkill
-    : join(process.cwd(), 'skills', 'loop', 'SKILL.md');
-  writeFileSync(plan.skillPath, readFileSync(skillSource));
-  io.out(`  ✓ installed loop skill in ${plan.skillPath}`);
+  // The whole folder: the skill and the mod Claude Code auto-loads from it.
+  // init installs the whole folder or says why it could not; it never reports
+  // a skill it did not write.
+  const skillFiles = loopSkillFiles(loopSkillSource(packageRoot));
+  if (!skillFiles.some((f) => f.rel === 'SKILL.md')) {
+    throw new Error(`cannot install the loop skill: no skills/loop/SKILL.md in ${packageRoot} or ${process.cwd()}`);
+  }
+  installLoopSkill(dirname(plan.skillPath), skillFiles, home);
+  io.out(existsSync(join(dirname(plan.skillPath), '.claude-plugin'))
+    ? `  ✓ installed loop skill and panel in ${dirname(plan.skillPath)}`
+    : `  ✓ installed loop skill in ${dirname(plan.skillPath)} (its panel is the user-level copy's)`);
 
   // ---- guidance ----
   // Sonata owns only what is between its markers here; everything else in the

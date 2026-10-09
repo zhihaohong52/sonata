@@ -1,4 +1,6 @@
 import { EXTENDED_CONTEXT_SUFFIX, roleQualifiesForExtendedContext, tierQualifiesForExtendedContext } from '../extended-context.js';
+import { homedir } from 'node:os';
+import { installLoopSkill, loopSkillFiles } from '../loop-skill.js';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -639,28 +641,29 @@ function refreshLoopSkill(opts: SyncOptions): string[] {
   // src/commands/) unless the caller names one, so every caller of `cmdSync` —
   // `sonata agents` and the shell's Sync action too — refreshes the same copy.
   const root = opts.packageRoot ?? join(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
-  const source = join(root, 'skills', 'loop', 'SKILL.md');
-  if (!existsSync(source)) return [];
-  const content = readFileSync(source, 'utf8');
-  const targets = [
-    join(opts.cwd, '.claude', 'skills', 'sonata-loop', 'SKILL.md'),
-    ...(opts.home === undefined ? [] : [join(opts.home, '.claude', 'skills', 'sonata-loop', 'SKILL.md')]),
+  if (!existsSync(join(root, 'skills', 'loop', 'SKILL.md'))) return [];
+  // The refresh is optional: a source that cannot be read leaves the
+  // installed copies as they are rather than failing a sync of the agents.
+  let files: ReturnType<typeof loopSkillFiles>;
+  try {
+    files = loopSkillFiles(root);
+  } catch {
+    return [];
+  }
+  const dirs = [
+    join(opts.cwd, '.claude', 'skills', 'sonata-loop'),
+    ...(opts.home === undefined ? [] : [join(opts.home, '.claude', 'skills', 'sonata-loop')]),
   ];
   const refreshed: string[] = [];
-  // Each copy is replaced whole (temp file + rename, so an interrupted write
-  // never leaves half a skill) and on its own: this runs after the agents are
-  // written, and a copy sonata cannot replace is left as it was rather than
-  // failing a sync that has already changed files.
-  for (const path of targets) {
-    const tmp = `${path}.${process.pid}.tmp`;
+  // Installing stays init's: a folder without SKILL.md was never installed.
+  // A copy sonata cannot replace is left as it was rather than failing a sync
+  // that has already written the agents.
+  for (const dir of dirs) {
+    if (!existsSync(join(dir, 'SKILL.md'))) continue;
     try {
-      if (!existsSync(path)) continue;
-      if (readFileSync(path, 'utf8') === content) continue;
-      writeFileSync(tmp, content);
-      renameSync(tmp, path);
-      refreshed.push(path);
+      refreshed.push(...installLoopSkill(dir, files, opts.home ?? homedir()));
     } catch {
-      rmSync(tmp, { force: true });
+      // left as it was
     }
   }
   return refreshed;

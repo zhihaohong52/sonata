@@ -301,7 +301,9 @@ interface decision is `complex`. When unsure, use `-normal`; a task that fails
 review twice is re-run one tier up. The `sonata-loop` skill `sonata init` installs
 (`skills/loop/SKILL.md`) drives this across a whole feature: plan, route each task
 to a tier, gate behind review, and escalate `simple` to `normal` to `complex`
-after repeated failures.
+after repeated failures. The same folder is a Claude Code mod with a live panel:
+the loop's tasks, each tier agent's current activity, the model the router
+served, and an agent's diff when you select its row (`/loop-panel` toggles it).
 
 They compose with everything Claude Code already does — parallel fan-out,
 workflows, and `isolation: "worktree"`.

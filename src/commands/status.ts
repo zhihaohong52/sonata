@@ -86,6 +86,11 @@ export interface RouteLine {
    * indistinguishable, which is exactly the case a reader is checking.
    */
   effort?: string;
+  /** The tier alias's role and the tier it resolved to (an `-auto` alias's choice included). */
+  role?: string;
+  tier?: string;
+  /** The row's priced cost; absent when unpriced, never 0 standing in for "not known". */
+  priceUsd?: number;
 }
 
 /** The newest `limit` ledger rows as route lines — alias, what served it, status, tokens, time, gateway and effort — newest first. */
@@ -103,5 +108,8 @@ export function recentRoutes(rows: LedgerRow[], limit: number): RouteLine[] {
       ts: row.ts,
       gateway: row.gateway,
       effort: row.effort,
+      role: row.role,
+      tier: row.tier,
+      priceUsd: row.price !== undefined && 'totalUsd' in row.price ? row.price.totalUsd : undefined,
     }));
 }

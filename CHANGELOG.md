@@ -10,6 +10,17 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Added
 
+- **The sonata-loop skill is now also a Claude Code mod with a live panel.**
+  One line per task and per tier agent: state, the model the router served
+  (`≈` and `unknown` where it cannot be attributed, never `$0`), tokens,
+  elapsed time, and what a running agent is doing and how recently; an agent
+  silent for 90 s reads `stalled`. Selecting a row opens its token breakdown
+  (input, output, cache read, cache write) and its applied diff beneath it.
+  The orchestrator reports the plan through the mod's `sonata_loop` tool;
+  `/loop-panel` toggles the pane. `sonata init` and `sonata sync` now install
+  the whole skill folder, and `sonata doctor` says when the installed panel is
+  missing or out of date.
+
 - **`SONATA_CAPTURE_TEXT_CALLS_DIR`**, an opt-in diagnosis capture for the
   router. When a response carries a tool call written as text that cannot be
   recovered, the router saves the raw upstream stream, the outbound request
