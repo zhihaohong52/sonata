@@ -1,4 +1,4 @@
-import type { Loop, LoopTask, Phase, Tier } from '../types'
+import type { AgentRow, Loop, LoopTask, Phase, Tier } from '../types'
 
 const SONATA_AGENT = /^(native-)?(code|review|explore|plan)(-|$)/
 export const isSonataAgent = (type: string): boolean => SONATA_AGENT.test(type)
@@ -50,4 +50,68 @@ export function applyLoopAction(loop: Loop | null, input: unknown, now: number):
   }
   if (!TIERS.includes(a.to as Tier)) return { error: 'to must be simple, normal or complex' }
   return put({ ...task, escalatedTo: a.to as Tier })
+}
+
+type Tracked = { loop: Loop | null; agents: AgentRow[] }
+
+export function spawnAgent(
+  s: Tracked,
+  e: { agentId: string; subagentType: string; description: string; parentAgentId?: string },
+  now: number,
+): Tracked {
+  if (!isSonataAgent(e.subagentType)) return s
+  const parent = e.parentAgentId === undefined ? undefined : s.agents.find(a => a.id === e.parentAgentId)
+  // A child belongs to its parent's task; only a top-level spawn takes the pending one.
+  const taskId = e.parentAgentId !== undefined ? parent?.taskId : s.loop?.pendingTaskId
+  const row: AgentRow = {
+    id: e.agentId, type: e.subagentType, description: e.description, parentId: e.parentAgentId,
+    taskId, status: 'running', steps: 0, stepTimes: [], usedBash: false, hunks: [], startedAt: now,
+  }
+  let loop = s.loop
+  if (loop !== null && taskId !== undefined) {
+    loop = {
+      ...loop,
+      pendingTaskId: e.parentAgentId === undefined ? undefined : loop.pendingTaskId,
+      tasks: loop.tasks.map(t => (t.id === taskId ? { ...t, agentIds: [...t.agentIds, e.agentId] } : t)),
+    }
+  }
+  return { loop, agents: [...s.agents, row] }
+}
+
+const patch = (agents: AgentRow[], id: string, fn: (a: AgentRow) => AgentRow): AgentRow[] =>
+  agents.some(a => a.id === id) ? agents.map(a => (a.id === id ? fn(a) : a)) : agents
+
+export const stepAgent = (agents: AgentRow[], e: { agentId: string; model: string }, now: number): AgentRow[] =>
+  patch(agents, e.agentId, a => ({ ...a, steps: a.steps + 1, alias: e.model, stepTimes: [...a.stepTimes, now].slice(-200) }))
+
+const base = (p: string): string => p.split('/').pop() ?? p
+
+function describeCall(tool: string, input: Record<string, unknown>): string {
+  const s = (k: string): string | undefined => (typeof input[k] === 'string' ? (input[k] as string) : undefined)
+  const target = s('file_path') ? base(s('file_path')!)
+    : s('pattern') ?? s('path') ?? (s('command')?.trim().split(/\s+/)[0]) ?? s('description')
+  return target === undefined ? tool : `${tool} ${target}`
+}
+
+export const toolActivity = (agents: AgentRow[], e: { agentId: string; tool: string; input: Record<string, unknown> }): AgentRow[] =>
+  patch(agents, e.agentId, a => ({ ...a, activity: describeCall(e.tool, e.input), usedBash: a.usedBash || e.tool === 'Bash' }))
+
+export const completeAgent = (agents: AgentRow[], e: { agentId: string; reason: 'answer' | 'aborted' | 'refusal' | 'error' }, now: number): AgentRow[] =>
+  patch(agents, e.agentId, a => ({
+    ...a, activity: undefined, endedAt: now,
+    status: e.reason === 'answer' ? 'done' : e.reason === 'aborted' ? 'aborted' : 'error',
+  }))
+
+export const childrenOf = (agents: AgentRow[], id: string | undefined): AgentRow[] =>
+  agents.filter(a => a.parentId === id)
+
+export function depthOf(agents: AgentRow[], id: string): number {
+  let depth = 0
+  let cur = agents.find(a => a.id === id)
+  while (cur?.parentId !== undefined && depth < 32) {
+    cur = agents.find(a => a.id === cur!.parentId)
+    if (cur === undefined) break
+    depth++
+  }
+  return depth
 }
