@@ -440,6 +440,13 @@ describe('nativeTomlFor — settings init must not silently drop', () => {
     expect(back.windows![1]).toMatchObject({ from: '08:30', to: '00:30', input: 1 });
   });
 
+  // Hand-written like `price`, and as easy for init to delete: without it the
+  // model goes back to chat-completions and every tool request 400s again.
+  it('round-trips a per-model api', () => {
+    const toml = write({ unifiedModels: { 'acme-m': { api: 'responses' } } } as never);
+    expect(parseConfig(toml).unifiedModels['acme-m'].api).toBe('responses');
+  });
+
   it('round-trips a per-model price block', () => {
     const toml = write({ unifiedModels: { 'acme-m': { price: { input: 3, output: 15 } } } } as never);
     expect(parseConfig(toml).unifiedModels['acme-m'].price).toMatchObject({ input: 3, output: 15 });

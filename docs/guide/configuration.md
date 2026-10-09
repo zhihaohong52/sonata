@@ -28,6 +28,13 @@ A `[models."<key>"]` entry can carry `gateway`/`id` (native), `harness`/`harness
 (dispatch fallback), or both — one model, two routes. `sonata init` writes this
 shape for you; see [Using it](../../README.md#using-it) for how the generated agents use it.
 
+A native model that answers `Function tools with reasoning_effort are not supported
+… use /v1/responses` (seen from `gpt-6.1-sol` and `gpt-6-astra` on an
+OpenAI-compatible gateway) needs `api = "responses"` on its entry. That sends it
+to the gateway's `/responses` endpoint instead of `/chat/completions`. It only
+applies to an `api-key` gateway reached through LiteLLM, and is refused anywhere
+else. `sonata init` keeps the line when it rewrites the file.
+
 ## Where sonata.toml lives
 
 Sonata looks for a config in two places, in order:
