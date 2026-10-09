@@ -33,6 +33,11 @@ export async function cmdUpgrade(deps: UpgradeDeps): Promise<number> {
     deps.out(`Could not read the latest ${deps.name} release from the npm registry.`);
     return 1;
   }
+  // `triple` reads anything else as 0.0.0, which would report "latest".
+  if (!/^v?\d+\.\d+\.\d+/.test(latest)) {
+    deps.out(`The npm registry returned an unusable version for ${deps.name}: ${latest}`);
+    return 1;
+  }
   if (cmp(triple(latest), triple(deps.installed)) <= 0) {
     deps.out(`sonata ${deps.installed} is the latest release.`);
     return 0;

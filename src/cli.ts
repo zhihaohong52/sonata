@@ -217,7 +217,10 @@ export async function main(argv: string[]): Promise<number> {
       latestVersion: (pkg) => realUpdateDeps(homedir()).latestVersion(pkg),
       run: ([cmd, ...args]) => new Promise((resolve) => {
         const child = spawn(cmd, args, { stdio: 'inherit' });
-        child.on('error', () => resolve(false));
+        child.on('error', (err) => {
+          console.error(`Could not start ${cmd}: ${err.message}`);
+          resolve(false);
+        });
         child.on('close', (code) => resolve(code === 0));
       }),
       out: (line) => console.log(line),

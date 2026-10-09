@@ -45,6 +45,13 @@ describe('cmdUpgrade', () => {
     expect(ran).toEqual([]);
   });
 
+  it('fails on a registry version it cannot read, rather than reporting latest', async () => {
+    const { d, lines, ran } = deps({ latest: 'garbage' });
+    expect(await cmdUpgrade(d)).toBe(1);
+    expect(ran).toEqual([]);
+    expect(lines.at(-1)).toMatch(/unusable version/);
+  });
+
   it('reports a failed install', async () => {
     const { d, lines } = deps({ latest: '0.16.0', ok: false });
     expect(await cmdUpgrade(d)).toBe(1);
