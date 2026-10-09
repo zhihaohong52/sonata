@@ -76,3 +76,24 @@ test('/clear also clears the router footer', async ($, on) => {
   expect(await ui.find({ text: /router not reachable/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('a nested child is drawn once, under its parent, and counted once', async ($, on) => {
+  let n = 0
+  const ids = ['p', 'c']
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'sonata-code-complex', agentId: ids[n++] }))
+  on('tool.call', { tool: 'Edit' }, () => ({ result: {}, text: 'ok' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: '{"routes":[]}' } }))
+  on('clock.sleep', () => new Promise(() => {}))
+  await $.tool.call({ tool: TOOL, action: 'plan', title: 't', tasks: [{ id: '1', title: 'A' }] })
+  await $.tool.call({ tool: TOOL, action: 'start', taskId: '1', phase: 'code' })
+  await $.agent.spawn({ subagentType: 'code-complex', description: 'parent', prompt: 'x' } as never)
+  await $.agent.spawn({ subagentType: 'code-simple', description: 'child', prompt: 'x', parentAgentId: 'p' } as never)
+  await $.tool.call({ tool: 'Edit', agentId: 'c', file_path: '/r/a.ts', old_string: 'a', new_string: 'b' } as never)
+  const ui = await $.ui.mount({ plugin: 'sonata-loop', surface: 'terminal', ...PANE })
+  expect(await ui.findAll({ key: 'agent:c' })).toHaveLength(1)
+  await ui.press({ key: 'task:1' })
+  expect(await ui.findAll({ text: /^\+ b/ })).toHaveLength(1)
+  await ui.unmount()
+})

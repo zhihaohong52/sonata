@@ -38,7 +38,7 @@ async function fetchOnce($: EngineInterface): Promise<void> {
     const body = res.ok ? (JSON.parse(res.text) as { routes?: RouterState['routes'] }) : undefined
     await update($, routerAtom, () => (body?.routes === undefined
       ? { routes: [], error: `router answered ${res.status}` }
-      : { routes: body.routes }))
+      : { routes: body.routes, at: Date.now() }))
   } catch {
     await update($, routerAtom, r => ({ ...r, error: 'router not reachable' }))
   }
@@ -178,6 +178,7 @@ export const register: Register = (on, options) => {
       router: await read($, routerAtom),
       view: await read($, viewAtom),
       now: Date.now(),
+      cols: Number((e as { props?: { bodyColumns?: unknown } }).props?.bodyColumns) || 80,
     }
     const act: PanelActions = {
       select: key => void update($, viewAtom, v => ({ ...v, selected: v.selected === key ? undefined : key })),

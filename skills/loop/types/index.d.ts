@@ -63,7 +63,12 @@ export type RouteLine = {
   priceUsd?: number
 }
 
-export type RouterState = { routes: RouteLine[]; error?: string }
+export type RouterState = {
+  routes: RouteLine[]
+  error?: string
+  /** When the router was last read successfully (epoch ms). */
+  at?: number
+}
 
 export type View = { selected?: string; showAll: boolean; expanded: string[] }
 
