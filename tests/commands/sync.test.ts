@@ -953,7 +953,7 @@ describe('cmdSync — refreshing the installed loop skill', () => {
     expect(res.skills).toContain(skillPath);
     expect(res.skills).toContain(join(dirname(skillPath), '.claude-plugin', 'plugin.json'));
     expect(res.skills).toContain(join(dirname(skillPath), 'hooks', 'register.tsx'));
-    expect(res.skills.some((p) => p.endsWith('.test.ts'))).toBe(false);
+    expect((res.skills ?? []).some((p) => p.endsWith('.test.ts'))).toBe(false);
     expect(readFileSync(skillPath, 'utf8')).toBe(shipped);
   });
 });
