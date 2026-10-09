@@ -1,5 +1,5 @@
 import type { AgentRow, Hunk, Loop, LoopTask, RouterState, View } from '../types'
-import { attribute, childrenOf, depthOf, diffStat, taskCost } from './model'
+import { attribute, childrenOf, depthOf, diffStat, taskCost, totalTokens } from './model'
 
 export type PanelData = {
   loop: Loop | null
@@ -37,6 +37,9 @@ const clock = (ms: number): string => {
   const m = Math.floor(s / 60)
   return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : `${m}:${String(s % 60).padStart(2, '0')}`
 }
+/** A token count in 4 cells at most: 812, 9.4k, 41.5k, 1.2M. */
+const tok = (n: number): string =>
+  n < 1000 ? String(n) : n < 100_000 ? `${(n / 1000).toFixed(1)}k` : n < 1_000_000 ? `${Math.round(n / 1000)}k` : `${(n / 1_000_000).toFixed(1)}M`
 const ago = (ms: number): string => (ms < 60_000 ? `${Math.max(0, Math.round(ms / 1000))}s ago` : `${Math.round(ms / 60_000)}m ago`)
 /** Cut to `n` cells, ending in `…` when cut (DESIGN.md: never truncate silently). */
 const fit = (s: string, n: number): string => (n <= 0 ? '' : s.length <= n ? s : `${s.slice(0, Math.max(0, n - 1))}…`)
@@ -95,6 +98,7 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
   const barW = width >= BAR_MIN_COLS ? 10 : 0
   const timeW = 6
   const stepsW = 4
+  const tokW = 7
   const idW = 4
   const rule = '─'.repeat(width)
 
@@ -125,7 +129,7 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
     const depth = depthOf(agents, a.id)
     const pad = ' '.repeat(indent)
     const typeW = 16
-    const restW = inner - indent - typeW - stepsW - timeW - statusW
+    const restW = inner - indent - typeW - tokW - stepsW - timeW - statusW
     const showModel = width >= MODEL_MIN_COLS
     const model = modelOf(a)
     const elapsed = clock((a.endedAt ?? now) - a.startedAt)
@@ -135,7 +139,8 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
           {edge(key)}
           <Text>{pad}</Text>
           <Text color={C.text} bold={isSel(key)}>{padR(a.type, showModel ? typeW : typeW + restW)}</Text>
-          {showModel ? <Text color={model.color}>{padR(model.text, restW)}</Text> : null}
+          {showModel ? <Text color={model.color}>{padR(model.text.length > restW ? model.text.replace(/ · \S+$/, '') : model.text, restW)}</Text> : null}
+          <Text color={a.tokens ? C.muted : C.rule}>{padL(a.tokens ? tok(totalTokens(a.tokens)) : '—', tokW)}</Text>
           <Text color={C.muted}>{padL(a.steps > 0 ? String(a.steps) : '', stepsW)}</Text>
           <Text color={C.muted}>{padL(elapsed, timeW)}</Text>
           {status(agentStatus(a))}
@@ -224,6 +229,8 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
   const done = loop?.tasks.filter(t => t.state === 'done').length ?? 0
   const loopCost = costs.reduce((n, c) => n + c.usd, 0)
   const loopPartial = costs.some(c => c.isPartial)
+  const counted = agents.filter(a => a.tokens !== undefined)
+  const loopTokens = counted.reduce((n, a) => n + totalTokens(a.tokens!), 0)
   const costNote = loop === null
     ? ''
     : loopCost === 0 && loopPartial ? 'cost unknown' : `${loopPartial ? '≈' : ''}${money(loopCost)}`
@@ -241,7 +248,8 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
       : { mark: STROKE.done, color: C.accent, text: `router up · updated ${ago(now - router.at)}` }
 
   // The head: the title, then the loop's facts right-aligned on the same line.
-  const facts = loop === null ? 'idle' : `${done} of ${loop.tasks.length} done   ${costNote}   ${clock(now - loop.startedAt)}`
+  const tokNote = counted.length === 0 ? '' : `${tok(loopTokens)} tok   `
+  const facts = loop === null ? 'idle' : `${done} of ${loop.tasks.length} done   ${tokNote}${costNote}   ${clock(now - loop.startedAt)}`
   const title = loop === null ? '' : loop.title
   const titleRoom = Math.max(0, width - 6 - facts.length - 3)
 

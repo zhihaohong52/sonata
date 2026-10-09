@@ -206,3 +206,21 @@ test('a router error keeps the last reported models and says how old they are', 
   expect(await ui.find({ text: /flash-1/ })).toBeDefined()
   await ui.unmount()
 })
+
+test('an agent row shows the tokens its steps reported', async ($, on) => {
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'sonata-code-simple', agentId: 'a1' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: '{"routes":[]}' } }))
+  on('clock.sleep', () => new Promise(() => {}))
+  on('turn.step', async function* (_$, e) {
+    return { ...e, answer: '', toolUses: [], stopReason: null, usage: { input_tokens: 1200, output_tokens: 300, cache_read_input_tokens: 40000, cache_creation_input_tokens: 0, model: 'm' } }
+  })
+  await $.tool.call({ tool: TOOL, action: 'plan', title: 't', tasks: [{ id: '1', title: 'A' }] })
+  await $.tool.call({ tool: TOOL, action: 'start', taskId: '1', phase: 'code' })
+  await $.agent.spawn({ subagentType: 'code-simple', description: 'x', prompt: 'x' } as never)
+  for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'sonata-code-simple', messageCount: 1, agentId: 'a1' } as never)) { /* drain */ }
+  const ui = await $.ui.mount({ plugin: 'sonata-loop', surface: 'terminal', ...PANE })
+  expect((await ui.find({ key: 'agent:a1' }))?.text).toMatch(/41\.5k/)
+  await ui.unmount()
+})

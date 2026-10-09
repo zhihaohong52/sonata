@@ -1,5 +1,5 @@
 import { test, expect } from 'claude-code/testing'
-import { applyLoopAction, spawnAgent, stepAgent, toolActivity, completeAgent, childrenOf, depthOf } from './model'
+import { applyLoopAction, spawnAgent, stepAgent, toolActivity, completeAgent, childrenOf, depthOf, addUsage } from './model'
 import type { Loop, AgentRow } from '../types'
 
 const started = (): Loop => {
@@ -47,4 +47,14 @@ test('steps, activity and completion', () => {
   agents = completeAgent(agents, { agentId: 'a', reason: 'aborted' }, 20)
   expect(agents[0]).toMatchObject({ status: 'aborted', endedAt: 20, activity: undefined })
   expect(stepAgent(agents, { agentId: 'zzz', model: 'm' }, 1)).toBe(agents)
+})
+
+test('step usage adds up per agent, and an agent with none has no token count', () => {
+  let agents: AgentRow[] = spawnAgent({ loop: null, agents: [] }, { agentId: 'a', subagentType: 'code-simple', description: 'x' }, 0).agents
+  expect(agents[0].tokens).toBeUndefined()
+  const u = { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 3000, cache_creation_input_tokens: 50, model: 'm' }
+  agents = addUsage(agents, 'a', u)
+  agents = addUsage(agents, 'a', u)
+  expect(agents[0].tokens).toEqual({ input: 2000, output: 400, cacheRead: 6000, cacheWrite: 100 })
+  expect(addUsage(agents, 'zzz', u)).toBe(agents)
 })

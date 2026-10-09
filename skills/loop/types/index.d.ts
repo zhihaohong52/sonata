@@ -48,6 +48,8 @@ export type AgentRow = {
   /** Epoch ms of each `turn.step`, for matching router routes. */
   stepTimes: number[]
   usedBash: boolean
+  /** Summed from each step's reported usage; absent until one reports. */
+  tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number }
   hunks: Hunk[]
   startedAt: number
   endedAt?: number

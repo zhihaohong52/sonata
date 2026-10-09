@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 import type { AgentRow, Loop, RouterState, View } from '../types'
-import { addHunks, applyLoopAction, completeAgent, hunksFor, spawnAgent, stepAgent, toolActivity } from './model'
+import { addHunks, addUsage, applyLoopAction, completeAgent, hunksFor, spawnAgent, stepAgent, toolActivity } from './model'
 import { panelTree } from './panel'
 import type { PanelActions, PanelData } from './panel'
 
@@ -161,7 +161,14 @@ export const register: Register = (on, options) => {
       await update($, agentsAtom, a => stepAgent(a, { agentId, model: e.model }, Date.now()))
       void poll($)
     }
-    return yield* next(e)
+    const result = yield* next(e)
+    // The engine's own count of what this step's request moved: no router needed.
+    if (e.agentId !== undefined && result?.usage) {
+      const agentId = e.agentId
+      const usage = result.usage
+      await update($, agentsAtom, a => addUsage(a, agentId, usage))
+    }
+    return result
   })
 
   // Every other tool call: observe the subagent's activity and its applied edits.

@@ -195,3 +195,22 @@ export function taskCost(agents: AgentRow[], routes: RouteLine[], ids: string[])
   }
   return { usd, isPartial }
 }
+
+type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
+
+export const addUsage = (agents: AgentRow[], agentId: string, u: Usage): AgentRow[] =>
+  patch(agents, agentId, a => {
+    const t = a.tokens ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+    return {
+      ...a,
+      tokens: {
+        input: t.input + u.input_tokens,
+        output: t.output + u.output_tokens,
+        cacheRead: t.cacheRead + u.cache_read_input_tokens,
+        cacheWrite: t.cacheWrite + u.cache_creation_input_tokens,
+      },
+    }
+  })
+
+/** Every token an agent's requests moved: prompt (fresh, cached, written) plus output. */
+export const totalTokens = (t: NonNullable<AgentRow['tokens']>): number => t.input + t.cacheRead + t.cacheWrite + t.output
