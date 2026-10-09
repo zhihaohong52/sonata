@@ -59,3 +59,20 @@ test('"active only" still shows a running child of a finished parent', async ($,
   expect(await ui.find({ key: 'agent:c' })).toBeDefined()
   await ui.unmount()
 })
+
+test('/clear also clears the router footer', async ($, on) => {
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'sonata-code-simple', agentId: 'a1' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('http.fetch', () => { throw new Error('down') })
+  let parked!: () => void
+  const isParked = new Promise<void>(r => { parked = r })
+  on('clock.sleep', () => { parked(); return new Promise(() => {}) })
+  on('session.end', () => ({ sessionId: 's' }))
+  await $.agent.spawn({ subagentType: 'code-simple', description: 'x', prompt: 'x' } as never)
+  await isParked
+  await $.session.end({ reason: 'clear' })
+  const ui = await $.ui.mount({ plugin: 'sonata-loop', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /router not reachable/ })).toBeUndefined()
+  await ui.unmount()
+})

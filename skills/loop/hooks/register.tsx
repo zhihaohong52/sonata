@@ -92,6 +92,7 @@ export const register: Register = (on, options) => {
       await update($, loopAtom, () => null)
       await update($, agentsAtom, () => [])
       await update($, viewAtom, () => ({ showAll: true, expanded: [] }))
+      await update($, routerAtom, () => ({ routes: [] }))
     }
     return next(e)
   })
