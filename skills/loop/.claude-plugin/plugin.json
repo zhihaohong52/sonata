@@ -1,0 +1,17 @@
+{
+  "name": "sonata-loop",
+  "version": "0.1.0",
+  "description": "Live panel of a sonata-loop run: tasks, tier agents, served models and diffs",
+  "author": {
+    "name": "zhihaohong52"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "router_url": {
+      "type": "string",
+      "title": "sonata router URL",
+      "description": "Where `sonata serve` answers; the machine router's port is 4100 unless [native.ports] says otherwise.",
+      "default": "http://127.0.0.1:4100"
+    }
+  }
+}
