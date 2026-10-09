@@ -97,3 +97,19 @@ test('a nested child is drawn once, under its parent, and counted once', async (
   expect(await ui.findAll({ text: /^\+ b/ })).toHaveLength(1)
   await ui.unmount()
 })
+
+test('an OK router reply that is not JSON is not reported as unreachable', async ($, on) => {
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'sonata-code-simple', agentId: 'a1' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: 'not json' } }))
+  let parked!: () => void
+  const isParked = new Promise<void>(r => { parked = r })
+  on('clock.sleep', () => { parked(); return new Promise(() => {}) })
+  await $.agent.spawn({ subagentType: 'code-simple', description: 'x', prompt: 'x' } as never)
+  await isParked
+  const ui = await $.ui.mount({ plugin: 'sonata-loop', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /unreadable body/ })).toBeDefined()
+  expect(await ui.find({ text: /router not reachable/ })).toBeUndefined()
+  await ui.unmount()
+})

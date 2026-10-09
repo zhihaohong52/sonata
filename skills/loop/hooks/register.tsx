@@ -35,7 +35,15 @@ async function fetchOnce($: EngineInterface): Promise<void> {
   try {
     const session = await $.session.id()
     const res = await $.http.fetch(`${routerUrl}/__sonata/api/session/${encodeURIComponent(session)}`)
-    const body = res.ok ? (JSON.parse(res.text) as { routes?: RouterState['routes'] }) : undefined
+    let body: { routes?: RouterState['routes'] } | undefined
+    if (res.ok) {
+      try {
+        body = JSON.parse(res.text) as { routes?: RouterState['routes'] }
+      } catch {
+        await update($, routerAtom, () => ({ routes: [], error: 'router answered with an unreadable body' }))
+        return
+      }
+    }
     await update($, routerAtom, () => (body?.routes === undefined
       ? { routes: [], error: `router answered ${res.status}` }
       : { routes: body.routes, at: Date.now() }))
