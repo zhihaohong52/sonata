@@ -56,7 +56,10 @@ async function fetchOnce($: EngineInterface): Promise<void> {
       await update($, routerAtom, r => (mine === epoch ? { ...r, error: 'router replied with no routes' } : r))
       return
     }
-    await update($, routerAtom, r => (mine === epoch ? { routes, at: Date.now() } : r))
+    // Only route-shaped entries: one `null` would crash every attribution.
+    const kept = routes.filter((x): x is RouterState['routes'][number] =>
+      typeof x === 'object' && x !== null && typeof (x as { alias?: unknown }).alias === 'string')
+    await update($, routerAtom, r => (mine === epoch ? { routes: kept, at: Date.now() } : r))
   } catch {
     await update($, routerAtom, r => (mine === epoch ? { ...r, error: 'router not reachable' } : r))
   }

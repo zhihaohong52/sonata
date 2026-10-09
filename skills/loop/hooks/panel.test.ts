@@ -246,3 +246,39 @@ test('selecting an agent shows its input, output and cache tokens', async ($, on
   expect(await ui.find({ text: /in 1\.2k\s+out 300\s+cache read 40\.0k\s+cache write 2\.5k/ })).toBeDefined()
   await ui.unmount()
 })
+
+test('a fetch in flight across a new plan does not write its result back', async ($, on) => {
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'sonata-code-simple', agentId: 'a1' }))
+  on('session.id', () => ({ value: 's1' }))
+  let fail!: (e: Error) => void
+  on('http.fetch', () => new Promise((_, rej) => { fail = rej }))
+  let parked!: () => void
+  const isParked = new Promise<void>(r => { parked = r })
+  on('clock.sleep', () => { parked(); return new Promise(() => {}) })
+  await $.agent.spawn({ subagentType: 'code-simple', description: 'x', prompt: 'x' } as never)
+  await $.tool.call({ tool: TOOL, action: 'plan', title: 'next', tasks: [{ id: '1', title: 'A' }] })
+  fail(new Error('down'))
+  await isParked
+  const ui = await $.ui.mount({ plugin: 'sonata-loop', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /router not reachable/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a routes list holding junk entries keeps the good ones and the pane draws', async ($, on) => {
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'sonata-code-simple', agentId: 'a1' }))
+  on('session.id', () => ({ value: 's1' }))
+  let parked!: () => void
+  const isParked = new Promise<void>(r => { parked = r })
+  on('clock.sleep', () => { parked(); return new Promise(() => {}) })
+  on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: '{"routes":[null, 7, {"alias":"x"}]}' } }))
+  await $.tool.call({ tool: TOOL, action: 'plan', title: 't', tasks: [{ id: '1', title: 'A' }] })
+  await $.tool.call({ tool: TOOL, action: 'start', taskId: '1', phase: 'code' })
+  await $.agent.spawn({ subagentType: 'code-simple', description: 'x', prompt: 'x' } as never)
+  await isParked
+  const ui = await $.ui.mount({ plugin: 'sonata-loop', surface: 'terminal', ...PANE })
+  expect(await ui.find({ key: 'task:1' })).toBeDefined()
+  expect(await ui.find({ text: /router up/ })).toBeDefined()
+  await ui.unmount()
+})

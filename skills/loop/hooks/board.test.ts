@@ -98,3 +98,11 @@ test('only the running task title is bold', () => {
   expect(boldOf('Lead')).toBe(true)
   expect(boldOf('Later')).toBe(false)
 })
+
+test('a running agent does not wait for a router that has never answered', () => {
+  const a = agent({ id: 'a', type: 'code-auto', stepTimes: [NOW - 1000] })
+  const r = rows(draw(data({ loop: loop(['a']), agents: [a], router: { routes: [], error: 'router not reachable' } })))
+  const row = r.find(l => /code-auto/.test(l))!
+  expect(row).not.toMatch(/waiting for router/)
+  expect(row).toMatch(/\?/)
+})

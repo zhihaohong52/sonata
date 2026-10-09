@@ -134,7 +134,9 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
   // ── model cell: what the router actually served, or why it cannot say ──
   const modelOf = (a: AgentRow): { served: string; tier: string; color: string } => {
     const at = attribute(agents, router.routes, a.id)
-    if (at.served.length === 0) return { served: a.status === 'running' ? 'waiting for router' : '?', tier: '', color: C.muted }
+    // Waiting only makes sense for a router that has answered before.
+    const waiting = a.status === 'running' && !(router.error !== undefined && router.at === undefined)
+    if (at.served.length === 0) return { served: waiting ? 'waiting for router' : '?', tier: '', color: C.muted }
     return { served: `${at.isExact ? '→' : '≈'} ${at.served.join('/')}`, tier: at.tier ? ` · ${at.tier}` : '', color: at.isExact ? C.muted : C.mid }
   }
   // The tier is a column: it drops for every row at once, never for one row.
