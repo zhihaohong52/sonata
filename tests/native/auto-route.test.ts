@@ -125,6 +125,16 @@ describe('jevRequestBody', () => {
       /Size is not difficulty/,
     );
   });
+
+  it('judges each role by its own criteria; an unknown role gets the code criteria', () => {
+    const complexFor = (role: string) =>
+      (jevRequestBody({ role, task: 'T', tiers: ['simple', 'normal', 'complex'] }) as any).questions.tier.criteria.complex.what;
+    expect(complexFor('review')).toMatch(/whole-branch gate/);
+    expect(complexFor('plan')).toMatch(/spec or feature design/);
+    expect(complexFor('explore')).toMatch(/Surveys a subsystem/);
+    expect(complexFor('code')).toMatch(/design decision/);
+    expect(complexFor('docs')).toBe(complexFor('code'));
+  });
 });
 
 describe('parseJevAnswer', () => {
