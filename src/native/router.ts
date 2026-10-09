@@ -657,7 +657,7 @@ export const TERMINAL_STATUSES: ReadonlySet<number> = new Set([400, 405, 415, 42
  * 400 bodies that mean "this candidate cannot serve requests of this shape",
  * as opposed to "this request was malformed".
  *
- * Four entries, because four have been measured.
+ * Five entries, because five have been measured.
  *
  * `thought_signature` — Gemini 3 returns one on each function call and requires
  * it echoed back, and LiteLLM does not preserve it, so every multi-turn
@@ -717,6 +717,16 @@ export const TERMINAL_STATUSES: ReadonlySet<number> = new Set([400, 405, 415, 42
  * the top of this list: the request is well-formed, and the next candidate
  * serves it.
  *
+ * `Function tools with reasoning_effort are not supported` — an OpenAI model
+ * that serves tools with reasoning only on `/v1/responses`. Captured
+ * 2026-10-09 from `vendorz-gpt-6.1-sol` on `sonata-review-complex`, and probed
+ * the same day: `gpt-6-astra` answers identically, every other model on that
+ * gateway serves the request. The fix is `api = "responses"` on the model
+ * (`litellmModelEntry`); this entry is the safety net for a config without
+ * it. Its ceiling is the threshold: each such model still kills
+ * `TIER_CAPABILITY_400_THRESHOLD - 1` requests before it cools — once per
+ * model, not per effort level, since the cooldown is keyed by model.
+ *
  * Guessing at "equivalent" signatures would break this repo's evidence-over-
  * inference rule, and the cost of a wrong guess is asymmetric: a signature
  * that matches too broadly cools healthy candidates on ordinary client errors,
@@ -728,6 +738,7 @@ const CAPABILITY_400_SIGNATURES = [
   'System messages are not allowed',
   'No tool output found for function call',
   'Reasoning is mandatory',
+  'Function tools with reasoning_effort are not supported',
 ] as const;
 
 /**

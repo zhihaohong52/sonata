@@ -65,8 +65,10 @@ export function fallbackTier(tiers: readonly Tier[]): Tier {
   return tiers[0];
 }
 
+type Criteria = Record<Tier, { what: string; not_for: string }>;
+
 /** Same definitions the generated agent descriptions use, so Jev and a caller judge alike. */
-const TIER_CRITERIA: Record<Tier, { what: string; not_for: string }> = {
+const CODE_CRITERIA: Criteria = {
   simple: {
     what: 'Specified closely enough that the change could be written without asking a question; '
       + 'typically one or two files and no interface change. A large mechanical change is simple.',
@@ -84,8 +86,66 @@ const TIER_CRITERIA: Record<Tier, { what: string; not_for: string }> = {
   },
 };
 
+/**
+ * Read-only roles have no "what to build" to decide, so the code criteria
+ * never let them reach `complex`: replayed against 100 logged decisions,
+ * jev-1.13.0 sent every review, final merge gates included, to `normal`.
+ * Their difficulty is how far the answer must reach. Naming sensitive
+ * domains (money, auth) instead overshot: most tasks touch one.
+ */
+const ROLE_CRITERIA: Record<string, Criteria> = {
+  code: CODE_CRITERIA,
+  review: {
+    simple: {
+      what: 'Checks one small, already-decided change against a stated expectation: a re-review of a single '
+        + 'fix, or a mechanical diff with nothing to judge.',
+      not_for: 'Reviewing new behaviour, or anything whose correctness depends on code outside the diff.',
+    },
+    normal: {
+      what: 'Reviews one scoped change for defects: a single commit, one task\'s diff, or a small branch '
+        + 'with one purpose. Needs reading the surrounding code. The usual review, whatever the domain.',
+      not_for: 'The final gate before a feature branch merges, or a review spanning several tasks or components.',
+    },
+    complex: {
+      what: 'The final or whole-branch gate before a multi-task feature merges, or a review spanning several '
+        + 'tasks or components, so it must judge how the parts fit together rather than each diff alone.',
+      not_for: 'A single commit or one task\'s diff, even in sensitive code.',
+    },
+  },
+  plan: {
+    simple: {
+      what: 'Orders steps for a change that is already fully decided and small.',
+      not_for: 'Turning a spec or design into tasks.',
+    },
+    normal: {
+      what: 'Plans one bounded change whose design is settled; the plan is mostly sequencing and naming files.',
+      not_for: 'Planning a whole spec or feature, or a change across several components.',
+    },
+    complex: {
+      what: 'Turns a spec or feature design into an implementation plan, or plans a change across several '
+        + 'components, so it must resolve open design questions and decide interfaces.',
+      not_for: 'A small change whose steps are already obvious.',
+    },
+  },
+  explore: {
+    simple: {
+      what: 'Finds one named thing: where a symbol is defined, a value, a file.',
+      not_for: 'Questions that need following a flow through the code.',
+    },
+    normal: {
+      what: 'Traces one flow or answers how one feature works, across a few files.',
+      not_for: 'Surveys of a whole subsystem or questions about design rationale.',
+    },
+    complex: {
+      what: 'Surveys a subsystem, compares approaches across the codebase, or answers why it is built this way.',
+      not_for: 'Locating a specific thing or tracing one flow.',
+    },
+  },
+};
+
 /** The System One request: `state` plus one Choice named `tier`. */
 export function jevRequestBody(input: { role: string; task: string; tiers: readonly Tier[] }): object {
+  const criteria = Object.hasOwn(ROLE_CRITERIA, input.role) ? ROLE_CRITERIA[input.role] : CODE_CRITERIA;
   return {
     state: { role: input.role, task: input.task },
     questions: {
@@ -95,7 +155,7 @@ export function jevRequestBody(input: { role: string; task: string; tiers: reado
           'Pick the cheapest tier that can fully complete `task` in one pass, without being re-run at a higher tier.',
           '`role` is the kind of work (code, review, explore or plan). Size is not difficulty.',
         ],
-        criteria: Object.fromEntries(input.tiers.map((tier) => [tier, TIER_CRITERIA[tier]])),
+        criteria: Object.fromEntries(input.tiers.map((tier) => [tier, criteria[tier]])),
       },
     },
   };

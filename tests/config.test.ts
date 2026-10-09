@@ -126,6 +126,46 @@ wire_format = "anthropic"
   });
 });
 
+describe('[models] api', () => {
+  const model = (gateway: string, api: string) => `
+[native.gateways.vendorz]
+auth = "api-key"
+base_url = "https://vendorz.example/v1"
+
+[native.gateways.codex]
+auth = "codex-oauth"
+
+[native.gateways.anth]
+auth = "api-key"
+provider = "anthropic"
+base_url = "https://anthropic.example/v1"
+
+[models."m"]
+gateway = "${gateway}"
+id = "gpt-6.1-sol"
+api = "${api}"
+`;
+
+  it('carries api = "responses" into the native projection', () => {
+    const config = parseConfig(`${model('vendorz', 'responses')}
+[tiers.code]
+simple = ["m"]
+complex = ["m"]
+`);
+    expect(config.unifiedModels.m.api).toBe('responses');
+    expect(config.native!.models.m.api).toBe('responses');
+  });
+
+  it('refuses an unknown value', () => {
+    expect(() => parseConfig(model('vendorz', 'chat'))).toThrow(/unknown "api" "chat"/);
+  });
+
+  it('refuses it where no LiteLLM endpoint is chosen', () => {
+    expect(() => parseConfig(model('codex', 'responses'))).toThrow(/gateway "codex" is not one/);
+    expect(() => parseConfig(model('anth', 'responses'))).toThrow(/gateway "anth" is not one/);
+  });
+});
+
 describe('dispatch window', () => {
   it('defaults to 1500 seconds, inside the 30-minute MCP idle window', () => {
     const c = parseConfig(`

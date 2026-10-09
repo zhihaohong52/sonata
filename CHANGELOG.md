@@ -16,6 +16,29 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   and the tool names it searched. Off by default: the files hold whole
   conversations.
 
+- **`api = "responses"` on a `[models]` entry sends that model to the gateway's
+  `/responses` endpoint.** `gpt-6.1-sol` and `gpt-6-astra` on vendorz refuse
+  function tools with `reasoning_effort` on `/chat/completions`, and every Claude
+  Code request carries tools, so every `-complex` agent ranking them first died
+  on its first call with a 400. Through LiteLLM's Responses bridge both serve
+  multi-turn tool use at `xhigh`. The key is opt-in per model, refused on OAuth
+  and direct Anthropic gateways, and kept by `sonata init`. That 400 now also
+  falls through to the next candidate after the usual run of three, for configs
+  without the key.
+
+### Changed
+
+- **Auto-routing judges reviews, plans and explores by their own criteria.**
+  Jev was given the code-tier definitions for every role, and those only reach
+  `complex` when there is something to design, which a review never has: across
+  103 logged decisions it chose `complex` zero times, and every final merge gate
+  went to `review-normal`. Each role now has its own criteria: a review is
+  `complex` when it is the whole-branch gate or spans several tasks, a plan when
+  it turns a spec into tasks, an explore when it surveys a subsystem. Replayed
+  against those 100 tasks on jev-1.13.0, all three final gates and all three
+  spec plans move to `complex`, single-commit reviews stay `normal`, and code
+  decisions are unchanged.
+
 ## [0.15.5] - 2026-10-07
 
 ### Fixed

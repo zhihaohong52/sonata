@@ -62,6 +62,22 @@ describe('LiteLLM config — unified [models] entries', () => {
     expect(cfg.model_list[0].litellm_params.api_base).toBe('https://gateway.acme.example/v1');
   });
 
+  it('sends an api = "responses" model through LiteLLM\'s Responses bridge', () => {
+    // Measured 2026-10-09: gpt-6.1-sol refuses tools + reasoning_effort on
+    // chat-completions, so the endpoint is chosen per model by this prefix.
+    const cfg = litellmConfig({
+      models: {},
+      gateways: { vendorz: { baseUrl: 'https://vendorz.example/v1', auth: 'api-key' } },
+      ports: { router: 4100, litellm: 4000 },
+      generate: {},
+    }, 'sk-master', {
+      sol: { gateway: 'vendorz', id: 'gpt-6.1-sol', api: 'responses' },
+      luna: { gateway: 'vendorz', id: 'gpt-6-luna' },
+    });
+    expect(cfg.model_list.map((e) => e.litellm_params.model)).toEqual(['openai/responses/gpt-6.1-sol', 'openai/gpt-6-luna']);
+    expect(cfg.litellm_settings.use_chat_completions_url_for_anthropic_messages).toBe(true);
+  });
+
   it('skips a unified entry with no gateway route (harness-only)', () => {
     const cfg = litellmConfig({
       models: {},
