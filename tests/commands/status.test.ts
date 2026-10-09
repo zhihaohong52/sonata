@@ -43,3 +43,20 @@ describe('recentRoutes', () => {
     expect(recentRoutes([], 10)).toEqual([]);
   });
 });
+describe('recentRoutes for the loop panel', () => {
+  const row = (over: Record<string, unknown>) => ({
+    ts: '2026-10-09T03:00:00.000Z', ms: 10, alias: 'sonata-code-auto', upstream: 'litellm',
+    status: 200, complete: true, tokens: { input: 1, output: 2 }, attempts: [], key: 'flash',
+    role: 'code', tier: 'normal', price: { source: 'model', totalUsd: 0.0123 }, ...over,
+  }) as never;
+
+  it('carries role, tier and a priced row\'s cost', () => {
+    const [line] = recentRoutes([row({})], 10);
+    expect(line).toMatchObject({ role: 'code', tier: 'normal', priceUsd: 0.0123 });
+  });
+
+  it('leaves priceUsd absent for an unpriced row rather than 0', () => {
+    const [line] = recentRoutes([row({ price: { source: 'none' } })], 10);
+    expect(line.priceUsd).toBeUndefined();
+  });
+});
