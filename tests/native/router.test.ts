@@ -612,6 +612,35 @@ describe('tier alias routing', () => {
     expect(seen[seen.length - 1]).toBe('default/luna');
   });
 
+  it('fingerprints a model that serves tools with reasoning only on /v1/responses', async () => {
+    // Captured 2026-10-09 from vendorz-gpt-6.1-sol on sonata-review-complex.
+    // The fix is `api = "responses"`; this keeps a config without it alive.
+    const RESPONSES_ONLY_400 = JSON.stringify({
+      error: {
+        message: 'litellm.BadRequestError: OpenAIException - Function tools with reasoning_effort are not supported '
+          + 'for gpt-6.1-sol in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to \'none\'.. '
+          + 'Received Model Group=default/flash',
+      },
+    });
+    const seen: string[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return model === 'default/flash'
+          ? new Response(RESPONSES_ONLY_400, { status: 400 })
+          : new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES,
+    };
+    for (let i = 0; i < TIER_CAPABILITY_400_THRESHOLD - 1; i++) {
+      expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(400);
+    }
+    expect((await routeRequest(req('sonata-code-simple'), deps)).status).toBe(200);
+    expect(seen[seen.length - 1]).toBe('default/luna');
+  });
+
   it('cools the whole gateway on an account-level refusal, skipping its other models', async () => {
     // The win, and the reason this scope exists. Measured 2026-09-21: one
     // project has 5 of its 11 native models on `vendorz`, so an exhausted
@@ -3060,7 +3089,7 @@ describe('message-less 400s', () => {
     await routeRequest(request('capture me'), { ...deps, capture400Dir: dir });
     const files = readdirSync(dir).sort();
     expect(files).toHaveLength(2);
-    expect(files.some((f) => f.endsWith('-ds@none.json'))).toBe(true);
+    expect(files.some((f) => /-ds@none-[0-9a-f]{8}\.json$/.test(f))).toBe(true);
     for (const file of files) {
       expect(statSync(join(dir, file)).mode & 0o777).toBe(0o600);
       const doc = JSON.parse(readFileSync(join(dir, file), 'utf8')) as { alias: string; request: { messages: unknown[] }; status: number };

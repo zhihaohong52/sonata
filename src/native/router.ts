@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
@@ -184,6 +184,15 @@ export interface RouterDeps {
    * hold conversation content. `serve` sets it from `SONATA_CAPTURE_400_DIR`.
    */
   capture400Dir?: string;
+  /**
+   * Where to write a diagnosis record whenever a text-form tool call cannot be
+   * recovered: the raw upstream stream as LiteLLM sent it (before any
+   * rewrite), the outbound request, and the tool names recovery looked them
+   * up in. One 0600 file per response; unset writes nothing, for the same
+   * reason as `capture400Dir`. `serve` sets it from
+   * `SONATA_CAPTURE_TEXT_CALLS_DIR`.
+   */
+  captureTextCallsDir?: string;
 }
 
 /**
@@ -648,7 +657,7 @@ export const TERMINAL_STATUSES: ReadonlySet<number> = new Set([400, 405, 415, 42
  * 400 bodies that mean "this candidate cannot serve requests of this shape",
  * as opposed to "this request was malformed".
  *
- * Four entries, because four have been measured.
+ * Five entries, because five have been measured.
  *
  * `thought_signature` — Gemini 3 returns one on each function call and requires
  * it echoed back, and LiteLLM does not preserve it, so every multi-turn
@@ -708,6 +717,16 @@ export const TERMINAL_STATUSES: ReadonlySet<number> = new Set([400, 405, 415, 42
  * the top of this list: the request is well-formed, and the next candidate
  * serves it.
  *
+ * `Function tools with reasoning_effort are not supported` — an OpenAI model
+ * that serves tools with reasoning only on `/v1/responses`. Captured
+ * 2026-10-09 from `vendorz-gpt-6.1-sol` on `sonata-review-complex`, and probed
+ * the same day: `gpt-6-astra` answers identically, every other model on that
+ * gateway serves the request. The fix is `api = "responses"` on the model
+ * (`litellmModelEntry`); this entry is the safety net for a config without
+ * it. Its ceiling is the threshold: each such model still kills
+ * `TIER_CAPABILITY_400_THRESHOLD - 1` requests before it cools — once per
+ * model, not per effort level, since the cooldown is keyed by model.
+ *
  * Guessing at "equivalent" signatures would break this repo's evidence-over-
  * inference rule, and the cost of a wrong guess is asymmetric: a signature
  * that matches too broadly cools healthy candidates on ordinary client errors,
@@ -719,6 +738,7 @@ const CAPABILITY_400_SIGNATURES = [
   'System messages are not allowed',
   'No tool output found for function call',
   'Reasoning is mandatory',
+  'Function tools with reasoning_effort are not supported',
 ] as const;
 
 /**
@@ -765,25 +785,66 @@ const MESSAGELESS_400_FINGERPRINT = 'message-less 400';
 function capture400(
   deps: RouterDeps,
   entry: { alias: string; candidate: string; status: number; outbound: Buffer; response: Buffer },
-): void {
-  const dir = deps.capture400Dir;
+): Promise<void> {
+  return writeCapture(deps, deps.capture400Dir, entry.candidate, `a ${entry.status}`, {
+    alias: entry.alias,
+    candidate: entry.candidate,
+    status: entry.status,
+    response: entry.response.subarray(0, 4096).toString(),
+    request: parsedOrText(entry.outbound),
+  });
+}
+
+function parsedOrText(body: Buffer): unknown {
+  try { return JSON.parse(body.toString()); } catch { return body.toString(); }
+}
+
+/**
+ * One owner-only JSON file in `dir`, named by time and candidate plus a
+ * random suffix, so two captures in the same millisecond never share a path
+ * (`wx` refuses to overwrite either way). Asynchronous, because a capture can
+ * hold a whole conversation and the router serves every session; never fatal.
+ */
+async function writeCapture(deps: RouterDeps, dir: string | undefined, candidate: string, what: string, doc: Record<string, unknown>): Promise<void> {
   if (dir === undefined || dir === '') return;
   try {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    await mkdir(dir, { recursive: true, mode: 0o700 });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const name = `${stamp}-${entry.candidate.replace(/[^A-Za-z0-9@._-]/g, '_')}.json`;
-    let request: unknown;
-    try { request = JSON.parse(entry.outbound.toString()); } catch { request = entry.outbound.toString(); }
-    writeFileSync(join(dir, name), `${JSON.stringify({
-      alias: entry.alias,
-      candidate: entry.candidate,
-      status: entry.status,
-      response: entry.response.subarray(0, 4096).toString(),
-      request,
-    }, null, 2)}\n`, { mode: 0o600 });
+    const name = `${stamp}-${candidate.replace(/[^A-Za-z0-9@._-]/g, '_')}-${randomBytes(4).toString('hex')}.json`;
+    await writeFile(join(dir, name), `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
   } catch (error) {
-    deps.log?.(`router: could not capture a ${entry.status} to ${dir}: ${error instanceof Error ? error.message : String(error)}`);
+    deps.log?.(`router: could not capture ${what} to ${dir}: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+/**
+ * How much of an upstream stream an unrecovered-call capture keeps. A turn
+ * that wrote its calls as text is short; the bound only stops a runaway
+ * response from growing the router's memory.
+ */
+const TEXT_CALL_CAPTURE_LIMIT = 4 * 1024 * 1024;
+
+/**
+ * Copies a stream's bytes, up to `TEXT_CALL_CAPTURE_LIMIT`, as they pass.
+ * `cancel` still reaches the upstream, so a client that leaves stops it.
+ */
+function teeStream(body: AsyncIterable<Uint8Array>): { stream: AsyncIterable<Uint8Array> & { cancel(): void }; seen: () => Buffer } {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  async function* pass(): AsyncIterable<Uint8Array> {
+    for await (const chunk of body) {
+      if (bytes < TEXT_CALL_CAPTURE_LIMIT) {
+        const piece = Buffer.from(chunk).subarray(0, TEXT_CALL_CAPTURE_LIMIT - bytes);
+        chunks.push(piece);
+        bytes += piece.length;
+      }
+      yield chunk;
+    }
+  }
+  return {
+    stream: Object.assign(pass(), { cancel: () => { (body as { cancel?: () => void }).cancel?.(); } }),
+    seen: () => Buffer.concat(chunks),
+  };
 }
 
 /**
@@ -1286,17 +1347,42 @@ async function recoverTextToolCalls(
   deps: RouterDeps,
   counts: TextToolCallCounts,
   onUnparsed?: (unparsed: number) => void,
+  capture?: { alias: string; candidate: string; outbound: Buffer },
 ): Promise<RouterResponse> {
   if (response.status !== 200) return response;
   const tools = toolSchemas(req.body);
+  // Recovery has failed in production while every replay of the same text
+  // succeeded (2026-10-07), so what is captured is what the scanner actually
+  // received, beside the tools it looked calls up in.
+  let upstream: () => Buffer = () => Buffer.alloc(0);
   const settle = (found: TextToolCallCounts): void => {
     counts.recovered = found.recovered;
     counts.unparsed = found.unparsed;
-    if (found.unparsed > 0) onUnparsed?.(found.unparsed);
+    if (found.unparsed > 0) {
+      onUnparsed?.(found.unparsed);
+      if (capture !== undefined) {
+        // Not awaited: this runs as the stream ends, and the client's last
+        // bytes must not wait on a disk write. writeCapture logs its own failures.
+        void writeCapture(deps, deps.captureTextCallsDir, capture.candidate, 'an unrecovered text tool call', {
+          alias: capture.alias,
+          candidate: capture.candidate,
+          counts: found,
+          recoveryToolNames: [...tools.keys()],
+          upstream: upstream().toString(),
+          request: parsedOrText(capture.outbound),
+        });
+      }
+    }
   };
   const type = response.headers['content-type'] ?? '';
   if (type.includes('text/event-stream') && !Buffer.isBuffer(response.body)) {
-    return { ...response, body: rewriteTextToolCallStream(response.body, tools, settle) };
+    let body: AsyncIterable<Uint8Array> = response.body;
+    if (capture !== undefined && deps.captureTextCallsDir) {
+      const tee = teeStream(response.body);
+      body = tee.stream;
+      upstream = tee.seen;
+    }
+    return { ...response, body: rewriteTextToolCallStream(body, tools, settle) };
   }
   if (!type.includes('application/json')) return response;
   let read: { whole: Buffer } | { passThrough: AsyncIterable<Uint8Array> & { cancel(): void } };
@@ -1313,7 +1399,9 @@ async function recoverTextToolCalls(
   // A body the bounded read gave up on is served as it arrived, with nothing
   // recovered and `counts` left at zero.
   if ('passThrough' in read) return { ...response, body: read.passThrough };
-  const { body, counts: found } = rewriteTextToolCallJson(read.whole, tools);
+  const whole = read.whole;
+  upstream = () => whole;
+  const { body, counts: found } = rewriteTextToolCallJson(whole, tools);
   settle(found);
   return { ...response, body };
 }
@@ -1924,7 +2012,7 @@ async function routeTierRequest(
     // an unservable 400.
     if ('loginRefused' in response && response.loginRefused === true) {
       if (response.status === 400) {
-        capture400(deps, { alias, candidate: variant, status: response.status, outbound: body, response: response.body as Buffer });
+        await capture400(deps, { alias, candidate: variant, status: response.status, outbound: body, response: response.body as Buffer });
       }
       attempts.push({ key: route.key, status: response.status });
       const cooling = !('replaced' in response && response.replaced === true) &&
@@ -2017,7 +2105,7 @@ async function routeTierRequest(
       // them an empty error. This mirrors the 500 path in `forwardToLitellm`.
       const bodyBuf = await bufferBody(response.body, deps);
       if (response.status === 400) {
-        capture400(deps, { alias, candidate: variant, status: response.status, outbound: body, response: bodyBuf });
+        await capture400(deps, { alias, candidate: variant, status: response.status, outbound: body, response: bodyBuf });
       }
       const unservable = response.status === 400
         ? UNSERVABLE_400_SIGNATURES.find((signature) => bodyBuf.toString().includes(signature))
@@ -2128,7 +2216,7 @@ async function routeTierRequest(
       servedResponse = await recoverTextToolCalls(response, req, deps, textToolCalls, (n) => {
         cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
         deps.log?.(`router: ${alias} ${variant} wrote ${n} tool call(s) as text that could not be recovered; cooling it`);
-      });
+      }, { alias, candidate: variant, outbound: body });
       if (isClientGone(servedResponse)) return servedResponse;
     }
     // Pin only on a response the client actually receives IN FULL. A 400
@@ -2454,7 +2542,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     }
     const textToolCalls: TextToolCallCounts = { recovered: 0, unparsed: 0 };
     // No cooldown here: a bare key has no next candidate to fall through to.
-    const served = await recoverTextToolCalls(response, req, deps, textToolCalls);
+    const served = await recoverTextToolCalls(response, req, deps, textToolCalls, undefined, { alias: alias ?? requested ?? '?', candidate: alias ?? requested ?? 'unknown', outbound: body });
     if (isClientGone(served)) return served;
     return withUsageRecording(
       served,
