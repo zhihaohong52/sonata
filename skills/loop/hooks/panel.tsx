@@ -224,6 +224,16 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
   const usedBash = selIds.some(id => agents.find(a => a.id === id)?.usedBash)
   const diffLabel = selAgent ? `${selAgent.type}   ${selAgent.description}` : selTask ? `${selTask.id === 'final' ? 'end' : selTask.id}   ${selTask.title}` : ''
   const sel = diffStat(hunks)
+  // The selection's token breakdown: the agent's own, or its task's whole tree.
+  const selTok = selIds
+    .map(id => agents.find(a => a.id === id)?.tokens)
+    .filter((t): t is NonNullable<AgentRow['tokens']> => t !== undefined)
+    .reduce<NonNullable<AgentRow['tokens']> | undefined>((s, t) => ({
+      input: (s?.input ?? 0) + t.input,
+      output: (s?.output ?? 0) + t.output,
+      cacheRead: (s?.cacheRead ?? 0) + t.cacheRead,
+      cacheWrite: (s?.cacheWrite ?? 0) + t.cacheWrite,
+    }), undefined)
 
   const unplanned = agents.filter(a => a.parentId === undefined && a.taskId === undefined)
   const done = loop?.tasks.filter(t => t.state === 'done').length ?? 0
@@ -290,6 +300,9 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
             <Text color={C.text} bold>{fit(diffLabel, Math.max(10, width - 24))}</Text>
             <Text color={C.muted}>{hunks.length > 0 ? `   +${sel.added} −${sel.removed}   ${sel.files} file${sel.files === 1 ? '' : 's'}` : ''}</Text>
           </Text>
+          <Text color={C.muted}>{selTok === undefined
+            ? 'no token usage reported yet'
+            : fit(`in ${tok(selTok.input)}   out ${tok(selTok.output)}   cache read ${tok(selTok.cacheRead)}   cache write ${tok(selTok.cacheWrite)}`, width)}</Text>
           {usedBash && <Text color={C.mid}>{fit('Bash ran here too. Edits it made are not in this diff.', width)}</Text>}
           {hunks.length === 0 && <Text color={C.muted}>no applied edits yet</Text>}
           {hunks.map((hunk, i) => (
