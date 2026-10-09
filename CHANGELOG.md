@@ -8,6 +8,19 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Changed
+
+- **Auto-routing judges reviews, plans and explores by their own criteria.**
+  Jev was given the code-tier definitions for every role, and those only reach
+  `complex` when there is something to design, which a review never has: across
+  103 logged decisions it chose `complex` zero times, and every final merge gate
+  went to `review-normal`. Each role now has its own criteria: a review is
+  `complex` when it is the whole-branch gate or spans several tasks, a plan when
+  it turns a spec into tasks, an explore when it surveys a subsystem. Replayed
+  against those 100 tasks on jev-1.13.0, all three final gates and all three
+  spec plans move to `complex`, single-commit reviews stay `normal`, and code
+  decisions are unchanged.
+
 ## [0.15.5] - 2026-10-07
 
 ### Fixed
