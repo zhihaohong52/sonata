@@ -71,7 +71,13 @@ export const register: Register = (on, options) => {
         required: ['action'],
       },
     })
-    await $.command.register({ name: 'sonata-loop', description: 'Show or hide the sonata loop panel' })
+    // Not /sonata-loop: that name is the skill's own. A refused registration
+    // must not cost the rest of this hook (the tool is registered above).
+    try {
+      await $.command.register({ name: 'loop-panel', description: 'Show or hide the sonata loop panel' })
+    } catch {
+      // the panel still opens on the loop's first plan
+    }
     return next(e)
   })
 
@@ -84,7 +90,7 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'sonata-loop' }, async $ => {
+  on('command.run', { command: 'loop-panel' }, async $ => {
     const isOpen = (await $.ui.panes()).some(p => p.id === PANE)
     if (isOpen) await $.ui.close({ id: PANE })
     else await $.ui.open({ id: PANE, title: 'sonata loop' })
@@ -99,7 +105,8 @@ export const register: Register = (on, options) => {
     await update($, loopAtom, () => result.loop)
     if (input.action === 'plan') void $.ui.open({ id: PANE, title: 'sonata loop' })
     const n = result.loop?.tasks.length ?? 0
-    return { result: { ok: true }, text: `sonata_loop recorded (${n} task${n === 1 ? '' : 's'}).` }
+    // A registered tool's result is a string (or content blocks), never an object.
+    return { result: `sonata_loop recorded (${n} task${n === 1 ? '' : 's'}).` }
   })
 
   on('agent.spawn', async ($, e, next) => {

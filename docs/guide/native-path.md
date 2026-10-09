@@ -56,7 +56,7 @@ than a metered API key.
 
 The `sonata-loop` skill folder `sonata init` installs is also a Claude Code mod,
 which Claude Code loads from the skills folder by itself. While a loop runs it
-shows a side panel (toggle it with `/sonata-loop`):
+shows a side panel (toggle it with `/loop-panel`):
 
 - **Tasks** from the loop's plan, each with its state: pending, coding, fixing,
   in review, done, `failed n×`, or `escalated→<tier>`. The orchestrator reports
