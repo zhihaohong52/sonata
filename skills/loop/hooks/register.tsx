@@ -71,6 +71,11 @@ async function poll($: EngineInterface): Promise<void> {
       await fetchOnce($)
       await $.clock.sleep(3_000)
     }
+  } catch {
+    // The poll is started unawaited (`void poll($)`). An engine call it is
+    // waiting on can be rejected when the environment goes away (a reload,
+    // a torn-down test); that ends this poll, and the next spawn or step
+    // starts another. It must never surface as an unhandled rejection.
   } finally {
     polling = false
   }
