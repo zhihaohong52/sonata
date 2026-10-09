@@ -29,6 +29,8 @@ const argsOf = (e: object): Record<string, unknown> =>
 // a reload mid-loop does not freeze the model and cost columns.
 let routerUrl = 'http://127.0.0.1:4100'
 let polling = false
+// The session's directory, so the panel can show diff paths relative to it.
+let sessionCwd: string | undefined
 // Marks router resets, so a fetch started before one cannot write stale state after it.
 let epoch = 0
 
@@ -100,7 +102,9 @@ export const register: Register = (on, options) => {
     } catch {
       // the panel still opens on the loop's first plan
     }
-    return next(e)
+    const started = await next(e)
+    sessionCwd = started.cwd
+    return started
   })
 
   on('session.end', async ($, e, next) => {
@@ -203,6 +207,7 @@ export const register: Register = (on, options) => {
       router: await read($, routerAtom),
       view: await read($, viewAtom),
       now: Date.now(),
+      cwd: sessionCwd,
       cols: Number((e as { props?: { bodyColumns?: unknown } }).props?.bodyColumns) || 80,
     }
     const act: PanelActions = {
