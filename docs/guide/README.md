@@ -8,7 +8,7 @@ answers your current question.
 |---|---|
 | [Getting started](getting-started.md) | Install, `sonata init` screen by screen, BYOK keys, and your first tier agent |
 | [Commands](commands.md) | Every command and flag, grouped by what you reach for it to do |
-| [Native path](native-path.md) | Running foreign models inside Claude Code's own loop through the local routing proxy — `sonata serve`, `sonata code`, `sonata route on/auto` |
+| [Native path](native-path.md) | Running foreign models inside Claude Code's own loop through the local routing proxy — `sonata route auto`, `sonata serve`, `sonata code` |
 | [Codex subscription auth](codex-subscription.md) | How the `codex-oauth` gateway type authenticates against a ChatGPT subscription instead of a metered API key |
 | [Permission modes](permission-modes.md) | How each harness (OpenCode, Pi, Codex, Reasonix, Claude Code) honours Claude Code's permission modes, and where enforcement is real vs. advisory |
 | [Configuration](configuration.md) | The `sonata.toml` schema, where it's resolved from, and how roles/tiers work |

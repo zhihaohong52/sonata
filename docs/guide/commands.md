@@ -30,9 +30,9 @@ mistyped command suggests the nearest real one.
 |---|---|
 | `sonata serve [--daemon]` | Run the router (and its LiteLLM child, when a gateway needs one); `--daemon` detaches. Its web UI is at `http://localhost:4100/` by default (`[native.ports] router`) |
 | `sonata restart` | Stop the router sonata recorded and start a fresh daemon. Use this rather than killing it by hand |
-| `sonata code` | Launch a Claude Code session routed through the router, starting it if needed (passes `claude` arguments through) |
-| `sonata route on\|off\|status [--global]` | Route every plain `claude` session in the project (or, with `--global`, every project) through the router |
 | `sonata route auto\|manual [--global]` | Route each session for its lifetime via hooks, keeping Remote Control. `auto` is what `sonata init` offers |
+| `sonata route on\|off\|status [--global]` | Route every plain `claude` session in the project (or, with `--global`, every project) through the router |
+| `sonata code` | Launch a single routed Claude Code session without writing any settings, starting the router if needed (passes `claude` arguments through). Most setups use `sonata route auto` and plain `claude` instead |
 | `sonata status [--session <id>\|--all] [--global]` | Whether the router is up and on which port, then recent alias → candidate served → tokens → failed attempts decisions from the ledger |
 | `sonata usage [--since 7d] [--by model\|role\|tier\|route\|effort\|gateway\|lane\|session\|project] [--session <id>] [--project <dir>] [--json]` | Tokens and cost from the ledger — native requests as the router saw them, and dispatch runs read from each harness's own store once they finish (`--by lane` splits the two). Unpriced volume is reported separately, never folded into the total |
 

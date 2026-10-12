@@ -164,8 +164,8 @@ The ones you will use most:
 | `sonata init` | Set up sonata in this project |
 | `sonata doctor` | Check everything sonata depends on, and say how to fix what's broken |
 | `sonata agents` | See and re-rank the tier agents' models |
-| `sonata route auto` | Route each Claude Code session through the router, keeping Remote Control |
-| `sonata code` | Launch one routed Claude Code session |
+| `sonata route auto` | Route every plain `claude` session in this project through the router, keeping Remote Control — set once, then launch `claude` as usual |
+| `sonata code` | Launch one routed session without changing any settings |
 | `sonata usage` / `sonata status` | Tokens and cost, and what the router served |
 | `sonata dispatch` | Run a task through a model's own harness — the fallback lane |
 | `sonata upgrade` | Install the latest release |

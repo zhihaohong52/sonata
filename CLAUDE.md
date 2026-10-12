@@ -328,5 +328,5 @@ dispatching several scoped agents yourself.
 
 If a tier agent fails with `model_not_found`, the session is **not routed** —
 that is a setup problem, not a broken agent. Run `sonata doctor`, and start
-the session with `sonata code` (or `sonata route on` before launching).
+a new session after `sonata route auto` (or launch one with `sonata code`).
 <!-- sonata:end -->
