@@ -22,7 +22,7 @@ export type PanelActions = {
 
 // sonata's departure-board vocabulary (DESIGN.md), in Claude Code's own theme
 // keys so the pane follows the host's light or dark theme. `claude` is the
-// terracotta accent DESIGN.md already borrows: spent on the running task's
+// terracotta accent DESIGN.md already borrows: spent on each active task's
 // numeral, the selection edge and the live router stroke, nothing else.
 const C = { text: 'text', muted: 'inactive', rule: 'subtle', accent: 'claude', low: 'success', mid: 'warning', high: 'error' } as const
 
@@ -249,7 +249,6 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
   // ── task rows: id, title, share-of-spend bar, cost, state stroke ──
   const costs = (loop?.tasks ?? []).map(t => taskCost(agents, router.routes, treeIds(agents, rootsOf(t, agents))))
   const maxCost = Math.max(0, ...costs.map(c => c.usd))
-  const running = loop?.tasks.find(t => t.state !== 'done' && t.state !== 'pending')
 
   // A neutral bar: length compares spend; green stays reserved for done.
   const bar = (usd: number) => {
@@ -271,7 +270,7 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
     const roots = rootsOf(t, agents)
     const ids = treeIds(agents, roots)
     const cost = costs[i]
-    const isLead = running?.id === t.id
+    const isActive = t.state !== 'done' && t.state !== 'pending'
     const titleW = inner - idW - (barW ? barW + 1 : 0) - costW - statusW
     const costText = ids.length === 0 || (cost.isPartial && cost.usd === 0)
       ? '—'
@@ -283,8 +282,8 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
       <Button key={key} plain onPress={() => act.select(key)}>
         <Text>
           {edge(key)}
-          <Text color={isLead ? C.accent : C.muted} bold={isLead}>{padL(t.id === 'final' ? 'end' : t.id, idW - 1)} </Text>
-          <Text color={t.state === 'pending' ? C.muted : C.text} bold={isLead || isSel(key)}>{padR(t.title, titleW)}</Text>
+          <Text color={isActive ? C.accent : C.muted} bold={isActive}>{padL(t.id === 'final' ? 'end' : t.id, idW - 1)} </Text>
+          <Text color={t.state === 'pending' ? C.muted : C.text} bold={isActive || isSel(key)}>{padR(t.title, titleW)}</Text>
           {bar(cost.usd)}
           <Text color={costText === '—' ? C.rule : C.muted}>{padL(costText, Math.max(0, costW - (costSuffix ? 4 : 0)))}</Text>{costSuffix}
           {status(taskStatus(t, routerDown))}

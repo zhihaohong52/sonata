@@ -92,7 +92,27 @@ test('while the router is unreachable, running reads as unconfirmed', () => {
   expect(colorOf(tree, 'running')).toBe('inactive')
 })
 
-test('only the running task title is bold', () => {
+test('every active task accents and bolds its id and title', () => {
+  const tree = draw(data({ loop: { ...loop([]), tasks: [
+    { id: '1', title: 'Done task', state: 'done', failures: 0, agentIds: [] },
+    { id: '2', title: 'Coding task', state: 'coding', failures: 0, agentIds: [] },
+    { id: '3', title: 'Review task', state: 'review', failures: 0, agentIds: [] },
+    { id: '4', title: 'Pending task', state: 'pending', failures: 0, agentIds: [] },
+  ] } }))
+  const boldOf = (needle: string) => { let b: boolean | undefined; const w = (n: any, bold?: boolean) => { if (typeof n === 'string') { if (n.includes(needle) && b === undefined) b = !!bold; return } if (n && typeof n === 'object') n.children.forEach((k: any) => w(k, n.props?.bold ?? bold)) }; w(tree); return b }
+  for (const id of ['2', '3']) {
+    expect(colorOf(tree, id)).toBe('claude')
+    expect(boldOf(id)).toBe(true)
+  }
+  for (const id of ['1', '4']) {
+    expect(colorOf(tree, id)).not.toBe('claude')
+    expect(boldOf(id)).toBe(false)
+  }
+  for (const title of ['Coding task', 'Review task']) expect(boldOf(title)).toBe(true)
+  for (const title of ['Done task', 'Pending task']) expect(boldOf(title)).toBe(false)
+})
+
+test('the active task title is bold', () => {
   const tree = draw(data({ loop: { ...loop([]), tasks: [{ id: '1', title: 'Lead', state: 'coding', failures: 0, agentIds: [] }, { id: '2', title: 'Later', state: 'pending', failures: 0, agentIds: [] }] } }))
   const boldOf = (needle: string) => { let b: boolean | undefined; const w = (n: any, bold?: boolean) => { if (typeof n === 'string') { if (n.includes(needle) && b === undefined) b = !!bold; return } if (n && typeof n === 'object') n.children.forEach((k: any) => w(k, n.props?.bold ?? bold)) }; w(tree); return b }
   expect(boldOf('Lead')).toBe(true)
