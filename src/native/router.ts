@@ -1861,11 +1861,10 @@ async function forwardDirect(
     };
   } catch (error) {
     if (clientLeft(req)) return clientGone();
-    const message = error instanceof Error ? error.message : String(error);
     return {
       status: 502,
       headers: { 'content-type': 'application/json' },
-      body: anthropicErrorBody('router_error', message),
+      body: anthropicErrorBody('router_error', 'upstream unreachable'),
     };
   }
 }
@@ -2673,11 +2672,10 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       tenantConfig: tenant.config, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   } catch (error) {
     if (clientLeft(req)) return clientGone();
-    const message = error instanceof Error ? error.message : String(error);
     return withUsageRecording({
       status: 502,
       headers: { 'content-type': 'application/json' },
-      body: anthropicErrorBody('router_error', message),
+      body: anthropicErrorBody('router_error', 'upstream unreachable'),
     }, { startedAt, session, project: tenant.project, tenant: tenant.id,
       tenantConfig: tenant.config, alias: alias ?? '', upstream: 'anthropic', attempts: [] }, deps);
   }

@@ -897,6 +897,27 @@ describe('tier alias routing', () => {
     ],
   };
 
+  it('does not expose a thrown fetch error for a session tier candidate', async () => {
+    const logs: string[] = [];
+    const res = await routeRequest(
+      {
+        method: 'POST', url: '/v1/messages',
+        headers: { authorization: 'Bearer SESSION-SECRET' },
+        body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [] })),
+      },
+      {
+        fetch: (async () => { throw new Error('boom Bearer sk-ant-oat01-SENTINEL x-api-key SENTINEL2'); }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTier: () => ({ role: 'code', tier: 'simple', routes: [{ key: 'claude', native: SESSION }] }),
+        log: (line) => logs.push(line),
+      },
+    );
+    expect(res.status).toBe(529);
+    const output = `${Buffer.isBuffer(res.body) ? res.body.toString() : ''}\n${logs.join('\n')}`;
+    expect(output).not.toContain('SENTINEL');
+    expect(output).not.toContain('SENTINEL2');
+  });
+
   it('sends a direct-transport candidate straight to the gateway, never touching litellm', async () => {
     let seenUrl = '';
     const res = await routeRequest(req('sonata-code-simple'), {
@@ -2844,6 +2865,28 @@ describe('routeRequest — a bare model key on a direct gateway', () => {
     expect(seen[0].auth).toBe('Bearer GATEWAY-KEY');
     expect(seen[0].effort).toBe('low');
     await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it('does not expose a thrown fetch error for a bare direct key', async () => {
+    const logs: string[] = [];
+    const res = await routeRequest(
+      {
+        method: 'POST', url: '/v1/messages',
+        headers: { authorization: 'Bearer CALLER-SECRET' },
+        body: Buffer.from(JSON.stringify({ model: 'flash', messages: [] })),
+      },
+      {
+        fetch: (async () => { throw new Error('boom Bearer sk-ant-oat01-SENTINEL x-api-key SENTINEL2'); }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveNative: () => ({ gateway: 'g', id: 'flash', transport: 'direct' as const, baseUrl: 'https://gw.example/v1' }),
+        gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
+        log: (line) => logs.push(line),
+      },
+    );
+    expect(res.status).toBe(502);
+    const output = `${Buffer.isBuffer(res.body) ? res.body.toString() : ''}\n${logs.join('\n')}`;
+    expect(output).not.toContain('SENTINEL');
+    expect(output).not.toContain('SENTINEL2');
   });
 
   it('still sends a litellm-transport bare key to LiteLLM', async () => {
