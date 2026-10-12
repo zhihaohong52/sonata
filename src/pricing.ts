@@ -328,7 +328,7 @@ export function resolvePrice(
     return covered({ source: 'gateway', totalUsd });
   }
 
-  const provider = gateway?.pricingProvider;
+  const provider = gateway?.pricingProvider ?? (gateway?.auth === undefined ? undefined : proposePricingProvider(model.gateway ?? '', gateway.auth));
   if (provider === undefined || modelsDev === undefined || model.id === undefined) {
     return { source: 'none' };
   }

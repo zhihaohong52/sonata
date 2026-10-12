@@ -638,14 +638,15 @@ export async function main(argv: string[]): Promise<number> {
     // on real data, $167.10 with $0.000000 covered beside $10.34 with all of
     // it covered. The column is shown only when some bucket has covered work.
     const anyCovered = report.buckets.some((bucket) => bucket.coveredRequests > 0);
+    const SPENT_WIDTH = 16;
     const money = (usd: number) => `$${usd.toFixed(4)}`;
     if (anyCovered) {
-      console.log(`${''.padEnd(labelWidth)} ${'requests'.padStart(8)} ${'input'.padStart(12)} ${'output'.padStart(10)}  ${'spent'.padStart(16)}  ${'covered'.padStart(12)}`);
+      console.log(`${''.padEnd(labelWidth)} ${'requests'.padStart(8)} ${'input'.padStart(12)} ${'output'.padStart(10)}  ${'spent'.padStart(SPENT_WIDTH)}  ${'covered'.padStart(12)}`);
     }
     for (const bucket of report.buckets) {
       const spent = spentLabel(bucket, money);
       const covered = anyCovered ? `  ${coveredLabel(bucket, money).padStart(12)}` : '';
-      console.log(`${bucket.label.padEnd(labelWidth)} ${String(bucket.requests).padStart(8)} ${String(bucket.input).padStart(12)} ${String(bucket.output).padStart(10)}  ${spent.padStart(12)}${covered}`);
+      console.log(`${bucket.label.padEnd(labelWidth)} ${String(bucket.requests).padStart(8)} ${String(bucket.input).padStart(12)} ${String(bucket.output).padStart(10)}  ${spent.padStart(SPENT_WIDTH)}${covered}`);
     }
     console.log(`\npriced total   $${report.pricedTotalUsd.toFixed(4)}`);
     if (report.covered.requests > 0) {

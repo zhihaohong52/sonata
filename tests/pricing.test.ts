@@ -202,7 +202,6 @@ id = "claude-opus-4-1"
 base_url = "https://api.anthropic.com"
 provider = "anthropic"
 auth = "session"
-pricing_provider = "anthropic"
 `);
     const sessionCache: ModelsDevCache = {
       fetchedAt: '2026-08-26T15:31:30.637Z',
@@ -222,6 +221,18 @@ pricing_provider = "anthropic"
 
   it('proposes Anthropic pricing for the session auth gateway', () => {
     expect(proposePricingProvider('claude', 'session')).toEqual(['anthropic']);
+  });
+
+  it('leaves an unknown api-key gateway without a pricing provider unpriced', () => {
+    const unknownGateway = parseConfig(`
+[models."unknown"]
+gateway = "mystery"
+id = "mystery-model"
+
+[native.gateways."mystery"]
+base_url = "https://example.invalid/v1"
+`);
+    expect(resolvePrice(unknownGateway, 'unknown', tokens, now, cache)).toEqual({ source: 'none' });
   });
 
   it('reports none for an unknown key', () => {
