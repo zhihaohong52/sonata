@@ -16,7 +16,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   $5.98/task) over its own `xhigh` (56.0, $3.46/task) — 73% more per task for
   1.6 points. `complex` now treats any model less than 3 points below the
   strongest as tied with it, so the cheaper one (`xhigh`) leads; a model more than 3 points
-  stronger still leads however the prices compare. `simple` and `normal` are unchanged. Existing configs keep their
+  stronger still leads however the prices compare. A model below the
+  price-performance knee still follows those at or above it. `simple` and `normal` are unchanged. Existing configs keep their
   saved order until `sonata init --repropose-tiers` (or re-ranking in
   `sonata agents`).
 

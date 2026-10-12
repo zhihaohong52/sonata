@@ -91,6 +91,12 @@ export const AA_CAPABILITY_TIE_MARGIN = 1.0;
  * than 3 points below the leader ties with it and the cheaper one leads; 3 or
  * more never does.
  *
+ * One exception, by design: the knee split runs first. A model below the
+ * frontier's knee sorts after every model at or above it even when it is less
+ * than 3 points below the leader — the knee marks where extra capability
+ * stops being worth its price, and `complex` must not slide back under it to
+ * save money. The tie decides among models on the same side of the knee.
+ *
  * Scoped to `complex` on purpose. `normal` and `simple` already weigh cost in
  * their sort key, and use the class only to break an exact price tie, where a
  * wider band would just discard a real capability edge for no saving.
