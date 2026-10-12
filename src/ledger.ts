@@ -96,6 +96,8 @@ export interface LedgerRow {
    */
   effort?: Effort;
   gateway?: string;
+  /** Which credential paid a request served by a `session` gateway; never the credential itself. */
+  credential?: 'subscription' | 'key';
   /**
    * Where the request went. `harness` is a `sonata dispatch` run, read from
    * the harness's own store after it finished rather than observed in

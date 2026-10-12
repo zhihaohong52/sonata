@@ -443,6 +443,7 @@ interface RecordContext {
   gateway?: string;
   upstream: 'litellm' | 'anthropic' | 'direct';
   attempts: { key: string; status: number }[];
+  credential?: 'subscription' | 'key';
   session?: string;
   project?: string;
   tenant?: string;
@@ -493,6 +494,7 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
           // asked for", which is a different fact from `effort: undefined`.
           ...(ctx.effort === undefined ? {} : { effort: ctx.effort }),
           gateway: ctx.gateway,
+          ...(ctx.credential === undefined ? {} : { credential: ctx.credential }),
           upstream: ctx.upstream,
           litellmModel: response.headers['x-litellm-model-name'],
           callId: response.headers['x-litellm-call-id'],
@@ -1418,6 +1420,25 @@ function anthropicErrorBody(type: string, message: string): Buffer {
   return Buffer.from(JSON.stringify({ type: 'error', error: { type, message } }));
 }
 
+/** Classifies the caller credential without retaining or returning its value. */
+export function sessionCredential(headers: Record<string, string>): 'subscription' | 'key' | undefined {
+  let bearer: string | undefined;
+  let apiKey = false;
+  for (const [name, value] of Object.entries(headers)) {
+    const lower = name.toLowerCase();
+    if (lower === 'authorization') bearer = value;
+    else if (lower === 'x-api-key' && value !== '') apiKey = true;
+  }
+  if (bearer !== undefined && /^Bearer sk-ant-oat/i.test(bearer)) return 'subscription';
+  if (apiKey || (bearer !== undefined && bearer.trim() !== '')) return 'key';
+  return undefined;
+}
+
+const sessionCredentialField = (headers: Record<string, string>) => {
+  const credential = sessionCredential(headers);
+  return credential === undefined ? {} : { credential };
+};
+
 function isClaudeRequest(body: Buffer): boolean {
   try {
     return JSON.parse(body.toString()).model?.startsWith('claude-') === true;
@@ -1511,7 +1532,8 @@ export function usesUnicodePropertyEscape(pattern: string): boolean {
  * going to rely on; the alternative is a request that cannot be sent. Every
  * other pattern is kept, so this cannot loosen a schema the upstream accepts.
  * Applied on the litellm path only — an Anthropic request stays byte-identical,
- * and the direct path is a pass-through by contract (see `forwardDirect`).
+ * and the direct path is a pass-through by contract (see `forwardDirect`), except
+ * session gateways which rewrite the model and forward the caller credential.
  * Returns the body untouched, same bytes, when there is nothing to strip.
  */
 export function sanitizeToolSchemas(body: Buffer): Buffer {
@@ -1802,7 +1824,8 @@ function withSessionHeader(
  * For `api-key` gateways, the caller credential is stripped and replaced with
  * the gateway's own key. A `session` gateway is the exception: its validated
  * destination is Anthropic itself, so the session's credential is forwarded
- * without alteration.
+ * without alteration. Its credential IS the caller's, and the validated base
+ * URL is api.anthropic.com, so forwarding it is not a leak.
  */
 async function forwardDirect(
   body: Buffer,
@@ -2202,6 +2225,7 @@ async function routeTierRequest(
         key: route.key,
         effort: route.effort,
         gateway: route.native!.gateway,
+        ...(route.native!.auth === 'session' ? sessionCredentialField(req.headers) : {}),
         upstream: direct ? 'direct' : 'litellm',
         attempts,
       }, deps);
@@ -2251,6 +2275,7 @@ async function routeTierRequest(
       key: route.key,
       effort: route.effort,
       gateway: route.native!.gateway,
+      ...(route.native!.auth === 'session' ? sessionCredentialField(req.headers) : {}),
       upstream: direct ? 'direct' : 'litellm',
       attempts,
       textToolCalls,
@@ -2388,19 +2413,9 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   // tier candidate uses. This is how the claude harness adapter — whose
   // `--model` names a sonata key straight to the router — honours a
   // `sonata dispatch --model <key>@<effort>`. A tier alias never contains
-  // `@`, and a `claude-` model is Anthropic's own and passes through
-  // untouched, so neither is split.
+  // `@`, and an unconfigured `claude-` name remains Anthropic's own.
   let alias = requested;
   let bareEffort: Effort | undefined;
-  if (requested !== undefined && requested.includes('@') && !requested.startsWith('sonata-') && !isClaudeRequest(req.body)) {
-    try {
-      ({ key: alias, effort: bareEffort } = splitCandidate(requested));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      deps.log?.(`router: refused model=${requested} — ${message}`);
-      return { status: 400, headers: { 'content-type': 'application/json' }, body: anthropicErrorBody('invalid_request_error', message) };
-    }
-  }
 
   // A hint is honoured only from a caller that proves it is the user: naming a
   // project chooses that project's gateways, endpoints and stored credentials,
@@ -2424,6 +2439,22 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     if (!(error instanceof TenantError)) throw error;
     deps.log?.(`router: refused model=${alias ?? '?'} — ${error.message}`);
     return { status: 400, headers: { 'content-type': 'application/json' }, body: anthropicErrorBody('invalid_request_error', error.message) };
+  }
+
+  if (requested !== undefined && requested.includes('@') && !requested.startsWith('sonata-')) {
+    let split: { key: string; effort?: Effort } | undefined;
+    try {
+      split = splitCandidate(requested);
+    } catch (error) {
+      if (!isClaudeRequest(req.body)) {
+        const message = error instanceof Error ? error.message : String(error);
+        deps.log?.(`router: refused model=${requested} — ${message}`);
+        return { status: 400, headers: { 'content-type': 'application/json' }, body: anthropicErrorBody('invalid_request_error', message) };
+      }
+    }
+    if (split !== undefined && (!isClaudeRequest(req.body) || deps.resolveNative?.(split.key, tenant) !== undefined)) {
+      ({ key: alias, effort: bareEffort } = split);
+    }
   }
 
   const unavailable = deps.litellmUnavailable?.();
@@ -2508,7 +2539,8 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     return routeTierRequest(req, deps, alias, startedAt, session, tenant, unavailable);
   }
 
-  const anthropic = isClaudeRequest(req.body);
+  const configured = alias !== undefined ? deps.resolveNative?.(alias, tenant) : undefined;
+  const anthropic = configured === undefined && isClaudeRequest(req.body);
   const headers = requestHeaders(req.headers);
   const upstream = anthropic ? 'anthropic' : 'litellm';
   // Anthropic understands its own block arrays and its own tool schemas; only
@@ -2525,7 +2557,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   // Sending it to LiteLLM instead reaches nothing on a direct-only config
   // (no child is started) and loses the direct path's pass-through contract
   // on a mixed one.
-  const native = !anthropic && alias !== undefined ? deps.resolveNative?.(alias, tenant) : undefined;
+  const native = configured;
   const droppedGateway = native === undefined ? undefined : deps.gatewayUnavailable?.(tenant, native.gateway);
   if (droppedGateway !== undefined) {
     deps.log?.(`router: refused model=${requested ?? '?'} — its gateway is not served`);
@@ -2559,6 +2591,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
         alias,
         key: alias,
         gateway: native.gateway,
+        ...(native.auth === 'session' ? sessionCredentialField(req.headers) : {}),
         effort: bareEffort,
         upstream: 'direct',
         attempts: [],

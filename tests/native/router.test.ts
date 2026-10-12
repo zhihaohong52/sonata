@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, repairNamelessToolCalls, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import { routeRequest, sessionCredential, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, repairNamelessToolCalls, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
 import type { RouterTenant } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
@@ -197,6 +197,104 @@ describe('tier alias routing', () => {
   });
 
   beforeEach(() => clearCooldowns());
+
+  const SESSION = { gateway: 'claude', id: 'claude-opus-4-1', transport: 'direct' as const, baseUrl: 'https://api.anthropic.com/v1', auth: 'session' as const };
+  const withHeaders = (model: string, headers: Record<string, string>) =>
+    ({ method: 'POST', url: '/v1/messages', headers, body: Buffer.from(JSON.stringify({ model, messages: [] })) });
+
+  it('routes a configured claude- key to its own gateway, not to Anthropic', async () => {
+    const rec: FetchCall[] = [];
+    const res = await routeRequest(withHeaders('claude-sonnet-4.5', { authorization: 'Bearer usr' }), {
+      ...base, fetch: fakeFetch(rec),
+      resolveNative: (key) => key === 'claude-sonnet-4.5' ? { gateway: 'copilot', id: 'claude-sonnet-4.5', transport: 'litellm' as const } : undefined,
+    });
+    expect(res.status).toBe(200);
+    expect(rec[0].url).toBe('http://lite/v1/messages');
+  });
+
+  it('still passes an unconfigured claude- name to Anthropic byte-identical with the caller headers', async () => {
+    const rec: { url: string; headers: Record<string, string>; body: string }[] = [];
+    const body = JSON.stringify({ model: 'claude-opus-4-1', system: [{ type: 'text', text: 's', cache_control: { type: 'ephemeral' } }] });
+    await routeRequest({ method: 'POST', url: '/v1/messages', headers: { authorization: 'Bearer usr' }, body: Buffer.from(body) }, {
+      ...base, resolveNative: () => undefined,
+      fetch: (async (u: RequestInfo | URL, init?: RequestInit) => {
+        rec.push({ url: String(u), headers: Object.fromEntries(new Headers(init?.headers)), body: Buffer.from(init!.body as Uint8Array).toString() });
+        return new Response('{}', { status: 200 });
+      }) as typeof fetch,
+    });
+    expect(rec[0].url).toBe('https://api.anthropic.com/v1/messages');
+    expect(rec[0].headers.authorization).toBe('Bearer usr');
+    expect(rec[0].body).toBe(body);
+  });
+
+  it('forwards a session candidate with the caller credential, rewriting only model', async () => {
+    const rec: { url: string; headers: Record<string, string>; body: string }[] = [];
+    const sent = { model: 'sonata-code-complex', system: [{ type: 'text', text: 's', cache_control: { type: 'ephemeral' } }], messages: [] };
+    await serveFully({ method: 'POST', url: '/v1/messages', headers: { authorization: 'Bearer sk-ant-oat01-x', 'anthropic-beta': 'oauth-2025-04-20' }, body: Buffer.from(JSON.stringify(sent)) }, {
+      ...base,
+      resolveTier: () => ({ role: 'code', tier: 'complex', routes: [{ key: 'opus', native: SESSION }] }),
+      fetch: (async (u: RequestInfo | URL, init?: RequestInit) => {
+        rec.push({ url: String(u), headers: Object.fromEntries(new Headers(init?.headers)), body: Buffer.from(init!.body as Uint8Array).toString() });
+        return new Response(COMPLETE_BODY, { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch,
+    });
+    expect(rec[0].url).toBe('https://api.anthropic.com/v1/messages');
+    expect(rec[0].headers.authorization).toBe('Bearer sk-ant-oat01-x');
+    expect(rec[0].headers['anthropic-beta']).toBe('oauth-2025-04-20');
+    expect(JSON.parse(rec[0].body)).toEqual({ ...sent, model: 'claude-opus-4-1' });
+  });
+
+  it('forwards x-api-key unchanged to a session candidate when authorization is absent', async () => {
+    const rec: { headers: Record<string, string> }[] = [];
+    await serveFully({ method: 'POST', url: '/v1/messages', headers: { 'x-api-key': 'caller-key' }, body: Buffer.from(JSON.stringify({ model: 'sonata-code-complex', messages: [] })) }, {
+      ...base,
+      resolveTier: () => ({ role: 'code', tier: 'complex', routes: [{ key: 'opus', native: SESSION }] }),
+      fetch: (async (_u: RequestInfo | URL, init?: RequestInit) => {
+        rec.push({ headers: Object.fromEntries(new Headers(init?.headers)) });
+        return new Response(COMPLETE_BODY, { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch,
+    });
+    expect(rec[0].headers['x-api-key']).toBe('caller-key');
+  });
+
+  it('falls through to the next candidate when a session candidate answers 401', async () => {
+    const urls: string[] = [];
+    const res = await serveFully(withHeaders('sonata-code-complex', {}), {
+      ...base,
+      resolveTier: () => ({ role: 'code', tier: 'complex', routes: [
+        { key: 'opus', native: SESSION },
+        { key: 'flash', native: { gateway: 'g', id: 'flash-1', transport: 'litellm' as const } },
+      ] }),
+      fetch: (async (u: RequestInfo | URL) => {
+        urls.push(String(u));
+        return String(u).startsWith('https://api.anthropic.com')
+          ? new Response('{"type":"error","error":{"type":"authentication_error","message":"x"}}', { status: 401 })
+          : new Response(COMPLETE_BODY, { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch,
+    });
+    expect(res.status).toBe(200);
+    expect(urls).toEqual(['https://api.anthropic.com/v1/messages', 'http://lite/v1/messages']);
+  });
+
+  it('splits claude-key@low only when the key is configured', async () => {
+    const seen: string[] = [];
+    await routeRequest(withHeaders('claude-sonnet-4.5@low', {}), {
+      ...base, fetch: fakeFetch([]),
+      resolveNative: (key) => { seen.push(key); return key === 'claude-sonnet-4.5' ? { gateway: 'g', id: 'claude-sonnet-4.5', transport: 'litellm' as const } : undefined; },
+    });
+    expect(seen).toContain('claude-sonnet-4.5');
+    const rec: FetchCall[] = [];
+    await routeRequest(withHeaders('claude-opus-4-1@low', {}), { ...base, fetch: fakeFetch(rec), resolveNative: () => undefined });
+    expect(rec[0].url).toBe('https://api.anthropic.com/v1/messages');
+  });
+
+  it('classifies the session credential without exposing it', () => {
+    expect(sessionCredential({ authorization: 'Bearer sk-ant-oat01-abc' })).toBe('subscription');
+    expect(sessionCredential({ Authorization: 'Bearer sk-ant-oat01-abc' })).toBe('subscription');
+    expect(sessionCredential({ 'x-api-key': 'sk-ant-api03-abc' })).toBe('key');
+    expect(sessionCredential({ authorization: 'Bearer some-gateway-token' })).toBe('key');
+    expect(sessionCredential({})).toBeUndefined();
+  });
 
   it('rewrites the model to the first native candidate and forwards to litellm', async () => {
     const seen: string[] = [];
