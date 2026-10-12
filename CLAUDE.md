@@ -56,12 +56,12 @@ npm run release -- 0.4.0   # promote [Unreleased] → dated section, bump manife
 git push --follow-tags     # this is what publishes: the tag fires release.yml
 ```
 
-**Which number to bump.** Pre-1.0 this project sets its own rule: **patch**
-(`0.12.0` → `0.12.1`) for changes that do not affect what sonata does — fixes,
-refinements, docs, a screen presenting data sonata already reported; **minor**
-(`0.12.x` → `0.13.0`) for a change to sonata's function — how it routes, ranks,
-prices or dispatches, a new config key, or behaviour a user relies on
-changing. When unsure, ask rather than pick. **1.0 is gated on exposure, not a
+**Which number to bump.** Pre-1.0 this project sets its own rule, and since
+the public beta (0.16.x) it is: **minor** (`0.16.x` → `0.17.0`) only for a
+**major feature** — something new a user can do. Everything else is a
+**patch**, including fixes, refinements, docs, and changes to how sonata
+routes, ranks, prices or dispatches (the `complex` near-tie margin shipped as a
+patch). When unsure, ask rather than pick. **1.0 is gated on exposure, not a
 checklist** (`docs/roadmap.md`).
 
 **Releases:** changelog entries accumulate under `## [Unreleased]` as work
@@ -294,10 +294,14 @@ rather than Claude's own general-purpose subagents. That is what sonata is
 for: cheap models for mechanical work, and a different model family reviewing
 Claude's own code.
 
-Match the tier to the work. `-simple` is writable without asking a question
-(one or two files, no interface change). `-normal` is the default: you know
-what to change but not exactly how. `-complex` needs a design decision, or
-"done" is still ambiguous.
+**Auto-routing is on:** `-auto` agents are the default (`code-auto`,
+`review-auto`, …). Sonata chooses the tier for each task;
+explicit tier agents are the manual override when you know better.
+
+For a manual override, match the tier to the work. `-simple` is writable
+without asking a question (one or two files, no interface change).
+`-normal` fits when you know what to change but not exactly how.
+`-complex` needs a design decision, or "done" is still ambiguous.
 
 **Your config decides which of those exist** — `sonata agents` lists them, and
 a config written before the `normal` tier has only `-simple` and `-complex`.
@@ -327,6 +331,6 @@ is your decision to make here, where the agent count is visible, by
 dispatching several scoped agents yourself.
 
 If a tier agent fails with `model_not_found`, the session is **not routed** —
-that is a setup problem, not a broken agent. Run `sonata doctor`, and start
+that is a setup problem, not a broken agent. Run `sonata doctor`, then start
 a new session after `sonata route auto` (or launch one with `sonata code`).
 <!-- sonata:end -->

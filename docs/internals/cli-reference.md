@@ -20,16 +20,20 @@ git push --follow-tags     # this is what publishes: the tag fires release.yml
 
 **Which number to bump, so it is a lookup rather than a debate.** Pre-1.0,
 semver's own rules say nothing — `0.x` promises no compatibility at all — so
-this project states its own, set by the maintainer: **patch** (`0.12.0` →
-`0.12.1`) for minor changes that do not affect what sonata does — fixes,
-refinements, documentation, a screen that presents data sonata already
-reported; **minor** (`0.12.x` → `0.13.0`) for a major change that affects
-sonata's function — how it routes, ranks, prices or dispatches, a new config
-key, or behaviour a user relies on changing. Pre-1.0 the minor digit is the
-"major" one; the leading `0` stays until the 1.0 gate below. When unsure,
-ask rather than pick — v0.12.1 shipped a new usage screen as a patch by the
-maintainer's call, which the older rule here ("minor when a user-visible
-surface is added") would have filed as 0.13.0.
+this project states its own, set by the maintainer. **Since the public beta
+(0.16.x): minor** (`0.16.x` → `0.17.0`) is reserved for a **major feature** —
+something new a user can do; **everything else is a patch**, including fixes,
+refinements, documentation, and changes to how sonata routes, ranks, prices or
+dispatches. The `complex` tier's wider near-tie margin, which changed every
+proposed ranking, shipped as a patch under this rule. Pre-1.0 the minor digit
+is the "major" one; the leading `0` stays until the 1.0 gate below. When
+unsure, ask rather than pick.
+
+Before the public beta the line sat lower: a minor bump for any change to
+sonata's function (routing, ranking, pricing, dispatch, a new config key), and
+a patch only for changes that did not affect what sonata does. v0.12.1 already
+bent that rule, shipping a new usage screen as a patch by the maintainer's
+call.
 
 **1.0 is gated on exposure, not on a checklist**, and the gate has already been
 reached on its item list — all fourteen roadmap items shipped by 0.6.0. See
