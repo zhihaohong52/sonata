@@ -305,3 +305,29 @@ test('a route with a malformed timestamp or price is dropped and the pane draws'
   expect(await ui.find({ key: 'task:1' })).toBeDefined()
   await ui.unmount()
 })
+
+test('isCovered true survives the shape filter; any other value drops the route', async ($, on) => {
+  on('turn.step', async function* (_$, e) { return { ...e, answer: '', toolUses: [], stopReason: null, usage: null } })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'sonata-code-simple', agentId: 'a1' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('turn.complete', () => ({ text: '' }))
+  let parked!: () => void
+  const isParked = new Promise<void>(r => { parked = r })
+  on('clock.sleep', () => { parked(); return new Promise(() => {}) })
+  const body = JSON.stringify({ routes: [
+    { alias: 'sonata-code-simple', ts: new Date().toISOString(), served: 'flash-1', status: 200, priceUsd: 0.42, isCovered: true },
+    { alias: 'sonata-code-simple', ts: new Date().toISOString(), served: 'kimi-9', status: 200, priceUsd: 9, isCovered: 'yes' },
+  ] })
+  on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: body } }))
+  await $.tool.call({ tool: TOOL, action: 'plan', title: 't', tasks: [{ id: '1', title: 'A' }] })
+  await $.tool.call({ tool: TOOL, action: 'start', taskId: '1', phase: 'code' })
+  await $.agent.spawn({ subagentType: 'code-simple', description: 'x', prompt: 'x' } as never)
+  for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'sonata-code-simple', messageCount: 1, agentId: 'a1' } as never)) { /* drain */ }
+  await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't' } as never)
+  await isParked
+  const ui = await $.ui.mount({ plugin: 'sonata-loop', surface: 'terminal', ...PANE })
+  expect((await ui.find({ key: 'agent:a1' }))?.text).toMatch(/\$0\.42 sub/)
+  expect(await ui.find({ text: /kimi-9/ })).toBeUndefined()
+  await ui.unmount()
+})

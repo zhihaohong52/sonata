@@ -65,6 +65,7 @@ async function fetchOnce($: EngineInterface): Promise<void> {
       const r = x as Record<string, unknown>
       return typeof r.alias === 'string' && optional(r.ts, 'string') && optional(r.served, 'string')
         && optional(r.tier, 'string') && optional(r.priceUsd, 'number')
+        && (r.isCovered === undefined || r.isCovered === true)
     })
     await update($, routerAtom, r => (mine === epoch ? { routes: kept, at: Date.now() } : r))
   } catch {

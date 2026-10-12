@@ -63,6 +63,7 @@ export type RouteLine = {
   role?: string
   tier?: string
   priceUsd?: number
+  isCovered?: true
 }
 
 export type RouterState = {
