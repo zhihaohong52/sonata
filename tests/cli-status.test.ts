@@ -73,6 +73,22 @@ describe('sonata status CLI wiring', () => {
     vi.unstubAllGlobals();
   });
 
+  it('aligns covered usage values with the covered header column', async () => {
+    const usageModule = await import('../src/commands/usage.js');
+    vi.spyOn(usageModule, 'cmdUsage').mockResolvedValue({
+      buckets: [{ label: 'opus', requests: 2, input: 100, output: 20, costUsd: 0, coveredUsd: 0.42, coveredRequests: 2, unpricedRequests: 0 }],
+      pricedTotalUsd: 0, covered: { requests: 2, totalUsd: 0.42 },
+      unpriced: { requests: 0, input: 0, output: 0 }, noPromptTokens: { requests: 0, output: 0 }, failedAttempts: [],
+    } as never);
+    const lines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((line) => lines.push(String(line)));
+
+    await main(['usage']);
+    const header = lines.find((line) => line.includes('covered'))!;
+    const data = lines.find((line) => line.startsWith('opus'))!;
+    expect(data.lastIndexOf('$0.4200')).toBe(header.lastIndexOf('covered'));
+  });
+
   it('rejects an unrecognized flag with the parseArgs unknown-option error', async () => {
     // Give every downstream dependency a valid value so nothing would throw if
     // strict parsing were disabled — a `status --sessionx <id>` would then just

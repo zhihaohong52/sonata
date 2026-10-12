@@ -223,6 +223,38 @@ auth = "session"
     expect(proposePricingProvider('claude', 'session')).toEqual(['anthropic']);
   });
 
+  it('leaves an api-key openrouter gateway without an explicit provider unpriced', () => {
+    const openrouter = parseConfig(`
+[models."openrouter"]
+gateway = "openrouter"
+id = "deepseek/deepseek-v4-flash"
+
+[native.gateways."openrouter"]
+base_url = "https://example.invalid/v1"
+`);
+    const openrouterCache: ModelsDevCache = {
+      fetchedAt: '2026-08-26T15:31:30.637Z',
+      providers: { openrouter: { 'deepseek/deepseek-v4-flash': { input: 3, output: 9 } } },
+    };
+    expect(resolvePrice(openrouter, 'openrouter', tokens, now, openrouterCache)).toEqual({ source: 'none' });
+  });
+
+  it('keeps codex OAuth gateways without pricing_provider unpriced', () => {
+    const oauth = parseConfig(`
+[models."codex"]
+gateway = "whatever-name"
+id = "gpt-5.6-terra"
+
+[native.gateways."whatever-name"]
+auth = "codex-oauth"
+`);
+    const oauthCache: ModelsDevCache = {
+      fetchedAt: '2026-08-26T15:31:30.637Z',
+      providers: { openai: { 'gpt-5.6-terra': { input: 4, output: 12 } } },
+    };
+    expect(resolvePrice(oauth, 'codex', tokens, now, oauthCache)).toEqual({ source: 'none' });
+  });
+
   it('leaves an unknown api-key gateway without a pricing provider unpriced', () => {
     const unknownGateway = parseConfig(`
 [models."unknown"]

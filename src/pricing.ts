@@ -328,7 +328,7 @@ export function resolvePrice(
     return covered({ source: 'gateway', totalUsd });
   }
 
-  const provider = gateway?.pricingProvider ?? (gateway?.auth === undefined ? undefined : proposePricingProvider(model.gateway ?? '', gateway.auth));
+  const provider = gateway?.pricingProvider ?? (gateway?.auth === 'session' ? ['anthropic'] : undefined);
   if (provider === undefined || modelsDev === undefined || model.id === undefined) {
     return { source: 'none' };
   }
