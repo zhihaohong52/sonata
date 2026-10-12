@@ -87,9 +87,9 @@ export const AA_CAPABILITY_TIE_MARGIN = 1.0;
  * Measured 2026-10-13: Claude Opus 5.5 led at `max` (intelligence 57.6,
  * $5.98/task) over its own `xhigh` (56.0, $3.46/task) — 73% more per task for
  * 1.6 points, an edge inside the run-to-run spread of the benchmark itself.
- * Classes are counted down from the strongest candidate, so any model within 3
- * points of the leader ties with it and the cheaper one leads; a model more
- * than 3 points below the leader never ties with it.
+ * Classes are counted down from the strongest candidate, so any model less
+ * than 3 points below the leader ties with it and the cheaper one leads; 3 or
+ * more never does.
  *
  * Scoped to `complex` on purpose. `normal` and `simple` already weigh cost in
  * their sort key, and use the class only to break an exact price tie, where a
@@ -126,12 +126,18 @@ export function capabilityClass(index: number, margin: number = AA_CAPABILITY_TI
  *
  * Bucketing on `index / margin` put 58.6 and 57.0 in different classes (20 vs
  * 19) though they are 1.6 apart, so the expensive rung led again. Anchoring on
- * the leader makes the class a per-candidate key (still transitive) where
- * everything within `margin` of the strongest candidate shares class 0. Lower
- * class is stronger.
+ * the leader makes the class a per-candidate key (still transitive): less than
+ * `margin` below the leader ties with it (class 0); `margin` or more never
+ * does. Lower class is stronger.
+ *
+ * Below class 0 the bands have fixed edges every `margin` points down from the
+ * leader, so two close models can fall either side of one. That affects only
+ * fallback order, never which model leads — the leader is class 0 by
+ * construction. The `+ 1e-9` keeps a gap of exactly `margin` in class 1
+ * deterministically, rather than letting float representation decide.
  */
 export function complexClass(index: number, top: number, margin: number = COMPLEX_CAPABILITY_TIE_MARGIN): number {
-  return Math.floor((top - index) / margin);
+  return Math.floor((top - index) / margin + 1e-9);
 }
 
 /*
@@ -1037,8 +1043,19 @@ export function proposeTiers(
    * stronger dominated one inside a capability-ordered tier.
    */
   // The strongest reasoning score among the candidates `complex` sorts —
-  // classes are counted down from it (see `complexClass`).
-  const complexTop = Math.max(0, ...candidates.map((c) => rankReasoning(c).index).filter(Number.isFinite));
+  // classes are counted down from it (see `complexClass`). The top is taken
+  // only from candidates that can lead the tier, because the earlier
+  // comparator terms sort the others after them; anchoring on one of those
+  // shifts every class edge. Falls back to every candidate when none can lead.
+  const leaders = candidates.filter(
+    (c) => capable(c) && !avoided.has(bareKey(c)) && !offScale(c) && !powerGeometry.wasteful.has(c),
+  );
+  const complexTop = Math.max(
+    0,
+    ...((leaders.length > 0 ? leaders : candidates)
+      .map((c) => rankReasoning(c).index)
+      .filter(Number.isFinite)),
+  );
   const byCapability = (a: string, b: string) => {
     const ra = rankReasoning(a); const rb = rankReasoning(b);
     return avoidance(a, b)

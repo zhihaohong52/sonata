@@ -5,6 +5,7 @@ import { join, dirname } from 'node:path';
 import { parseConfig } from '../src/config.js';
 import {
   capabilityClass,
+  complexClass,
   normalizeModelName, lookupModel, proposeTiers, loadAaCatalog, aaCatalogPath,
   aaCatalogAgeDays, aaLookupNames, catalogCoverage, SIMPLE_COST_CEILING,
   catalogFamily, expandCandidates, hasEffortVariants, unpinnedVariants, candidateLabel,
@@ -569,6 +570,40 @@ describe('proposeTiers — complex trades a small capability edge for a large sa
     };
     const tiers = proposeTiers(['cheap-follower', 'pricier-leader'], far);
     expect(tiers.complex[0]).toBe('pricier-leader');
+  });
+
+  it('does not let an avoided stronger model set the class edges', () => {
+    // A model on a gateway the user avoids can still be the strongest thing in
+    // the candidate pool, and before the top was restricted to candidates that
+    // can lead, its 60.0 anchored the classes: 58.6 and 56.9 fell on opposite
+    // sides of one edge (0.5 and 1.0 margins down) and the dear rung led again.
+    const avoidedStronger: AaCatalog = {
+      fetchedAt: '2026-10-13T00:00:00Z',
+      models: {
+        'claude-opus-5-5': { blendedPriceUsd: 8, family: 'claude-opus-5-5', intelligenceIndex: 58.6, costPerTask: 5.982, effort: 'max' },
+        'claude-opus-5-5-xhigh': { blendedPriceUsd: 8, family: 'claude-opus-5-5', intelligenceIndex: 56.9, costPerTask: 3.4591, effort: 'xhigh' },
+        'mega-alpha': { blendedPriceUsd: 1, intelligenceIndex: 60, costPerTask: 0.5 },
+      },
+    };
+    const tiers = proposeTiers(['claude-opus-5-5', 'mega-alpha'], avoidedStronger, [], new Set(['mega-alpha']));
+    const nonAvoided = tiers.complex.filter((k) => k !== 'mega-alpha');
+    expect(nonAvoided.slice(0, 2)).toEqual(['claude-opus-5-5@xhigh', 'claude-opus-5-5@max']);
+  });
+
+  it('does not let an off-scale stronger model set the class edges', () => {
+    // An agentic-only score is a different axis, so that model is demoted as
+    // off-scale — but `reasoningOf` still fell back to its agentic 61 when
+    // taking the top, which split the 1.7-point Opus pair across a class edge.
+    const offScaleStronger: AaCatalog = {
+      fetchedAt: '2026-10-13T00:00:00Z',
+      models: {
+        'claude-opus-5-5': { blendedPriceUsd: 8, family: 'claude-opus-5-5', intelligenceIndex: 58.6, costPerTask: 5.982, effort: 'max' },
+        'claude-opus-5-5-xhigh': { blendedPriceUsd: 8, family: 'claude-opus-5-5', intelligenceIndex: 56.9, costPerTask: 3.4591, effort: 'xhigh' },
+        'agentic-only': { blendedPriceUsd: 1, agenticIndex: 61, costPerTask: 0.5 },
+      },
+    };
+    const tiers = proposeTiers(['claude-opus-5-5', 'agentic-only'], offScaleStronger);
+    expect(tiers.complex.slice(0, 2)).toEqual(['claude-opus-5-5@xhigh', 'claude-opus-5-5@max']);
   });
 });
 
@@ -1452,6 +1487,15 @@ describe('proposeTiers — the wasteful-tail gate', () => {
     // land either side of a class edge, and is then ranked by capability.
     // That is the safe direction — it never makes the order input-dependent.
     expect(capabilityClass(51.4)).not.toBe(capabilityClass(51.6));
+  });
+
+  it('counts complex classes down from the leader, with a deterministic exact edge', () => {
+    // Less than 3 points below the leader ties with it (class 0); 3 or more
+    // never does. A gap of exactly the margin lands in class 1 — including the
+    // float-representation case — so the edge is not a coin toss.
+    expect(complexClass(57, 60)).toBe(1);
+    expect(complexClass(57.01, 60)).toBe(0);
+    expect(complexClass(64.1 - 3, 64.1)).toBe(1);
   });
 
   it('orders identically however the input is shuffled', () => {

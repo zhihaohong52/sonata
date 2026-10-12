@@ -16,6 +16,7 @@ import {
   addedGatewayNames,
   hasModelsToPick,
   modelsStepCandidates,
+  modelsStepSelection,
   stepBeforeRoles,
   initialRankedFor,
   acceptRemainingTiers,
@@ -27,7 +28,7 @@ import {
   type ProviderOption,
 } from './app-state.js';
 import { TIER_NAMES, type NativeGatewayAuth } from '../config.js';
-import { byokCandidateKey, fetchModels as defaultFetchModels } from '../native/models.js';
+import { fetchModels as defaultFetchModels } from '../native/models.js';
 import { ROLE_BLURB } from '../roles.js';
 import type { InitState, TuiResult } from './types.js';
 import { usePalette } from './theme-context.js';
@@ -332,6 +333,11 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const addedBaseUrls = Object.fromEntries(
         (state.customProviders ?? []).map((provider) => [provider.name, provider.url]),
       );
+      // A pick made on a provider's own screen can be drawn here under a
+      // different key (a codex harness row is keyed by bare id while the OAuth
+      // pick is `codex-<id>`), so both the checkbox set and the keys kept
+      // across submit are matched on (gateway, id), not on key.
+      const selection = modelsStepSelection(state, candidates);
       return <ModelsStep
         key="models"
         candidates={candidates}
@@ -347,21 +353,20 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         gatewayNames={gatewayNames}
         upstreamForCandidate={upstreamForCandidate}
         fetchModels={data.fetchModels ?? defaultFetchModels}
-        initialSelected={new Set(state.nativeKeys)}
+        initialSelected={selection.initialSelected}
         onSubmit={(keys, live, offered) => {
           // Keep any BYOK/custom-provider keys already chosen: this step owns
           // the harness candidates only, and a plain overwrite would drop the
           // rest — they were already selected inside ProvidersStep.
-          const byokKeys = new Set(Object.entries(state.byokModels ?? {}).flatMap(([provider, ids]) =>
-            ids.map((id) => byokCandidateKey(provider, id))));
           // Deduped: a BYOK model can now also appear in this picker (its
           // gateway's live /models answer lists it), so `keys` and `kept`
           // overlap — and a doubled key is written to the config twice.
-          // A model this step drew follows its checkbox; one it never drew
-          // (the catalog filter hid it, or its gateway's live list omitted
-          // it) is kept as chosen on its provider's screen.
-          const shown = new Set(offered);
-          const kept = (state.nativeKeys ?? []).filter((key) => byokKeys.has(key) && !shown.has(key));
+          // A model this step drew follows its checkbox — matched by
+          // (gateway, id), since the row can carry a different key from the
+          // pick; one it never drew (the catalog filter hid it, or its
+          // gateway's live list omitted it) is kept as chosen on its
+          // provider's screen.
+          const kept = selection.keptFor(offered);
           setState((current) => ({
             ...applyStep(current, 2, [...new Set([...(keys as string[]), ...kept])]),
             // Carried so cmdInit can mint a candidate for a model only the

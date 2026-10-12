@@ -490,7 +490,7 @@ export function seededRankingFor(
  * they are JSON-encoded rather than joined by a separator, which would make
  * `a` + `b/c` collide with `a/b` + `c`.
  */
-function gatewayIdKey(gateway: string, id: string): string {
+export function gatewayIdKey(gateway: string, id: string): string {
   return JSON.stringify([gateway, id]);
 }
 
@@ -587,6 +587,52 @@ export function modelsStepCandidates(
     }
   }
   return out;
+}
+
+/**
+ * How the models step's checkboxes line up with picks made on a provider's
+ * own screen, matched by (gateway, id) rather than by key.
+ *
+ * The keys can differ for one model: a codex harness row is keyed by bare id
+ * (`gpt-6-luna`) while the pick minted on the OAuth screen is
+ * `codex-gpt-6-luna`. Matching by key left the drawn row unchecked and kept
+ * the pick no matter what the user did to its checkbox. Matching the pair
+ * instead lets a pick drawn under another key follow that row's checkbox —
+ * while a pick the step never drew (the catalog filter hid it, a live list
+ * omitted it) is still kept, as chosen on its provider's screen.
+ */
+export function modelsStepSelection(
+  state: { nativeKeys?: readonly string[]; byokModels?: Record<string, string[]> },
+  candidates: readonly CandidateOption[],
+): {
+  initialSelected: Set<string>;
+  keptFor: (offered: readonly { gateway: string; id: string }[]) => string[];
+} {
+  const nativeKeys = state.nativeKeys ?? [];
+  // Each pick's own key, indexed by the (gateway, id) it names.
+  const pickKeyByGatewayId = new Map<string, string>();
+  for (const [gateway, ids] of Object.entries(state.byokModels ?? {})) {
+    for (const id of ids) pickKeyByGatewayId.set(gatewayIdKey(gateway, id), byokCandidateKey(gateway, id));
+  }
+  // A pick drawn under a different key starts checked exactly when its own key
+  // was chosen: seed the drawn key in alongside the pick's, and the row's
+  // checkbox reads the state its provider's screen recorded.
+  const initialSelected = new Set(nativeKeys);
+  for (const candidate of candidates) {
+    const pickKey = pickKeyByGatewayId.get(gatewayIdKey(candidate.gateway, candidate.id));
+    if (pickKey !== undefined && nativeKeys.includes(pickKey)) initialSelected.add(candidate.key);
+  }
+  return {
+    initialSelected,
+    keptFor: (offered) => {
+      const drawn = new Set(offered.map((candidate) => gatewayIdKey(candidate.gateway, candidate.id)));
+      const kept: string[] = [];
+      for (const [gIdKey, pickKey] of pickKeyByGatewayId) {
+        if (nativeKeys.includes(pickKey) && !drawn.has(gIdKey)) kept.push(pickKey);
+      }
+      return kept;
+    },
+  };
 }
 
 export function mergeLiveCandidates(
