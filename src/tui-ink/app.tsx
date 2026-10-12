@@ -15,6 +15,7 @@ import {
   knownCandidates,
   addedGatewayNames,
   hasModelsToPick,
+  modelsStepCandidates,
   stepBeforeRoles,
   initialRankedFor,
   acceptRemainingTiers,
@@ -289,7 +290,8 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
           // A provider added this run has no rows in `data.candidates` by
           // design, so deciding from that set alone skipped the models step
           // for exactly the provider whose key was just typed.
-          setStep(hasModelsToPick(candidates, addedGatewayNames(state)) ? 2 : 3);
+          const stepCandidates = modelsStepCandidates(candidates, state, data.gatewayAuth ?? {});
+          setStep(hasModelsToPick(stepCandidates, addedGatewayNames(state)) ? 2 : 3);
           // An updater, so it lands after the gateway order just recorded.
           setState((current) => withoutUnofferedModels(current, data.candidates, providers));
         }}
@@ -298,7 +300,11 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       />;
     }
     case 2: {
-      const candidates = candidatesForProviders(data.candidates, data.providers, state.providerKeys);
+      const candidates = modelsStepCandidates(
+        candidatesForProviders(data.candidates, data.providers, state.providerKeys),
+        state,
+        data.gatewayAuth ?? {},
+      );
       const catalog = loadAaCatalog(data.home);
       const gatewayNames = [...new Set(candidates.map((candidate) => candidate.gateway))];
       const modelsDev = loadModelsDev(data.home);
@@ -362,7 +368,11 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
           // Deduped: a BYOK model can now also appear in this picker (its
           // gateway's live /models answer lists it), so `keys` and `kept`
           // overlap — and a doubled key is written to the config twice.
-          const kept = (state.nativeKeys ?? []).filter((key) => byokKeys.has(key));
+          // A model this step showed follows its checkbox; one it never
+          // showed (an API-key provider's pick, or one the catalog filter
+          // hid) is kept as chosen on its provider's screen.
+          const shown = new Set(offeredCandidates.map((candidate) => candidate.key));
+          const kept = (state.nativeKeys ?? []).filter((key) => byokKeys.has(key) && !shown.has(key));
           setState((current) => ({
             ...applyStep(current, 2, [...new Set([...(keys as string[]), ...kept])]),
             // Carried so cmdInit can mint a candidate for a model only the
@@ -378,7 +388,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     }
     case 3: {
       const candidates = candidatesForProviders(data.candidates, data.providers, state.providerKeys);
-      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role, hint: ROLE_BLURB[role] }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={() => setStep(stepBeforeRoles(candidates, addedGatewayNames(state)))} onCancel={cancel} filterable={false} />;
+      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role, hint: ROLE_BLURB[role] }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={() => setStep(stepBeforeRoles(modelsStepCandidates(candidates, state, data.gatewayAuth ?? {}), addedGatewayNames(state)))} onCancel={cancel} filterable={false} />;
     }
     case 4: {
       const roles = state.roles ?? [];

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addedGatewayNames, hasModelsToPick, stepBeforeRoles } from '../../src/tui-ink/app-state.js';
+import { addedGatewayNames, hasModelsToPick, modelsStepCandidates, stepBeforeRoles } from '../../src/tui-ink/app-state.js';
 import type { CandidateOption } from '../../src/tui-ink/app-state.js';
 
 const startup: CandidateOption[] = [
@@ -63,5 +63,32 @@ describe('stepBeforeRoles — Back from the Roles screen', () => {
 
   it('skips back to providers only when the models step was never shown', () => {
     expect(stepBeforeRoles([], [])).toBe(1);
+  });
+});
+
+describe('modelsStepCandidates — rows the models step draws', () => {
+  it('adds the models picked on a session provider\'s own screen', () => {
+    const rows = modelsStepCandidates(startup, { byokModels: { claude: ['claude-opus-5-5'] } }, { claude: 'session' });
+    expect(rows.map((row) => row.key)).toEqual(['acme-fast', 'claude-claude-opus-5-5']);
+  });
+
+  it('adds an OAuth provider\'s picks too, since the /models refresh skips it', () => {
+    const rows = modelsStepCandidates([], { byokModels: { codex: ['gpt-6-luna'] } }, { codex: 'codex-oauth' });
+    expect(rows.map((row) => row.gateway)).toEqual(['codex']);
+  });
+
+  it('leaves an API-key provider to the /models refresh', () => {
+    expect(modelsStepCandidates(startup, { byokModels: { mylab: ['m1'] } }, { mylab: 'api-key' })).toEqual(startup);
+    expect(modelsStepCandidates(startup, { byokModels: { mylab: ['m1'] } }, {})).toEqual(startup);
+  });
+
+  it('does not repeat a model the startup list already has', () => {
+    const existing = [{ key: 'claude-claude-opus-5-5', gateway: 'claude', id: 'claude-opus-5-5', label: 'claude/claude-opus-5-5' }];
+    expect(modelsStepCandidates(existing, { byokModels: { claude: ['claude-opus-5-5'] } }, { claude: 'session' })).toEqual(existing);
+  });
+
+  it('makes the wizard enter the models step for a session provider alone', () => {
+    const rows = modelsStepCandidates([], { byokModels: { claude: ['claude-opus-5-5'] } }, { claude: 'session' });
+    expect(hasModelsToPick(rows, [])).toBe(true);
   });
 });

@@ -552,6 +552,38 @@ export function knownCandidates(
   return out;
 }
 
+/**
+ * The models step's rows: the startup candidates, plus the models picked on a
+ * session or OAuth provider's own screen this run.
+ *
+ * Those gateways are in neither source the step otherwise draws from. They
+ * have no rows in `data.candidates`, which is computed at startup, and the
+ * step's `/models` refresh skips them because they have no key to send. So
+ * adding `claude` (your Claude Code account) and pressing Continue skipped the
+ * models step entirely, or showed it without the Claude models: they were
+ * kept in state, but nothing drew them, so they looked discarded. An API-key
+ * gateway added this run needs no row here; the refresh lists what it serves.
+ */
+export function modelsStepCandidates(
+  candidates: CandidateOption[],
+  state: { byokModels?: Record<string, string[]> },
+  gatewayAuth: Readonly<Record<string, NativeGatewayAuth>>,
+): CandidateOption[] {
+  const seen = new Set(candidates.map((candidate) => candidate.key));
+  const out = [...candidates];
+  for (const [gateway, ids] of Object.entries(state.byokModels ?? {})) {
+    const auth = gatewayAuth[gateway];
+    if (auth === undefined || !(auth === 'session' || isOauthGatewayAuth(auth))) continue;
+    for (const id of ids) {
+      const key = byokCandidateKey(gateway, id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ key, gateway, id, label: `${gateway}/${id}` });
+    }
+  }
+  return out;
+}
+
 export function mergeLiveCandidates(
   candidates: CandidateOption[],
   liveByGateway: Record<string, string[]>,

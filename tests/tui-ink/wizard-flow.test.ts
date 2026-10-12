@@ -9,7 +9,7 @@ import { aaCatalogPath, loadAaCatalog } from '../../src/catalog.js';
 import { parseConfig } from '../../src/config.js';
 import { rankableCandidates } from '../../src/commands/agents.js';
 import type { TuiResult } from '../../src/tui-ink/types.js';
-import { tick } from './ink-wait.js';
+import { tick, until } from './ink-wait.js';
 
 const ENTER = '\r';
 const DOWN = '\x1B[B';
@@ -614,5 +614,48 @@ describe('a provider removed when the models step is then skipped', () => {
 
     expect(w.result()?.state.providerKeys).toEqual(['config/beta']);
     expect(w.result()?.state.nativeKeys).toEqual(['beta-saved']);
+  });
+});
+
+describe('a Claude session provider added this run', () => {
+  // Reported: add `claude` (your own Claude Code account) on the providers
+  // screen, pick its models, press Continue — and the models step shows none
+  // of them. The step listed only startup candidates plus gateways it could
+  // refresh over `/models`, and a session gateway is neither: it has no rows
+  // at startup and no key to refresh with. The models were kept in state, but
+  // the step never drew them, so they looked discarded.
+  it('lists the models picked on its own screen in the models step', async () => {
+    const w = renderWizard({
+      home: '/tmp/does-not-exist',
+      harnesses: [],
+      providers: [{ key: 'byok/claude', harness: 'byok', provider: 'claude', count: 0 }],
+      candidates: [],
+      roles: ['code'],
+      byokProviders: [{ name: 'claude', url: 'https://api.anthropic.com/v1' }],
+      gatewayAuth: { claude: 'session' },
+      storedKeys: {},
+      modelsDevCache: {
+        fetchedAt: '2026-10-01T00:00:00Z',
+        providers: { anthropic: { 'claude-opus-5-5': { input: 1 }, 'claude-sonnet-5': { input: 1 } } },
+      },
+      fetchModels: async () => ({ outcome: 'ok', models: [] }),
+    });
+    const frame = () => w.lastFrame() ?? '';
+    await w.press(ENTER);
+    await until(() => frame().includes('Add provider'), 'the providers menu');
+    await w.press(ENTER);
+    await until(() => frame().includes('Add a custom provider'), 'the provider picker');
+    await w.press('claude', ENTER);
+    await until(() => frame().includes('Models for claude'), 'the claude models screen');
+    // The first row is "select all"; pick just the first model.
+    await w.press(DOWN, SPACE, ENTER);
+    await until(() => frame().includes('Continue'), 'the menu with Continue');
+    await w.press(DOWN, ENTER);
+    await until(() => frame().includes('Models') && !frame().includes('Models for claude'), 'the models step');
+    expect(frame()).toContain('claude-opus-5-5');
+    // Picked on its own screen, so it arrives already checked: pressing
+    // Continue here keeps it rather than discarding it.
+    expect(frame()).toMatch(/◉ claude\/claude-opus-5-5/);
+    expect(frame()).not.toContain('claude-sonnet-5');
   });
 });

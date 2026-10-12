@@ -8,6 +8,17 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- **Claude (and OAuth) models picked during `sonata init` now reach the Models
+  step.** Adding `claude` (your Claude Code account) on the providers screen,
+  choosing its models and pressing Continue skipped the Models step, or showed
+  it without them. The step listed only models known at startup plus what
+  providers' `/models` endpoints returned, and a session or OAuth provider
+  added this run is in neither. The picks were kept in state but never drawn,
+  so they looked discarded. They now appear, checked, and unchecking one there
+  drops it.
+
 ## [0.16.1] - 2026-10-12
 
 ### Changed
