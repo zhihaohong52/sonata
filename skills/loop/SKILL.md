@@ -44,6 +44,36 @@ agent fails with "all native routes … failed", use the tier the error names
 (`sonata dispatch --tier code-normal …`); if it names none, use
 `<role>-normal`.
 
+## `/sonata-loop panel`
+
+`/sonata-loop panel` toggles the loop panel; the panel's mod answers it before
+this skill loads. If you are reading this with `panel` as the whole argument,
+the mod is not loaded in this session: do not start a loop. Say that the panel
+needs the mod loaded (a new session after `sonata sync`, and `sonata doctor` to
+check it) and stop.
+
+## Reporting to the loop panel
+
+When a tool named `mcp__sonata-loop__sonata_loop` is available, the sonata-loop
+panel is installed: report each loop step to it so the person watching sees
+where the loop is. Call it at these points, and nowhere else:
+
+- after the plan (step 1): `plan` with `title` and `tasks: [{ id, title }]`,
+  one per planned task in the plan's own numbering, plus a last task
+  `{ id: "final", title: "Final gate" }`;
+- immediately before every dispatch: `start` with `taskId` and `phase`:
+  `code` for a task's first dispatch, `fix` for a fix, `review` for its
+  review, `final` for the final gate (task `final`);
+- after every review verdict: `result` with `taskId` and `outcome` `pass` or
+  `fail`, and a one-line `note` on a fail;
+- when a task escalates: `escalate` with `taskId` and `to`;
+- when the loop ends, either way: `done` with a one-line `summary`.
+
+If the tool refuses a call, fix the call (the refusal names what is wrong)
+and carry on; never stop the loop over it. If the tool is not available,
+skip this section entirely: the loop runs exactly as described everywhere
+else.
+
 ## Difficulty heuristic
 
 - **simple** — writable without asking a question: one or two files, no

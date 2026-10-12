@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "sonata",
+  "description": "Foreign-model subagents for Claude Code",
+  "owner": {
+    "name": "zhihaohong52",
+    "url": "https://github.com/zhihaohong52"
+  },
+  "plugins": [
+    {
+      "name": "sonata-loop",
+      "description": "Live panel of a sonata-loop run: tasks, tier agents, served models and diffs. Needs sonata itself (npm i -g @zhihaohong52/sonata) and `sonata serve`.",
+      "source": "./skills/loop",
+      "category": "development"
+    }
+  ]
+}

@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { apply } from '../../src/init/apply.js';
@@ -44,6 +44,35 @@ describe('apply', () => {
     await apply(p, { cwd, home, packageRoot: resolve('.') }, { out: () => {}, prune: false });
     expect(existsSync(p.skillPath)).toBe(true);
     expect(readFileSync(p.skillPath, 'utf8')).toContain('sonata');
+  });
+
+  // init must never report a skill it did not install.
+  it('fails, rather than reporting success, when the package ships no loop skill', async () => {
+    const empty = mkdtempSync(join(tmpdir(), 'no-pkg-'));
+    const spy = vi.spyOn(process, 'cwd').mockReturnValue(empty);
+    const lines: string[] = [];
+    try {
+      await expect(apply(planFor(), { cwd, home, packageRoot: empty }, { out: (l: string) => lines.push(l), prune: false }))
+        .rejects.toThrow(/loop skill/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(lines.some((l) => /installed loop skill/.test(l))).toBe(false);
+  });
+
+  it('fails when the package skill folder has no SKILL.md, even with other files in it', async () => {
+    const partial = mkdtempSync(join(tmpdir(), 'partial-pkg-'));
+    mkdirSync(join(partial, 'skills', 'loop', 'hooks'), { recursive: true });
+    writeFileSync(join(partial, 'skills', 'loop', 'hooks', 'hooks.json'), '{}');
+    const spy = vi.spyOn(process, 'cwd').mockReturnValue(partial);
+    const lines: string[] = [];
+    try {
+      await expect(apply(planFor(), { cwd, home, packageRoot: partial }, { out: (l: string) => lines.push(l), prune: false }))
+        .rejects.toThrow(/SKILL\.md/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(lines.some((l) => /installed loop skill/.test(l))).toBe(false);
   });
 
   it('generates one agent file per role and tier', async () => {
