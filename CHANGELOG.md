@@ -8,6 +8,18 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tier agents on Claude Code 2.1.29x received fragments instead of their
+  task.** Claude Code now sends `thread: { type: "continue" }` requests that
+  carry only the newest turns, leaving the task, tools and history on
+  Anthropic's server. Forwarded to a foreign model, a subagent arrived with no
+  tools and no task: it wrote tool calls as text, reported it had been given
+  nothing to do, and auto-routing logged `no-task`. The router now answers a
+  threaded request on any non-Anthropic route with Claude Code's own
+  `thread_unsupported_request` error, which makes Claude Code resend the turn
+  with the full conversation and stay stateless on that model for the session.
+
 ### Added
 
 - **`SONATA_CAPTURE_TEXT_CALLS_DIR`**, an opt-in diagnosis capture for the
