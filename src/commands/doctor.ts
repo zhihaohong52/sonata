@@ -27,6 +27,7 @@ import {
 } from '../settings.js';
 import type { Settings } from '../settings.js';
 import { homedir } from 'node:os';
+import { pluginPanel } from '../loop-skill.js';
 import { basename, join } from 'node:path';
 import { findLitellm } from '../native/litellm.js';
 import { litellmRequired, sharedBaseUrls, sharedBaseUrlWarning } from '../native/providers.js';
@@ -213,7 +214,12 @@ export function strandedNoneCandidates(
 }
 
 /** Whether each installed sonata-loop skill folder carries the panel mod the package ships. */
-export function loopPanelCheck(dirs: string[], packageRoot: string, userDir?: string): { ok: boolean; line: string } {
+export function loopPanelCheck(
+  dirs: string[],
+  packageRoot: string,
+  userDir?: string,
+  plugin?: { id: string; version?: string },
+): { ok: boolean; line: string } {
   const version = (dir: string): string | undefined => {
     try {
       const v = (JSON.parse(readFileSync(join(dir, '.claude-plugin', 'plugin.json'), 'utf8')) as { version?: unknown }).version;
@@ -223,6 +229,17 @@ export function loopPanelCheck(dirs: string[], packageRoot: string, userDir?: st
     }
   };
   const shipped = version(join(packageRoot, 'skills', 'loop'));
+  // A marketplace install carries the panel for every copy; each copy should
+  // be the skill alone (Claude Code would refuse its plugin).
+  if (plugin !== undefined) {
+    const loser = dirs.find((d) => existsSync(join(d, '.claude-plugin')));
+    if (loser !== undefined) return { ok: false, line: `loop panel in ${loser} is shadowed by the ${plugin.id} plugin — run \`sonata sync\`` };
+    const v = plugin.version ?? 'unknown version';
+    if (shipped !== undefined && plugin.version !== undefined && plugin.version !== shipped) {
+      return { ok: false, line: `loop panel ${v} from the ${plugin.id} plugin, package has ${shipped} — run \`claude plugin update ${plugin.id}\`` };
+    }
+    return { ok: true, line: `loop panel ${v} from the ${plugin.id} plugin` };
+  }
   // Every installed copy is checked: sync refreshes them all, and a current
   // project copy must not hide a stale user-level one.
   let current: string | undefined;
@@ -1473,6 +1490,7 @@ export async function cmdDoctor(
       [join(opts.cwd, '.claude', 'skills', 'sonata-loop'), join(home, '.claude', 'skills', 'sonata-loop')],
       opts.packageRoot,
       join(home, '.claude', 'skills', 'sonata-loop'),
+      pluginPanel(home, opts.cwd),
     );
     // Silent where the skill was never installed: nothing to keep in step.
     if (panel.line !== 'loop skill not installed') checks.push({ name: 'loop panel', ok: panel.ok, detail: panel.line });

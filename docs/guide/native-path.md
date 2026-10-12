@@ -82,3 +82,16 @@ The panel reads the router at `http://127.0.0.1:4100` by default. With a
 different `[native.ports] router`, set the mod's `router_url` option. When the
 router is not reachable the footer says so and the panel keeps showing what it
 last reported, with its age.
+
+The panel can also be installed as a plugin from this repo's marketplace:
+
+```
+claude plugin marketplace add zhihaohong52/sonata
+claude plugin install sonata-loop@sonata
+```
+
+Claude Code loads one plugin per name, and the installed plugin wins over any
+skills-folder copy, so once it is present `sonata init` and `sonata sync` write
+only the skill text and remove the panel files from their copies. Update it
+with `claude plugin update sonata-loop@sonata`; `sonata doctor` says when its
+version is behind the package's.

@@ -54,21 +54,47 @@ export function writeLoopSkill(dir: string, files: LoopSkillFile[]): string[] {
 const MOD_PATHS = ['.claude-plugin', 'hooks', 'types'] as const
 
 /**
+ * The sonata-loop plugin installed from a marketplace (`claude plugin install
+ * sonata-loop@<marketplace>`) for this project, if any: a user-scoped install,
+ * or one scoped to `projectRoot`. Read from Claude Code's own install record.
+ */
+export function pluginPanel(home: string, projectRoot: string): { id: string; version?: string } | undefined {
+  let plugins: unknown;
+  try {
+    plugins = (JSON.parse(readFileSync(join(home, '.claude', 'plugins', 'installed_plugins.json'), 'utf8')) as { plugins?: unknown }).plugins;
+  } catch {
+    return undefined;
+  }
+  if (typeof plugins !== 'object' || plugins === null) return undefined;
+  for (const [id, entries] of Object.entries(plugins)) {
+    if (!id.startsWith('sonata-loop@') || !Array.isArray(entries)) continue;
+    for (const e of entries as { scope?: unknown; projectPath?: unknown; version?: unknown }[]) {
+      const applies = e?.scope === 'user'
+        || (typeof e?.projectPath === 'string' && resolve(e.projectPath) === resolve(projectRoot));
+      if (applies) return { id, version: typeof e.version === 'string' ? e.version : undefined };
+    }
+  }
+  return undefined;
+}
+
+/**
  * Installs the folder into `dir`, keeping the panel mod at one level.
  *
- * Claude Code loads one plugin per name and lets `~/.claude/skills/<name>`
- * shadow a project's copy, reporting the project's as a load error (measured
- * 2026-10-10: "1 error during load"). So when a user-level copy exists, a
- * project copy gets the skill alone, and any mod sonata wrote there before is
- * removed. Returns the paths written or removed.
+ * Claude Code loads one plugin per name. An installed `sonata-loop@<marketplace>`
+ * plugin takes the name over every skills-folder copy, and `~/.claude/skills/<name>`
+ * takes it over a project's; a copy that loses is reported as a load error
+ * (measured 2026-10-10 and 2026-10-12), unless it is the skill alone, which
+ * loads beside the winner. So a copy whose panel lives elsewhere gets the
+ * skill alone, and any mod sonata wrote there before is removed. `plugin` names
+ * a marketplace install that provides the panel. Returns the paths written or removed.
  */
-export function installLoopSkill(dir: string, files: LoopSkillFile[], home: string | undefined): string[] {
+export function installLoopSkill(dir: string, files: LoopSkillFile[], home: string | undefined, plugin?: string): string[] {
   const userDir = home === undefined ? undefined : join(home, '.claude', 'skills', 'sonata-loop')
   const shadowed = userDir !== undefined && resolve(dir) !== resolve(userDir) && existsSync(join(userDir, 'SKILL.md'))
-  if (!shadowed) return writeLoopSkill(dir, files)
+  if (plugin === undefined && !shadowed) return writeLoopSkill(dir, files)
   // A user-level copy from before the panel shadows the project's without
   // carrying a panel of its own: give it the panel before deferring to it.
-  const changed = existsSync(join(userDir, '.claude-plugin', 'plugin.json')) ? [] : writeLoopSkill(userDir, files)
+  const changed = plugin !== undefined || existsSync(join(userDir!, '.claude-plugin', 'plugin.json')) ? [] : writeLoopSkill(userDir!, files)
   changed.push(...writeLoopSkill(dir, files.filter(f => f.rel === 'SKILL.md')))
   for (const rel of MOD_PATHS) {
     const path = join(dir, rel)

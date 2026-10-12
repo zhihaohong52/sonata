@@ -1,6 +1,6 @@
 import { EXTENDED_CONTEXT_SUFFIX, roleQualifiesForExtendedContext, tierQualifiesForExtendedContext } from '../extended-context.js';
 import { homedir } from 'node:os';
-import { installLoopSkill, loopSkillFiles } from '../loop-skill.js';
+import { installLoopSkill, loopSkillFiles, pluginPanel } from '../loop-skill.js';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -654,6 +654,8 @@ function refreshLoopSkill(opts: SyncOptions): string[] {
     join(opts.cwd, '.claude', 'skills', 'sonata-loop'),
     ...(opts.home === undefined ? [] : [join(opts.home, '.claude', 'skills', 'sonata-loop')]),
   ];
+  const home = opts.home ?? homedir();
+  const plugin = pluginPanel(home, opts.cwd)?.id;
   const refreshed: string[] = [];
   // Installing stays init's: a folder without SKILL.md was never installed.
   // A copy sonata cannot replace is left as it was rather than failing a sync
@@ -661,7 +663,7 @@ function refreshLoopSkill(opts: SyncOptions): string[] {
   for (const dir of dirs) {
     if (!existsSync(join(dir, 'SKILL.md'))) continue;
     try {
-      refreshed.push(...installLoopSkill(dir, files, opts.home ?? homedir()));
+      refreshed.push(...installLoopSkill(dir, files, home, plugin));
     } catch {
       // left as it was
     }

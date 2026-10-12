@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { installLoopSkill, loopSkillFiles, writeLoopSkill } from '../src/loop-skill.js';
+import { installLoopSkill, loopSkillFiles, pluginPanel, writeLoopSkill } from '../src/loop-skill.js';
 
 function fakePackage(): string {
   const root = mkdtempSync(join(tmpdir(), 'loop-skill-'));
@@ -72,5 +72,48 @@ describe('loop skill folder', () => {
     installLoopSkill(project, files, home);
     expect(existsSync(join(user, '.claude-plugin', 'plugin.json'))).toBe(true);
     expect(existsSync(join(project, '.claude-plugin'))).toBe(false);
+  });
+
+  // Measured 2026-10-12: an installed sonata-loop@<marketplace> plugin takes
+  // the name, and any skills-folder copy carrying plugin.json fails to load; a
+  // copy with SKILL.md alone loads beside it.
+  it('writes the skill alone at every level when a marketplace install provides the panel', () => {
+    const files = loopSkillFiles(fakePackage());
+    const home = mkdtempSync(join(tmpdir(), 'home-'));
+    const user = join(home, '.claude', 'skills', 'sonata-loop');
+    writeLoopSkill(user, files);
+    installLoopSkill(user, files, home, 'sonata-loop@sonata');
+    expect(existsSync(join(user, 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(user, '.claude-plugin'))).toBe(false);
+    const project = join(mkdtempSync(join(tmpdir(), 'proj-')), '.claude', 'skills', 'sonata-loop');
+    installLoopSkill(project, files, home, 'sonata-loop@sonata');
+    expect(existsSync(join(project, 'hooks'))).toBe(false);
+    expect(existsSync(join(user, '.claude-plugin'))).toBe(false);
+  });
+});
+
+describe('pluginPanel', () => {
+  const installed = (home: string, plugins: Record<string, unknown[]>) => {
+    mkdirSync(join(home, '.claude', 'plugins'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins }));
+  };
+
+  it('finds a user-scoped install, or one scoped to this project, and nothing else', () => {
+    const home = mkdtempSync(join(tmpdir(), 'home-'));
+    const project = mkdtempSync(join(tmpdir(), 'proj-'));
+    expect(pluginPanel(home, project)).toBeUndefined();
+    installed(home, { 'sonata-loop@sonata': [{ scope: 'local', projectPath: '/elsewhere', version: '0.1.0' }], 'other@x': [{ scope: 'user' }] });
+    expect(pluginPanel(home, project)).toBeUndefined();
+    installed(home, { 'sonata-loop@sonata': [{ scope: 'project', projectPath: project, version: '0.1.0' }] });
+    expect(pluginPanel(home, project)).toEqual({ id: 'sonata-loop@sonata', version: '0.1.0' });
+    installed(home, { 'sonata-loop@fork': [{ scope: 'user', version: '0.2.0' }] });
+    expect(pluginPanel(home, project)).toEqual({ id: 'sonata-loop@fork', version: '0.2.0' });
+  });
+
+  it('reads an unreadable record as no install', () => {
+    const home = mkdtempSync(join(tmpdir(), 'home-'));
+    mkdirSync(join(home, '.claude', 'plugins'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'plugins', 'installed_plugins.json'), '{not json');
+    expect(pluginPanel(home, home)).toBeUndefined();
   });
 });

@@ -19,7 +19,9 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   The orchestrator reports the plan through the mod's `sonata_loop` tool;
   `/loop-panel` toggles the pane. `sonata init` and `sonata sync` now install
   the whole skill folder, and `sonata doctor` says when the installed panel is
-  missing or out of date.
+  missing or out of date. The repo is also a plugin marketplace, so the panel
+  installs with `claude plugin install sonata-loop@sonata`; with that install
+  present, `init` and `sync` write the skill alone and leave the panel to it.
 
 - **`SONATA_CAPTURE_TEXT_CALLS_DIR`**, an opt-in diagnosis capture for the
   router. When a response carries a tool call written as text that cannot be

@@ -2226,6 +2226,21 @@ describe('loop panel check', () => {
     expect(loopPanelCheck([project, user], pkg, user)).toEqual({ ok: false, line: `loop panel in ${project} is shadowed by ${user} — run \`sonata sync\`` });
   });
 
+  it('takes the panel from a marketplace install, and flags a skills-folder copy it shadows', () => {
+    const project = join(mkdtempSync(join(tmpdir(), 'proj-')), 'sonata-loop');
+    mkdirSync(project, { recursive: true });
+    writeFileSync(join(project, 'SKILL.md'), '#');
+    const plugin = { id: 'sonata-loop@sonata', version: '0.1.0' };
+    expect(loopPanelCheck([project], pkg, undefined, plugin)).toEqual({ ok: true, line: 'loop panel 0.1.0 from the sonata-loop@sonata plugin' });
+    expect(loopPanelCheck([project], pkg, undefined, { ...plugin, version: '0.0.9' })).toEqual({
+      ok: false, line: 'loop panel 0.0.9 from the sonata-loop@sonata plugin, package has 0.1.0 — run `claude plugin update sonata-loop@sonata`',
+    });
+    manifest(project, '0.1.0');
+    expect(loopPanelCheck([project], pkg, undefined, plugin)).toEqual({
+      ok: false, line: `loop panel in ${project} is shadowed by the sonata-loop@sonata plugin — run \`sonata sync\``,
+    });
+  });
+
   it('reports a panel whose hook files are missing as incomplete', () => {
     const dir = join(mkdtempSync(join(tmpdir(), 'inst-')), 'sonata-loop');
     manifest(dir, '0.1.0');
