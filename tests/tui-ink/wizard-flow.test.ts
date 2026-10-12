@@ -658,4 +658,53 @@ describe('a Claude session provider added this run', () => {
     expect(frame()).toMatch(/◉ claude\/claude-opus-5-5/);
     expect(frame()).not.toContain('claude-sonnet-5');
   });
+
+  it('drops a model the models step unchecked even though its provider screen chose it', async () => {
+    const w = renderWizard({
+      home: '/tmp/does-not-exist',
+      harnesses: [],
+      providers: [{ key: 'byok/claude', harness: 'byok', provider: 'claude', count: 0 }],
+      candidates: [],
+      roles: ['code'],
+      byokProviders: [{ name: 'claude', url: 'https://api.anthropic.com/v1' }],
+      gatewayAuth: { claude: 'session' },
+      storedKeys: {},
+      modelsDevCache: {
+        fetchedAt: '2026-10-01T00:00:00Z',
+        providers: { anthropic: { 'claude-opus-5-5': { input: 1 }, 'claude-sonnet-5': { input: 1 } } },
+      },
+      fetchModels: async () => ({ outcome: 'ok', models: [] }),
+    });
+    const frame = () => w.lastFrame() ?? '';
+    await w.press(ENTER);
+    await until(() => frame().includes('Add provider'), 'the providers menu');
+    await w.press(ENTER);
+    await until(() => frame().includes('Add a custom provider'), 'the provider picker');
+    await w.press('claude', ENTER);
+    await until(() => frame().includes('Models for claude'), 'the claude models screen');
+    // Both models, so one stays checked and the walk below can reach the end —
+    // unchecking the only row would leave nothing selected, and the summary
+    // refuses to continue from there.
+    await w.press(SPACE, ENTER);
+    await until(() => frame().includes('Continue'), 'the menu with Continue');
+    await w.press(DOWN, ENTER);
+    await until(() => frame().includes('Models') && !frame().includes('Models for claude'), 'the models step');
+    expect(frame()).toMatch(/◉ claude\/claude-opus-5-5/);
+    expect(frame()).toMatch(/◉ claude\/claude-sonnet-5/);
+    // The first row is "select all"; down once puts the cursor on the first
+    // model row. SPACE then flips only that row — the frame proves the cursor
+    // was there, since the select-all toggle would have cleared both.
+    await w.press(DOWN, SPACE);
+    expect(frame()).toMatch(/○ claude\/claude-opus-5-5/);
+    expect(frame()).toMatch(/◉ claude\/claude-sonnet-5/);
+    await w.press(ENTER);
+    // roles, the three tier screens, auto-route (Off), then the summary.
+    await w.press(ENTER, ENTER, ENTER, ENTER, ENTER, ENTER);
+    const r = w.result();
+    expect(r?.cancelled).toBe(false);
+    // A model this step drew follows its checkbox: unchecking it drops it even
+    // though its provider screen chose it and `kept` would have kept it.
+    expect(r?.state.nativeKeys).not.toContain('claude-claude-opus-5-5');
+    expect(r?.state.nativeKeys).toEqual(['claude-claude-sonnet-5']);
+  });
 });

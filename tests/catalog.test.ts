@@ -381,11 +381,14 @@ describe('proposeTiers', () => {
   it('ranks the simple tier by capability per cost, not by capability', () => {
     // The whole point of the simple tier: a model 40% as capable for 4% of the
     // cost beats the strongest model, which is what grunt work should run on.
+    // `top-and-dear` sits 4 points clear — outside the 3-point near-tie margin —
+    // so `complex` still leads on capability; a pair within the margin would
+    // tie and the cheaper model would lead there too.
     const aa: AaCatalog = {
       fetchedAt: '2026-08-25T00:00:00Z',
       models: {
         'cheap-and-good': { codingIndex: 58, blendedPriceUsd: 1, agenticIndex: 58, costPerTask: 0.09 },
-        'top-and-dear': { codingIndex: 60, blendedPriceUsd: 1, agenticIndex: 60, costPerTask: 0.95 },
+        'top-and-dear': { codingIndex: 62, blendedPriceUsd: 1, agenticIndex: 62, costPerTask: 0.95 },
       },
     };
     const tiers = proposeTiers(['top-and-dear', 'cheap-and-good'], aa);
@@ -535,6 +538,37 @@ describe('proposeTiers — complex trades a small capability edge for a large sa
   it('still ranks a clearly weaker model below both, however its price compares', () => {
     const tiers = proposeTiers(['claude-opus-5-5', 'claude-fable-5-1'], aa);
     expect(tiers.complex.indexOf('claude-fable-5-1@max')).toBeGreaterThan(tiers.complex.indexOf('claude-opus-5-5@max'));
+    expect(tiers.complex.indexOf('claude-fable-5-1@max')).toBeGreaterThan(tiers.complex.indexOf('claude-opus-5-5@xhigh'));
+  });
+
+  it('ties a near pair however the scores fall against a class edge', () => {
+    // 58.6 and 57.0 are 1.6 apart, but `Math.round(index / 3)` put them in
+    // classes 20 and 19 — opposite sides of a fixed bucket edge — so the
+    // expensive rung led again. Classes count down from the leader instead,
+    // and a 1.6-point gap inside the margin is one class.
+    const shifted: AaCatalog = {
+      fetchedAt: '2026-10-13T00:00:00Z',
+      models: {
+        'claude-opus-5-5': { blendedPriceUsd: 8, family: 'claude-opus-5-5', intelligenceIndex: 58.6, costPerTask: 5.982, effort: 'max' },
+        'claude-opus-5-5-xhigh': { blendedPriceUsd: 8, family: 'claude-opus-5-5', intelligenceIndex: 57, costPerTask: 3.4591, effort: 'xhigh' },
+      },
+    };
+    const tiers = proposeTiers(['claude-opus-5-5'], shifted);
+    expect(tiers.complex.slice(0, 2)).toEqual(['claude-opus-5-5@xhigh', 'claude-opus-5-5@max']);
+  });
+
+  it('does not tie a model more than 3 points below the leader, however cheap', () => {
+    // Counted down from the leader, 56.5 sits one whole class under 60 — the
+    // margin separates them even though the follower costs a fiftieth.
+    const far: AaCatalog = {
+      fetchedAt: '2026-10-13T00:00:00Z',
+      models: {
+        'pricier-leader': { blendedPriceUsd: 5, intelligenceIndex: 60, costPerTask: 5 },
+        'cheap-follower': { blendedPriceUsd: 0.1, intelligenceIndex: 56.5, costPerTask: 0.1 },
+      },
+    };
+    const tiers = proposeTiers(['cheap-follower', 'pricier-leader'], far);
+    expect(tiers.complex[0]).toBe('pricier-leader');
   });
 });
 
@@ -1482,7 +1516,7 @@ describe('proposeTiers — effort variants', () => {
       fetchedAt: '2026-08-25T00:00:00Z',
       models: {
         'cheap-and-good': { codingIndex: 58, blendedPriceUsd: 1, agenticIndex: 58, costPerTask: 0.09 },
-        'top-and-dear': { codingIndex: 60, blendedPriceUsd: 1, agenticIndex: 60, costPerTask: 0.95 },
+        'top-and-dear': { codingIndex: 62, blendedPriceUsd: 1, agenticIndex: 62, costPerTask: 0.95 },
       },
     };
     expect(proposeTiers(['top-and-dear', 'cheap-and-good'], aa)).toEqual({

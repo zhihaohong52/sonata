@@ -87,6 +87,13 @@ describe('modelsStepCandidates — rows the models step draws', () => {
     expect(modelsStepCandidates(existing, { byokModels: { claude: ['claude-opus-5-5'] } }, { claude: 'session' })).toEqual(existing);
   });
 
+  it('does not repeat a model the startup list already holds under a different key', () => {
+    // A codex harness row is keyed by bare id, while the pick on the OAuth
+    // screen mints `codex-gpt-6-luna` — same (gateway, id), two keys.
+    const existing = [{ key: 'gpt-6-luna', gateway: 'codex', id: 'gpt-6-luna', label: 'codex/gpt-6-luna' }];
+    expect(modelsStepCandidates(existing, { byokModels: { codex: ['gpt-6-luna'] } }, { codex: 'codex-oauth' })).toEqual(existing);
+  });
+
   it('makes the wizard enter the models step for a session provider alone', () => {
     const rows = modelsStepCandidates([], { byokModels: { claude: ['claude-opus-5-5'] } }, { claude: 'session' });
     expect(hasModelsToPick(rows, [])).toBe(true);

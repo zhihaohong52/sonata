@@ -5,7 +5,7 @@ import { RankedSelect } from './components/ranked-select.js';
 import { ProvidersStep } from './components/providers-step.js';
 import { ModelsStep } from './components/models-step.js';
 import { AutoRouteStep } from './components/auto-route-step.js';
-import { candidateFacts, candidateLabel, reasoningOf, expandCandidates, hasTaskCost, loadAaCatalog, proposeTiers, taskCostedCandidates, unpinnedVariants } from '../catalog.js';
+import { candidateFacts, candidateLabel, reasoningOf, expandCandidates, loadAaCatalog, proposeTiers, taskCostedCandidates, unpinnedVariants } from '../catalog.js';
 import { loadModelsDev, type ModelsDevCache } from '../modelsdev.js';
 import { loginGateway as defaultLoginGateway } from '../native/oauth-login.js';
 import { catalogSpellingsForGateway } from '../pricing.js';
@@ -311,7 +311,6 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const pricingProviders = state.configScope === undefined
         ? {}
         : data.declaredPricingProviders?.[state.configScope] ?? {};
-      const candidateByKey = new Map(candidates.map((candidate) => [candidate.key, candidate] as const));
       // Resolution needs only the gateway and the id, so a candidate minted by
       // the live /models refresh resolves exactly like a startup one.
       const upstreamForCandidate = (candidate: { gateway: string; id: string }): string | readonly string[] =>
@@ -320,16 +319,6 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
           { name: candidate.gateway, auth: data.gatewayAuth?.[candidate.gateway], pricingProvider: pricingProviders[candidate.gateway] },
           candidate.id,
         );
-      const upstreamForModels = (key: string): string | readonly string[] => {
-        const candidate = candidateByKey.get(key);
-        return candidate === undefined ? key : upstreamForCandidate(candidate);
-      };
-      // A catalog-backed init offers only models AA can rank on its per-task
-      // scale. Hand-added uncosted entries still route, but belong outside this
-      // proposal flow rather than being silently ranked on token prices.
-      const offeredCandidates = catalog === undefined
-        ? candidates
-        : candidates.filter((candidate) => hasTaskCost(candidate.key, catalog, gatewayNames, upstreamForModels));
       // A provider added this run exists only in `state`: `data.candidates`
       // and `data.gatewayBaseUrls` were both computed at startup. Without
       // these two, the gateway whose key was just typed is never asked what it
@@ -359,7 +348,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         upstreamForCandidate={upstreamForCandidate}
         fetchModels={data.fetchModels ?? defaultFetchModels}
         initialSelected={new Set(state.nativeKeys)}
-        onSubmit={(keys, live) => {
+        onSubmit={(keys, live, offered) => {
           // Keep any BYOK/custom-provider keys already chosen: this step owns
           // the harness candidates only, and a plain overwrite would drop the
           // rest — they were already selected inside ProvidersStep.
@@ -368,10 +357,10 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
           // Deduped: a BYOK model can now also appear in this picker (its
           // gateway's live /models answer lists it), so `keys` and `kept`
           // overlap — and a doubled key is written to the config twice.
-          // A model this step showed follows its checkbox; one it never
-          // showed (an API-key provider's pick, or one the catalog filter
-          // hid) is kept as chosen on its provider's screen.
-          const shown = new Set(offeredCandidates.map((candidate) => candidate.key));
+          // A model this step drew follows its checkbox; one it never drew
+          // (the catalog filter hid it, or its gateway's live list omitted
+          // it) is kept as chosen on its provider's screen.
+          const shown = new Set(offered);
           const kept = (state.nativeKeys ?? []).filter((key) => byokKeys.has(key) && !shown.has(key));
           setState((current) => ({
             ...applyStep(current, 2, [...new Set([...(keys as string[]), ...kept])]),

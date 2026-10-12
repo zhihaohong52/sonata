@@ -563,6 +563,9 @@ export function knownCandidates(
  * models step entirely, or showed it without the Claude models: they were
  * kept in state, but nothing drew them, so they looked discarded. An API-key
  * gateway added this run needs no row here; the refresh lists what it serves.
+ *
+ * A model the startup list already holds under a different key (a codex harness
+ * row keyed by bare id) is not added a second time.
  */
 export function modelsStepCandidates(
   candidates: CandidateOption[],
@@ -570,14 +573,16 @@ export function modelsStepCandidates(
   gatewayAuth: Readonly<Record<string, NativeGatewayAuth>>,
 ): CandidateOption[] {
   const seen = new Set(candidates.map((candidate) => candidate.key));
+  const seenGatewayIds = new Set(candidates.map((candidate) => gatewayIdKey(candidate.gateway, candidate.id)));
   const out = [...candidates];
   for (const [gateway, ids] of Object.entries(state.byokModels ?? {})) {
     const auth = gatewayAuth[gateway];
     if (auth === undefined || !(auth === 'session' || isOauthGatewayAuth(auth))) continue;
     for (const id of ids) {
       const key = byokCandidateKey(gateway, id);
-      if (seen.has(key)) continue;
+      if (seen.has(key) || seenGatewayIds.has(gatewayIdKey(gateway, id))) continue;
       seen.add(key);
+      seenGatewayIds.add(gatewayIdKey(gateway, id));
       out.push({ key, gateway, id, label: `${gateway}/${id}` });
     }
   }
