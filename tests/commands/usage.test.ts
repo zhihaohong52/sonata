@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { aggregate, classifierCostNote, cmdUsage, parseDuration, parseUsageFlags, projectResolver } from '../../src/commands/usage.js';
+import { aggregate, classifierCostNote, cmdUsage, parseDuration, parseUsageFlags, projectResolver, spentLabel, type UsageBucket } from '../../src/commands/usage.js';
 import { appendRow, type LedgerRow } from '../../src/ledger.js';
 
 function row(over: Partial<LedgerRow> = {}): LedgerRow {
@@ -17,6 +17,26 @@ function row(over: Partial<LedgerRow> = {}): LedgerRow {
     ...over,
   };
 }
+
+describe('spentLabel', () => {
+  const money = (usd: number) => '$' + usd.toFixed(2);
+  const bucket = (over: Partial<UsageBucket>): UsageBucket => ({
+    label: 'x', requests: 2, input: 0, output: 0, costUsd: 0, coveredUsd: 0,
+    coveredRequests: 0, unpricedRequests: 0, ...over,
+  });
+
+  it('shows the list value for an all-covered bucket', () => {
+    expect(spentLabel(bucket({ coveredUsd: 0.42, coveredRequests: 2 }), money)).toBe('$0.42 sub');
+  });
+
+  it('shows billed cost for a mixed bucket', () => {
+    expect(spentLabel(bucket({ costUsd: 1.1, coveredUsd: 0.42, coveredRequests: 1 }), money)).toBe('$1.10');
+  });
+
+  it('shows an em dash for an all-unpriced bucket', () => {
+    expect(spentLabel(bucket({ unpricedRequests: 2 }), money)).toBe('—');
+  });
+});
 
 // The only evidence a pinned level was actually applied is cost moving with
 // it — `drop_params: true` means a provider without an effort control drops

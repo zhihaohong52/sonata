@@ -84,10 +84,15 @@ export function ratesCoverTokens(tokens: UsageTokens, rates: Rates): boolean {
   return true;
 }
 
-/** OAuth subscriptions value work at list rates but never bill per token. */
-function relabelCovered(auth: NativeGatewayAuth | undefined, price: LedgerPrice): LedgerPrice {
-  if (price.source === 'none' || auth === undefined || !isOauthGatewayAuth(auth)) return price;
-  return { ...price, source: 'covered' };
+/**
+ * Subscription work is valued at list rates but never billed per token. An
+ * OAuth gateway is always a subscription; a session gateway is one exactly
+ * when the request carried the person's Claude subscription credential.
+ */
+function relabelCovered(auth: NativeGatewayAuth | undefined, price: LedgerPrice, credential?: 'subscription' | 'key'): LedgerPrice {
+  if (price.source === 'none' || auth === undefined) return price;
+  const isSubscription = isOauthGatewayAuth(auth) || (auth === 'session' && credential === 'subscription');
+  return isSubscription ? { ...price, source: 'covered' } : price;
 }
 
 /**
@@ -171,6 +176,7 @@ export const MODELSDEV_PROVIDER_FOR_GATEWAY: Record<string, string> = {
 const MODELSDEV_PROVIDER_FOR_AUTH: Record<string, string> = {
   'codex-oauth': 'openai',
   'copilot-oauth': 'github-copilot',
+  session: 'anthropic',
 };
 
 /**
@@ -279,6 +285,8 @@ export function configUpstreamFor(
 }
 
 export interface ResolvePriceOptions {
+  /** Credential used by a `session` gateway request. */
+  credential?: 'subscription' | 'key';
   /**
    * Whether an OAuth gateway's auth may relabel the result `covered`
    * (default true — the native lane's rule).
@@ -304,7 +312,7 @@ export function resolvePrice(
 
   const gateway = model.gateway === undefined ? undefined : config.native?.gateways[model.gateway];
   const covered = (price: LedgerPrice): LedgerPrice =>
-    (options?.relabelCovered === false ? price : relabelCovered(gateway?.auth, price));
+    (options?.relabelCovered === false ? price : relabelCovered(gateway?.auth, price, options?.credential));
 
   const modelRates = ratesFor(model.price, at);
   if (modelRates !== undefined) {

@@ -57,6 +57,17 @@ describe('spentTodayUsd', () => {
     expect(budgetRefusal([{ dailyUsd: 0.01, spentUsd: spentTodayUsd(home, noon), configPath: '/test/sonata.toml' }])).toBeUndefined();
   });
 
+  it('excludes covered work alongside billed spend', () => {
+    appendRow(home, row('2026-09-03T01:00:00.000Z', { source: 'covered', totalUsd: 5 }, { credential: 'subscription' }));
+    appendRow(home, row('2026-09-03T02:00:00.000Z', { source: 'model', totalUsd: 1 }, { gateway: 'claude' }));
+    expect(spentTodayUsd(home, noon)).toBe(1);
+  });
+
+  it('counts pre-credential priced session rows', () => {
+    appendRow(home, row('2026-09-03T01:00:00.000Z', { source: 'model', totalUsd: 1 }, { gateway: 'claude' }));
+    expect(spentTodayUsd(home, noon)).toBe(1);
+  });
+
   it('never folds unpriced rows in as zero-cost spend', () => {
     // The honesty constraint: unpriced is spend of unknown size, not spend of
     // no size. It is excluded from the total rather than counted as 0, which

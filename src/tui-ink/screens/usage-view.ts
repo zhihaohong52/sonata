@@ -71,7 +71,7 @@ export const USAGE_CELL = { requests: 7, tokens: 16, spent: 11, covered: 11 } as
  * the header off the top. Spend is never dropped — it is what the screen is
  * for. Tokens go first, then the request count, then the covered column —
  * covered money outranks a count, since a bucket that is all subscription
- * work shows `—` as spend and only this column says what it was worth. Each
+ * work shows its list value in the spend cell and this column provides detail. Each
  * is dropped only when the label would otherwise be too short to name the
  * bucket; 20 cells holds most model keys whole.
  */

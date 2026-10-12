@@ -1400,7 +1400,7 @@ function close(server: Server): Promise<void> {
  */
 export function priceRow(config: SonataConfig, home: string, row: LedgerRow): LedgerRow {
   try {
-    const price = resolvePrice(config, row.key, row.tokens, new Date(row.ts), loadModelsDev(home));
+    const price = resolvePrice(config, row.key, row.tokens, new Date(row.ts), loadModelsDev(home), row.credential === undefined ? undefined : { credential: row.credential });
     return { ...row, price };
   } catch {
     return row; // an unpriceable row is still a row

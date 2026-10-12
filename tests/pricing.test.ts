@@ -192,6 +192,38 @@ base_url = "https://example.invalid/v1"
     expect(resolvePrice(config, 'bare', tokens, now, cache)).toEqual({ source: 'none' });
   });
 
+  it('prices session gateway models at Anthropic list and marks subscription work covered', () => {
+    const sessionConfig = parseConfig(`
+[models."opus"]
+gateway = "claude"
+id = "claude-opus-4-1"
+
+[native.gateways."claude"]
+base_url = "https://api.anthropic.com"
+provider = "anthropic"
+auth = "session"
+pricing_provider = "anthropic"
+`);
+    const sessionCache: ModelsDevCache = {
+      fetchedAt: '2026-08-26T15:31:30.637Z',
+      providers: { anthropic: { 'claude-opus-4-1': { input: 15, output: 75 } } },
+    };
+    const usage = { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheCreation: 0 };
+    expect(resolvePrice(sessionConfig, 'opus', usage, now, sessionCache, { credential: 'subscription' })).toMatchObject({
+      source: 'covered', totalUsd: 90,
+    });
+    expect(resolvePrice(sessionConfig, 'opus', usage, now, sessionCache, { credential: 'key' })).toMatchObject({
+      source: 'models-dev', totalUsd: 90,
+    });
+    expect(resolvePrice(sessionConfig, 'opus', usage, now, sessionCache)).toMatchObject({
+      source: 'models-dev', totalUsd: 90,
+    });
+  });
+
+  it('proposes Anthropic pricing for the session auth gateway', () => {
+    expect(proposePricingProvider('claude', 'session')).toEqual(['anthropic']);
+  });
+
   it('reports none for an unknown key', () => {
     expect(resolvePrice(config, 'nope', tokens, now, cache)).toEqual({ source: 'none' });
     expect(resolvePrice(config, undefined, tokens, now, cache)).toEqual({ source: 'none' });

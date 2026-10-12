@@ -76,15 +76,12 @@ export function parseUsageFlags(args: readonly string[]): UsageFlags {
 }
 
 /**
- * A bucket's spend cell.
- *
- * `—` rather than `$0.0000` where nothing was billed per token: a bucket that
- * is all unpriced, or all subscription work, did not cost zero — its cost is
- * unknown or covered, and a zero would say otherwise.
+ * A bucket's spend cell: billed money, or the list value marked `sub` when all
+ * its work was covered. All-unpriced buckets remain `—`.
  */
 export function spentLabel(bucket: UsageBucket, money: (usd: number) => string): string {
   if (bucket.costUsd === 0 && bucket.coveredUsd === 0 && bucket.unpricedRequests === bucket.requests) return '—';
-  if (bucket.costUsd === 0 && bucket.coveredRequests > 0) return '—';
+  if (bucket.costUsd === 0 && bucket.coveredRequests > 0) return `${money(bucket.coveredUsd)} sub`;
   return money(bucket.costUsd);
 }
 

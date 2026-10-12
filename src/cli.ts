@@ -640,7 +640,7 @@ export async function main(argv: string[]): Promise<number> {
     const anyCovered = report.buckets.some((bucket) => bucket.coveredRequests > 0);
     const money = (usd: number) => `$${usd.toFixed(4)}`;
     if (anyCovered) {
-      console.log(`${''.padEnd(labelWidth)} ${'requests'.padStart(8)} ${'input'.padStart(12)} ${'output'.padStart(10)}  ${'spent'.padStart(12)}  ${'covered'.padStart(12)}`);
+      console.log(`${''.padEnd(labelWidth)} ${'requests'.padStart(8)} ${'input'.padStart(12)} ${'output'.padStart(10)}  ${'spent'.padStart(16)}  ${'covered'.padStart(12)}`);
     }
     for (const bucket of report.buckets) {
       const spent = spentLabel(bucket, money);
