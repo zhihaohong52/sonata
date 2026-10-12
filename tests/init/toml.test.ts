@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { replaceBlock, nativeTomlFor, replaceTiersBlock, tomlKey } from '../../src/init/toml.js';
-import { parseConfig, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL } from '../../src/config.js';
+import { parseConfig, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL, ANTHROPIC_SESSION_BASE_URL } from '../../src/config.js';
 import { configNativeCandidates } from '../../src/init/helpers.js';
 import { DEFAULT_PORTS } from '../../src/commands/ports.js';
 import type { NativeCandidate } from '../../src/commands/init.js';
@@ -244,6 +244,28 @@ describe('nativeTomlFor — copilot-oauth', () => {
       baseUrl: COPILOT_OAUTH_BASE_URL, auth: 'copilot-oauth',
     });
     expect(config.native!.gateways['github-copilot'].pricingProvider).toEqual(['github-copilot']);
+  });
+});
+
+describe('nativeTomlFor — session gateways', () => {
+  it('writes auth and no base_url, and round-trips', () => {
+    const candidate: NativeCandidate = {
+      key: 'opus', gateway: 'claude', id: 'claude-opus-4-1',
+      contextWindow: 128000, baseUrl: ANTHROPIC_SESSION_BASE_URL, auth: 'session',
+    };
+    // A credential_source is offered for every other auth kind; a session
+    // gateway's credential is the session's own, so the writer must not emit one.
+    const toml = nativeTomlFor({ code: [candidate] }, { claude: 'sonata' });
+    expect(toml).toContain('auth = "session"');
+    expect(toml).toContain('provider = "anthropic"');
+    expect(toml).not.toContain('base_url');
+    expect(toml).not.toContain('credential_source');
+
+    const config = parseConfig(toml);
+    expect(config.native!.gateways.claude).toMatchObject({
+      auth: 'session', provider: 'anthropic', baseUrl: ANTHROPIC_SESSION_BASE_URL,
+    });
+    expect(config.native!.gateways.claude.credentialSource).toBeUndefined();
   });
 });
 

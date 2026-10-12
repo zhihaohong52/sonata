@@ -1065,8 +1065,10 @@ function resolveChildEnvFromSnapshot(
     return chain;
   };
 
+  // A session gateway has no key to find: its credential is the session's own.
   const automaticallyResolved = Object.entries(native.gateways)
-    .filter(([, gateway]) => gateway.auth !== 'api-key' || gateway.credentialSource === undefined);
+    .filter(([, gateway]) => gateway.auth !== 'session'
+      && (gateway.auth !== 'api-key' || gateway.credentialSource === undefined));
   const found = new Map(resolveKeys(automaticallyResolved.map(([name]) => name), home).map((hit) => [hit.gateway, hit]));
   for (const [name, gateway] of automaticallyResolved) {
     const hit = found.get(name);

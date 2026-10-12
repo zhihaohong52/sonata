@@ -2296,23 +2296,21 @@ describe('nativeCandidatesFrom — copilot', () => {
   });
 });
 
-describe('nativeCandidatesFrom — models the router cannot reach', () => {
-  it('drops a claude- model, which parseConfig would refuse', () => {
-    // Copilot really does serve these; offering one would let init write a
-    // config that then fails to load.
+describe('nativeCandidatesFrom — Claude models are ordinary models', () => {
+  it('keeps a claude- model from Copilot', () => {
     const refs = [
       { harness: 'opencode' as const, provider: 'github-copilot', id: 'claude-opus-4.6', ref: 'github-copilot/claude-opus-4.6' },
       { harness: 'opencode' as const, provider: 'github-copilot', id: 'gpt-5.4', ref: 'github-copilot/gpt-5.4' },
     ];
     const got = nativeCandidatesFrom(refs, {}, new Map([['github-copilot', 'copilot-oauth' as const]]));
-    expect(got.map((c) => c.id)).toEqual(['gpt-5.4']);
+    expect(got.map((c) => c.id)).toEqual(['claude-opus-4.6', 'gpt-5.4']);
   });
 
-  it('drops one whose flattened key starts with the prefix', () => {
+  it('keeps one whose flattened key starts with the prefix', () => {
     const refs = [
       { harness: 'opencode' as const, provider: 'claude', id: 'x', ref: 'claude-x' },
     ];
-    expect(nativeCandidatesFrom(refs, { claude: 'https://x/v1' })).toEqual([]);
+    expect(nativeCandidatesFrom(refs, { claude: 'https://x/v1' }).map((candidate) => candidate.key)).toEqual(['claude-x']);
   });
 
   it('every candidate it returns survives parseConfig', () => {

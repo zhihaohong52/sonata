@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import { budgetRefusal, type BudgetStatus } from '../budget.js';
-import { isTierAliasShape, TIER_NAMES, tiersCollapse, type SonataConfig, type AutoRouteConfig } from '../config.js';
+import { isTierAliasShape, TIER_NAMES, tiersCollapse, type NativeGatewayAuth, type SonataConfig, type AutoRouteConfig } from '../config.js';
 import type { AutoRouteRecord, LedgerRow } from '../ledger.js';
 import { autoRole, cleanTask, decideTier, DecisionStore, type TierClassifier } from './auto-route.js';
 import { SONATA_PROJECT_HEADER, TenantError } from './tenants.js';
@@ -19,7 +19,7 @@ export interface TierRoute {
   key: string;
   /** The reasoning-effort level this candidate is pinned to, if any. */
   effort?: Effort;
-  native?: { gateway: string; id: string; transport?: Transport; baseUrl?: string };
+  native?: { gateway: string; id: string; transport?: Transport; baseUrl?: string; auth?: NativeGatewayAuth };
   harness?: { harness: string; id: string };
 }
 
@@ -130,8 +130,7 @@ export interface RouterDeps {
   /**
    * Resolved API key per native gateway, keyed by gateway name — how
    * `forwardDirect` finds the credential to inject for a direct-transport
-   * candidate. Absent or unresolved means an empty bearer, same as any other
-   * unresolvable credential.
+   * candidate. Session gateways instead forward the validated caller token.
    */
   gatewayKeys?: (tenant: RouterTenant) => Record<string, string>;
   /**
@@ -1800,23 +1799,25 @@ function withSessionHeader(
  * byte-identical: `redacted_thinking` carries opaque vendor state the
  * upstream requires echoed back exactly.
  *
- * Auth is the security boundary, not hygiene: the caller's credential is
- * Claude Code's own Anthropic credential, and forwarding it to a third-party
- * gateway would be a leak. It is stripped and replaced with the gateway's own
- * key, the same way `litellmHeaders` swaps in the litellm master key.
+ * For `api-key` gateways, the caller credential is stripped and replaced with
+ * the gateway's own key. A `session` gateway is the exception: its validated
+ * destination is Anthropic itself, so the session's credential is forwarded
+ * without alteration.
  */
 async function forwardDirect(
   body: Buffer,
-  gw: { baseUrl: string; key: string; authHeader?: string },
+  gw: { baseUrl: string; key: string; authHeader?: string; auth?: NativeGatewayAuth },
   req: RouterRequest,
   deps: RouterDeps,
 ): Promise<RouterResponse> {
   const headers = requestHeaders(req.headers);
-  for (const name of Object.keys(headers)) {
-    if (name.toLowerCase() === 'authorization' || name.toLowerCase() === 'x-api-key') delete headers[name];
+  if (gw.auth !== 'session') {
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase() === 'authorization' || name.toLowerCase() === 'x-api-key') delete headers[name];
+    }
+    if ((gw.authHeader ?? 'authorization').toLowerCase() === 'x-api-key') headers['x-api-key'] = gw.key;
+    else headers.authorization = `Bearer ${gw.key}`;
   }
-  if ((gw.authHeader ?? 'authorization').toLowerCase() === 'x-api-key') headers['x-api-key'] = gw.key;
-  else headers.authorization = `Bearer ${gw.key}`;
 
   // A gateway's configured `base_url` already ends in `/v1` (the same
   // convention `native/models.ts`'s `modelsUrl` relies on), while `req.url`
@@ -1989,7 +1990,11 @@ async function routeTierRequest(
     const response = direct
       ? await forwardDirect(
         body,
-        { baseUrl: route.native!.baseUrl ?? '', key: deps.gatewayKeys?.(tenant)[route.native!.gateway] ?? '' },
+        {
+          baseUrl: route.native!.baseUrl ?? '',
+          key: deps.gatewayKeys?.(tenant)[route.native!.gateway] ?? '',
+          auth: route.native!.auth,
+        },
         req,
         deps,
       )
@@ -2534,7 +2539,11 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     deps.log?.(`${req.method} ${req.url} model=${requested ?? '?'} -> direct`);
     const response = await forwardDirect(
       withEffort(withModel(req.body, native.id), bareEffort),
-      { baseUrl: native.baseUrl ?? '', key: deps.gatewayKeys?.(tenant)[native.gateway] ?? '' },
+      {
+        baseUrl: native.baseUrl ?? '',
+        key: deps.gatewayKeys?.(tenant)[native.gateway] ?? '',
+        auth: native.auth,
+      },
       req,
       deps,
     );

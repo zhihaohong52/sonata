@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { HarnessAdapter, LaunchPlan, PlanInput, UsageQuery, UsageRecord, UsageResult } from './types.js';
 import { asRecord, count, epochMs, filesIn, readJsonl } from './usage-files.js';
-import { isAnthropicRoutedName, isReadOnlyRole, loadConfig } from '../config.js';
+import { isReadOnlyRole, loadConfig } from '../config.js';
 import { joinCandidate } from '../effort.js';
 import { homedir } from 'node:os';
 import { routerPorts } from '../commands/ports.js';
@@ -48,7 +48,7 @@ export function planClaude(
   // models is out of scope by design: Claude Code's own setting governs them.
   // So the name stays bare and the plan says the level went unhonoured, which
   // is what makes `sonata tail` annotate the report instead of lying about it.
-  const anthropicRouted = isAnthropicRoutedName(input.modelId);
+  const anthropicRouted = input.modelId.startsWith('claude-');
   const effortHonoured = !anthropicRouted;
   const flags = [
     '-p',

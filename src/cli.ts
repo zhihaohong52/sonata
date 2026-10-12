@@ -797,10 +797,11 @@ export async function main(argv: string[]): Promise<number> {
   if (command === 'auth') {
     const { positionals } = parseArgs({ args: rest, allowPositionals: true, options: {} });
     const [action, gateway] = positionals;
-    let gateways: string[] = [];
+    let configured: Record<string, { auth: string }> = {};
     try {
-      gateways = Object.keys(loadConfig(process.cwd(), homedir()).native?.gateways ?? {});
+      configured = loadConfig(process.cwd(), homedir()).native?.gateways ?? {};
     } catch { /* no config yet — add/remove/login do not need one */ }
+    const gateways = Object.keys(configured);
 
     if (action === 'list') {
       console.log(cmdAuthList({ home: homedir(), gateways }).text);
@@ -818,6 +819,12 @@ export async function main(argv: string[]): Promise<number> {
     }
     if (action === 'add') {
       if (!gateway) throw new Error('sonata auth add requires a gateway');
+      if (configured[gateway]?.auth === 'session') {
+        throw new Error(
+          `sonata auth add: gateway "${gateway}" is auth = "session" — ` +
+          `it uses the Claude Code session's own credential; there is nothing to log in to.`,
+        );
+      }
       const key = await readAuthKey();
       if (!key) throw new Error('sonata auth add requires a non-empty key');
       cmdAuthAdd({ home: homedir(), gateway, key });

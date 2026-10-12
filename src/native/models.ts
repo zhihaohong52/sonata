@@ -185,10 +185,8 @@ export async function fetchModels(
  * `openai` before its `openai-codex` and `codex` aliases, so keep-first is what
  * makes the picker say `openai`.
  *
- * `anthropic` is excluded. Every model it serves is `claude-*`, a prefix the
- * router reserves for Anthropic and `parseConfig` refuses, so its catalogue
- * filters to nothing — offering a provider that can yield no usable model is
- * worse than not offering it.
+ * `anthropic` is excluded. It is already the Claude Code session endpoint;
+ * routing its models back through itself is not a useful provider choice.
  */
 export function wellKnownProviders(): Array<{ name: string; url: string }> {
   const byUrl = new Map<string, string>();

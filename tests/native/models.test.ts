@@ -246,9 +246,8 @@ describe('wellKnownProviders', () => {
   });
 
   it('does not offer anthropic', () => {
-    // Every model it serves is `claude-*`, which the router reserves and
-    // parseConfig refuses, so its catalogue filters to empty. A provider that
-    // can offer nothing is worse than one that is absent.
+    // It is already the Claude Code session endpoint; routing its models back
+    // through itself is not a useful provider choice.
     expect(providers.some((provider) => provider.name === 'anthropic')).toBe(false);
   });
 

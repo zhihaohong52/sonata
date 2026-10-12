@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MANAGED_MCP_FILES, claudeAdapter, planClaude } from '../../src/adapters/claude.js';
 import { getAdapter } from '../../src/adapters/index.js';
-import { KNOWN_HARNESSES, isAnthropicRoutedName } from '../../src/config.js';
+import { KNOWN_HARNESSES } from '../../src/config.js';
 import { splitCandidate } from '../../src/effort.js';
 
 function cwdWithNative(): string {
@@ -233,7 +233,6 @@ describe('claudeAdapter.plan — the name it emits is one the router will split'
   it('round-trips through the same splitter routeRequest uses', () => {
     const name = nameIn(claudeAdapter.plan({ ...base, mode: 'acceptEdits', effort: 'max' }).script);
 
-    expect(isAnthropicRoutedName(name)).toBe(false);
     expect(splitCandidate(name)).toEqual({ key: 'deepseek-v4-flash', effort: 'max' });
   });
 });

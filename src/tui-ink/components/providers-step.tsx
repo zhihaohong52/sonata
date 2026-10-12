@@ -28,7 +28,7 @@ import {
   type AvailableCredentials,
   type ProviderOption,
 } from '../app-state.js';
-import { isAnthropicRoutedName, isOauthGatewayAuth, type CredentialSource, type NativeGatewayAuth } from '../../config.js';
+import { isOauthGatewayAuth, type CredentialSource, type NativeGatewayAuth } from '../../config.js';
 import { proposePricingProvider } from '../../pricing.js';
 import type { ModelsDevCache } from '../../modelsdev.js';
 import { loginGateway as defaultLoginGateway, type LoginResult } from '../../native/oauth-login.js';
@@ -129,11 +129,11 @@ export function oauthModelIds(
 ): string[] {
   const provider = proposePricingProvider(gateway, auth)?.[0];
   if (provider === undefined || cache?.providers[provider] === undefined) return [];
-  return Object.keys(cache.providers[provider]).filter((id) => !isAnthropicRoutedName(id));
+  return Object.keys(cache.providers[provider]);
 }
 
 export function parseOAuthModelIds(value: string): string[] {
-  return [...new Set(value.split(',').map((id) => id.trim()).filter((id) => id !== '' && !isAnthropicRoutedName(id)))];
+  return [...new Set(value.split(',').map((id) => id.trim()).filter((id) => id !== ''))];
 }
 
 export interface OAuthModelsStepProps {

@@ -23,10 +23,10 @@ const cache: ModelsDevCache = {
 
 describe('oauthModelIds', () => {
   it('returns model ids from the models.dev provider for an OAuth gateway', () => {
-    expect(oauthModelIds(cache, 'openai', 'codex-oauth')).toEqual(['gpt-5.6-luna']);
+    expect(oauthModelIds(cache, 'openai', 'codex-oauth')).toEqual(['gpt-5.6-luna', 'claude-sonnet-4.6']);
   });
 
-  it('filters claude-prefixed ids before they reach the config picker', () => {
+  it('keeps claude-prefixed ids in the config picker — they are ordinary models', () => {
     const copilot: ModelsDevCache = {
       fetchedAt: cache.fetchedAt,
       providers: {
@@ -37,7 +37,8 @@ describe('oauthModelIds', () => {
         },
       },
     };
-    expect(oauthModelIds(copilot, 'github-copilot', 'copilot-oauth')).toEqual(['gpt-5.6-luna']);
+    expect(oauthModelIds(copilot, 'github-copilot', 'copilot-oauth'))
+      .toEqual(['gpt-5.6-luna', 'claude-opus-5', 'claude-sonnet-4.6']);
   });
 
   it('returns no ids when the cache or provider entry is missing', () => {
@@ -47,8 +48,8 @@ describe('oauthModelIds', () => {
 });
 
 describe('OAuthModelsStep', () => {
-  it('keeps manual entry usable while filtering reserved ids', () => {
-    expect(parseOAuthModelIds('claude-opus-5, gpt-5.6-luna, gpt-5.6-luna')).toEqual(['gpt-5.6-luna']);
+  it('keeps manual entry usable, de-duplicating the ids typed', () => {
+    expect(parseOAuthModelIds('claude-opus-5, gpt-5.6-luna, gpt-5.6-luna')).toEqual(['claude-opus-5', 'gpt-5.6-luna']);
   });
 
   it('offers manual model entry when the catalog has no usable ids', async () => {
@@ -98,6 +99,7 @@ describe('OAuth login in ProvidersStep', () => {
     // The models screen mounts from LoginScreen's effect once the login
     // resolves, so it is waited for rather than assumed after a fixed sleep.
     await until(() => frame().includes('Models for openai') && frame().includes('gpt-5.6-luna'), 'the models screen');
+    app.stdin.write('\u001b[B'); // past the "select all" row to the first catalog row
     app.stdin.write(SPACE); // select the first catalog row
     await until(() => frame().includes('1 selected'), 'the row to be selected');
     app.stdin.write(ENTER);

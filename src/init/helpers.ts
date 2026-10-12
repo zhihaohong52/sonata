@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { splitCandidate } from '../effort.js';
 import {
   GLOBAL_CONFIG_RELATIVE, parseConfig,
-  isOauthGatewayAuth, oauthGatewayBaseUrl, isAnthropicRoutedName,
+  isOauthGatewayAuth, oauthGatewayBaseUrl,
   CREDENTIAL_SOURCES, type SonataConfig, type NativeGatewayAuth, type NativeGatewayWireFormat, type CredentialSource,
 } from '../config.js';
 import { readChatGptOAuth, readOpencodeChatGptOAuth } from '../native/codex-auth.js';
@@ -298,11 +298,6 @@ export function nativeCandidatesFrom(
     .filter((r) => {
       // An oauth provider needs no discovered URL — LiteLLM supplies it.
       if (providerBaseUrls[r.provider] === undefined && !oauthProviders.has(r.provider)) return false;
-      // Copilot, acme and anthropic all serve Claude models, but the router
-      // sends this prefix to Anthropic, so parseConfig refuses such an entry.
-      // Offering one would let init write a config it cannot read back.
-      const key = r.ref.replace(/\//g, '-');
-      if (isAnthropicRoutedName(key) || isAnthropicRoutedName(r.id ?? r.ref)) return false;
       const dedup = `${r.provider}/${r.id}`;
       if (seen.has(dedup)) return false;
       seen.add(dedup);

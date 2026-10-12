@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Box, Text } from 'ink';
 import { MultiSelect } from './multi-select.js';
 import { mergeLiveCandidates, type CandidateOption } from '../app-state.js';
-import { isAnthropicRoutedName, isOauthGatewayAuth, type NativeGatewayAuth } from '../../config.js';
+import { isOauthGatewayAuth, type NativeGatewayAuth } from '../../config.js';
 import { fetchModels as defaultFetchModels } from '../../native/models.js';
 import { hasTaskCost, lookupModel, type AaCatalog } from '../../catalog.js';
 import { usePalette } from '../theme-context.js';
@@ -107,10 +107,8 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
       const fresh: Record<string, string[]> = {};
       const problems: string[] = [];
       for (const { gateway, found } of results) {
-        // The router reserves `claude-` for Anthropic, so parseConfig refuses
-        // such an id — offering one would write a config it cannot read back.
         const usable = found.outcome === 'ok'
-          ? found.models.map((model) => model.id).filter((id) => !isAnthropicRoutedName(id))
+          ? found.models.map((model) => model.id)
           : [];
         // An empty answer is not evidence the gateway serves nothing; treat it
         // as a failed refresh so the harness list survives.

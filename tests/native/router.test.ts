@@ -811,6 +811,29 @@ describe('tier alias routing', () => {
     expect(seenUrl).toBe('https://gw.example/v1/messages');
   });
 
+  it('forwards the caller credential unchanged only for a session gateway', async () => {
+    const rec: FetchCall[] = [];
+    await routeRequest(
+      {
+        method: 'POST', url: '/v1/messages',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer SESSION-SECRET' },
+        body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [] })),
+      },
+      {
+        fetch: fakeFetch(rec), litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTier: () => ({
+          role: 'code', tier: 'simple',
+          routes: [{ key: 'direct-1', native: {
+            gateway: 'g', id: 'model-1', transport: 'direct', baseUrl: 'https://api.anthropic.com/v1', auth: 'session',
+          } }],
+        }),
+      },
+    );
+    expect(rec[0].url).toBe('https://api.anthropic.com/v1/messages');
+    expect(rec[0].headers.authorization).toBe('Bearer SESSION-SECRET');
+    expect(JSON.stringify(rec)).not.toContain('GATEWAY-KEY');
+  });
+
   it('injects the gateway key and never forwards the caller credential', async () => {
     let seenAuth: string | undefined;
     const res = await routeRequest(

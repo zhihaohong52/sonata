@@ -94,6 +94,8 @@ export type Transport = 'direct' | 'litellm' | 'anthropic';
  * cannot contradict itself.
  */
 export function transportFor(gw: NativeGatewayConfig, gateway: string): Transport {
+  // A session gateway is Anthropic itself, reached with the caller's own credential.
+  if (gw.auth === 'session') return 'direct';
   // An OAuth gateway's dialect is fixed by its auth: chatgpt needs
   // `mode: responses`, copilot needs a token exchange first. Neither is a
   // plain Anthropic endpoint sonata could talk to unaided.
