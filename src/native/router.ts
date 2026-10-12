@@ -2327,9 +2327,57 @@ async function routeTierRequest(
   }, deps);
 }
 
+/**
+ * Whether a request continues or opens a server-side thread.
+ *
+ * Claude Code 2.1.29x sends `thread: { type: 'continue', previous_message_id }`
+ * carrying only the turns since the last response: the task, the tools and the
+ * history stay on Anthropic's server. A foreign model keeps no such thread, so
+ * forwarding one hands it fragments — measured 2026-10-12, a subagent's
+ * request reached the model with no tools and two tool_result turns, and the
+ * model reported it had been given no task.
+ */
+function isThreaded(body: Buffer): boolean {
+  try {
+    const thread = (JSON.parse(body.toString()) as { thread?: unknown }).thread;
+    return thread !== undefined && thread !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Claude Code's own "thread unsupported" refusal. It reads
+ * `error.details.error_code`; on `thread_unsupported_request` it resends the
+ * turn stateless — full history, system and tools — and keeps that model
+ * stateless for the rest of the session, so this costs one round trip per
+ * agent and reaches no upstream.
+ */
+function threadUnsupported(): RouterResponse {
+  return {
+    status: 400,
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({
+      type: 'error',
+      error: {
+        type: 'invalid_request_error',
+        message: 'thread: request unsupported — sonata routes this model statelessly; resend the full conversation',
+        details: { error_code: 'thread_unsupported_request' },
+      },
+    })),
+  };
+}
+
 export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promise<RouterResponse> {
   const requested = requestedModel(req.body);
   const session = req.headers['x-claude-code-session-id'];
+
+  // Only Anthropic holds Claude Code's threads: every other route needs the
+  // whole conversation in the request.
+  if (!isClaudeRequest(req.body) && isThreaded(req.body)) {
+    deps.log?.(`router: model=${requested ?? '?'} sent a server-side thread; asking for a stateless resend`);
+    return threadUnsupported();
+  }
 
   // A bare model name may carry a level (`flash@low`) in the same grammar a
   // tier candidate uses. This is how the claude harness adapter — whose

@@ -52,6 +52,60 @@ async function serveFully(...args: Parameters<typeof routeRequest>): ReturnType<
 const base = { litellmBase: 'http://lite', litellmKey: 'sk-local', anthropicBase: 'https://api.anthropic.com' };
 
 describe('routeRequest', () => {
+  // Claude Code 2.1.29x sends `thread: { type: 'continue', previous_message_id }`
+  // with only the new turns, leaving the task, tools and history on
+  // Anthropic's server. A foreign model keeps no such thread, so it received
+  // fragments (measured 2026-10-12: no tools, two tool_result turns, no task).
+  // Answering with Claude Code's own "thread unsupported" error makes it
+  // resend the turn stateless and keep that model stateless for the session.
+  describe('server-side threads', () => {
+    const threaded = (model: string, thread: Record<string, unknown>) => ({
+      method: 'POST', url: '/v1/messages', headers: {},
+      body: Buffer.from(JSON.stringify({ model, thread, messages: [{ role: 'user', content: 'hi' }] })),
+    });
+
+    it.each([
+      [{ type: 'continue', previous_message_id: 'msg_1' }],
+      [{ type: 'create' }],
+    ])('refuses a thread %j on a foreign route without calling upstream', async (thread) => {
+      const rec: FetchCall[] = [];
+      const res = await routeRequest(threaded('sonata-code-normal', thread), {
+        ...base, fetch: fakeFetch(rec),
+        resolveTier: () => ({ role: 'code', tier: 'normal', routes: [{ key: 'flash', native: { gateway: 'g', id: 'f', transport: 'litellm' as const } }] }),
+      });
+      expect(res.status).toBe(400);
+      expect(rec).toHaveLength(0);
+      const error = JSON.parse((res.body as Buffer).toString()).error;
+      expect(error.details.error_code).toBe('thread_unsupported_request');
+      expect(error.message).toMatch(/\bthread\b.{0,3}(param|field|request|type|:)/i);
+    });
+
+    it('refuses a thread on a bare native key too', async () => {
+      const rec: FetchCall[] = [];
+      const res = await routeRequest(threaded('flash', { type: 'continue', previous_message_id: 'msg_1' }), {
+        ...base, fetch: fakeFetch(rec), resolveNative: () => ({ gateway: 'g', id: 'f', transport: 'litellm' as const }),
+      });
+      expect(res.status).toBe(400);
+      expect(rec).toHaveLength(0);
+    });
+
+    it('passes a threaded claude- request to Anthropic untouched', async () => {
+      const rec: FetchCall[] = [];
+      const res = await routeRequest(threaded('claude-opus-5-5', { type: 'continue', previous_message_id: 'msg_1' }), { ...base, fetch: fakeFetch(rec) });
+      expect(res.status).toBe(200);
+      expect(rec[0].url).toBe('https://api.anthropic.com/v1/messages');
+    });
+
+    it('serves an unthreaded foreign request as before', async () => {
+      const rec: FetchCall[] = [];
+      const res = await routeRequest({ method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from(JSON.stringify({ model: 'flash', messages: [] })) }, {
+        ...base, fetch: fakeFetch(rec), resolveNative: () => ({ gateway: 'g', id: 'f', transport: 'litellm' as const }),
+      });
+      expect(res.status).toBe(200);
+      expect(rec).toHaveLength(1);
+    });
+  });
+
   it('routes a claude- model to anthropic with client headers forwarded', async () => {
     const rec: FetchCall[] = [];
     await routeRequest(
