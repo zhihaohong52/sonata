@@ -8,26 +8,22 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
-## [0.16.0] - 2026-10-12
-
 ### Changed
 
-- **A mistyped command suggests the one you meant.** `sonata docotr` now
-  answers `✘ unknown command "docotr"` with `└ Did you mean sonata doctor?`
-  (a prefix match, or the nearest command within two edits; nothing when none
-  is close). The exit code stays 2.
+- **Documentation, ready for public beta.** The user guide is published as a
+  site on GitHub Pages (`docs/`, built with VitePress by a new `docs`
+  workflow). The README is now the front door — status, quickstart, how it
+  works — with the full `sonata init` walkthrough moved to a new *Getting
+  started* page and every command and flag to a new *Commands* page (adding
+  `sonata wait`, `sonata tui`, `usage --by route`/`--project` and
+  `status --global`, which the old table missed). Every guide page was checked
+  against the source: Claude models are no longer described as filtered out,
+  tier ordering and the `<role>-auto` agents are described as they work, and
+  the configuration reference now covers `schema_version`, `avoid_gateways`,
+  `gateway_order`, `[budget]`, `[native.ports]`, every gateway and model key,
+  and `credential_source`. New `CONTRIBUTING.md` and `SECURITY.md`.
 
-### Fixed
-
-- **Tier agents on Claude Code 2.1.29x received fragments instead of their
-  task.** Claude Code now sends `thread: { type: "continue" }` requests that
-  carry only the newest turns, leaving the task, tools and history on
-  Anthropic's server. Forwarded to a foreign model, a subagent arrived with no
-  tools and no task: it wrote tool calls as text, reported it had been given
-  nothing to do, and auto-routing logged `no-task`. The router now answers a
-  threaded request on any non-Anthropic route with Claude Code's own
-  `thread_unsupported_request` error, which makes Claude Code resend the turn
-  with the full conversation and stay stateless on that model for the session.
+## [0.16.0] - 2026-10-12
 
 ### Added
 
@@ -75,6 +71,11 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Changed
 
+- **A mistyped command suggests the one you meant.** `sonata docotr` now
+  answers `✘ unknown command "docotr"` with `└ Did you mean sonata doctor?`
+  (a prefix match, or the nearest command within two edits; nothing when none
+  is close). The exit code stays 2.
+
 - **Auto-routing judges reviews, plans and explores by their own criteria.**
   Jev was given the code-tier definitions for every role, and those only reach
   `complex` when there is something to design, which a review never has: across
@@ -85,6 +86,18 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   against those 100 tasks on jev-1.13.0, all three final gates and all three
   spec plans move to `complex`, single-commit reviews stay `normal`, and code
   decisions are unchanged.
+
+### Fixed
+
+- **Tier agents on Claude Code 2.1.29x received fragments instead of their
+  task.** Claude Code now sends `thread: { type: "continue" }` requests that
+  carry only the newest turns, leaving the task, tools and history on
+  Anthropic's server. Forwarded to a foreign model, a subagent arrived with no
+  tools and no task: it wrote tool calls as text, reported it had been given
+  nothing to do, and auto-routing logged `no-task`. The router now answers a
+  threaded request on any non-Anthropic route with Claude Code's own
+  `thread_unsupported_request` error, which makes Claude Code resend the turn
+  with the full conversation and stay stateless on that model for the session.
 
 ## [0.15.5] - 2026-10-07
 

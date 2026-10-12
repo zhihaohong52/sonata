@@ -1,0 +1,14 @@
+{
+  "name": "sonata-docs",
+  "private": true,
+  "description": "The sonata documentation site (GitHub Pages). Kept apart from the CLI's own package so its dependencies never reach `npm ci` for the CLI or the published tarball.",
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4"
+  }
+}

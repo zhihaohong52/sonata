@@ -1,10 +1,23 @@
-# Handoff — sonata after 0.13.1
+# Handoff — sonata after 0.16.0
 
 Originally written 2026-09-04 at the end of the 0.6.0 session; rewritten
 2026-09-12 after 0.8.3, and the top section again 2026-09-19 after 0.11.0.
 Read this before starting new work. It records what is done, what is
 deliberately *not* done, what to pick up if you want work, and the traps that
 have cost previous sessions real time.
+
+**Updated 2026-10-13, at 0.16.0** — the sections below are kept as written, so
+some of their "open" items have since closed. Closed: the effort-tier PRs
+(0.9.0, PR #34); the 0.13.1 full audit (ran 2026-09-27, backlog fixed in
+0.14.0); the final malformed-tool-call 400 (`repairNamelessToolCalls`, 0.14.0);
+issue #47, dispatch-run usage (0.13.0); the test type errors (`typecheck` now
+chains `typecheck:tests`); the codex-oauth system-message hole (0.6.0);
+`SONATA_CAPTURE_TEXT_CALLS_DIR` (0.16.0). Still open: `gpt-6-luna` 400s on
+roughly every other request; `No tool call found for function call output with
+call_id …`; text-call recovery going 0 for 6; `serve.test.ts` failing under
+full-suite load; the doctor budget surface and `worktreeUnchanged` in
+`sonata runs`; the machine config's `[budget]`/`avoid_gateways` (a user
+decision). "Where things stood at 0.8.3" further down is historical.
 
 ## mimo text tool calls (2026-10-07) — open follow-ups
 
@@ -250,7 +263,7 @@ because every agent description used to end "when unsure, use `-complex`".
 adjectival. Judge whether that worked with `sonata usage --by tier`, and if the
 split has not moved, the next lever is structural rather than more wording.
 
-## Where things stand
+## Where things stood at 0.8.3 (historical — see the sections above for current state)
 
 - `main` at `ed34902`, clean, in sync with origin. **`[Unreleased]` is not
   empty** — it carries the effort-level tier candidates (PR #28) and the three

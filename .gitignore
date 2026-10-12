@@ -23,3 +23,7 @@ sonata.toml
 # contract, which later sessions reload — so they are force-added below.
 .impeccable/questions/
 .impeccable/hook.cache.json
+
+# The docs site's build output and VitePress's dev cache (docs/.vitepress/dist
+# is already covered by `dist/` above).
+docs/.vitepress/cache/

@@ -33,16 +33,21 @@ that didn't lead to a standalone implementation plan.
 | 2026-08-25 | Tier routing: native-first subagents, difficulty tiers, loop skill | [spec](specs/2026-08-25-tier-routing-design.md) | [plan](plans/2026-08-25-tier-routing.md) |
 | 2026-08-27 | Usage and route ledger | [spec](specs/2026-08-27-usage-ledger-design.md) | [plan](plans/2026-08-27-usage-ledger.md) |
 | 2026-08-27 | Daemon identity: a lifecycle you can trust | [spec](specs/2026-08-27-daemon-identity-design.md) | [plan](plans/2026-08-27-daemon-identity.md) |
-| 2026-08-27 | Dynamic context-window resolution | [spec](specs/2026-08-27-dynamic-context-window.md) | — **queued**, not yet implemented |
-| 2026-08-27 | Pricing accuracy follow-ups (genai-prices, day-of-week windows, cache-creation rate) | [spec](specs/2026-08-27-pricing-accuracy-followups.md) | — **queued**, not yet implemented |
+| 2026-08-27 | Dynamic context-window resolution | [spec](specs/2026-08-27-dynamic-context-window.md) | — shipped in 0.8.2 (windows from models.dev rather than the feed this spec sketched; per-model, plus the `[1m]` tier declaration) |
+| 2026-08-27 | Pricing accuracy follow-ups (genai-prices, day-of-week windows, cache-creation rate) | [spec](specs/2026-08-27-pricing-accuracy-followups.md) | — partly shipped: the cache-creation rate in 0.8.0; genai-prices and day-of-week price windows are still open (pricing moved to models.dev in 0.8.0, so the spec's ai-pricing.fyi framing is obsolete) |
 | 2026-08-30 | `sonata init` hardening: decompose the front door, and test it | [spec](specs/2026-08-30-init-hardening-design.md) | [plan](plans/2026-08-30-init-hardening.md) |
-| 2026-08-30 | Two routing reliability defects (tier-absorbing 400, leaked subagent pin) | [spec](specs/2026-08-30-routing-reliability-defects.md) | — **queued**, roadmap items 13 and 14 |
-| 2026-09-13 | Effort levels in tiers: rank and dispatch the same model | [spec](specs/2026-09-13-effort-tiers-design.md) | [plan](plans/2026-09-13-effort-tiers-pr1.md) (PR 1 of 3; router and adapters planned after it merges) |
+| 2026-08-30 | Two routing reliability defects (tier-absorbing 400, leaked subagent pin) | [spec](specs/2026-08-30-routing-reliability-defects.md) | — fixed in 0.4.1 (roadmap items 13 and 14) |
+| 2026-09-01 | Managed LiteLLM (superseded by the strategy spec below) | [spec](specs/2026-09-01-managed-litellm-design.md) | — superseded |
+| 2026-09-01 | LiteLLM: which dialect, and when sonata needs it | [spec](specs/2026-09-01-litellm-strategy-design.md) | [plan](plans/2026-09-01-litellm-strategy.md) — shipped in 0.5.0 |
+| 2026-09-09 | One router for every project (multi-tenant router) | [spec](specs/2026-09-09-multi-tenant-router-design.md) | [plan](plans/2026-09-09-multi-tenant-router.md) |
+| 2026-09-13 | Effort levels in tiers: rank and dispatch the same model | [spec](specs/2026-09-13-effort-tiers-design.md) | [plan](plans/2026-09-13-effort-tiers-pr1.md) (PR 1 of 3; all three shipped in 0.9.0 as PR #34) |
 | 2026-09-15 | A local UI on the router (sessions, logs, usage dashboard) | [spec](specs/2026-09-15-router-ui-design.md) | [plan](plans/2026-09-15-router-ui.md) |
 | 2026-09-15 | Rank tiers on dollars per task only | [spec](specs/2026-09-15-rank-per-task-only-design.md) | — implemented directly from measured decision |
 | 2026-09-16 | Three tiers: simple, normal, complex | [spec](specs/2026-09-16-three-tiers-design.md) | [plan](plans/2026-09-16-three-tiers.md) — implemented |
-| 2026-09-22 | Model → provider routing: one model, many ways to reach it | [spec](specs/2026-09-22-model-provider-routing-design.md) | — **queued**, ships in 0.12.0 |
+| 2026-09-18 | A persistent config TUI | [spec](specs/2026-09-18-config-tui-design.md) | [plan](plans/2026-09-18-config-tui.md) |
+| 2026-09-22 | Model → provider routing: one model, many ways to reach it | [spec](specs/2026-09-22-model-provider-routing-design.md) | — partly shipped: derived frontier ranking in 0.12.0, multi-route knee in 0.12.2, `gateway_order` in 0.13.0; the model → provider nesting itself is designed, not implemented |
 | 2026-09-30 | Auto-routed tiers: Jev chooses simple, normal or complex | [spec](specs/2026-09-30-jev-auto-route-design.md) | [plan](plans/2026-09-30-jev-auto-route.md) |
 | 2026-10-01 | Auto-route: any decision URL, best available model (JevBench) | [spec](specs/2026-10-01-decision-model-selection-design.md) | [plan](plans/2026-10-01-decision-model-selection.md) |
+| 2026-10-02 | Recovering tool calls a model writes as text | [spec](specs/2026-10-02-text-tool-calls-design.md) | [plan](plans/2026-10-02-text-tool-calls.md) — shipped in 0.15.3 |
 | 2026-10-09 | sonata-loop as a mod: a live panel of the loop and its agents | [spec](specs/2026-10-09-sonata-loop-panel-design.md) | [plan](plans/2026-10-09-sonata-loop-panel.md) |
 | 2026-10-12 | Claude models as ordinary sonata models; subscription cost shown at list price | [spec](specs/2026-10-12-claude-models-design.md) | [plan](plans/2026-10-12-claude-models.md) |

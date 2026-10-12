@@ -1,7 +1,10 @@
 # Troubleshooting
 
-Start with `sonata doctor` — it checks tmux, each configured harness, its
-version and auth, and the permission hook.
+Start with `sonata doctor` — it checks tmux, each configured harness's version
+and auth, the permission hook, and the config itself: legacy layouts, tier
+routing (and which of five states leaves a session unrouted), model rankings,
+catalog coverage and freshness, unpriced gateways, stale MCP registrations,
+auto-route decisions and the loop panel.
 
 | Symptom | Cause |
 |---|---|
@@ -11,12 +14,13 @@ version and auth, and the permission hook.
 | A tier agent errors with "all native routes … failed" | Every candidate for that tier failed. Run the `sonata dispatch --tier <role>-<tier>` command the error names, in Bash. |
 | Every opencode/pi dispatch refuses | The permission hook is not installed, so sonata assumes `default`. Run `sonata init` and choose a hook scope. |
 | A codex run sits in `PAUSED` at startup | Codex has not been trusted in this directory. Run `codex` there once and answer "Yes, continue". |
-| A run reports `degraded` | The harness exited without writing a report; the text you get is scraped pane output. Treat it as untrustworthy. |
+| A run reports `degraded` | The harness exited without writing a report. If it wrote its own fallback file (codex's `-o` message, claude's `last-message.txt`), that text is what you get; otherwise it is scraped pane output. Treat either as untrustworthy. |
 | A run never finishes | It is capped by `run_timeout_seconds`. Attach with `tmux attach -t sonata-<id>` to watch it. |
 | `sonata doctor` says "config predates [tiers]" | Run `sonata init` — it migrates the config to `[models]`+`[tiers]`, carrying through every previously selected model. |
-| `sonata doctor` says "tier agents need a routed session" | No session routes native traffic to the router. Run `sonata route auto` (or `--global`). |
+| `sonata doctor` says "tier agents need a routed session" | No session routes native traffic to the router. Doctor names which of five states you are in — follow the fix it gives (usually `sonata route auto`, or `--global`). |
 | A tier always picks the wrong model first | The tier is a *ranked* list and the order is the fallback order. Run `sonata agents` and re-rank it — no need to walk the whole `sonata init` wizard. |
-| A tier agent's window is smaller than the model's | The alias only claims 1M when **every** candidate in that tier has a 1M window, since any of them may answer. `sonata agents` shows each candidate's window and whether the alias carries `[1m]`. |
+| A tier agent's window is smaller than the model's | The alias only claims 1M when **every** native candidate in that tier — every one with a gateway — has a 1M window, since any of them may answer. Harness-lane candidates never serve the alias, so they are skipped. `sonata agents` shows each candidate's window and whether the alias carries `[1m]`. |
+| A tier agent fails with `model_not_found` | The session is not routed — Claude Code sent the `sonata-*` alias to Anthropic. That is a setup problem, not a broken agent: run `sonata doctor`, then start the session with `sonata code` (or run `sonata route auto`/`on` before launching). |
 | Setup is in a bad state and you want to start clean | `sonata reset` (add `--global` for the machine scope) removes the config, generated agents, loop skill, CLAUDE.md block and routing hooks, while keeping your keys and usage ledger. Then run `sonata init` again. |
 | Two installs disagree about a fixed bug | `sonata` on PATH runs `dist/`, not `src/`. `sonata --version` prints the version *and* the directory it ran from, which is how you tell which one answered. |
 | A tier agent dies with 400 `Request is missing x-opencode-session` | sonata before 0.13.1 never sent opencode.ai its session header. Upgrade, then `sonata restart` — the running router keeps the old code until restarted. |

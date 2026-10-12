@@ -19,14 +19,15 @@ normal  = ["flash", "kimi-k3"]       # optional; absent is valid, empty is refus
 complex = ["kimi-k3", "flash"]
 
 [run]
-tail_window_seconds   = 20     # how long `sonata tail` blocks per call
-stall_timeout_seconds = 120    # silence before a run is reported STALLED
-run_timeout_seconds   = 1800   # hard cap; the run is killed at this point
+tail_window_seconds     = 20     # how long `sonata tail` blocks per call
+stall_timeout_seconds   = 120    # silence before a run is reported STALLED
+run_timeout_seconds     = 1800   # hard cap; the run is killed at this point
+dispatch_window_seconds = 1500   # how long `sonata wait` blocks before giving up
 ```
 
 A `[models."<key>"]` entry can carry `gateway`/`id` (native), `harness`/`harness_id`
 (dispatch fallback), or both — one model, two routes. `sonata init` writes this
-shape for you; see [Using it](../../README.md#using-it) for how the generated agents use it.
+shape for you; see [Using it](getting-started.md#using-it) for how the generated agents use it.
 
 A native model that answers `Function tools with reasoning_effort are not supported
 … use /v1/responses` (seen from `gpt-6.1-sol` and `gpt-6-astra` on an
@@ -37,12 +38,14 @@ else. `sonata init` keeps the line when it rewrites the file.
 
 ## Where sonata.toml lives
 
-Sonata looks for a config in two places, in order:
+Sonata looks for a config in three places, in order, and uses exactly one:
 
 1. `./sonata.toml` — the current repository
-2. `~/.config/sonata/sonata.toml` — the machine
+2. `sonata.toml` in a linked git worktree's main checkout, when the worktree
+   has none of its own
+3. `~/.config/sonata/sonata.toml` — the machine
 
-A project config wins outright; it is not merged with the machine one. So a
+A project config wins outright; it is never merged with the machine one. So a
 repository with its own `sonata.toml` sees only that file, and adding one
 repo-specific model means copying the machine entries alongside it.
 
@@ -65,23 +68,27 @@ opencode. The strength of that guarantee differs per harness; see
 
 Each role chooses its own ranked model list, per tier, through `[tiers.<role>]`.
 `simple` and `complex` are required; `normal` is optional. An absent `normal`
-list is valid and preserves the previous behavior, while a present-but-empty
-list is refused at parse time. The older flat `[generate.roles]`/`[generate.native]` pair is
+list is valid: no `<role>-normal` agent is generated, and a `sonata-<role>-normal`
+alias resolves to nothing. A present-but-empty list is refused at parse time.
+The older flat `[generate.roles]`/`[generate.native]` pair is
 migrated automatically the next time you run `sonata init` (a config still in
 that shape parses fine in the meantime — `sonata doctor` just points at
 `init` to migrate it).
 
 A tier candidate may pin a reasoning-effort level: `"gpt-5.6-luna@xhigh"`.
-The level is one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
-`max`, and it belongs to the *slot*, not the model — the same model may sit
-in `simple` at `high` and in `complex` at `max`. `sonata init` ranks every
+The level is one of `default`, `none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, `max`. `default` means run the model as it ships — no
+`reasoning_effort` is sent at all. The level belongs to the *slot*, not the
+model — the same model may sit in `simple` at `high` and in `complex` at
+`max`. `sonata init` ranks every
 level Artificial Analysis has scored for a model as its own row, because for
 the current generation the level is often the larger lever: GPT-5.6 Luna at
 `max` out-scores GPT-5.6 Terra at every level below `max`, at an eighth of
 the cost per task.
 
-**A bare candidate whose model the catalog scores at several levels is
-refused when the config loads.** Ranked bare, it is scored at the model's
+**A bare candidate whose model the catalog holds at any effort level is
+refused when the config loads** — a family of one counts, because its single
+row is still a level to pin. Ranked bare, it is scored at the model's
 default row (usually its highest level) and dispatched with no level at all,
 so what the ranking promised and what runs are different models. The error
 names the candidate, its levels and its default; `sonata init` re-ranks
@@ -160,9 +167,9 @@ code-simple
 ```
 
 Three things there are invisible in the file itself: what a key actually
-resolves to, whether every candidate clears 1M (which is what decides the
-`[1m]` suffix, and it has to hold for *whichever* model answers, not the best
-one), and whether a key still names a model at all.
+resolves to, whether every native candidate clears 1M (which is what decides
+the `[1m]` suffix, and it has to hold for *whichever* model answers, not the
+best one), and whether a key still names a model at all.
 
 Run it in a terminal and it is also the editor — `enter` re-ranks one list
 through the same picker `sonata init` uses, `w` writes and regenerates the
@@ -177,7 +184,7 @@ split it — `key` is the candidate, not the model.
 
 It is the only writer of `sonata.toml` besides `sonata init`, and it replaces
 the `[tiers]` tables alone: every other byte of your config, including
-hand-written `[price]` blocks and `pricing_provider`, is left exactly where it
+hand-written `price` entries and `pricing_provider`, is left exactly where it
 was. It refuses to write at all if the file changed while the editor was open,
 rather than reverting a tier you edited elsewhere.
 
@@ -196,3 +203,77 @@ expensive to recreate — your gateway keys, the usage ledger, the ranking and
 pricing caches, and the `.sonata/` run store — and prints that list, so a
 reset never silently costs you your credentials or spend history. The full plan
 is shown, path by path, before anything is touched.
+
+## Config keys
+
+The whole grammar `sonata.toml` parses. Top-level keys must sit above every
+`[table]` header — a bare key after one belongs to that table.
+
+**Top level**
+
+- `schema_version` — integer stamp; the current value is `2` and a newer one
+  is refused. Older files are migrated in memory on every load; nothing is
+  written back.
+- `avoid_gateways` — list of gateway names whose models rank last in every
+  tier. Demotion, never exclusion: they stay as last-resort candidates. An
+  unknown name is refused, so a typo cannot read as an unused setting.
+- `gateway_order` — list of gateway names that breaks ranking *ties* only; a
+  gateway left out is neutral. An unknown or repeated name is refused.
+
+**`[budget]`**
+
+- `daily_usd` — positive number of US dollars. It counts priced spend only
+  (unpriced volume is reported beside it, never folded in as zero), including
+  a `sonata dispatch` run once that run finishes. Both the router and
+  `sonata dispatch` refuse at the cap — but a dispatch run cannot be stopped
+  midway, so one run can carry spend past it. Subscription-covered work
+  (`codex-oauth`, `copilot-oauth`, a Claude `session` gateway) shows as
+  `$x sub` and never counts. A non-positive or non-numeric value is refused
+  at parse time; remove the table to run without a cap.
+
+**`[native.ports]`**
+
+- `router` — port for `sonata serve`'s router (default `4100`).
+- `litellm` — port for the managed LiteLLM child (default `4000`).
+
+**`[native.gateways."<name>"]`**
+
+- `base_url` — the endpoint (required on an `api-key` gateway). An OAuth
+  gateway cannot point it anywhere but the URL its credential reaches —
+  naming the metered OpenAI API on a `codex-oauth` gateway is refused (see
+  [Codex subscription auth](codex-subscription.md)); an `auth = "session"`
+  gateway accepts only `https://api.anthropic.com`.
+- `auth` — `api-key` (default), `codex-oauth`, `copilot-oauth`, or `session`.
+- `provider` — one of `openai`, `anthropic`, `gemini`, `deepseek`, `mistral`,
+  `groq`, `openrouter`, selecting the wire dialect LiteLLM speaks.
+  `wire_format = "openai"|"anthropic"` is the older spelling; `provider` wins
+  when both are set. Neither may be set on an OAuth gateway, whose dialect is
+  fixed by its auth.
+- `credential_source` — `sonata`, `codex`, or `opencode`: which login the
+  gateway reads. `codex` is refused with `api-key` and with `copilot-oauth`,
+  and `session` cannot set it. See
+  [Codex subscription auth](codex-subscription.md#which-login-a-gateway-reads).
+- `price` — rates as below.
+- `pricing_provider` — name(s) of the models.dev provider(s) whose rates
+  price this gateway's models, instead of hand-written ones.
+
+**`[models."<key>"]`**
+
+- `gateway` — the native route's gateway name; or `harness` — the dispatch
+  route's harness (`opencode`, `codex`, `pi`, `reasonix`, `claude`); or both.
+- `id` — the upstream model id for `gateway`, the harness-side ref for
+  `harness` alone.
+- `harness_id` — optional harness-side id when the two differ. Unset, codex
+  takes `id` bare, opencode/pi/reasonix take `<gateway>/<id>`, and `claude`
+  takes the config key.
+- `api = "responses"` — send to the gateway's `/responses` endpoint instead
+  of `/chat/completions`. Only on an `api-key` gateway reached through
+  LiteLLM; refused anywhere else.
+- `context_window` — tokens, for the native route (default `128000`).
+- `price` — rates as below.
+
+**`price`** (on a model or a gateway) is USD per 1,000,000 tokens: `input`,
+`cached_input`, `cache_write`, `output`, each optional; a rate of `0` is a
+real price (a free tier). `windows` is an optional array of tables with
+`from` and `to` as UTC `HH:MM` plus the same rate keys; evaluated in order,
+the first match wins. A window whose `from` equals its `to` is refused.

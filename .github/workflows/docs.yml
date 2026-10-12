@@ -1,0 +1,74 @@
+name: docs
+
+# Builds docs/ with VitePress and publishes it to GitHub Pages. The site's
+# dependencies live in docs/package.json, apart from the CLI's own, so nothing
+# here touches the CLI's install, its tests or the published tarball.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time; a newer push supersedes a queued one but never
+# cancels a deployment already in progress.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # The site shows each page's last-updated date from git history; a
+          # shallow clone would date every page to the deploy commit.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - run: npm ci
+        working-directory: docs
+
+      # A dead link fails the build, so a pull request that breaks one is
+      # caught before it reaches the site.
+      - run: npm run build
+        working-directory: docs
+
+      # Needs the repository's Pages source set to "GitHub Actions"
+      # (Settings → Pages); the job token cannot turn Pages on by itself.
+      - uses: actions/configure-pages@v5
+        if: github.event_name != 'pull_request'
+
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

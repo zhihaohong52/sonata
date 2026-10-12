@@ -96,8 +96,10 @@ So pick concurrency from what the *gateway* can carry:
 - Count the distinct upstreams, not the distinct tasks. Eleven ranked
   candidates on one subscription is one upstream.
 - A tier that exhausts returns 529 naming `sonata dispatch --tier`, which is
-  the harness lane — a real fallback, but it runs outside the router and its
-  tokens never reach the ledger.
+  the harness lane — a real fallback, but it runs outside the router. (When
+  this was written its tokens never reached the ledger; since 0.13.0 a
+  finished dispatch is measured from the harness's own store, recorded in the
+  ledger, and counted toward `[budget]`.)
 - Expect crashes rather than preventing them: have every agent commit its own
   work, scoped to the files it owns, so a death costs one agent's turn rather
   than the wave.
@@ -188,7 +190,9 @@ Read-only roles run under opencode's `plan` agent, which blocks writes, so
 recorded `canWriteReport: true` — meaning every review and plan run on opencode
 was judged degraded for a file it was structurally incapable of writing. Fixed
 by keying `canWriteReport` off the agent actually chosen, since `explore` is
-read-only yet still able to write.
+read-only yet still able to write. (Since superseded: opencode now maps every
+read-only role — `explore` included — to its read-only `plan` agent, so the
+role/agent split the fix relied on no longer arises.)
 
 ## Clean up sessions
 

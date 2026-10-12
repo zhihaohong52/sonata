@@ -4,10 +4,13 @@ The harness path runs the foreign model's *own* loop in OpenCode, Codex,
 Pi, or Reasonix. The native path instead runs foreign models inside Claude
 Code's own loop, tools, and permission modes, through a local routing proxy:
 
-- `sonata serve` — runs the router and a managed LiteLLM child
+- `sonata serve` — runs the router, and a managed LiteLLM child when any
+  configured model needs one. Anthropic-native gateways go straight through
+  the router and start none. The child comes up with `serve` when the config
+  already needs it, and otherwise lazily, on the first request that does.
 - `sonata code` — launches a single Claude Code session routed through the proxy
-  (`ANTHROPIC_BASE_URL` points at the local router); auto-starts
-  `sonata serve --daemon` if the router is down
+  (`ANTHROPIC_BASE_URL` points at the local router); auto-starts the router
+  in the background if it is down
 - `sonata route on` — routes *every* plain `claude` session launched in the
   project, not just ones started by `sonata code`: it writes the same
   `ANTHROPIC_BASE_URL` env into `.claude/settings.local.json` and installs a
@@ -36,6 +39,14 @@ foreign-on-Claude-loop session through `sonata dispatch`, running headless
 Two consequences worth knowing. First, `ANTHROPIC_BASE_URL` is process-wide and
 `isFirstPartyAnthropicBaseUrl` gates Remote Control, so sessions launched by
 `sonata code` lose Remote Control while routed through the local proxy.
+
+Second, behind a gateway Claude Code cannot verify that a model really has the
+1M window it claims natively, so it budgets those models — Sonnet 5, the Fable
+models, Opus 4.7+ — at 200K instead. The window silently shrinks by 80%; the
+only clue is a number in `/context`. An id carrying an explicit `[1m]` is
+immune, because there is nothing left to verify: `"model": "opus[1m]"` keeps
+its full window where a bare `opus` does not. `sonata doctor` prints the fix
+when it applies.
 
 ### Your own Claude Code account
 

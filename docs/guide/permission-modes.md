@@ -29,10 +29,11 @@ having nothing to ask about. To use opencode for edits, dispatch in
 `acceptEdits` or `bypassPermissions`, or use a codex model, whose TUI does
 prompt.
 
-**Pi** has the strictest enforcement of the three, and the least negotiable
-limits. Its docs say it "intentionally does not include built-in MCP,
-sub-agents, permission popups, plan mode, to-dos, or background bash", and it
-has no sandbox — so like opencode it cannot honour `default`, and refuses:
+**Pi**'s tool allowlist is real enforcement, and its limits are the least
+negotiable of the harnesses sonata drives. Its docs say it "intentionally does
+not include built-in MCP, sub-agents, permission popups, plan mode, to-dos, or
+background bash", and it has no sandbox — so like opencode it cannot honour
+`default`, and refuses:
 
 | Claude Code mode | tools |
 |---|---|
@@ -108,6 +109,29 @@ question before the agent starts at all, which looks exactly like a model that
 never said anything — `sonata doctor` reports that as a blocker, and
 `reasonix config telemetry off` clears it.
 
+**Claude Code** (`claude -p` is headless — there is no TUI to prompt in) passes
+the session's mode through, except for read-only roles, which are forced to
+`plan` and stripped down:
+
+| Claude Code mode | invocation | tools |
+|---|---|---|
+| `plan` | `claude -p --permission-mode plan` | `--tools=Read,Grep,Glob` |
+| `default` | `claude -p --permission-mode default` | full built-in set |
+| `acceptEdits` | `claude -p --permission-mode acceptEdits` | full built-in set |
+| `bypassPermissions` | `claude -p --permission-mode bypassPermissions` | full built-in set |
+
+A read-only role runs as `plan` whatever mode the session is in, and gets
+`--tools=Read,Grep,Glob` (with `--allowedTools` of the same set) plus
+`--strict-mcp-config` and no `--mcp-config`, which loads no MCP servers at all.
+`--tools` restricts only the built-in set: probed live on Claude Code 2.1.284,
+it left every user, project, plugin and claude.ai MCP tool reachable until
+strict mode closed that. Where an enterprise `managed-mcp.json` is deployed,
+`--strict-mcp-config` reads as asking to replace the managed set and Claude
+Code exits at startup, so sonata falls back to `--disallowedTools=mcp__*`
+there — the managed servers still start, but their tools are refused. A
+read-only run cannot write `report.md`, so as with pi and reasonix its final
+message is taken as the report and the run is not marked degraded.
+
 ## The permission hook
 
 The mode is not exposed as an environment variable, so this needs a
@@ -125,5 +149,9 @@ parent session. The residual gap is worth stating plainly: the foreign harness
 has no such classifier, so it will run things auto mode would have blocked.
 Dispatch in `plan` mode, or to a read-only role, when that matters.
 
-The hook does nothing in projects that have no `sonata.toml`, so a global
-install will not litter unrelated repositories.
+The hook writes nothing in a directory that has neither its own `sonata.toml`
+(or `.sonata/`) nor a machine config. With a project `sonata.toml` or
+`.sonata/`, the mode is written to `<cwd>/.sonata/session-<id>.json`; a project
+relying on the machine config gets `~/.config/sonata/session-<id>.json` beside
+it. So a global install does not scatter `.sonata/` directories across
+unrelated repositories.

@@ -17,9 +17,9 @@ Two ways to run it:
 - **Native** — the foreign model runs *inside Claude Code's own loop*: its
   tools, its permission modes, no separate TUI. A local routing proxy
   (`sonata serve`) makes this possible; see the [Native path guide](docs/guide/native-path.md).
-  This is the default: `sonata init` generates one agent per role and present tier
-  (up to 12 agents), each backed by a ranked list of models the router tries in
-  order.
+  This is the default: `sonata init` generates one agent per role and tier
+  (`code-simple`, `review-complex`, …), each backed by a ranked list of models
+  the router tries in order.
 - **Harness** — the foreign model runs in *its own* CLI (OpenCode, Codex, Pi,
   Reasonix), launched in a detached tmux session and driven through
   `sonata dispatch`. No proxy required — this is the fallback lane: when
@@ -44,274 +44,64 @@ Two reasons you might want that:
   done — "Refactored the parser. Tests pass."
 ```
 
+
 ## Status
 
-**Working, early.** The engine and the OpenCode, Codex, Pi and Reasonix
-harness adapters are complete and tested, each verified end to end against a
-real model. The native path (`sonata serve`/`sonata code`/`sonata restart`
-and the `claude` harness adapter) is also complete and verified live —
-routing, permission modes, and the router's Codex-overload handling have all
-been confirmed against real dispatches.
+**Public beta.** Sonata is pre-1.0 and changing quickly. The engine and the
+OpenCode, Codex, Pi and Reasonix harness adapters are complete and tested, each
+verified end to end against a real model; so is the native path — routing,
+permission modes and ranked fallback confirmed against real dispatches. Expect rough edges in setups nobody has tried yet — and please
+[report them](https://github.com/zhihaohong52/sonata/issues).
 
 Read [Limitations](docs/guide/limitations.md) and
-[Security](docs/guide/security.md) before depending on it.
+[Security](docs/guide/security.md) before depending on it: the models sonata
+launches run on your machine, as you.
 
-## Requirements
+## Quickstart
 
-- **Node 22+**
-- **tmux** — every harness runs inside a tmux session (`brew install tmux`,
-  `apt install tmux`)
-- **LiteLLM — managed, and only when a gateway needs it.** Sonata installs its
-  own pinned copy into `~/.config/sonata/litellm` (`sonata litellm install`,
-  offered by `sonata init`), so `pip install` by hand is no longer a step. A
-  gateway that speaks the Anthropic Messages API natively is reached directly
-  with no LiteLLM in the path at all — such a config needs no Python whatsoever.
-  When one *is* needed, `uv` (fastest, and can fetch a conforming interpreter)
-  or a `python3` in `>=3.10,<3.15` is required.
-- **macOS or Linux.** Sonata launches bash scripts inside tmux and manages
-  process groups directly; Windows is not supported. WSL should work but is
-  untested.
-- **A provider.** Either an API key for one of ~30 well-known providers (see
-  [BYOK](#byok-bring-your-own-key) — no harness needed), or at least one of the
-  harnesses below, authenticated:
-  - **[OpenCode](https://opencode.ai)** — any provider it supports
-  - **[Codex CLI](https://github.com/openai/codex)** — `codex login`
-  - **[Pi](https://github.com/earendil-works/pi-mono)** — any provider it
-    supports; model ids take the `provider/id` form
-  - **[Reasonix](https://github.com/esengine/DeepSeek-Reasonix)** — `reasonix setup`;
-    any OpenAI-compatible endpoint is a config entry, and model ids take the
-    `provider/id` form
-  - **Claude Code** — the `claude` harness adapter (native path; see the
-    [Native path guide](docs/guide/native-path.md))
-
-## Install
+Requires **Node 22+**, **tmux**, and **macOS or Linux**, plus a provider: an
+API key for one of ~30 well-known providers, your Claude Code account, or an
+authenticated harness ([OpenCode](https://opencode.ai),
+[Codex CLI](https://github.com/openai/codex),
+[Pi](https://github.com/earendil-works/pi-mono) or
+[Reasonix](https://github.com/esengine/DeepSeek-Reasonix)). Full requirements
+are in [Getting started](docs/guide/getting-started.md#requirements).
 
 ```bash
 npm install -g @zhihaohong52/sonata
-```
-
-### From source
-
-For working on sonata itself, or to run a change that has not been released:
-
-```bash
-git clone https://github.com/zhihaohong52/sonata.git
-cd sonata
-npm install
-npm run build
-npm link          # puts `sonata` on your PATH
-```
-
-`sonata` on your PATH runs `dist/`, not `src/` — after changing anything under
-`src/`, run `npm run build` or the command keeps its old behaviour.
-
-Then, in the repository where you want to use it:
-
-```bash
+cd your-project
 sonata init
 ```
 
-`sonata init` detects your environment, reports anything broken with the command
-that fixes it, and asks which providers, models and roles you want.
+`sonata init` checks your environment, reports anything broken with the
+command that fixes it, then walks you through providers, models, roles and a
+ranking of models into tiers. It writes `sonata.toml`, generates the tier
+agents, and offers to route your Claude Code sessions through sonata's local
+router. Every prompt has a flag, so it also runs unattended.
 
-Provider setup is a menu, modeled on opencode's own `/connect`: bulk-import
-everything you're already logged into elsewhere, or add providers one at a
-time — including one sonata has never heard of.
-
-```
-  ███████╗ ██████╗ ███╗   ██╗ █████╗ ████████╗ █████╗
-  ██╔════╝██╔═══██╗████╗  ██║██╔══██╗╚══██╔══╝██╔══██╗
-  ███████╗██║   ██║██╔██╗ ██║███████║   ██║   ███████║
-  ╚════██║██║   ██║██║╚██╗██║██╔══██║   ██║   ██╔══██║
-  ███████║╚██████╔╝██║ ╚████║██║  ██║   ██║   ██║  ██║
-  ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝
-
-  foreign-model subagents for Claude Code
-
-  ✓ tmux 3.7b
-  ✓ opencode 1.18.19 · 520 models
-  ✓ codex codex-cli 0.149.0 · 6 models
-
-  Set up providers
-  ❯ Import from other harnesses
-    Add provider
-
-  ↑↓ choose · enter confirm · ← back · esc cancel
-```
-
-**Import from other harnesses** bulk-selects providers your installed
-harnesses are already authenticated for — nothing to type, nothing to
-re-enter. It lists every provider with a detected credential (an OAuth grant
-or a plain API key sitting in another harness's own store), whether or not
-it is already configured, and pre-checks the ones that are — so the same
-screen doubles as a toggle: unchecking an already-imported provider removes
-it, along with its models and any role assignments that used them:
-
-```
-  Import from other harnesses
-
-  filter: █
-
-  ❯ ◉ codex     · expires in 8d
-    ○ openai    · expires in 8d
-
-  2 of 2 · space toggle · type to filter · enter confirm · esc cancel
-```
-
-**Add provider** searches the merged catalogue of every provider a harness
-knows about plus ~30 well-known BYOK providers — or lets you type in one
-sonata has never seen:
-
-```
-  Add provider
-
-  filter: █
-
-  ❯ acme                · opencode
-    anthropic           · opencode
-    codex               · codex
-    deepseek            · byok
-    ⋮
-    Add a custom provider…
-
-  38 of 38 · ↑↓ choose · type to filter · enter confirm · ← back · esc cancel
-```
-
-Picking a known provider offers **Run OAuth login** (for `codex` and
-`github-copilot`, the two providers sonata can authenticate on its own — see
-the [Native path guide](docs/guide/native-path.md)) or **Enter an API key**.
-Picking a harness-catalogued provider then shows its models to select from:
-
-```
-  Models to enable
-
-  filter: gpt█
-
-  ❯ ◉ openai/gpt-5.6-sol      · GPT-5.6 Sol
-    ○ openai/gpt-5.6-luna     · GPT-5.6 Luna
-
-  2 of 13 · space toggle · type to filter · enter confirm · esc cancel
-```
-
-Then it asks you to rank your selected models into `simple`, `normal` and
-`complex` tiers per role — pre-sorted by a cached Artificial Analysis catalog
-(`sonata catalog
-update`, with a free key from [artificialanalysis.ai](https://artificialanalysis.ai))
-when one exists, or built-in defaults otherwise. `complex` is ordered by raw
-capability. `normal` is ordered by capability **per task-dollar** without a cost
-cap, while `simple` uses that same value order under a cost cap of 12 times the
-best-value model's cost per task. Thus `simple` is a cost-capped prefix of
-`normal`: demanding work goes to the strongest model you picked, ordinary work
-gets the best value, and grunt work stays within the cheaper fallback chain. Set
-`avoid_gateways` in
-`sonata.toml` to rank a particular gateway's models last without dropping them
-as fallbacks. It then asks whether the config
-applies to this project or the whole machine, writes `sonata.toml`, generates
-one agent per role × tier, offers to install the permission hook, installs the
-`sonata-loop` skill, and offers to run `sonata route auto` so the generated
-agents have a router to reach. Project scope writes `./sonata.toml` and
-`./.claude/agents/`; machine scope writes `~/.config/sonata/sonata.toml` and
-`~/.claude/agents/`, where Claude Code offers the agents in every repository.
-
-Claude Code picks up the new agents automatically; no restart is needed.
-
-Every prompt has a flag, so it also works unattended:
-
-```bash
-sonata init --yes --providers opencode/openai --models opencode-openai-gpt-5.6-sol --roles code,review --scope project
-```
-
-### BYOK (bring your own key)
-
-Sonata does not need a harness. **Add provider** lists ~30 well-known
-providers alongside anything your harnesses discovered; pick one, enter its
-API key, and choose from the models it reports. A provider not on that
-list — an internal proxy, a self-hosted endpoint — doesn't need to be:
-**Add a custom provider…**, at the bottom of that same search list, asks for
-a name, a base URL, and whether it speaks OpenAI's or Anthropic's wire
-format, then drops into the same key-entry flow.
-
-The key is stored in sonata's own key store — never in `sonata.toml`, never in
-an agent file, and never on the command line. It is written only after you
-confirm the summary, so cancelling the wizard stores nothing.
-
-Unattended, with the key stored first so it stays out of argv and shell history:
-
-```bash
-sonata auth add deepseek
-sonata init --yes --providers byok/deepseek --models deepseek-deepseek-v4-flash --roles code
-```
-
-BYOK models use the [native path](docs/guide/native-path.md), so they run
-inside Claude Code's own loop, tools and permission modes.
-
-Two things worth knowing before you pick a provider:
-
-- **Model discovery is a convention, not a guarantee.** Sonata asks the provider
-  for `GET <base_url>/models`, which every provider in its list implements. If
-  yours does not answer — offline, or a different shape — the wizard asks you to
-  type the model ids instead, saying which of those happened. That is a
-  fallback, not an error.
-- **A rejected key gets its own screen.** If the provider answers 401 or 403,
-  sonata says so and offers to take a different key. It also offers to keep the
-  one you gave and type ids by hand, because some providers refuse to list
-  models for a key that works perfectly well for inference.
-- **`claude-*` models are not offered.** The router forwards that prefix to
-  Anthropic, so a `claude-` id cannot be served through a gateway. Aggregators
-  such as OpenRouter list plenty of them; sonata filters them out rather than
-  writing a config it would then refuse to load.
-
-### Adding Codex models
-
-**The wizard discovers OpenCode, Pi and Reasonix models** by provider then by
-model, and **Codex through `codex app-server`'s `model/list`** (JSON-RPC over
-stdio — codex has no provider dimension and takes a bare model id). Hand-written
-codex entries survive `sonata init`, so a bare-id model can also be added by
-hand:
-
-```toml
-[models."gpt-5-6-sol"]
-harness = "codex"
-id = "gpt-5.6-sol"
-```
-
-Hand-written entries survive `sonata init` — the wizard carries through any
-model whose harness it does not manage.
-
-Then run `sonata sync` to regenerate the agent files; Claude Code picks them up automatically.
-
-## Using it
-
-The generated agents are ordinary registry entries, so Claude selects them the
-same way it selects any other subagent. Ask for one by name, or describe work
-that suits it:
+Then ask Claude Code for one by name, or describe work that suits it:
 
 > "Use code-simple to convert these callbacks to async/await."
-
-> "Use code-normal to add this flag and its tests."
 
 > "Get review-complex to look at the auth refactor."
 
 Choose a tier by the task, not its size: `simple` is specified closely enough
-that the diff can be written without asking a question; `normal` is the default
-when you know what to change but need to fit it into the surrounding code;
-`complex` needs a design decision or the meaning of done is ambiguous. Size is
-not difficulty: a large mechanical change is `simple`, while a three-line
-interface decision is `complex`. When unsure, use `-normal`; a task that fails
-review twice is re-run one tier up. The `sonata-loop` skill `sonata init` installs
-(`skills/loop/SKILL.md`) drives this across a whole feature: plan, route each task
-to a tier, gate behind review, and escalate `simple` to `normal` to `complex`
-after repeated failures. The same folder is a Claude Code mod with a live panel:
-the loop's tasks, each tier agent's current activity, the model the router
-served, and an agent's diff when you select its row (`/sonata-loop panel` toggles it).
+that the diff could be written without asking a question; `normal` is the
+default when you know what to change but need to fit it into the surrounding
+code; `complex` needs a design decision, or "done" is still ambiguous. The
+`sonata-loop` skill that `sonata init` installs drives this across a whole
+feature — plan, route each task to a tier, gate behind review, escalate on
+repeated failure.
 
-They compose with everything Claude Code already does — parallel fan-out,
-workflows, and `isolation: "worktree"`.
+The [Getting started guide](docs/guide/getting-started.md) walks through the
+wizard screen by screen, including BYOK keys and hand-added models.
 
 ## How it works
 
-`sonata init` generates one agent per role × present tier — up to 12 agents
-across `simple`, `normal` and `complex` — such as `code-simple`, `code-normal`,
+`sonata init` generates one agent per role (`code`, `review`, `explore`,
+`plan`) and tier (`simple`, `normal`, `complex`) — up to 12 — plus, with
+`[auto_route]` configured, a `<role>-auto` agent per role that picks the tier
+itself. Tier agents are named `code-simple`, `code-normal`,
 `code-complex`, `review-simple`, and so on. Each agent's frontmatter names a
 router alias (`model: sonata-code-simple`), not a specific model:
 
@@ -373,45 +163,34 @@ killed and the run is reported `DONE`, `degraded`, with a report beginning
 
 ## Commands
 
+The ones you will use most:
+
 | Command | Purpose |
 |---|---|
-| `sonata upgrade` | Installs the latest published release with `npm install -g`. A development install (`npm link`) is refused and told to `git pull && npm run build` instead. Run `sonata restart` afterwards so the router runs the new version |
-| `sonata --version` (`-v`) | The running version and the directory it ran from. The path matters: `sonata` on PATH runs `dist/`, not `src/`, so this is how you tell which install answered |
-| `sonata init` | Set up sonata in this project (interactive); `--prune` removes stale generated agents |
-| `sonata reset [--global] [--yes]` | Remove sonata's configuration and generated files at one scope — the config, the generated agents, the loop skill, the CLAUDE.md block, and the routing env/hooks/allow-list. Keeps your gateway keys, the usage ledger and the caches, and shows the full plan before touching anything |
-| `sonata doctor [--json]` | Check tmux, harnesses, auth and versions; `--json` prints the same checks as structured output |
-| `sonata sync` | Regenerate agent files from `sonata.toml`; `--prune` removes stale generated agents |
-| `sonata agents [--list] [--json]` | Every generated tier agent, what each of its ranked candidates resolves to, its context window, and whether the alias carries `[1m]`. In a terminal it is also the editor: re-rank a tier without walking the whole wizard |
-| `sonata run` | Launch a run, print its id |
-| `sonata dispatch (--tier <role>-<tier> \| --model <key>)` | Blocking harness dispatch with ranked fallback — the fallback lane a tier agent reaches for when every native route fails |
-| `sonata tail` | Human/debugging view of a run |
-| `sonata approve` | Answer a pending approval |
-| `sonata log <id>` | Print what a run printed |
-| `sonata verify <id> [--model <key>]` | Verify a completed run |
-| `sonata auth` | Manage native-path gateway keys (`list`, `add <gateway>`, `remove <gateway>`, `login <gateway>`) |
-| `sonata catalog [update]` | Show the cached Artificial Analysis catalog's age, or refresh it (needs a stored `artificialanalysis` key). `sonata init` refreshes it itself when a discovered model is missing from it; `sonata doctor` warns when it goes stale |
-| `sonata litellm install\|status` | Install or report sonata's own pinned LiteLLM venv. `status` answering `not-required` is healthy — it means no gateway in this config routes through it |
-| `sonata serve` | Run the native router and its managed LiteLLM child (`--daemon` detaches); UI: `http://localhost:4100/` |
-| `sonata restart` | Kill whatever sonata router currently holds the port and start a fresh daemon |
-| `sonata code` | Launch a Claude Code session routed through the local proxy (passes `claude` args through) |
-| `sonata route on\|off\|status [--global]` | Route every plain `claude` session in the project (or, with `--global`, every project) through the proxy via settings.local.json/settings.json |
-| `sonata route auto\|manual [--global]` | Route each session for its lifetime via SessionStart/SessionEnd hooks, keeping Remote Control |
-| `sonata usage [--since 7d] [--by model\|role\|tier\|effort\|gateway\|lane\|session\|project] [--session <id>] [--json]` | Tokens and cost from the ledger: native requests as the router saw them, and `sonata dispatch` runs read from each harness's own store once they finish (`--by lane` splits the two); unpriced volume is reported separately, never folded into the total |
-| `sonata status [--session <id>\|--all]` | Whether the router is up and on which port, then the recent alias → candidate served → tokens → failed attempts decisions from the ledger; reachability and routing state live in `sonata route status` |
-| `sonata runs [--json]` | List this project's dispatch runs |
-| `sonata gc` | Kill finished tmux sessions |
+| `sonata init` | Set up sonata in this project |
+| `sonata doctor` | Check everything sonata depends on, and say how to fix what's broken |
+| `sonata agents` | See and re-rank the tier agents' models |
+| `sonata route auto` | Route each Claude Code session through the router, keeping Remote Control |
+| `sonata code` | Launch one routed Claude Code session |
+| `sonata usage` / `sonata status` | Tokens and cost, and what the router served |
+| `sonata dispatch` | Run a task through a model's own harness — the fallback lane |
+| `sonata upgrade` | Install the latest release |
+
+Every command and flag: [Commands](docs/guide/commands.md).
 
 ## Documentation
 
-The essentials are above. Deep-dive reference lives in
-[`docs/guide/`](docs/guide/):
+**[zhihaohong52.github.io/sonata](https://zhihaohong52.github.io/sonata/)** — the user guide, also
+readable here in [`docs/guide/`](docs/guide/):
 
 | Guide | Covers |
 |---|---|
-| [Native path](docs/guide/native-path.md) | Running foreign models inside Claude Code's own loop through the local routing proxy |
-| [Codex subscription auth](docs/guide/codex-subscription.md) | Authenticating the `codex-oauth` gateway against a ChatGPT subscription |
+| [Getting started](docs/guide/getting-started.md) | Install, `sonata init` screen by screen, BYOK, first dispatch |
+| [Commands](docs/guide/commands.md) | Every command and flag |
+| [Configuration](docs/guide/configuration.md) | The `sonata.toml` schema, resolution order, roles and tiers |
+| [Native path](docs/guide/native-path.md) | Running foreign models inside Claude Code's own loop through the local router |
+| [Codex subscription auth](docs/guide/codex-subscription.md) | Authenticating against a ChatGPT subscription instead of a metered key |
 | [Permission modes](docs/guide/permission-modes.md) | How each harness honours Claude Code's permission modes |
-| [Configuration](docs/guide/configuration.md) | The `sonata.toml` schema, resolution order, and roles/tiers |
 | [Troubleshooting](docs/guide/troubleshooting.md) | Symptom → cause table |
 | [Security](docs/guide/security.md) | What sonata does and doesn't protect against |
 | [Limitations](docs/guide/limitations.md) | Known gaps worth knowing before depending on this |
@@ -419,39 +198,17 @@ The essentials are above. Deep-dive reference lives in
 
 Where this is headed: [Roadmap to 1.0](docs/roadmap.md).
 
-Design history — every feature's spec and implementation plan, kept as a
-permanent record — is indexed in [`docs/superpowers/`](docs/superpowers/).
-Architecture reviews are in [`docs/reviews/`](docs/reviews/). What using
-sonata to implement sonata taught about sizing and verifying dispatched work
-is in [`docs/dispatching-work-through-sonata.md`](docs/dispatching-work-through-sonata.md).
-
-## Development
-
-```bash
-npm install
-npm test          # 1523 tests; needs tmux
-npm run typecheck
-npm run build
-```
-
-The test suite runs against a **fake harness** — a scripted binary replaying a
-normal run, a crash, a real captured approval prompt, a hang that the watchdog
-must kill, a clean exit with no report, and a harness-written report — so the
-whole engine is covered with no API spend and no harness installed.
-
-See [Adding a harness](docs/guide/adding-a-harness.md) for the extension
-point, and [Documentation](#documentation) above for the design-history index.
+For maintainers and the curious: the design record behind the code is in
+[`docs/internals/`](docs/internals/), every feature's spec and plan in
+[`docs/superpowers/`](docs/superpowers/), and point-in-time audits in
+[`docs/reviews/`](docs/reviews/). `DESIGN.md` and `PRODUCT.md` at the root are
+the design brief for the terminal UI.
 
 ## Contributing
 
-Issues and pull requests are welcome.
-
-- Run `npm test` and `npm run typecheck` before opening a PR; CI runs both on
-  Linux with tmux installed.
-- Add tests for behaviour you change. The suite needs no API keys.
-- Prefer evidence to inference: if a change depends on how a harness behaves,
-  say how you verified it. A captured fixture beats a plausible regex.
-- Keep harness-specific knowledge inside its adapter.
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md)
+for the development setup and what a good PR looks like. Report security
+issues privately, as described in [SECURITY.md](SECURITY.md).
 
 ## Changelog
 

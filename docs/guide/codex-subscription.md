@@ -1,7 +1,8 @@
 # Using a ChatGPT (Codex) subscription with sonata
 
 Verified end to end on 2026-08-20 against codex-cli 0.147.0, LiteLLM 1.82.3,
-a ChatGPT Plus account, and `gpt-5.6-luna`.
+a ChatGPT Plus account, and `gpt-5.6-luna`. Sonata now pins its own LiteLLM
+(1.98.0); the dated notes below say what held when they were measured.
 
 A `codex login` credential is **ChatGPT OAuth**, not an OpenAI API key. That
 distinction decides everything below, and getting it wrong produces errors that
@@ -54,9 +55,15 @@ Runs the real `codex` CLI, which already speaks all of the above.
 harness = "codex"
 id = "gpt-5.6-luna"
 
-[generate.roles]
-code = ["gpt-5.6-luna"]
+[tiers.code]
+simple  = ["gpt-5.6-luna@xhigh"]
+complex = ["gpt-5.6-luna@xhigh"]
 ```
+
+`simple` and `complex` are required lists; `normal` is optional. The `@xhigh`
+suffix pins the reasoning-effort level — a bare candidate is refused at load
+when the catalog holds the model at any level (see
+[Configuration](configuration.md)).
 
 `sonata sync`, then dispatch. Verified: `codex exec -m 'gpt-5.6-luna' -s
 workspace-write` completed a real repository task, exit 0.
@@ -64,7 +71,8 @@ workspace-write` completed a real repository task, exit 0.
 Note `sonata doctor` will report `key source: codex: no key`. That refers to the
 **native** gateway and is irrelevant here — the harness uses codex CLI's own
 auth. Note also that `config.models` is resolved before `config.native.models`
-(`src/commands/run.ts:106` vs `:111`), so adding a `[models]` entry reroutes an
+([`src/commands/run.ts`](https://github.com/zhihaohong52/sonata/blob/main/src/commands/run.ts)),
+so adding a `[models]` entry reroutes an
 existing agent without regenerating it or restarting Claude Code.
 
 ## Route 2 — the native path (foreign model inside Claude Code's own loop)
@@ -126,10 +134,10 @@ bridge never accumulates
 normal use. What does break: non-streaming callers — health checks, token
 counting, `stream:false` probes.
 
-Upstream: [BerriAI/litellm#25429](https://github.com/BerriAI/litellm/issues/25429),
-open since 2026-04-09, fix PR
-[#31332](https://github.com/BerriAI/litellm/pull/31332) still unmerged. No
-stable release contains it. Reproduced on 1.82.3 here.
+Upstream: [BerriAI/litellm#25429](https://github.com/BerriAI/litellm/issues/25429).
+As of 2026-08-20 it had been open since 2026-04-09, fix PR
+[#31332](https://github.com/BerriAI/litellm/pull/31332) was still unmerged,
+no stable release contained it, and it reproduced on 1.82.3 here.
 
 ## How sonata implements Route 2
 
@@ -139,15 +147,15 @@ Configure it by marking the gateway — nothing else is needed:
 [native.gateways."codex"]
 auth = "codex-oauth"
 
-[native.models."gpt-5.6-luna"]
+[models."gpt-5.6-luna"]
 gateway = "codex"
 id = "gpt-5.6-luna"
-context_window = 128000
+# context_window = 128000   # optional; this is the default
 ```
 
-`base_url` is refused here: a config naming the metered API would describe a
-gateway that can never authenticate. `sonata init` writes this form by itself
-when `codex login` used a ChatGPT account.
+`base_url` is not needed, and naming another one is refused: a config naming
+the metered API would describe a gateway that can never authenticate. `sonata
+init` writes this form by itself when `codex login` used a ChatGPT account.
 
 A sonata-initiated login identifies itself to OpenAI as the Codex CLI. This is
 not new behavior: LiteLLM's own Codex provider already makes that identification
@@ -170,6 +178,30 @@ What each piece does:
 
 Verified end to end: an Anthropic `/v1/messages` streaming request to
 `sonata serve`'s router returned `"text": "OK"` from `gpt-5.6-luna`.
+
+### Which login a gateway reads
+
+`credential_source` on `[native.gateways."<name>"]` chooses the store a
+gateway authenticates from:
+
+- `sonata` — a login per gateway name, in sonata's own store
+  (`sonata auth login <gateway>`).
+- `codex` — the credential `codex login` wrote to `~/.codex/auth.json`.
+  Refused with `auth = "api-key"` (that is a subscription, not a bearer key)
+  and with `copilot-oauth` (Copilot logins come only from opencode).
+- `opencode` — opencode's store: its `openai` entry for `codex-oauth`, its
+  `github-copilot` entry for `copilot-oauth`.
+- absent — a ChatGPT gateway reads codex's login when there is one, else
+  opencode's; a Copilot gateway reads opencode's, as it does with
+  `credential_source = "opencode"`. On an `api-key` gateway the default
+  reads sonata's key store first, then opencode's.
+
+LiteLLM holds one ChatGPT and one Copilot credential per process, so two
+gateways of one OAuth kind that resolve to different logins cannot both be
+served. Sonata drops every gateway of that kind — their models answer a typed
+502 naming the gateways and projects, and the rest of the config keeps
+working — and `sonata doctor` warns, naming both. Point them at one
+credential.
 
 ### The credential must not outlive serve
 
