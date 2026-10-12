@@ -33,6 +33,10 @@ describe('spentLabel', () => {
     expect(spentLabel(bucket({ costUsd: 1.1, coveredUsd: 0.42, coveredRequests: 1 }), money)).toBe('$1.10');
   });
 
+  it('shows an em dash when covered and unpriced requests have no billed cost', () => {
+    expect(spentLabel(bucket({ coveredUsd: 0.42, coveredRequests: 1, unpricedRequests: 1 }), money)).toBe('—');
+  });
+
   it('shows an em dash for an all-unpriced bucket', () => {
     expect(spentLabel(bucket({ unpricedRequests: 2 }), money)).toBe('—');
   });

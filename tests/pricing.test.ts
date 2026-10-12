@@ -219,6 +219,40 @@ auth = "session"
     });
   });
 
+  it('does not fall back to OpenRouter for a session model missing from Anthropic', () => {
+    const sessionConfig = parseConfig(`
+[models."opus"]
+gateway = "claude"
+id = "claude-opus-4-1"
+
+[native.gateways."claude"]
+provider = "anthropic"
+auth = "session"
+`);
+    const sessionCache: ModelsDevCache = {
+      fetchedAt: '2026-08-26T15:31:30.637Z',
+      providers: { openrouter: { 'claude-opus-4-1': { input: 15, output: 75 } } },
+    };
+    expect(resolvePrice(sessionConfig, 'opus', tokens, now, sessionCache)).toEqual({ source: 'none' });
+  });
+
+  it('honours an explicit provider for a session gateway', () => {
+    const sessionConfig = parseConfig(`
+[models."opus"]
+gateway = "claude"
+id = "claude-opus-4-1"
+[native.gateways."claude"]
+provider = "anthropic"
+auth = "session"
+pricing_provider = "openrouter"
+`);
+    const sessionCache: ModelsDevCache = {
+      fetchedAt: '2026-08-26T15:31:30.637Z',
+      providers: { openrouter: { 'claude-opus-4-1': { input: 15, output: 75 } } },
+    };
+    expect(resolvePrice(sessionConfig, 'opus', tokens, now, sessionCache)).toMatchObject({ source: 'models-dev', totalUsd: 15 });
+  });
+
   it('proposes Anthropic pricing for the session auth gateway', () => {
     expect(proposePricingProvider('claude', 'session')).toEqual(['anthropic']);
   });

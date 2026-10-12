@@ -223,6 +223,11 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
   const selectedGateways = [...new Set([...configured, ...existingNames])];
 
   const routeToProvider = (provider: ProviderOption) => {
+    if (gatewayAuth[provider.provider] === 'session') {
+      const option = { ...provider, key: byokProviderKey(provider.provider) };
+      setScreen({ kind: 'oauth-models', provider: option, ids: oauthModelIds(modelsDevCache, provider.provider, 'session') });
+      return;
+    }
     if (provider.harness === 'byok') {
       const known = byokProviders.find((p) => p.name === provider.provider);
       if (known === undefined) return;

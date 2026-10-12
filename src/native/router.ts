@@ -578,11 +578,8 @@ export function withModel(body: Buffer, model: string): Buffer {
  * ranking scored this model at the stated level; a request that runs it at
  * another describes a different model.
  *
- * Applied on both transports. On `direct` the body is otherwise passed
- * through byte-identical because assistant blocks carry opaque vendor state;
- * one top-level key leaves those blocks untouched, and an Anthropic-wire
- * upstream ignores a key it does not know (measured 2026-09-14 against
- * DeepSeek's `/anthropic/v1/messages`: 200 with `reasoning_effort: "bogus"`).
+ * Applied only on LiteLLM routes. Anthropic-native direct routes have no
+ * `reasoning_effort` field and must preserve `thinking` unchanged.
  *
  * A bare candidate (no effort) returns the identical buffer — exactly the
  * request that shipped before levels existed. What the router cannot tell is
@@ -2007,7 +2004,7 @@ async function routeTierRequest(
     const prepared = foreign ? stripForeignThinking(outbound) : outbound;
     // Effort is applied last, after the strip: both touch thinking-adjacent
     // fields for different reasons, and the strip must see the original.
-    const body = withEffort(withModel(prepared, direct ? route.native!.id : cool), route.effort);
+    const body = withEffort(withModel(prepared, direct ? route.native!.id : cool), direct ? undefined : route.effort);
     const variant = joinCandidate(route.key, route.effort);
     const response = direct
       ? await forwardDirect(
@@ -2401,13 +2398,6 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   const requested = requestedModel(req.body);
   const session = req.headers['x-claude-code-session-id'];
 
-  // Only Anthropic holds Claude Code's threads: every other route needs the
-  // whole conversation in the request.
-  if (!isClaudeRequest(req.body) && isThreaded(req.body)) {
-    deps.log?.(`router: model=${requested ?? '?'} sent a server-side thread; asking for a stateless resend`);
-    return threadUnsupported();
-  }
-
   // A bare model name may carry a level (`flash@low`) in the same grammar a
   // tier candidate uses. This is how the claude harness adapter — whose
   // `--model` names a sonata key straight to the router — honours a
@@ -2477,6 +2467,15 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       headers: { 'content-type': 'application/json' },
       body: anthropicErrorBody('rate_limit_error', refusal),
     };
+  }
+
+  // Refuse threaded requests for all routes except unconfigured Claude
+  // pass-through; do so before any request can reach an upstream.
+  if (isThreaded(req.body)
+    && !(isClaudeRequest(req.body)
+      && (alias === undefined || (!alias.startsWith('sonata-') && deps.resolveNative?.(alias, tenant) === undefined)))) {
+    deps.log?.(`router: model=${requested ?? '?'} sent a server-side thread; asking for a stateless resend`);
+    return threadUnsupported();
   }
 
   // Once, ahead of every branch, so the tier loop, the bare-key path and the
@@ -2569,7 +2568,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   if (native?.transport === 'direct' && alias !== undefined) {
     deps.log?.(`${req.method} ${req.url} model=${requested ?? '?'} -> direct`);
     const response = await forwardDirect(
-      withEffort(withModel(req.body, native.id), bareEffort),
+      withModel(req.body, native.id),
       {
         baseUrl: native.baseUrl ?? '',
         key: deps.gatewayKeys?.(tenant)[native.gateway] ?? '',

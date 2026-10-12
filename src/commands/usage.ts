@@ -80,8 +80,10 @@ export function parseUsageFlags(args: readonly string[]): UsageFlags {
  * its work was covered. All-unpriced buckets remain `—`.
  */
 export function spentLabel(bucket: UsageBucket, money: (usd: number) => string): string {
-  if (bucket.costUsd === 0 && bucket.coveredUsd === 0 && bucket.unpricedRequests === bucket.requests) return '—';
-  if (bucket.costUsd === 0 && bucket.coveredRequests > 0) return `${money(bucket.coveredUsd)} sub`;
+  if (bucket.costUsd === 0 && (bucket.unpricedRequests > 0 || bucket.coveredRequests === 0)) return '—';
+  if (bucket.costUsd === 0 && bucket.coveredRequests === bucket.requests && bucket.requests > 0) {
+    return `${money(bucket.coveredUsd)} sub`;
+  }
   return money(bucket.costUsd);
 }
 

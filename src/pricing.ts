@@ -349,7 +349,9 @@ export function resolvePrice(
   // a model the lab itself has not listed can still be priced from the rate
   // models.dev already holds for it. Naming it yourself simply moves it up.
   let scraped: Rates | undefined;
-  outer: for (const id of withFallbackProvider(provider)) {
+  outer: for (const id of gateway?.auth === 'session' && gateway.pricingProvider === undefined
+    ? provider
+    : withFallbackProvider(provider)) {
     const table = modelsDev.providers[id];
     if (table === undefined) continue;
     for (const name of lookup) {

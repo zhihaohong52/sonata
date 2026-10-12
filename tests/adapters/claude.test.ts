@@ -207,6 +207,35 @@ describe('claudeAdapter.plan — configured Claude keys carry effort', () => {
     expect(plan.effortHonoured).toBe(true);
   });
 
+  it('carries effort for a configured LiteLLM Claude key', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sonata-claude-adapter-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."claude-sonnet-4.5"]
+gateway = "copilot"
+id = "claude-sonnet-4.5"
+[native.gateways."copilot"]
+base_url = "https://copilot.example/v1"
+`);
+    const plan = claudeAdapter.plan({ ...base, cwd, modelId: 'claude-sonnet-4.5', mode: 'acceptEdits', effort: 'low' });
+    expect(plan.script).toContain(`--model 'claude-sonnet-4.5@low'`);
+    expect(plan.effortHonoured).toBe(true);
+  });
+
+  it('leaves a configured direct key bare and reports effort unhonoured', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sonata-claude-adapter-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."opus"]
+gateway = "claude"
+id = "claude-opus-4-1"
+[native.gateways."claude"]
+provider = "anthropic"
+auth = "session"
+`);
+    const plan = claudeAdapter.plan({ ...base, cwd, modelId: 'opus', mode: 'acceptEdits', effort: 'low' });
+    expect(plan.script).toContain(`--model 'opus'`);
+    expect(plan.effortHonoured).toBe(false);
+  });
+
   it('leaves an undefined Claude model bare and effort unhonoured', () => {
     const plan = claudeAdapter.plan({ ...base, modelId: 'claude-opus-4-1', mode: 'acceptEdits', effort: 'low' });
     expect(plan.script).toContain(`--model 'claude-opus-4-1'`);

@@ -2027,6 +2027,19 @@ context_window = 128000
     expect(check!.detail).toContain('acme');
   });
 
+  it('does not warn that an unconfigured session gateway lacks pricing', async () => {
+    const toml = `
+schema_version = 1
+[native.gateways."claude"]
+provider = "anthropic"
+auth = "session"
+[models."opus"]
+gateway = "claude"
+id = "claude-opus-4-1"
+`;
+    expect(await pricingCheck(toml)).toBeUndefined();
+  });
+
   it('stays silent for a gateway that declares pricing_provider', async () => {
     expect(await pricingCheck(config('pricing_provider = ["openai"]'))).toBeUndefined();
   });

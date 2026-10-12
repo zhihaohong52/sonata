@@ -788,6 +788,7 @@ export async function cmdDoctor(
       .map(() => false),
   ];
   const unpricedGateways = gatewayEntries.filter(([name, gw]) => {
+    if (gw.auth === 'session' && gw.pricingProvider === undefined) return false;
     if (gw.pricingProvider !== undefined && gw.pricingProvider.length > 0) return false;
     if (gw.price !== undefined) return false;
     const priced = handPricedOn(name);

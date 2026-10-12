@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { HarnessAdapter, LaunchPlan, PlanInput, UsageQuery, UsageRecord, UsageResult } from './types.js';
 import { asRecord, count, epochMs, filesIn, readJsonl } from './usage-files.js';
-import { isReadOnlyRole, loadConfig } from '../config.js';
+import { isReadOnlyRole, loadConfig, nativeRouteFor } from '../config.js';
 import { joinCandidate } from '../effort.js';
 import { homedir } from 'node:os';
 import { routerPorts } from '../commands/ports.js';
@@ -39,10 +39,8 @@ export function planClaude(
   // `reasoning_effort` (PR 2) — so the wire path exists and a second mechanism
   // here would be one more place for the two to disagree.
   //
-  // A name the config defines is a sonata key like any other and takes a
-  // level; one it does not define is Anthropic's own (the router passes it
-  // through untouched), so a level appended there would reach Anthropic as
-  // part of the name.
+  // Configured keys on direct routes cannot carry an effort suffix because
+  // Anthropic has no reasoning_effort field; other configured routes can.
   let config;
   try {
     config = loadConfig(input.cwd, homedir());
@@ -50,11 +48,12 @@ export function planClaude(
     // Keep the adapter usable without a config; the model then routes as a
     // direct Anthropic name when it has the reserved prefix.
   }
-  const anthropicRouted = input.modelId.startsWith('claude-') && config?.unifiedModels[input.modelId] === undefined;
-  const effortHonoured = !anthropicRouted;
+  const route = config === undefined ? undefined : nativeRouteFor(config, input.modelId);
+  const effortHonoured = route?.transport !== 'direct'
+    && !(input.modelId.startsWith('claude-') && config?.unifiedModels[input.modelId] === undefined);
   const flags = [
     '-p',
-    `--model ${shellQuote(anthropicRouted ? input.modelId : joinCandidate(input.modelId, input.effort))}`,
+    `--model ${shellQuote(effortHonoured ? joinCandidate(input.modelId, input.effort) : input.modelId)}`,
     `--permission-mode ${permissionMode}`,
   ];
   // `--allowedTools <value>` (space form) is variadic in claude's own CLI

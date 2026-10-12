@@ -106,6 +106,28 @@ describe('Claude session provider in ProvidersStep', () => {
     app.unmount();
   });
 
+  it('routes a config-sourced Claude session provider to model selection without key entry', async () => {
+    let state: InitState = {};
+    const app = render(React.createElement(ProvidersStep, {
+      home: '/tmp/sonata-config-session-test', harnesses: [],
+      providers: [{ key: 'config/claude', harness: 'config', provider: 'claude', count: 1 }, { key: 'byok/claude', harness: 'byok', provider: 'claude', count: 0 }],
+      byokProviders: [{ name: 'claude', url: 'https://api.anthropic.com/v1' }],
+      credentialAvailability: {}, gatewayAuth: { claude: 'session' }, storedKeys: {},
+      modelsDevCache: cache, state,
+      onChange: (updater: (current: InitState) => InitState) => { state = updater(state); },
+      onContinue: () => {}, onBack: () => {}, onCancel: () => {},
+    }));
+    const frame = () => app.lastFrame() ?? '';
+    await settle();
+    app.stdin.write(ENTER);
+    await until(() => frame().includes('Add provider'), 'the provider picker');
+    app.stdin.write('claude');
+    app.stdin.write(ENTER);
+    await until(() => frame().includes('Models for claude') && frame().includes('claude-opus-4-1'), 'the models screen');
+    expect(frame()).not.toContain('API key for claude');
+    app.unmount();
+  });
+
   it('keeps claude model ids offered for Copilot', () => {
     expect(oauthModelIds({ ...cache, providers: {
       'github-copilot': { 'claude-sonnet-4.5': { input: 1 } },
