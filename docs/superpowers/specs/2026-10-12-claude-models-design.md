@@ -180,14 +180,14 @@ per token. A day of subscription work never trips it.
 
 The main cost cell of a bucket whose work was entirely covered reads `—` today.
 It shows the bucket's list value instead, marked `sub` (`$0.42 sub`). A mixed
-bucket shows the billed amount with the covered value beside it (`$1.10 + $0.42 sub`).
-The existing covered column and totals keep their meaning.
+bucket's cell shows the billed amount, and the existing covered column beside it
+carries the subscription value. The covered column and totals keep their meaning.
 
 ### `sonata status` and the router's session API
 
 `RouteLine` (`src/commands/status.ts`), which is also what
-`/__sonata/api/session/<id>` returns to the panel, gains `isCovered?: boolean`,
-true when the row's price source is `covered`. `priceUsd` keeps carrying the
+`/__sonata/api/session/<id>` returns to the panel, gains `isCovered?: true`,
+present only when the row's price source is `covered`. `priceUsd` keeps carrying the
 list value, as it already does for covered rows.
 
 `sonata status` prints a covered route's cost as `$0.42 sub`, and its totals
@@ -196,8 +196,8 @@ line splits billed money from subscription value:
 
 ### The loop panel
 
-- `RouteLine` in `skills/loop/types/index.d.ts` gains `isCovered?: boolean`,
-  and `fetchOnce`'s route-shape filter accepts it as an optional boolean.
+- `RouteLine` in `skills/loop/types/index.d.ts` gains `isCovered?: true`,
+  and `fetchOnce`'s route-shape filter accepts it only as `true` or absent.
 - `attribute` returns `isCovered: true` when any of an agent's routes was
   covered; `taskCost` returns the same per task.
 - **Agent and task rows** show the list cost, then ` sub` in the `inactive`
