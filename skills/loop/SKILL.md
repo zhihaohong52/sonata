@@ -44,6 +44,14 @@ agent fails with "all native routes … failed", use the tier the error names
 (`sonata dispatch --tier code-normal …`); if it names none, use
 `<role>-normal`.
 
+## `/sonata-loop panel`
+
+`/sonata-loop panel` toggles the loop panel; the panel's mod answers it before
+this skill loads. If you are reading this with `panel` as the whole argument,
+the mod is not loaded in this session: do not start a loop. Say that the panel
+needs the mod loaded (a new session after `sonata sync`, and `sonata doctor` to
+check it) and stop.
+
 ## Reporting to the loop panel
 
 When a tool named `mcp__sonata-loop__sonata_loop` is available, the sonata-loop

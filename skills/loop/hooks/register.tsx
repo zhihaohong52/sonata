@@ -110,13 +110,6 @@ export const register: Register = (on, options) => {
         required: ['action'],
       },
     })
-    // Not /sonata-loop: that name is the skill's own. A refused registration
-    // must not cost the rest of this hook (the tool is registered above).
-    try {
-      await $.command.register({ name: 'loop-panel', description: 'Show or hide the sonata loop panel' })
-    } catch {
-      // the panel still opens on the loop's first plan
-    }
     const started = await next(e)
     sessionCwd = started.cwd
     return started
@@ -133,7 +126,10 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'loop-panel' }, async $ => {
+  // One command: `/sonata-loop panel` toggles the pane; anything else is the
+  // skill's own /sonata-loop, passed on untouched.
+  on('command.run', { command: 'sonata-loop' }, async ($, e, next) => {
+    if (e.args.trim().toLowerCase() !== 'panel') return next(e)
     const isOpen = (await $.ui.panes()).some(p => p.id === PANE)
     if (isOpen) await $.ui.close({ id: PANE })
     else await $.ui.open({ id: PANE, title: 'sonata loop' })

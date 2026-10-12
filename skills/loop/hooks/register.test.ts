@@ -25,13 +25,39 @@ test('the tool answers with a string result, the shape the host accepts', async 
   expect(typeof (r as { result?: unknown }).result).toBe('string')
 })
 
-test('the panel command does not take the skill\'s own /sonata-loop name', async ($, on) => {
+test('registers no command of its own: the panel rides on the skill\'s /sonata-loop', async ($, on) => {
   const names: string[] = []
   on('tool.register', () => ({ value: {} }))
   on('command.register', (_$, e) => { names.push((e as { name: string }).name); return { value: {} } })
   on('session.start', () => ({ cwd: '/tmp' }))
   await $.session.start({ source: 'startup', cwd: '/tmp' } as never)
-  expect(names).toEqual(['loop-panel'])
+  expect(names).toEqual([])
+})
+
+test('/sonata-loop panel toggles the pane and runs no skill', async ($, on) => {
+  const opened: string[] = []
+  let closed = 0
+  let skillRuns = 0
+  let panes: { id: string }[] = []
+  on('ui.panes', () => ({ value: panes }))
+  on('ui.open', (_$, e) => { opened.push((e as { id: string }).id); return { value: { isPlaced: true } } })
+  on('ui.close', () => { closed++; return { value: {} } })
+  on('command.run', () => { skillRuns++; return { text: 'skill ran' } })
+  const run = (args: string) => $.command.run({ command: 'sonata-loop', args } as never)
+  expect((await run('panel')).text).toBe('Loop panel opened.')
+  expect(opened).toEqual(['sonata-loop'])
+  panes = [{ id: 'sonata-loop' }]
+  expect((await run(' Panel ')).text).toBe('Loop panel closed.')
+  expect(closed).toBe(1)
+  expect(skillRuns).toBe(0)
+})
+
+test('/sonata-loop with anything else runs the skill as typed', async ($, on) => {
+  const seen: string[] = []
+  on('command.run', (_$, e) => { seen.push((e as { args: string }).args); return { text: 'skill ran' } })
+  expect((await $.command.run({ command: 'sonata-loop', args: 'add a logout button' } as never)).text).toBe('skill ran')
+  expect((await $.command.run({ command: 'sonata-loop', args: '' } as never)).text).toBe('skill ran')
+  expect(seen).toEqual(['add a logout button', ''])
 })
 
 test('an agent finishing triggers one more router fetch, so its last request is counted', async ($, on) => {

@@ -17,7 +17,7 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   silent for 90 s reads `stalled`. Selecting a row opens its token breakdown
   (input, output, cache read, cache write) and its applied diff beneath it.
   The orchestrator reports the plan through the mod's `sonata_loop` tool;
-  `/loop-panel` toggles the pane. `sonata init` and `sonata sync` now install
+  `/sonata-loop panel` toggles the pane. `sonata init` and `sonata sync` now install
   the whole skill folder, and `sonata doctor` says when the installed panel is
   missing or out of date. The repo is also a plugin marketplace, so the panel
   installs with `claude plugin install sonata-loop@sonata`; with that install
