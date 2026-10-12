@@ -7,24 +7,17 @@
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
 
-Claude Code's subagents are excellent, but they are always Claude. Sonata lets
-you dispatch a subagent backed by a different model, through the ordinary
-Agent tool — same interface, same working directory, same report contract.
-Different brain.
+Claude Code's subagents always run on Claude. Sonata gives you subagents that
+run on other models — GPT, DeepSeek, GLM, Kimi, or anything else you can reach
+— called through the ordinary Agent tool, in the same working directory, with
+the same tools and permission modes. Your main session stays on Claude; only
+the subagents change.
 
-Two ways to run it:
-
-- **Native** — the foreign model runs *inside Claude Code's own loop*: its
-  tools, its permission modes, no separate TUI. A local routing proxy
-  (`sonata serve`) makes this possible; see the [Native path guide](docs/guide/native-path.md).
-  This is the default: `sonata init` generates one agent per role and tier
-  (`code-simple`, `review-complex`, …), each backed by a ranked list of models
-  the router tries in order.
-- **Harness** — the foreign model runs in *its own* CLI (OpenCode, Codex, Pi,
-  Reasonix), launched in a detached tmux session and driven through
-  `sonata dispatch`. No proxy required — this is the fallback lane: when
-  every native route for a tier has failed, the router says so and names the
-  `sonata dispatch --tier <role>-<tier>` command, which the agent runs itself.
+`sonata init` generates agents such as `code-simple`, `code-complex` and
+`review-complex`, each backed by a ranked list of models. A local router
+(`sonata serve`) runs them inside Claude Code's own loop and tries the next
+model when one fails. If every model in the list fails, the agent falls back to
+running the task in that model's own CLI (OpenCode, Codex, Pi or Reasonix).
 
 Two reasons you might want that:
 
@@ -35,31 +28,24 @@ Two reasons you might want that:
   fewer problems than asking a different model family. Review is where a second
   opinion actually pays.
 
-```
-● code-deepseek-v4-flash (running)
-  └ sonata: tail a1f3e2
-     → read  src/parser.ts
-     → edit  src/parser.ts  +31 −12
-     → bash  pytest -q → 47 passed
-  done — "Refactored the parser. Tests pass."
-```
-
+Sonata itself is free and MIT-licensed; you pay your providers as usual, and
+`sonata usage` shows what each model, tier and role cost you.
 
 ## Status
 
-**Public beta.** Sonata is pre-1.0 and changing quickly. The engine and the
-OpenCode, Codex, Pi and Reasonix harness adapters are complete and tested, each
-verified end to end against a real model; so is the native path — routing,
-permission modes and ranked fallback confirmed against real dispatches. Expect rough edges in setups nobody has tried yet — and please
-[report them](https://github.com/zhihaohong52/sonata/issues).
+**Public beta.** Sonata is pre-1.0 and changing quickly. The native path and
+the OpenCode, Codex, Pi and Reasonix adapters are complete, tested, and verified
+end to end against real models. Expect rough edges in setups nobody has tried
+yet, and please [report them](https://github.com/zhihaohong52/sonata/issues).
 
 Read [Limitations](docs/guide/limitations.md) and
-[Security](docs/guide/security.md) before depending on it: the models sonata
-launches run on your machine, as you.
+[Security](docs/guide/security.md) before depending on it. The models sonata
+launches run on your machine, as you, and your code is sent to whichever
+providers you configure.
 
 ## Quickstart
 
-Requires **Node 22+**, **tmux**, and **macOS or Linux**, plus a provider: an
+Requires **Claude Code**, **Node 22+**, **tmux**, and **macOS or Linux**, plus a provider: an
 API key for one of ~30 well-known providers, your Claude Code account, or an
 authenticated harness ([OpenCode](https://opencode.ai),
 [Codex CLI](https://github.com/openai/codex),
@@ -75,9 +61,12 @@ sonata init
 
 `sonata init` checks your environment, reports anything broken with the
 command that fixes it, then walks you through providers, models, roles and a
-ranking of models into tiers. It writes `sonata.toml`, generates the tier
-agents, and offers to route your Claude Code sessions through sonata's local
-router. Every prompt has a flag, so it also runs unattended.
+ranking of models into tiers. It writes `sonata.toml` and generates the tier
+agents. Every prompt has a flag, so it also runs unattended.
+
+Accept its offer to route your sessions (`sonata route auto`), then **start a
+new Claude Code session**: routing is set up when a session starts. Without it,
+tier agents fail with `model_not_found`; `sonata doctor` says what is missing.
 
 Then ask Claude Code for one by name, or describe work that suits it:
 
