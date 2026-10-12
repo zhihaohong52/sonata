@@ -8,6 +8,13 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Changed
+
+- **A mistyped command suggests the one you meant.** `sonata docotr` now
+  answers `✘ unknown command "docotr"` with `└ Did you mean sonata doctor?`
+  (a prefix match, or the nearest command within two edits; nothing when none
+  is close). The exit code stays 2.
+
 ### Fixed
 
 - **Tier agents on Claude Code 2.1.29x received fragments instead of their
