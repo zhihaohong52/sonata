@@ -22,6 +22,8 @@ features:
     details: Tier agents run inside Claude Code's own loop through a local router that tries a ranked list of models. When every native route fails, sonata dispatch runs the task in the model's own CLI instead.
 ---
 
+![The code-complex tier in sonata agents](/screenshots/tier-ranking.png)
+
 ::: warning Public beta
 Sonata is pre-1.0 and under active development. Read
 [Limitations](/guide/limitations) and [Security](/guide/security) before

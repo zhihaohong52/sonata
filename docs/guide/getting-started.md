@@ -121,6 +121,8 @@ Picking a harness-catalogued provider then shows its models to select from:
   2 of 13 · space toggle · type to filter · enter confirm · esc cancel
 ```
 
+![Re-ranking the code-complex tier](/screenshots/tier-ranking.png)
+
 Then it asks you to rank your selected models into `simple`, `normal` and
 `complex` tiers per role — pre-sorted by a cached Artificial Analysis catalog
 (`sonata catalog update`, with a free key from [artificialanalysis.ai](https://artificialanalysis.ai))
@@ -143,7 +145,8 @@ agents have a router to reach. Project scope writes `./sonata.toml` and
 `./.claude/agents/`; machine scope writes `~/.config/sonata/sonata.toml` and
 `~/.claude/agents/`, where Claude Code offers the agents in every repository.
 
-Claude Code picks up the new agents automatically; no restart is needed.
+Claude Code picks up the new agents automatically; no restart is needed. To
+change a ranking later, run `sonata agents` and press enter on a tier.
 
 Every prompt has a flag, so it also works unattended:
 

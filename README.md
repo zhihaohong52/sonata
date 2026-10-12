@@ -19,6 +19,8 @@ the subagents change.
 model when one fails. If every model in the list fails, the agent falls back to
 running the task in that model's own CLI (OpenCode, Codex, Pi or Reasonix).
 
+![The code-complex tier in sonata agents: ranked models with intelligence, cost per task and live state](docs/public/screenshots/tier-ranking.png)
+
 Two reasons you might want that:
 
 - **Cost.** Mechanical work — bulk refactors, test scaffolding, migrations —
@@ -29,7 +31,10 @@ Two reasons you might want that:
   opinion actually pays.
 
 Sonata itself is free and MIT-licensed; you pay your providers as usual, and
-`sonata usage` shows what each model, tier and role cost you.
+`sonata usage` shows what each model, tier and role cost you — including work
+a subscription already covers, valued at list price:
+
+![sonata usage by tier over 30 days](docs/public/screenshots/usage.png)
 
 ## Status
 
