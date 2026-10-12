@@ -22,7 +22,7 @@ export type PanelActions = {
 
 // sonata's departure-board vocabulary (DESIGN.md), in Claude Code's own theme
 // keys so the pane follows the host's light or dark theme. `claude` is the
-// terracotta accent DESIGN.md already borrows: spent on the running task's
+// terracotta accent DESIGN.md already borrows: spent on each active task's
 // numeral, the selection edge and the live router stroke, nothing else.
 const C = { text: 'text', muted: 'inactive', rule: 'subtle', accent: 'claude', low: 'success', mid: 'warning', high: 'error' } as const
 
@@ -117,7 +117,7 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
 
   // ── the column budget, measured once for every row ──
   const statusW = width >= WORD_MIN_COLS ? 14 : 4
-  const costW = 9
+  const costW = width >= BAR_MIN_COLS ? 13 : 9
   const barW = width >= BAR_MIN_COLS ? 10 : 0
   const timeW = 6
   const tokW = 7
@@ -125,7 +125,7 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
   const typeW = 16
   const showModel = width >= MODEL_MIN_COLS
   const rule = '─'.repeat(width)
-  const modelW = (indent: number) => inner - indent - typeW - tokW - timeW - statusW
+  const modelW = (indent: number) => inner - indent - typeW - tokW - timeW - costW - statusW
 
   const status = (s: Status) => (
     <Text color={s.color}>{padR(` ${s.mark}${statusW > 4 ? ` ${s.word}` : ''}`, statusW)}</Text>
@@ -141,6 +141,12 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
   }
   // The tier is a column: it drops for every row at once, never for one row.
   const indentOf = (a: AgentRow) => idW + 1 + 2 * depthOf(agents, a.id)
+  const agentCost = (a: AgentRow): any => {
+    const at = attribute(agents, router.routes, a.id)
+    if (a.status === 'running' || at.usd === undefined) return <Text color={C.rule}>{padL('—', costW)}</Text>
+    const suffix = width >= BAR_MIN_COLS && at.isCovered ? <Text color={C.muted}> sub</Text> : null
+    return <Text color={C.muted}>{padL(money(at.usd), Math.max(0, costW - (suffix ? 4 : 0)))}{suffix}</Text>
+  }
   const stripTier = agents.some(a => {
     const m = modelOf(a)
     return (m.served + m.tier).length > modelW(indentOf(a))
@@ -160,7 +166,10 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
     const tokens = sumTokens(rowsOf.map(a => a.tokens).filter((t): t is Tokens => t !== undefined))
     const pad = ' '.repeat(indent + 1)
     const avail = width - indent - 1
+    const cost = taskCost(agents, router.routes, ids)
+    const hasBilledAndCovered = cost.coveredUsd > 0 && cost.usd > cost.coveredUsd
     return [
+      ...(hasBilledAndCovered ? [<Text key={`${key}:d:cost`} color={C.muted}>{`${pad}cost   ${money(cost.usd - cost.coveredUsd)} billed · ${money(cost.coveredUsd)} sub`}</Text>] : []),
       <Text key={`${key}:d:head`}>
         <Text color={C.accent}>▌</Text>
         <Text color={C.muted}>{`${pad.slice(1)}${fit(label, Math.max(10, avail - 22))}`}</Text>
@@ -210,6 +219,7 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
           {showModel ? <Text color={model.color}>{padR(modelText, restW)}</Text> : null}
           <Text color={a.tokens ? C.muted : C.rule}>{padL(a.tokens ? tok(totalTokens(a.tokens)) : '—', tokW)}</Text>
           <Text color={C.muted}>{padL(elapsed, timeW)}</Text>
+          {agentCost(a)}
           {status(agentStatus(a, now, routerDown))}
         </Text>
       </Button>,
@@ -239,7 +249,6 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
   // ── task rows: id, title, share-of-spend bar, cost, state stroke ──
   const costs = (loop?.tasks ?? []).map(t => taskCost(agents, router.routes, treeIds(agents, rootsOf(t, agents))))
   const maxCost = Math.max(0, ...costs.map(c => c.usd))
-  const running = loop?.tasks.find(t => t.state !== 'done' && t.state !== 'pending')
 
   // A neutral bar: length compares spend; green stays reserved for done.
   const bar = (usd: number) => {
@@ -261,21 +270,22 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
     const roots = rootsOf(t, agents)
     const ids = treeIds(agents, roots)
     const cost = costs[i]
-    const isLead = running?.id === t.id
+    const isActive = t.state !== 'done' && t.state !== 'pending'
     const titleW = inner - idW - (barW ? barW + 1 : 0) - costW - statusW
     const costText = ids.length === 0 || (cost.isPartial && cost.usd === 0)
       ? '—'
       : `${cost.isPartial ? '≈' : ''}${money(cost.usd)}`
+    const costSuffix = width >= BAR_MIN_COLS && cost.coveredUsd > 0 ? <Text color={C.muted}> sub</Text> : null
     const top = roots.map(id => agents.find(a => a.id === id)).filter((a): a is AgentRow => a !== undefined)
     return [
       <Box key={`${key}:gap`} height={i === 0 ? 0 : 1} />,
       <Button key={key} plain onPress={() => act.select(key)}>
         <Text>
           {edge(key)}
-          <Text color={isLead ? C.accent : C.muted} bold={isLead}>{padL(t.id === 'final' ? 'end' : t.id, idW - 1)} </Text>
-          <Text color={t.state === 'pending' ? C.muted : C.text} bold={isLead || isSel(key)}>{padR(t.title, titleW)}</Text>
+          <Text color={isActive ? C.accent : C.muted} bold={isActive}>{padL(t.id === 'final' ? 'end' : t.id, idW - 1)} </Text>
+          <Text color={t.state === 'pending' ? C.muted : C.text} bold={isActive || isSel(key)}>{padR(t.title, titleW)}</Text>
           {bar(cost.usd)}
-          <Text color={costText === '—' ? C.rule : C.muted}>{padL(costText, costW)}</Text>
+          <Text color={costText === '—' ? C.rule : C.muted}>{padL(costText, Math.max(0, costW - (costSuffix ? 4 : 0)))}</Text>{costSuffix}
           {status(taskStatus(t, routerDown))}
         </Text>
       </Button>,
@@ -287,12 +297,16 @@ export function panelTree(h: any, els: any, data: PanelData, act: PanelActions) 
   const unplanned = agents.filter(a => a.parentId === undefined && a.taskId === undefined)
   const done = loop?.tasks.filter(t => t.state === 'done').length ?? 0
   const loopCost = costs.reduce((n, c) => n + c.usd, 0)
+  const loopCovered = costs.reduce((n, c) => n + c.coveredUsd, 0)
   const loopPartial = costs.some(c => c.isPartial)
   const counted = agents.filter(a => a.tokens !== undefined)
   const loopTokens = counted.reduce((n, a) => n + totalTokens(a.tokens!), 0)
   const costNote = loop === null
     ? ''
-    : loopCost === 0 && loopPartial ? 'cost unknown' : `${loopPartial ? '≈' : ''}${money(loopCost)}`
+    : loopCost === 0 && loopPartial ? 'cost unknown'
+      : loopCovered > 0
+        ? `${loopPartial ? '≈' : ''}${loopCost > loopCovered ? `${money(loopCost - loopCovered)} + ` : ''}${money(loopCovered)} sub`
+        : `${loopPartial ? '≈' : ''}${money(loopCost)}`
 
   const routerLine = router.error !== undefined
     ? {

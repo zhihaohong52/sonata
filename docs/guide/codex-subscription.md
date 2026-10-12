@@ -235,12 +235,9 @@ To actually use `copilot-oauth`, the token must carry the `copilot` scope —
 LiteLLM's own device-code login produces one, writing it to its token
 directory.
 
-**Known collision:** Copilot serves Claude models, but the router sends any
-`claude-`-prefixed model to Anthropic, so `parseConfig` refuses such an id.
-5 of the 8 Copilot models on this machine are Claude. `init` filters every
-candidate the router cannot reach — otherwise it would write a config that
-`parseConfig` then refuses to load. 27 such candidates were being offered
-across `acme`, `anthropic` and `github-copilot`.
+**Claude models are available:** Copilot serves Claude models, as do other
+configured gateways. A configured key routes to its gateway; only an
+unconfigured `claude-*` name is passed directly to Anthropic.
 
 **opencode writes `expires: 0`** on the Copilot entry, meaning "does not
 expire". Read literally that reports a working token as expired since 1970.

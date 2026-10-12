@@ -28,7 +28,7 @@ import {
   type AvailableCredentials,
   type ProviderOption,
 } from '../app-state.js';
-import { isAnthropicRoutedName, isOauthGatewayAuth, type CredentialSource, type NativeGatewayAuth } from '../../config.js';
+import { isOauthGatewayAuth, type CredentialSource, type NativeGatewayAuth } from '../../config.js';
 import { proposePricingProvider } from '../../pricing.js';
 import type { ModelsDevCache } from '../../modelsdev.js';
 import { loginGateway as defaultLoginGateway, type LoginResult } from '../../native/oauth-login.js';
@@ -129,11 +129,11 @@ export function oauthModelIds(
 ): string[] {
   const provider = proposePricingProvider(gateway, auth)?.[0];
   if (provider === undefined || cache?.providers[provider] === undefined) return [];
-  return Object.keys(cache.providers[provider]).filter((id) => !isAnthropicRoutedName(id));
+  return Object.keys(cache.providers[provider]);
 }
 
 export function parseOAuthModelIds(value: string): string[] {
-  return [...new Set(value.split(',').map((id) => id.trim()).filter((id) => id !== '' && !isAnthropicRoutedName(id)))];
+  return [...new Set(value.split(',').map((id) => id.trim()).filter((id) => id !== ''))];
 }
 
 export interface OAuthModelsStepProps {
@@ -223,10 +223,20 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
   const selectedGateways = [...new Set([...configured, ...existingNames])];
 
   const routeToProvider = (provider: ProviderOption) => {
+    if (gatewayAuth[provider.provider] === 'session') {
+      const option = { ...provider, key: byokProviderKey(provider.provider) };
+      setScreen({ kind: 'oauth-models', provider: option, ids: oauthModelIds(modelsDevCache, provider.provider, 'session') });
+      return;
+    }
     if (provider.harness === 'byok') {
       const known = byokProviders.find((p) => p.name === provider.provider);
       if (known === undefined) return;
       const byokOption = { ...provider, key: byokProviderKey(provider.provider) };
+      if (gatewayAuth[provider.provider] === 'session') {
+        // The person's own Claude Code account: nothing to store or log in to.
+        setScreen({ kind: 'oauth-models', provider: byokOption, ids: oauthModelIds(modelsDevCache, provider.provider, 'session') });
+        return;
+      }
       const route = byokProviderRoute(
         gatewayAuth[provider.provider],
         credentialAvailability[provider.provider]?.keyEntryAvailable,
@@ -598,11 +608,15 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
           onChange((current) => applyStep({
             ...current,
             providerKeys: [...new Set([...(current.providerKeys ?? []), provider.key])],
-            credentialSources: { ...current.credentialSources, [provider.provider]: 'sonata' },
+            ...(gatewayAuth[provider.provider] === 'session' ? {} : {
+              credentialSources: { ...current.credentialSources, [provider.provider]: 'sonata' as const },
+            }),
           }, 5, { provider: provider.provider, ids: selected }));
           setScreen({ kind: 'menu' });
         }}
-        onBack={() => setScreen({ kind: 'login', provider })}
+        onBack={() => setScreen(gatewayAuth[provider.provider] === 'session'
+          ? { kind: 'pick' }
+          : { kind: 'login', provider })}
         onCancel={onCancel}
       />
     );

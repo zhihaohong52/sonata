@@ -35,9 +35,26 @@ foreign-on-Claude-loop session through `sonata dispatch`, running headless
 
 Two consequences worth knowing. First, `ANTHROPIC_BASE_URL` is process-wide and
 `isFirstPartyAnthropicBaseUrl` gates Remote Control, so sessions launched by
-`sonata code` lose Remote Control while routed through the local proxy. Second,
-model keys and ids beginning with `claude-` are refused at parse time, because
-the router sends that prefix to Anthropic.
+`sonata code` lose Remote Control while routed through the local proxy.
+
+### Your own Claude Code account
+
+A tier can rank Claude models served by your own Claude Code account:
+
+    [native.gateways."claude"]
+    provider = "anthropic"
+    auth = "session"
+
+    [models."opus"]
+    gateway = "claude"
+    id = "claude-opus-4-1"
+
+The router forwards the session's own credential, and only to
+`api.anthropic.com` — any other `base_url` is refused. Usage is priced at
+Anthropic's list rates; work your Claude subscription paid for is shown as
+`$x sub` and never counts toward `[budget]`. A key named exactly like a model
+your main session uses (`claude-opus-4-1`) also catches that session's own
+turns when it is routed.
 
 **OpenCode Zen and Go.** The two are separate endpoints on one opencode.ai
 account: Zen (pay as you go) is `https://opencode.ai/zen/v1`, Go (the

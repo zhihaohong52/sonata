@@ -56,7 +56,7 @@ describe('statusColumns', () => {
     // test green. It now sweeps down to a width no one uses, with no excuse.
     for (let width = 12; width <= 200; width += 1) {
       const c = statusColumns(width);
-      const fixed = 4 + 4 + (c.time ? 9 : 0) + (c.gateway ? 12 : 0) + (c.tokens ? 20 : 0);
+      const fixed = 4 + 4 + (c.time ? 9 : 0) + (c.gateway ? 12 : 0) + (c.tokens ? 33 : 0);
       expect(fixed + c.alias + c.served).toBeLessThanOrEqual(width);
     }
   });

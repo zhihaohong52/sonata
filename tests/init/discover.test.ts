@@ -46,6 +46,12 @@ describe('discover', () => {
     expect(env.existingHookScope).toBeUndefined();
   });
 
+  it('offers the Claude session gateway on a fresh machine without credentials', async () => {
+    const env = await discover({ cwd, home, packageRoot: cwd, detect: detector }, () => {});
+    expect(env.gatewayAuth.get('claude')).toBe('session');
+    expect(env.offered.map((provider) => provider.key)).toContain('byok/claude');
+  });
+
   it('seeds OAuth capability for a known provider before login exists', async () => {
     const env = await discover({ cwd, home, packageRoot: cwd, detect: detector }, () => {});
     expect(env.gatewayAuth.get('openai')).toBe('codex-oauth');

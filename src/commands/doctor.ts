@@ -788,6 +788,7 @@ export async function cmdDoctor(
       .map(() => false),
   ];
   const unpricedGateways = gatewayEntries.filter(([name, gw]) => {
+    if (gw.auth === 'session' && gw.pricingProvider === undefined) return false;
     if (gw.pricingProvider !== undefined && gw.pricingProvider.length > 0) return false;
     if (gw.price !== undefined) return false;
     const priced = handPricedOn(name);
@@ -1225,6 +1226,10 @@ export async function cmdDoctor(
     );
 
     for (const [name, gateway] of Object.entries(config.native.gateways)) {
+      if (gateway.auth === 'session') {
+        checks.push({ name: 'credentials', ok: true, detail: `${name}: uses the Claude Code session's own credential` });
+        continue;
+      }
       const source = gateway.credentialSource;
       if (source === undefined) {
         // Distinct name from the `key source: <gateway>` checks below — this is
@@ -1356,7 +1361,8 @@ export async function cmdDoctor(
     }
 
     const keyGateways = gatewayNames.filter(
-      (name) => !oauthGateways.includes(name) && !sourcedGateways.has(name));
+      (name) => config.native!.gateways[name].auth !== 'session'
+        && !oauthGateways.includes(name) && !sourcedGateways.has(name));
     for (const report of keyReport(keyGateways, home)) {
       checks.push(report.source
         ? { name: `key source: ${report.gateway}`, ok: true, detail: `from ${report.source}` }

@@ -92,7 +92,27 @@ test('while the router is unreachable, running reads as unconfirmed', () => {
   expect(colorOf(tree, 'running')).toBe('inactive')
 })
 
-test('only the running task title is bold', () => {
+test('every active task accents and bolds its id and title', () => {
+  const tree = draw(data({ loop: { ...loop([]), tasks: [
+    { id: '1', title: 'Done task', state: 'done', failures: 0, agentIds: [] },
+    { id: '2', title: 'Coding task', state: 'coding', failures: 0, agentIds: [] },
+    { id: '3', title: 'Review task', state: 'review', failures: 0, agentIds: [] },
+    { id: '4', title: 'Pending task', state: 'pending', failures: 0, agentIds: [] },
+  ] } }))
+  const boldOf = (needle: string) => { let b: boolean | undefined; const w = (n: any, bold?: boolean) => { if (typeof n === 'string') { if (n.includes(needle) && b === undefined) b = !!bold; return } if (n && typeof n === 'object') n.children.forEach((k: any) => w(k, n.props?.bold ?? bold)) }; w(tree); return b }
+  for (const id of ['2', '3']) {
+    expect(colorOf(tree, id)).toBe('claude')
+    expect(boldOf(id)).toBe(true)
+  }
+  for (const id of ['1', '4']) {
+    expect(colorOf(tree, id)).not.toBe('claude')
+    expect(boldOf(id)).toBe(false)
+  }
+  for (const title of ['Coding task', 'Review task']) expect(boldOf(title)).toBe(true)
+  for (const title of ['Done task', 'Pending task']) expect(boldOf(title)).toBe(false)
+})
+
+test('the active task title is bold', () => {
   const tree = draw(data({ loop: { ...loop([]), tasks: [{ id: '1', title: 'Lead', state: 'coding', failures: 0, agentIds: [] }, { id: '2', title: 'Later', state: 'pending', failures: 0, agentIds: [] }] } }))
   const boldOf = (needle: string) => { let b: boolean | undefined; const w = (n: any, bold?: boolean) => { if (typeof n === 'string') { if (n.includes(needle) && b === undefined) b = !!bold; return } if (n && typeof n === 'object') n.children.forEach((k: any) => w(k, n.props?.bold ?? bold)) }; w(tree); return b }
   expect(boldOf('Lead')).toBe(true)
@@ -105,4 +125,58 @@ test('a running agent does not wait for a router that has never answered', () =>
   const row = r.find(l => /code-auto/.test(l))!
   expect(row).not.toMatch(/waiting for router/)
   expect(row).toMatch(/\?/)
+})
+
+// The ` sub` mark: list price kept, subscription spelled out after it.
+const billed = (alias: string, priceUsd: number, isCovered?: true): RouteLine =>
+  ({ alias, served: 'flash', status: 200, ts: new Date(NOW - 50_000).toISOString(), priceUsd, isCovered })
+const doneAgent = (id: string, alias: string): AgentRow =>
+  agent({ id, type: 'code-auto', alias, status: 'done', endedAt: NOW, stepTimes: [NOW - 50_000] })
+
+test('an agent whose routes are all covered renders its cost cell marked sub', () => {
+  const a = doneAgent('a', 'x')
+  const routes = [billed('x', 0.3, true), { ...billed('x', 0.12, true), ts: new Date(NOW - 40_000).toISOString() }]
+  const r = rows(draw(data({ cols: 80, loop: loop(['a']), agents: [a], router: { routes, at: NOW } })))
+  expect(r.find(l => /code-auto/.test(l))).toMatch(/\$0\.4200 sub/)
+})
+
+test('a task mixing billed and covered work renders its cost cell marked sub', () => {
+  const a = doneAgent('a', 'x')
+  const b = doneAgent('b', 'y')
+  const routes = [billed('x', 1.1), billed('y', 0.42, true)]
+  const r = rows(draw(data({ cols: 80, loop: loop(['a', 'b']), agents: [a, b], router: { routes, at: NOW } })))
+  expect(r.find(l => /Task one/.test(l))).toMatch(/\$1\.52 sub/)
+  expect(r[0]).toMatch(/\$1\.10 \+ \$0\.4200 sub/)
+})
+
+test('with only covered work the header reads the covered value marked sub', () => {
+  const a = doneAgent('a', 'x')
+  const routes = [billed('x', 0.42, true)]
+  const r = rows(draw(data({ cols: 80, loop: loop(['a']), agents: [a], router: { routes, at: NOW } })))
+  expect(r[0]).toMatch(/\$0\.4200 sub/)
+  expect(r[0]).not.toMatch(/\+/)
+})
+
+test('a selected task shows its billed and covered cost split in the detail', () => {
+  const a = doneAgent('a', 'x')
+  const b = doneAgent('b', 'y')
+  const routes = [billed('x', 1.1), billed('y', 0.42, true)]
+  const r = rows(draw(data({ cols: 80, loop: loop(['a', 'b']), agents: [a, b], router: { routes, at: NOW }, view: { showAll: true, expanded: [], selected: 'task:1' } })))
+  expect(r).toContain('     cost   $1.10 billed · $0.4200 sub')
+})
+
+test('the sub mark is drawn in inactive', () => {
+  const a = doneAgent('a', 'x')
+  const tree = draw(data({ cols: 80, loop: loop(['a']), agents: [a], router: { routes: [billed('x', 0.42, true)], at: NOW } }))
+  expect(colorOf(tree, ' sub')).toBe('inactive')
+})
+
+test('below 76 columns rows drop the sub mark and the header keeps it', () => {
+  const a = doneAgent('a', 'x')
+  const b = doneAgent('b', 'y')
+  const routes = [billed('x', 1.1), billed('y', 0.42, true)]
+  const r = rows(draw(data({ cols: 72, loop: loop(['a', 'b']), agents: [a, b], router: { routes, at: NOW } })))
+  expect(r.find(l => /Task one/.test(l))).not.toMatch(/ sub/)
+  expect(r.find(l => /code-auto/.test(l))).not.toMatch(/ sub/)
+  expect(r[0]).toMatch(/ sub/)
 })

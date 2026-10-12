@@ -224,6 +224,10 @@ describe('fetchModels (Google Generative Language)', () => {
 describe('wellKnownProviders', () => {
   const providers = wellKnownProviders();
 
+  it('does not offer Anthropic under its session gateway alias', () => {
+    expect(providers.some((provider) => provider.name === 'claude')).toBe(false);
+  });
+
   it('returns a non-empty list of named urls', () => {
     expect(providers.length).toBeGreaterThanOrEqual(30);
     expect(providers.every((provider) => provider.name !== '' && provider.url !== '')).toBe(true);
@@ -246,9 +250,8 @@ describe('wellKnownProviders', () => {
   });
 
   it('does not offer anthropic', () => {
-    // Every model it serves is `claude-*`, which the router reserves and
-    // parseConfig refuses, so its catalogue filters to empty. A provider that
-    // can offer nothing is worse than one that is absent.
+    // It is already the Claude Code session endpoint; routing its models back
+    // through itself is not a useful provider choice.
     expect(providers.some((provider) => provider.name === 'anthropic')).toBe(false);
   });
 

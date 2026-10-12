@@ -18,15 +18,18 @@ const cache: ModelsDevCache = {
       'gpt-5.6-luna': { input: 1 },
       'claude-sonnet-4.6': { input: 1 },
     },
+    anthropic: {
+      'claude-opus-4-1': { input: 1 },
+    },
   },
 };
 
 describe('oauthModelIds', () => {
   it('returns model ids from the models.dev provider for an OAuth gateway', () => {
-    expect(oauthModelIds(cache, 'openai', 'codex-oauth')).toEqual(['gpt-5.6-luna']);
+    expect(oauthModelIds(cache, 'openai', 'codex-oauth')).toEqual(['gpt-5.6-luna', 'claude-sonnet-4.6']);
   });
 
-  it('filters claude-prefixed ids before they reach the config picker', () => {
+  it('keeps claude-prefixed ids in the config picker — they are ordinary models', () => {
     const copilot: ModelsDevCache = {
       fetchedAt: cache.fetchedAt,
       providers: {
@@ -37,7 +40,8 @@ describe('oauthModelIds', () => {
         },
       },
     };
-    expect(oauthModelIds(copilot, 'github-copilot', 'copilot-oauth')).toEqual(['gpt-5.6-luna']);
+    expect(oauthModelIds(copilot, 'github-copilot', 'copilot-oauth'))
+      .toEqual(['gpt-5.6-luna', 'claude-opus-5', 'claude-sonnet-4.6']);
   });
 
   it('returns no ids when the cache or provider entry is missing', () => {
@@ -47,8 +51,8 @@ describe('oauthModelIds', () => {
 });
 
 describe('OAuthModelsStep', () => {
-  it('keeps manual entry usable while filtering reserved ids', () => {
-    expect(parseOAuthModelIds('claude-opus-5, gpt-5.6-luna, gpt-5.6-luna')).toEqual(['gpt-5.6-luna']);
+  it('keeps manual entry usable, de-duplicating the ids typed', () => {
+    expect(parseOAuthModelIds('claude-opus-5, gpt-5.6-luna, gpt-5.6-luna')).toEqual(['claude-opus-5', 'gpt-5.6-luna']);
   });
 
   it('offers manual model entry when the catalog has no usable ids', async () => {
@@ -66,6 +70,68 @@ describe('OAuthModelsStep', () => {
     await tick();
     expect(submitted).toEqual(['gpt-5.6-luna']);
     app.unmount();
+  });
+});
+
+describe('Claude session provider in ProvidersStep', () => {
+  it('offers Anthropic ids without key entry and records no credential source', async () => {
+    let state: InitState = {};
+    const app = render(React.createElement(ProvidersStep, {
+      home: '/tmp/sonata-claude-session-test', harnesses: [],
+      providers: [{ key: 'byok/claude', harness: 'byok', provider: 'claude', count: 0 }],
+      byokProviders: [{ name: 'claude', url: 'https://api.anthropic.com/v1' }],
+      credentialAvailability: {}, gatewayAuth: { claude: 'session' }, storedKeys: {},
+      modelsDevCache: cache, state,
+      onChange: (updater: (current: InitState) => InitState) => { state = updater(state); },
+      onContinue: () => {}, onBack: () => {}, onCancel: () => {},
+    }));
+
+    const frame = () => app.lastFrame() ?? '';
+    await settle();
+    app.stdin.write(ENTER);
+    await until(() => frame().includes('Add a custom provider'), 'the provider picker');
+    app.stdin.write('claude');
+    app.stdin.write(ENTER);
+    await until(() => frame().includes('Models for claude') && frame().includes('claude-opus-4-1'), 'the models screen');
+    expect(frame()).not.toContain('API key for claude');
+    app.stdin.write('\u001b[B');
+    app.stdin.write(SPACE);
+    await until(() => frame().includes('1 selected'), 'the model to be selected');
+    app.stdin.write(ENTER);
+    await until(() => state.byokModels !== undefined, 'the selection to be recorded');
+
+    expect(state.byokModels).toEqual({ claude: ['claude-opus-4-1'] });
+    expect(state.providerKeys).toEqual(['byok/claude']);
+    expect(state.credentialSources?.claude).toBeUndefined();
+    app.unmount();
+  });
+
+  it('routes a config-sourced Claude session provider to model selection without key entry', async () => {
+    let state: InitState = {};
+    const app = render(React.createElement(ProvidersStep, {
+      home: '/tmp/sonata-config-session-test', harnesses: [],
+      providers: [{ key: 'config/claude', harness: 'config', provider: 'claude', count: 1 }, { key: 'byok/claude', harness: 'byok', provider: 'claude', count: 0 }],
+      byokProviders: [{ name: 'claude', url: 'https://api.anthropic.com/v1' }],
+      credentialAvailability: {}, gatewayAuth: { claude: 'session' }, storedKeys: {},
+      modelsDevCache: cache, state,
+      onChange: (updater: (current: InitState) => InitState) => { state = updater(state); },
+      onContinue: () => {}, onBack: () => {}, onCancel: () => {},
+    }));
+    const frame = () => app.lastFrame() ?? '';
+    await settle();
+    app.stdin.write(ENTER);
+    await until(() => frame().includes('Add provider'), 'the provider picker');
+    app.stdin.write('claude');
+    app.stdin.write(ENTER);
+    await until(() => frame().includes('Models for claude') && frame().includes('claude-opus-4-1'), 'the models screen');
+    expect(frame()).not.toContain('API key for claude');
+    app.unmount();
+  });
+
+  it('keeps claude model ids offered for Copilot', () => {
+    expect(oauthModelIds({ ...cache, providers: {
+      'github-copilot': { 'claude-sonnet-4.5': { input: 1 } },
+    } }, 'github-copilot', 'copilot-oauth')).toEqual(['claude-sonnet-4.5']);
   });
 });
 
@@ -98,6 +164,7 @@ describe('OAuth login in ProvidersStep', () => {
     // The models screen mounts from LoginScreen's effect once the login
     // resolves, so it is waited for rather than assumed after a fixed sleep.
     await until(() => frame().includes('Models for openai') && frame().includes('gpt-5.6-luna'), 'the models screen');
+    app.stdin.write('\u001b[B'); // past the "select all" row to the first catalog row
     app.stdin.write(SPACE); // select the first catalog row
     await until(() => frame().includes('1 selected'), 'the row to be selected');
     app.stdin.write(ENTER);

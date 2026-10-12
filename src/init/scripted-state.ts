@@ -88,7 +88,7 @@ export function scriptedState(
       .map((key) => key.slice(prefix.length));
   }
   if (byokSelected.length > 0) {
-    addByokCandidates(nativeByKey, byokUrls, byokModels);
+    addByokCandidates(nativeByKey, byokUrls, byokModels, {}, env.gatewayAuth);
     // `addByokCandidates` silently skips a gateway with no resolvable URL
     // (neither `byokUrls` nor `WELL_KNOWN_PROVIDER_URLS` has it). Filter those
     // out here so `validate` can surface the unknown-provider error instead
@@ -139,7 +139,7 @@ export function scriptedState(
   // BYOK missing-key check needs home — keep it here (after validation so unknown providers are caught first)
   if (byokSelected.length > 0) {
     const stored = new Set(resolveKeys(byokSelected, opts.home).map((source) => source.gateway));
-    const missing = byokSelected.filter((name) => !stored.has(name));
+    const missing = byokSelected.filter((name) => !stored.has(name) && env.gatewayAuth.get(name) !== 'session');
     if (missing.length > 0) {
       throw new Error(
         `sonata init: no key for ${missing.join(', ')}. ` +

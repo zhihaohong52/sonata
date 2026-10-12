@@ -82,7 +82,7 @@ There are two deliverables: (A) `sonata serve`/`sonata code` for a complete loca
 
 Verified end to end through a scratch LiteLLM 1.98.0 on the generated config: `/v1/messages` 400 without the header, 200 with it. The Anthropic-shaped `/messages` endpoint is no escape: MiMo answers it `ModelProtocolUnsupported`.
 
-**`init` must never offer a model the router cannot reach.** Copilot, acme and anthropic all serve Claude models, and the router sends `claude-` upstream, so `parseConfig` refuses those ids — 27 such candidates were being offered, and selecting one wrote a config that then failed to load. `isAnthropicRoutedName` is the single definition, used by both the parser and the candidate filter.
+**Claude ids are ordinary model ids.** A Claude id can be served by any configured gateway. When a name starts with `claude-` and is not a configured key, the router sends it directly to Anthropic; configured keys resolve normally, including through a gateway using the caller's Claude Code session credential.
 
 **The router port's occupant is usually sonata.** `sonata run`/`sonata dispatch`
 auto-start `sonata serve --daemon` when the router is down, so a prior dispatch
@@ -296,7 +296,7 @@ credential, which is how the transport shipped structurally dead until the
 
 Remote Control is the trade-off: `ANTHROPIC_BASE_URL` is process-wide, and `isFirstPartyAnthropicBaseUrl` gates Remote Control. Sessions launched by `sonata code` therefore lose Remote Control while routed through the local proxy.
 
-The `claude-` prefix is load-bearing because the router sends that prefix to Anthropic. Native model keys and ids beginning with `claude-` are refused at parse time. Credentials flow only store → memory → LiteLLM environment; keys are never logged or put in a Claude conversation. The user starts `sonata serve`: the classifier correctly blocks launching an auth-forwarding proxy from inside a session.
+A `claude-*` name the config does not define passes through to Anthropic; a configured key routes like any other. A gateway with `auth = "session"` forwards the caller's credential only to `api.anthropic.com`, refusing any other `base_url`. Other credentials flow only store → memory → LiteLLM environment; keys are never logged or put in a Claude conversation. The user starts `sonata serve`: the classifier correctly blocks launching an auth-forwarding proxy from inside a session.
 
 The `claude` harness adapter is the simplest adapter: it runs headless `claude -p`, has no TUI, and maps permission modes directly. For native dispatches it assumes `sonata serve` is already running.
 

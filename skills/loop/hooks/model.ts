@@ -163,7 +163,7 @@ export function diffStat(hunks: Hunk[]): { added: number; removed: number; files
   }
 }
 
-export type Attribution = { served: string[]; tier?: string; usd?: number; isExact: boolean }
+export type Attribution = { served: string[]; tier?: string; usd?: number; isCovered: boolean; isExact: boolean }
 
 // Slack around an agent's lifetime for the router's clock and its ledger write.
 const GRACE_MS = 5_000
@@ -183,27 +183,37 @@ function isShared(agents: AgentRow[], agent: AgentRow, at: number): boolean {
 
 export function attribute(agents: AgentRow[], routes: RouteLine[], agentId: string): Attribution {
   const agent = agents.find(a => a.id === agentId)
-  if (agent === undefined) return { served: [], tier: undefined, usd: undefined, isExact: false }
+  if (agent === undefined) return { served: [], tier: undefined, usd: undefined, isCovered: false, isExact: false }
   const mine = routesOf(agent, routes)
   const served = [...new Set(mine.map(r => r.served).filter((s): s is string => s !== undefined))]
   const tier = mine.find(r => r.tier !== undefined)?.tier
-  if (mine.length === 0) return { served, tier, usd: undefined, isExact: false }
+  const isCovered = mine.some(r => r.isCovered === true)
+  if (mine.length === 0) return { served, tier, usd: undefined, isCovered, isExact: false }
   const isExact = !mine.some(r => isShared(agents, agent, Date.parse(r.ts!)))
   const isPriced = mine.every(r => r.priceUsd !== undefined)
   // Unknown is never zero: an ambiguous or unpriced agent has no cost at all.
   const usd = isExact && isPriced ? mine.reduce((n, r) => n + r.priceUsd!, 0) : undefined
-  return { served, tier, usd, isExact }
+  return { served, tier, usd, isCovered, isExact }
 }
 
-export function taskCost(agents: AgentRow[], routes: RouteLine[], ids: string[]): { usd: number; isPartial: boolean } {
+function coveredUsdOf(mine: RouteLine[]): number {
+  return mine.reduce((n, r) => n + (r.isCovered === true ? r.priceUsd ?? 0 : 0), 0)
+}
+
+export function taskCost(agents: AgentRow[], routes: RouteLine[], ids: string[]): { usd: number; coveredUsd: number; isPartial: boolean } {
   let usd = 0
+  let coveredUsd = 0
   let isPartial = false
   for (const id of ids) {
+    const agent = agents.find(a => a.id === id)
     const a = attribute(agents, routes, id)
     if (a.usd === undefined) isPartial = true
-    else usd += a.usd
+    else {
+      usd += a.usd
+      if (agent !== undefined) coveredUsd += coveredUsdOf(routesOf(agent, routes))
+    }
   }
-  return { usd, isPartial }
+  return { usd, coveredUsd, isPartial }
 }
 
 type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }

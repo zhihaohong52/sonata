@@ -33,6 +33,12 @@ export async function cmdAuthLogin(opts: {
       `Configured: ${Object.keys(gateways).join(', ') || '(none)'}`,
     );
   }
+  if (gateway.auth === 'session') {
+    throw new Error(
+      `sonata auth login: gateway "${opts.gateway}" is auth = "session" — ` +
+      `it uses the Claude Code session's own credential; there is nothing to log in to.`,
+    );
+  }
   if (!isOauthGatewayAuth(gateway.auth)) {
     throw new Error(
       `sonata auth login: gateway "${opts.gateway}" is auth = "api-key" — ` +

@@ -139,7 +139,7 @@ export function plan(
         providerBaseUrls.set(provider.name, provider.url);
       }
     }
-    addByokCandidates(built, providerBaseUrls, state.byokModels ?? {}, state.customWireFormats ?? {});
+    addByokCandidates(built, providerBaseUrls, state.byokModels ?? {}, state.customWireFormats ?? {}, env.gatewayAuth);
     addLiveCandidates(env, built, state.liveModels ?? {}, env.providerBaseUrlsByScope?.[configScope]);
     applyScopeBaseUrls(built, scopeQueryUrls(env, configScope, state.customProviders));
     rewriteOauthToApiKey(built, state.byokKeys ?? {});
@@ -286,6 +286,8 @@ export function plan(
           : `  ! ${gateway}: no key from opencode — log into opencode itself, sonata does not manage its credentials`);
       continue;
     }
+
+    if (auth === 'session') continue;
 
     if (auth !== undefined && isOauthGatewayAuth(auth) && source !== undefined) {
       // Bearer keys and device-login OAuth credentials live in different

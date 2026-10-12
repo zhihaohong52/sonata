@@ -837,6 +837,29 @@ auth = "codex-oauth"
     }
   });
 
+  it('reports session auth as the Claude Code session credential without missing-key failure', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-session-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-session-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.claude]
+provider = "anthropic"
+auth = "session"
+`);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      const credentials = checks.filter((c) => c.name.includes('credential') || c.name === 'credentials');
+      expect(checks.map((c) => c.detail).join('\n')).toContain(
+        "claude: uses the Claude Code session's own credential",
+      );
+      expect(credentials.every((c) => c.ok)).toBe(true);
+      expect(checks.map((c) => c.detail).join('\n')).not.toMatch(/claude: no credential/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('reports a healthy sonata-sourced credential', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-source-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-source-home-'));
@@ -2002,6 +2025,19 @@ context_window = 128000
     const check = await pricingCheck(toml);
     expect(check).toBeDefined();
     expect(check!.detail).toContain('acme');
+  });
+
+  it('does not warn that an unconfigured session gateway lacks pricing', async () => {
+    const toml = `
+schema_version = 1
+[native.gateways."claude"]
+provider = "anthropic"
+auth = "session"
+[models."opus"]
+gateway = "claude"
+id = "claude-opus-4-1"
+`;
+    expect(await pricingCheck(toml)).toBeUndefined();
   });
 
   it('stays silent for a gateway that declares pricing_provider', async () => {

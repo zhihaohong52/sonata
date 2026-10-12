@@ -169,7 +169,7 @@ async function runInit(
 
   // ---- plan -------------------------------------------------------------
   const credentials = fsCredentialProbe(opts.home, env.copilotUsable);
-  const initPlan = plan(env, chosen.state, credentials, opts);
+  const initPlan = plan(env, chosen.state, credentials, opts, chosen.nativeByKey);
 
   for (const line of initPlan.notices) out(line);
   out('');

@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { HarnessAdapter, LaunchPlan, PlanInput, UsageQuery, UsageRecord, UsageResult } from './types.js';
 import { asRecord, count, epochMs, filesIn, readJsonl } from './usage-files.js';
-import { isAnthropicRoutedName, isReadOnlyRole, loadConfig } from '../config.js';
+import { isReadOnlyRole, loadConfig, nativeRouteFor } from '../config.js';
 import { joinCandidate } from '../effort.js';
 import { homedir } from 'node:os';
 import { routerPorts } from '../commands/ports.js';
@@ -39,20 +39,21 @@ export function planClaude(
   // `reasoning_effort` (PR 2) — so the wire path exists and a second mechanism
   // here would be one more place for the two to disagree.
   //
-  // Except for an Anthropic-routed name, where that split does NOT happen:
-  // `routeRequest` skips it for a `claude-` model, because such a request is
-  // forwarded byte-identical to Anthropic by contract. Appending a level there
-  // would not reach the splitter, it would reach Anthropic as part of the
-  // model name, which rejects it — turning a working Claude dispatch into a
-  // 404 for asking a question sonata cannot answer anyway. Effort for Claude
-  // models is out of scope by design: Claude Code's own setting governs them.
-  // So the name stays bare and the plan says the level went unhonoured, which
-  // is what makes `sonata tail` annotate the report instead of lying about it.
-  const anthropicRouted = isAnthropicRoutedName(input.modelId);
-  const effortHonoured = !anthropicRouted;
+  // Configured keys on direct routes cannot carry an effort suffix because
+  // Anthropic has no reasoning_effort field; other configured routes can.
+  let config;
+  try {
+    config = loadConfig(input.cwd, homedir());
+  } catch {
+    // Keep the adapter usable without a config; the model then routes as a
+    // direct Anthropic name when it has the reserved prefix.
+  }
+  const route = config === undefined ? undefined : nativeRouteFor(config, input.modelId);
+  const effortHonoured = route?.transport !== 'direct'
+    && !(input.modelId.startsWith('claude-') && config?.unifiedModels[input.modelId] === undefined);
   const flags = [
     '-p',
-    `--model ${shellQuote(anthropicRouted ? input.modelId : joinCandidate(input.modelId, input.effort))}`,
+    `--model ${shellQuote(effortHonoured ? joinCandidate(input.modelId, input.effort) : input.modelId)}`,
     `--permission-mode ${permissionMode}`,
   ];
   // `--allowedTools <value>` (space form) is variadic in claude's own CLI
@@ -103,7 +104,7 @@ export function planClaude(
   let routerUrl = '';
   let contextWindow = '';
   try {
-    const config = loadConfig(input.cwd, homedir());
+    config ??= loadConfig(input.cwd, homedir());
     if (config.native) {
       routerUrl = `http://localhost:${routerPorts(homedir()).router}`;
       const windows = Object.values(config.native.models).map(m => m.contextWindow);

@@ -204,11 +204,12 @@ export function nativeTomlFor(
       && !isOauthGatewayAuth(existingGateway.auth) && !isOauthGatewayAuth(auth)
       ? existingGateway.baseUrl
       : candidateUrl;
-    // An OAuth gateway takes no base_url: the credential reaches only its own
-    // provider's backend, and LiteLLM already knows that URL.
-    if (isOauthGatewayAuth(auth)) lines.push(`auth = ${tomlKey(auth)}`);
-    else lines.push(`base_url = ${tomlKey(baseUrl)}`);
-    const source = credentialSources[gateway];
+    // An OAuth or session gateway takes no base_url: an OAuth credential
+    // reaches only its own provider's backend, and a session gateway goes to
+    // Anthropic's own URL, which `parseConfig` fixes in place.
+    if (isOauthGatewayAuth(auth) || auth === 'session') lines.push(`auth = ${tomlKey(auth)}`);
+    if (!isOauthGatewayAuth(auth) && auth !== 'session') lines.push(`base_url = ${tomlKey(baseUrl)}`);
+    const source = auth === 'session' ? undefined : credentialSources[gateway];
     if (source !== undefined) lines.push(`credential_source = ${tomlKey(source)}`);
     // `provider` supersedes `wire_format`, so the wizard writes the current
     // key. Reading `wire_format` stays supported for configs already on disk;
@@ -220,9 +221,13 @@ export function nativeTomlFor(
     // writing from the candidate alone dropped `provider = "gemini"` on every
     // re-init and the transport silently fell back to openai.
     const kept = existing?.native?.gateways?.[gateway];
-    const providerToWrite = kept !== undefined
-      ? kept.provider
-      : (wireFormat === 'anthropic' ? wireFormat : undefined);
+    // A session gateway is Anthropic's own API, and `parseConfig` refuses one
+    // that does not say so — write it whatever the candidate carried.
+    const providerToWrite = auth === 'session'
+      ? 'anthropic'
+      : kept !== undefined
+        ? kept.provider
+        : (wireFormat === 'anthropic' ? wireFormat : undefined);
     // Never on an OAuth gateway: its provider is fixed by its auth kind and
     // `parseConfig` refuses the key there, so emitting it would write a config
     // that will not load.

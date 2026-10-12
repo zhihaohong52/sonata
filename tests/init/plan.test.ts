@@ -51,6 +51,24 @@ const state = {
 const opts = { cwd: '/repo', home: '/home/u', packageRoot: '/pkg' };
 
 describe('plan — the config it emits', () => {
+  it('writes a loadable Claude session gateway without a key requirement', () => {
+    const claude = { key: 'claude-claude-opus-4-1', gateway: 'claude', id: 'claude-opus-4-1',
+      contextWindow: 128000, baseUrl: 'https://api.anthropic.com/v1', auth: 'session' as const,
+      wireFormat: 'anthropic' as const };
+    const p = plan(
+      env({ allNativeCandidates: [claude], gatewayAuth: new Map([['claude', 'session']]) }),
+      { ...state, providerKeys: ['byok/claude'], nativeKeys: [claude.key],
+        tiers: { code: { simple: [claude.key], complex: [claude.key] } } },
+      noCredentials, opts,
+    );
+    const back = parseConfig(p.configToml);
+    expect(back.native!.gateways.claude.auth).toBe('session');
+    expect(Object.values(back.unifiedModels)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ gateway: 'claude', id: 'claude-opus-4-1' }),
+    ]));
+    expect(p.notices).not.toContain('  ! claude: no key — run `sonata auth add claude`');
+  });
+
   it('keeps avoid_gateways bound to the top level, not to a table', () => {
     // The 0.3.4 defect: avoid_gateways was written after a [table] header,
     // so TOML bound it to that table and it was silently ignored. Only a

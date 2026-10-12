@@ -73,6 +73,22 @@ describe('sonata status CLI wiring', () => {
     vi.unstubAllGlobals();
   });
 
+  it('aligns covered usage values with the covered header column', async () => {
+    const usageModule = await import('../src/commands/usage.js');
+    vi.spyOn(usageModule, 'cmdUsage').mockResolvedValue({
+      buckets: [{ label: 'opus', requests: 2, input: 100, output: 20, costUsd: 0, coveredUsd: 0.42, coveredRequests: 2, unpricedRequests: 0 }],
+      pricedTotalUsd: 0, covered: { requests: 2, totalUsd: 0.42 },
+      unpriced: { requests: 0, input: 0, output: 0 }, noPromptTokens: { requests: 0, output: 0 }, failedAttempts: [],
+    } as never);
+    const lines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((line) => lines.push(String(line)));
+
+    await main(['usage']);
+    const header = lines.find((line) => line.includes('covered'))!;
+    const data = lines.find((line) => line.startsWith('opus'))!;
+    expect(data.lastIndexOf('$0.4200')).toBe(header.lastIndexOf('covered'));
+  });
+
   it('rejects an unrecognized flag with the parseArgs unknown-option error', async () => {
     // Give every downstream dependency a valid value so nothing would throw if
     // strict parsing were disabled — a `status --sessionx <id>` would then just
@@ -287,6 +303,26 @@ describe('sonata status CLI wiring', () => {
     expect(all).toContain('router: unavailable (could not parse machine config');
     expect(all).toContain('.config/sonata/sonata.toml)');
     expect(isSonataRouterMock).not.toHaveBeenCalled();
+  });
+
+  it('marks a subscription route sub and splits the totals into billed and sub', async () => {
+    // Covered rows are priced at a subscription's list value, not money that
+    // moved. Folding them into one total overstates the bill by exactly what
+    // the plan already paid for.
+    routerPortsMock.mockReturnValue({ router: 4100, litellm: 4000 });
+    isSonataRouterMock.mockResolvedValue(false);
+    readRowsMock.mockReturnValue([
+      cell({ key: 'priced', price: { source: 'models-dev', totalUsd: 1.1 } }),
+      cell({ key: 'covered', price: { source: 'covered', totalUsd: 0.42 } }),
+    ] as never);
+
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await main(['status', '--all']);
+    const lines = spy.mock.calls.map(([l]) => String(l));
+    expect(lines.find((l) => l.includes('-> priced'))).toContain('$1.1000');
+    expect(lines.find((l) => l.includes('-> priced'))).not.toContain('sub');
+    expect(lines.find((l) => l.includes('-> covered'))).toContain('$0.4200 sub');
+    expect(lines).toContain('cost: $1.1000 billed · $0.4200 sub');
   });
 });
 

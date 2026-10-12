@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MANAGED_MCP_FILES, claudeAdapter, planClaude } from '../../src/adapters/claude.js';
 import { getAdapter } from '../../src/adapters/index.js';
-import { KNOWN_HARNESSES, isAnthropicRoutedName } from '../../src/config.js';
+import { KNOWN_HARNESSES } from '../../src/config.js';
 import { splitCandidate } from '../../src/effort.js';
 
 function cwdWithNative(): string {
@@ -198,6 +198,51 @@ describe('claudeAdapter.plan — reasoning effort', () => {
   });
 });
 
+describe('claudeAdapter.plan — configured Claude keys carry effort', () => {
+  it('appends effort for a configured Claude key', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sonata-claude-adapter-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `[models."claude-sonnet-4.5"]\nharness = "claude"\nid = "claude-sonnet-4.5"\n`);
+    const plan = claudeAdapter.plan({ ...base, cwd, modelId: 'claude-sonnet-4.5', mode: 'acceptEdits', effort: 'low' });
+    expect(plan.script).toContain(`--model 'claude-sonnet-4.5@low'`);
+    expect(plan.effortHonoured).toBe(true);
+  });
+
+  it('carries effort for a configured LiteLLM Claude key', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sonata-claude-adapter-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."claude-sonnet-4.5"]
+gateway = "copilot"
+id = "claude-sonnet-4.5"
+[native.gateways."copilot"]
+base_url = "https://copilot.example/v1"
+`);
+    const plan = claudeAdapter.plan({ ...base, cwd, modelId: 'claude-sonnet-4.5', mode: 'acceptEdits', effort: 'low' });
+    expect(plan.script).toContain(`--model 'claude-sonnet-4.5@low'`);
+    expect(plan.effortHonoured).toBe(true);
+  });
+
+  it('leaves a configured direct key bare and reports effort unhonoured', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sonata-claude-adapter-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[models."opus"]
+gateway = "claude"
+id = "claude-opus-4-1"
+[native.gateways."claude"]
+provider = "anthropic"
+auth = "session"
+`);
+    const plan = claudeAdapter.plan({ ...base, cwd, modelId: 'opus', mode: 'acceptEdits', effort: 'low' });
+    expect(plan.script).toContain(`--model 'opus'`);
+    expect(plan.effortHonoured).toBe(false);
+  });
+
+  it('leaves an undefined Claude model bare and effort unhonoured', () => {
+    const plan = claudeAdapter.plan({ ...base, modelId: 'claude-opus-4-1', mode: 'acceptEdits', effort: 'low' });
+    expect(plan.script).toContain(`--model 'claude-opus-4-1'`);
+    expect(plan.effortHonoured).toBe(false);
+  });
+});
+
 describe('claudeAdapter.plan — an Anthropic-routed model cannot carry a level', () => {
   // `routeRequest` splits `<key>@<effort>` off a bare model name ONLY when the
   // name is not Anthropic-routed — a `claude-` request is passed through
@@ -233,7 +278,6 @@ describe('claudeAdapter.plan — the name it emits is one the router will split'
   it('round-trips through the same splitter routeRequest uses', () => {
     const name = nameIn(claudeAdapter.plan({ ...base, mode: 'acceptEdits', effort: 'max' }).script);
 
-    expect(isAnthropicRoutedName(name)).toBe(false);
     expect(splitCandidate(name)).toEqual({ key: 'deepseek-v4-flash', effort: 'max' });
   });
 });

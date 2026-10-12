@@ -63,6 +63,10 @@ describe('transportFor', () => {
   it('uses the table when the gateway declares no provider', () => {
     expect(transportFor(gw({}), 'anthropic')).toBe('direct');
   });
+
+  it('reaches a session gateway directly, never through LiteLLM', () => {
+    expect(transportFor({ baseUrl: 'https://api.anthropic.com/v1', auth: 'session', provider: 'anthropic' }, 'claude')).toBe('direct');
+  });
 });
 
 describe('litellmRequired', () => {

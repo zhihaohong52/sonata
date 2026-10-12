@@ -114,10 +114,14 @@ export interface NativeModelConfig { gateway: string; id: string; contextWindow:
  * the Responses wire API, with streaming mandatory. LiteLLM's `chatgpt`
  * provider speaks all of that and refreshes the token itself, so sonata
  * supplies neither a base URL nor a key. See docs/guide/codex-subscription.md.
+ *
+ * `session` is the calling Claude Code session's own credential, forwarded
+ * as-is. There is no key to store and nowhere else it may go — see
+ * `ANTHROPIC_SESSION_BASE_URL`.
  */
-export type NativeGatewayAuth = 'api-key' | 'codex-oauth' | 'copilot-oauth';
+export type NativeGatewayAuth = 'api-key' | 'codex-oauth' | 'copilot-oauth' | 'session';
 
-export const NATIVE_GATEWAY_AUTHS: readonly NativeGatewayAuth[] = ['api-key', 'codex-oauth', 'copilot-oauth'];
+export const NATIVE_GATEWAY_AUTHS: readonly NativeGatewayAuth[] = ['api-key', 'codex-oauth', 'copilot-oauth', 'session'];
 
 import type { LitellmProvider, Transport } from './native/providers.js';
 import { LITELLM_PROVIDERS, transportFor } from './native/providers.js';
@@ -150,18 +154,19 @@ export function isOauthGatewayAuth(auth: NativeGatewayAuth): boolean {
 }
 
 /**
- * The prefix the router reserves for Anthropic.
- *
- * A native model whose key or id starts with it can never be reached, because
- * the router forwards that prefix upstream rather than to LiteLLM. Several
- * gateways legitimately serve Claude models — Copilot, acme, anthropic — so
- * this is a real limitation, not a theoretical one: `init` must not offer such
- * a model, or it writes a config that `parseConfig` then refuses to load.
+ * Where a `session` gateway sends the caller's own credential — and the only
+ * place it may: the credential is Claude Code's own, and any other host would
+ * receive it in the clear.
  */
-export const ANTHROPIC_ROUTED_PREFIX = 'claude-';
+export const ANTHROPIC_SESSION_BASE_URL = 'https://api.anthropic.com/v1';
 
-export function isAnthropicRoutedName(name: string): boolean {
-  return name.startsWith(ANTHROPIC_ROUTED_PREFIX);
+/** Whether `url` is Anthropic's API itself: https, host exactly api.anthropic.com, path empty or /v1. */
+function isAnthropicApiUrl(url: string): boolean {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return false; }
+  return parsed.protocol === 'https:' && parsed.host === 'api.anthropic.com'
+    && parsed.username === '' && parsed.password === ''
+    && /^\/(v1\/?)?$/.test(parsed.pathname) && parsed.search === '' && parsed.hash === '';
 }
 
 /** Where LiteLLM's `chatgpt` provider sends Codex traffic. */
@@ -369,6 +374,43 @@ function parsePrice(raw: unknown, where: string): PriceConfig | undefined {
   return price;
 }
 
+/** The models.dev providers a gateway's `pricing_provider` names, or `undefined` when it names none. */
+function parsePricingProvider(name: string, raw: unknown): string[] | undefined {
+  if (raw === undefined) return undefined;
+  let pricingProvider: string[];
+  if (typeof raw === 'string') {
+    pricingProvider = [raw];
+  } else if (Array.isArray(raw)) {
+    if (raw.length === 0) {
+      throw new Error(`sonata.toml: native gateway "${name}" has empty "pricing_provider" list`);
+    }
+    if (!raw.every((provider) => typeof provider === 'string')) {
+      throw new Error(`sonata.toml: native gateway "${name}" has non-string "pricing_provider" list entry`);
+    }
+    pricingProvider = raw;
+  } else {
+    throw new Error(`sonata.toml: native gateway "${name}" has non-string "pricing_provider"`);
+  }
+  // A blank id names no models.dev provider, so every model on this
+  // gateway would resolve to `source: 'none'` and report as unpriced —
+  // the same silent-failure shape as a mistyped gateway in
+  // `avoid_gateways`. The setting's only visible effect is a price that
+  // does not appear, so a value that cannot ever match must be refused
+  // where it is written rather than discovered in a cost report.
+  if (pricingProvider.some((provider) => provider.trim().length === 0)) {
+    throw new Error(
+      `sonata.toml: native gateway "${name}" has a blank "pricing_provider" entry — ` +
+      'name a models.dev provider (e.g. "openai"), or remove the key',
+    );
+  }
+  // Surrounding whitespace is invisible in a TOML string but not in the
+  // lookup: the value is used directly as a models.dev provider key, so
+  // `" openai "` matches nothing and every model on the gateway reports
+  // as unpriced — the same silent failure the blank check above refuses,
+  // arriving by a route the blank check cannot see.
+  return pricingProvider.map((provider) => provider.trim());
+}
+
 export function parseConfig(text: string): SonataConfig {
   // Every field-level check below reads the *current* shape, so the chain runs
   // first: an older file is walked forward here, and a file stamped newer than
@@ -392,11 +434,6 @@ export function parseConfig(text: string): SonataConfig {
     if (typeof d.gateway === 'string') {
       if (typeof d.id !== 'string') {
         throw new Error(`sonata.toml: model "${name}" with gateway "${d.gateway}" needs string "id"`);
-      }
-      if (isAnthropicRoutedName(name)) {
-        throw new Error(
-          `sonata.toml: model "${name}" cannot use the "${ANTHROPIC_ROUTED_PREFIX}" prefix because the router routes it to Anthropic.`,
-        );
       }
       if (d.harness !== undefined && (typeof d.harness !== 'string' || !KNOWN_HARNESSES.includes(d.harness as any))) {
         throw new Error(
@@ -504,12 +541,6 @@ export function parseConfig(text: string): SonataConfig {
             ({ key } = splitCandidate(candidate));
           } catch (err) {
             throw new Error(`sonata.toml: tiers.${role}.${tier} ${(err as Error).message}`);
-          }
-          if (isAnthropicRoutedName(key)) {
-            throw new Error(
-              `sonata.toml: tiers.${role}.${tier} model "${key}" cannot use the ` +
-              `"${ANTHROPIC_ROUTED_PREFIX}" prefix because the router routes it to Anthropic.`,
-            );
           }
           if (!unifiedModels[key]) {
             throw new Error(
@@ -688,6 +719,29 @@ export function parseConfig(text: string): SonataConfig {
         );
       }
       const auth = rawAuth as NativeGatewayAuth;
+      if (auth === 'session') {
+        // The person's own Claude Code account: the caller's credential is
+        // forwarded as-is, so where it may go is the whole security question.
+        if (d.provider !== 'anthropic') {
+          throw new Error(`sonata.toml: native gateway "${name}" is auth = "session", which needs provider = "anthropic".`);
+        }
+        if (d.credential_source !== undefined) {
+          throw new Error(
+            `sonata.toml: native gateway "${name}" is auth = "session", so it cannot set credential_source — ` +
+            'its credential is the session\'s own, never a stored one. Remove credential_source.',
+          );
+        }
+        if (d.base_url !== undefined && (typeof d.base_url !== 'string' || !isAnthropicApiUrl(d.base_url))) {
+          throw new Error(
+            `sonata.toml: native gateway "${name}" is auth = "session", so its base_url must be ` +
+            `https://api.anthropic.com — the session's credential goes nowhere else. Remove base_url.`,
+          );
+        }
+        const price = parsePrice(d.price, `[native.gateways."${name}"]`);
+        const pricingProvider = parsePricingProvider(name, d.pricing_provider);
+        gateways[name] = { baseUrl: ANTHROPIC_SESSION_BASE_URL, auth, provider: 'anthropic', price, pricingProvider };
+        continue;
+      }
       let credentialSource: CredentialSource | undefined;
       if (d.credential_source !== undefined) {
         const raw = d.credential_source;
@@ -758,41 +812,7 @@ export function parseConfig(text: string): SonataConfig {
         provider = raw as LitellmProvider;
       }
       const price = parsePrice(d.price, `[native.gateways."${name}"]`);
-      let pricingProvider: string[] | undefined;
-      if (d.pricing_provider !== undefined) {
-        const rawPricingProvider = d.pricing_provider;
-        if (typeof rawPricingProvider === 'string') {
-          pricingProvider = [rawPricingProvider];
-        } else if (Array.isArray(rawPricingProvider)) {
-          if (rawPricingProvider.length === 0) {
-            throw new Error(`sonata.toml: native gateway "${name}" has empty "pricing_provider" list`);
-          }
-          if (!rawPricingProvider.every((provider) => typeof provider === 'string')) {
-            throw new Error(`sonata.toml: native gateway "${name}" has non-string "pricing_provider" list entry`);
-          }
-          pricingProvider = rawPricingProvider;
-        } else {
-          throw new Error(`sonata.toml: native gateway "${name}" has non-string "pricing_provider"`);
-        }
-        // A blank id names no models.dev provider, so every model on this
-        // gateway would resolve to `source: 'none'` and report as unpriced —
-        // the same silent-failure shape as a mistyped gateway in
-        // `avoid_gateways`. The setting's only visible effect is a price that
-        // does not appear, so a value that cannot ever match must be refused
-        // where it is written rather than discovered in a cost report.
-        if (pricingProvider.some((provider) => provider.trim().length === 0)) {
-          throw new Error(
-            `sonata.toml: native gateway "${name}" has a blank "pricing_provider" entry — ` +
-            'name a models.dev provider (e.g. "openai"), or remove the key',
-          );
-        }
-        // Surrounding whitespace is invisible in a TOML string but not in the
-        // lookup: the value is used directly as a models.dev provider key, so
-        // `" openai "` matches nothing and every model on the gateway reports
-        // as unpriced — the same silent failure the blank check above refuses,
-        // arriving by a route the blank check cannot see.
-        pricingProvider = pricingProvider.map((provider) => provider.trim());
-      }
+      const pricingProvider = parsePricingProvider(name, d.pricing_provider);
       // An OAuth gateway is addressed by LiteLLM's own provider, which knows the
       // URL; accepting one here would only let a config claim a base URL that is
       // never used — or worse, name the metered endpoint the credential cannot
@@ -847,11 +867,6 @@ export function parseConfig(text: string): SonataConfig {
       if (typeof d.gateway !== 'string' || typeof d.id !== 'string' || typeof d.context_window !== 'number') {
         throw new Error(
           `sonata.toml: native model "${name}" needs string "gateway", string "id" and number "context_window"`,
-        );
-      }
-      if (isAnthropicRoutedName(name)) {
-        throw new Error(
-          `sonata.toml: native model "${name}" cannot use the "${ANTHROPIC_ROUTED_PREFIX}" prefix because the router routes it to Anthropic.`,
         );
       }
       if (!gateways[d.gateway]) {
@@ -1067,6 +1082,7 @@ export function nativeRouteFor(config: SonataConfig, key: string): TierRoute['na
     id: model.id,
     transport: gw !== undefined ? transportFor(gw, model.gateway) : undefined,
     baseUrl: gw?.baseUrl,
+    ...(gw !== undefined ? { auth: gw.auth } : {}),
   };
 }
 

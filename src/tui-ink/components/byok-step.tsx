@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { MultiSelect } from './multi-select.js';
 import { TextInput } from './text-input.js';
-import { isAnthropicRoutedName } from '../../config.js';
 import { fetchModels as defaultFetchModels, type FetchModelsResult } from '../../native/models.js';
 import { usePalette } from '../theme-context.js';
 
@@ -64,7 +63,6 @@ export function ByokStep(props: ByokStepProps): React.ReactElement {
   const palette = usePalette();
   const { provider, apiKey, initialIds, fetchModels, onKey, onSubmit, onBack, onCancel } = props;
   const [result, setResult] = useState<FetchModelsResult | undefined>(undefined);
-  const [dropped, setDropped] = useState(0);
   const [attempt, setAttempt] = useState(0);
   const [ignoreRejection, setIgnoreRejection] = useState(false);
   const [retrying, setRetrying] = useState(false);
@@ -75,9 +73,7 @@ export function ByokStep(props: ByokStepProps): React.ReactElement {
     void fetchModels(provider.url, apiKey).then((found) => {
       if (cancelled) return;
       if (found.outcome === 'ok') {
-        const usable = found.models.filter((model) => !isAnthropicRoutedName(model.id));
-        setDropped(found.models.length - usable.length);
-        setResult({ outcome: 'ok', models: usable });
+        setResult({ outcome: 'ok', models: found.models });
       } else {
         setResult(found);
       }
@@ -150,11 +146,6 @@ export function ByokStep(props: ByokStepProps): React.ReactElement {
 
   return (
     <Box flexDirection="column">
-      {dropped > 0 && (
-        <Text color={palette.MUTED}>
-          {dropped} claude-* model{dropped === 1 ? '' : 's'} not shown — the router reserves that prefix
-        </Text>
-      )}
       <MultiSelect
         key={`byok-models-${provider.name}`}
         title={`Models for ${provider.name}`}
@@ -181,14 +172,9 @@ function hintFor(result: FetchModelsResult, url: string): string {
 }
 
 function validateIds(value: string): string | undefined {
-  if (parseIds(value).length > 0) return undefined;
-  const typed = value.split(',').map((id) => id.trim()).filter((id) => id !== '');
-  return typed.length > 0
-    ? 'None of those can be used: the router reserves `claude-` for Anthropic.'
-    : 'Enter at least one model id.';
+  return parseIds(value).length > 0 ? undefined : 'Enter at least one model id.';
 }
 
 function parseIds(value: string): string[] {
-  return [...new Set(value.split(',').map((id) => id.trim()).filter((id) => id !== ''))]
-    .filter((id) => !isAnthropicRoutedName(id));
+  return [...new Set(value.split(',').map((id) => id.trim()).filter((id) => id !== ''))];
 }

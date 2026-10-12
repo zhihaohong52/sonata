@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { readRows } from '../../ledger.js';
-import { projectTenant, recentRoutes, scopeRows, type RouteLine } from '../../commands/status.js';
+import { projectTenant, recentRoutes, routeCostLabel, routeTotals, scopeRows, type RouteLine } from '../../commands/status.js';
 import { routerPorts } from '../../commands/ports.js';
 import { isSonataRouter, serveHealthUrl } from '../../commands/serve.js';
 import { STATE, columns, usableWidth } from '../theme.js';
@@ -108,12 +108,18 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
       routes.map((r) => 1 + r.attempts.length),
       process.stdout.rows ?? 24,
       // What the screen spends on itself: the two headings, their rules, the
-      // router line, two spacers and the footer — plus the two hint lines
-      // when the router is down, and one held back for the "N more" line.
-      // Counted exactly now that every line is guaranteed to be ONE line.
-      9 + (up === false ? 2 : 0) + 1,
+      // router line, two spacers and the footer — plus the cost line under the
+      // routes, the two hint lines when the router is down, and one held back
+      // for the "N more" line. Counted exactly now that every line is
+      // guaranteed to be ONE line. The cost line is reserved whether or not it
+      // is drawn: it is decided from the rows already chosen to fit.
+      10 + (up === false ? 2 : 0) + 1,
     ));
   const fresh = at === undefined ? 'sampling…' : `updated ${agoLabel(now - at)}`;
+  // Billed money and subscription value, apart, under the list — one left an
+  // account and the other is what a plan already paid for. Undefined when
+  // nothing shown was priced, which is why there is no "cost: —" line.
+  const totals = routeTotals(visible);
 
   /*
    * Every line below is ONE `<Text wrap="truncate-end">` with styled spans
@@ -217,6 +223,14 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
               {sc.tokens && (
                 <Text color={palette.MUTED}>{`${line.input} in / ${line.output} out`}</Text>
               )}
+              {/* Rides with the token counts and is dropped with them: its
+                  width is budgeted in `statusColumns` beside theirs, and a
+                  cell the budget does not name is one the row always overflows
+                  by — truncate-end then eats it every time. Below that width
+                  the totals line under the list still says what it cost. */}
+              {sc.tokens && (
+                <Text color={palette.MUTED}>{` ${routeCostLabel(line)}`}</Text>
+              )}
             </Text>
             {/* Failed attempts are why a dispatch died, so they are not a detail. */}
             {line.attempts.map((a) => (
@@ -233,6 +247,9 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
         // Said plainly rather than silently truncated: a list that stops
         // without saying so reads as the whole list.
         <Text wrap="truncate-end" color={palette.MUTED}>{`… ${routes.length - visible.length} more, not shown`}</Text>
+      )}
+      {totals !== undefined && (
+        <Text wrap="truncate-end" color={palette.MUTED}>{`cost: ${totals}`}</Text>
       )}
       <Box marginTop={1}>
         <Text wrap="truncate-end" color={palette.MUTED}>{`g ${global ? 'this project' : 'every project'}   esc back   q quit`}</Text>

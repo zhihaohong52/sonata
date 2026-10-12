@@ -192,6 +192,115 @@ base_url = "https://example.invalid/v1"
     expect(resolvePrice(config, 'bare', tokens, now, cache)).toEqual({ source: 'none' });
   });
 
+  it('prices session gateway models at Anthropic list and marks subscription work covered', () => {
+    const sessionConfig = parseConfig(`
+[models."opus"]
+gateway = "claude"
+id = "claude-opus-4-1"
+
+[native.gateways."claude"]
+base_url = "https://api.anthropic.com"
+provider = "anthropic"
+auth = "session"
+`);
+    const sessionCache: ModelsDevCache = {
+      fetchedAt: '2026-08-26T15:31:30.637Z',
+      providers: { anthropic: { 'claude-opus-4-1': { input: 15, output: 75 } } },
+    };
+    const usage = { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheCreation: 0 };
+    expect(resolvePrice(sessionConfig, 'opus', usage, now, sessionCache, { credential: 'subscription' })).toMatchObject({
+      source: 'covered', totalUsd: 90,
+    });
+    expect(resolvePrice(sessionConfig, 'opus', usage, now, sessionCache, { credential: 'key' })).toMatchObject({
+      source: 'models-dev', totalUsd: 90,
+    });
+    expect(resolvePrice(sessionConfig, 'opus', usage, now, sessionCache)).toMatchObject({
+      source: 'models-dev', totalUsd: 90,
+    });
+  });
+
+  it('does not fall back to OpenRouter for a session model missing from Anthropic', () => {
+    const sessionConfig = parseConfig(`
+[models."opus"]
+gateway = "claude"
+id = "claude-opus-4-1"
+
+[native.gateways."claude"]
+provider = "anthropic"
+auth = "session"
+`);
+    const sessionCache: ModelsDevCache = {
+      fetchedAt: '2026-08-26T15:31:30.637Z',
+      providers: { openrouter: { 'claude-opus-4-1': { input: 15, output: 75 } } },
+    };
+    expect(resolvePrice(sessionConfig, 'opus', tokens, now, sessionCache)).toEqual({ source: 'none' });
+  });
+
+  it('honours an explicit provider for a session gateway', () => {
+    const sessionConfig = parseConfig(`
+[models."opus"]
+gateway = "claude"
+id = "claude-opus-4-1"
+[native.gateways."claude"]
+provider = "anthropic"
+auth = "session"
+pricing_provider = "openrouter"
+`);
+    const sessionCache: ModelsDevCache = {
+      fetchedAt: '2026-08-26T15:31:30.637Z',
+      providers: { openrouter: { 'claude-opus-4-1': { input: 15, output: 75 } } },
+    };
+    expect(resolvePrice(sessionConfig, 'opus', tokens, now, sessionCache)).toMatchObject({ source: 'models-dev', totalUsd: 15 });
+  });
+
+  it('proposes Anthropic pricing for the session auth gateway', () => {
+    expect(proposePricingProvider('claude', 'session')).toEqual(['anthropic']);
+  });
+
+  it('leaves an api-key openrouter gateway without an explicit provider unpriced', () => {
+    const openrouter = parseConfig(`
+[models."openrouter"]
+gateway = "openrouter"
+id = "deepseek/deepseek-v4-flash"
+
+[native.gateways."openrouter"]
+base_url = "https://example.invalid/v1"
+`);
+    const openrouterCache: ModelsDevCache = {
+      fetchedAt: '2026-08-26T15:31:30.637Z',
+      providers: { openrouter: { 'deepseek/deepseek-v4-flash': { input: 3, output: 9 } } },
+    };
+    expect(resolvePrice(openrouter, 'openrouter', tokens, now, openrouterCache)).toEqual({ source: 'none' });
+  });
+
+  it('keeps codex OAuth gateways without pricing_provider unpriced', () => {
+    const oauth = parseConfig(`
+[models."codex"]
+gateway = "whatever-name"
+id = "gpt-5.6-terra"
+
+[native.gateways."whatever-name"]
+auth = "codex-oauth"
+`);
+    const oauthCache: ModelsDevCache = {
+      fetchedAt: '2026-08-26T15:31:30.637Z',
+      providers: { openai: { 'gpt-5.6-terra': { input: 4, output: 12 } } },
+    };
+    expect(resolvePrice(oauth, 'codex', tokens, now, oauthCache)).toEqual({ source: 'none' });
+  });
+
+  it('leaves an unknown api-key gateway without a pricing provider unpriced', () => {
+    const unknownGateway = parseConfig(`
+[models."unknown"]
+gateway = "mystery"
+id = "mystery-model"
+
+[native.gateways."mystery"]
+base_url = "https://example.invalid/v1"
+`);
+    expect(resolvePrice(unknownGateway, 'unknown', tokens, now, cache)).toEqual({ source: 'none' });
+  });
+
   it('reports none for an unknown key', () => {
     expect(resolvePrice(config, 'nope', tokens, now, cache)).toEqual({ source: 'none' });
     expect(resolvePrice(config, undefined, tokens, now, cache)).toEqual({ source: 'none' });

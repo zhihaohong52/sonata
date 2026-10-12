@@ -30,7 +30,7 @@ import {
 import { migrateLegacyConfig } from '../normalize.js';
 import { wellKnownProviders } from '../native/models.js';
 import { byokProviderKey } from '../tui-ink/app-state.js';
-import { oauthProvidersFor, PROVIDER_OAUTH_AUTHS, nativeCandidatesFrom, configNativeCandidates, gatewayNamesOf, avoidedKeysOf, dedupeOauthProviders, type NativeCandidate, configPathFor, defaultDetector, OPENCODE_RANGE } from './helpers.js';
+import { oauthProvidersFor, PROVIDER_OAUTH_AUTHS, PROVIDER_SESSION_GATEWAY, nativeCandidatesFrom, configNativeCandidates, gatewayNamesOf, avoidedKeysOf, dedupeOauthProviders, type NativeCandidate, configPathFor, defaultDetector, OPENCODE_RANGE } from './helpers.js';
 import type { Detector, ConfigScope, Detection, InitOptions } from './helpers.js';
 import { isBrokenHarness } from '../detect.js';
 
@@ -237,6 +237,7 @@ export async function discover(
   for (const [gateway, auth] of Object.entries(PROVIDER_OAUTH_AUTHS)) {
     if (!gatewayAuth.has(gateway)) gatewayAuth.set(gateway, auth);
   }
+  if (!gatewayAuth.has(PROVIDER_SESSION_GATEWAY)) gatewayAuth.set(PROVIDER_SESSION_GATEWAY, 'session');
   for (const [gateway, auth] of oauthProviders) gatewayAuth.set(gateway, auth);
   const detectedNativeCandidates = nativeCandidatesFrom(allRefs, providerBaseUrls, oauthProviders);
   const allNativeCandidates = [...new Map([
@@ -249,6 +250,9 @@ export async function discover(
   // otherwise deepseek appears twice, once with a catalogue and once without.
   const byokProviders = wellKnownProviders()
     .filter((provider) => !offered.some((existing) => existing.provider === provider.name));
+  if (!offered.some((provider) => provider.provider === PROVIDER_SESSION_GATEWAY)) {
+    byokProviders.push({ name: PROVIDER_SESSION_GATEWAY, url: WELL_KNOWN_PROVIDER_URLS[PROVIDER_SESSION_GATEWAY]! });
+  }
   for (const provider of byokProviders) {
     offered.push({
       harness: 'byok',

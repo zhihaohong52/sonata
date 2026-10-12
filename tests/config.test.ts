@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { aaCatalogPath } from '../src/catalog.js';
-import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents, expectedAgentNames, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL, resolveTierAlias, harnessModelFor, tiersCollapse, NoConfigError } from '../src/config.js';
+import { parseConfig, isReadOnlyRole, configPath, loadConfig, generatedAgents, expectedAgentNames, CODEX_OAUTH_BASE_URL, COPILOT_OAUTH_BASE_URL, ANTHROPIC_SESSION_BASE_URL, nativeRouteFor, resolveTierAlias, harnessModelFor, tiersCollapse, NoConfigError } from '../src/config.js';
 
 const VALID = `
 [models.deepseek-v4-flash]
@@ -450,7 +450,7 @@ base_url = "http://x"
 `)).not.toThrow();
   });
 
-  it('refuses a native model key beginning claude-', () => {
+  it('accepts a native model key beginning claude-', () => {
     expect(() => parseConfig(`
 [native.models."claude-ish"]
 gateway = "g"
@@ -458,7 +458,7 @@ id = "foo"
 context_window = 1000
 [native.gateways."g"]
 base_url = "http://x"
-`)).toThrow(/claude-/);
+`)).not.toThrow();
   });
 
   it('refuses generate.native referencing an undefined native model', () => {
@@ -618,13 +618,15 @@ auth = "copilot-oauth"
 `)).not.toThrow();
   });
 
-  it('still refuses a unified model key beginning claude-', () => {
+  it('accepts a unified model key beginning claude-', () => {
     expect(() => parseConfig(`
 [models."claude-sonnet"]
 gateway = "copilot"
 id = "claude-sonnet-4-5"
 context_window = 1000
-`)).toThrow(/cannot use the "claude-" prefix/);
+[native.gateways."copilot"]
+auth = "copilot-oauth"
+`)).not.toThrow();
   });
 });
 
@@ -942,7 +944,7 @@ base_url = "https://acme.example/v1"
     expect(resolved?.routes.map((r) => r.key)).toEqual(['gpt-5.6-terra', 'deepseek-v4-flash']);
     expect(resolved?.routes[1].native).toEqual({
       gateway: 'vendorx', id: 'deepseek-v4-flash-0731',
-      transport: 'litellm', baseUrl: 'http://gateway.example/v1',
+      transport: 'litellm', baseUrl: 'http://gateway.example/v1', auth: 'api-key',
     });
     expect(resolved?.routes[1].harness).toEqual({ harness: 'opencode', id: 'vendorx/deepseek-v4-flash-0731' });
   });
@@ -1014,9 +1016,9 @@ complex = []
       .not.toThrow();
   });
 
-  it('refuses claude- keys in unified models and tier keys', () => {
-    expect(() => parseConfig(TIERED.replace('[models."gpt-5.6-terra"]', '[models."claude-terra"]')))
-      .toThrow(/claude-/);
+  it('accepts claude- keys in unified models and tier keys', () => {
+    expect(() => parseConfig(TIERED.split('gpt-5.6-terra').join('claude-terra')))
+      .not.toThrow();
   });
 
   it('refuses mixing [tiers] with [generate]', () => {
@@ -1529,5 +1531,73 @@ base_url="https://a.example/v1"
 base_url="https://b.example/v1"
 `);
     expect(Object.keys(cfg.native!.gateways).sort()).toEqual(['acme', 'acme-2']);
+  });
+});
+
+describe('parseConfig — Claude models are ordinary models', () => {
+  const tiers = (key: string) => `\n[tiers.code]\nsimple = ["${key}"]\ncomplex = ["${key}"]\n`;
+
+  it('accepts a claude- key in [models] and [tiers]', () => {
+    const cfg = parseConfig(`schema_version = 1
+[native.gateways."copilot"]
+auth = "copilot-oauth"
+[models."claude-sonnet-4.5"]
+gateway = "copilot"
+id = "claude-sonnet-4.5"
+${tiers('claude-sonnet-4.5')}`);
+    expect(cfg.unifiedModels['claude-sonnet-4.5'].id).toBe('claude-sonnet-4.5');
+    expect(cfg.tiers?.code?.simple).toEqual(['claude-sonnet-4.5']);
+  });
+
+  it('accepts a session gateway and defaults its base_url to Anthropic', () => {
+    const cfg = parseConfig(`schema_version = 1
+[native.gateways."claude"]
+provider = "anthropic"
+auth = "session"
+[models."opus"]
+gateway = "claude"
+id = "claude-opus-4-1"
+${tiers('opus')}`);
+    expect(cfg.native!.gateways.claude).toMatchObject({ auth: 'session', baseUrl: ANTHROPIC_SESSION_BASE_URL, provider: 'anthropic' });
+    expect(nativeRouteFor(cfg, 'opus')).toEqual({ gateway: 'claude', id: 'claude-opus-4-1', transport: 'direct', baseUrl: ANTHROPIC_SESSION_BASE_URL, auth: 'session' });
+  });
+
+  it.each([
+    'https://api.anthropic.com.evil.test/v1',
+    'http://api.anthropic.com/v1',
+    'https://api.anthropic.com@evil.test/v1',
+    'https://gateway.example/v1',
+    'not a url',
+  ])('refuses a session gateway whose base_url is %s', (url) => {
+    expect(() => parseConfig(`schema_version = 1
+[native.gateways."claude"]
+provider = "anthropic"
+auth = "session"
+base_url = "${url}"
+`)).toThrow(/session.*api\.anthropic\.com/);
+  });
+
+  it('accepts the Anthropic base_url spelled with or without /v1', () => {
+    for (const url of ['https://api.anthropic.com', 'https://api.anthropic.com/v1', 'https://api.anthropic.com/v1/']) {
+      const cfg = parseConfig(`schema_version = 1\n[native.gateways."claude"]\nprovider = "anthropic"\nauth = "session"\nbase_url = "${url}"\n`);
+      expect(cfg.native!.gateways.claude.baseUrl).toBe(ANTHROPIC_SESSION_BASE_URL);
+    }
+  });
+
+  it('refuses a session gateway on any provider but anthropic, and with a credential_source', () => {
+    expect(() => parseConfig(`schema_version = 1\n[native.gateways."claude"]\nprovider = "openai"\nauth = "session"\n`))
+      .toThrow(/session.*provider = "anthropic"/);
+    expect(() => parseConfig(`schema_version = 1\n[native.gateways."claude"]\nauth = "session"\n`))
+      .toThrow(/session.*provider = "anthropic"/);
+    expect(() => parseConfig(`schema_version = 1\n[native.gateways."claude"]\nprovider = "anthropic"\nauth = "session"\ncredential_source = "sonata"\n`))
+      .toThrow(/session.*credential_source/);
+  });
+
+  it('refuses a session gateway that names only wire_format', () => {
+    // `wire_format` is the deprecated spelling of `provider`, but a session
+    // gateway reads `provider` itself: it forwards the caller's own credential,
+    // so the transport is stated in the current key or refused.
+    expect(() => parseConfig(`schema_version = 1\n[native.gateways."claude"]\nauth = "session"\nwire_format = "anthropic"\n`))
+      .toThrow(/session.*provider = "anthropic"/);
   });
 });

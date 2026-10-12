@@ -11,6 +11,14 @@ const oauth = (key: string, gateway: string, id: string, baseUrl: string): Nativ
   ({ key, gateway, id, contextWindow: 128000, baseUrl, auth: 'codex-oauth' });
 
 describe('addByokCandidates', () => {
+  it('uses the Anthropic session endpoint and wire format for Claude account candidates', () => {
+    const nativeByKey = new Map<string, NativeCandidate>();
+    addByokCandidates(nativeByKey, new Map(), { claude: ['claude-opus-4-1'] }, {}, new Map([['claude', 'session']]));
+    expect(nativeByKey.get('claude-claude-opus-4-1')).toMatchObject({
+      gateway: 'claude', auth: 'session', baseUrl: 'https://api.anthropic.com/v1', wireFormat: 'anthropic',
+    });
+  });
+
   it('uses the selected OAuth auth and provider backend URL', () => {
     const nativeByKey = new Map<string, NativeCandidate>();
     addByokCandidates(nativeByKey, new Map([['openai', 'https://api.openai.com/v1']]),

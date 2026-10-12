@@ -45,3 +45,4 @@ that didn't lead to a standalone implementation plan.
 | 2026-09-30 | Auto-routed tiers: Jev chooses simple, normal or complex | [spec](specs/2026-09-30-jev-auto-route-design.md) | [plan](plans/2026-09-30-jev-auto-route.md) |
 | 2026-10-01 | Auto-route: any decision URL, best available model (JevBench) | [spec](specs/2026-10-01-decision-model-selection-design.md) | [plan](plans/2026-10-01-decision-model-selection.md) |
 | 2026-10-09 | sonata-loop as a mod: a live panel of the loop and its agents | [spec](specs/2026-10-09-sonata-loop-panel-design.md) | [plan](plans/2026-10-09-sonata-loop-panel.md) |
+| 2026-10-12 | Claude models as ordinary sonata models; subscription cost shown at list price | [spec](specs/2026-10-12-claude-models-design.md) | [plan](plans/2026-10-12-claude-models.md) |

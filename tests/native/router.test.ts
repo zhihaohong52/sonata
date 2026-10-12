@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, repairNamelessToolCalls, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import { routeRequest, sessionCredential, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, repairNamelessToolCalls, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
 import type { RouterTenant } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
@@ -59,6 +59,7 @@ describe('routeRequest', () => {
   // Answering with Claude Code's own "thread unsupported" error makes it
   // resend the turn stateless and keep that model stateless for the session.
   describe('server-side threads', () => {
+    const session = { gateway: 'claude', id: 'claude-opus-4-1', transport: 'direct' as const, baseUrl: 'https://api.anthropic.com/v1', auth: 'session' as const };
     const threaded = (model: string, thread: Record<string, unknown>) => ({
       method: 'POST', url: '/v1/messages', headers: {},
       body: Buffer.from(JSON.stringify({ model, thread, messages: [{ role: 'user', content: 'hi' }] })),
@@ -86,6 +87,36 @@ describe('routeRequest', () => {
         ...base, fetch: fakeFetch(rec), resolveNative: () => ({ gateway: 'g', id: 'f', transport: 'litellm' as const }),
       });
       expect(res.status).toBe(400);
+      expect(rec).toHaveLength(0);
+    });
+
+    it('refuses a thread on a configured Claude key routed through LiteLLM', async () => {
+      const rec: FetchCall[] = [];
+      const res = await routeRequest(threaded('claude-sonnet-4.5', { type: 'continue', previous_message_id: 'msg_1' }), {
+        ...base, fetch: fakeFetch(rec), resolveNative: () => ({ gateway: 'copilot', id: 'claude-sonnet-4.5', transport: 'litellm' as const }),
+      });
+      expect(res.status).toBe(400);
+      expect(JSON.parse((res.body as Buffer).toString()).error.details.error_code).toBe('thread_unsupported_request');
+      expect(rec).toHaveLength(0);
+    });
+
+    it('refuses a thread on a session tier alias before forwarding', async () => {
+      const rec: FetchCall[] = [];
+      const res = await routeRequest(threaded('sonata-code-complex', { type: 'continue', previous_message_id: 'msg_1' }), {
+        ...base, fetch: fakeFetch(rec), resolveTier: () => ({ role: 'code', tier: 'complex', routes: [{ key: 'opus', native: session }] }),
+      });
+      expect(res.status).toBe(400);
+      expect(JSON.parse((res.body as Buffer).toString()).error.details.error_code).toBe('thread_unsupported_request');
+      expect(rec).toHaveLength(0);
+    });
+
+    it('refuses a thread on a configured session key', async () => {
+      const rec: FetchCall[] = [];
+      const res = await routeRequest(threaded('opus', { type: 'continue', previous_message_id: 'msg_1' }), {
+        ...base, fetch: fakeFetch(rec), resolveNative: () => session,
+      });
+      expect(res.status).toBe(400);
+      expect(JSON.parse((res.body as Buffer).toString()).error.details.error_code).toBe('thread_unsupported_request');
       expect(rec).toHaveLength(0);
     });
 
@@ -197,6 +228,132 @@ describe('tier alias routing', () => {
   });
 
   beforeEach(() => clearCooldowns());
+
+  const SESSION = { gateway: 'claude', id: 'claude-opus-4-1', transport: 'direct' as const, baseUrl: 'https://api.anthropic.com/v1', auth: 'session' as const };
+  const withHeaders = (model: string, headers: Record<string, string>) =>
+    ({ method: 'POST', url: '/v1/messages', headers, body: Buffer.from(JSON.stringify({ model, messages: [] })) });
+
+  it('keeps thinking intact and omits effort for a configured session key with effort', async () => {
+    const rec: { body: string }[] = [];
+    const sent = { model: 'opus@low', thinking: { type: 'enabled', budget_tokens: 1024 }, messages: [] };
+    await routeRequest({ method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from(JSON.stringify(sent)) }, {
+      ...base,
+      resolveNative: (key) => key === 'opus' ? SESSION : undefined,
+      fetch: (async (_u: RequestInfo | URL, init?: RequestInit) => {
+        rec.push({ body: Buffer.from(init!.body as Uint8Array).toString() });
+        return new Response(COMPLETE_BODY, { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch,
+    });
+    expect(JSON.parse(rec[0].body)).toEqual({ ...sent, model: 'claude-opus-4-1' });
+  });
+
+  it('routes a configured claude- key to its own gateway, not to Anthropic', async () => {
+    const rec: FetchCall[] = [];
+    const res = await routeRequest(withHeaders('claude-sonnet-4.5', { authorization: 'Bearer usr' }), {
+      ...base, fetch: fakeFetch(rec),
+      resolveNative: (key) => key === 'claude-sonnet-4.5' ? { gateway: 'copilot', id: 'claude-sonnet-4.5', transport: 'litellm' as const } : undefined,
+    });
+    expect(res.status).toBe(200);
+    expect(rec[0].url).toBe('http://lite/v1/messages');
+  });
+
+  it('still passes an unconfigured claude- name to Anthropic byte-identical with the caller headers', async () => {
+    const rec: { url: string; headers: Record<string, string>; body: string }[] = [];
+    const body = JSON.stringify({ model: 'claude-opus-4-1', system: [{ type: 'text', text: 's', cache_control: { type: 'ephemeral' } }] });
+    await routeRequest({ method: 'POST', url: '/v1/messages', headers: { authorization: 'Bearer usr' }, body: Buffer.from(body) }, {
+      ...base, resolveNative: () => undefined,
+      fetch: (async (u: RequestInfo | URL, init?: RequestInit) => {
+        rec.push({ url: String(u), headers: Object.fromEntries(new Headers(init?.headers)), body: Buffer.from(init!.body as Uint8Array).toString() });
+        return new Response('{}', { status: 200 });
+      }) as typeof fetch,
+    });
+    expect(rec[0].url).toBe('https://api.anthropic.com/v1/messages');
+    expect(rec[0].headers.authorization).toBe('Bearer usr');
+    expect(rec[0].body).toBe(body);
+  });
+
+  it('keeps thinking intact and omits effort for a session tier candidate', async () => {
+    const rec: { body: string }[] = [];
+    const sent = { model: 'sonata-code-complex', thinking: { type: 'enabled', budget_tokens: 1024 }, messages: [] };
+    await serveFully({ method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from(JSON.stringify(sent)) }, {
+      ...base,
+      resolveTier: () => ({ role: 'code', tier: 'complex', routes: [{ key: 'opus', effort: 'low', native: SESSION }] }),
+      fetch: (async (_u: RequestInfo | URL, init?: RequestInit) => {
+        rec.push({ body: Buffer.from(init!.body as Uint8Array).toString() });
+        return new Response(COMPLETE_BODY, { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch,
+    });
+    expect(JSON.parse(rec[0].body)).toEqual({ ...sent, model: 'claude-opus-4-1' });
+  });
+
+  it('forwards a session candidate with the caller credential, rewriting only model', async () => {
+    const rec: { url: string; headers: Record<string, string>; body: string }[] = [];
+    const sent = { model: 'sonata-code-complex', system: [{ type: 'text', text: 's', cache_control: { type: 'ephemeral' } }], messages: [] };
+    await serveFully({ method: 'POST', url: '/v1/messages', headers: { authorization: 'Bearer sk-ant-oat01-x', 'anthropic-beta': 'oauth-2025-04-20' }, body: Buffer.from(JSON.stringify(sent)) }, {
+      ...base,
+      resolveTier: () => ({ role: 'code', tier: 'complex', routes: [{ key: 'opus', native: SESSION }] }),
+      fetch: (async (u: RequestInfo | URL, init?: RequestInit) => {
+        rec.push({ url: String(u), headers: Object.fromEntries(new Headers(init?.headers)), body: Buffer.from(init!.body as Uint8Array).toString() });
+        return new Response(COMPLETE_BODY, { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch,
+    });
+    expect(rec[0].url).toBe('https://api.anthropic.com/v1/messages');
+    expect(rec[0].headers.authorization).toBe('Bearer sk-ant-oat01-x');
+    expect(rec[0].headers['anthropic-beta']).toBe('oauth-2025-04-20');
+    expect(JSON.parse(rec[0].body)).toEqual({ ...sent, model: 'claude-opus-4-1' });
+  });
+
+  it('forwards x-api-key unchanged to a session candidate when authorization is absent', async () => {
+    const rec: { headers: Record<string, string> }[] = [];
+    await serveFully({ method: 'POST', url: '/v1/messages', headers: { 'x-api-key': 'caller-key' }, body: Buffer.from(JSON.stringify({ model: 'sonata-code-complex', messages: [] })) }, {
+      ...base,
+      resolveTier: () => ({ role: 'code', tier: 'complex', routes: [{ key: 'opus', native: SESSION }] }),
+      fetch: (async (_u: RequestInfo | URL, init?: RequestInit) => {
+        rec.push({ headers: Object.fromEntries(new Headers(init?.headers)) });
+        return new Response(COMPLETE_BODY, { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch,
+    });
+    expect(rec[0].headers['x-api-key']).toBe('caller-key');
+  });
+
+  it('falls through to the next candidate when a session candidate answers 401', async () => {
+    const urls: string[] = [];
+    const res = await serveFully(withHeaders('sonata-code-complex', {}), {
+      ...base,
+      resolveTier: () => ({ role: 'code', tier: 'complex', routes: [
+        { key: 'opus', native: SESSION },
+        { key: 'flash', native: { gateway: 'g', id: 'flash-1', transport: 'litellm' as const } },
+      ] }),
+      fetch: (async (u: RequestInfo | URL) => {
+        urls.push(String(u));
+        return new URL(String(u)).host === 'api.anthropic.com'
+          ? new Response('{"type":"error","error":{"type":"authentication_error","message":"x"}}', { status: 401 })
+          : new Response(COMPLETE_BODY, { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch,
+    });
+    expect(res.status).toBe(200);
+    expect(urls).toEqual(['https://api.anthropic.com/v1/messages', 'http://lite/v1/messages']);
+  });
+
+  it('splits claude-key@low only when the key is configured', async () => {
+    const seen: string[] = [];
+    await routeRequest(withHeaders('claude-sonnet-4.5@low', {}), {
+      ...base, fetch: fakeFetch([]),
+      resolveNative: (key) => { seen.push(key); return key === 'claude-sonnet-4.5' ? { gateway: 'g', id: 'claude-sonnet-4.5', transport: 'litellm' as const } : undefined; },
+    });
+    expect(seen).toContain('claude-sonnet-4.5');
+    const rec: FetchCall[] = [];
+    await routeRequest(withHeaders('claude-opus-4-1@low', {}), { ...base, fetch: fakeFetch(rec), resolveNative: () => undefined });
+    expect(rec[0].url).toBe('https://api.anthropic.com/v1/messages');
+  });
+
+  it('classifies the session credential without exposing it', () => {
+    expect(sessionCredential({ authorization: 'Bearer sk-ant-oat01-abc' })).toBe('subscription');
+    expect(sessionCredential({ Authorization: 'Bearer sk-ant-oat01-abc' })).toBe('subscription');
+    expect(sessionCredential({ 'x-api-key': 'sk-ant-api03-abc' })).toBe('key');
+    expect(sessionCredential({ authorization: 'Bearer some-gateway-token' })).toBe('key');
+    expect(sessionCredential({})).toBeUndefined();
+  });
 
   it('rewrites the model to the first native candidate and forwards to litellm', async () => {
     const seen: string[] = [];
@@ -799,6 +956,27 @@ describe('tier alias routing', () => {
     ],
   };
 
+  it('does not expose a thrown fetch error for a session tier candidate', async () => {
+    const logs: string[] = [];
+    const res = await routeRequest(
+      {
+        method: 'POST', url: '/v1/messages',
+        headers: { authorization: 'Bearer SESSION-SECRET' },
+        body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [] })),
+      },
+      {
+        fetch: (async () => { throw new Error('boom Bearer sk-ant-oat01-SENTINEL x-api-key SENTINEL2'); }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTier: () => ({ role: 'code', tier: 'simple', routes: [{ key: 'claude', native: SESSION }] }),
+        log: (line) => logs.push(line),
+      },
+    );
+    expect(res.status).toBe(529);
+    const output = `${Buffer.isBuffer(res.body) ? res.body.toString() : ''}\n${logs.join('\n')}`;
+    expect(output).not.toContain('SENTINEL');
+    expect(output).not.toContain('SENTINEL2');
+  });
+
   it('sends a direct-transport candidate straight to the gateway, never touching litellm', async () => {
     let seenUrl = '';
     const res = await routeRequest(req('sonata-code-simple'), {
@@ -809,6 +987,29 @@ describe('tier alias routing', () => {
     });
     expect(res.status).toBe(200);
     expect(seenUrl).toBe('https://gw.example/v1/messages');
+  });
+
+  it('forwards the caller credential unchanged only for a session gateway', async () => {
+    const rec: FetchCall[] = [];
+    await routeRequest(
+      {
+        method: 'POST', url: '/v1/messages',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer SESSION-SECRET' },
+        body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [] })),
+      },
+      {
+        fetch: fakeFetch(rec), litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTier: () => ({
+          role: 'code', tier: 'simple',
+          routes: [{ key: 'direct-1', native: {
+            gateway: 'g', id: 'model-1', transport: 'direct', baseUrl: 'https://api.anthropic.com/v1', auth: 'session',
+          } }],
+        }),
+      },
+    );
+    expect(rec[0].url).toBe('https://api.anthropic.com/v1/messages');
+    expect(rec[0].headers.authorization).toBe('Bearer SESSION-SECRET');
+    expect(JSON.stringify(rec)).not.toContain('GATEWAY-KEY');
   });
 
   it('injects the gateway key and never forwards the caller credential', async () => {
@@ -2324,12 +2525,12 @@ describe('effort-level candidates', () => {
     expect(bodies[0].output_config).toBeUndefined();
   });
 
-  it('sends reasoning_effort on the direct path too, leaving the rest of the body alone', async () => {
+  it('leaves the direct path body untouched regardless of pinned effort', async () => {
     const { bodies, deps } = harness(DIRECT);
     const req = request();
     await routeRequest(req, deps);
-    const { thinking: _t, output_config: _o, ...original } = JSON.parse(req.body.toString());
-    expect(bodies[0]).toEqual({ ...original, model: 'or-1', reasoning_effort: 'low' });
+    const original = JSON.parse(req.body.toString());
+    expect(bodies[0]).toEqual({ ...original, model: 'or-1' });
   });
 
   it('leaves a bare candidate\'s body exactly as before', async () => {
@@ -2721,8 +2922,30 @@ describe('routeRequest — a bare model key on a direct gateway', () => {
     expect(seen[0].url).toBe('https://gw.example/v1/messages');
     expect(seen[0].model).toBe('upstream-flash');
     expect(seen[0].auth).toBe('Bearer GATEWAY-KEY');
-    expect(seen[0].effort).toBe('low');
+    expect(seen[0].effort).toBeUndefined();
     await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it('does not expose a thrown fetch error for a bare direct key', async () => {
+    const logs: string[] = [];
+    const res = await routeRequest(
+      {
+        method: 'POST', url: '/v1/messages',
+        headers: { authorization: 'Bearer CALLER-SECRET' },
+        body: Buffer.from(JSON.stringify({ model: 'flash', messages: [] })),
+      },
+      {
+        fetch: (async () => { throw new Error('boom Bearer sk-ant-oat01-SENTINEL x-api-key SENTINEL2'); }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveNative: () => ({ gateway: 'g', id: 'flash', transport: 'direct' as const, baseUrl: 'https://gw.example/v1' }),
+        gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
+        log: (line) => logs.push(line),
+      },
+    );
+    expect(res.status).toBe(502);
+    const output = `${Buffer.isBuffer(res.body) ? res.body.toString() : ''}\n${logs.join('\n')}`;
+    expect(output).not.toContain('SENTINEL');
+    expect(output).not.toContain('SENTINEL2');
   });
 
   it('still sends a litellm-transport bare key to LiteLLM', async () => {
