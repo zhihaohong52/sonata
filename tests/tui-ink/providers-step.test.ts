@@ -18,6 +18,9 @@ const cache: ModelsDevCache = {
       'gpt-5.6-luna': { input: 1 },
       'claude-sonnet-4.6': { input: 1 },
     },
+    anthropic: {
+      'claude-opus-4-1': { input: 1 },
+    },
   },
 };
 
@@ -67,6 +70,46 @@ describe('OAuthModelsStep', () => {
     await tick();
     expect(submitted).toEqual(['gpt-5.6-luna']);
     app.unmount();
+  });
+});
+
+describe('Claude session provider in ProvidersStep', () => {
+  it('offers Anthropic ids without key entry and records no credential source', async () => {
+    let state: InitState = {};
+    const app = render(React.createElement(ProvidersStep, {
+      home: '/tmp/sonata-claude-session-test', harnesses: [],
+      providers: [{ key: 'byok/claude', harness: 'byok', provider: 'claude', count: 0 }],
+      byokProviders: [{ name: 'claude', url: 'https://api.anthropic.com/v1' }],
+      credentialAvailability: {}, gatewayAuth: { claude: 'session' }, storedKeys: {},
+      modelsDevCache: cache, state,
+      onChange: (updater: (current: InitState) => InitState) => { state = updater(state); },
+      onContinue: () => {}, onBack: () => {}, onCancel: () => {},
+    }));
+
+    const frame = () => app.lastFrame() ?? '';
+    await settle();
+    app.stdin.write(ENTER);
+    await until(() => frame().includes('Add a custom provider'), 'the provider picker');
+    app.stdin.write('claude');
+    app.stdin.write(ENTER);
+    await until(() => frame().includes('Models for claude') && frame().includes('claude-opus-4-1'), 'the models screen');
+    expect(frame()).not.toContain('API key for claude');
+    app.stdin.write('\u001b[B');
+    app.stdin.write(SPACE);
+    await until(() => frame().includes('1 selected'), 'the model to be selected');
+    app.stdin.write(ENTER);
+    await until(() => state.byokModels !== undefined, 'the selection to be recorded');
+
+    expect(state.byokModels).toEqual({ claude: ['claude-opus-4-1'] });
+    expect(state.providerKeys).toEqual(['byok/claude']);
+    expect(state.credentialSources?.claude).toBeUndefined();
+    app.unmount();
+  });
+
+  it('keeps claude model ids offered for Copilot', () => {
+    expect(oauthModelIds({ ...cache, providers: {
+      'github-copilot': { 'claude-sonnet-4.5': { input: 1 } },
+    } }, 'github-copilot', 'copilot-oauth')).toEqual(['claude-sonnet-4.5']);
   });
 });
 

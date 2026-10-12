@@ -18,7 +18,7 @@
  * candidate whose auth had just been flipped to `api-key`, so the config
  * got a route that authenticates and then 401s. Single source lives here.
  */
-import { isOauthGatewayAuth, oauthGatewayBaseUrl, type NativeGatewayAuth } from '../config.js';
+import { ANTHROPIC_SESSION_BASE_URL, isOauthGatewayAuth, oauthGatewayBaseUrl, type NativeGatewayAuth } from '../config.js';
 import { WELL_KNOWN_PROVIDER_URLS } from '../detect.js';
 import { byokCandidateKey } from '../native/models.js';
 import type { NativeCandidate } from './helpers.js';
@@ -60,8 +60,11 @@ export function addByokCandidates(
       const key = byokCandidateKey(gateway, id);
       nativeByKey.set(key, {
         key, gateway, id, contextWindow: 128000,
-        baseUrl: isOauthGatewayAuth(auth) ? oauthGatewayBaseUrl(auth) : baseUrl, auth,
-        ...(wireFormat !== undefined ? { wireFormat } : {}),
+        baseUrl: auth === 'session' ? ANTHROPIC_SESSION_BASE_URL
+          : isOauthGatewayAuth(auth) ? oauthGatewayBaseUrl(auth) : baseUrl,
+        auth,
+        ...(auth === 'session' ? { wireFormat: 'anthropic' as const }
+          : wireFormat !== undefined ? { wireFormat } : {}),
       });
     }
   }

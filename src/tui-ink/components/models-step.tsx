@@ -67,7 +67,7 @@ export function refreshableGateways(
   const gateways = [...new Set([...candidates.map((candidate) => candidate.gateway), ...addedGateways])];
   return gateways.filter((gateway) => {
     const auth = gatewayAuth[gateway];
-    if (auth !== undefined && isOauthGatewayAuth(auth)) return false;
+    if (auth !== undefined && (isOauthGatewayAuth(auth) || auth === 'session')) return false;
     return gatewayBaseUrls[gateway] !== undefined && keys[gateway] !== undefined;
   });
 }

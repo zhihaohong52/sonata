@@ -227,6 +227,11 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
       const known = byokProviders.find((p) => p.name === provider.provider);
       if (known === undefined) return;
       const byokOption = { ...provider, key: byokProviderKey(provider.provider) };
+      if (gatewayAuth[provider.provider] === 'session') {
+        // The person's own Claude Code account: nothing to store or log in to.
+        setScreen({ kind: 'oauth-models', provider: byokOption, ids: oauthModelIds(modelsDevCache, provider.provider, 'session') });
+        return;
+      }
       const route = byokProviderRoute(
         gatewayAuth[provider.provider],
         credentialAvailability[provider.provider]?.keyEntryAvailable,
@@ -598,11 +603,15 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
           onChange((current) => applyStep({
             ...current,
             providerKeys: [...new Set([...(current.providerKeys ?? []), provider.key])],
-            credentialSources: { ...current.credentialSources, [provider.provider]: 'sonata' },
+            ...(gatewayAuth[provider.provider] === 'session' ? {} : {
+              credentialSources: { ...current.credentialSources, [provider.provider]: 'sonata' as const },
+            }),
           }, 5, { provider: provider.provider, ids: selected }));
           setScreen({ kind: 'menu' });
         }}
-        onBack={() => setScreen({ kind: 'login', provider })}
+        onBack={() => setScreen(gatewayAuth[provider.provider] === 'session'
+          ? { kind: 'pick' }
+          : { kind: 'login', provider })}
         onCancel={onCancel}
       />
     );

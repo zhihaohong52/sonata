@@ -224,6 +224,10 @@ describe('fetchModels (Google Generative Language)', () => {
 describe('wellKnownProviders', () => {
   const providers = wellKnownProviders();
 
+  it('does not offer Anthropic under its session gateway alias', () => {
+    expect(providers.some((provider) => provider.name === 'claude')).toBe(false);
+  });
+
   it('returns a non-empty list of named urls', () => {
     expect(providers.length).toBeGreaterThanOrEqual(30);
     expect(providers.every((provider) => provider.name !== '' && provider.url !== '')).toBe(true);

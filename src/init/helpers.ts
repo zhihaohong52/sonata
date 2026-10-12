@@ -31,6 +31,7 @@ import type { UpdateDeps } from './harness-updates.js';
 import type { CatalogRefreshDeps } from './catalog-refresh.js';
 
 export const OPENCODE_RANGE = '>=1.18.0 <2.0.0';
+export const PROVIDER_SESSION_GATEWAY = 'claude';
 
 export interface Detection {
   tmux: { installed: boolean; version?: string; problems: Problem[] };

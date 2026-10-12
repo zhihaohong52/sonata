@@ -287,6 +287,8 @@ export function plan(
       continue;
     }
 
+    if (auth === 'session') continue;
+
     if (auth !== undefined && isOauthGatewayAuth(auth) && source !== undefined) {
       // Bearer keys and device-login OAuth credentials live in different
       // stores per source, so presence and the repair hint both branch on

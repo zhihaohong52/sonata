@@ -91,6 +91,8 @@ export const WELL_KNOWN_PROVIDER_URLS: Record<string, string> = {
 
   // Major providers
   'anthropic': 'https://api.anthropic.com/v1',
+  // `claude` is the name of the session-authenticated Claude Code gateway.
+  'claude': 'https://api.anthropic.com/v1',
   'deepseek': 'https://api.deepseek.com/v1',
   'google': 'https://generativelanguage.googleapis.com/v1beta',
   'mistral': 'https://api.mistral.ai/v1',
