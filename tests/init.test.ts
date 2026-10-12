@@ -336,6 +336,36 @@ describe('cmdInit (non-interactive)', () => {
       expect(existsSync(join(cwd, 'sonata.toml'))).toBe(true);
     });
 
+    it('writes a newly selected Claude session gateway without asking for an API key', async () => {
+      const claudeDetect = async () => ({
+        tmux: { installed: true, version: '3.7b', problems: [] },
+        harnesses: [],
+      });
+      await cmdInit({
+        installLitellm: NO_INSTALL,
+        cwd, home, packageRoot: '/pkg', detect: claudeDetect, write,
+        host: {
+          runTui: async (data) => ({
+            cancelled: false,
+            state: {
+              configScope: 'project',
+              providerKeys: ['byok/claude'],
+              nativeKeys: ['claude-claude-opus-5-5'],
+              byokModels: { claude: ['claude-opus-5-5'] },
+              roles: ['code'],
+              hookScope: 'skip', routing: 'skip', guidance: 'skip',
+              tiers: { code: { simple: ['claude-claude-opus-5-5'], complex: ['claude-claude-opus-5-5'] } },
+            },
+          }),
+          confirm: async () => true,
+        },
+      });
+
+      const config = parseConfig(readFileSync(join(cwd, 'sonata.toml'), 'utf8'));
+      expect(config.native!.gateways.claude).toMatchObject({ auth: 'session', provider: 'anthropic' });
+      expect(lines.join('\n')).not.toContain('claude: no key');
+    });
+
     it('is interactive because a host is present, without a TTY', async () => {
       // `isInteractive()` inspects this process's stdin, which inside the
       // shell has already been claimed by Ink — so the host's presence is

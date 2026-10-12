@@ -139,7 +139,7 @@ export function plan(
         providerBaseUrls.set(provider.name, provider.url);
       }
     }
-    addByokCandidates(built, providerBaseUrls, state.byokModels ?? {}, state.customWireFormats ?? {});
+    addByokCandidates(built, providerBaseUrls, state.byokModels ?? {}, state.customWireFormats ?? {}, env.gatewayAuth);
     addLiveCandidates(env, built, state.liveModels ?? {}, env.providerBaseUrlsByScope?.[configScope]);
     applyScopeBaseUrls(built, scopeQueryUrls(env, configScope, state.customProviders));
     rewriteOauthToApiKey(built, state.byokKeys ?? {});

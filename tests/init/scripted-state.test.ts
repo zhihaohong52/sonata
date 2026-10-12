@@ -45,6 +45,20 @@ describe('scriptedState', () => {
     )).toThrow(/made-up/);
   });
 
+  it('mints Claude BYOK models with session auth', () => {
+    const { state, nativeByKey } = scriptedState(
+      env({
+        offered: [{ harness: 'byok', provider: 'claude', key: 'byok/claude', count: 0 }],
+        byokProviders: [{ name: 'claude', url: 'https://api.anthropic.com/v1' }],
+        gatewayAuth: new Map([['claude', 'session']]),
+      }),
+      opts({ providers: ['byok/claude'], models: ['claude-claude-opus-5-5'] }),
+    );
+    expect(nativeByKey.get(state.nativeKeys![0])).toMatchObject({
+      gateway: 'claude', auth: 'session', baseUrl: 'https://api.anthropic.com/v1', wireFormat: 'anthropic',
+    });
+  });
+
   it('takes the --providers order as the gateway ranking', () => {
     // The flag's order is the only ranking a scripted install ever states, so
     // it is the ranking — not detection order, which would silently reorder
