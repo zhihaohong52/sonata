@@ -10,6 +10,13 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Changed
 
+- **Generated agents and the CLAUDE.md block point at `sonata route auto`.**
+  A tier agent's description and the `model_not_found` advice in the managed
+  CLAUDE.md block named `sonata code` first and `sonata route on` second; they
+  now name `sonata route auto` (then a new `claude` session) as the fix, with
+  `sonata code` as the one-off alternative. Run `sonata sync` to refresh
+  existing agent files.
+
 - **Documentation, ready for public beta.** The user guide is published as a
   site on GitHub Pages (`docs/`, built with VitePress by a new `docs`
   workflow). The README is now the front door — status, quickstart, how it

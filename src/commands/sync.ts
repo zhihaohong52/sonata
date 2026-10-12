@@ -495,11 +495,11 @@ export function nativeAgentMarkdown(spec: { role: string; model: string }): stri
 
   return `---
 name: ${yamlString(`native-${spec.role}-${spec.model}`)}
-description: ${yamlString(`Runs ${blurb} natively on ${spec.model} inside Claude Code's own loop. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on).`)}
+description: ${yamlString(`Runs ${blurb} natively on ${spec.model} inside Claude Code's own loop. ${NO_MODEL_ARG} Requires a routed session (sonata route auto, or sonata code).`)}
 model: ${yamlScalar(spec.model)}
 ${tools}---
 
-This agent only works in a routed session (sonata code, or sonata route on).
+This agent only works in a routed session (sonata route auto, or sonata code).
 
 ${NO_MODEL_ARG}
 
@@ -547,8 +547,8 @@ export function tierAgentMarkdown(spec: {
   const available = spec.availableTiers ?? TIER_NAMES;
   const delegating = delegatingForRole(spec.role, spec.planTiers ?? TIER_NAMES, tier, available);
   const description = tier === undefined
-    ? `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`
-    : `Runs ${blurb} on a ranked list of foreign models (${tier} tier), natively inside Claude Code's loop. ${TIER_CRITERION[tier]} Size is not difficulty — a large mechanical change is simple, a three-line change that decides an interface is complex. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`;
+    ? `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop. ${NO_MODEL_ARG} Requires a routed session (sonata route auto, or sonata code).`
+    : `Runs ${blurb} on a ranked list of foreign models (${tier} tier), natively inside Claude Code's loop. ${TIER_CRITERION[tier]} Size is not difficulty — a large mechanical change is simple, a three-line change that decides an interface is complex. ${NO_MODEL_ARG} Requires a routed session (sonata route auto, or sonata code).`;
 
   return `---
 name: ${name}
@@ -556,7 +556,7 @@ description: ${description}
 model: ${model}
 ${tools}---
 
-This agent only works in a routed session (sonata code, or sonata route on/auto).
+This agent only works in a routed session (sonata route auto, or sonata code).
 
 ${NO_MODEL_ARG}
 ${modelChoice(available)}
@@ -585,14 +585,14 @@ export function autoAgentMarkdown(spec: {
   const model = spec.extendedContext === true ? `${alias}${EXTENDED_CONTEXT_SUFFIX}` : alias;
   const tools = toolsForRole(spec.role);
   const delegating = delegatingForRole(spec.role, spec.planTiers, 'simple', spec.availableTiers);
-  const description = `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop; sonata chooses the tier (${spec.availableTiers.join(', ')}) for each task. The default choice — use an explicit -${spec.availableTiers.join(' / -')} agent only when you know the tier better. ${NO_MODEL_ARG} Requires a routed session (sonata code, or sonata route on/auto).`;
+  const description = `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop; sonata chooses the tier (${spec.availableTiers.join(', ')}) for each task. The default choice — use an explicit -${spec.availableTiers.join(' / -')} agent only when you know the tier better. ${NO_MODEL_ARG} Requires a routed session (sonata route auto, or sonata code).`;
   return `---
 name: ${spec.role}-auto
 description: ${description}
 model: ${model}
 ${tools}---
 
-This agent only works in a routed session (sonata code, or sonata route on/auto).
+This agent only works in a routed session (sonata route auto, or sonata code).
 
 ${NO_MODEL_ARG}
 

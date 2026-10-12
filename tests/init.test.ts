@@ -134,9 +134,9 @@ describe('staleAgents', () => {
     ].join('\n'))).toBe(true);
     expect(isSonataAgentText([
       '---', 'name: native-review-acme-m',
-      "description: Runs review natively on acme-m inside Claude Code's own loop. Requires a routed session (sonata code, or sonata route on).",
+      "description: Runs review natively on acme-m inside Claude Code's own loop. Requires a routed session (sonata route auto, or sonata code).",
       'model: acme-m', 'tools: Read, Grep, Glob', '---', '',
-      'This agent only works in a routed session (sonata code, or sonata route on).', '', 'Focus on review.', '',
+      'This agent only works in a routed session (sonata route auto, or sonata code).', '', 'Focus on review.', '',
     ].join('\n'))).toBe(true);
   });
 
