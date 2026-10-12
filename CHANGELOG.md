@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-10-12
+
 ### Changed
 
 - **Generated agents and the CLAUDE.md block point at `sonata route auto`.**
