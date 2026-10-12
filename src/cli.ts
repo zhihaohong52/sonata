@@ -1029,8 +1029,51 @@ export async function main(argv: string[]): Promise<number> {
   }
 
 
-  console.error(`sonata: unknown command "${command ?? ''}"`);
+  const guess = suggestCommand(command ?? '');
+  console.error(`✘ unknown command "${command ?? ''}"`);
+  if (guess) console.error(`  └ Did you mean sonata ${guess}?`);
+  console.error('\nRun sonata --help to list commands.');
   return 2;
+}
+
+/** Every top-level command `main` dispatches; a test holds it to the branches above. */
+export const COMMANDS = [
+  'agents', 'approve', 'auth', 'catalog', 'code', 'dispatch', 'doctor', 'gc', 'help', 'init',
+  'litellm', 'log', 'reset', 'restart', 'route', 'run', 'runs', 'serve', 'status', 'sync',
+  'tail', 'tui', 'upgrade', 'usage', 'verify', 'version', 'wait',
+] as const;
+
+/** The command a typo most likely meant: a prefix, else the nearest within 2 edits (1 for short input). */
+export function suggestCommand(input: string): string | undefined {
+  const word = input.toLowerCase();
+  if (word.length >= 2) {
+    const prefixed = COMMANDS.find((c) => c.startsWith(word));
+    if (prefixed) return prefixed;
+  }
+  const limit = word.length <= 3 ? 1 : 2;
+  let best: string | undefined;
+  let bestDistance = limit + 1;
+  for (const c of COMMANDS) {
+    const d = editDistance(word, c);
+    if (d < bestDistance) { best = c; bestDistance = d; }
+  }
+  return best;
+}
+
+/** Optimal string alignment distance, so a swapped pair (`docotr`) costs one edit. */
+function editDistance(a: string, b: string): number {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array<number>(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0]![j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i]![j] = Math.min(d[i - 1]![j]! + 1, d[i]![j - 1]! + 1, d[i - 1]![j - 1]! + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i]![j] = Math.min(d[i]![j]!, d[i - 2]![j - 2]! + 1);
+      }
+    }
+  }
+  return d[a.length]![b.length]!;
 }
 
 async function readAuthKey(): Promise<string> {
