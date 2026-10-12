@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { recentRoutes } from '../../src/commands/status.js';
+import { recentRoutes, routeCostLabel, routeTotals, type RouteLine } from '../../src/commands/status.js';
 import type { LedgerRow } from '../../src/ledger.js';
 
 function row(over: Partial<LedgerRow> = {}): LedgerRow {
@@ -63,5 +63,28 @@ describe('recentRoutes for the loop panel', () => {
   it('leaves priceUsd absent for an unpriced row rather than 0', () => {
     const [line] = recentRoutes([row({ price: { source: 'none' } })], 10);
     expect(line.priceUsd).toBeUndefined();
+  });
+});
+
+describe('route cost', () => {
+  const line = (over: Partial<RouteLine>): RouteLine => ({ alias: 'a', attempts: [], served: 'k', status: 200, input: 1, output: 1, ts: '2026-10-12T00:00:00Z', ...over });
+
+  it('marks covered rows and carries the flag through recentRoutes', () => {
+    const rows = [
+      { ...row(), price: { source: 'covered', totalUsd: 0.42 } },
+      { ...row(), price: { source: 'models-dev', totalUsd: 1.1 } },
+    ] as LedgerRow[];
+    const lines = recentRoutes(rows, 10);
+    expect(lines.filter((l) => l.isCovered === true)).toHaveLength(1);
+    expect(lines.some((l) => 'isCovered' in l && l.isCovered !== true)).toBe(false);
+  });
+
+  it('labels each route and totals billed apart from subscription', () => {
+    expect(routeCostLabel(line({ priceUsd: 0.0123 }))).toBe('$0.0123');
+    expect(routeCostLabel(line({ priceUsd: 0.42, isCovered: true }))).toBe('$0.4200 sub');
+    expect(routeCostLabel(line({}))).toBe('—');
+    expect(routeTotals([line({ priceUsd: 1.1 }), line({ priceUsd: 0.42, isCovered: true }), line({})])).toBe('$1.1000 billed · $0.4200 sub');
+    expect(routeTotals([line({ priceUsd: 0.42, isCovered: true })])).toBe('$0.4200 sub');
+    expect(routeTotals([line({})])).toBeUndefined();
   });
 });

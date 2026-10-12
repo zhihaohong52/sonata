@@ -79,8 +79,11 @@ export function statusColumns(width: number): StatusColumns {
   const time = width >= 52;
   // What the two flexible name columns share, after the fixed cells: 4 for the
   // status code, 4 for the stroke and its padding, and whatever the optional
-  // columns take when present.
-  const fixed = 4 + 4 + (time ? 9 : 0) + (gateway ? 12 : 0) + (tokens ? 20 : 0);
+  // columns take when present. The token cell's 20 is shared with the cost
+  // label beside it (` $0.4200 sub`), which is dropped with the tokens — a
+  // cell the budget does not name is one the row always overflows by, and
+  // truncate-end then eats exactly that cell every time.
+  const fixed = 4 + 4 + (time ? 9 : 0) + (gateway ? 12 : 0) + (tokens ? 33 : 0);
   // No minimum that can exceed what the terminal has. The previous version
   // floored the names at 16 cells and each column at 8, which is right on a
   // wide terminal and adds up to MORE than a narrow one — 24 cells of floor

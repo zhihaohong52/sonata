@@ -91,6 +91,8 @@ export interface RouteLine {
   tier?: string;
   /** The row's priced cost; absent when unpriced, never 0 standing in for "not known". */
   priceUsd?: number;
+  /** The price is a subscription's list value, not money billed per token. */
+  isCovered?: true;
 }
 
 /** The newest `limit` ledger rows as route lines — alias, what served it, status, tokens, time, gateway and effort — newest first. */
@@ -111,5 +113,28 @@ export function recentRoutes(rows: LedgerRow[], limit: number): RouteLine[] {
       role: row.role,
       tier: row.tier,
       priceUsd: row.price !== undefined && 'totalUsd' in row.price ? row.price.totalUsd : undefined,
+      ...(row.price?.source === 'covered' ? { isCovered: true as const } : {}),
     }));
+}
+
+const usd4 = (usd: number): string => `$${usd.toFixed(4)}`;
+
+/** One route's cost: list price, marked `sub` when a subscription covered it; `—` when unpriced, never $0. */
+export function routeCostLabel(line: RouteLine, money: (usd: number) => string = usd4): string {
+  if (line.priceUsd === undefined) return '—';
+  return line.isCovered === true ? `${money(line.priceUsd)} sub` : money(line.priceUsd);
+}
+
+/** Billed money and subscription value, apart; undefined when nothing shown was priced. */
+export function routeTotals(lines: RouteLine[], money: (usd: number) => string = usd4): string | undefined {
+  let billed = 0;
+  let covered = 0;
+  let anyBilled = false;
+  let anyCovered = false;
+  for (const l of lines) {
+    if (l.priceUsd === undefined) continue;
+    if (l.isCovered === true) { covered += l.priceUsd; anyCovered = true; } else { billed += l.priceUsd; anyBilled = true; }
+  }
+  const parts = [...(anyBilled ? [`${money(billed)} billed`] : []), ...(anyCovered ? [`${money(covered)} sub`] : [])];
+  return parts.length === 0 ? undefined : parts.join(' · ');
 }

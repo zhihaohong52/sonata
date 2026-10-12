@@ -288,6 +288,26 @@ describe('sonata status CLI wiring', () => {
     expect(all).toContain('.config/sonata/sonata.toml)');
     expect(isSonataRouterMock).not.toHaveBeenCalled();
   });
+
+  it('marks a subscription route sub and splits the totals into billed and sub', async () => {
+    // Covered rows are priced at a subscription's list value, not money that
+    // moved. Folding them into one total overstates the bill by exactly what
+    // the plan already paid for.
+    routerPortsMock.mockReturnValue({ router: 4100, litellm: 4000 });
+    isSonataRouterMock.mockResolvedValue(false);
+    readRowsMock.mockReturnValue([
+      cell({ key: 'priced', price: { source: 'models-dev', totalUsd: 1.1 } }),
+      cell({ key: 'covered', price: { source: 'covered', totalUsd: 0.42 } }),
+    ] as never);
+
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await main(['status', '--all']);
+    const lines = spy.mock.calls.map(([l]) => String(l));
+    expect(lines.find((l) => l.includes('-> priced'))).toContain('$1.1000');
+    expect(lines.find((l) => l.includes('-> priced'))).not.toContain('sub');
+    expect(lines.find((l) => l.includes('-> covered'))).toContain('$0.4200 sub');
+    expect(lines).toContain('cost: $1.1000 billed · $0.4200 sub');
+  });
 });
 
 describe('sonata runs CLI wiring', () => {

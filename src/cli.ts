@@ -29,7 +29,7 @@ import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove } from './commands
 import { cmdServe, cmdRestart, startServeDaemon, isSonataRouter, sonataRouterReady, sonataRouterHasUi } from './commands/serve.js';
 import { routerPorts } from './commands/ports.js';
 import { cmdCode } from './commands/code.js';
-import { projectTenant, recentRoutes, scopeRows } from './commands/status.js';
+import { projectTenant, recentRoutes, routeCostLabel, routeTotals, scopeRows } from './commands/status.js';
 import { localTime } from './tui-ink/screens/status-poll.js';
 import { summarizeRuns } from './commands/runs.js';
 import { cmdRoute, cmdRouteSession, cmdRouteSettle, cmdRouteSubagent, type RouteAction } from './commands/route.js';
@@ -763,11 +763,16 @@ export async function main(argv: string[]): Promise<number> {
         const served = `${line.served ?? '(none — all candidates failed)'}${line.effort !== undefined ? `@${line.effort}` : ''}`;
         const when = localTime(line.ts);
         const via = line.gateway !== undefined ? ` via ${line.gateway}` : '';
-        console.log(`${when}  ${line.status}  ${line.alias.padEnd(24)} -> ${served.padEnd(24)}${via.padEnd(16)} ${line.input} in / ${line.output} out`);
+        console.log(`${when}  ${line.status}  ${line.alias.padEnd(24)} -> ${served.padEnd(24)}${via.padEnd(16)} ${line.input} in / ${line.output} out  ${routeCostLabel(line)}`);
         if (line.attempts.length > 0) {
           for (const a of line.attempts) console.log(`    attempt ${a.key}: ${a.status}`);
         }
       }
+      // Billed money and subscription value are different money: one left an
+      // account, the other is what a plan already paid for. Folded together
+      // the total overstates the bill by exactly the covered work.
+      const t = routeTotals(recent);
+      if (t !== undefined) console.log(`cost: ${t}`);
     }
     console.log('reach and routing state live in `sonata route status`');
     return 0;
