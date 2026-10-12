@@ -25,6 +25,7 @@ Moved out of `CLAUDE.md` verbatim to keep that file within its size limit; `CLAU
   into a STALLED one: the report was written, the quit watcher sent Ctrl-D, nothing happened, and no exit sentinel
   was ever produced. Clearing the line before quitting would fix the second half; the first half needs prompt
   detection to know what it has already answered.
+- **Claude Code session credentials require a Claude Code session.** A gateway with `auth = "session"` uses the caller's active session credential and only supports `api.anthropic.com`; outside that context the session credential may be unavailable. Subscription usage is estimated at Anthropic list rates, not a billing statement.
 - No streaming granularity guarantees — progress is whatever the harness prints.
 - **`default` mode is verified live on codex and reasonix** (2026-08-18). A codex dispatch surfaced its
   directory-trust prompt as `PAUSED`, took `approve`, did the work and reached `DONE` un-degraded — the first

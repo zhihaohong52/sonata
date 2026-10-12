@@ -837,6 +837,29 @@ auth = "codex-oauth"
     }
   });
 
+  it('reports session auth as the Claude Code session credential without missing-key failure', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-session-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-session-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.claude]
+provider = "anthropic"
+auth = "session"
+`);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('down'); };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      const credentials = checks.filter((c) => c.name.includes('credential') || c.name === 'credentials');
+      expect(checks.map((c) => c.detail).join('\n')).toContain(
+        "claude: uses the Claude Code session's own credential",
+      );
+      expect(credentials.every((c) => c.ok)).toBe(true);
+      expect(checks.map((c) => c.detail).join('\n')).not.toMatch(/claude: no credential/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('reports a healthy sonata-sourced credential', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-source-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-source-home-'));

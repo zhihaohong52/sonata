@@ -198,6 +198,22 @@ describe('claudeAdapter.plan — reasoning effort', () => {
   });
 });
 
+describe('claudeAdapter.plan — configured Claude keys carry effort', () => {
+  it('appends effort for a configured Claude key', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sonata-claude-adapter-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `[models."claude-sonnet-4.5"]\nharness = "claude"\nid = "claude-sonnet-4.5"\n`);
+    const plan = claudeAdapter.plan({ ...base, cwd, modelId: 'claude-sonnet-4.5', mode: 'acceptEdits', effort: 'low' });
+    expect(plan.script).toContain(`--model 'claude-sonnet-4.5@low'`);
+    expect(plan.effortHonoured).toBe(true);
+  });
+
+  it('leaves an undefined Claude model bare and effort unhonoured', () => {
+    const plan = claudeAdapter.plan({ ...base, modelId: 'claude-opus-4-1', mode: 'acceptEdits', effort: 'low' });
+    expect(plan.script).toContain(`--model 'claude-opus-4-1'`);
+    expect(plan.effortHonoured).toBe(false);
+  });
+});
+
 describe('claudeAdapter.plan — an Anthropic-routed model cannot carry a level', () => {
   // `routeRequest` splits `<key>@<effort>` off a bare model name ONLY when the
   // name is not Anthropic-routed — a `claude-` request is passed through

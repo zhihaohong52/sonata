@@ -22,6 +22,15 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Added
 
+- **Claude models are ordinary models.** A tier may rank Claude ids that a
+  gateway serves (Copilot, OpenRouter, any other) and, through a new
+  `auth = "session"` gateway, models on your own Claude Code account — the
+  router forwards the session's credential, only ever to `api.anthropic.com`.
+  `sonata init` offers both. Every request is priced at its API list rate:
+  subscription work (`codex-oauth`, `copilot-oauth`, and a Claude
+  subscription session) shows as `$x sub` in `sonata usage`, `sonata status`
+  and the loop panel, and still never counts toward `[budget]`.
+
 - **The sonata-loop skill is now also a Claude Code mod with a live panel.**
   One line per task and per tier agent: state, the model the router served
   (`≈` and `unknown` where it cannot be attributed, never `$0`), tokens,
