@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-12
+
 ### Changed
 
 - **A mistyped command suggests the one you meant.** `sonata docotr` now
