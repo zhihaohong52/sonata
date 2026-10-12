@@ -327,7 +327,7 @@ test('isCovered true survives the shape filter; any other value drops the route'
   await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't' } as never)
   await isParked
   const ui = await $.ui.mount({ plugin: 'sonata-loop', surface: 'terminal', ...PANE })
-  expect((await ui.find({ key: 'agent:a1' }))?.text).toMatch(/\$0\.42 sub/)
+  expect((await ui.find({ key: 'agent:a1' }))?.text).toMatch(/\$0\.4200 sub/)
   expect(await ui.find({ text: /kimi-9/ })).toBeUndefined()
   await ui.unmount()
 })

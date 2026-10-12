@@ -35,7 +35,7 @@ const MODEL_MIN_COLS = 52 // below this an agent row drops its model column
 /** A running agent silent this long reads as stalled: silence is a failure mode. */
 const STALL_MS = 90_000
 
-const money = (usd: number): string => `$${usd.toFixed(2)}`
+const money = (usd: number): string => `$${usd.toFixed(usd < 1 ? 4 : 2)}`
 const clock = (ms: number): string => {
   const s = Math.max(0, Math.floor(ms / 1000))
   const m = Math.floor(s / 60)

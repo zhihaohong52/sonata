@@ -117,7 +117,7 @@ test('an agent whose routes are all covered renders its cost cell marked sub', (
   const a = doneAgent('a', 'x')
   const routes = [billed('x', 0.3, true), { ...billed('x', 0.12, true), ts: new Date(NOW - 40_000).toISOString() }]
   const r = rows(draw(data({ cols: 80, loop: loop(['a']), agents: [a], router: { routes, at: NOW } })))
-  expect(r.find(l => /code-auto/.test(l))).toMatch(/\$0\.42 sub/)
+  expect(r.find(l => /code-auto/.test(l))).toMatch(/\$0\.4200 sub/)
 })
 
 test('a task mixing billed and covered work renders its cost cell marked sub', () => {
@@ -126,14 +126,14 @@ test('a task mixing billed and covered work renders its cost cell marked sub', (
   const routes = [billed('x', 1.1), billed('y', 0.42, true)]
   const r = rows(draw(data({ cols: 80, loop: loop(['a', 'b']), agents: [a, b], router: { routes, at: NOW } })))
   expect(r.find(l => /Task one/.test(l))).toMatch(/\$1\.52 sub/)
-  expect(r[0]).toMatch(/\$1\.10 \+ \$0\.42 sub/)
+  expect(r[0]).toMatch(/\$1\.10 \+ \$0\.4200 sub/)
 })
 
 test('with only covered work the header reads the covered value marked sub', () => {
   const a = doneAgent('a', 'x')
   const routes = [billed('x', 0.42, true)]
   const r = rows(draw(data({ cols: 80, loop: loop(['a']), agents: [a], router: { routes, at: NOW } })))
-  expect(r[0]).toMatch(/\$0\.42 sub/)
+  expect(r[0]).toMatch(/\$0\.4200 sub/)
   expect(r[0]).not.toMatch(/\+/)
 })
 
@@ -142,7 +142,7 @@ test('a selected task shows its billed and covered cost split in the detail', ()
   const b = doneAgent('b', 'y')
   const routes = [billed('x', 1.1), billed('y', 0.42, true)]
   const r = rows(draw(data({ cols: 80, loop: loop(['a', 'b']), agents: [a, b], router: { routes, at: NOW }, view: { showAll: true, expanded: [], selected: 'task:1' } })))
-  expect(r).toContain('     cost   $1.10 billed · $0.42 sub')
+  expect(r).toContain('     cost   $1.10 billed · $0.4200 sub')
 })
 
 test('the sub mark is drawn in inactive', () => {
