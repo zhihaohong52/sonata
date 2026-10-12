@@ -128,7 +128,8 @@ Then it asks you to rank your selected models into `simple`, `normal` and
 (`sonata catalog update`, with a free key from [artificialanalysis.ai](https://artificialanalysis.ai))
 when one exists, or built-in defaults otherwise. The key is optional; without
 it the wizard still works, just with coarser defaults. `complex` is ordered by
-capability, with cost breaking near-ties. `normal` leads with the knee of the
+capability, and models within 3 points of each other count as tied, so the
+cheaper one leads. `normal` leads with the knee of the
 price-performance frontier, then follows capability **per task-dollar**.
 `simple` is that same value order filtered to models costing at most 12 times
 the best-value model per task — so it leads with the best-value model, not the

@@ -79,6 +79,25 @@ export const SIMPLE_COST_CEILING = 12;
 export const AA_CAPABILITY_TIE_MARGIN = 1.0;
 
 /**
+ * The tie margin the `complex` tier applies — wider than the general one,
+ * because `complex` is the tier cost otherwise never reaches.
+ *
+ * `complex` sorts by capability and lets price decide only inside a tie, so
+ * with the general 1.0 margin it would pay any premium for a point and a half.
+ * Measured 2026-10-13: Claude Opus 5.5 led at `max` (intelligence 57.6,
+ * $5.98/task) over its own `xhigh` (56.0, $3.46/task) — 73% more per task for
+ * 1.6 points, an edge inside the run-to-run spread of the benchmark itself.
+ * Three points is wide enough to call that a tie and narrow enough that a
+ * genuinely stronger model (Opus over Fable 5.1, 4.2 points) still leads
+ * however the prices compare.
+ *
+ * Scoped to `complex` on purpose. `normal` and `simple` already weigh cost in
+ * their sort key, and use the class only to break an exact price tie, where a
+ * wider band would just discard a real capability edge for no saving.
+ */
+export const COMPLEX_CAPABILITY_TIE_MARGIN = 3.0;
+
+/**
  * The capability *class* a score falls in — the margin applied transitively.
  *
  * "Within the margin" cannot be asked pairwise. Tolerance is not transitive:
@@ -97,8 +116,8 @@ export const AA_CAPABILITY_TIE_MARGIN = 1.0;
  * by capability where the old code ranked by price, never produce an order
  * that depends on input.
  */
-export function capabilityClass(index: number): number {
-  return Math.round(index / AA_CAPABILITY_TIE_MARGIN);
+export function capabilityClass(index: number, margin: number = AA_CAPABILITY_TIE_MARGIN): number {
+  return Math.round(index / margin);
 }
 
 /*
@@ -1024,7 +1043,7 @@ export function proposeTiers(
       // because a pairwise one is not transitive: it produced a genuine
       // 3-cycle on a real fixture, which made the sort depend on input order
       // and the tier differ run to run.
-      || capabilityClass(rb.index) - capabilityClass(ra.index)
+      || capabilityClass(rb.index, COMPLEX_CAPABILITY_TIE_MARGIN) - capabilityClass(ra.index, COMPLEX_CAPABILITY_TIE_MARGIN)
       || ra.price - rb.price
       // A real capability edge breaks an equal price, after the class has had
       // its say: where there is no money to save there is nothing to trade,

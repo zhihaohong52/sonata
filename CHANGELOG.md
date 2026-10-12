@@ -8,6 +8,18 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Changed
+
+- **`complex` no longer pays a large premium for a small capability edge.**
+  It ranks by capability and lets cost decide only a near-tie, and "near" was
+  1 point. Measured: Claude Opus 5.5 led at `max` (intelligence 57.6,
+  $5.98/task) over its own `xhigh` (56.0, $3.46/task) — 73% more per task for
+  1.6 points. `complex` now treats scores within 3 points as tied, so `xhigh`
+  leads; a model more than 3 points stronger still leads however the prices
+  compare. `simple` and `normal` are unchanged. Existing configs keep their
+  saved order until `sonata init --repropose-tiers` (or re-ranking in
+  `sonata agents`).
+
 ### Fixed
 
 - **Claude (and OAuth) models picked during `sonata init` now reach the Models

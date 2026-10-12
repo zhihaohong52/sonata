@@ -502,14 +502,39 @@ describe('proposeTiers', () => {
     const aa: AaCatalog = {
       fetchedAt: '2026-08-25T00:00:00Z',
       models: {
-        // 2-point gap, wider than AA_CAPABILITY_TIE_MARGIN (1.0) — a real
-        // edge, so the pricier-but-more-capable model still wins.
+        // 6-point gap, wider than COMPLEX_CAPABILITY_TIE_MARGIN (3.0) — a
+        // real edge, so the pricier-but-more-capable model still wins.
         'pricier-and-better': { codingIndex: 60, blendedPriceUsd: 3, agenticIndex: 60, costPerTask: 1 },
-        'cheaper-and-close': { codingIndex: 58, blendedPriceUsd: 0.2, agenticIndex: 58, costPerTask: 0.1 },
+        'cheaper-and-close': { codingIndex: 54, blendedPriceUsd: 0.2, agenticIndex: 54, costPerTask: 0.1 },
       },
     };
     const tiers = proposeTiers(['cheaper-and-close', 'pricier-and-better'], aa);
     expect(tiers.complex[0]).toBe('pricier-and-better');
+  });
+});
+
+describe('proposeTiers — complex trades a small capability edge for a large saving', () => {
+  // Measured 2026-10-13: Claude Opus 5.5 led `complex` at `max` (intelligence
+  // 57.6, $5.98/task) over its own `xhigh` (56.0, $3.46/task) — 73% more per
+  // task for 1.6 points. With a 1.0 margin those were two classes apart, so
+  // capability decided outright and cost never got a say.
+  const aa: AaCatalog = {
+    fetchedAt: '2026-10-13T00:00:00Z',
+    models: {
+      'claude-opus-5-5': { blendedPriceUsd: 8, family: 'claude-opus-5-5', intelligenceIndex: 57.6, costPerTask: 5.982, effort: 'max' },
+      'claude-opus-5-5-xhigh': { blendedPriceUsd: 8, family: 'claude-opus-5-5', intelligenceIndex: 56, costPerTask: 3.4591, effort: 'xhigh' },
+      'claude-fable-5-1': { blendedPriceUsd: 20, family: 'claude-fable-5-1', intelligenceIndex: 53.4, costPerTask: 7.6297, effort: 'max' },
+    },
+  };
+
+  it('leads with the cheaper rung when the stronger one is within the margin', () => {
+    const tiers = proposeTiers(['claude-opus-5-5'], aa);
+    expect(tiers.complex.slice(0, 2)).toEqual(['claude-opus-5-5@xhigh', 'claude-opus-5-5@max']);
+  });
+
+  it('still ranks a clearly weaker model below both, however its price compares', () => {
+    const tiers = proposeTiers(['claude-opus-5-5', 'claude-fable-5-1'], aa);
+    expect(tiers.complex.indexOf('claude-fable-5-1@max')).toBeGreaterThan(tiers.complex.indexOf('claude-opus-5-5@max'));
   });
 });
 
@@ -1583,17 +1608,11 @@ describe('proposeTiers — effort breaks a capability-and-price tie', () => {
       },
     };
     expect(proposeTiers(['gemini-3.7-flash'], edged).complex[0]).toBe('gemini-3.7-flash@low');
-    // A 1.0 gap at a fifth of the price now goes to the MORE CAPABLE rung,
-    // where the deleted cost band made it a tie and let price decide.
-    //
-    // This is the band's removal showing its cost honestly. 71 against 72 is
-    // exactly `AA_CAPABILITY_TIE_MARGIN`, so `capabilityClass` separates them
-    // and `complex` — the strong end — takes the edge. The wasteful-tail gate
-    // cannot reach it either: with only two points on the frontier the bar is
-    // a fraction of a median computed from that single slope, so it can never
-    // exceed it, and there is no shape to tell "a bad deal" from "the only
-    // deal available". Gaps genuinely inside the margin are still resolved by
-    // price, which is the case above.
+    // A 1.0 gap at a fifth of the price goes to the CHEAPER rung. 71 against
+    // 72 sits inside `COMPLEX_CAPABILITY_TIE_MARGIN` (3.0), so `complex`
+    // treats it as a tie and price decides. (With the general 1.0 margin it
+    // went to the more capable rung, paying five times over for one point —
+    // the case that motivated the wider complex margin.)
     const cheaper: AaCatalog = {
       fetchedAt: aa.fetchedAt,
       models: {
@@ -1601,7 +1620,7 @@ describe('proposeTiers — effort breaks a capability-and-price tie', () => {
         'gemini-3-7-flash-low': { codingIndex: 71, blendedPriceUsd: 0.5, agenticIndex: 71, costPerTask: 0.1, family: 'gemini-3-7-flash', effort: 'low' },
       },
     };
-    expect(proposeTiers(['gemini-3.7-flash'], cheaper).complex[0]).toBe('gemini-3.7-flash@high');
+    expect(proposeTiers(['gemini-3.7-flash'], cheaper).complex[0]).toBe('gemini-3.7-flash@low');
     // Inside the margin, price still decides.
     const noise: AaCatalog = {
       fetchedAt: aa.fetchedAt,
