@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.16.2] - 2026-10-13
+
 ### Changed
 
 - **`complex` no longer pays a large premium for a small capability edge.**
