@@ -8,6 +8,30 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Changed
+
+- **`complex` no longer pays a large premium for a small capability edge.**
+  It ranks by capability and lets cost decide only a near-tie, and "near" was
+  1 point. Measured: Claude Opus 5.5 led at `max` (intelligence 57.6,
+  $5.98/task) over its own `xhigh` (56.0, $3.46/task) — 73% more per task for
+  1.6 points. `complex` now treats any model less than 3 points below the
+  strongest as tied with it, so the cheaper one (`xhigh`) leads; a model more than 3 points
+  stronger still leads however the prices compare. A model below the
+  price-performance knee still follows those at or above it. `simple` and
+  `normal` are unchanged. Existing configs keep their saved order until `sonata init --repropose-tiers` (or re-ranking in
+  `sonata agents`).
+
+### Fixed
+
+- **Claude (and OAuth) models picked during `sonata init` now reach the Models
+  step.** Adding `claude` (your Claude Code account) on the providers screen,
+  choosing its models and pressing Continue skipped the Models step, or showed
+  it without them. The step listed only models known at startup plus what
+  providers' `/models` endpoints returned, and a session or OAuth provider
+  added this run is in neither. The picks were kept in state but never drawn,
+  so they looked discarded. They now appear, checked, and unchecking one there
+  drops it.
+
 ## [0.16.1] - 2026-10-12
 
 ### Changed

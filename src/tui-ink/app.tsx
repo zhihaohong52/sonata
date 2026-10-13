@@ -5,7 +5,7 @@ import { RankedSelect } from './components/ranked-select.js';
 import { ProvidersStep } from './components/providers-step.js';
 import { ModelsStep } from './components/models-step.js';
 import { AutoRouteStep } from './components/auto-route-step.js';
-import { candidateFacts, candidateLabel, reasoningOf, expandCandidates, hasTaskCost, loadAaCatalog, proposeTiers, taskCostedCandidates, unpinnedVariants } from '../catalog.js';
+import { candidateFacts, candidateLabel, reasoningOf, expandCandidates, loadAaCatalog, proposeTiers, taskCostedCandidates, unpinnedVariants } from '../catalog.js';
 import { loadModelsDev, type ModelsDevCache } from '../modelsdev.js';
 import { loginGateway as defaultLoginGateway } from '../native/oauth-login.js';
 import { catalogSpellingsForGateway } from '../pricing.js';
@@ -15,6 +15,8 @@ import {
   knownCandidates,
   addedGatewayNames,
   hasModelsToPick,
+  modelsStepCandidates,
+  modelsStepSelection,
   stepBeforeRoles,
   initialRankedFor,
   acceptRemainingTiers,
@@ -26,7 +28,7 @@ import {
   type ProviderOption,
 } from './app-state.js';
 import { TIER_NAMES, type NativeGatewayAuth } from '../config.js';
-import { byokCandidateKey, fetchModels as defaultFetchModels } from '../native/models.js';
+import { fetchModels as defaultFetchModels } from '../native/models.js';
 import { ROLE_BLURB } from '../roles.js';
 import type { InitState, TuiResult } from './types.js';
 import { usePalette } from './theme-context.js';
@@ -289,7 +291,8 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
           // A provider added this run has no rows in `data.candidates` by
           // design, so deciding from that set alone skipped the models step
           // for exactly the provider whose key was just typed.
-          setStep(hasModelsToPick(candidates, addedGatewayNames(state)) ? 2 : 3);
+          const stepCandidates = modelsStepCandidates(candidates, state, data.gatewayAuth ?? {});
+          setStep(hasModelsToPick(stepCandidates, addedGatewayNames(state)) ? 2 : 3);
           // An updater, so it lands after the gateway order just recorded.
           setState((current) => withoutUnofferedModels(current, data.candidates, providers));
         }}
@@ -298,14 +301,17 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       />;
     }
     case 2: {
-      const candidates = candidatesForProviders(data.candidates, data.providers, state.providerKeys);
+      const candidates = modelsStepCandidates(
+        candidatesForProviders(data.candidates, data.providers, state.providerKeys),
+        state,
+        data.gatewayAuth ?? {},
+      );
       const catalog = loadAaCatalog(data.home);
       const gatewayNames = [...new Set(candidates.map((candidate) => candidate.gateway))];
       const modelsDev = loadModelsDev(data.home);
       const pricingProviders = state.configScope === undefined
         ? {}
         : data.declaredPricingProviders?.[state.configScope] ?? {};
-      const candidateByKey = new Map(candidates.map((candidate) => [candidate.key, candidate] as const));
       // Resolution needs only the gateway and the id, so a candidate minted by
       // the live /models refresh resolves exactly like a startup one.
       const upstreamForCandidate = (candidate: { gateway: string; id: string }): string | readonly string[] =>
@@ -314,16 +320,6 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
           { name: candidate.gateway, auth: data.gatewayAuth?.[candidate.gateway], pricingProvider: pricingProviders[candidate.gateway] },
           candidate.id,
         );
-      const upstreamForModels = (key: string): string | readonly string[] => {
-        const candidate = candidateByKey.get(key);
-        return candidate === undefined ? key : upstreamForCandidate(candidate);
-      };
-      // A catalog-backed init offers only models AA can rank on its per-task
-      // scale. Hand-added uncosted entries still route, but belong outside this
-      // proposal flow rather than being silently ranked on token prices.
-      const offeredCandidates = catalog === undefined
-        ? candidates
-        : candidates.filter((candidate) => hasTaskCost(candidate.key, catalog, gatewayNames, upstreamForModels));
       // A provider added this run exists only in `state`: `data.candidates`
       // and `data.gatewayBaseUrls` were both computed at startup. Without
       // these two, the gateway whose key was just typed is never asked what it
@@ -337,6 +333,11 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const addedBaseUrls = Object.fromEntries(
         (state.customProviders ?? []).map((provider) => [provider.name, provider.url]),
       );
+      // A pick made on a provider's own screen can be drawn here under a
+      // different key (a codex harness row is keyed by bare id while the OAuth
+      // pick is `codex-<id>`), so both the checkbox set and the keys kept
+      // across submit are matched on (gateway, id), not on key.
+      const selection = modelsStepSelection(state, candidates);
       return <ModelsStep
         key="models"
         candidates={candidates}
@@ -352,17 +353,20 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         gatewayNames={gatewayNames}
         upstreamForCandidate={upstreamForCandidate}
         fetchModels={data.fetchModels ?? defaultFetchModels}
-        initialSelected={new Set(state.nativeKeys)}
-        onSubmit={(keys, live) => {
+        initialSelected={selection.initialSelected}
+        onSubmit={(keys, live, offered) => {
           // Keep any BYOK/custom-provider keys already chosen: this step owns
           // the harness candidates only, and a plain overwrite would drop the
           // rest — they were already selected inside ProvidersStep.
-          const byokKeys = new Set(Object.entries(state.byokModels ?? {}).flatMap(([provider, ids]) =>
-            ids.map((id) => byokCandidateKey(provider, id))));
           // Deduped: a BYOK model can now also appear in this picker (its
           // gateway's live /models answer lists it), so `keys` and `kept`
           // overlap — and a doubled key is written to the config twice.
-          const kept = (state.nativeKeys ?? []).filter((key) => byokKeys.has(key));
+          // A model this step drew follows its checkbox — matched by
+          // (gateway, id), since the row can carry a different key from the
+          // pick; one it never drew (the catalog filter hid it, or its
+          // gateway's live list omitted it) is kept as chosen on its
+          // provider's screen.
+          const kept = selection.keptFor(offered);
           setState((current) => ({
             ...applyStep(current, 2, [...new Set([...(keys as string[]), ...kept])]),
             // Carried so cmdInit can mint a candidate for a model only the
@@ -378,7 +382,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
     }
     case 3: {
       const candidates = candidatesForProviders(data.candidates, data.providers, state.providerKeys);
-      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role, hint: ROLE_BLURB[role] }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={() => setStep(stepBeforeRoles(candidates, addedGatewayNames(state)))} onCancel={cancel} filterable={false} />;
+      return <MultiSelect key="roles" title="Roles" items={data.roles.map((role) => ({ value: role, label: role, hint: ROLE_BLURB[role] }))} initialSelected={new Set(state.roles ?? data.roles)} onSubmit={next} onBack={() => setStep(stepBeforeRoles(modelsStepCandidates(candidates, state, data.gatewayAuth ?? {}), addedGatewayNames(state)))} onCancel={cancel} filterable={false} />;
     }
     case 4: {
       const roles = state.roles ?? [];

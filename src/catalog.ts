@@ -79,6 +79,31 @@ export const SIMPLE_COST_CEILING = 12;
 export const AA_CAPABILITY_TIE_MARGIN = 1.0;
 
 /**
+ * The tie margin the `complex` tier applies — wider than the general one,
+ * because `complex` is the tier cost otherwise never reaches.
+ *
+ * `complex` sorts by capability and lets price decide only inside a tie, so
+ * with the general 1.0 margin it would pay any premium for a point and a half.
+ * Measured 2026-10-13: Claude Opus 5.5 led at `max` (intelligence 57.6,
+ * $5.98/task) over its own `xhigh` (56.0, $3.46/task) — 73% more per task for
+ * 1.6 points, an edge inside the run-to-run spread of the benchmark itself.
+ * Classes are counted down from the strongest candidate, so any model less
+ * than 3 points below the leader ties with it and the cheaper one leads; 3 or
+ * more never does.
+ *
+ * One exception, by design: the knee split runs first. A model below the
+ * frontier's knee sorts after every model at or above it even when it is less
+ * than 3 points below the leader — the knee marks where extra capability
+ * stops being worth its price, and `complex` must not slide back under it to
+ * save money. The tie decides among models on the same side of the knee.
+ *
+ * Scoped to `complex` on purpose. `normal` and `simple` already weigh cost in
+ * their sort key, and use the class only to break an exact price tie, where a
+ * wider band would just discard a real capability edge for no saving.
+ */
+export const COMPLEX_CAPABILITY_TIE_MARGIN = 3.0;
+
+/**
  * The capability *class* a score falls in — the margin applied transitively.
  *
  * "Within the margin" cannot be asked pairwise. Tolerance is not transitive:
@@ -97,8 +122,28 @@ export const AA_CAPABILITY_TIE_MARGIN = 1.0;
  * by capability where the old code ranked by price, never produce an order
  * that depends on input.
  */
-export function capabilityClass(index: number): number {
-  return Math.round(index / AA_CAPABILITY_TIE_MARGIN);
+export function capabilityClass(index: number, margin: number = AA_CAPABILITY_TIE_MARGIN): number {
+  return Math.round(index / margin);
+}
+
+/**
+ * The capability class a score falls in for `complex`, counted down from the
+ * strongest candidate rather than from fixed bucket edges.
+ *
+ * Bucketing on `index / margin` put 58.6 and 57.0 in different classes (20 vs
+ * 19) though they are 1.6 apart, so the expensive rung led again. Anchoring on
+ * the leader makes the class a per-candidate key (still transitive): less than
+ * `margin` below the leader ties with it (class 0); `margin` or more never
+ * does. Lower class is stronger.
+ *
+ * Below class 0 the bands have fixed edges every `margin` points down from the
+ * leader, so two close models can fall either side of one. That affects only
+ * fallback order, never which model leads — the leader is class 0 by
+ * construction. The `+ 1e-9` keeps a gap of exactly `margin` in class 1
+ * deterministically, rather than letting float representation decide.
+ */
+export function complexClass(index: number, top: number, margin: number = COMPLEX_CAPABILITY_TIE_MARGIN): number {
+  return Math.floor((top - index) / margin + 1e-9);
 }
 
 /*
@@ -1003,6 +1048,20 @@ export function proposeTiers(
    * introduced an inversion that ranked a weaker frontier rung above a
    * stronger dominated one inside a capability-ordered tier.
    */
+  // The strongest reasoning score among the candidates `complex` sorts —
+  // classes are counted down from it (see `complexClass`). The top is taken
+  // only from candidates that can lead the tier, because the earlier
+  // comparator terms sort the others after them; anchoring on one of those
+  // shifts every class edge. Falls back to every candidate when none can lead.
+  const leaders = candidates.filter(
+    (c) => capable(c) && !avoided.has(bareKey(c)) && !offScale(c) && !powerGeometry.wasteful.has(c),
+  );
+  const complexTop = Math.max(
+    0,
+    ...((leaders.length > 0 ? leaders : candidates)
+      .map((c) => rankReasoning(c).index)
+      .filter(Number.isFinite)),
+  );
   const byCapability = (a: string, b: string) => {
     const ra = rankReasoning(a); const rb = rankReasoning(b);
     return avoidance(a, b)
@@ -1024,7 +1083,7 @@ export function proposeTiers(
       // because a pairwise one is not transitive: it produced a genuine
       // 3-cycle on a real fixture, which made the sort depend on input order
       // and the tier differ run to run.
-      || capabilityClass(rb.index) - capabilityClass(ra.index)
+      || complexClass(ra.index, complexTop) - complexClass(rb.index, complexTop)
       || ra.price - rb.price
       // A real capability edge breaks an equal price, after the class has had
       // its say: where there is no money to save there is nothing to trade,

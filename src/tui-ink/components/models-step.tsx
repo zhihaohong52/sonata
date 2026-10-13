@@ -28,8 +28,8 @@ export interface ModelsStepProps {
    */
   upstreamForCandidate?: (candidate: CandidateOption) => string | readonly string[];
   fetchModels?: typeof defaultFetchModels;
-  /** Selected keys, plus what each gateway's own /models endpoint reported. */
-  onSubmit: (keys: string[], live: Record<string, string[]>) => void;
+  /** Selected keys, what each gateway's own /models endpoint reported, and the rows actually offered. */
+  onSubmit: (keys: string[], live: Record<string, string[]>, offered: CandidateOption[]) => void;
   onBack: () => void;
   onCancel: () => void;
 }
@@ -186,7 +186,7 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
           hint: candidate.label.endsWith(candidate.id) ? undefined : candidate.id,
         }))}
         initialSelected={initialSelected}
-        onSubmit={(selected) => onSubmit(selected as string[], live)}
+        onSubmit={(selected) => onSubmit(selected as string[], live, offered)}
         onBack={onBack}
         onCancel={onCancel}
       />
