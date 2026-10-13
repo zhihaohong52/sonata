@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.16.3] - 2026-10-13
+
 ### Added
 
 - **`r` on the ranking board resets a tier to the suggested order.** A saved
