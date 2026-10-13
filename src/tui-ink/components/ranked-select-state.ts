@@ -45,7 +45,8 @@ export type RsAction =
   | { type: 'down' }
   | { type: 'toggle' }
   | { type: 'moveUp' }
-  | { type: 'moveDown' };
+  | { type: 'moveDown' }
+  | { type: 'reset'; ranked: number[] };
 
 /** The board's starting state: cursor on the first row, `ranked` holding the seeded indices in rank order. */
 export function rsInitial(itemCount: number, initialRanked: number[]): RsState {
@@ -87,6 +88,10 @@ export function rsReduce(state: RsState, action: RsAction, itemCount: number): R
       [ranked[state.cursor - 1], ranked[state.cursor]] = [ranked[state.cursor], ranked[state.cursor - 1]];
       return { cursor: state.cursor - 1, ranked };
     }
+    // Replace the whole ranking with a given one (the catalog's suggestion),
+    // cursor back on the leader, so the result is what the reader sees first.
+    case 'reset':
+      return rsInitial(itemCount, action.ranked);
     case 'moveDown': {
       if (state.cursor < 0 || state.cursor >= state.ranked.length - 1) return state;
       const ranked = [...state.ranked];

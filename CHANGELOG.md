@@ -8,6 +8,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- **`r` on the ranking board resets a tier to the suggested order.** A saved
+  ranking is never re-proposed, so a ranking rule that changed in an upgrade
+  (like 0.16.2's `complex` near-tie margin) could only be adopted with
+  `sonata init --repropose-tiers`, outside the TUI. In `sonata agents`, `r`
+  now replaces the list being edited with the order the catalog proposes now;
+  nothing is written until you confirm, and `←` discards it. `sonata doctor`'s
+  tier-freshness advice names it, and computes its suggestion the same way.
+
 ### Fixed
 
 - **An overpriced model reached through two providers is demoted on both.**

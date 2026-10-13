@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useInput } from 'ink';
 import { loadAaCatalog } from '../../catalog.js';
 import { loadModelsDev } from '../../modelsdev.js';
-import { editorCandidates, itemFacts, itemLabel, writeTiers } from '../../commands/agents.js';
+import { editorCandidates, itemFacts, itemLabel, suggestedTiers, writeTiers } from '../../commands/agents.js';
 import { AgentsApp } from '../agents-app.js';
 import { Message } from '../components/screen.js';
 import { loadConfigForScreen } from './screen-config.js';
@@ -62,6 +62,7 @@ export function TiersScreen(
       initialTiers={config.tiers ?? {}}
       items={items}
       factsFor={(candidate, tier) => itemFacts(config, candidate, tier, aa, modelsDev)}
+      suggested={aa === undefined ? undefined : suggestedTiers(config, aa, modelsDev)}
       onDone={(tiers) => {
         if (tiers === undefined) { onBack(); return; }
         try {

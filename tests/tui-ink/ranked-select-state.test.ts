@@ -73,3 +73,12 @@ describe('rsReduce', () => {
     expect(rsInitial(4, [2, 0]).ranked).toEqual([2, 0]);
   });
 });
+
+describe('rsReduce reset', () => {
+  it('replaces the ranking and puts the cursor on the new leader', () => {
+    const s = rsReduce({ cursor: 2, ranked: [2, 0] }, { type: 'reset', ranked: [1, 3, 1, 9] }, 4);
+    // Deduplicated and bounded, the same as a seeded ranking.
+    expect(s).toEqual({ cursor: 0, ranked: [1, 3] });
+  });
+});
+

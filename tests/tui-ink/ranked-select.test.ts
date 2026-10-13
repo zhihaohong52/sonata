@@ -8,12 +8,13 @@ import { tick } from './ink-wait.js';
 
 const ITEMS = ['alpha', 'bravo', 'charlie', 'delta'].map((value) => ({ value, label: value }));
 
-function renderRanked(initialRanked?: string[]) {
+function renderRanked(initialRanked?: string[], suggested?: string[]) {
   let submitted: string[] | undefined;
   const app = render(React.createElement(RankedSelect<string>, {
     title: 'code: simple models',
     items: ITEMS,
     initialRanked,
+    suggested,
     onSubmit: (ranked: string[]) => { submitted = ranked; },
   }));
   return {
@@ -231,5 +232,33 @@ describe('packedLines', () => {
 
   it('is zero for nothing', () => {
     expect(packedLines([], 40)).toBe(0);
+  });
+
+  it('r replaces the saved ranking with the suggested one, and enter submits it', async () => {
+    // A saved order is never re-proposed; `r` is how a ranking rule that
+    // changed in an upgrade is adopted from inside the TUI.
+    const board = renderRanked(['delta', 'alpha'], ['bravo', 'charlie']);
+    expect(board.rows().slice(0, 2)).toEqual(['1 delta', '2 alpha']);
+    await board.press('r');
+    expect(board.rows().slice(0, 2)).toEqual(['1 bravo', '2 charlie']);
+    expect(board.cursorRow()).toBe('bravo');
+    await board.press('\r');
+    expect(board.submitted()).toEqual(['bravo', 'charlie']);
+  });
+
+  it('offers r only when there is a suggestion that ranks something', async () => {
+    const plain = renderRanked(['alpha']);
+    expect(plain.app.lastFrame()).not.toContain('suggested order');
+    await plain.press('r');
+    expect(plain.rows()[0]).toBe('1 alpha');
+
+    // A suggestion naming no row on this board would reset to an empty
+    // ranking `enter` refuses, so it is not offered.
+    const unknown = renderRanked(['alpha'], ['zulu']);
+    expect(unknown.app.lastFrame()).not.toContain('suggested order');
+    await unknown.press('r');
+    expect(unknown.rows()[0]).toBe('1 alpha');
+
+    expect(renderRanked(['alpha'], ['bravo']).app.lastFrame()).toContain('suggested order');
   });
 });

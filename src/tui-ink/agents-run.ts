@@ -18,6 +18,7 @@ export async function runAgentsTui(input: {
   initialTiers: Tiers;
   items: Array<{ value: string; label: string }>;
   factsFor?: (candidate: string, tier: keyof TierLists) => CandidateFacts;
+  suggested?: Partial<Record<keyof TierLists, string[]>>;
 }): Promise<Tiers | undefined> {
   let outcome: Tiers | undefined;
   return onAltScreen(async () => {

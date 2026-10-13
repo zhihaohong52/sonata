@@ -147,7 +147,8 @@ agents have a router to reach. Project scope writes `./sonata.toml` and
 `~/.claude/agents/`, where Claude Code offers the agents in every repository.
 
 Claude Code picks up the new agents automatically; no restart is needed. To
-change a ranking later, run `sonata agents` and press enter on a tier.
+change a ranking later, run `sonata agents` and press enter on a tier; `r`
+there resets it to the order the catalog suggests now.
 
 Every prompt has a flag, so it also works unattended:
 
