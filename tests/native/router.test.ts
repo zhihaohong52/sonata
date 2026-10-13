@@ -1154,7 +1154,7 @@ describe('tier alias routing', () => {
     const res = await routeRequest(req('sonata-code-simple'), {
       fetch: (async (url: string) => {
         seenUrls.push(url);
-        return new Response('{}', { status: url.startsWith('https://gw.example') ? 503 : 200 });
+        return new Response('{}', { status: new URL(url).host === 'gw.example' ? 503 : 200 });
       }) as unknown as typeof fetch,
       litellmBase: 'http://litellm', litellmKey: 'k',
       gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
