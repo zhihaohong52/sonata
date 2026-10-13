@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Text } from 'ink';
 import { MultiSelect } from './multi-select.js';
-import { mergeLiveCandidates, type CandidateOption } from '../app-state.js';
+import { gatewayIdKey, mergeLiveCandidates, type CandidateOption } from '../app-state.js';
 import { isOauthGatewayAuth, type NativeGatewayAuth } from '../../config.js';
 import { fetchModels as defaultFetchModels } from '../../native/models.js';
 import { hasTaskCost, lookupModel, type AaCatalog } from '../../catalog.js';
@@ -27,6 +27,13 @@ export interface ModelsStepProps {
    * uncosted purely because its gateway is new.
    */
   upstreamForCandidate?: (candidate: CandidateOption) => string | readonly string[];
+  /**
+   * (gateway, id) pairs of picks made on a provider's own screen that are
+   * currently chosen. An excluded candidate in this set was kept on purpose —
+   * it is written to the config all the same — so it is reported as kept,
+   * never under the "not offered" lines, which read as a drop.
+   */
+  picked?: ReadonlySet<string>;
   fetchModels?: typeof defaultFetchModels;
   /** Selected keys, what each gateway's own /models endpoint reported, and the rows actually offered. */
   onSubmit: (keys: string[], live: Record<string, string[]>, offered: CandidateOption[]) => void;
@@ -85,7 +92,7 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
   const palette = usePalette();
   const {
     candidates, addedGateways = [], gatewayBaseUrls, gatewayAuth, keys, initialSelected,
-    aa, gatewayNames = [], upstreamForCandidate, fetchModels = defaultFetchModels, onSubmit, onBack, onCancel,
+    aa, gatewayNames = [], upstreamForCandidate, picked, fetchModels = defaultFetchModels, onSubmit, onBack, onCancel,
   } = props;
   const targets = refreshableGateways(candidates, gatewayBaseUrls, gatewayAuth, keys, addedGateways);
   const [live, setLive] = useState<Record<string, string[]> | undefined>(
@@ -143,14 +150,21 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
     : merged.filter((candidate) => hasTaskCost(candidate.key, aa, names, upstreamOf(candidate)));
   const offered = costed;
   const excluded = merged.filter((candidate) => !costed.includes(candidate));
+  // A pick made on a provider's own screen is kept even when this filter
+  // hides it — `keptFor` still writes it to the config — so it gets its own
+  // line rather than one of the "not offered" messages, which read as a drop.
+  const wasPicked = (candidate: CandidateOption) =>
+    picked !== undefined && picked.has(gatewayIdKey(candidate.gateway, candidate.id));
+  const keptFromProvider = excluded.filter(wasPicked);
+  const dropped = excluded.filter((candidate) => !wasPicked(candidate));
   // Two different reasons, with two different fixes. A model the catalog does
   // not hold at all is usually newer than the cache — a codex release the day
   // after `catalog update` — and refreshing is the fix; one AA scores without
   // a cost per task will not be fixed by refreshing. One line used to say the
   // second for both, so a stale cache read as AA's verdict on the model.
-  const unknown = aa === undefined ? [] : excluded.filter((candidate) =>
+  const unknown = aa === undefined ? [] : dropped.filter((candidate) =>
     lookupModel(candidate.key, aa, names, upstreamOf(candidate)).source !== 'aa');
-  const uncosted = excluded.filter((candidate) => !unknown.includes(candidate));
+  const uncosted = dropped.filter((candidate) => !unknown.includes(candidate));
   const refreshed = Object.keys(live).length;
   return (
     <Box flexDirection="column">
@@ -162,6 +176,11 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
       {uncosted.length > 0 && (
         <Text color={palette.MUTED}>
           not offered — AA publishes no usable cost-per-task: {uncosted.map((candidate) => candidate.key).join(', ')}; add by hand to sonata.toml
+        </Text>
+      )}
+      {keptFromProvider.length > 0 && (
+        <Text color={palette.MUTED}>
+          kept from its provider screen but not ranked — the ranking catalog has no cost-per-task for: {keptFromProvider.map((candidate) => candidate.key).join(', ')}. It stays in the config; add it to a tier by hand, or run `sonata catalog update` and `sonata init` again.
         </Text>
       )}
       {refreshed > 0 && (

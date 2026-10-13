@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EXTENDED_CONTEXT_SUFFIX, roleQualifiesForExtendedContext, tierQualifiesForExtendedContext } from '../extended-context.js';
 import { autoAgentRoles, configPath, loadConfig, parseConfig, TIER_NAMES, tiersCollapse, type SonataConfig, type TierLists } from '../config.js';
-import { assertEffortsPinned, candidateFacts, candidateLabel, expandCandidates, hasTaskCost, loadAaCatalog, reasoningOf, type AaCatalog, type CandidateFacts } from '../catalog.js';
+import { assertEffortsPinned, candidateFacts, candidateLabel, expandCandidates, hasTaskCost, loadAaCatalog, proposeTiers, reasoningOf, type AaCatalog, type CandidateFacts, type TierProposal } from '../catalog.js';
 import { replaceTiersBlock } from '../init/toml.js';
 import { loadModelsDev, type ModelsDevCache } from '../modelsdev.js';
 import { configUpstreamFor } from '../pricing.js';
@@ -251,6 +251,32 @@ function upstreamOf(config: SonataConfig, modelsDev?: ModelsDevCache) {
 }
 
 /**
+ * The ranking a fresh `sonata init --repropose-tiers` would propose for this
+ * config, from the catalog as it is now.
+ *
+ * Saved tier lists are sticky — nothing re-proposes them — so this is what
+ * `sonata doctor` compares a saved list against and what the ranking board's
+ * "reset to suggested" key restores. One definition, so the two cannot
+ * disagree about what the suggestion is. `avoid_gateways` and
+ * `gateway_order` are resolved through the model table: ranking sorts model
+ * keys, and both settings name gateways.
+ */
+export function suggestedTiers(config: SonataConfig, aa?: AaCatalog, modelsDev?: ModelsDevCache): TierProposal {
+  const models = Object.entries(config.unifiedModels ?? {});
+  const avoid = new Set(config.avoidGateways ?? []);
+  const avoided = new Set(models.filter(([, m]) => m.gateway !== undefined && avoid.has(m.gateway)).map(([k]) => k));
+  const order = config.gatewayOrder ?? [];
+  const gatewayRank = new Map(models.flatMap(([k, m]) => {
+    const i = m.gateway === undefined ? -1 : order.indexOf(m.gateway);
+    return i < 0 ? [] : [[k, i] as const];
+  }));
+  return proposeTiers(
+    models.map(([k]) => k),
+    aa, Object.keys(config.native?.gateways ?? {}), avoided, upstreamOf(config, modelsDev), gatewayRank,
+  );
+}
+
+/**
  * Every candidate the editor may rank: each rankable key, expanded into its
  * scored effort levels where the catalog has them. The same expansion the
  * wizard's tier screens apply, so the two editors offer the same rows.
@@ -289,6 +315,8 @@ export interface AgentsIo {
     items: Array<{ value: string; label: string }>;
     /** Measurements for the tier being edited; see `itemFacts`. */
     factsFor?: (candidate: string, tier: keyof TierLists) => CandidateFacts;
+    /** The catalog's current proposal per tier; see `suggestedTiers`. */
+    suggested?: TierProposal;
   }) => Promise<Record<string, TierLists> | undefined>;
 }
 
@@ -364,6 +392,7 @@ export async function cmdAgents(
     // catalog cannot price and was wrong for all of them. This is the surface
     // that gets opened often, and it was the one drawing a checkbox list.
     factsFor: (candidate, tier) => itemFacts(config, candidate, tier, catalog, modelsDev),
+    suggested: catalog === undefined ? undefined : suggestedTiers(config, catalog, modelsDev),
   });
   if (next === undefined) {
     for (const line of renderAgents(rows)) io.out(line);

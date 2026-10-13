@@ -33,7 +33,8 @@ import { findLitellm } from '../native/litellm.js';
 import { litellmRequired, sharedBaseUrls, sharedBaseUrlWarning } from '../native/providers.js';
 import { litellmStatus, type InstallerDeps } from '../native/litellm-venv.js';
 import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm.js';
-import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, catalogFamily, hasTaskCost, loadAaCatalog, normalizedFor, proposeTiers } from '../catalog.js';
+import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, catalogFamily, hasTaskCost, loadAaCatalog, normalizedFor } from '../catalog.js';
+import { suggestedTiers } from './agents.js';
 import { loadModelsDev } from '../modelsdev.js';
 import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
@@ -586,27 +587,12 @@ export async function cmdDoctor(
       // an error. That is exactly the failure mode the freshness check above
       // exists for, and it is invisible for the same reason.
       {
-        // `avoided` is a set of MODEL KEYS — ranking sorts keys, and
-        // `avoid_gateways` names gateways. Passing the gateway names meant
-        // avoidance never matched anything and the re-proposal ranked an
-        // avoided model as if the user had asked for it. `gateway_order` is
-        // resolved the same way, through the model table.
-        const models = Object.entries(config.unifiedModels ?? {});
-        const avoid = new Set(config.avoidGateways ?? []);
-        const avoided = new Set(models.filter(([, m]) => m.gateway !== undefined && avoid.has(m.gateway)).map(([k]) => k));
-        const order = config.gatewayOrder ?? [];
-        const gatewayRank = new Map(models.flatMap(([k, m]) => {
-          const i = m.gateway === undefined ? -1 : order.indexOf(m.gateway);
-          return i < 0 ? [] : [[k, i] as const];
-        }));
+        // `suggestedTiers` resolves `avoid_gateways`/`gateway_order` through
+        // the model table (ranking sorts keys; both settings name gateways) —
+        // the same proposal the ranking board's reset key restores.
+        const proposal = suggestedTiers(config, catalog, loadModelsDev(home));
         const stale = Object.entries(config.tiers ?? {})
-          .map(([role, lists]) => {
-            const proposal = proposeTiers(
-              [...new Set(Object.keys(config.unifiedModels ?? {}))],
-              catalog, gateways, avoided, resolver, gatewayRank,
-            );
-            return [role, overCeilingSimple(lists.simple, proposal)] as const;
-          })
+          .map(([role, lists]) => [role, overCeilingSimple(lists.simple, proposal)] as const)
           .filter(([, over]) => over.length > 0);
         if (stale.length > 0) {
           // Roles usually share one ranking, so naming each separately
@@ -625,7 +611,7 @@ export async function cmdDoctor(
             ok: true,
             detail: `simple holds candidates the cost cap would now exclude — ${named.join('; ')}. `
               + 'The saved ranking predates the current catalog and is never re-proposed; '
-              + 're-rank with `sonata init --repropose-tiers`',
+              + 're-rank with `sonata init --repropose-tiers`, or `r` on the tier in `sonata agents`',
           });
         }
       }

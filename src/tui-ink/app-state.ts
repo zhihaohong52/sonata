@@ -495,6 +495,27 @@ export function gatewayIdKey(gateway: string, id: string): string {
 }
 
 /**
+ * The (gateway, id) pairs of provider-screen picks this run has chosen —
+ * `byokModels` ∩ `nativeKeys`, keyed like the models step draws rows.
+ *
+ * The models step's catalog filter can hide a pick like this; the step still
+ * keeps it (`keptFor`) and the config still gets it, so its message must say
+ * "kept" rather than the "not offered" lines' "dropped".
+ */
+export function pickedGatewayIds(
+  state: { nativeKeys?: readonly string[]; byokModels?: Record<string, string[]> },
+): Set<string> {
+  const nativeKeys = new Set(state.nativeKeys ?? []);
+  const out = new Set<string>();
+  for (const [gateway, ids] of Object.entries(state.byokModels ?? {})) {
+    for (const id of ids) {
+      if (nativeKeys.has(byokCandidateKey(gateway, id))) out.add(gatewayIdKey(gateway, id));
+    }
+  }
+  return out;
+}
+
+/**
  * Harness-derived candidates with a gateway's live `/models` answer swapped in.
  *
  * A harness catalogue is a snapshot: it keeps listing a model the gateway has
@@ -600,6 +621,13 @@ export function modelsStepCandidates(
  * instead lets a pick drawn under another key follow that row's checkbox —
  * while a pick the step never drew (the catalog filter hid it, a live list
  * omitted it) is still kept, as chosen on its provider's screen.
+ *
+ * A matched pick is submitted under its **provider-screen key**, never the
+ * drawn one, so the provider screen can still undo it: its deselect is
+ * `applyStep` step 5, which drops exactly `byokCandidateKey(provider, id)`
+ * and nothing else. Storing the drawn key instead left `gpt-6-luna` in
+ * `nativeKeys` where that removal could not see it — the model survived a
+ * deselect on its own screen and came back checked here.
  */
 export function modelsStepSelection(
   state: { nativeKeys?: readonly string[]; byokModels?: Record<string, string[]> },
@@ -607,6 +635,7 @@ export function modelsStepSelection(
 ): {
   initialSelected: Set<string>;
   keptFor: (offered: readonly { gateway: string; id: string }[]) => string[];
+  submitted: (keys: string[], offered: readonly CandidateOption[]) => string[];
 } {
   const nativeKeys = state.nativeKeys ?? [];
   // Each pick's own key, indexed by the (gateway, id) it names.
@@ -622,15 +651,35 @@ export function modelsStepSelection(
     const pickKey = pickKeyByGatewayId.get(gatewayIdKey(candidate.gateway, candidate.id));
     if (pickKey !== undefined && nativeKeys.includes(pickKey)) initialSelected.add(candidate.key);
   }
+  const keptFor = (offered: readonly { gateway: string; id: string }[]): string[] => {
+    const drawn = new Set(offered.map((candidate) => gatewayIdKey(candidate.gateway, candidate.id)));
+    const kept: string[] = [];
+    for (const [gIdKey, pickKey] of pickKeyByGatewayId) {
+      if (nativeKeys.includes(pickKey) && !drawn.has(gIdKey)) kept.push(pickKey);
+    }
+    return kept;
+  };
   return {
     initialSelected,
-    keptFor: (offered) => {
-      const drawn = new Set(offered.map((candidate) => gatewayIdKey(candidate.gateway, candidate.id)));
-      const kept: string[] = [];
-      for (const [gIdKey, pickKey] of pickKeyByGatewayId) {
-        if (nativeKeys.includes(pickKey) && !drawn.has(gIdKey)) kept.push(pickKey);
+    keptFor,
+    /**
+     * What the models step writes into `nativeKeys` on submit.
+     *
+     * A checked key naming a drawn row matched to a pick is rewritten to that
+     * pick's provider-screen key (so the provider screen can undo it); any
+     * other checked key is kept as drawn; and picks the step never drew are
+     * kept as chosen on their provider's screen.
+     */
+    submitted: (keys, offered) => {
+      const pickKeyByRowKey = new Map<string, string>();
+      for (const candidate of offered) {
+        const pickKey = pickKeyByGatewayId.get(gatewayIdKey(candidate.gateway, candidate.id));
+        if (pickKey !== undefined) pickKeyByRowKey.set(candidate.key, pickKey);
       }
-      return kept;
+      return [...new Set([
+        ...keys.map((key) => pickKeyByRowKey.get(key) ?? key),
+        ...keptFor(offered),
+      ])];
     },
   };
 }

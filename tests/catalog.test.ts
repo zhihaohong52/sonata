@@ -212,6 +212,24 @@ describe('proposeTiers', () => {
     expect(p.complex).toEqual(['flash-high', 'flash-low', 'pro-max']);
   });
 
+  it('gates every route of a gated model, not only the one key the frontier kept', () => {
+    // One model on two gateways is one point — same score, same cost per
+    // task — and `frontierIndices` keeps only the first duplicate. `wasteful`
+    // was built from the frontier's kept indices, so it named one route and
+    // the second escaped the gate entirely: the gated model itself led
+    // `complex` through its other gateway.
+    const p = proposeTiers(['flash-low', 'flash-high', 'acme-pro-max', 'beta-pro-max'], threeTierAa, ['acme', 'beta']);
+    // `acme-pro-max` and `beta-pro-max` both resolve to the `pro-max` row the
+    // single-route test above gates. Demoted, never dropped: both stay in the
+    // tier as fallbacks — but only after every route the gate did not fire on.
+    expect(p.complex).toHaveLength(4);
+    for (const route of ['acme-pro-max', 'beta-pro-max']) {
+      for (const survivor of ['flash-high', 'flash-low']) {
+        expect(p.complex.indexOf(route)).toBeGreaterThan(p.complex.indexOf(survivor));
+      }
+    }
+  });
+
   it('promotes every route to the knee, not only the one key the frontier kept', () => {
     // One model on two gateways is one point: same score, same cost per task.
     // The frontier keeps one of a duplicate pair, so the knee named one key,
@@ -603,6 +621,37 @@ describe('proposeTiers — complex trades a small capability edge for a large sa
       },
     };
     const tiers = proposeTiers(['claude-opus-5-5', 'agentic-only'], offScaleStronger);
+    expect(tiers.complex.slice(0, 2)).toEqual(['claude-opus-5-5@xhigh', 'claude-opus-5-5@max']);
+  });
+  it('does not let a gated stronger model set the class edges', () => {
+    // A model the wasteful-tail gate demotes can still be the strongest thing
+    // in the candidate pool, and `leaders` must exclude it before the top is
+    // taken: with its 60.0 anchoring the classes, 58.6 and 56.9 fall on
+    // opposite sides of a 3-point class edge (1.4 and 3.1 down) and the dear
+    // rung leads again — the same split the avoided and off-scale siblings fix.
+    //
+    // `budget-bravo` (40 @ $0.50/task) is a fourth frontier rung below the
+    // pair, from a different family, so the knee lands on the 56.9 point and
+    // both Opus rungs sit knee-and-above together. Without a rung this cheap
+    // the knee stays on 58.6 and the knee band splits the pair first.
+    const gatedStronger: AaCatalog = {
+      fetchedAt: '2026-10-13T00:00:00Z',
+      models: {
+        'claude-opus-5-5': { blendedPriceUsd: 8, family: 'claude-opus-5-5', intelligenceIndex: 58.6, costPerTask: 5.982, effort: 'max' },
+        'claude-opus-5-5-xhigh': { blendedPriceUsd: 8, family: 'claude-opus-5-5', intelligenceIndex: 56.9, costPerTask: 3.4591, effort: 'xhigh' },
+        'budget-bravo': { blendedPriceUsd: 1, intelligenceIndex: 40, costPerTask: 0.5 },
+        'mega-alpha': { blendedPriceUsd: 1, intelligenceIndex: 60, costPerTask: 60 },
+      },
+    };
+    const tiers = proposeTiers(['claude-opus-5-5', 'budget-bravo', 'mega-alpha'], gatedStronger);
+    // The gate fired on the top rung: the most capable model in the pool — 60,
+    // above both Opus rungs — sorts last, demoted but kept as a fallback.
+    expect(tiers.complex[tiers.complex.length - 1]).toBe('mega-alpha');
+    // The knee sits at 56.9 (budget-bravo falls below it), so both Opus rungs
+    // are in the knee-and-above band and lead the cheap rung.
+    expect(tiers.complex.indexOf('claude-opus-5-5@xhigh')).toBeLessThan(tiers.complex.indexOf('budget-bravo'));
+    expect(tiers.complex.indexOf('claude-opus-5-5@max')).toBeLessThan(tiers.complex.indexOf('budget-bravo'));
+    // …and within that band the cheaper rung leads the dearer one.
     expect(tiers.complex.slice(0, 2)).toEqual(['claude-opus-5-5@xhigh', 'claude-opus-5-5@max']);
   });
 });

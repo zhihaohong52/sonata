@@ -42,6 +42,15 @@ export interface RankedSelectProps<T> {
   onAcceptRest?: (ranked: T[]) => void;
   onBack?: () => void;
   onCancel?: () => void;
+  /**
+   * The ranking the catalog would propose for this list now. When given, `r`
+   * replaces the board's ranking with it — the in-TUI equivalent of
+   * `sonata init --repropose-tiers` for one list. A saved order is sticky and
+   * never re-proposed, so without this a ranking rule that changed in an
+   * upgrade could only be adopted by leaving the TUI. Nothing is written
+   * until `enter`, and `←` still discards it.
+   */
+  suggested?: T[];
 }
 
 /** Map a seeded ranking of values back to item indices, dropping any value the rows do not offer. */
@@ -55,7 +64,10 @@ function initialIndices<T>(items: Array<RankedSelectItem<T>>, initialRanked: T[]
 /** The ranking board: selection order is the fallback order, drawn in rank order with a shared-scale bar, a cost column and a state stroke per row. */
 export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement {
   const palette = usePalette();
-  const { title, items, initialRanked, metric = 'capability', footer, onSubmit, onAcceptRest, onBack, onCancel } = props;
+  const { title, items, initialRanked, metric = 'capability', footer, onSubmit, onAcceptRest, onBack, onCancel, suggested } = props;
+  // Only offered when it would rank something: an empty suggestion would
+  // reset the board to a ranking `enter` then refuses.
+  const suggestedIndices = suggested === undefined ? [] : initialIndices(items, suggested);
   const [state, dispatch] = useReducer(
     (current: ReturnType<typeof rsInitial>, action: Parameters<typeof rsReduce>[1]) => (
       rsReduce(current, action, items.length)
@@ -97,6 +109,10 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
       onAcceptRest(state.ranked.map((index) => items[index].value));
       return;
     }
+    if (input === 'r' && suggestedIndices.length > 0) {
+      dispatch({ type: 'reset', ranked: suggestedIndices });
+      return;
+    }
     if (input === '[') {
       dispatch({ type: 'moveUp' });
       return;
@@ -133,6 +149,7 @@ export function RankedSelect<T>(props: RankedSelectProps<T>): React.ReactElement
   // part of the chrome the rows must leave room for.
   const keys = ([
     ['↑↓', 'move'], ['space', 'rank'], ['[ ]', 'reorder'],
+    ...(suggestedIndices.length > 0 ? [['r', 'suggested order']] : []),
     ['enter', 'confirm', true],
     ...(onAcceptRest ? [['A', 'accept all']] : []),
     ...(onBack ? [['←', 'back']] : []),

@@ -17,6 +17,7 @@ import {
   hasModelsToPick,
   modelsStepCandidates,
   modelsStepSelection,
+  pickedGatewayIds,
   stepBeforeRoles,
   initialRankedFor,
   acceptRemainingTiers,
@@ -336,7 +337,9 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       // A pick made on a provider's own screen can be drawn here under a
       // different key (a codex harness row is keyed by bare id while the OAuth
       // pick is `codex-<id>`), so both the checkbox set and the keys kept
-      // across submit are matched on (gateway, id), not on key.
+      // across submit are matched on (gateway, id), not on key. What submit
+      // writes is the pick's provider-screen key wherever one matches, so
+      // that screen's later deselect — `applyStep` step 5 — can still undo it.
       const selection = modelsStepSelection(state, candidates);
       return <ModelsStep
         key="models"
@@ -352,23 +355,20 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         aa={catalog}
         gatewayNames={gatewayNames}
         upstreamForCandidate={upstreamForCandidate}
+        picked={pickedGatewayIds(state)}
         fetchModels={data.fetchModels ?? defaultFetchModels}
         initialSelected={selection.initialSelected}
         onSubmit={(keys, live, offered) => {
-          // Keep any BYOK/custom-provider keys already chosen: this step owns
-          // the harness candidates only, and a plain overwrite would drop the
-          // rest — they were already selected inside ProvidersStep.
-          // Deduped: a BYOK model can now also appear in this picker (its
-          // gateway's live /models answer lists it), so `keys` and `kept`
-          // overlap — and a doubled key is written to the config twice.
-          // A model this step drew follows its checkbox — matched by
-          // (gateway, id), since the row can carry a different key from the
-          // pick; one it never drew (the catalog filter hid it, or its
-          // gateway's live list omitted it) is kept as chosen on its
-          // provider's screen.
-          const kept = selection.keptFor(offered);
+          // `submitted` owns the mapping: a drawn row matched to a pick
+          // submits that pick's key, any other checked row keeps its drawn
+          // key, and a pick the step never drew (the catalog filter hid it,
+          // or its gateway's live list omitted it) is kept as chosen on its
+          // provider's screen. Deduped: a BYOK model can now also appear in
+          // this picker (its gateway's live /models answer lists it), so the
+          // two spellings overlap — and a doubled key is written to the
+          // config twice.
           setState((current) => ({
-            ...applyStep(current, 2, [...new Set([...(keys as string[]), ...kept])]),
+            ...applyStep(current, 2, selection.submitted(keys, offered)),
             // Carried so cmdInit can mint a candidate for a model only the
             // gateway knew about — otherwise it reaches the tiers but never
             // [models], and the config it writes will not parse.

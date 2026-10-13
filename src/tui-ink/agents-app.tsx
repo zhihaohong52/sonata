@@ -75,6 +75,12 @@ export interface AgentsAppProps {
    * three times ever, drew the board.
    */
   factsFor?: (candidate: string, tier: keyof TierLists) => RankedSelectItem<string>['facts'];
+  /**
+   * The catalog's current proposal per tier (`suggestedTiers`). Optional:
+   * without a catalog there is no suggestion worth offering, and the board
+   * then shows no `r` key.
+   */
+  suggested?: Partial<Record<keyof TierLists, string[]>>;
   /** `undefined` means the user quit without saving. */
   onDone: (tiers: Tiers | undefined) => void;
 }
@@ -96,7 +102,7 @@ export function metricLabel(_tier: keyof TierLists): string {
 
 /** The Tiers editor: one row per role × tier, enter opens that list on the ranking board, `w` writes every changed list at once, `q` quits without saving. */
 export function AgentsApp(props: AgentsAppProps): React.ReactElement {
-  const { config, items, factsFor, onDone } = props;
+  const { config, items, factsFor, suggested, onDone } = props;
   const palette = usePalette();
   // Re-rendered on resize so the list and the ranking board recompute their
   // widths; see `ConfigTui`, which does the same for the shell. This is the
@@ -128,6 +134,7 @@ export function AgentsApp(props: AgentsAppProps): React.ReactElement {
         ? items
         : items.map((item) => ({ ...item, facts: factsFor(item.value, editing.tier) }))}
       initialRanked={editing.keys}
+      suggested={suggested?.[editing.tier]}
       footer="enter confirm   ← back without changing this list"
       onSubmit={(ranked) => {
         setTiers((current) => ({

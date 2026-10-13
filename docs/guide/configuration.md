@@ -176,6 +176,13 @@ through the same picker `sonata init` uses, `w` writes and regenerates the
 agent files. `--list` prints without the editor, `--json` emits the same rows
 for a script.
 
+**A saved ranking is never re-ranked for you.** Upgrading sonata, or
+refreshing the catalog, changes what `sonata init` would propose but leaves
+your saved order alone. On the ranking board, `r` replaces that list with the
+order the catalog suggests now; it is written only when you confirm with
+`enter` and `w`, and `←` discards it. `sonata init --repropose-tiers` does the
+same for every list at once.
+
 **The `--json` shape changed when effort levels landed.** A row's `key` now
 holds the whole candidate, `@effort` included (`acme-big@high`), rather than a
 bare key into `[models]`, and a sibling `effort` field carries the level on its
