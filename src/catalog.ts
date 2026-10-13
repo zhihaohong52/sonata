@@ -1016,7 +1016,14 @@ export function proposeTiers(
     const at = kneeIndex(frontier);
     const knee = at === undefined ? undefined : pool[order[at]!];
     const kept = keptAfterGate(frontier);
-    const wasteful = new Set(order.slice(kept).map((i) => pool[i]!));
+    const gatedPoints = order.slice(kept).map((i) => points[i]!);
+    // A duplicate route of a gated model (the same model on a second
+    // gateway) is gated with it: frontierIndices keeps only the first of two
+    // identical points, so naming the kept index alone let the other route
+    // escape the gate and lead `complex`.
+    const wasteful = new Set(pool.filter((_, i) => gatedPoints.some(
+      (p) => p.capability === points[i]!.capability && p.cost === points[i]!.cost,
+    )));
     return {
       knee,
       wasteful,

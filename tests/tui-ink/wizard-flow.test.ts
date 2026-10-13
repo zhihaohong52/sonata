@@ -5,6 +5,8 @@ import { join, dirname } from 'node:path';
 import React from 'react';
 import { render } from 'ink-testing-library';
 import { InitWizard, type WizardData } from '../../src/tui-ink/app.js';
+import { ModelsStep } from '../../src/tui-ink/components/models-step.js';
+import { gatewayIdKey } from '../../src/tui-ink/app-state.js';
 import { aaCatalogPath, loadAaCatalog } from '../../src/catalog.js';
 import { parseConfig } from '../../src/config.js';
 import { rankableCandidates } from '../../src/commands/agents.js';
@@ -706,5 +708,51 @@ describe('a Claude session provider added this run', () => {
     // though its provider screen chose it and `kept` would have kept it.
     expect(r?.state.nativeKeys).not.toContain('claude-claude-opus-5-5');
     expect(r?.state.nativeKeys).toEqual(['claude-claude-sonnet-5']);
+  });
+});
+
+describe('the models step reports a kept pick separately from the drops', () => {
+  // A model picked on a provider's own screen is kept even when the ranking
+  // filter hides it — it is written to the config all the same — so the
+  // "not offered" lines, which read as a drop, must not claim it. The kept
+  // message names it; the two "not offered" messages name only the rest.
+  it('splits a picked-but-uncosted model out of the not-offered lists', async () => {
+    const w = render(React.createElement(ModelsStep, {
+      candidates: [
+        { key: 'acme-picked', gateway: 'acme', id: 'picked', label: 'acme/picked' },
+        { key: 'acme-plain', gateway: 'acme', id: 'plain', label: 'acme/plain' },
+        { key: 'acme-fast', gateway: 'acme', id: 'fast', label: 'acme/fast' },
+      ],
+      gatewayBaseUrls: {},
+      gatewayAuth: {},
+      keys: {},
+      initialSelected: new Set<string>(),
+      // Both `picked` and `plain` are in the catalog without a cost-per-task,
+      // so the filter hides both; `fast` is costed and offered as usual.
+      aa: {
+        fetchedAt: '2026-09-15T00:00:00Z',
+        models: {
+          picked: { codingIndex: 60, blendedPriceUsd: 0.2 },
+          plain: { codingIndex: 50, blendedPriceUsd: 0.3 },
+          fast: { codingIndex: 40, blendedPriceUsd: 0.1, costPerTask: 0.05 },
+        },
+      },
+      gatewayNames: ['acme'],
+      picked: new Set([gatewayIdKey('acme', 'picked')]),
+      onSubmit: () => {},
+      onBack: () => {},
+      onCancel: () => {},
+    }));
+    await tick();
+    // Wrapping must not defeat the message: collapse it back to one line.
+    const flat = (w.lastFrame() ?? '').replace(/\s+/g, ' ');
+    // The kept message owns the pick…
+    expect(flat).toContain('kept from its provider screen but not ranked');
+    expect(flat).toMatch(/cost-per-task for: acme-picked\. It stays in the config/);
+    // …and the "not offered" line owns only the unkept one.
+    expect(flat).toMatch(/AA publishes no usable cost-per-task: acme-plain; add by hand/);
+    expect(flat).not.toMatch(/AA publishes no usable cost-per-task: [^;]*acme-picked/);
+    expect(flat).not.toMatch(/cost-per-task for: [^.]*acme-plain/);
+    w.unmount();
   });
 });

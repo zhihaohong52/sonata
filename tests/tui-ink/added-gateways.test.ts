@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { addedGatewayNames, hasModelsToPick, modelsStepCandidates, modelsStepSelection, stepBeforeRoles } from '../../src/tui-ink/app-state.js';
+import { addedGatewayNames, applyStep, hasModelsToPick, modelsStepCandidates, modelsStepSelection, stepBeforeRoles } from '../../src/tui-ink/app-state.js';
 import type { CandidateOption } from '../../src/tui-ink/app-state.js';
+import type { InitState } from '../../src/tui-ink/types.js';
 
 const startup: CandidateOption[] = [
   { key: 'acme-fast', gateway: 'acme', id: 'fast', label: 'acme/fast' },
@@ -110,24 +111,34 @@ describe('modelsStepSelection — a pick drawn under a different key follows its
   const codexRow: CandidateOption = { key: 'gpt-6-luna', gateway: 'codex', id: 'gpt-6-luna', label: 'codex/gpt-6-luna' };
   const codexPick = { nativeKeys: ['codex-gpt-6-luna'], byokModels: { codex: ['gpt-6-luna'] } };
 
-  const submitted = (keys: string[], offered: CandidateOption[], state = codexPick) => {
-    const kept = modelsStepSelection(state, offered).keptFor(offered);
-    return [...new Set([...keys, ...kept])];
-  };
+  const submitted = (keys: string[], offered: CandidateOption[], state = codexPick) =>
+    modelsStepSelection(state, offered).submitted(keys, offered);
 
   it('starts the drawn row checked when its pick was chosen under another key', () => {
     const selection = modelsStepSelection(codexPick, [codexRow]);
     expect(selection.initialSelected.has('gpt-6-luna')).toBe(true);
   });
 
-  it('submit checked keeps the drawn key, not the pick key', () => {
-    const result = submitted(['gpt-6-luna'], [codexRow]);
-    expect(result).toContain('gpt-6-luna');
-    expect(result).not.toContain('codex-gpt-6-luna');
+  it('submit checked stores the pick\'s provider-screen key, not the drawn key', () => {
+    // The pick's own key is what the provider screen's deselect can remove;
+    // the drawn key would survive it and the row came back checked.
+    expect(submitted(['gpt-6-luna'], [codexRow])).toEqual(['codex-gpt-6-luna']);
   });
 
   it('submit unchecked drops both keys', () => {
     expect(submitted([], [codexRow])).toEqual([]);
+  });
+
+  it('a later provider-screen deselect removes what the models step stored', () => {
+    // The OAuth screen's deselection is applyStep step 5 with the provider's
+    // ids emptied — it drops exactly the pick's own key. Whatever the models
+    // step stored has to be that key, or the model survives here forever.
+    const afterModelsStep: InitState = {
+      byokModels: { codex: ['gpt-6-luna'] },
+      nativeKeys: submitted(['gpt-6-luna'], [codexRow]),
+    };
+    const afterDeselect = applyStep(afterModelsStep, 5, { provider: 'codex', ids: [] });
+    expect(afterDeselect.nativeKeys).toEqual([]);
   });
 
   it('keeps a pick the step never drew', () => {

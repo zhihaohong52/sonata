@@ -8,6 +8,21 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- **An overpriced model reached through two providers is demoted on both.**
+  `complex` pushes the costly top end of the price-performance curve to the
+  back, but only one route to a given model was marked, so the same model on a
+  second gateway could still lead the tier.
+- **Deselecting a model on its provider's screen in `sonata init` now
+  sticks.** A pick that the Models step showed under another key (a Codex
+  model your Codex app also lists) was stored under that key, so going back
+  and deselecting it on the Codex screen left it selected.
+- **The Models step says when a pick is kept but unranked.** A model chosen
+  on a provider's own screen that the ranking catalog cannot cost was listed
+  as "not offered", though it is still written to the config. It now has its
+  own line saying so.
+
 ## [0.16.2] - 2026-10-13
 
 ### Changed
