@@ -71,7 +71,10 @@ export function promoteUnreleased(changelog, version, date) {
 
 /** One version's notes, for the GitHub Release body. */
 export function sectionFor(changelog, version) {
-  const heading = new RegExp(`^## \\[${version.replace(/\./g, '\\.')}\\][^\\n]*$`, 'm');
+  // Every metacharacter escaped, not just `.`: `--notes` takes the version
+  // from a tag name in CI, and a tag is not validated as semver first.
+  const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const heading = new RegExp(`^## \\[${escaped}\\][^\\n]*$`, 'm');
   const match = heading.exec(changelog);
   if (match === null) return undefined;
   const bodyStart = match.index + match[0].length;

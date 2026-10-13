@@ -8,6 +8,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Security
+
+- **Dependency and code-scanning fixes.** `smol-toml` (the TOML parser) is
+  locked at 1.9.1, past a quadratic-time parse on long documents; the
+  development-only `source-map-js` at 1.2.2. The release script treats a
+  version as literal text when it looks up its changelog section (it had
+  escaped only `.`, and `--notes` takes a tag name from CI), and the CI
+  workflow now runs with a read-only token. Installs from npm already resolved
+  the patched `smol-toml`; only the repository's lockfile was behind.
+
 ## [0.16.3] - 2026-10-13
 
 ### Added

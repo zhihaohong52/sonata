@@ -97,6 +97,14 @@ describe('sectionFor', () => {
   it('returns undefined for a version not in the file', () => {
     expect(sectionFor(released, '9.9.9')).toBeUndefined();
   });
+
+  it('treats the version as literal text, not a pattern', () => {
+    // `--notes` takes a tag name from CI; a regex metacharacter in it must not
+    // widen the match onto another release's section.
+    expect(sectionFor(released, '0.4.(0|1)')).toBeUndefined();
+    expect(sectionFor(released, '0x4x0')).toBeUndefined();
+    expect(sectionFor(released, '.*')).toBeUndefined();
+  });
 });
 
 describe('assertNextVersion', () => {
