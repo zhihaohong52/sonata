@@ -1637,6 +1637,7 @@ pricing_provider = ["opencode-go"]
     writeFileSync(join(cwd, 'sonata.toml'), config('api = "responses"'));
     expect((await doctorChecks(cwd, home, at)).find((check) => check.name === 'model protocol')?.detail)
       .not.toContain('"opencode-go-gpt-6-luna"');
+  });
 
   it('names each budget cap with today\'s spend, and fails one that is spent', async () => {
     // A cap was invisible until it refused a request.
