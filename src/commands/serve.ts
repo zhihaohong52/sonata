@@ -791,15 +791,19 @@ function newCredentialMemory(): CredentialMemory {
 function chatgptTokenHash(dir: string | undefined): string | undefined {
   if (dir === undefined) return undefined;
   try {
-    const record: unknown = JSON.parse(readFileSync(join(dir, 'auth.json'), 'utf8'));
-    if (record === null || typeof record !== 'object') return undefined;
-    const { refresh_token: refresh, access_token: access } = record as Record<string, unknown>;
-    const token = typeof refresh === 'string' && refresh !== '' ? refresh
-      : typeof access === 'string' && access !== '' ? access : undefined;
-    return token === undefined ? undefined : createHash('sha256').update(token).digest('hex');
+    return chatgptRecordTokenHash(JSON.parse(readFileSync(join(dir, 'auth.json'), 'utf8')));
   } catch {
     return undefined;
   }
+}
+
+/** `chatgptTokenHash` of a record already in hand — a seed, before it is written. */
+function chatgptRecordTokenHash(record: unknown): string | undefined {
+  if (record === null || typeof record !== 'object') return undefined;
+  const { refresh_token: refresh, access_token: access } = record as Record<string, unknown>;
+  const token = typeof refresh === 'string' && refresh !== '' ? refresh
+    : typeof access === 'string' && access !== '' ? access : undefined;
+  return token === undefined ? undefined : createHash('sha256').update(token).digest('hex');
 }
 
 /**
@@ -1681,6 +1685,15 @@ export async function cmdServe(
   /** The ChatGPT token directory the current child was spawned into; set once the child bookkeeping exists. */
   let currentChatgptTokenDir: () => string | undefined = () => undefined;
   /**
+   * Why the next deliberate spawn seeds a new ChatGPT directory, re-reading
+   * the store first, and — when it will — schedules that restart; undefined
+   * when it would not. Every codex-oauth request asks while one is due, so a
+   * restart that was joined to one already in flight, or that failed, is
+   * asked for again rather than left pending. Set once the seed bookkeeping
+   * exists.
+   */
+  let chatgptReseedDue: () => string | undefined = () => undefined;
+  /**
    * Marks the refusal of the child serving `served` — the token directory it
    * was spawned into. One that is no longer the current child's is from a
    * LiteLLM a new login has since replaced: a response forwarded before the
@@ -1706,13 +1719,19 @@ export async function cmdServe(
       : '`codex login` (or `opencode auth login`)';
     const remedy = `LiteLLM's ChatGPT login was refused by OpenAI — run ${relogin} and then \`sonata restart\``;
     chatgptLoginRefused = {
-      message: `gateway ${names}: ${remedy} (LiteLLM had fallen back to an interactive device-code ` +
-        'login, which would hold each request for up to fifteen minutes)',
+      message: `gateway ${names}: ${remedy} (until then each request would be refused, or held for up to ` +
+        "fifteen minutes in LiteLLM's interactive device-code login)",
       dir: current,
       token: chatgptTokenHash(current),
       markedAt: clock(),
     };
-    console.error(`sonata serve: ${remedy} — affects gateway ${names}`);
+    // The store holding a newer login than LiteLLM was seeded with is the
+    // common case, not a logout: codex refreshes its own copy of the login,
+    // which revokes the tokens issued before it — LiteLLM's included. The
+    // mark stands either way, and is what makes that a reason to reseed
+    // (`chatgptReseed`), now or once the store's write lands.
+    const reseeding = chatgptReseedDue();
+    console.error(`sonata serve: ${reseeding ?? `${remedy} — affects gateway ${names}`}`);
   };
   /**
    * Gateways whose credential did not resolve in the last child-env build,
@@ -1981,7 +2000,11 @@ export async function cmdServe(
      * is itself a reason to restart: `litellmPlanSnapshot` carries the
      * generation the next spawn would seed.
      */
-    let chatgptSeeded: { gateway: string; dir: string; lineage: ChatGptLineage; generation: number; ended?: true } | undefined;
+    let chatgptSeeded: {
+      gateway: string; dir: string; lineage: ChatGptLineage; generation: number; ended?: true;
+      /** `chatgptRecordTokenHash` of the record written into `dir`: what a refusal of it is compared against. */
+      seedToken?: string;
+    } | undefined;
     // `gateway` is only the name for messages: every decision is keyed on the
     // login — `lineage` (store and account) — so a renamed gateway reading the
     // same login still sees its logout and its return.
@@ -1997,6 +2020,23 @@ export async function cmdServe(
       if (held === undefined) return {};
       const name = `gateway "${store.gateway}"`;
       if (held.ended === true) return { why: `${name}: logged in again — restarting litellm with the new login` };
+      // A refusal of the seeded login, with the store now holding another
+      // token: the store refreshed after seeding, which revoked the seeded
+      // one. A token equal to the seed is the one just refused, and needs a
+      // login — the bound: a reseeded token refused again is reseeded only
+      // once the store has moved on again. Read off the mark, so a refusal
+      // that arrived before the store's write landed turns into a reseed
+      // when it does, instead of standing until `sonata restart`.
+      const refused = chatgptLoginRefused;
+      if (refused !== undefined && refused.dir === held.dir && held.seedToken !== undefined) {
+        const storeToken = chatgptRecordTokenHash(store.record);
+        if (storeToken !== undefined && storeToken !== held.seedToken) {
+          return {
+            why: `${name}: its login was refreshed outside LiteLLM, which revoked LiteLLM's copy — ` +
+              'restarting litellm with the refreshed login',
+          };
+        }
+      }
       if (held.lineage.identity !== store.lineage.identity) {
         return {
           why: `${name}: credential source changed (${held.lineage.identity} → ${store.lineage.identity}) — ` +
@@ -2311,7 +2351,10 @@ export async function cmdServe(
         mkdirSync(dir, { recursive: true, mode: 0o700 });
         writeFileSync(join(dir, 'auth.json'), JSON.stringify(store.record), { mode: 0o600, flag: 'wx' });
         const previous = chatgptSeeded?.dir;
-        chatgptSeeded = { gateway: store.gateway, dir, lineage: store.lineage, generation };
+        const seedToken = chatgptRecordTokenHash(store.record);
+        chatgptSeeded = {
+          gateway: store.gateway, dir, lineage: store.lineage, generation, ...(seedToken === undefined ? {} : { seedToken }),
+        };
         if (previous !== undefined && previous !== dir) {
           retiredTokenDirs.add(previous);
           sweepRetiredTokenDirs();
@@ -2607,6 +2650,16 @@ export async function cmdServe(
       return inFlight;
     };
 
+    chatgptReseedDue = () => {
+      // Only a login seeded from a store has a newer copy to take.
+      if (chatgptSeeded === undefined) return undefined;
+      // The store as it is now, not as the last request found it.
+      refreshGatewayPlan();
+      const why = chatgptReseed()?.why;
+      if (why !== undefined) void maybeRestartForModelChange();
+      return why;
+    };
+
     // Retention is enforced by the writer — at startup and then daily (the
     // timer is started beside the price refresh below) — so a daemon that
     // stays up for weeks cannot accumulate day-files the way opencode's event
@@ -2673,9 +2726,15 @@ export async function cmdServe(
       },
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
       gatewayUnavailable: (tenant, gateway) => droppedGateways.get(gateway) ?? credentialFailures.get(gateway) ??
-        (chatgptLoginRefused !== undefined && tenant.config?.native?.gateways[gateway]?.auth === 'codex-oauth'
-          ? (refusedToken(), chatgptLoginRefused.message) : undefined),
+        (tenant.config?.native?.gateways[gateway]?.auth === 'codex-oauth'
+          ? (chatgptLoginRefused === undefined ? undefined
+            : ((why) => (why === undefined ? (refusedToken(), chatgptLoginRefused?.message) : `${why}; retry`))(chatgptReseedDue()))
+          : undefined),
       chatgptTokenDir: () => currentChatgptTokenDir(),
+      // A refusal with a reseed due mends itself within the restart, so only
+      // one that needs a login is a problem worth failing doctor over.
+      healthProblems: () => (chatgptLoginRefused === undefined || chatgptReseed()?.why !== undefined
+        ? [] : [chatgptLoginRefused.message]),
       chatgptLoginRefused: (served) => markChatgptLoginRefused(served),
       resolveNative: (key, tenant) => tenant.config === undefined ? undefined : nativeRouteFor(tenant.config, key),
       // Opt-in only: a captured request is a whole conversation.

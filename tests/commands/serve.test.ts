@@ -3627,7 +3627,13 @@ litellm = ${litellmPort}
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
       }).then(async (res) => ({ status: res.status, text: await res.text() }));
-      return { send, sendFull, envs, dir, tokenFile, held, settle, crash, emit, upstreamCalls };
+      const sendBare = () => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'luna', messages: [] }),
+      }).then(async (res) => ({ status: res.status, text: await res.text() }));
+      const problems = () => fetch(`http://localhost:${handle.routerPort}/__sonata_health`)
+        .then(async (res) => ((await res.json()) as { problems: string[] }).problems);
+      return { send, sendFull, sendBare, envs, dir, tokenFile, held, settle, crash, emit, upstreamCalls, problems };
     };
     let errors: string[];
     let errorSpy: ReturnType<typeof vi.spyOn>;
@@ -4020,8 +4026,9 @@ litellm = ${litellmPort}
       it('answers every ChatGPT request with a named 502 once LiteLLM logs the refusal, logging the remedy once', async () => {
         writeMachineConfig(machine());
         writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
-        const { send, sendFull, emit, upstreamCalls } = await start();
+        const { send, sendFull, emit, upstreamCalls, problems } = await start();
         expect(await send()).toBe(200);
+        expect(await problems()).toEqual([]);
         const forwardedBefore = upstreamCalls.length;
         emit(fixture('chatgpt-refresh-refused.txt'));
         emit(fixture('chatgpt-device-code.txt'));
@@ -4034,6 +4041,10 @@ litellm = ${litellmPort}
         const remedies = errors.filter((line) => line.includes('ChatGPT login was refused by OpenAI'));
         expect(remedies).toHaveLength(1);
         expect(remedies[0]).toContain('"codex"');
+        // And `sonata doctor` can say so: the router reports it on health.
+        const reported = await problems();
+        expect(reported).toHaveLength(1);
+        expect(reported[0]).toContain('codex login');
       });
 
       it('reads a real LiteLLM process\'s output: forwards it, masks the device code, and marks the gateways', async () => {
@@ -4085,6 +4096,100 @@ litellm = ${litellmPort}
         await waitFor(() => envs.length === 2, 'the restart for the new account');
         await settle();
         expect(await send()).toBe(200);
+      });
+
+      // Codex refreshes its own copy of the login on its own schedule, and a
+      // ChatGPT refresh revokes the tokens issued before it — LiteLLM's seeded
+      // copy included. Seen live: `token_revoked` two minutes after codex's
+      // refresh, and every ChatGPT model down until `sonata restart`.
+      describe('a login the store has refreshed since seeding', () => {
+        const rejected = (JSON.parse(fixture('chatgpt-token-rejected-proxy.json')) as { case: string; body: string }[])
+          .find((entry) => entry.case === 'token revoked')!.body;
+        const seed = () => {
+          writeMachineConfig(machine());
+          writeCodexStore({ access_token: claimJwt(2_000_000_000, 'acct-a'), refresh_token: 'SEEDED' });
+        };
+        const codexRefreshes = () =>
+          writeCodexStore({ access_token: claimJwt(2_000_000_001, 'acct-a'), refresh_token: 'REFRESHED-BY-CODEX' });
+
+        it('reseeds from the store when LiteLLM logs the refusal, never asking for a login', async () => {
+          seed();
+          const { send, envs, emit, settle, held } = await start();
+          expect(await send()).toBe(200);
+          codexRefreshes();
+          emit(fixture('chatgpt-refresh-refused.txt'));
+          await waitFor(() => envs.length === 2, 'the restart into a fresh seed');
+          await settle();
+          expect(envs[1].CHATGPT_TOKEN_DIR).not.toBe(envs[0].CHATGPT_TOKEN_DIR);
+          expect(held().refresh_token).toBe('REFRESHED-BY-CODEX');
+          expect(await send()).toBe(200);
+          expect(errors.some((line) => line.includes('refreshed outside LiteLLM'))).toBe(true);
+          expect(errors.some((line) => line.includes('ChatGPT login was refused by OpenAI'))).toBe(false);
+        });
+
+        it('reseeds when the ChatGPT backend answers token_revoked, telling the request that noticed to retry', async () => {
+          seed();
+          let revoked = false;
+          const { sendFull, send, envs, settle, held } = await start({
+            upstream: () => (revoked ? new Response(rejected, { status: 401 }) : new Response('{}', { status: 200 })),
+          });
+          expect(await send()).toBe(200);
+          codexRefreshes();
+          revoked = true;
+          const noticed = await sendFull();
+          revoked = false;
+          expect(noticed.status).toBe(502);
+          expect(noticed.text).toContain('retry');
+          expect(noticed.text).not.toContain('codex login');
+          await waitFor(() => envs.length === 2, 'the restart into a fresh seed');
+          await settle();
+          expect(held().refresh_token).toBe('REFRESHED-BY-CODEX');
+          expect(await send()).toBe(200);
+        });
+
+        it('reseeds once codex\'s write lands after a revocation that arrived first — on the bare path too', async () => {
+          // OpenAI revokes the old token when it answers codex's refresh, and
+          // codex writes the new one only after: a 401 in that gap finds the
+          // store unchanged. The mark it leaves must turn into a reseed when
+          // the write lands, not stand until \`sonata restart\`.
+          seed();
+          let revoked = false;
+          const { sendBare, envs, settle, held, problems } = await start({
+            upstream: () => (revoked ? new Response(rejected, { status: 401 }) : new Response('{}', { status: 200 })),
+          });
+          expect((await sendBare()).status).toBe(200);
+          revoked = true;
+          const first = await sendBare();
+          revoked = false;
+          expect(first.status).toBe(502);
+          expect(first.text).toContain('codex login');
+          expect(await problems()).toHaveLength(1);
+          codexRefreshes();
+          const next = await sendBare();
+          expect(next.text).toContain('retry');
+          expect(await problems()).toEqual([]);
+          await waitFor(() => envs.length === 2, 'the restart into a fresh seed');
+          await settle();
+          expect(held().refresh_token).toBe('REFRESHED-BY-CODEX');
+          expect((await sendBare()).status).toBe(200);
+        });
+
+        it('asks for a login once the reseeded token is refused too, with no newer one in the store', async () => {
+          // The bound: a reseed needs the store to have moved on since the
+          // last seed, so a refused login cannot restart LiteLLM in a loop.
+          seed();
+          const { send, sendFull, envs, emit, settle } = await start();
+          codexRefreshes();
+          emit(fixture('chatgpt-refresh-refused.txt'));
+          await waitFor(() => envs.length === 2, 'the restart into a fresh seed');
+          await settle();
+          emit(fixture('chatgpt-refresh-refused.txt'));
+          const refused = await sendFull();
+          expect(refused.status).toBe(502);
+          expect(refused.text).toContain('codex login');
+          await settle();
+          expect(envs).toHaveLength(2);
+        });
       });
 
       it('keeps the mark through a restart for anything else, which spawns LiteLLM on the same refused token', async () => {

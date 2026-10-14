@@ -10,6 +10,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **Codex models no longer go down every time codex refreshes its login.**
+  Refreshing a ChatGPT login revokes the copy the router's LiteLLM was
+  using, and every ChatGPT model answered 502 until `sonata restart`. The
+  router now notices the refusal — including the backend's own 401 — and,
+  when codex holds a newer login, restarts LiteLLM with it by itself. It asks
+  for `codex login` only when there is no newer login to take.
+- **`sonata doctor` reports a ChatGPT login the router cannot use** as a
+  failing `serve gateways` check. It used to say ok while every codex model
+  was refused.
+
 - **`sonata usage` no longer runs a covered amount into the token column.**
   A bucket whose work was all covered shows `$128.26 sub`, which filled the
   spend column exactly and left no gap (`63M / 196k$128.26 sub`). The column

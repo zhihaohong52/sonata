@@ -54,6 +54,13 @@ export interface RouterDeps {
    * happens to still be answering the same port.
    */
   instanceId?: string;
+  /**
+   * Faults the router is answering around rather than serving through —
+   * today a ChatGPT login LiteLLM cannot use — reported on `/__sonata_health`
+   * as `problems` for `sonata doctor` to show. A router that answers health
+   * says nothing about whether its gateways can serve.
+   */
+  healthProblems?: () => string[];
   /** Resolves the tenant a request belongs to; may throw `TenantError`, which becomes a 400. Absent means single-tenant: every request is `DEFAULT_TENANT`. */
   resolveTenant?: (hint: { project?: string; session?: string }) => RouterTenant;
   /**
@@ -1643,11 +1650,32 @@ const CHATGPT_LOGIN_REFUSED = new RegExp(
   '(?:Polling failed: |Timed out waiting for device authorization|Failed to request device code: )',
 );
 
-/** Whether a LiteLLM error body's envelope message is `CHATGPT_LOGIN_REFUSED`. */
-function chatgptLoginRefused(text: string): boolean {
+/**
+ * What a LiteLLM response's error message says when the ChatGPT backend itself
+ * refused the token LiteLLM sent: LiteLLM's proxy renders the backend's 401
+ * body after this prefix. Measured through a real 1.98.0 proxy
+ * (tests/fixtures/litellm/chatgpt-token-rejected-proxy.json), and seen live
+ * with `"code": "token_revoked"` two minutes after `codex` refreshed its own
+ * copy of the login: refreshing a ChatGPT login revokes the tokens issued
+ * before it, so LiteLLM's seeded copy dies whenever codex refreshes. Only
+ * that inner code counts: it is permanent for the token, while another 401 —
+ * `unauthorized_unknown`, measured from an unusable token — is left to the
+ * ordinary cooldown rather than marking the gateway down until a login.
+ * Anchored at the start of the message, like `CHATGPT_LOGIN_REFUSED`, and read
+ * only on a 401.
+ */
+const CHATGPT_TOKEN_REJECTED = /^litellm\.AuthenticationError: AuthenticationError: ChatgptException - \{[^]*?"code": ?"token_revoked"/;
+
+/**
+ * Whether a LiteLLM error body says its ChatGPT login is unusable: how its
+ * device-code fallback ended (`CHATGPT_LOGIN_REFUSED`), or — on a 401 — the
+ * backend refusing the token outright (`CHATGPT_TOKEN_REJECTED`).
+ */
+function chatgptLoginRefused(text: string, status: number): boolean {
   try {
     const message = (JSON.parse(text) as { error?: { message?: unknown } } | null)?.error?.message;
-    return typeof message === 'string' && CHATGPT_LOGIN_REFUSED.test(message);
+    if (typeof message !== 'string') return false;
+    return CHATGPT_LOGIN_REFUSED.test(message) || (status === 401 && CHATGPT_TOKEN_REJECTED.test(message));
   } catch {
     return false;
   }
@@ -1738,13 +1766,15 @@ async function forwardToLitellm(
     // For a ChatGPT candidate, a 400, 401 or 500 is also where LiteLLM
     // reports how its fallback to a device-code login ended after a refresh it
     // could not make, which only a re-login and a restart (a fresh seed) can
-    // mend. Measured, it is a 400.
+    // mend. Measured, it is a 400. A 401 is the backend refusing the token
+    // itself — revoked when codex refreshed its own copy of the login — which
+    // serve mends by reseeding from codex's store when that holds a newer one.
     if (response.status === 500 || (chatgpt && (response.status === 400 || response.status === 401))) {
       const responseBodyBuf = response.body === null
         ? Buffer.alloc(0)
         : await bufferBody(responseBody(response.body), deps);
       const text = responseBodyBuf.toString();
-      const refused = chatgpt && chatgptLoginRefused(text);
+      const refused = chatgpt && chatgptLoginRefused(text, response.status);
       if (refused && deps.chatgptLoginRefused !== undefined) {
         deps.chatgptLoginRefused(served);
       } else if (refused) {
@@ -2808,6 +2838,7 @@ export function createRouterServer(deps: RouterDeps): Server {
           // printing a URL that 404s. Absent means no UI.
           ui: deps.ui !== undefined,
           instanceId: deps.instanceId ?? null, tenants: deps.tenants?.() ?? [],
+          problems: deps.healthProblems?.() ?? [],
         }));
         return;
       }
