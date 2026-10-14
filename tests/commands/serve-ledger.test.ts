@@ -144,8 +144,8 @@ litellm = ${litellmPort ?? await freePort()}
     const rows: LedgerRow[] = [];
     const handle = await start((rec) => rows.push(rec));
 
-    // Nothing listens on the litellm port, so the one candidate fails (502)
-    // and the tier is exhausted (529) — plenty to force a usage observation.
+    // Nothing listens on the litellm port, so the tier is exhausted (529) —
+    // plenty to force a usage observation.
     const res = await fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -159,7 +159,9 @@ litellm = ${litellmPort ?? await freePort()}
       alias: 'sonata-code-simple', role: 'code', tier: 'simple',
       upstream: 'litellm', status: 529, complete: false,
       price: { source: 'none' },
-      attempts: [{ key: 'flash', status: 502 }],
+      // Nothing listens on the litellm port: a refused connection is LiteLLM's
+      // absence, not `flash` failing, so no attempt is recorded against it.
+      attempts: [],
     });
   });
 

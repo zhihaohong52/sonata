@@ -1673,7 +1673,28 @@ interface LitellmResponse extends RouterResponse {
    * it says nothing about the child serving now, so nothing is cooled for it.
    */
   replaced?: true;
+  /**
+   * Nothing is listening on LiteLLM's port: the connection was refused, so
+   * the request never reached a model. Every other LiteLLM-routed candidate
+   * would be refused the same way, so the tier loop stops trying them rather
+   * than recording each as a failed model. Only a refusal counts — a reset or
+   * any other thrown error can be one request's bad luck with the child still
+   * up, and keeps the ordinary fall-through.
+   */
+  litellmUnreachable?: true;
 }
+
+/** Whether a thrown fetch was a refused connection (undici puts the code on `cause`). */
+function connectionRefused(error: unknown): boolean {
+  for (let e: unknown = error, depth = 0; e !== undefined && e !== null && depth < 4; depth++) {
+    if (typeof e === 'object' && (e as { code?: unknown }).code === 'ECONNREFUSED') return true;
+    e = typeof e === 'object' ? (e as { cause?: unknown }).cause : undefined;
+  }
+  return false;
+}
+
+/** What a tier answers when its LiteLLM child stopped answering mid-request. */
+const LITELLM_UNREACHABLE = 'litellm is not answering (it may be restarting) — retry in a moment';
 
 /**
  * Why a candidate on `gateway` is not served after its ChatGPT login was
@@ -1765,6 +1786,7 @@ async function forwardToLitellm(
       status: 502,
       headers: { 'content-type': 'application/json' },
       body: anthropicErrorBody('router_error', message),
+      ...(connectionRefused(error) ? { litellmUnreachable: true as const } : {}),
     };
   }
 }
@@ -1910,6 +1932,14 @@ async function routeTierRequest(
   const ranked = resolved.routes.filter((route) => route.native !== undefined);
   const attempts: { key: string; status: number }[] = [];
   let skippedUnavailableLitellm = false;
+  // Why LiteLLM-routed candidates are being skipped: serve's own mark at the
+  // start of the request, or the child refusing a connection partway through.
+  let litellmDown = unavailable;
+  // The second of those. Kept apart because it ends differently: serve's mark
+  // means LiteLLM cannot run here, while a refusal mid-request is usually a
+  // restart, and the harness lane still works — so the tier answers the usual
+  // 529 naming `sonata dispatch`, with the reason, rather than a bare 502.
+  let litellmRefused = false;
   // Gateways skipped for being in their own cooldown. Named in the exhaustion
   // message, because "all native routes failed" with no attempt recorded
   // against them reads as a tier that has no candidates rather than one whose
@@ -1960,9 +1990,11 @@ async function routeTierRequest(
       skippedDropped.push(dropped);
       continue;
     }
-    if (!direct && unavailable !== undefined) {
+    if (!direct && litellmDown !== undefined) {
       // This is router state, not a candidate failure: leave its cooldown intact.
-      skippedUnavailableLitellm = true;
+      // Only serve's own mark answers the "cannot run here" 502 below; a
+      // refusal mid-request ends in the ordinary 529 (see `litellmRefused`).
+      if (!litellmRefused) skippedUnavailableLitellm = true;
       continue;
     }
     const until = cooldowns.get(cool);
@@ -2034,6 +2066,17 @@ async function routeTierRequest(
     // the one serving now, and cools nothing either. With no serve to mark
     // it — or one that did not — the candidate and its gateway cool, as for
     // an unservable 400.
+    // LiteLLM is not listening. Not this model's failure, and not the next
+    // one's: measured 2026-10-07, a `sonata restart` mid-request killed the
+    // child and the loop recorded eleven 502s — every model in the tier —
+    // cooling them all and answering 529. Stop asking LiteLLM; a candidate on
+    // a direct gateway may still serve.
+    if ('litellmUnreachable' in response && response.litellmUnreachable === true) {
+      deps.log?.(`router: litellm did not answer for ${route.key}; skipping its other routes`);
+      litellmDown = LITELLM_UNREACHABLE;
+      litellmRefused = true;
+      continue;
+    }
     if ('loginRefused' in response && response.loginRefused === true) {
       if (response.status === 400) {
         await capture400(deps, { alias, candidate: variant, status: response.status, outbound: body, response: response.body as Buffer });
@@ -2328,7 +2371,7 @@ async function routeTierRequest(
       'account-level refusal — an expired key, a rejected credential or an exhausted budget)'
     : '') + (skippedDropped.length > 0
     ? ` (not served: ${[...new Set(skippedDropped)].join('; ')})`
-    : '');
+    : '') + (litellmRefused ? ` (${LITELLM_UNREACHABLE})` : '');
   return withUsageRecording({
     status: 529,
     headers: { 'content-type': 'application/json' },

@@ -592,6 +592,50 @@ describe('tier alias routing', () => {
     expect(seen).toEqual(['default/flash', 'default/luna']);
   });
 
+  // A refused connection means nothing is listening on LiteLLM's port, so
+  // every LiteLLM candidate would be refused too: measured 2026-10-07, a
+  // restart mid-request cost eleven recorded failures in one tier.
+  it('stops asking litellm once its connection is refused, but still tries a direct gateway', async () => {
+    const refused = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+    const routes = {
+      role: 'code', tier: 'simple',
+      routes: [
+        { key: 'flash', native: { gateway: 'lg', id: 'flash-1' } },
+        { key: 'luna', native: { gateway: 'lg', id: 'luna-1' } },
+        { key: 'direct-1', native: { gateway: 'g', id: 'model-1', transport: 'direct' as const, baseUrl: 'https://gw.example/v1' } },
+      ],
+    };
+    const seen: string[] = [];
+    const logs: string[] = [];
+    const deps = {
+      fetch: (async (url: string) => {
+        seen.push(url);
+        if (url.startsWith('http://litellm')) throw refused;
+        return new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
+      resolveTier: () => routes,
+      log: (line: string) => { logs.push(line); },
+    };
+    const res = await routeRequest(req('sonata-code-simple'), deps);
+    expect(res.status).toBe(200);
+    expect(seen).toEqual(['http://litellm/v1/messages', 'https://gw.example/v1/messages']);
+    expect(logs.some((line) => line.includes('litellm did not answer'))).toBe(true);
+
+    // With no direct candidate the tier still answers 529 naming `sonata
+    // dispatch` — the harness lane works without LiteLLM — and says why,
+    // having asked LiteLLM once rather than once per model.
+    seen.length = 0;
+    const litellmOnly = { ...routes, routes: routes.routes.slice(0, 2) };
+    const down = await routeRequest(req('sonata-code-simple'), { ...deps, resolveTier: () => litellmOnly });
+    expect(down.status).toBe(529);
+    const message = JSON.parse((down.body as Buffer).toString()).error.message as string;
+    expect(message).toContain('litellm is not answering');
+    expect(message).toContain('sonata dispatch --tier code-simple');
+    expect(seen).toEqual(['http://litellm/v1/messages']);
+  });
+
   it('returns 529 naming the CLI fallback when every native route fails', async () => {
     const res = await routeRequest(req('sonata-code-simple'), {
       fetch: (async () => new Response('{}', { status: 503 })) as unknown as typeof fetch,
