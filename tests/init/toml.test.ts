@@ -488,8 +488,10 @@ describe('nativeTomlFor — settings init must not silently drop', () => {
   // Hand-written like `price`, and as easy for init to delete: without it the
   // model goes back to chat-completions and every tool request 400s again.
   it('round-trips a per-model api', () => {
-    const toml = write({ unifiedModels: { 'acme-m': { api: 'responses' } } } as never);
-    expect(parseConfig(toml).unifiedModels['acme-m'].api).toBe('responses');
+    for (const api of ['responses', 'google'] as const) {
+      const toml = write({ unifiedModels: { 'acme-m': { api } } } as never);
+      expect(parseConfig(toml).unifiedModels['acme-m'].api).toBe(api);
+    }
   });
 
   it('writes the api init found a model needs, and a hand-written one wins over it', () => {

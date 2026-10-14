@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 
 import { envVarForGateway } from './gateway-env.js';
 import { providerForBaseUrl, requiresSessionHeader } from './providers.js';
-import type { NativeConfig, UnifiedModelConfig, SonataConfig } from '../config.js';
+import type { ModelApi, NativeConfig, UnifiedModelConfig, SonataConfig } from '../config.js';
 
 export interface LiteLLMModelConfig {
   model_name: string;
@@ -42,7 +42,7 @@ function litellmModelEntry(
   gateway: string,
   id: string,
   gateways: NativeConfig['gateways'],
-  api?: 'responses',
+  api?: ModelApi,
 ): LiteLLMModelConfig {
   // An OAuth gateway is served by one of LiteLLM's own providers, which
   // supplies the base URL, the bearer and any refresh or token exchange.
@@ -102,6 +102,22 @@ function litellmModelEntry(
   // `gpt-6.1-sol` and `gpt-6-astra` answer every chat-completions request that
   // carries tools and `reasoning_effort` with a 400 naming `/v1/responses`,
   // and serve multi-turn tool use at `xhigh` through this prefix.
+  // `google` is LiteLLM's Gemini provider pointed at the gateway: it posts to
+  // `{api_base}/models/{id}:streamGenerateContent?alt=sse` with
+  // `x-goog-api-key`. Measured 2026-10-14 against OpenCode Go's
+  // `/inference/go/v1`: `gemini-4-argon-contributor` answers only there, and a
+  // real `claude -p` run made two tool calls through it — the thought
+  // signature Gemini needs echoed back survives the round trip.
+  if (api === 'google') {
+    return {
+      model_name: modelName,
+      litellm_params: {
+        model: `gemini/${id}`,
+        api_base: gateways[gateway].baseUrl,
+        api_key: `os.environ/${envVarForGateway(gateway)}`,
+      },
+    };
+  }
   return {
     model_name: modelName,
     litellm_params: {

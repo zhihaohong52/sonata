@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadModelsDev, modelsDevPath, needsResponsesApi, normalizeModelsDev, normalizeModelsDevResponsesOnly } from '../src/modelsdev.js';
+import { loadModelsDev, modelsDevPath, normalizeModelsDev, normalizeModelsDevProtocols, requiredApi } from '../src/modelsdev.js';
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'modelsdev', 'api.json');
 
@@ -79,17 +79,19 @@ describe('loadModelsDev', () => {
   });
 });
 
-describe('normalizeModelsDevResponsesOnly', () => {
+describe('normalizeModelsDevProtocols', () => {
   // models.dev's OpenCode Go entry, trimmed: the provider speaks chat
-  // completions, and three models override it. Measured 2026-10-14 against
-  // the real API: `gpt-6-luna` serves only `/responses`, `minimax-m3` serves
-  // chat completions (and Anthropic Messages), `glm-5.3-flash` chat only.
+  // completions, and models override it. Measured 2026-10-14 against the
+  // real API: `gpt-6-luna` serves only `/responses`, the Gemini model only
+  // Google's `generateContent`, `minimax-m3` chat completions (and Messages),
+  // `glm-5.3-flash` chat only.
   const doc = {
     'opencode-go': {
       npm: '@ai-sdk/openai-compatible',
       api: 'https://opencode.ai/inference/go/v1',
       models: {
         'gpt-6-luna': { name: 'GPT-6 Luna', provider: { npm: '@ai-sdk/openai' } },
+        'gemini-4-argon-contributor': { provider: { npm: '@ai-sdk/google' } },
         'minimax-m3': { name: 'MiniMax M3', provider: { npm: '@ai-sdk/anthropic' } },
         'glm-5.3-flash': { name: 'GLM 5.3 Flash' },
       },
@@ -102,36 +104,39 @@ describe('normalizeModelsDevResponsesOnly', () => {
     // says nothing about an override, so nothing is recorded for it.
     openai: { npm: '@ai-sdk/openai', api: 'https://api.openai.com/v1', models: { 'gpt-6-luna': { provider: { npm: '@ai-sdk/openai' } } } },
   };
-  const cache = { responsesOnly: normalizeModelsDevResponsesOnly(doc) };
+  const cache = { protocols: normalizeModelsDevProtocols(doc) };
 
-  it('records only the models an OpenAI-compatible provider overrides onto the Responses API, with its endpoint', () => {
-    expect(cache.responsesOnly).toEqual({
-      'opencode-go': { api: 'https://opencode.ai/inference/go/v1', ids: ['gpt-6-luna'] },
-      reseller: { api: 'https://reseller.example/v1', ids: ['gpt-6-luna'] },
+  it('records the models an OpenAI-compatible provider overrides onto another protocol, with its endpoint', () => {
+    expect(cache.protocols).toEqual({
+      'opencode-go': { api: 'https://opencode.ai/inference/go/v1', models: { 'gemini-4-argon-contributor': 'google', 'gpt-6-luna': 'responses' } },
+      reseller: { api: 'https://reseller.example/v1', models: { 'gpt-6-luna': 'responses' } },
     });
-    expect(normalizeModelsDevResponsesOnly(null)).toEqual({});
+    expect(normalizeModelsDevProtocols(null)).toEqual({});
   });
 
   it('matches a gateway by its endpoint — either OpenCode Go path — never by anything else', () => {
-    expect(needsResponsesApi(cache, 'https://opencode.ai/inference/go/v1', 'gpt-6-luna')).toBe(true);
-    expect(needsResponsesApi(cache, 'https://opencode.ai/zen/go/v1/', 'gpt-6-luna')).toBe(true);
-    expect(needsResponsesApi(cache, 'https://opencode.ai/zen/go/v1', 'minimax-m3')).toBe(false);
+    const go = 'https://opencode.ai/inference/go/v1';
+    expect(requiredApi(cache, go, 'gpt-6-luna')).toEqual({ api: 'responses', endpoint: go });
+    expect(requiredApi(cache, go, 'gemini-4-argon-contributor')).toEqual({ api: 'google', endpoint: go });
+    // The older path matches by plan, and says where the listed endpoint is.
+    expect(requiredApi(cache, 'https://opencode.ai/zen/go/v1/', 'gemini-4-argon-contributor')).toEqual({ api: 'google', endpoint: go });
+    expect(requiredApi(cache, go, 'minimax-m3')).toBeUndefined();
     // Another endpoint serving the same id says nothing about this one.
-    expect(needsResponsesApi(cache, 'https://other.example/v1', 'gpt-6-luna')).toBe(false);
-    expect(needsResponsesApi(cache, 'https://reseller.example/v1', 'gpt-6-luna')).toBe(true);
-    expect(needsResponsesApi(cache, undefined, 'gpt-6-luna')).toBe(false);
-    expect(needsResponsesApi(undefined, 'https://opencode.ai/zen/go/v1', 'gpt-6-luna')).toBe(false);
+    expect(requiredApi(cache, 'https://other.example/v1', 'gpt-6-luna')).toBeUndefined();
+    expect(requiredApi(cache, 'https://reseller.example/v1', 'gpt-6-luna')?.api).toBe('responses');
+    expect(requiredApi(cache, undefined, 'gpt-6-luna')).toBeUndefined();
+    expect(requiredApi(undefined, go, 'gpt-6-luna')).toBeUndefined();
   });
 
   it('survives a cache round trip, and a malformed map is dropped rather than failing the cache', () => {
     mkdirSync(dirname(modelsDevPath(home)), { recursive: true });
     const providers = { deepseek: { 'deepseek-v4-flash': { input: 0.44, output: 1.32 } } };
     writeFileSync(modelsDevPath(home), JSON.stringify({ fetchedAt: 'x', providers,
-      responsesOnly: { 'opencode-go': { api: 'https://opencode.ai/inference/go/v1', ids: ['gpt-6-luna', 7] }, old: ['gpt-6-luna'] } }));
-    expect(loadModelsDev(home)!.responsesOnly).toEqual({ 'opencode-go': { api: 'https://opencode.ai/inference/go/v1', ids: ['gpt-6-luna'] } });
-    writeFileSync(modelsDevPath(home), JSON.stringify({ fetchedAt: 'x', providers, responsesOnly: 'nope' }));
+      protocols: { 'opencode-go': { api: 'https://opencode.ai/inference/go/v1', models: { 'gpt-6-luna': 'responses', bad: 'smtp' } }, old: ['gpt-6-luna'] } }));
+    expect(loadModelsDev(home)!.protocols).toEqual({ 'opencode-go': { api: 'https://opencode.ai/inference/go/v1', models: { 'gpt-6-luna': 'responses' } } });
+    writeFileSync(modelsDevPath(home), JSON.stringify({ fetchedAt: 'x', providers, protocols: 'nope' }));
     const loaded = loadModelsDev(home)!;
-    expect(loaded.responsesOnly).toBeUndefined();
+    expect(loaded.protocols).toBeUndefined();
     expect(loaded.providers).toEqual(providers);
   });
 });

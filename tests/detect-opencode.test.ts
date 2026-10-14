@@ -66,6 +66,8 @@ describe('OpenCode gateway URLs', () => {
     // api.opencode.ai answers /models with a 200 "Not Found" text body, so a
     // Zen gateway added by hand fetched no models while Go's listed fine.
     expect(WELL_KNOWN_PROVIDER_URLS['opencode']).toBe('https://opencode.ai/zen/v1');
-    expect(WELL_KNOWN_PROVIDER_URLS['opencode-go']).toBe('https://opencode.ai/zen/go/v1');
+    // Go at the path models.dev lists: the older /zen/go serves every
+    // protocol but Google's, which its Gemini models need.
+    expect(WELL_KNOWN_PROVIDER_URLS['opencode-go']).toBe('https://opencode.ai/inference/go/v1');
   });
 });

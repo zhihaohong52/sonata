@@ -17,6 +17,13 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   never offered the contributor. It now takes the standard model's scores
   and rescales its cost per task by the price difference, and labels it in
   the ranking so the trade-off is your choice.
+- **Models served only on Google's protocol work.** OpenCode Go serves its
+  Gemini models (Gemini 4 Argon Contributor) only on Google's own
+  `generateContent` API. A new `api = "google"` on the model routes it there;
+  `sonata init` writes it from models.dev, and `sonata doctor` names a model
+  missing it. That protocol exists only at OpenCode Go's
+  `https://opencode.ai/inference/go/v1`, so init now writes that URL instead
+  of the older `…/zen/go/v1`, and doctor tells an existing config to switch.
 
 ### Fixed
 
