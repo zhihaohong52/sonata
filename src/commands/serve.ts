@@ -2731,10 +2731,14 @@ export async function cmdServe(
             : ((why) => (why === undefined ? (refusedToken(), chatgptLoginRefused?.message) : `${why}; retry`))(chatgptReseedDue()))
           : undefined),
       chatgptTokenDir: () => currentChatgptTokenDir(),
-      // A refusal with a reseed due mends itself within the restart, so only
-      // one that needs a login is a problem worth failing doctor over.
-      healthProblems: () => (chatgptLoginRefused === undefined || chatgptReseed()?.why !== undefined
-        ? [] : [chatgptLoginRefused.message]),
+      // Reported until the mark clears — which only a spawn on the new seed
+      // does — so a reseed whose restart failed still shows. One with a
+      // reseed due is named as that, not as needing a login.
+      healthProblems: () => {
+        if (chatgptLoginRefused === undefined) return [];
+        const why = chatgptReseed()?.why;
+        return [why === undefined ? chatgptLoginRefused.message : `${why} — not yet served by a restarted litellm`];
+      },
       chatgptLoginRefused: (served) => markChatgptLoginRefused(served),
       resolveNative: (key, tenant) => tenant.config === undefined ? undefined : nativeRouteFor(tenant.config, key),
       // Opt-in only: a captured request is a whole conversation.

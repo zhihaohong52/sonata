@@ -4167,9 +4167,9 @@ litellm = ${litellmPort}
           codexRefreshes();
           const next = await sendBare();
           expect(next.text).toContain('retry');
-          expect(await problems()).toEqual([]);
           await waitFor(() => envs.length === 2, 'the restart into a fresh seed');
           await settle();
+          expect(await problems()).toEqual([]);
           expect(held().refresh_token).toBe('REFRESHED-BY-CODEX');
           expect((await sendBare()).status).toBe(200);
         });
