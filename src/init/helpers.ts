@@ -279,6 +279,8 @@ export interface NativeCandidate {
   harness?: string;
   harnessId?: string;
   wireFormat?: NativeGatewayWireFormat;
+  /** Reached on the gateway's `/responses` endpoint; see `UnifiedModelConfig.api`. */
+  api?: 'responses';
 }
 
 /**

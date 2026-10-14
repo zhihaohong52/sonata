@@ -3025,6 +3025,43 @@ describe('OpenCode session header', () => {
   });
 });
 
+describe('routeRequest — a model on the wrong protocol', () => {
+  // OpenCode Go serves `gpt-6-luna` only on /responses; on chat completions it
+  // answers this, as captured through LiteLLM on 2026-10-14 (the upstream type
+  // `ModelProtocolUnsupported` is not in LiteLLM's envelope). `minimax-m3` on
+  // the same gateway serves chat completions, so only the model is cooled.
+  const PROTOCOL_400 = "{\"error\":{\"message\":\"litellm.BadRequestError: OpenAIException - Model does not support this protocol.. Received Model Group=8f3f1636d2c8/opencode-go-gpt-6-luna\\nAvailable Model Group Fallbacks=None\",\"type\":null,\"param\":null,\"code\":\"400\"}}";
+  const routes = {
+    role: 'code', tier: 'simple',
+    routes: [
+      { key: 'luna', native: { gateway: 'opencode-go', id: 'gpt-6-luna' } },
+      { key: 'minimax', native: { gateway: 'opencode-go', id: 'minimax-m3' } },
+    ],
+  };
+  const turn = (content: string) => ({
+    method: 'POST', url: '/v1/messages', headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'sonata-code-simple', messages: [{ role: 'user', content }] })),
+  });
+  beforeEach(() => clearCooldowns());
+
+  it('falls through at once and cools the model, not its gateway', async () => {
+    const seen: string[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        seen.push(model);
+        return model === 'default/luna' ? new Response(PROTOCOL_400, { status: 400 }) : new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => routes,
+    };
+    expect((await routeRequest(turn('first agent'), deps)).status).toBe(200);
+    expect(seen).toEqual(['default/luna', 'default/minimax']);
+    expect((await routeRequest(turn('second agent'), deps)).status).toBe(200);
+    expect(seen).toEqual(['default/luna', 'default/minimax', 'default/minimax']);
+  });
+});
+
 describe('routeRequest — a bare model key on a direct gateway', () => {
   beforeEach(() => clearCooldowns());
 

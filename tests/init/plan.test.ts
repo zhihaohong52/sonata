@@ -9,6 +9,7 @@ import { plan, type CredentialProbe } from '../../src/init/plan.js';
 import { deriveInitState } from '../../src/init/helpers.js';
 import { litellmRequired } from '../../src/native/providers.js';
 import { aaCatalogPath } from '../../src/catalog.js';
+import { modelsDevPath } from '../../src/modelsdev.js';
 import { AutoRouteStep } from '../../src/tui-ink/components/auto-route-step.js';
 import type { InitState } from '../../src/tui-ink/types.js';
 import { tick, until } from '../tui-ink/ink-wait.js';
@@ -67,6 +68,31 @@ describe('plan — the config it emits', () => {
       expect.objectContaining({ gateway: 'claude', id: 'claude-opus-4-1' }),
     ]));
     expect(p.notices).not.toContain('  ! claude: no key — run `sonata auth add claude`');
+  });
+
+  it('writes api = "responses" for a model its provider serves only there', () => {
+    // OpenCode Go serves `gpt-6-luna` only on /responses (measured 2026-10-14);
+    // models.dev records it, and init reads it from the cached copy.
+    const home = mkdtempSync(join(tmpdir(), 'sonata-plan-api-'));
+    mkdirSync(dirname(modelsDevPath(home)), { recursive: true });
+    writeFileSync(modelsDevPath(home), JSON.stringify({
+      fetchedAt: '2026-10-14T00:00:00.000Z', providers: { 'opencode-go': { 'gpt-6-luna': { input: 1, output: 2 } } },
+      names: { 'opencode-go': { 'gpt-6-luna': 'GPT-6 Luna', 'minimax-m3': 'MiniMax M3' } },
+      responsesOnly: { 'opencode-go': ['gpt-6-luna'] },
+    }));
+    const go = (id: string) => ({ key: `opencode-go-${id}`, gateway: 'opencode-go', id, contextWindow: 128000,
+      baseUrl: 'https://opencode.ai/zen/go/v1', auth: 'api-key' as const });
+    const keys = ['opencode-go-gpt-6-luna', 'opencode-go-minimax-m3'];
+    const p = plan(
+      env({ home, allNativeCandidates: [go('gpt-6-luna'), go('minimax-m3')],
+        providerBaseUrls: { 'opencode-go': 'https://opencode.ai/zen/go/v1' },
+        gatewayAuth: new Map([['opencode-go', 'api-key' as const]]) }),
+      { ...state, providerKeys: ['opencode/opencode-go'], nativeKeys: keys, tiers: { code: { simple: keys, complex: keys } } },
+      noCredentials, { ...opts, home },
+    );
+    const back = parseConfig(p.configToml);
+    expect(back.unifiedModels['opencode-go-gpt-6-luna'].api).toBe('responses');
+    expect(back.unifiedModels['opencode-go-minimax-m3'].api).toBeUndefined();
   });
 
   it('keeps avoid_gateways bound to the top level, not to a table', () => {

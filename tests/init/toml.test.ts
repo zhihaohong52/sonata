@@ -492,6 +492,17 @@ describe('nativeTomlFor — settings init must not silently drop', () => {
     expect(parseConfig(toml).unifiedModels['acme-m'].api).toBe('responses');
   });
 
+  it('writes the api init found a model needs, and a hand-written one wins over it', () => {
+    const candidate = {
+      key: 'opencode-go-gpt-6-luna', gateway: 'opencode-go', id: 'gpt-6-luna', contextWindow: 128000,
+      baseUrl: 'https://opencode.ai/zen/go/v1', auth: 'api-key' as const, api: 'responses' as const,
+    };
+    const toml = nativeTomlFor({ code: [candidate] }, {}, { code: { simple: [candidate.key], complex: [candidate.key] } });
+    expect(parseConfig(toml).unifiedModels[candidate.key].api).toBe('responses');
+    const plain = nativeTomlFor({ code: [{ ...candidate, api: undefined }] }, {}, { code: { simple: [candidate.key], complex: [candidate.key] } });
+    expect(parseConfig(plain).unifiedModels[candidate.key].api).toBeUndefined();
+  });
+
   it('round-trips a per-model price block', () => {
     const toml = write({ unifiedModels: { 'acme-m': { price: { input: 3, output: 15 } } } } as never);
     expect(parseConfig(toml).unifiedModels['acme-m'].price).toMatchObject({ input: 3, output: 15 });

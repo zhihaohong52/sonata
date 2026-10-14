@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadModelsDev, modelsDevPath, normalizeModelsDev } from '../src/modelsdev.js';
+import { loadModelsDev, modelsDevPath, needsResponsesApi, normalizeModelsDev, normalizeModelsDevResponsesOnly } from '../src/modelsdev.js';
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'modelsdev', 'api.json');
 
@@ -76,5 +76,53 @@ describe('loadModelsDev', () => {
     expect(loadModelsDev(home)).toBeUndefined();
     writeFileSync(modelsDevPath(home), JSON.stringify({ fetchedAt: 42, providers: {} }));
     expect(loadModelsDev(home)).toBeUndefined();
+  });
+});
+
+describe('normalizeModelsDevResponsesOnly', () => {
+  // models.dev's OpenCode Go entry, trimmed: the provider speaks chat
+  // completions, and three models override it. Measured 2026-10-14 against
+  // the real API: `gpt-6-luna` serves only `/responses`, `minimax-m3` serves
+  // chat completions (and Anthropic Messages), `glm-5.3-flash` chat only.
+  const doc = {
+    'opencode-go': {
+      npm: '@ai-sdk/openai-compatible',
+      models: {
+        'gpt-6-luna': { name: 'GPT-6 Luna', provider: { npm: '@ai-sdk/openai' } },
+        'minimax-m3': { name: 'MiniMax M3', provider: { npm: '@ai-sdk/anthropic' } },
+        'glm-5.3-flash': { name: 'GLM 5.3 Flash' },
+      },
+    },
+    // The OpenAI provider itself: its models are all `@ai-sdk/openai`, which
+    // says nothing about an override, so nothing is recorded for it.
+    openai: { npm: '@ai-sdk/openai', models: { 'gpt-6-luna': { name: 'GPT-6 Luna', provider: { npm: '@ai-sdk/openai' } } } },
+  };
+
+  it('records only the models an OpenAI-compatible provider overrides onto the Responses API', () => {
+    expect(normalizeModelsDevResponsesOnly(doc)).toEqual({ 'opencode-go': ['gpt-6-luna'] });
+    expect(normalizeModelsDevResponsesOnly(null)).toEqual({});
+  });
+
+  it('answers under the gateway\'s own providers, first listing wins', () => {
+    const cache = {
+      responsesOnly: normalizeModelsDevResponsesOnly(doc),
+      names: { 'opencode-go': { 'gpt-6-luna': 'GPT-6 Luna', 'minimax-m3': 'MiniMax M3' }, other: { 'gpt-6-luna': 'GPT-6 Luna' } },
+    };
+    expect(needsResponsesApi(cache, ['opencode-go'], 'gpt-6-luna')).toBe(true);
+    expect(needsResponsesApi(cache, ['opencode-go'], 'minimax-m3')).toBe(false);
+    expect(needsResponsesApi(cache, ['other', 'opencode-go'], 'gpt-6-luna')).toBe(false);
+    expect(needsResponsesApi(cache, [], 'gpt-6-luna')).toBe(false);
+    expect(needsResponsesApi(undefined, ['opencode-go'], 'gpt-6-luna')).toBe(false);
+  });
+
+  it('survives a cache round trip, and a malformed map is dropped rather than failing the cache', () => {
+    mkdirSync(dirname(modelsDevPath(home)), { recursive: true });
+    const providers = { deepseek: { 'deepseek-v4-flash': { input: 0.44, output: 1.32 } } };
+    writeFileSync(modelsDevPath(home), JSON.stringify({ fetchedAt: 'x', providers, responsesOnly: { 'opencode-go': ['gpt-6-luna', 7] } }));
+    expect(loadModelsDev(home)!.responsesOnly).toEqual({ 'opencode-go': ['gpt-6-luna'] });
+    writeFileSync(modelsDevPath(home), JSON.stringify({ fetchedAt: 'x', providers, responsesOnly: 'nope' }));
+    const loaded = loadModelsDev(home)!;
+    expect(loaded.responsesOnly).toBeUndefined();
+    expect(loaded.providers).toEqual(providers);
   });
 });

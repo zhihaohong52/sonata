@@ -1,5 +1,5 @@
-import { enrichContextWindows, loadModelsDev } from '../modelsdev.js';
-import { catalogSpellingsForGateway, configUpstreamFor } from '../pricing.js';
+import { enrichContextWindows, loadModelsDev, needsResponsesApi } from '../modelsdev.js';
+import { catalogSpellingsForGateway, configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { InitEnvironment } from './discover.js';
@@ -153,6 +153,20 @@ export function plan(
   // the development machine carried it, several of them 1M models.
   const modelsDev = loadModelsDev(opts.home);
   enrichContextWindows(nativeByKey, modelsDev?.contexts);
+  // A model its provider serves only on `/responses` is written with
+  // `api = "responses"`: on chat completions it refuses every request
+  // (OpenCode Go's `gpt-6-luna`, measured 2026-10-14). Key-authenticated
+  // gateways only — an OAuth provider picks its own endpoint — and only under
+  // the providers the gateway prices by, the same lookup pricing makes.
+  for (const candidate of nativeByKey.values()) {
+    const declared = configForScope?.native?.gateways[candidate.gateway];
+    if ((declared?.auth ?? candidate.auth) !== 'api-key') continue;
+    // A gateway speaking Anthropic's dialect goes direct, where `api` is refused.
+    if ((declared?.provider ?? declared?.wireFormat ?? candidate.wireFormat) === 'anthropic') continue;
+    const providers = declared?.pricingProvider
+      ?? proposePricingProvider(candidate.gateway, 'api-key', declared?.baseUrl ?? candidate.baseUrl) ?? [];
+    if (needsResponsesApi(modelsDev, providers, candidate.id)) candidate.api = 'responses';
+  }
 
   const chosenNative = nativeKeys.map((k) => nativeByKey.get(k)).filter((k): k is NativeCandidate => k !== undefined);
 
