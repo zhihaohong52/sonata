@@ -836,8 +836,7 @@ export async function cmdDoctor(
       const gw = model.gateway === undefined ? undefined : config.native?.gateways[model.gateway];
       if (gw === undefined || model.id === undefined || model.api !== undefined || gw.auth !== 'api-key') return [];
       if ((gw.provider ?? gw.wireFormat) === 'anthropic') return [];
-      const providers = gw.pricingProvider ?? proposePricingProvider(model.gateway!, 'api-key', gw.baseUrl) ?? [];
-      return needsResponsesApi(modelsDevForProviders, providers, model.id) ? [`"${key}"`] : [];
+      return needsResponsesApi(modelsDevForProviders, gw.baseUrl, model.id) ? [`"${key}"`] : [];
     });
     if (wrongProtocol.length > 0) {
       checks.push({

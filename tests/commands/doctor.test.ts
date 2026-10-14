@@ -1596,8 +1596,26 @@ ${api}
 gateway = "opencode-go"
 id = "minimax-m3"
 
+[models."go-under-another-name"]
+gateway = "opencode"
+id = "gpt-6-luna"
+
+[models."resold-luna"]
+gateway = "resell"
+id = "gpt-6-luna"
+
 [native.gateways."opencode-go"]
 base_url = "https://opencode.ai/zen/go/v1"
+pricing_provider = ["opencode-go"]
+
+# The Go URL under another name and pricing: matched by endpoint all the same.
+[native.gateways."opencode"]
+base_url = "https://opencode.ai/zen/go/v1"
+pricing_provider = ["opencode"]
+
+# Priced at Go's rates but its own endpoint: says nothing about its protocol.
+[native.gateways."resell"]
+base_url = "https://resell.example/v1"
 pricing_provider = ["opencode-go"]
 `;
     writeFileSync(join(cwd, 'sonata.toml'), config(''));
@@ -1607,15 +1625,18 @@ pricing_provider = ["opencode-go"]
       fetchedAt: '2026-10-14T00:00:00.000Z',
       providers: { 'opencode-go': { 'gpt-6-luna': { input: 1, output: 2 } } },
       names: { 'opencode-go': { 'gpt-6-luna': 'GPT-6 Luna', 'minimax-m3': 'MiniMax M3' } },
-      responsesOnly: { 'opencode-go': ['gpt-6-luna'] },
+      responsesOnly: { 'opencode-go': { api: 'https://opencode.ai/inference/go/v1', ids: ['gpt-6-luna'] } },
     }));
     const at = new Date('2026-10-14T00:00:00.000Z');
     const flagged = (await doctorChecks(cwd, home, at)).find((check) => check.name === 'model protocol');
     expect(flagged?.ok).toBe(false);
     expect(flagged?.detail).toContain('"opencode-go-gpt-6-luna"');
+    expect(flagged?.detail).toContain('"go-under-another-name"');
     expect(flagged?.detail).not.toContain('minimax');
+    expect(flagged?.detail).not.toContain('resold');
     writeFileSync(join(cwd, 'sonata.toml'), config('api = "responses"'));
-    expect((await doctorChecks(cwd, home, at)).find((check) => check.name === 'model protocol')).toBeUndefined();
+    expect((await doctorChecks(cwd, home, at)).find((check) => check.name === 'model protocol')?.detail)
+      .not.toContain('"opencode-go-gpt-6-luna"');
   });
 
   it('scores a vendor alias through its models.dev name, and an id that begins with the gateway name', async () => {

@@ -78,7 +78,7 @@ describe('plan — the config it emits', () => {
     writeFileSync(modelsDevPath(home), JSON.stringify({
       fetchedAt: '2026-10-14T00:00:00.000Z', providers: { 'opencode-go': { 'gpt-6-luna': { input: 1, output: 2 } } },
       names: { 'opencode-go': { 'gpt-6-luna': 'GPT-6 Luna', 'minimax-m3': 'MiniMax M3' } },
-      responsesOnly: { 'opencode-go': ['gpt-6-luna'] },
+      responsesOnly: { 'opencode-go': { api: 'https://opencode.ai/inference/go/v1', ids: ['gpt-6-luna'] } },
     }));
     const go = (id: string) => ({ key: `opencode-go-${id}`, gateway: 'opencode-go', id, contextWindow: 128000,
       baseUrl: 'https://opencode.ai/zen/go/v1', auth: 'api-key' as const });
@@ -93,6 +93,16 @@ describe('plan — the config it emits', () => {
     const back = parseConfig(p.configToml);
     expect(back.unifiedModels['opencode-go-gpt-6-luna'].api).toBe('responses');
     expect(back.unifiedModels['opencode-go-minimax-m3'].api).toBeUndefined();
+
+    // The same model on an endpoint of its own, priced at Go's rates: no api.
+    const resold = { ...go('gpt-6-luna'), key: 'resell-gpt-6-luna', gateway: 'resell', baseUrl: 'https://resell.example/v1' };
+    const other = plan(
+      env({ home, allNativeCandidates: [resold], providerBaseUrls: { resell: resold.baseUrl },
+        gatewayAuth: new Map([['resell', 'api-key' as const]]) }),
+      { ...state, providerKeys: ['opencode/resell'], nativeKeys: [resold.key], tiers: { code: { simple: [resold.key], complex: [resold.key] } } },
+      noCredentials, { ...opts, home },
+    );
+    expect(parseConfig(other.configToml).unifiedModels[resold.key].api).toBeUndefined();
   });
 
   it('keeps avoid_gateways bound to the top level, not to a table', () => {
