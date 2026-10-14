@@ -8,6 +8,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- **Contributor models are ranked.** A `-contributor` model (Muse Spark 1.3
+  Contributor, Gemini 4 Argon Contributor on OpenCode Go) is the standard
+  model on other terms — your prompts may be used for training — at another
+  price. Artificial Analysis scores only the standard model, so `sonata init`
+  never offered the contributor. It now takes the standard model's scores
+  and rescales its cost per task by the price difference, and labels it in
+  the ranking so the trade-off is your choice.
+
 ### Fixed
 
 - **Codex models no longer go down every time codex refreshes its login.**

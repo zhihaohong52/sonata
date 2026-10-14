@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { EFFORT_LEVELS, isEffort, joinCandidate, splitCandidate, type Effort } from './effort.js';
 import type { SonataConfig } from './config.js';
 import { frontierIndices, keptAfterGate, kneeIndex, type Point } from './frontier.js';
+import { loadModelsDev, type ModelsDevCache } from './modelsdev.js';
 
 export const AA_ATTRIBUTION =
   'Model rankings by Artificial Analysis — https://artificialanalysis.ai';
@@ -219,6 +220,12 @@ export interface AaEntry {
    * pricier-per-token terse one.
    */
   costPerTask?: number;
+  /**
+   * Set on a row sonata derived rather than AA published: the contributor
+   * variant of this AA slug (`withContributorEntries`). Never written to the
+   * cache file — it exists only in memory, rebuilt on every load.
+   */
+  contributorOf?: string;
   /**
    * The model this row is one effort level of, and which level. Read from
    * the parenthetical in AA's display name at `catalog update` — `GPT-5.6
@@ -823,7 +830,8 @@ export function candidateLabel(
     return `${head}  (AA's cost-per-task of ${entry.costPerTask} is not a usable cost — add by hand to sonata.toml)`;
   }
   if (!isTaskCost(entry.costPerTask)) return `${head}  (AA publishes no cost-per-task — add by hand to sonata.toml)`;
-  return `${head.padEnd(32)} ${reasoningOf(entry).toFixed(1).padStart(4)}  $${entry.costPerTask.toFixed(3)}/task`;
+  const row = `${head.padEnd(32)} ${reasoningOf(entry).toFixed(1).padStart(4)}  $${entry.costPerTask.toFixed(3)}/task`;
+  return entry.contributorOf === undefined ? row : `${row}  (contributor: prompts may be used for training)`;
 }
 
 /**
@@ -1257,7 +1265,7 @@ export function loadAaCatalog(home: string): AaCatalog | undefined {
       }
     }
     if (Object.keys(models).length === 0) return undefined;
-    return {
+    const catalog: AaCatalog = {
       fetchedAt: doc.fetchedAt,
       // Only a string survives: the writer stringifies it, so anything else in
       // the file is a hand-edit or a foreign writer, and a version that is not
@@ -1267,7 +1275,77 @@ export function loadAaCatalog(home: string): AaCatalog | undefined {
         : {}),
       models,
     };
+    return withContributorEntries(catalog, loadModelsDev(home));
   } catch {
     return undefined;
   }
+}
+
+const CONTRIBUTOR_SUFFIX = '-contributor';
+
+/**
+ * The AA catalog with a row for each contributor variant of a model AA scores.
+ *
+ * A `-contributor` model is the same weights sold on other terms — prompts may
+ * be used for training — at another price: models.dev lists Muse Spark 1.3
+ * Contributor at $0.10/$0.20 per 1M against the standard $1.25/$4.25, and
+ * OpenCode Go's Gemini 4 Argon Contributor at twice the standard rate. AA
+ * scores only the standard model, so the contributor was never ranked.
+ *
+ * Intelligence carries over unchanged. Cost per task is AA's tokens-per-task
+ * times its price, and the same weights spend the same tokens, so it is
+ * rescaled by price: AA's figure × the contributor's 3:1 blended rate ÷ the
+ * blended rate AA measured with (`blendedPriceUsd`). Every effort level of the
+ * family is rescaled by the same ratio.
+ *
+ * Derived only where every input is known: the contributor's rate is the one
+ * every models.dev provider listing it agrees on (two prices make it
+ * ambiguous, and ambiguous stays unscored); both rates are positive (a `free`
+ * listing would rank at $0 against everything); and AA's blended rate is a
+ * real price — when AA published no per-token rates it falls back to the
+ * cost per task, and a ratio against that would be meaningless. A slug AA
+ * scores itself is never overwritten. In memory only: AA data may not be
+ * redistributed, and none of this is written anywhere.
+ */
+export function withContributorEntries(aa: AaCatalog, modelsDev: Pick<ModelsDevCache, 'providers'> | undefined): AaCatalog {
+  if (modelsDev === undefined) return aa;
+  const blended = new Map<string, number | null>();
+  for (const table of Object.values(modelsDev.providers)) {
+    for (const [id, rates] of Object.entries(table)) {
+      const bare = id.slice(id.lastIndexOf('/') + 1);
+      if (!bare.endsWith(CONTRIBUTOR_SUFFIX)) continue;
+      const { input, output } = rates;
+      if (input === undefined || output === undefined || !(input > 0) || !(output > 0)) continue;
+      const rate = (input * 3 + output) / 4;
+      const seen = blended.get(bare);
+      blended.set(bare, seen === undefined || seen === rate ? rate : null);
+    }
+  }
+  const models = { ...aa.models };
+  let added = false;
+  for (const [id, rate] of blended) {
+    if (rate === null) continue;
+    const key = aaMatchKey(normalizeModelName(id));
+    if (models[key] !== undefined) continue;
+    const base = normalizeModelName(id.slice(0, -CONTRIBUTOR_SUFFIX.length));
+    const family = catalogFamily(base, aa);
+    const single = family === undefined ? aaEntryFor(base, aa) : undefined;
+    const rows: [string | undefined, AaEntry][] = family !== undefined
+      ? [...family.variants].map(([effort, entry]) => [effort, entry])
+      : single !== undefined ? [[undefined, single]] : [];
+    for (const [effort, entry] of rows) {
+      const cost = entry.costPerTask;
+      if (cost === undefined || !(entry.blendedPriceUsd > 0) || entry.blendedPriceUsd === cost) continue;
+      const derived: AaEntry = {
+        ...entry,
+        costPerTask: cost * (rate / entry.blendedPriceUsd),
+        blendedPriceUsd: rate,
+        contributorOf: family?.name ?? base,
+        ...(family !== undefined ? { family: key } : {}),
+      };
+      models[effort === undefined || effort === family?.default ? key : `${key}-${effort}`] = derived;
+      added = true;
+    }
+  }
+  return added ? { ...aa, models } : aa;
 }
