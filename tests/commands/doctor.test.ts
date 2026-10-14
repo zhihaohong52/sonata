@@ -1665,6 +1665,10 @@ pricing_provider = ["opencode-go"]
     const spent = (await budget())[0]!;
     expect(spent.ok).toBe(false);
     expect(spent.detail).toContain('refused until 00:00 UTC');
+    // A machine config that will not load is named, not read as "no cap".
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), '[budget]\ndaily_usd = "lots"\n');
+    const broken = (await budget()).find((c) => c.detail.includes('does not load'));
+    expect(broken?.ok).toBe(false);
   });
 
   it('scores a vendor alias through its models.dev name, and an id that begins with the gateway name', async () => {

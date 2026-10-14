@@ -922,7 +922,18 @@ export async function cmdDoctor(
     let machineCap: number | undefined;
     if (resolved === machinePath) machineCap = config?.budget?.dailyUsd;
     else if (existsSync(machinePath)) {
-      try { machineCap = parseConfig(readFileSync(machinePath, 'utf8')).budget?.dailyUsd; } catch { /* reported by its own load */ }
+      try {
+        machineCap = parseConfig(readFileSync(machinePath, 'utf8')).budget?.dailyUsd;
+      } catch (error) {
+        // Not reported anywhere else when a project config answered, and a cap
+        // that cannot be read is not the same as no cap.
+        checks.push({
+          name: 'budget',
+          ok: false,
+          detail: `the machine config (${machinePath}) does not load, so its [budget] cap cannot be checked: `
+            + (error instanceof Error ? error.message : String(error)),
+        });
+      }
     }
     if (machineCap !== undefined) caps.push({ label: `the machine (${machinePath})`, cap: machineCap, spent: spentTodayUsd(home, at) });
     for (const { label, cap, spent } of caps) {
