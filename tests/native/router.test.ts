@@ -1503,6 +1503,49 @@ describe('routeRequest — a ChatGPT login LiteLLM cannot refresh', () => {
     });
   }
 
+  // The ChatGPT backend refusing the token itself — revoked when codex
+  // refreshed its own copy of the login. Measured through a real proxy.
+  const rejected = JSON.parse(readFileSync(
+    join(import.meta.dirname, '..', 'fixtures', 'litellm', 'chatgpt-token-rejected-proxy.json'), 'utf8',
+  )) as { case: string; status: number; body: string }[];
+
+  it('leaves a 401 that is not a revoked token to the ordinary cooldown', async () => {
+    let told = 0;
+    const measured = rejected.find((entry) => entry.case === 'unauthorized (measured)')!;
+    await route(401, measured.body, () => { told += 1; });
+    expect(told).toBe(0);
+  });
+
+  it('reads the revoked-token prefix only at the start of the message', async () => {
+    let told = 0;
+    const revoked = rejected.find((entry) => entry.case === 'token revoked')!;
+    const message = (JSON.parse(revoked.body) as { error: { message: string } }).error.message;
+    await route(401, envelope(`litellm.BadRequestError: wrapped - ${message}`, 401), () => { told += 1; });
+    expect(told).toBe(0);
+  });
+
+  for (const entry of rejected.filter((e) => e.case === 'token revoked')) {
+    it(`tells serve when the ChatGPT backend refuses the token: "${entry.case}"`, async () => {
+      let told = 0;
+      const result = await route(entry.status, entry.body, () => { told += 1; });
+      expect(entry.status).toBe(401);
+      expect(result.status).toBe(502);
+      expect(told).toBe(1);
+    });
+
+    it(`says nothing for "${entry.case}" from a gateway that is not codex-oauth`, async () => {
+      let told = 0;
+      await route(entry.status, entry.body, () => { told += 1; }, 'or');
+      expect(told).toBe(0);
+    });
+
+    it(`reads "${entry.case}" only on a 401`, async () => {
+      let told = 0;
+      await route(400, entry.body, () => { told += 1; });
+      expect(told).toBe(0);
+    });
+  }
+
   // The request that notices is answered as every later one is, rather than
   // with LiteLLM's raw 400 — which the tier loop read as the request's fault
   // and returned, never trying the next candidate.
@@ -2069,6 +2112,23 @@ describe('createRouterServer — health', () => {
       // tell a router that serves the UI from one that does not, rather than
       // printing a URL that 404s.
       expect(body.ui).toBe(false);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('reports the problems it is answering around, and none when told of none', async () => {
+    const problems: string[] = [];
+    const server = createRouterServer({
+      fetch, litellmBase: 'http://litellm', litellmKey: 'k', health: true, healthProblems: () => problems,
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const read = async () => (await (await fetch(`http://127.0.0.1:${port}/__sonata_health`)).json() as { problems: unknown }).problems;
+      expect(await read()).toEqual([]);
+      problems.push('gateway "codex": refused');
+      expect(await read()).toEqual(['gateway "codex": refused']);
     } finally {
       server.close();
     }

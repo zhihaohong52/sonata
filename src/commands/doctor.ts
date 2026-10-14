@@ -1186,6 +1186,15 @@ export async function cmdDoctor(
                   + 'interactive sign-in.',
               });
           }
+          // The router answers health while a gateway it serves cannot: a
+          // refused ChatGPT login left every codex model answering 502 for a
+          // day while this check printed ok.
+          const problems = (body as { problems?: unknown }).problems;
+          if (Array.isArray(problems)) {
+            for (const problem of problems) {
+              if (typeof problem === 'string') checks.push({ name: 'serve gateways', ok: false, detail: problem });
+            }
+          }
           // Same gate as `sonata status`: a router without the `ui` capability
           // is one built before the UI existed, and its URL would 404.
           if (healthReportsUi(body)) {

@@ -1,0 +1,14 @@
+[
+  {
+    "case": "unauthorized (measured)",
+    "note": "Measured 2026-10-14 through a real LiteLLM 1.98.0 proxy whose chatgpt deployment was given an unusable token; the ChatGPT backend answered 401.",
+    "status": 401,
+    "body": "{\"error\":{\"message\":\"litellm.AuthenticationError: AuthenticationError: ChatgptException - {\\n  \\\"error\\\": {\\n    \\\"message\\\": \\\"Could not parse your authentication token. Please try signing in again.\\\",\\n    \\\"type\\\": null,\\n    \\\"code\\\": \\\"unauthorized_unknown\\\",\\n    \\\"param\\\": null\\n  },\\n  \\\"status\\\": 401\\n}. Received Model Group=probe\\nAvailable Model Group Fallbacks=None\",\"type\":null,\"param\":null,\"code\":\"401\"}}"
+  },
+  {
+    "case": "token revoked",
+    "note": "The measured envelope with the inner error replaced by the ChatGPT backend's token_revoked body, as LiteLLM logged it on 2026-10-14 after codex refreshed its login (serve log, 20:33).",
+    "status": 401,
+    "body": "{\"error\":{\"message\":\"litellm.AuthenticationError: AuthenticationError: ChatgptException - {\\n  \\\"error\\\": {\\n    \\\"message\\\": \\\"Encountered invalidated oauth token for user, failing request\\\",\\n    \\\"type\\\": null,\\n    \\\"code\\\": \\\"token_revoked\\\",\\n    \\\"param\\\": null\\n  },\\n  \\\"status\\\": 401\\n}. Received Model Group=probe\\nAvailable Model Group Fallbacks=None\",\"type\":null,\"param\":null,\"code\":\"401\"}}"
+  }
+]

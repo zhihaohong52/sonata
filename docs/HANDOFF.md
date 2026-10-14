@@ -19,6 +19,23 @@ full-suite load; the doctor budget surface and `worktreeUnchanged` in
 `sonata runs`; the machine config's `[budget]`/`avoid_gateways` (a user
 decision). "Where things stood at 0.8.3" further down is historical.
 
+## ChatGPT login revocation (2026-10-14) — open follow-ups
+
+- **Fixed:** codex refreshing its login revoked LiteLLM's copy (`token_revoked`),
+  and every ChatGPT model 502'd until `sonata restart`; doctor said ok
+  throughout. serve now reseeds from the store when it holds a newer token,
+  and doctor fails `serve gateways` on a refused login. A network outage
+  during LiteLLM's own refresh (2026-10-13 18:51, DNS) still needs a restart
+  if the store has nothing newer.
+- **New: OpenCode Go refuses its GPT models over chat completions** — 400
+  `Model does not support this protocol` for `opencode-go-gpt-6-luna` (four
+  captures in `~/.config/sonata/capture-400/`, 2026-10-14). They need the
+  protocol opencode itself uses for them; probe before changing the route.
+- **The `call_id` error is still untraced.** Those four captures were the
+  OpenCode Go bug above, not it. `SONATA_CAPTURE_400_DIR` is armed on the
+  maintainer's router until the next plain `sonata restart`; the error's 400s
+  arrive ~1 s after a 0-token 200 on the same conversation.
+
 ## mimo text tool calls (2026-10-07) — open follow-ups
 
 - **A wrong diagnosis, closed as PR #81.** The decision_model failures (mimo

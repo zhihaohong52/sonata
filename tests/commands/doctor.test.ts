@@ -599,6 +599,23 @@ code = ["deepseek-v4-flash"]
     } finally { globalThis.fetch = originalFetch; }
   });
 
+  it('fails a check for each problem the router reports, beside an ok serve health', async () => {
+    // A refused ChatGPT login left every codex model answering 502 for a day
+    // while doctor printed ok: the router answering health said nothing of it.
+    const { cwd, home } = setup();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      status: 'ok', sonata: true, multiTenant: true, tenants: [], problems: ['gateway "codex": run `codex login`', 7],
+    }), { status: 200 })) as unknown as typeof fetch;
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      expect(checks.find((c) => c.name === 'serve health')?.ok).toBe(true);
+      expect(checks.filter((c) => c.name === 'serve gateways')).toEqual([
+        { name: 'serve gateways', ok: false, detail: 'gateway "codex": run `codex login`' },
+      ]);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
   it('lists unknown tenant config paths as question marks', async () => {
     const { cwd, home } = setup();
     const originalFetch = globalThis.fetch;
