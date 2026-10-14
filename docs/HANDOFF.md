@@ -14,8 +14,7 @@ issue #47, dispatch-run usage (0.13.0); the test type errors (`typecheck` now
 chains `typecheck:tests`); the codex-oauth system-message hole (0.6.0);
 `SONATA_CAPTURE_TEXT_CALLS_DIR` (0.16.0). Still open: `gpt-6-luna` 400s on
 roughly every other request; `No tool call found for function call output with
-call_id …`; text-call recovery going 0 for 6; `serve.test.ts` failing under
-full-suite load; the machine config's `[budget]`/`avoid_gateways` (a user
+call_id …`; text-call recovery going 0 for 6; the machine config's `[budget]`/`avoid_gateways` (a user
 decision). "Where things stood at 0.8.3" further down is historical.
 
 ## ChatGPT login revocation (2026-10-14) — open follow-ups
@@ -93,9 +92,11 @@ What is still open:
 - **`gpt-6-luna` answers a 400 on roughly every other request** on
   `code-simple`/`review-simple` in other sessions (each followed by a 200).
   Seen in the 2026-09-26 ledger, not investigated.
-- **`tests/commands/serve.test.ts` fails under full-suite load** (different
-  tests on different runs; 111/111 in isolation, with or without the PR #69
-  changes). Load-dependent timing, not yet diagnosed.
+- ~~**`tests/commands/serve.test.ts` fails under full-suite load**~~ — not
+  seen in the last 60 CI runs (checked 2026-10-15) or in local full-suite
+  runs. The one CI failure in that window was `tests/e2e-log.test.ts`
+  ("prints all of a non-interactive run's output once": `burst-1` appeared
+  twice, run 38278834456, 2026-10-12) — a one-off flake, untraced.
 - **A LiteLLM or router restart is needed for any router fix to apply** — the
   running daemon keeps the code it started with. A user who upgrades and does
   not `sonata restart` still has the bug.
