@@ -342,8 +342,15 @@ describe('router — text-form tool calls', () => {
     await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
     // Written after the stream ends, without holding it: wait for the files.
     const deadline = Date.now() + 2_000;
-    const count = () => { try { return readdirSync(dir).length; } catch { return 0; } };
-    while (count() < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    // Complete, not merely present: the file exists a moment before its
+    // contents are written, and reading it then failed under full-suite load.
+    const written = () => {
+      try {
+        const names = readdirSync(dir);
+        return names.length >= 2 && names.every((name) => { JSON.parse(readFileSync(join(dir, name), 'utf8')); return true; });
+      } catch { return false; }
+    };
+    while (!written() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
     const files = readdirSync(dir);
     expect(files).toHaveLength(2);
     expect(statSync(join(dir, files[0])).mode & 0o777).toBe(0o600);
