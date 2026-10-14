@@ -6,7 +6,7 @@ import { fit } from '../components/screen.js';
 import { usePalette } from '../theme-context.js';
 import { agoLabel } from './status-poll.js';
 import {
-  bucketsThatFit, compactCount, nextDimension, nextWindow, usageColumns, USAGE_CELL, USAGE_POLL_MS, windowLabel,
+  bucketsThatFit, compactCount, nextDimension, nextWindow, usageCell, usageColumns, USAGE_CELL, USAGE_POLL_MS, windowLabel,
 } from './usage-view.js';
 
 const money = (usd: number): string => `$${usd.toFixed(usd >= 100 ? 2 : 4)}`;
@@ -112,10 +112,10 @@ export function UsageScreen({ cwd, home, by: initialBy = 'model', since: initial
   const shown = buckets.slice(0, bucketsThatFit(buckets.length, process.stdout.rows ?? 24, chrome));
 
   const header = [
-    col.requests ? 'req'.padStart(USAGE_CELL.requests) : '',
-    col.tokens ? 'in / out'.padStart(USAGE_CELL.tokens) : '',
-    'spent'.padStart(USAGE_CELL.spent),
-    col.covered ? 'covered'.padStart(USAGE_CELL.covered) : '',
+    col.requests ? usageCell('req', USAGE_CELL.requests) : '',
+    col.tokens ? usageCell('in / out', USAGE_CELL.tokens) : '',
+    usageCell('spent', USAGE_CELL.spent),
+    col.covered ? usageCell('covered', USAGE_CELL.covered) : '',
   ].join('');
 
   // Every line is ONE truncating Text, as on the status screen: sibling Texts
@@ -147,14 +147,14 @@ export function UsageScreen({ cwd, home, by: initialBy = 'model', since: initial
       {shown.map((bucket) => (
         <Text key={bucket.label} wrap="truncate-end">
           <Text color={palette.TEXT}>{fit(bucket.label, col.label - 1).padEnd(col.label)}</Text>
-          {col.requests && <Text color={palette.MUTED}>{String(bucket.requests).padStart(USAGE_CELL.requests)}</Text>}
+          {col.requests && <Text color={palette.MUTED}>{usageCell(String(bucket.requests), USAGE_CELL.requests)}</Text>}
           {col.tokens && (
             <Text color={palette.MUTED}>
-              {`${compactCount(bucket.input)} / ${compactCount(bucket.output)}`.padStart(USAGE_CELL.tokens)}
+              {usageCell(`${compactCount(bucket.input)} / ${compactCount(bucket.output)}`, USAGE_CELL.tokens)}
             </Text>
           )}
-          <Text color={bucket.costUsd > 0 ? palette.TEXT : palette.MUTED}>{spentLabel(bucket, money).padStart(USAGE_CELL.spent)}</Text>
-          {col.covered && <Text color={palette.MUTED}>{coveredLabel(bucket, money).padStart(USAGE_CELL.covered)}</Text>}
+          <Text color={bucket.costUsd > 0 ? palette.TEXT : palette.MUTED}>{usageCell(spentLabel(bucket, money), USAGE_CELL.spent)}</Text>
+          {col.covered && <Text color={palette.MUTED}>{usageCell(coveredLabel(bucket, money), USAGE_CELL.covered)}</Text>}
         </Text>
       ))}
       {shown.length < buckets.length && (

@@ -8,6 +8,13 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- **`sonata usage` no longer runs a covered amount into the token column.**
+  A bucket whose work was all covered shows `$128.26 sub`, which filled the
+  spend column exactly and left no gap (`63M / 196k$128.26 sub`). The column
+  is wider and every cell keeps its leading space.
+
 ## [0.16.4] - 2026-10-14
 
 ### Fixed

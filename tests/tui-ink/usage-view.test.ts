@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { render } from 'ink-testing-library';
 import {
-  bucketsThatFit, compactCount, nextDimension, nextWindow, usageColumns, USAGE_CELL, windowLabel,
+  bucketsThatFit, compactCount, nextDimension, nextWindow, usageCell, usageColumns, USAGE_CELL, windowLabel,
 } from '../../src/tui-ink/screens/usage-view.js';
 import { UsageScreen } from '../../src/tui-ink/screens/usage.js';
 import { appendRow, type LedgerRow } from '../../src/ledger.js';
@@ -164,5 +164,16 @@ describe('UsageScreen', () => {
     expect(frame).toContain('this project');
     expect(frame).toContain('Nothing routed from this project');
     app.unmount();
+  });
+});
+
+describe('usageCell', () => {
+  // Measured: `$128.26 sub` filled the old 11-wide spend cell exactly, so it
+  // ran into the token column — `63M / 196k$128.26 sub`.
+  it('fits a covered spend label with its gap, and keeps the gap when a value overflows', () => {
+    expect(usageCell('$1234.56 sub', USAGE_CELL.spent)).toBe(' $1234.56 sub');
+    expect(usageCell('$1234.56 sub', USAGE_CELL.spent)).toHaveLength(USAGE_CELL.spent);
+    expect(usageCell('$12345678.90 sub', USAGE_CELL.spent).startsWith(' ')).toBe(true);
+    expect(usageCell('7', USAGE_CELL.requests)).toBe('      7');
   });
 });

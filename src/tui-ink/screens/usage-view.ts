@@ -60,8 +60,20 @@ export interface UsageColumns {
   covered: boolean;
 }
 
-/** Fixed cell widths, each including its leading gap. */
-export const USAGE_CELL = { requests: 7, tokens: 16, spent: 11, covered: 11 } as const;
+/**
+ * Fixed cell widths, each including its leading gap. `spent` fits a covered
+ * bucket's `$1234.56 sub` (12) after its gap: at 11 it fitted `$128.26 sub`
+ * exactly, leaving no gap, and the value ran into the token column.
+ */
+export const USAGE_CELL = { requests: 7, tokens: 16, spent: 13, covered: 11 } as const;
+
+/**
+ * A right-aligned cell that always keeps its leading gap: a value wider than
+ * the cell widens the row rather than touching the column before it.
+ */
+export function usageCell(text: string, width: number): string {
+  return ` ${text.padStart(width - 1)}`;
+}
 
 /**
  * The usage board's width budget.
