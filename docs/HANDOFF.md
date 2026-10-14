@@ -84,11 +84,9 @@ What is still open:
   a `review-normal` dispatch is confirmed working on 0.13.1.
 - **Only the first PR #69 commit was reviewed by CodeRabbit.** The header
   stripping, the test fix and the tmux retry passed CI unreviewed.
-- **The maintainer's machine config points both `opencode` and `opencode-go`
-  at the Go URL**, so each Go model is listed twice and the `opencode` one is
-  priced from the Zen table. How the Go URL got onto `opencode` is not
-  established — sonata's table never held it. Whether Zen serves the models
-  listed under that gateway is also unchecked.
+- ~~**The maintainer's machine config pointed both `opencode` and
+  `opencode-go` at the Go URL.**~~ Checked 2026-10-15: it has only
+  `opencode-go` now.
 - **`gpt-6-luna` answers a 400 on roughly every other request** on
   `code-simple`/`review-simple` in other sessions (each followed by a 200).
   Seen in the 2026-09-26 ledger, not investigated.
