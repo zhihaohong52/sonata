@@ -240,6 +240,7 @@ Rules that bite (full reference: `docs/internals/configuration.md`):
 - `[tiers]` and legacy `[generate.*]` may not coexist; legacy configs migrate on `sonata init`.
 - `tiersCollapse` is the single definition of "element-wise identical" tiers (one collapsed agent per role).
 - `[budget] daily_usd` counts priced volume only; non-positive/non-numeric is refused at parse time.
+- **Covered = subscription**: OAuth and Claude-session gateways, plus an `api-key` gateway on a plan endpoint (`PLAN_ENDPOINTS`, `src/plans.ts`) or with `billing = "subscription"`. Covered work is valued at list and excluded from `[budget]`; models.dev lists plans at $0, so a $0 rate is never taken as a covered row's list price.
 - A `claude-*` name the config does not define passes through to Anthropic; a configured key routes like any other. `auth = "session"` forwards the caller's credential and only to `api.anthropic.com`.
 - `sonata init` owns the managed CLAUDE.md block between standalone `<!-- sonata:begin -->`/`<!-- sonata:end -->` lines only; mismatched markers are refused, not repaired.
 - A tier agent's `model` frontmatter is overridden by the Agent tool's `model` argument — which silently defeats routing.

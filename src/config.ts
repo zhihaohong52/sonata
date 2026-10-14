@@ -143,6 +143,15 @@ export const NATIVE_GATEWAY_WIRE_FORMATS: readonly NativeGatewayWireFormat[] = [
  * otherwise re-sniffs and can silently answer differently.
  */
 export type CredentialSource = 'sonata' | 'codex' | 'opencode';
+/**
+ * How a key-authenticated gateway is paid for. `subscription` is a flat-rate
+ * plan: its work is valued at list but never billed per token, so it is
+ * reported as covered and left out of `[budget]`. Unset, the endpoint decides
+ * (`planEndpointFor`); set, it overrides that — the way to mark a plan that
+ * shares its metered sibling's URL, or to correct the table.
+ */
+export type GatewayBilling = 'subscription' | 'metered';
+export const GATEWAY_BILLINGS: readonly GatewayBilling[] = ['subscription', 'metered'];
 
 export const CREDENTIAL_SOURCES: readonly CredentialSource[] = ['sonata', 'codex', 'opencode'];
 
@@ -184,6 +193,8 @@ export interface NativeGatewayConfig {
   baseUrl: string;
   auth: NativeGatewayAuth;
   credentialSource?: CredentialSource;
+  /** Only on an `api-key` gateway; see `GatewayBilling`. */
+  billing?: GatewayBilling;
   /**
    * Which LiteLLM provider this gateway speaks. Also decides transport: an
    * `anthropic` api-key gateway is reached directly, with no LiteLLM at all.
@@ -725,6 +736,12 @@ export function parseConfig(text: string): SonataConfig {
         if (d.provider !== 'anthropic') {
           throw new Error(`sonata.toml: native gateway "${name}" is auth = "session", which needs provider = "anthropic".`);
         }
+        if (d.billing !== undefined) {
+          throw new Error(
+            `sonata.toml: native gateway "${name}" is auth = "session", so it cannot set billing — ` +
+            'whether its work is covered is decided per request, by which Claude login sent it. Remove billing.',
+          );
+        }
         if (d.credential_source !== undefined) {
           throw new Error(
             `sonata.toml: native gateway "${name}" is auth = "session", so it cannot set credential_source — ` +
@@ -813,6 +830,23 @@ export function parseConfig(text: string): SonataConfig {
       }
       const price = parsePrice(d.price, `[native.gateways."${name}"]`);
       const pricingProvider = parsePricingProvider(name, d.pricing_provider);
+      let billing: GatewayBilling | undefined;
+      if (d.billing !== undefined) {
+        if (typeof d.billing !== 'string' || !GATEWAY_BILLINGS.includes(d.billing as GatewayBilling)) {
+          throw new Error(
+            `sonata.toml: native gateway "${name}" has unknown billing "${String(d.billing)}". ` +
+            `Known: ${GATEWAY_BILLINGS.join(', ')}`,
+          );
+        }
+        // An OAuth login is a subscription by construction: there is no
+        // metered reading of it to choose, so the key would only mislead.
+        if (isOauthGatewayAuth(auth)) {
+          throw new Error(
+            `sonata.toml: native gateway "${name}" is ${auth}, which is always a subscription — remove billing.`,
+          );
+        }
+        billing = d.billing as GatewayBilling;
+      }
       // An OAuth gateway is addressed by LiteLLM's own provider, which knows the
       // URL; accepting one here would only let a config claim a base URL that is
       // never used — or worse, name the metered endpoint the credential cannot
@@ -832,7 +866,7 @@ export function parseConfig(text: string): SonataConfig {
       if (typeof d.base_url !== 'string') {
         throw new Error(`sonata.toml: native gateway "${name}" needs string "base_url"`);
       }
-      gateways[name] = { baseUrl: d.base_url, auth, credentialSource, provider, wireFormat, price, pricingProvider };
+      gateways[name] = { baseUrl: d.base_url, auth, credentialSource, billing, provider, wireFormat, price, pricingProvider };
     }
 
     // Two distinct gateway names can collapse onto one LiteLLM key variable

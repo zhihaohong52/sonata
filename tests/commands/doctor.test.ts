@@ -1966,6 +1966,72 @@ base_url = "https://gateway.example/v1"
 // consults (model rates, then gateway rates, then the provider), so a gateway
 // priced by hand needs none — and reporting it as pricing nothing is a false
 // statement about the user's own config.
+describe('cmdDoctor — subscriptions', () => {
+  let cwd: string;
+  let home: string;
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'sonata-doctor-sub-'));
+    home = mkdtempSync(join(tmpdir(), 'sonata-doctor-sub-home-'));
+  });
+
+  const run = async (gateways: string) => {
+    writeFileSync(join(cwd, 'sonata.toml'), `
+schema_version = 1
+${gateways}
+[models."m"]
+gateway = "plan"
+id = "model-x"
+context_window = 128000
+`);
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    return {
+      subscriptions: checks.find((c) => c.name === 'subscriptions'),
+      undecided: checks.find((c) => c.name === 'subscription billing'),
+    };
+  };
+
+  it('names each subscription gateway and why it counts as one', async () => {
+    const { subscriptions, undecided } = await run(`
+[native.gateways."plan"]
+base_url = "https://api.z.ai/api/coding/paas/v4"
+[native.gateways."stated"]
+base_url = "https://api.minimax.io/v1"
+billing = "subscription"
+[native.gateways."metered"]
+base_url = "https://api.deepseek.com/v1"
+`);
+    // `plan` serves a model and nothing prices it, so it is covered in name
+    // only until it has a price source — said, rather than "valued at list".
+    expect(subscriptions?.detail).toContain('plan (Z.ai GLM Coding Plan; unpriced until it has a pricing_provider)');
+    expect(subscriptions?.detail).toContain('stated (billing = "subscription")');
+    expect(subscriptions?.detail).not.toContain('metered');
+    expect(undecided).toBeUndefined();
+  });
+
+  it('does not call a priced subscription gateway unpriced', async () => {
+    const { subscriptions } = await run(`
+[native.gateways."plan"]
+base_url = "https://api.z.ai/api/coding/paas/v4"
+pricing_provider = ["zai"]
+`);
+    expect(subscriptions?.detail).toContain('plan (Z.ai GLM Coding Plan)');
+    expect(subscriptions?.detail).not.toContain('unpriced');
+  });
+
+  // Only the key tells a MiniMax plan from MiniMax pay-as-you-go, so sonata
+  // reads it as metered and says so until the gateway states its billing.
+  it('names a shared-endpoint gateway that has not stated its billing', async () => {
+    const { subscriptions, undecided } = await run(`
+[native.gateways."plan"]
+base_url = "https://api.minimax.io/v1"
+`);
+    expect(subscriptions).toBeUndefined();
+    expect(undecided?.ok).toBe(true);
+    expect(undecided?.detail).toContain('plan (MiniMax Token Plan)');
+    expect(undecided?.detail).toContain('billing = "subscription"');
+  });
+});
+
 describe('cmdDoctor — gateway pricing', () => {
   let cwd: string;
   let home: string;

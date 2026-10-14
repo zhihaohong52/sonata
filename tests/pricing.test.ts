@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ModelsDevCache } from '../src/modelsdev.js';
 import { parseConfig } from '../src/config.js';
-import { costOf, inWindow, ratesFor, resolvePrice, proposePricingProvider, MODELSDEV_PROVIDER_FOR_GATEWAY } from '../src/pricing.js';
+import { costOf, inWindow, isSubscriptionGateway, ratesFor, resolvePrice, proposePricingProvider, MODELSDEV_PROVIDER_FOR_GATEWAY } from '../src/pricing.js';
 
 const at = (iso: string) => new Date(iso);
 const WRAP = { from: '16:30', to: '00:30', input: 0.11, output: 0.33 };
@@ -341,6 +341,93 @@ base_url = "https://example.invalid/v1"
       'auth = "codex-oauth"',
     ));
     expect(resolvePrice(oauth, 'plain', tokens, now, cache)).toEqual({ source: 'covered', totalUsd: 2 });
+  });
+
+  // OpenCode Go is a flat-rate plan reached with an ordinary key; Zen, on the
+  // same host with the same key, is metered. Decided by endpoint.
+  it('relabels an OpenCode Go gateway as covered, but not OpenCode Zen', () => {
+    const go = parseConfig(TOML.replace('https://example.invalid/v1', 'https://opencode.ai/zen/go/v1'));
+    expect(resolvePrice(go, 'plain', tokens, now, cache)).toEqual({ source: 'covered', totalUsd: 2 });
+    const zen = parseConfig(TOML.replace('https://example.invalid/v1', 'https://opencode.ai/zen/v1'));
+    expect(resolvePrice(zen, 'plain', tokens, now, cache)).toEqual({ source: 'gateway', totalUsd: 2 });
+    // The harness lane opts out, as for OAuth.
+    expect(resolvePrice(go, 'plain', tokens, now, cache, { relabelCovered: false })).toEqual({ source: 'gateway', totalUsd: 2 });
+  });
+
+  it('also covers the newer /inference/go path, and a plan from the endpoint table', () => {
+    const go = parseConfig(TOML.replace('https://example.invalid/v1', 'https://opencode.ai/inference/go/v1'));
+    expect(resolvePrice(go, 'plain', tokens, now, cache)).toEqual({ source: 'covered', totalUsd: 2 });
+    const zai = parseConfig(TOML.replace('https://example.invalid/v1', 'https://api.z.ai/api/coding/paas/v4'));
+    expect(resolvePrice(zai, 'plain', tokens, now, cache)).toEqual({ source: 'covered', totalUsd: 2 });
+    const zaiMetered = parseConfig(TOML.replace('https://example.invalid/v1', 'https://api.z.ai/api/paas/v4'));
+    expect(resolvePrice(zaiMetered, 'plain', tokens, now, cache)).toEqual({ source: 'gateway', totalUsd: 2 });
+  });
+
+  // `billing` says what a URL cannot: a plan sharing its metered sibling's
+  // endpoint, or a correction to the table, in either direction.
+  it('lets billing override the endpoint either way', () => {
+    const minimaxPlan = parseConfig(TOML.replace(
+      'base_url = "https://example.invalid/v1"\npricing_provider',
+      'base_url = "https://api.minimax.io/v1"\nbilling = "subscription"\npricing_provider',
+    ));
+    expect(resolvePrice(minimaxPlan, 'plain', tokens, now, cache)).toEqual({ source: 'covered', totalUsd: 2 });
+    const goMetered = parseConfig(TOML.replace(
+      'base_url = "https://example.invalid/v1"\npricing_provider',
+      'base_url = "https://opencode.ai/zen/go/v1"\nbilling = "metered"\npricing_provider',
+    ));
+    expect(resolvePrice(goMetered, 'plain', tokens, now, cache)).toEqual({ source: 'gateway', totalUsd: 2 });
+  });
+
+  it('isSubscriptionGateway: key gateways only, billing first, then the endpoint', () => {
+    expect(isSubscriptionGateway({ auth: 'api-key', baseUrl: 'https://api.kimi.com/coding/v1' })).toBe(true);
+    expect(isSubscriptionGateway({ auth: 'api-key', baseUrl: 'https://api.moonshot.ai/v1' })).toBe(false);
+    expect(isSubscriptionGateway({ auth: 'api-key', baseUrl: 'https://api.moonshot.ai/v1', billing: 'subscription' })).toBe(true);
+    expect(isSubscriptionGateway({ auth: 'api-key', baseUrl: 'https://api.kimi.com/coding/v1', billing: 'metered' })).toBe(false);
+    // OAuth and session are decided elsewhere (always, and per request).
+    expect(isSubscriptionGateway({ auth: 'codex-oauth' })).toBe(false);
+    expect(isSubscriptionGateway(undefined)).toBe(false);
+  });
+
+  // models.dev lists coding and token plans at $0 — the plan is what is paid
+  // for — so a covered row priced from one would value real work at nothing.
+  // The search continues to the metered sibling instead.
+  it('skips a $0 plan listing when valuing covered work, and only then', () => {
+    const planToml = TOML
+      .replace('[native.gateways."acme".price]\ninput = 2\n', '')
+      .replace('base_url = "https://example.invalid/v1"\npricing_provider = "deepseek"',
+        'base_url = "https://api.z.ai/api/coding/paas/v4"\npricing_provider = ["zai-coding-plan", "zai"]');
+    const plan = parseConfig(planToml);
+    const planCache: ModelsDevCache = {
+      fetchedAt: '2026-10-14T00:00:00.000Z',
+      providers: {
+        'zai-coding-plan': { 'deepseek-v4-pro': { input: 0, output: 0 } },
+        zai: { 'deepseek-v4-pro': { input: 5, output: 9 } },
+      },
+    };
+    expect(resolvePrice(plan, 'plain', tokens, now, planCache)).toEqual({
+      source: 'covered', totalUsd: 5, observedAt: '2026-10-14T00:00:00.000Z',
+    });
+    // The dispatch lane takes models.dev at its word.
+    expect(resolvePrice(plan, 'plain', tokens, now, planCache, { relabelCovered: false })).toEqual({
+      source: 'models-dev', totalUsd: 0, observedAt: '2026-10-14T00:00:00.000Z',
+    });
+    // A session gateway is covered only for a subscription credential; sent
+    // with an API key the request is billed, so a $0 stays a real price.
+    const session = parseConfig(planToml.replace(
+      'base_url = "https://api.z.ai/api/coding/paas/v4"\npricing_provider = ["zai-coding-plan", "zai"]',
+      'auth = "session"\nprovider = "anthropic"\npricing_provider = ["zai-coding-plan", "zai"]',
+    ));
+    expect(resolvePrice(session, 'plain', tokens, now, planCache, { credential: 'key' })).toEqual({
+      source: 'models-dev', totalUsd: 0, observedAt: '2026-10-14T00:00:00.000Z',
+    });
+    expect(resolvePrice(session, 'plain', tokens, now, planCache, { credential: 'subscription' })).toEqual({
+      source: 'covered', totalUsd: 5, observedAt: '2026-10-14T00:00:00.000Z',
+    });
+    // A metered gateway's $0 is a real price — a free tier.
+    const free = parseConfig(planToml.replace('https://api.z.ai/api/coding/paas/v4', 'https://api.z.ai/api/paas/v4'));
+    expect(resolvePrice(free, 'plain', tokens, now, planCache)).toEqual({
+      source: 'models-dev', totalUsd: 0, observedAt: '2026-10-14T00:00:00.000Z',
+    });
   });
 
   // The relabel is the native lane's rule: an OAuth subscription values work

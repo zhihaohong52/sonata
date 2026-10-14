@@ -211,6 +211,14 @@ export function nativeTomlFor(
     if (!isOauthGatewayAuth(auth) && auth !== 'session') lines.push(`base_url = ${tomlKey(baseUrl)}`);
     const source = auth === 'session' ? undefined : credentialSources[gateway];
     if (source !== undefined) lines.push(`credential_source = ${tomlKey(source)}`);
+    // Hand-written, never proposed: the endpoint table already decides for a
+    // plan with a URL of its own, so the key exists only to say what a URL
+    // cannot. Kept only while the gateway stays key-authenticated, where
+    // `parseConfig` accepts it.
+    const billing = auth === 'api-key' && existingGateway !== undefined && existingGateway.auth === 'api-key'
+      ? existingGateway.billing
+      : undefined;
+    if (billing !== undefined) lines.push(`billing = ${tomlKey(billing)}`);
     // `provider` supersedes `wire_format`, so the wizard writes the current
     // key. Reading `wire_format` stays supported for configs already on disk;
     // continuing to WRITE it would mean every new config is born legacy.
@@ -246,7 +254,7 @@ export function nativeTomlFor(
     // bounds $0 forever, and an OAuth gateway never reaches `relabelCovered`
     // and reads as unpriced rather than covered.
     const pricingProvider = kept === undefined
-      ? proposePricingProvider(gateway, auth)
+      ? proposePricingProvider(gateway, auth, baseUrl)
       : kept.pricingProvider;
     if (pricingProvider !== undefined && pricingProvider.length > 0) {
       lines.push(`pricing_provider = [${pricingProvider.map(tomlKey).join(', ')}]`);

@@ -185,7 +185,7 @@ export function plan(
     const declared = configForScope?.native?.gateways[candidate.gateway];
     return catalogSpellingsForGateway(
       modelsDev,
-      { name: candidate.gateway, auth: declared?.auth ?? candidate.auth, pricingProvider: declared?.pricingProvider },
+      { name: candidate.gateway, auth: declared?.auth ?? candidate.auth, pricingProvider: declared?.pricingProvider, baseUrl: declared?.baseUrl ?? candidate.baseUrl },
       candidate.id,
     );
   };

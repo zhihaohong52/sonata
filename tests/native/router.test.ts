@@ -178,6 +178,16 @@ describe('routeRequest', () => {
     expect(JSON.parse((res.body as Buffer).toString()).error.type).toBe('router_error');
   });
 
+  it('names litellm as not answering when its connection is refused', async () => {
+    const refused = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+    const res = await routeRequest(
+      { method: 'POST', url: '/v1/messages', headers: {}, body: Buffer.from('{"model":"deepseek-v4-flash"}') },
+      { ...base, fetch: async () => { throw refused; } },
+    );
+    expect(res.status).toBe(502);
+    expect(JSON.parse((res.body as Buffer).toString()).error.message).toContain('litellm is not answering');
+  });
+
   it('waits for litellmReady before forwarding to litellm', async () => {
     // A respawned litellm child is not listening yet for a brief window;
     // without this gate a request landing there gets connection-refused
@@ -590,6 +600,72 @@ describe('tier alias routing', () => {
     });
     expect(res.status).toBe(200);
     expect(seen).toEqual(['default/flash', 'default/luna']);
+  });
+
+  // A refused connection means nothing is listening on LiteLLM's port, so
+  // every LiteLLM candidate would be refused too: measured 2026-10-07, a
+  // restart mid-request cost eleven recorded failures in one tier.
+  it('stops asking litellm once its connection is refused, but still tries a direct gateway', async () => {
+    const refused = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+    const routes = {
+      role: 'code', tier: 'simple',
+      routes: [
+        { key: 'flash', native: { gateway: 'lg', id: 'flash-1' } },
+        { key: 'luna', native: { gateway: 'lg', id: 'luna-1' } },
+        { key: 'direct-1', native: { gateway: 'g', id: 'model-1', transport: 'direct' as const, baseUrl: 'https://gw.example/v1' } },
+      ],
+    };
+    const seen: string[] = [];
+    const logs: string[] = [];
+    const deps = {
+      fetch: (async (url: string) => {
+        seen.push(url);
+        if (url.startsWith('http://litellm')) throw refused;
+        return new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
+      resolveTier: () => routes,
+      log: (line: string) => { logs.push(line); },
+    };
+    const res = await routeRequest(req('sonata-code-simple'), deps);
+    expect(res.status).toBe(200);
+    expect(seen).toEqual(['http://litellm/v1/messages', 'https://gw.example/v1/messages']);
+    expect(logs.some((line) => line.includes('litellm did not answer'))).toBe(true);
+
+    // With no direct candidate the tier still answers 529 naming `sonata
+    // dispatch` — the harness lane works without LiteLLM — and says why,
+    // having asked LiteLLM once rather than once per model.
+    seen.length = 0;
+    const litellmOnly = { ...routes, routes: routes.routes.slice(0, 2) };
+    const down = await routeRequest(req('sonata-code-simple'), { ...deps, resolveTier: () => litellmOnly });
+    expect(down.status).toBe(529);
+    const message = JSON.parse((down.body as Buffer).toString()).error.message as string;
+    expect(message).toContain('litellm is not answering');
+    expect(message).toContain('sonata dispatch --tier code-simple');
+    expect(seen).toEqual(['http://litellm/v1/messages']);
+  });
+
+  // undici reports a dual-stack connect that failed on every address as an
+  // AggregateError with no code of its own.
+  it('treats an AggregateError of refusals as litellm being down, and a mixed one as not', async () => {
+    const refusal = () => Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    const run = async (error: Error) => {
+      const seen: string[] = [];
+      await routeRequest(req('sonata-code-simple'), {
+        fetch: (async (url: string) => { seen.push(url); throw error; }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTier: () => ({ role: 'code', tier: 'simple', routes: [
+          { key: 'agg-a', native: { gateway: 'lg', id: 'a' } },
+          { key: 'agg-b', native: { gateway: 'lg', id: 'b' } },
+        ] }),
+      });
+      return seen.length;
+    };
+    const all = Object.assign(new TypeError('fetch failed'), { cause: new AggregateError([refusal(), refusal()]) });
+    expect(await run(all)).toBe(1);
+    const mixed = Object.assign(new TypeError('fetch failed'), { cause: new AggregateError([refusal(), new Error('ETIMEDOUT')]) });
+    expect(await run(mixed)).toBe(2);
   });
 
   it('returns 529 naming the CLI fallback when every native route fails', async () => {
@@ -3321,6 +3397,24 @@ describe('message-less 400s', () => {
       expect(rows.at(-1)?.attempts).toEqual([{ key: 'ds', status: 400 }]);
     });
   }
+
+  // A refusal after a message-less 400 is the last thing seen, so the tier
+  // answers the outage (529 + reason), not the stale 400.
+  it('does not return an earlier message-less 400 once litellm refuses the next connection', async () => {
+    const refused = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) });
+    const { deps } = harness(() => new Response('{}', { status: 200 }));
+    let calls = 0;
+    const res = await routeRequest(request(), {
+      ...deps,
+      fetch: (async () => {
+        calls += 1;
+        if (calls === 1) return new Response(ENVELOPE_EMPTY, { status: 400 });
+        throw refused;
+      }) as unknown as typeof fetch,
+    });
+    expect(res.status).toBe(529);
+    expect(JSON.parse((res.body as Buffer).toString()).error.message).toContain('litellm is not answering');
+  });
 
   it('keeps a 400 that carries a real error message terminal', async () => {
     const { seen, lines, deps } = harness(() => new Response(ENVELOPE_WITH_MESSAGE, { status: 400 }));

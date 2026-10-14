@@ -1601,3 +1601,36 @@ base_url = "${url}"
       .toThrow(/session.*provider = "anthropic"/);
   });
 });
+
+describe('native gateway billing', () => {
+  const gateway = (lines: string) => `
+[native]
+[native.ports]
+router = 4100
+litellm = 4101
+[native.gateways.acme]
+${lines}
+`;
+
+  it('round-trips each value on a key gateway, and is absent by default', () => {
+    for (const billing of ['subscription', 'metered']) {
+      const config = parseConfig(gateway(`base_url = "https://api.minimax.io/v1"\nbilling = "${billing}"`));
+      expect(config.native!.gateways.acme.billing).toBe(billing);
+    }
+    expect(parseConfig(gateway('base_url = "https://api.minimax.io/v1"')).native!.gateways.acme.billing).toBeUndefined();
+  });
+
+  it('refuses an unknown value by name, listing the valid ones', () => {
+    expect(() => parseConfig(gateway('base_url = "https://x.example/v1"\nbilling = "flat"')))
+      .toThrow(/unknown billing "flat".*subscription, metered/s);
+  });
+
+  // An OAuth login is a subscription by construction, and a session gateway
+  // is decided per request: there is no choice for the key to make.
+  it('refuses billing on an OAuth or session gateway', () => {
+    expect(() => parseConfig(gateway('auth = "codex-oauth"\nbilling = "metered"')))
+      .toThrow(/always a subscription — remove billing/);
+    expect(() => parseConfig(gateway('auth = "session"\nprovider = "anthropic"\nbilling = "subscription"')))
+      .toThrow(/cannot set billing/);
+  });
+});

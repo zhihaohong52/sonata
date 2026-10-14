@@ -35,6 +35,7 @@ import { litellmStatus, type InstallerDeps } from '../native/litellm-venv.js';
 import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm.js';
 import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, catalogFamily, hasTaskCost, loadAaCatalog, normalizedFor } from '../catalog.js';
 import { suggestedTiers } from './agents.js';
+import { planEndpointFor, sharedPlanFor } from '../plans.js';
 import { loadModelsDev } from '../modelsdev.js';
 import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
@@ -784,7 +785,7 @@ export async function cmdDoctor(
   });
   if (unpricedGateways.length > 0) {
     const named = unpricedGateways.slice(0, 3).map(([name, gw]) => {
-      const proposal = proposePricingProvider(name, gw.auth);
+      const proposal = proposePricingProvider(name, gw.auth, gw.baseUrl);
       // Naming the exact line is the point: a user told only that a gateway is
       // unpriced has to go and find what the key is called and what it takes.
       return proposal === undefined ? name : `${name} (pricing_provider = ["${proposal[0]}"])`;
@@ -822,6 +823,47 @@ export async function cmdDoctor(
         ok: true,
         detail: `${unmatched.join('; ')} — named in pricing_provider but not published by models.dev, `
           + 'so they price nothing; check the spelling or run `sonata catalog update`',
+      });
+    }
+  }
+
+  // Which gateways count as subscriptions, and why. Their work is reported
+  // covered and kept out of `[budget]`, which is a claim about the user's
+  // money worth showing rather than leaving to be inferred from the usage
+  // screen. A gateway on an endpoint that serves both a plan and a metered API
+  // cannot be classified by sonata at all, so it is named until it says.
+  {
+    // A covered row needs a price before it can be relabelled: a gateway
+    // nothing prices reports unpriced, and claiming "valued at list" for it
+    // would contradict the gateway-pricing line printed beside it.
+    const unpricedNames = new Set(unpricedGateways.map(([name]) => name));
+    const subscriptions = gatewayEntries.flatMap(([name, gw]) => {
+      const why = isOauthGatewayAuth(gw.auth) ? `${gw.auth === 'codex-oauth' ? 'ChatGPT' : 'Copilot'} login`
+        : gw.auth === 'session' ? 'your Claude login, when it is a subscription'
+          : gw.billing === 'subscription' ? 'billing = "subscription"'
+            : gw.billing === undefined ? planEndpointFor(gw.baseUrl)?.plan : undefined;
+      if (why === undefined) return [];
+      return [`${name} (${why}${unpricedNames.has(name) ? '; unpriced until it has a pricing_provider' : ''})`];
+    });
+    if (subscriptions.length > 0) {
+      checks.push({
+        name: 'subscriptions',
+        ok: true,
+        detail: `${subscriptions.join(', ')} — work on these is reported as covered: valued at list where a price is known, `
+          + 'never counted toward [budget]',
+      });
+    }
+    const undecided = gatewayEntries.flatMap(([name, gw]) => {
+      if (gw.auth !== 'api-key' || gw.billing !== undefined) return [];
+      const plan = sharedPlanFor(gw.baseUrl);
+      return plan === undefined ? [] : [`${name} (${plan})`];
+    });
+    if (undecided.length > 0) {
+      checks.push({
+        name: 'subscription billing',
+        ok: true,
+        detail: `${undecided.join(', ')}: this endpoint serves both a plan and pay as you go, and only the key says which — `
+          + 'treated as pay per token; if yours is a plan key, set billing = "subscription" on the gateway',
       });
     }
   }

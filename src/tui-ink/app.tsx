@@ -318,7 +318,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const upstreamForCandidate = (candidate: { gateway: string; id: string }): string | readonly string[] =>
         catalogSpellingsForGateway(
           modelsDev,
-          { name: candidate.gateway, auth: data.gatewayAuth?.[candidate.gateway], pricingProvider: pricingProviders[candidate.gateway] },
+          { name: candidate.gateway, auth: data.gatewayAuth?.[candidate.gateway], pricingProvider: pricingProviders[candidate.gateway], baseUrl: data.gatewayBaseUrls?.[candidate.gateway] },
           candidate.id,
         );
       // A provider added this run exists only in `state`: `data.candidates`
@@ -473,7 +473,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         if (gateway === undefined) return id;
         return catalogSpellingsForGateway(
           modelsDev,
-          { name: gateway, auth: data.gatewayAuth?.[gateway], pricingProvider: pricingProviders[gateway] },
+          { name: gateway, auth: data.gatewayAuth?.[gateway], pricingProvider: pricingProviders[gateway], baseUrl: data.gatewayBaseUrls?.[gateway] },
           id,
         );
       };

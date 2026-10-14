@@ -53,7 +53,12 @@ Worth knowing before you depend on this:
   which the API rejects — a multi-turn agent then dies mid-task on a 400.
   Affinity and thinking-block stripping make that survivable, not impossible.
 
-- **`normal` is optional.** A config may keep only `simple` and `complex`, preserving its previous behaviour; adding `normal` provides the uncapped value-ranked choice. `simple` remains a cost-capped prefix of `normal`, so the tiers can agree on a homogeneous model family.
+- **`normal` is optional.** A config may keep only `simple` and `complex`, preserving its previous behaviour; adding `normal` provides the uncapped value-ranked choice. `simple` is the value order capped at 12 times the best-value model's cost per task, so it leads with the best-value model while `normal` leads with the knee of the price-performance frontier.
+- **A plan's overflow is invisible.** A subscription gateway's work is
+  reported as covered and left out of `[budget]`. Some plans bill usage past
+  their allowance per token (OpenCode Go with "Use balance" on, Chutes,
+  NanoGPT, Ollama Cloud's extra credits), and nothing in a response says
+  which requests did — so that spend is reported covered too.
 - **`auth = "session"` needs a live Claude Code session.** Outside that context
   the session credential may be unavailable, and subscription spend is
   estimated at Anthropic list prices — a report, not a bill.

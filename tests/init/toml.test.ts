@@ -373,6 +373,16 @@ describe('nativeTomlFor — originating pricing_provider', () => {
     expect(config.native!.gateways.google.pricingProvider).toEqual(['google']);
   });
 
+  // models.dev lists plans at $0, so a plan gateway is proposed its metered
+  // sibling's table — chosen by endpoint, never by the gateway's name.
+  it('proposes the metered sibling for a plan endpoint, whatever the gateway is called', () => {
+    const plan = { ...gw('glm-plan'), baseUrl: 'https://api.z.ai/api/coding/paas/v4' };
+    expect(parseConfig(nativeTomlFor({ code: [plan] })).native!.gateways['glm-plan'].pricingProvider).toEqual(['zai']);
+    // OpenCode Go is the plan models.dev prices at real rates: its own entry.
+    const go = { ...gw('my-go'), baseUrl: 'https://opencode.ai/inference/go/v1' };
+    expect(parseConfig(nativeTomlFor({ code: [go] })).native!.gateways['my-go'].pricingProvider).toEqual(['opencode-go']);
+  });
+
   it('leaves a gateway it cannot identify unpriced rather than guessing', () => {
     const toml = nativeTomlFor({ code: [gw('my-private-proxy')] });
     expect(toml).not.toContain('pricing_provider');
@@ -437,6 +447,19 @@ describe('nativeTomlFor — settings init must not silently drop', () => {
       native: { gateways: { acme: { baseUrl: 'https://acme.example/v1', auth: 'api-key', pricingProvider: ['openai', 'deepseek'] } } },
     } as never);
     expect(parseConfig(toml).native!.gateways.acme.pricingProvider).toEqual(['openai', 'deepseek']);
+  });
+
+  // `billing` is the one statement a URL cannot make — a plan sharing its
+  // metered sibling's endpoint — so dropping it would put plan work back into
+  // `[budget]` on the next `sonata init`.
+  it('round-trips a gateway billing', () => {
+    for (const billing of ['subscription', 'metered'] as const) {
+      const toml = write({
+        native: { gateways: { acme: { baseUrl: 'https://acme.example/v1', auth: 'api-key', billing } } },
+      } as never);
+      expect(parseConfig(toml).native!.gateways.acme.billing).toBe(billing);
+    }
+    expect(write()).not.toContain('billing');
   });
 
   it('round-trips a gateway price block', () => {
