@@ -19,6 +19,14 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 - **`sonata doctor` reports a ChatGPT login the router cannot use** as a
   failing `serve gateways` check. It used to say ok while every codex model
   was refused.
+- **OpenCode Go's GPT models work.** OpenCode Go serves `gpt-6-luna` and
+  `gpt-5.6-luna` only on the Responses API and refused every request sonata
+  sent them over chat completions — often ending the request instead of
+  trying the next model. `sonata init` now writes `api = "responses"` for any
+  model models.dev says needs it, `sonata doctor` names one that lacks it,
+  and the router falls straight through past the refusal. Existing configs:
+  run `sonata catalog update`, then `sonata doctor`, and add the line it names
+  (or re-run `sonata init`).
 
 - **`sonata usage` no longer runs a covered amount into the token column.**
   A bucket whose work was all covered shows `$128.26 sub`, which filled the

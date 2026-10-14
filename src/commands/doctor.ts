@@ -36,7 +36,7 @@ import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm
 import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, catalogFamily, hasTaskCost, loadAaCatalog, normalizedFor } from '../catalog.js';
 import { suggestedTiers } from './agents.js';
 import { planEndpointFor, sharedPlanFor } from '../plans.js';
-import { loadModelsDev } from '../modelsdev.js';
+import { loadModelsDev, needsResponsesApi } from '../modelsdev.js';
 import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
@@ -823,6 +823,27 @@ export async function cmdDoctor(
         ok: true,
         detail: `${unmatched.join('; ')} — named in pricing_provider but not published by models.dev, `
           + 'so they price nothing; check the spelling or run `sonata catalog update`',
+      });
+    }
+  }
+
+  // A model its provider serves only on `/responses`, configured without
+  // `api = "responses"`: every request to it is refused on chat completions
+  // (OpenCode Go's `gpt-6-luna`, which served nothing in 37 tries before
+  // 2026-10-14). The router falls through past it, so nothing else says so.
+  if (modelsDevForProviders !== undefined) {
+    const wrongProtocol = Object.entries(config.unifiedModels).flatMap(([key, model]) => {
+      const gw = model.gateway === undefined ? undefined : config.native?.gateways[model.gateway];
+      if (gw === undefined || model.id === undefined || model.api !== undefined || gw.auth !== 'api-key') return [];
+      if ((gw.provider ?? gw.wireFormat) === 'anthropic') return [];
+      return needsResponsesApi(modelsDevForProviders, gw.baseUrl, model.id) ? [`"${key}"`] : [];
+    });
+    if (wrongProtocol.length > 0) {
+      checks.push({
+        name: 'model protocol',
+        ok: false,
+        detail: `${wrongProtocol.join(', ')}: served only on the Responses API, so every request on chat completions is refused — `
+          + 'add api = "responses" to each [models] entry, or re-run `sonata init`',
       });
     }
   }

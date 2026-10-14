@@ -10,7 +10,7 @@ import {
   modelsDevPath,
   normalizeModelsDev,
   normalizeModelsDevContexts,
-  normalizeModelsDevNames,
+  normalizeModelsDevNames, normalizeModelsDevResponsesOnly,
   type ModelsDevCache,
 } from '../modelsdev.js';
 import { resolveKeyFromSource } from '../native/credentials.js';
@@ -331,6 +331,7 @@ export async function updateModelsDev(
     providers,
     contexts: normalizeModelsDevContexts(body),
     names: normalizeModelsDevNames(body),
+    responsesOnly: normalizeModelsDevResponsesOnly(body),
   };
   const path = modelsDevPath(home);
   mkdirSync(dirname(path), { recursive: true });

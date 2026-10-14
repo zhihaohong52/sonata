@@ -34,7 +34,9 @@ A native model that answers `Function tools with reasoning_effort are not suppor
 OpenAI-compatible gateway) needs `api = "responses"` on its entry. That sends it
 to the gateway's `/responses` endpoint instead of `/chat/completions`. It only
 applies to an `api-key` gateway reached through LiteLLM, and is refused anywhere
-else. `sonata init` keeps the line when it rewrites the file.
+else. `sonata init` keeps the line when it rewrites the file, and adds it itself
+for a model models.dev says is served only there (OpenCode Go's GPT models, for
+one); `sonata doctor` names any such model that lacks it.
 
 ## Where sonata.toml lives
 

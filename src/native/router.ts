@@ -871,6 +871,20 @@ function teeStream(body: AsyncIterable<Uint8Array>): { stream: AsyncIterable<Uin
  */
 const UNSERVABLE_400_SIGNATURES = ['MissingSessionID'] as const;
 
+/**
+ * 400 bodies that mean "this MODEL cannot serve any request as sonata sends
+ * it", while its gateway's other models can. They fall through at once, like
+ * `UNSERVABLE_400_SIGNATURES`, but cool the one candidate, not the gateway.
+ *
+ * `Model does not support this protocol` is OpenCode Go refusing a model on
+ * the wrong endpoint (its type `ModelProtocolUnsupported`, which LiteLLM's
+ * envelope drops). Measured 2026-10-14: `gpt-6-luna` answers it on chat
+ * completions and serves on `/responses`, while `minimax-m3` on the same
+ * gateway serves chat completions. 37 requests had ended on it as a terminal
+ * 400. The fix is `api = "responses"` on the model; this is the backstop.
+ */
+const MODEL_UNSERVABLE_400_SIGNATURES = ['Model does not support this protocol'] as const;
+
 /** Module-level so a cooling-down key stays cool across requests. Test seam: `clearCooldowns()`. */
 const cooldowns = new Map<string, number>();
 
@@ -2212,6 +2226,16 @@ async function routeTierRequest(
       const unservable = response.status === 400
         ? UNSERVABLE_400_SIGNATURES.find((signature) => bodyBuf.toString().includes(signature))
         : undefined;
+      const modelUnservable = response.status === 400 && unservable === undefined
+        ? MODEL_UNSERVABLE_400_SIGNATURES.find((signature) => bodyBuf.toString().includes(signature))
+        : undefined;
+      if (modelUnservable !== undefined) {
+        attempts.push({ key: route.key, status: response.status });
+        cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+        if (conversation !== undefined) stickyDemote(conversation, route.key);
+        deps.log?.(`router: ${route.key} refused (400 "${modelUnservable}"), cooling it and trying next`);
+        continue;
+      }
       if (unservable !== undefined) {
         attempts.push({ key: route.key, status: response.status });
         cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
