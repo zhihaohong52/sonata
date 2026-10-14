@@ -1315,10 +1315,12 @@ export function withContributorEntries(aa: AaCatalog, modelsDev: Pick<ModelsDevC
       const bare = id.slice(id.lastIndexOf('/') + 1);
       if (!bare.endsWith(CONTRIBUTOR_SUFFIX)) continue;
       const { input, output } = rates;
-      if (input === undefined || output === undefined || !(input > 0) || !(output > 0)) continue;
-      const rate = (input * 3 + output) / 4;
+      if (input === undefined || output === undefined) continue;
+      // A free listing beside a paid one is a disagreement like any other:
+      // which price this gateway charges is then unknown, so it stays unscored.
+      const rate = input > 0 && output > 0 ? (input * 3 + output) / 4 : null;
       const seen = blended.get(bare);
-      blended.set(bare, seen === undefined || seen === rate ? rate : null);
+      blended.set(bare, rate !== null && (seen === undefined || seen === rate) ? rate : null);
     }
   }
   const models = { ...aa.models };
@@ -1343,7 +1345,10 @@ export function withContributorEntries(aa: AaCatalog, modelsDev: Pick<ModelsDevC
         contributorOf: family?.name ?? base,
         ...(family !== undefined ? { family: key } : {}),
       };
-      models[effort === undefined || effort === family?.default ? key : `${key}-${effort}`] = derived;
+      const destination = effort === undefined || effort === family?.default ? key : `${key}-${effort}`;
+      // A level AA publishes itself is never replaced by a derived one.
+      if (aa.models[destination] !== undefined) continue;
+      models[destination] = derived;
       added = true;
     }
   }

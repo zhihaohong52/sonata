@@ -843,6 +843,7 @@ export async function cmdDoctor(
       const required = requiredApi(modelsDevForProviders, gw.baseUrl, model.id);
       if (required === undefined) continue;
       if (model.api === undefined) missing.push(`"${key}" (api = "${required.api}")`);
+      else if (model.api !== required.api) missing.push(`"${key}" (api = "${model.api}", but it is served on "${required.api}")`);
       if ((model.api ?? required.api) === 'google' && gw.baseUrl !== undefined && !sameEndpoint(gw.baseUrl, required.endpoint)) {
         wrongEndpoint.push(`"${key}" — set base_url = "${required.endpoint}" on gateway "${model.gateway}"`);
       }
@@ -851,8 +852,8 @@ export async function cmdDoctor(
       checks.push({
         name: 'model protocol',
         ok: false,
-        detail: `${missing.join(', ')}: served only on that protocol, so every request on chat completions is refused — `
-          + 'add the api line to each [models] entry, or re-run `sonata init`',
+        detail: `${missing.join(', ')}: served only on that protocol, so every request on any other is refused — `
+          + 'set the api line on each [models] entry, or re-run `sonata init`',
       });
     }
     if (wrongEndpoint.length > 0) {

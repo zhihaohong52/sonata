@@ -1637,6 +1637,10 @@ pricing_provider = ["opencode-go"]
     writeFileSync(join(cwd, 'sonata.toml'), config('api = "responses"'));
     expect((await doctorChecks(cwd, home, at)).find((check) => check.name === 'model protocol')?.detail)
       .not.toContain('"opencode-go-gpt-6-luna"');
+    // An explicit api that is the wrong protocol is named too.
+    writeFileSync(join(cwd, 'sonata.toml'), config('api = "google"'));
+    expect((await doctorChecks(cwd, home, at)).find((check) => check.name === 'model protocol')?.detail)
+      .toContain('"opencode-go-gpt-6-luna" (api = "google", but it is served on "responses")');
   });
 
   it('tells a Google-protocol model on OpenCode Go\'s older /zen/go path where it is served', async () => {

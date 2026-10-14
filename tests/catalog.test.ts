@@ -1836,6 +1836,14 @@ describe('withContributorEntries', () => {
     expect(aa.models['acme-one-contributor']).toBeUndefined();
   });
 
+  it('never replaces a contributor level AA publishes itself', () => {
+    const published = { intelligenceIndex: 33, blendedPriceUsd: 1, costPerTask: 0.7, family: 'acme-one-contributor', effort: 'low' as const };
+    const out = withContributorEntries({ ...aa, models: { ...aa.models, 'acme-one-contributor-low': published } },
+      { providers: { go: { 'acme-one-contributor': rates(0.5, 1) } } });
+    expect(out.models['acme-one-contributor-low']).toEqual(published);
+    expect(out.models['acme-one-contributor']?.costPerTask).toBe(0.3125);
+  });
+
   it('can price a contributor above the standard model, and reads a vendor-qualified id', () => {
     const out = derived({ gw: { 'vendor/acme-one-contributor': rates(4, 4) } });
     expect(out.models['acme-one-contributor']!.costPerTask).toBe(2);
@@ -1847,6 +1855,9 @@ describe('withContributorEntries', () => {
       .models['acme-one-contributor']).toBeUndefined();
     expect(derived({ a: { 'acme-two-contributor': rates(1, 1) } }).models['acme-two-contributor']).toBeUndefined();
     expect(derived({ a: { 'other-contributor': rates(1, 1) } })).toBe(aa);
+    // A free listing beside a paid one leaves the price unknown.
+    expect(derived({ a: { 'acme-one-contributor': rates(0, 0) }, b: { 'acme-one-contributor': rates(1, 1) } })
+      .models['acme-one-contributor']).toBeUndefined();
   });
 
   it('is applied by loadAaCatalog from the models.dev cache, and never written to disk', () => {
