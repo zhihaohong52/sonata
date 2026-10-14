@@ -15,8 +15,7 @@ chains `typecheck:tests`); the codex-oauth system-message hole (0.6.0);
 `SONATA_CAPTURE_TEXT_CALLS_DIR` (0.16.0). Still open: `gpt-6-luna` 400s on
 roughly every other request; `No tool call found for function call output with
 call_id …`; text-call recovery going 0 for 6; `serve.test.ts` failing under
-full-suite load; the doctor budget surface and `worktreeUnchanged` in
-`sonata runs`; the machine config's `[budget]`/`avoid_gateways` (a user
+full-suite load; the machine config's `[budget]`/`avoid_gateways` (a user
 decision). "Where things stood at 0.8.3" further down is historical.
 
 ## ChatGPT login revocation (2026-10-14) — open follow-ups
@@ -778,11 +777,10 @@ All five are cheap and none blocks anything.
    and its models still go through LiteLLM. Adding `provider = "anthropic"`
    flips them to the direct path; that exact config was verified live in an
    earlier session. Verified still absent 2026-09-04.
-3. **Item 04 has no `sonata doctor` surface.** A configured budget cap is
-   invisible until it refuses. A line naming the cap and today's spend costs
-   very little and removes a silent-until-it-bites surprise.
-4. **Item 07 is not surfaced in `sonata runs`.** `TailResult.worktreeUnchanged`
-   already exists; only the report prefix consumes it today.
+3. ~~**Item 04 has no `sonata doctor` surface.**~~ Done 2026-10-15: a
+   `budget` check per cap, failing once spent.
+4. ~~**Item 07 is not surfaced in `sonata runs`.**~~ Done 2026-10-15:
+   `unchanged`, from the exit capture only.
 5. **`deepseek`, `mistral`, `groq` sit in `PROVIDER_FOR_GATEWAY` without live
    verification.** The table's own comment says only exercised endpoints
    belong there, so a wrong row is a real defect — but nobody has hit one,

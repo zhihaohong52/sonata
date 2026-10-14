@@ -794,8 +794,8 @@ export async function main(argv: string[]): Promise<number> {
       return 0;
     }
     for (const r of runs) {
-      const flags = `${r.state}${r.degraded ? ' degraded' : ''}${r.report ? ' report' : ''}`;
-      console.log(`${r.id.padEnd(14)} ${flags.padEnd(24)} ${(r.role ?? '—').padEnd(8)} ${r.model ?? '—'} ${r.started ?? ''}`);
+      const flags = `${r.state}${r.degraded ? ' degraded' : ''}${r.report ? ' report' : ''}${r.worktreeUnchanged ? ' unchanged' : ''}`;
+      console.log(`${r.id.padEnd(14)} ${flags.padEnd(34)} ${(r.role ?? '—').padEnd(8)} ${r.model ?? '—'} ${r.started ?? ''}`);
     }
     return 0;
   }

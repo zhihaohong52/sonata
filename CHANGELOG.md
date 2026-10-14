@@ -10,6 +10,12 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **`sonata doctor` shows each `[budget] daily_usd` cap** with today's priced
+  spend against it, and fails one that is spent. A cap used to be invisible
+  until it refused a request.
+- **`sonata runs` marks a run that changed nothing** (`unchanged`), the same
+  finding its report already carried as `[no worktree change: …]`.
+
 - **`sonata init` can set up a coding or token plan from opencode.** The Z.ai
   and Zhipu GLM Coding Plans, Kimi For Coding, Alibaba's Coding and Token
   Plans, Volcengine Ark, Tencent, Xiaomi, StepFun and KUAE Cloud plans had no

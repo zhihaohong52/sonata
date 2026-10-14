@@ -1637,6 +1637,34 @@ pricing_provider = ["opencode-go"]
     writeFileSync(join(cwd, 'sonata.toml'), config('api = "responses"'));
     expect((await doctorChecks(cwd, home, at)).find((check) => check.name === 'model protocol')?.detail)
       .not.toContain('"opencode-go-gpt-6-luna"');
+
+  it('names each budget cap with today\'s spend, and fails one that is spent', async () => {
+    // A cap was invisible until it refused a request.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-budget-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-budget-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), '[budget]\ndaily_usd = 5\n');
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), '[budget]\ndaily_usd = 20\n');
+    const at = new Date('2026-10-15T12:00:00.000Z');
+    const spend = (usd: number, tenant: string | undefined, source: 'models-dev' | 'covered' = 'models-dev') => appendRow(home, {
+      ts: '2026-10-15T09:00:00.000Z', ms: 1, alias: 'sonata-code-simple', upstream: 'litellm', status: 200, complete: true,
+      tokens: { input: 1, output: 1, cacheRead: 0, cacheCreation: 0 }, price: { source, totalUsd: usd }, attempts: [],
+      ...(tenant === undefined ? {} : { tenant }),
+    } as LedgerRow);
+    const project = projectTenant(cwd, home)!;
+    spend(3, project);
+    spend(4, 'another-project');
+    spend(100, project, 'covered');
+    const budget = () => doctorChecks(cwd, home, at).then((checks) => checks.filter((c) => c.name === 'budget'));
+    expect(await budget()).toEqual([
+      { name: 'budget', ok: true, detail: `$3.00 of $5.00 priced spend today (UTC) for this project (${join(cwd, 'sonata.toml')})` },
+      { name: 'budget', ok: true, detail: `$7.00 of $20.00 priced spend today (UTC) for the machine (${join(home, '.config', 'sonata', 'sonata.toml')})` },
+    ]);
+    spend(2, project);
+    const spent = (await budget())[0]!;
+    expect(spent.ok).toBe(false);
+    expect(spent.detail).toContain('refused until 00:00 UTC');
   });
 
   it('scores a vendor alias through its models.dev name, and an id that begins with the gateway name', async () => {
