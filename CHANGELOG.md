@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.16.4] - 2026-10-14
+
 ### Fixed
 
 - **Flat-rate plans are reported as subscriptions, not per-token spend.**
