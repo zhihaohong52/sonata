@@ -10,6 +10,12 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **`sonata init` can set up a coding or token plan from opencode.** The Z.ai
+  and Zhipu GLM Coding Plans, Kimi For Coding, Alibaba's Coding and Token
+  Plans, Volcengine Ark, Tencent, Xiaomi, StepFun and KUAE Cloud plans had no
+  known base URL, so an opencode login to one could not be used with a key.
+  Each now has one, and is reported as a subscription.
+
 - **Codex models no longer go down every time codex refreshes its login.**
   Refreshing a ChatGPT login revokes the copy the router's LiteLLM was
   using, and every ChatGPT model answered 502 until `sonata restart`. The

@@ -129,6 +129,31 @@ export const WELL_KNOWN_PROVIDER_URLS: Record<string, string> = {
   'chutes': 'https://llm.chutes.ai/v1',
   'empower': 'https://app.empower.dev/api/v1',
   'morph': 'https://api.morphllm.com/v1',
+
+  // Flat-rate coding and token plans with an endpoint of their own, keyed by
+  // the provider id opencode and models.dev give them (URLs from models.dev,
+  // 2026-10-15). Each is one `planEndpointFor` (src/plans.ts) recognises, so a
+  // gateway init writes from here is reported as a subscription. Plans served
+  // on Anthropic's dialect (MiniMax's) or sharing their metered sibling's
+  // endpoint are left out: the first needs a wire format this table cannot
+  // carry, and the second is the key's to decide, not the URL's.
+  'zai-coding-plan': 'https://api.z.ai/api/coding/paas/v4',
+  'zhipuai-coding-plan': 'https://open.bigmodel.cn/api/coding/paas/v4',
+  'kimi-code-plan-global': 'https://api.kimi.ai/coding/v1',
+  'kimi-code-plan-cn': 'https://api.kimi.com/coding/v1',
+  'alibaba-coding-plan': 'https://coding-intl.dashscope.aliyuncs.com/v1',
+  'alibaba-coding-plan-cn': 'https://coding.dashscope.aliyuncs.com/v1',
+  'alibaba-token-plan': 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1',
+  'alibaba-token-plan-cn': 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+  'volcengine-coding-plan': 'https://ark.cn-beijing.volces.com/api/coding/v3',
+  'tencent-coding-plan': 'https://api.lkeap.cloud.tencent.com/coding/v3',
+  'tencent-token-plan': 'https://api.lkeap.cloud.tencent.com/plan/v3',
+  'xiaomi-token-plan-ams': 'https://token-plan-ams.xiaomimimo.com/v1',
+  'xiaomi-token-plan-cn': 'https://token-plan-cn.xiaomimimo.com/v1',
+  'xiaomi-token-plan-sgp': 'https://token-plan-sgp.xiaomimimo.com/v1',
+  'stepfun-ai-step-plan': 'https://api.stepfun.ai/step_plan/v1',
+  'stepfun-step-plan': 'https://api.stepfun.com/step_plan/v1',
+  'kuae-cloud-coding-plan': 'https://coding-plan-endpoint.kuaecloud.net/v1',
 };
 
 export function parseOpenCodeProviderBaseUrls(text: string): Record<string, string> {

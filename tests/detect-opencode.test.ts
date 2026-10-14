@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WELL_KNOWN_PROVIDER_URLS, detectOpenCode } from '../src/detect.js';
+import { planEndpointFor } from '../src/plans.js';
 import { opencodeDbPath } from '../src/native/opencode-store.js';
 import { sqliteAvailable, writeOpencodeCredDb } from './opencode-db-fixture.js';
 
@@ -67,5 +68,15 @@ describe('OpenCode gateway URLs', () => {
     // Zen gateway added by hand fetched no models while Go's listed fine.
     expect(WELL_KNOWN_PROVIDER_URLS['opencode']).toBe('https://opencode.ai/zen/v1');
     expect(WELL_KNOWN_PROVIDER_URLS['opencode-go']).toBe('https://opencode.ai/zen/go/v1');
+  });
+});
+
+describe('WELL_KNOWN_PROVIDER_URLS — plan providers', () => {
+  // A plan provider init writes from this table must be recognised as a plan
+  // by its URL, or its work is reported as billed per token.
+  it('points every plan provider at an endpoint planEndpointFor recognises', () => {
+    const plans = Object.entries(WELL_KNOWN_PROVIDER_URLS).filter(([id]) => /-(code|coding|token|step)-plan/.test(id));
+    expect(plans.length).toBe(17);
+    for (const [id, url] of plans) expect(planEndpointFor(url), id).toBeDefined();
   });
 });
