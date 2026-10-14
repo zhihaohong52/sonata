@@ -233,9 +233,10 @@ The whole grammar `sonata.toml` parses. Top-level keys must sit above every
   (unpriced volume is reported beside it, never folded in as zero), including
   a `sonata dispatch` run once that run finishes. Both the router and
   `sonata dispatch` refuse at the cap — but a dispatch run cannot be stopped
-  midway, so one run can carry spend past it. Subscription-covered work
-  (`codex-oauth`, `copilot-oauth`, a Claude `session` gateway) shows as
-  `$x sub` and never counts. A non-positive or non-numeric value is refused
+  midway, so one run can carry spend past it. Subscription-covered work — a
+  `codex-oauth`, `copilot-oauth` or Claude `session` gateway, or any gateway
+  on a flat-rate plan (see `billing` below) — shows as `$x sub` and never
+  counts. A non-positive or non-numeric value is refused
   at parse time; remove the table to run without a cap.
 
 **`[native.ports]`**
@@ -260,9 +261,19 @@ The whole grammar `sonata.toml` parses. Top-level keys must sit above every
   gateway reads. `codex` is refused with `api-key` and with `copilot-oauth`,
   and `session` cannot set it. See
   [Codex subscription auth](codex-subscription.md#which-login-a-gateway-reads).
+- `billing` — `subscription` or `metered`, on an `api-key` gateway only:
+  whether it is a flat-rate plan. Subscription work is valued at list but
+  never billed per token, so it is reported as covered and left out of
+  `[budget]`. Unset, the endpoint decides — see
+  [Subscription plans](native-path.md#subscription-plans) — so set it only for
+  a plan that shares its pay-as-you-go endpoint (MiniMax, Synthetic, Chutes,
+  NanoGPT, Ollama Cloud, Cerebras Code), or to correct sonata. An OAuth or
+  `session` gateway cannot set it.
 - `price` — rates as below.
 - `pricing_provider` — name(s) of the models.dev provider(s) whose rates
-  price this gateway's models, instead of hand-written ones.
+  price this gateway's models, instead of hand-written ones. For a plan
+  endpoint, `sonata init` proposes the plan's pay-as-you-go sibling (`zai`
+  for the GLM Coding Plan), because models.dev lists plans at $0.
 
 **`[models."<key>"]`**
 

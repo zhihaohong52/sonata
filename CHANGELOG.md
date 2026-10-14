@@ -8,6 +8,38 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Fixed
+
+- **Flat-rate plans are reported as subscriptions, not per-token spend.**
+  OpenCode Go was priced like pay-as-you-go: its work counted toward
+  `[budget]` and `sonata usage` showed it as billed, though it is a monthly
+  plan. Every key-authenticated plan with an endpoint of its own is now
+  recognised from the gateway's `base_url` — OpenCode Go, the Z.ai and Zhipu
+  GLM Coding Plans, Kimi For Coding, Alibaba's Coding and Token Plans,
+  Volcengine Ark, Tencent, Xiaomi and StepFun plans, KUAE Cloud — and
+  reported as covered: valued at list price, left out of `[budget]`. The
+  same vendors' metered endpoints are unchanged. The list follows
+  models.dev's provider catalogue, which opencode also reads. Rows already
+  in the ledger keep the label they were written with.
+- **A restart no longer fails a whole tier.** When `sonata restart` killed
+  LiteLLM under an in-flight request, the router tried every remaining
+  model against the dead process and recorded each as failed — eleven in one
+  measured tier. A refused connection to LiteLLM now stops the LiteLLM-backed
+  candidates at once (a model on a direct gateway is still tried) without
+  recording or cooling any of them, and the tier's 529 says LiteLLM is not
+  answering — still naming `sonata dispatch`, which works without it.
+
+### Added
+
+- **`billing = "subscription" | "metered"` on a gateway.** For a plan that
+  shares its pay-as-you-go endpoint, where only the key says which it is —
+  MiniMax Token Plan, Synthetic, Chutes, NanoGPT, Ollama Cloud, Cerebras Code
+  — or to correct sonata either way. `sonata doctor` lists every gateway it
+  counts as a subscription and why, and names a gateway on a shared endpoint
+  that has not said. For a plan endpoint `sonata init` proposes the plan's
+  pay-as-you-go sibling as its `pricing_provider`, since models.dev lists
+  plans at $0, and a $0 rate is no longer taken as a covered row's list price.
+
 ### Security
 
 - **Dependency and code-scanning fixes.** `smol-toml` (the TOML parser) is

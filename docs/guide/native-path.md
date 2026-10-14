@@ -77,12 +77,66 @@ turns when it is routed.
 
 **OpenCode Zen and Go.** The two are separate endpoints on one opencode.ai
 account: Zen (pay as you go) is `https://opencode.ai/zen/v1`, Go (the
-subscription) is `https://opencode.ai/zen/go/v1`. Both route a conversation by
+subscription) is `https://opencode.ai/zen/go/v1` (models.dev now lists both
+under `/inference`, and both paths answer). Both route a conversation by
 an `x-opencode-session` header and refuse a request without one (400
 `MissingSessionID`). Since 0.13.1 the router sends it — a stable id per
 conversation — and LiteLLM forwards it only to models on an `opencode.ai`
 gateway; no other client `x-*` header reaches them. Earlier versions sent none,
 so no native request to an opencode.ai gateway could succeed.
+
+## Subscription plans
+
+Several vendors sell a flat-rate coding or token plan beside a metered API,
+reached with an ordinary API key. Sonata reports a plan's work as **covered**:
+valued at list price in `sonata usage` (shown as `$x sub`), never billed per
+token, and left out of `[budget]`. Usage beyond a plan's allowance that the
+vendor bills per token is not something a response says, so sonata cannot
+see it — keep `[budget]` for metered gateways in mind if your plan overflows
+to a balance.
+
+A plan with an endpoint of its own is recognised from the gateway's
+`base_url`, with nothing to configure:
+
+| Plan | Endpoint |
+|---|---|
+| OpenCode Go | `opencode.ai/zen/go`, `opencode.ai/inference/go` |
+| Z.ai / Zhipu GLM Coding Plan | `api.z.ai/api/coding`, `open.bigmodel.cn/api/coding` |
+| Kimi For Coding | `api.kimi.com/coding`, `api.kimi.ai/coding` |
+| Alibaba Coding Plan | `coding-intl.dashscope.aliyuncs.com`, `coding.dashscope.aliyuncs.com` |
+| Alibaba Token Plan | `token-plan.<region>.maas.aliyuncs.com` |
+| Volcengine Ark Coding / Agent Plan | `ark.cn-beijing.volces.com/api/coding`, `/api/plan` |
+| Tencent Coding / Token Plan | `api.lkeap.cloud.tencent.com/coding`, `/plan` |
+| Xiaomi Token Plan | `token-plan-<region>.xiaomimimo.com` |
+| StepFun Step Plan | `api.stepfun.ai/step_plan`, `api.stepfun.com/step_plan` |
+| KUAE Cloud Coding Plan | `coding-plan-endpoint.kuaecloud.net` |
+
+The same vendors' pay-as-you-go endpoints (`api.z.ai/api/paas`,
+`api.moonshot.ai`, `opencode.ai/zen/v1`, …) stay metered. The list follows
+models.dev's provider catalogue, which opencode also reads.
+
+Some plans share their pay-as-you-go endpoint, and only the key says which you
+have: **MiniMax Token Plan, Synthetic, Chutes, NanoGPT, Ollama Cloud, Cerebras
+Code, Umans AI.** Sonata treats those as metered, and `sonata doctor` names
+them. If yours is a plan key, say so on the gateway:
+
+```toml
+[native.gateways."minimax"]
+base_url = "https://api.minimax.io/anthropic"
+provider = "anthropic"
+billing = "subscription"
+```
+
+`billing = "metered"` does the opposite, for an endpoint sonata gets wrong.
+`sonata doctor` lists every gateway it counts as a subscription and why.
+
+ChatGPT (`codex-oauth`), GitHub Copilot (`copilot-oauth`) and your Claude
+account (`auth = "session"`) are subscriptions through their own logins. A
+SuperGrok subscription includes no API access, so xAI is always metered.
+
+Check a plan's terms before routing it through sonata. Some limit the plan to
+the vendor's listed tools — Z.ai's Coding Plan terms, for one, exclude
+"SDK-based access or other third-party integrations".
 
 See also: [Codex subscription auth](codex-subscription.md), for how the
 `codex-oauth` gateway type authenticates against a ChatGPT subscription rather

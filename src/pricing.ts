@@ -5,11 +5,12 @@
  * A scraped price applies only when the gateway identifies its serving provider:
  * the same model can cost materially different amounts across providers.
  */
-import { isOauthGatewayAuth, type NativeGatewayAuth, type PriceConfig, type PriceWindow, type Rates, type SonataConfig } from './config.js';
+import { isOauthGatewayAuth, type GatewayBilling, type NativeGatewayAuth, type PriceConfig, type PriceWindow, type Rates, type SonataConfig } from './config.js';
 import type { LedgerPrice } from './ledger.js';
 import type { UsageTokens } from './native/usage.js';
 import { normalizeModelName, type UpstreamFor } from './catalog.js';
 import { catalogSpellingsFor, type ModelsDevCache } from './modelsdev.js';
+import { planEndpointFor } from './plans.js';
 
 function minutes(hhmm: string): number {
   const [hours, minutesPart] = hhmm.split(':');
@@ -85,13 +86,33 @@ export function ratesCoverTokens(tokens: UsageTokens, rates: Rates): boolean {
 }
 
 /**
+ * Whether a key-authenticated gateway is a flat-rate plan rather than metered
+ * per token: its own `billing` when set, otherwise its endpoint
+ * (`planEndpointFor`). An OAuth gateway is always one and a session gateway
+ * depends on the request, so neither is decided here.
+ */
+export function isSubscriptionGateway(gateway: { auth?: NativeGatewayAuth; baseUrl?: string; billing?: GatewayBilling } | undefined): boolean {
+  if (gateway === undefined || (gateway.auth ?? 'api-key') !== 'api-key') return false;
+  if (gateway.billing !== undefined) return gateway.billing === 'subscription';
+  return planEndpointFor(gateway.baseUrl) !== undefined;
+}
+
+/**
  * Subscription work is valued at list rates but never billed per token. An
  * OAuth gateway is always a subscription; a session gateway is one exactly
- * when the request carried the person's Claude subscription credential.
+ * when the request carried the person's Claude subscription credential; a
+ * key-authenticated gateway is one when `isSubscriptionGateway` says so.
  */
-function relabelCovered(auth: NativeGatewayAuth | undefined, price: LedgerPrice, credential?: 'subscription' | 'key'): LedgerPrice {
+function relabelCovered(
+  gateway: { auth?: NativeGatewayAuth; baseUrl?: string; billing?: GatewayBilling } | undefined,
+  price: LedgerPrice,
+  credential?: 'subscription' | 'key',
+): LedgerPrice {
+  const auth = gateway?.auth;
   if (price.source === 'none' || auth === undefined) return price;
-  const isSubscription = isOauthGatewayAuth(auth) || (auth === 'session' && credential === 'subscription');
+  const isSubscription = isOauthGatewayAuth(auth)
+    || (auth === 'session' && credential === 'subscription')
+    || isSubscriptionGateway(gateway);
   return isSubscription ? { ...price, source: 'covered' } : price;
 }
 
@@ -196,9 +217,15 @@ const MODELSDEV_PROVIDER_FOR_AUTH: Record<string, string> = {
 export function proposePricingProvider(
   gateway: string,
   auth: NativeGatewayAuth | undefined,
+  baseUrl?: string,
 ): string[] | undefined {
   const byAuth = auth === undefined ? undefined : MODELSDEV_PROVIDER_FOR_AUTH[auth];
-  const provider = byAuth ?? MODELSDEV_PROVIDER_FOR_GATEWAY[gateway];
+  // A plan endpoint is priced from its metered sibling, never by its name:
+  // a gateway called `zai` pointed at the Coding Plan would otherwise be
+  // priced from `zai` correctly only by luck, and one called `glm-plan` not
+  // at all. models.dev lists the plan itself at $0.
+  const plan = (auth ?? 'api-key') === 'api-key' ? planEndpointFor(baseUrl) : undefined;
+  const provider = byAuth ?? (plan === undefined ? MODELSDEV_PROVIDER_FOR_GATEWAY[gateway] : plan.listProvider ?? MODELSDEV_PROVIDER_FOR_GATEWAY[gateway]);
   return provider === undefined ? undefined : [provider];
 }
 
@@ -231,6 +258,11 @@ function qualifiedMatch(table: Record<string, Rates>, name: string): Rates | und
     if (!sameRates(found, rates)) return undefined;
   }
   return found;
+}
+
+/** Whether a rate table charges nothing for input and output alike. */
+function isZeroRate(rates: Rates): boolean {
+  return (rates.input ?? 0) === 0 && (rates.output ?? 0) === 0;
 }
 
 function sameRates(a: Rates, b: Rates): boolean {
@@ -312,7 +344,7 @@ export function resolvePrice(
 
   const gateway = model.gateway === undefined ? undefined : config.native?.gateways[model.gateway];
   const covered = (price: LedgerPrice): LedgerPrice =>
-    (options?.relabelCovered === false ? price : relabelCovered(gateway?.auth, price, options?.credential));
+    (options?.relabelCovered === false ? price : relabelCovered(gateway, price, options?.credential));
 
   const modelRates = ratesFor(model.price, at);
   if (modelRates !== undefined) {
@@ -349,6 +381,10 @@ export function resolvePrice(
   // a model the lab itself has not listed can still be priced from the rate
   // models.dev already holds for it. Naming it yourself simply moves it up.
   let scraped: Rates | undefined;
+  // Only where the result will be relabelled covered: the harness lane opts
+  // out, and there a $0 rate stays what models.dev says it is.
+  const subscription = options?.relabelCovered !== false && gateway !== undefined
+    && (isOauthGatewayAuth(gateway.auth) || gateway.auth === 'session' || isSubscriptionGateway(gateway));
   outer: for (const id of gateway?.auth === 'session' && gateway.pricingProvider === undefined
     ? provider
     : withFallbackProvider(provider)) {
@@ -356,6 +392,11 @@ export function resolvePrice(
     if (table === undefined) continue;
     for (const name of lookup) {
       const hit = table[name] ?? qualifiedMatch(table, name);
+      // A $0 rate on a subscription gateway is a plan provider's listing
+      // (models.dev prices coding and token plans at nothing, because the
+      // plan is what is paid for), not a list price. Covered work is valued
+      // at list, so keep looking — the metered sibling or the fallback.
+      if (hit !== undefined && subscription && isZeroRate(hit)) continue;
       if (hit !== undefined) { scraped = hit; break outer; }
     }
   }
