@@ -378,6 +378,9 @@ describe('nativeTomlFor — originating pricing_provider', () => {
   it('proposes the metered sibling for a plan endpoint, whatever the gateway is called', () => {
     const plan = { ...gw('glm-plan'), baseUrl: 'https://api.z.ai/api/coding/paas/v4' };
     expect(parseConfig(nativeTomlFor({ code: [plan] })).native!.gateways['glm-plan'].pricingProvider).toEqual(['zai']);
+    // OpenCode Go is the plan models.dev prices at real rates: its own entry.
+    const go = { ...gw('my-go'), baseUrl: 'https://opencode.ai/inference/go/v1' };
+    expect(parseConfig(nativeTomlFor({ code: [go] })).native!.gateways['my-go'].pricingProvider).toEqual(['opencode-go']);
   });
 
   it('leaves a gateway it cannot identify unpriced rather than guessing', () => {

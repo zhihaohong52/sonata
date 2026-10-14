@@ -48,7 +48,7 @@ export const PLAN_ENDPOINTS: readonly PlanEndpoint[] = [
   // OpenCode Go is the one plan models.dev prices at real rates: its
   // allowance is a dollar amount per model, metered at those rates. Both the
   // older `/zen/go` and the current `/inference/go` path answer.
-  { plan: 'OpenCode Go', host: 'opencode.ai', path: /^\/(zen|inference)\/go(\/|$)/ },
+  { plan: 'OpenCode Go', host: 'opencode.ai', path: /^\/(zen|inference)\/go(\/|$)/, listProvider: 'opencode-go' },
   { plan: 'Z.ai GLM Coding Plan', host: 'api.z.ai', path: /^\/api\/coding(\/|$)/, listProvider: 'zai' },
   { plan: 'Zhipu GLM Coding Plan', host: 'open.bigmodel.cn', path: /^\/api\/coding(\/|$)/, listProvider: 'zhipuai' },
   // No list provider: the plan's ids (`k3`, `kimi-for-coding`) are not the

@@ -411,6 +411,18 @@ base_url = "https://example.invalid/v1"
     expect(resolvePrice(plan, 'plain', tokens, now, planCache, { relabelCovered: false })).toEqual({
       source: 'models-dev', totalUsd: 0, observedAt: '2026-10-14T00:00:00.000Z',
     });
+    // A session gateway is covered only for a subscription credential; sent
+    // with an API key the request is billed, so a $0 stays a real price.
+    const session = parseConfig(planToml.replace(
+      'base_url = "https://api.z.ai/api/coding/paas/v4"\npricing_provider = ["zai-coding-plan", "zai"]',
+      'auth = "session"\nprovider = "anthropic"\npricing_provider = ["zai-coding-plan", "zai"]',
+    ));
+    expect(resolvePrice(session, 'plain', tokens, now, planCache, { credential: 'key' })).toEqual({
+      source: 'models-dev', totalUsd: 0, observedAt: '2026-10-14T00:00:00.000Z',
+    });
+    expect(resolvePrice(session, 'plain', tokens, now, planCache, { credential: 'subscription' })).toEqual({
+      source: 'covered', totalUsd: 5, observedAt: '2026-10-14T00:00:00.000Z',
+    });
     // A metered gateway's $0 is a real price — a free tier.
     const free = parseConfig(planToml.replace('https://api.z.ai/api/coding/paas/v4', 'https://api.z.ai/api/paas/v4'));
     expect(resolvePrice(free, 'plain', tokens, now, planCache)).toEqual({

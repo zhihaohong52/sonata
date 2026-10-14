@@ -833,18 +833,24 @@ export async function cmdDoctor(
   // screen. A gateway on an endpoint that serves both a plan and a metered API
   // cannot be classified by sonata at all, so it is named until it says.
   {
+    // A covered row needs a price before it can be relabelled: a gateway
+    // nothing prices reports unpriced, and claiming "valued at list" for it
+    // would contradict the gateway-pricing line printed beside it.
+    const unpricedNames = new Set(unpricedGateways.map(([name]) => name));
     const subscriptions = gatewayEntries.flatMap(([name, gw]) => {
-      if (isOauthGatewayAuth(gw.auth)) return [`${name} (${gw.auth === 'codex-oauth' ? 'ChatGPT' : 'Copilot'} login)`];
-      if (gw.auth === 'session') return [`${name} (your Claude login)`];
-      if (gw.billing === 'subscription') return [`${name} (billing = "subscription")`];
-      const plan = gw.billing === undefined ? planEndpointFor(gw.baseUrl) : undefined;
-      return plan === undefined ? [] : [`${name} (${plan.plan})`];
+      const why = isOauthGatewayAuth(gw.auth) ? `${gw.auth === 'codex-oauth' ? 'ChatGPT' : 'Copilot'} login`
+        : gw.auth === 'session' ? 'your Claude login, when it is a subscription'
+          : gw.billing === 'subscription' ? 'billing = "subscription"'
+            : gw.billing === undefined ? planEndpointFor(gw.baseUrl)?.plan : undefined;
+      if (why === undefined) return [];
+      return [`${name} (${why}${unpricedNames.has(name) ? '; unpriced until it has a pricing_provider' : ''})`];
     });
     if (subscriptions.length > 0) {
       checks.push({
         name: 'subscriptions',
         ok: true,
-        detail: `${subscriptions.join(', ')} — reported as covered, valued at list and not counted toward [budget]`,
+        detail: `${subscriptions.join(', ')} — work on these is reported as covered: valued at list where a price is known, `
+          + 'never counted toward [budget]',
       });
     }
     const undecided = gatewayEntries.flatMap(([name, gw]) => {

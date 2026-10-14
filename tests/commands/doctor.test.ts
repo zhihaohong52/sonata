@@ -2000,10 +2000,22 @@ billing = "subscription"
 [native.gateways."metered"]
 base_url = "https://api.deepseek.com/v1"
 `);
-    expect(subscriptions?.detail).toContain('plan (Z.ai GLM Coding Plan)');
+    // `plan` serves a model and nothing prices it, so it is covered in name
+    // only until it has a price source — said, rather than "valued at list".
+    expect(subscriptions?.detail).toContain('plan (Z.ai GLM Coding Plan; unpriced until it has a pricing_provider)');
     expect(subscriptions?.detail).toContain('stated (billing = "subscription")');
     expect(subscriptions?.detail).not.toContain('metered');
     expect(undecided).toBeUndefined();
+  });
+
+  it('does not call a priced subscription gateway unpriced', async () => {
+    const { subscriptions } = await run(`
+[native.gateways."plan"]
+base_url = "https://api.z.ai/api/coding/paas/v4"
+pricing_provider = ["zai"]
+`);
+    expect(subscriptions?.detail).toContain('plan (Z.ai GLM Coding Plan)');
+    expect(subscriptions?.detail).not.toContain('unpriced');
   });
 
   // Only the key tells a MiniMax plan from MiniMax pay-as-you-go, so sonata

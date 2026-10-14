@@ -1685,12 +1685,14 @@ interface LitellmResponse extends RouterResponse {
 }
 
 /** Whether a thrown fetch was a refused connection (undici puts the code on `cause`). */
-function connectionRefused(error: unknown): boolean {
-  for (let e: unknown = error, depth = 0; e !== undefined && e !== null && depth < 4; depth++) {
-    if (typeof e === 'object' && (e as { code?: unknown }).code === 'ECONNREFUSED') return true;
-    e = typeof e === 'object' ? (e as { cause?: unknown }).cause : undefined;
-  }
-  return false;
+function connectionRefused(error: unknown, depth = 0): boolean {
+  if (error === undefined || error === null || typeof error !== 'object' || depth > 4) return false;
+  if ((error as { code?: unknown }).code === 'ECONNREFUSED') return true;
+  // A dual-stack connect that fails on every address arrives as an
+  // AggregateError with no code of its own: refused only if all of them were.
+  const errors = (error as { errors?: unknown }).errors;
+  if (Array.isArray(errors) && errors.length > 0 && errors.every((e) => connectionRefused(e, depth + 1))) return true;
+  return connectionRefused((error as { cause?: unknown }).cause, depth + 1);
 }
 
 /** What a tier answers when its LiteLLM child stopped answering mid-request. */
@@ -2075,6 +2077,9 @@ async function routeTierRequest(
       deps.log?.(`router: litellm did not answer for ${route.key}; skipping its other routes`);
       litellmDown = LITELLM_UNREACHABLE;
       litellmRefused = true;
+      // The refusal is now the last thing seen: a message-less 400 from an
+      // earlier candidate must not be returned in place of the outage.
+      lastMessageless = undefined;
       continue;
     }
     if ('loginRefused' in response && response.loginRefused === true) {
@@ -2371,7 +2376,7 @@ async function routeTierRequest(
       'account-level refusal — an expired key, a rejected credential or an exhausted budget)'
     : '') + (skippedDropped.length > 0
     ? ` (not served: ${[...new Set(skippedDropped)].join('; ')})`
-    : '') + (litellmRefused ? ` (${LITELLM_UNREACHABLE})` : '');
+    : '') + (litellmDown !== undefined ? ` (skipped the LiteLLM routes: ${litellmDown})` : '');
   return withUsageRecording({
     status: 529,
     headers: { 'content-type': 'application/json' },
@@ -2662,6 +2667,10 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
       isCodexOauth(tenant, native?.gateway),
     );
     if (isClientGone(response)) return response;
+    // The same reason the tier path gives, instead of the bare "fetch failed".
+    if (response.litellmUnreachable === true) {
+      return { status: 502, headers: { 'content-type': 'application/json' }, body: anthropicErrorBody('router_error', LITELLM_UNREACHABLE) };
+    }
     // Answered as every later request on the gateway is — the named 502 —
     // and, like those, never a ledger row: nothing was served.
     if (response.loginRefused === true && native !== undefined) {

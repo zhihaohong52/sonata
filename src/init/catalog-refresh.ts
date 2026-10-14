@@ -52,7 +52,7 @@ export function uncoveredCandidates(
       candidate.key,
       catalog,
       gatewayNames,
-      () => catalogSpellingsForGateway(modelsDev, { name: candidate.gateway, auth: candidate.auth }, candidate.id),
+      () => catalogSpellingsForGateway(modelsDev, { name: candidate.gateway, auth: candidate.auth, baseUrl: candidate.baseUrl }, candidate.id),
     ))
     .map((candidate) => candidate.key);
 }

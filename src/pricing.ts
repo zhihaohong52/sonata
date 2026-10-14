@@ -92,7 +92,7 @@ export function ratesCoverTokens(tokens: UsageTokens, rates: Rates): boolean {
  * depends on the request, so neither is decided here.
  */
 export function isSubscriptionGateway(gateway: { auth?: NativeGatewayAuth; baseUrl?: string; billing?: GatewayBilling } | undefined): boolean {
-  if (gateway === undefined || (gateway.auth ?? 'api-key') !== 'api-key') return false;
+  if (gateway === undefined || gateway.auth !== 'api-key') return false;
   if (gateway.billing !== undefined) return gateway.billing === 'subscription';
   return planEndpointFor(gateway.baseUrl) !== undefined;
 }
@@ -103,17 +103,15 @@ export function isSubscriptionGateway(gateway: { auth?: NativeGatewayAuth; baseU
  * when the request carried the person's Claude subscription credential; a
  * key-authenticated gateway is one when `isSubscriptionGateway` says so.
  */
-function relabelCovered(
+function isCoveredWork(
   gateway: { auth?: NativeGatewayAuth; baseUrl?: string; billing?: GatewayBilling } | undefined,
-  price: LedgerPrice,
   credential?: 'subscription' | 'key',
-): LedgerPrice {
+): boolean {
   const auth = gateway?.auth;
-  if (price.source === 'none' || auth === undefined) return price;
-  const isSubscription = isOauthGatewayAuth(auth)
+  if (auth === undefined) return false;
+  return isOauthGatewayAuth(auth)
     || (auth === 'session' && credential === 'subscription')
     || isSubscriptionGateway(gateway);
-  return isSubscription ? { ...price, source: 'covered' } : price;
 }
 
 /**
@@ -288,11 +286,13 @@ function withFallbackProvider(provider: readonly string[]): readonly string[] {
  */
 export function catalogSpellingsForGateway(
   modelsDev: ModelsDevCache | undefined,
-  gateway: { name: string; auth?: NativeGatewayAuth; pricingProvider?: readonly string[] } | undefined,
+  gateway: { name: string; auth?: NativeGatewayAuth; pricingProvider?: readonly string[]; baseUrl?: string } | undefined,
   id: string,
 ): string[] {
   if (modelsDev?.names === undefined || gateway === undefined) return [id];
-  const named = gateway.pricingProvider ?? proposePricingProvider(gateway.name, gateway.auth) ?? [];
+  // `baseUrl` so a plan gateway ranks from the same provider it is priced
+  // from (`proposePricingProvider` picks a plan's metered sibling by URL).
+  const named = gateway.pricingProvider ?? proposePricingProvider(gateway.name, gateway.auth, gateway.baseUrl) ?? [];
   return catalogSpellingsFor(modelsDev.names, withFallbackProvider(named), id);
 }
 
@@ -312,7 +312,7 @@ export function configUpstreamFor(
     const gateway = gatewayName === undefined ? undefined : config.native?.gateways[gatewayName];
     const id = model.id ?? model.harnessId ?? key;
     if (gatewayName === undefined || gateway === undefined) return [id];
-    return catalogSpellingsForGateway(modelsDev, { name: gatewayName, auth: gateway.auth, pricingProvider: gateway.pricingProvider }, id);
+    return catalogSpellingsForGateway(modelsDev, { name: gatewayName, auth: gateway.auth, pricingProvider: gateway.pricingProvider, baseUrl: gateway.baseUrl }, id);
   };
 }
 
@@ -343,8 +343,13 @@ export function resolvePrice(
   if (model === undefined) return { source: 'none' };
 
   const gateway = model.gateway === undefined ? undefined : config.native?.gateways[model.gateway];
+  // One verdict, used both to relabel and to decide whether a $0 rate is a
+  // plan listing to skip. Restating it separately let a session request sent
+  // with an API key — billed per token — skip a genuine $0 and be charged a
+  // reseller's rate against `[budget]`.
+  const isCovered = options?.relabelCovered !== false && isCoveredWork(gateway, options?.credential);
   const covered = (price: LedgerPrice): LedgerPrice =>
-    (options?.relabelCovered === false ? price : relabelCovered(gateway, price, options?.credential));
+    (isCovered && price.source !== 'none' ? { ...price, source: 'covered' } : price);
 
   const modelRates = ratesFor(model.price, at);
   if (modelRates !== undefined) {
@@ -382,9 +387,8 @@ export function resolvePrice(
   // models.dev already holds for it. Naming it yourself simply moves it up.
   let scraped: Rates | undefined;
   // Only where the result will be relabelled covered: the harness lane opts
-  // out, and there a $0 rate stays what models.dev says it is.
-  const subscription = options?.relabelCovered !== false && gateway !== undefined
-    && (isOauthGatewayAuth(gateway.auth) || gateway.auth === 'session' || isSubscriptionGateway(gateway));
+  // out, a metered request is billed, and there a $0 rate is what it says.
+  const subscription = isCovered;
   outer: for (const id of gateway?.auth === 'session' && gateway.pricingProvider === undefined
     ? provider
     : withFallbackProvider(provider)) {
