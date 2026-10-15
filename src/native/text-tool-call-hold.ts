@@ -1,3 +1,5 @@
+import { PARSE_BUFFER_CAP_CHARS } from './text-tool-calls.js';
+
 /**
  * Holds a streamed tier turn back from the client until it is clear whether
  * the model wrote a tool call as text — so that a call the router cannot
@@ -6,8 +8,10 @@
  * docs/superpowers/specs/2026-10-02-text-tool-calls-design.md, "fall through").
  *
  * Only the decision is made here. Rewriting stays in
- * `rewriteTextToolCallStream`, whose output is what is held and replayed, so a
- * held turn reaches the client byte for byte as an unheld one would.
+ * `rewriteTextToolCallStream`, whose output is what is held and replayed, so
+ * the rewriter's output is unchanged by the hold. (That output is not the
+ * upstream's bytes: the rewriter normalises line endings and re-serialises
+ * block events.)
  *
  * Used only on tier routes (`sonata-<role>-<tier>`, `-auto`), which carry
  * subagent traffic nobody watches stream; a main session's own model and a
@@ -18,10 +22,16 @@
  *   is released at once and streams on as it always has;
  * - the turn ends, when the rewriter's counts decide (an unrecovered call
  *   withdraws it, anything else is served);
- * - or a limit is hit: past `maxBytes` of held output, `idleMs` without an
- *   upstream byte once the first has arrived, or `maxMs` in total (time to
- *   first token included), what is held is released and the rest streams as
- *   it would have unheld. A limit only costs that turn its withdrawal.
+ * - or a limit is hit: past `maxBytes` of upstream input or of held output,
+ *   `idleMs` without an upstream byte once the first has arrived, or `maxMs`
+ *   in total (time to first token included), what is held is released and
+ *   the rest streams as it would have unheld. A limit only costs that turn
+ *   its withdrawal.
+ *
+ * Memory per held response is therefore about `maxBytes` of held output plus
+ * the chunk in flight, and the parsers' own buffers — the scanner's unclosed
+ * call, the rewriter's and this probe's unterminated frame — are each capped
+ * at `PARSE_BUFFER_CAP_CHARS`, past which they give up and pass through.
  */
 
 export interface HoldLimits { maxBytes: number; idleMs: number; maxMs: number }
@@ -29,7 +39,7 @@ export interface HoldLimits { maxBytes: number; idleMs: number; maxMs: number }
 type ProbeState = 'pending' | 'released';
 
 /** Reads raw upstream SSE bytes and releases the hold at the first real `tool_use` block. */
-export function createToolUseProbe() {
+export function createToolUseProbe(maxFrameChars: number = PARSE_BUFFER_CAP_CHARS) {
   const decoder = new TextDecoder();
   let buffer = '';
   let carry = '';
@@ -56,6 +66,8 @@ export function createToolUseProbe() {
         event(buffer.slice(0, split));
         buffer = buffer.slice(split + 2);
       }
+      // A frame too large to read is no evidence either way: stop holding.
+      if (buffer.length > maxFrameChars) state = 'released';
       // A turn's text is held whole; only the scan for the next event is kept.
       if (state !== 'pending') buffer = '';
     },
@@ -87,9 +99,16 @@ export async function holdForTextToolCalls(
   // Idle is measured from the first upstream byte: a model slow to its first
   // token has sent nothing to release yet. Before then only `maxMs` applies.
   let lastInput: number | undefined;
+  // Raw upstream bytes count toward `maxBytes` too: a scanner holding an
+  // unclosed call emits nothing, so held output alone would never trip it.
+  let inputBytes = 0;
+  let overflowed: (() => void) | undefined;
+  const overflow = new Promise<'limit'>((resolve) => { overflowed = () => resolve('limit'); });
   async function* tapped(): AsyncIterable<Uint8Array> {
     for await (const chunk of upstream) {
       lastInput = Date.now();
+      inputBytes += chunk.length;
+      if (inputBytes > limits.maxBytes) overflowed?.();
       probe.push(chunk);
       yield chunk;
     }
@@ -152,7 +171,7 @@ export async function holdForTextToolCalls(
     });
     let next: IteratorResult<Uint8Array> | 'limit' | 'aborted';
     try {
-      next = await Promise.race([pending, limit, aborted]);
+      next = await Promise.race([pending, limit, aborted, overflow]);
     } catch {
       // The upstream broke while held. What reached nobody is released as
       // it would have streamed, and the break surfaces where it always has:
@@ -181,6 +200,6 @@ export async function holdForTextToolCalls(
     const chunk = Buffer.from(next.value);
     held.push(chunk);
     heldBytes += chunk.length;
-    if (heldBytes > limits.maxBytes) return release();
+    if (heldBytes > limits.maxBytes || inputBytes > limits.maxBytes) return release();
   }
 }

@@ -815,6 +815,38 @@ describe('router — text-form tool calls', () => {
     expect('textToolCalls' in rows[0]).toBe(false);
   });
 
+  it('stops holding an unclosed call with a huge parameter once its input passes the byte limit', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const slowEnd = (): Response => new Response(new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const enc = new TextEncoder();
+        controller.enqueue(enc.encode([
+          ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+          ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+          ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: '<tool_call><function=Bash><parameter=command>' } }),
+        ].join('')));
+        // Nothing of this is emitted by the scanner, which is holding the call.
+        for (let i = 0; i < 40; i++) controller.enqueue(enc.encode(ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'x'.repeat(100) } })));
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        controller.enqueue(enc.encode(ev('content_block_stop', { index: 0 }) + ev('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { input_tokens: 1, output_tokens: 1 } }) + ev('message_stop', {})));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const { seen, d } = twoCandidates(rows, slowEnd, {
+      textToolCallHoldLimits: { maxBytes: 2_000, idleMs: 10_000, maxMs: 60_000 },
+    });
+    const started = Date.now();
+    const res = await routeRequest(withTools('sonata-code-simple'), d);
+    // Released on input bytes, before the upstream's tail arrived.
+    expect(Date.now() - started).toBeLessThan(300);
+    const out = await drain(res.body);
+    expect(out).toContain('x'.repeat(100));
+    expect(out).toContain('message_stop');
+    expect(seen).toEqual(['default/flash']);
+    expect(rows[0]).toMatchObject({ key: 'flash', complete: true, textToolCalls: { recovered: 0, unparsed: 1 } });
+  });
+
   it('stops holding past the byte limit and streams as before', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];

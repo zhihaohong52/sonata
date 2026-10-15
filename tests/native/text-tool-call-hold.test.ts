@@ -28,6 +28,12 @@ describe('createToolUseProbe', () => {
     expect(probeOf(start(0, 'text'), text(0, 'Let me look.'), ev('content_block_stop', { index: 0 }), start(1, 'tool_use'))).toBe('released');
   });
 
+  it('stops holding on a frame too large to read, keeping nothing of it', () => {
+    const probe = createToolUseProbe(1000);
+    probe.push(bytes(`event: content_block_delta\ndata: {"text":"${'x'.repeat(2000)}`));
+    expect(probe.state).toBe('released');
+  });
+
   it('is not released by a tool call written as text', () => {
     expect(probeOf(start(0, 'text'), text(0, '<tool_call><function=Bash><parameter=command>ls</parameter></function></tool_call>'))).toBe('pending');
   });

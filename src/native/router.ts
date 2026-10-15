@@ -239,7 +239,8 @@ export const TEXT_TOOL_CALL_READ_LIMITS = { maxBytes: 64 * 1024 * 1024, idleMs: 
  * - `maxMs` 5 min: a 20–30k-token thinking or report turn at 50–100 tokens/s.
  *   Kept well under the 10 min a client waits for response headers (Claude
  *   Code's default `API_TIMEOUT_MS`), since nothing is sent while held.
- * - `maxBytes` 32 MiB: SSE costs roughly 150 bytes a token, so ~200k tokens.
+ * - `maxBytes` 32 MiB, counted on upstream input and on held output alike:
+ *   SSE costs roughly 150 bytes a token, so ~200k tokens.
  * - `idleMs` 10 s, counted from the first byte: upstreams send pings, so this
  *   long without a byte is a stall, not a slow model.
  */
